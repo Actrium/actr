@@ -94,7 +94,7 @@ extension ActrService {
         }
     }
 
-    /// Prepare client-side stream handling
+    /// Prepare peer-side stream handling
     /// - Parameter expectedCount: Number of messages expected from the server
     /// - Returns: PrepareStreamResponse containing the result
     func prepareClientStream(expectedCount: Int32) async throws -> {{PROJECT_NAME_PASCAL}}_PrepareStreamResponse {

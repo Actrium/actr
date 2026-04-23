@@ -334,9 +334,9 @@ use actr_protocol::{Realm, RegisterRequest, register_response};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Compile-time state marker: a [`Node`] has been born from a [`Hyper`]
-/// plus a [`actr_config::RuntimeConfig`], but no workload has been bound
-/// yet. Transition to [`Attached`] via [`Node::attach`],
-/// [`Node::attach_linked_handle`], or [`Node::attach_none`].
+/// plus a [`actr_config::RuntimeConfig`], but no attachment path has been
+/// chosen yet. Transition to [`Attached`] via [`Node::attach`],
+/// [`Node::attach_linked`], or [`Node::attach_linked_handle`].
 pub struct Init;
 #[cfg(not(target_arch = "wasm32"))]
 /// Compile-time state marker: a package has been verified and attached; AIS credential still pending.
@@ -380,7 +380,6 @@ impl NodeState for Registered {}
 ///     .attach(package)            -> Node<Attached>          (package-backed)
 ///     .attach_linked(workload)    -> Node<Attached>          (generic Rust Workload)
 ///     .attach_linked_handle(h)    -> Node<Attached>          (embedded app / FFI handle)
-///     .attach_none()              -> Node<Attached>          (client-only)
 ///     .register(ais_endpoint)     -> Node<Registered>        (credential obtained)
 ///     .start()                    -> ActrRef                 (running node)
 /// ```
@@ -408,10 +407,10 @@ struct Attachment {
     /// Verified package retained for AIS bootstrap: the manifest plus the raw
     /// manifest bytes and signature that AIS may need to re-verify upstream.
     ///
-    /// `None` for linked / client-only attach variants
-    /// ([`Node::attach_linked_handle`], [`Node::attach_none`]) — those flows
-    /// register with AIS through [`Node::register_with`] with a
-    /// caller-supplied `service_spec`.
+    /// `None` for linked attachments, which have no verified package
+    /// metadata attached. In that case `Node::register*` falls back to the
+    /// runtime config's actor metadata instead of package-derived
+    /// registration inputs.
     verified: Option<VerifiedPackage>,
     package_bytes: bytes::Bytes,
 }
@@ -421,16 +420,15 @@ struct Attachment {
 ///
 /// A `Node<Init>` is produced by [`Node::from_config_file`] or
 /// [`Node::from_hyper`]; it carries `Hyper` + [`actr_config::RuntimeConfig`]
-/// but has no workload bound. Call one of the attach methods to progress
+/// but has not yet been attached. Call one of the attach methods to progress
 /// into `Node<Attached>`, then `register().start()` into a running
 /// [`ActrRef`]:
 ///
 /// ```text
 /// Node::from_config_file(path) -> Node<Init>
 ///     .attach(package)         -> Node<Attached>   (package-backed)
-///     .attach_linked(workload)  -> Node<Attached>   (generic Rust Workload)
+///     .attach_linked(workload) -> Node<Attached>   (generic Rust Workload)
 ///     .attach_linked_handle(h) -> Node<Attached>   (embedded app / FFI handle)
-///     .attach_none()           -> Node<Attached>   (client-only)
 ///
 /// Node<Attached>.register(ais) -> Node<Registered>
 /// Node<Registered>.start()     -> ActrRef
@@ -803,40 +801,6 @@ impl Node<Init> {
             workload::WorkloadAdapter::new(workload);
         self.attach_linked_handle(handle).await
     }
-
-    /// Attach with no workload at all — produces a client-only node
-    /// suitable for outbound `call` / `tell` from bindings that never
-    /// host a local actor. Equivalent to [`Node::attach_linked_handle`]
-    /// with a no-op handle.
-    pub async fn attach_none(self) -> HyperResult<Node<Attached>> {
-        let runtime_config = self
-            .pending_runtime_config
-            .expect("Node<Init> without pending runtime config");
-        let hyper_inner = self.hyper;
-        let mailbox_backpressure_threshold =
-            hyper_inner.config.resolved_mailbox_backpressure_threshold();
-        let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
-        let node_inner = crate::lifecycle::node::Inner::build(
-            runtime_config,
-            crate::workload::Workload::None,
-            None,
-            None,
-            mailbox_backpressure_threshold,
-            credential_expiry_warning,
-        )
-        .await
-        .map_err(|e| HyperError::Runtime(e.to_string()))?;
-        Ok(Node {
-            hyper: hyper_inner,
-            attachment: Some(Attachment {
-                node: node_inner,
-                verified: None,
-                package_bytes: bytes::Bytes::new(),
-            }),
-            pending_runtime_config: None,
-            _state: std::marker::PhantomData,
-        })
-    }
 }
 
 // ── State transition: Attached → Registered ──────────────────────────────────
@@ -848,9 +812,8 @@ impl Node<Attached> {
     ///
     /// `realm_id`, `acl`, and `realm_secret` come from the attached
     /// [`RuntimeConfig`]; `service_spec` is derived from the package's proto
-    /// exports when a package-backed attach was used. For linked /
-    /// client-only attaches, use [`Node::register_with`] to pass a
-    /// caller-supplied `service_spec`.
+    /// exports when a package-backed attach was used. Linked attachments
+    /// register from the runtime config's actor metadata instead.
     pub async fn register(self, ais_endpoint: &str) -> HyperResult<Node<Registered>> {
         let attachment = self
             .attachment
@@ -867,7 +830,11 @@ impl Node<Attached> {
         self.register_with(ais_endpoint, service_spec).await
     }
 
-    /// Register with AIS using an explicit `service_spec` (skips package-based derivation).
+    /// Register with AIS using an explicit `service_spec`.
+    ///
+    /// This skips package-based `service_spec` derivation for
+    /// package-backed attachments. Linked attachments use the supplied
+    /// `service_spec` together with the runtime config's actor metadata.
     pub async fn register_with(
         mut self,
         ais_endpoint: &str,
@@ -894,12 +861,8 @@ impl Node<Attached> {
             )
             .await?
         } else {
-            return Err(HyperError::Runtime(
-                "linked / client-only attach cannot register with AIS via `Node::register`; \
-                 supply a preregistered credential through a platform-specific flow before \
-                 calling `start()`"
-                    .to_string(),
-            ));
+            bootstrap_linked_credential_inner(&attachment.node.config, ais_endpoint, service_spec)
+                .await?
         };
 
         attachment.node.set_preregistered_credential(register_ok);
@@ -1336,6 +1299,50 @@ async fn bootstrap_credential_inner(
     );
 
     Ok(ok)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn bootstrap_linked_credential_inner(
+    config: &actr_config::RuntimeConfig,
+    ais_endpoint: &str,
+    service_spec: Option<ServiceSpec>,
+) -> HyperResult<register_response::RegisterOk> {
+    let mut ais = AisClient::new(ais_endpoint);
+    if let Some(ref secret) = config.realm_secret {
+        ais = ais.with_realm_secret(secret.clone());
+    }
+
+    let ws_address = if let Some(port) = config.websocket_listen_port {
+        let host = config
+            .websocket_advertised_host
+            .as_deref()
+            .unwrap_or("127.0.0.1");
+        Some(format!("ws://{}:{}", host, port))
+    } else {
+        None
+    };
+
+    let req = RegisterRequest {
+        actr_type: config.actr_type().clone(),
+        realm: config.realm,
+        service_spec,
+        acl: config.acl.clone(),
+        service: None,
+        ws_address,
+        ..Default::default()
+    };
+
+    let response = ais.register_with_manifest(req).await?;
+    match response.result {
+        Some(register_response::Result::Success(ok)) => Ok(ok),
+        Some(register_response::Result::Error(e)) => Err(HyperError::AisBootstrapFailed(format!(
+            "AIS rejected registration (code={}): {}",
+            e.code, e.message
+        ))),
+        None => Err(HyperError::AisBootstrapFailed(
+            "AIS response missing result field".to_string(),
+        )),
+    }
 }
 
 // ─── Helper functions (native-only) ──────────────────────────────────────────

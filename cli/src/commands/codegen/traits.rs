@@ -7,11 +7,11 @@ use std::path::PathBuf;
 /// Type of scaffold code to generate
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScaffoldType {
-    /// Generate server-side scaffold only
+    /// Generate export-side scaffold only
     Server,
-    /// Generate client-side scaffold only
+    /// Generate dependency-side scaffold only
     Client,
-    /// Generate both server and client scaffolds
+    /// Generate both export and dependency scaffolds
     #[default]
     Both,
 }

@@ -81,7 +81,7 @@ let wasm_bindgen = (function(exports) {
      * - With `WORKLOAD`: `DOM -> workload.dispatch(route_key, payload, ctx) -> response`
      *   - Local route: the workload processes locally and may call remote targets via `ctx.call_raw()`
      *   - Remote route: the workload forwards to a remote actor via `ctx.call_raw()`
-     * - Without `WORKLOAD`: `DOM -> HostGate -> Gate -> WebRTC` (legacy compatibility path)
+     * - Without `WORKLOAD`: `DOM -> HostGate -> Gate -> WebRTC`
      * @param {string} client_id
      * @param {any} payload
      * @returns {Promise<void>}

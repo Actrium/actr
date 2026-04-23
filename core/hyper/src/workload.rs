@@ -112,8 +112,8 @@ pub trait LinkedWorkloadHandle: Send + Sync + 'static {
     ///
     /// The default implementation rejects the dispatch with
     /// `ActrError::NotImplemented` so that handles concerned only with
-    /// observation hooks (e.g. pure client-side adapters) can be plugged
-    /// in without supplying a dispatcher. Generic linked attaches go
+    /// observation hooks (e.g. adapter-only hosts) can be plugged in
+    /// without supplying a dispatcher. Generic linked attaches go
     /// through [`WorkloadAdapter`], which overrides this method to call
     /// into the framework's `MessageDispatcher`.
     async fn dispatch(
@@ -328,16 +328,8 @@ impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
 ///   [`crate::Node::attach_linked`] /
 ///   [`crate::Node::attach_linked_handle`]. Inbound RPC envelopes are
 ///   forwarded to the handle via [`LinkedWorkloadHandle::dispatch`].
-/// - `None` — strictly client-only attach via
-///   [`crate::Node::attach_none`]. Inbound RPC dispatch is rejected with
-///   [`ActrError::NotImplemented`]; the node is used only for outbound
-///   calls / discovery.
-#[derive(Default)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Workload {
-    /// Client-only node: no local guest, no dispatch target.
-    #[default]
-    None,
     /// Linked in-process workload handle — hosts dispatch and lifecycle
     /// hooks inside the current process without a packaged guest binary.
     Linked(Arc<dyn LinkedWorkloadHandle>),
@@ -350,7 +342,6 @@ pub(crate) enum Workload {
 impl std::fmt::Debug for Workload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Workload::None => f.write_str("Workload::None"),
             Workload::Linked(_) => f.write_str("Workload::Linked(<dyn LinkedWorkloadHandle>)"),
             #[cfg(feature = "wasm-engine")]
             Workload::Wasm(w) => f.debug_tuple("Workload::Wasm").field(w).finish(),
@@ -372,9 +363,6 @@ impl Workload {
         Box::pin(async move {
             let _ = &invocation;
             match self {
-                Workload::None => Err(ActrError::NotImplemented(
-                    "this node has no dispatchable workload (client-only attach)".to_string(),
-                )),
                 Workload::Linked(handle) => handle.dispatch(envelope, Arc::new(ctx)).await,
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => {
@@ -568,12 +556,9 @@ mod tests {
         accepts(adapter);
     }
 
-    /// Verify the `Debug` surface keeps the Linked variant distinguishable
-    /// from None — important because the two arms take different paths in
-    /// `dispatch_envelope` / `handle`.
+    /// Verify the `Debug` surface stays stable for linked workloads.
     #[test]
-    fn workload_variants_debug_distinctly() {
-        assert_eq!(format!("{:?}", Workload::None), "Workload::None");
+    fn linked_workload_debug_surface() {
         let handle: Arc<dyn LinkedWorkloadHandle> = WorkloadAdapter::new(EchoWorkload {
             suffix: "-ok".to_string(),
         });

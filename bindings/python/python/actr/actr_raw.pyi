@@ -193,7 +193,7 @@ class DataStream:
 
 # ActrNode class
 class ActrNode:
-    """Represents a client-only actor node before it is started."""
+    """Represents an ACTR node before it is started."""
 
     @staticmethod
     async def from_toml(path: str) -> "ActrNode":

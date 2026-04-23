@@ -46,7 +46,7 @@ The `start.sh` scripts run a preflight check and will auto-install/update these 
 Run workspace commands from the repository root. Examples:
 
 - `bash data-stream/start.sh` – spin up actrix (root config), receiver, and sender.
-- `bash shell-actr-echo/start.sh` – run the echo server/client against the root actrix config.
+- `bash shell-actr-echo/start.sh` – run the echo host and shell caller against the root actrix config.
 - `bash package-echo/start.sh` – run the signed package echo host/client demo against the root actrix config.
 - `bash package-echo/start_tmp_echo_actr.sh` – generate a temporary `echo-actr-xx` service via `actr init/install/gen` and run the package echo demo against it.
 - `bash package-echo/manual-runtime-lifecycle.sh` – verify detached runtime lifecycle commands against the package-backed server config.

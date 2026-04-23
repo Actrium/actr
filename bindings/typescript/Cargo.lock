@@ -172,6 +172,7 @@ dependencies = [
  "actr-framework",
  "actr-hyper",
  "actr-protocol",
+ "async-trait",
  "bytes",
  "napi",
  "napi-build",

@@ -3,8 +3,34 @@ use napi_derive::napi;
 
 use crate::types::{ActrId, ActrType, PayloadType};
 use actr_config::ConfigParser;
-use actr_framework::Dest;
+use actr_framework::{Context as RtContext, Dest, MessageDispatcher, Workload as RtWorkload};
 use actr_hyper::{ActrRef as RuntimeActrRef, Node, Registered};
+use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
+use async_trait::async_trait;
+
+struct TypeScriptBindingWorkload;
+
+#[async_trait]
+impl RtWorkload for TypeScriptBindingWorkload {
+    type Dispatcher = TypeScriptBindingDispatcher;
+}
+
+struct TypeScriptBindingDispatcher;
+
+#[async_trait]
+impl MessageDispatcher for TypeScriptBindingDispatcher {
+    type Workload = TypeScriptBindingWorkload;
+
+    async fn dispatch<C: RtContext>(
+        _workload: &Self::Workload,
+        _envelope: RpcEnvelope,
+        _ctx: &C,
+    ) -> ActorResult<bytes::Bytes> {
+        Err(ActrError::NotImplemented(
+            "typescript bindings do not expose inbound local RPC dispatch".to_string(),
+        ))
+    }
+}
 
 #[napi]
 pub struct ActrNode {
@@ -13,13 +39,14 @@ pub struct ActrNode {
 
 #[napi]
 impl ActrNode {
-    /// Create a client-only ActrNode from manifest.toml and the sibling actr.toml.
+    /// Create an ActrNode wrapper from manifest.toml and the sibling actr.toml.
     #[napi(factory)]
     pub async fn from_file(config_path: String) -> Result<ActrNode> {
         // Accept the manifest.toml path, resolve its sibling actr.toml,
         // and let Node::from_config_file own config + trust + Hyper
-        // construction. TypeScript bindings are client-only so we finish
-        // with attach_none.
+        // construction. TypeScript bindings boot a minimal linked
+        // workload here; this surface exposes discovery and outbound
+        // calls, not TypeScript-defined service hosting.
         let manifest = ConfigParser::from_manifest_file(&config_path)
             .map_err(crate::error::config_error_to_napi)?;
         let runtime_path = manifest.config_dir.join("actr.toml");
@@ -29,7 +56,7 @@ impl ActrNode {
             .map_err(crate::error::hyper_error_to_napi)?;
         crate::logger::init_observability(init.runtime_config().observability.clone());
         let attached = init
-            .attach_none()
+            .attach_linked(TypeScriptBindingWorkload)
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
         let ais_endpoint = attached.ais_endpoint().to_string();

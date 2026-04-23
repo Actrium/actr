@@ -1,8 +1,9 @@
 use actr_config::ConfigParser;
-use actr_framework::{Bytes, Context as RtContext};
+use actr_framework::{Bytes, Context as RtContext, MessageDispatcher, Workload as RtWorkload};
 use actr_hyper::context::RuntimeContext;
 use actr_hyper::{ActrRef as RtActrRef, Node, Registered};
-use actr_protocol::{ActrError, PayloadType as RpPayloadType};
+use actr_protocol::{ActorResult, ActrError, PayloadType as RpPayloadType, RpcEnvelope};
+use async_trait::async_trait;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
@@ -14,6 +15,30 @@ use crate::{ActrId, ActrType};
 
 type WrappedNode = Node<Registered>;
 type WrappedRef = RtActrRef;
+
+struct PythonBindingWorkload;
+
+#[async_trait]
+impl RtWorkload for PythonBindingWorkload {
+    type Dispatcher = PythonBindingDispatcher;
+}
+
+struct PythonBindingDispatcher;
+
+#[async_trait]
+impl MessageDispatcher for PythonBindingDispatcher {
+    type Workload = PythonBindingWorkload;
+
+    async fn dispatch<C: RtContext>(
+        _workload: &Self::Workload,
+        _envelope: RpcEnvelope,
+        _ctx: &C,
+    ) -> ActorResult<Bytes> {
+        Err(ActrError::NotImplemented(
+            "python bindings do not expose inbound local RPC dispatch".to_string(),
+        ))
+    }
+}
 
 #[pyclass(name = "ActrNode")]
 pub struct ActrNode {
@@ -27,8 +52,9 @@ impl ActrNode {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             // Accept the manifest.toml path (historical contract), resolve
             // the sibling actr.toml, and hand off to Node::from_config_file
-            // for config + trust + Hyper construction. Python bindings are
-            // client-only so we finish with attach_none.
+            // for config + trust + Hyper construction. Python bindings boot
+            // a minimal linked workload here; this surface exposes discovery
+            // and outbound calls, not Python-defined service hosting.
             let manifest = ConfigParser::from_manifest_file(&path)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             let runtime_path = manifest.config_dir.join("actr.toml");
@@ -36,12 +62,10 @@ impl ActrNode {
             let init = Node::from_config_file(&runtime_path)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            ensure_observability_initialized(Some(
-                init.runtime_config().observability.clone(),
-            ));
+            ensure_observability_initialized(Some(init.runtime_config().observability.clone()));
 
             let attached = init
-                .attach_none()
+                .attach_linked(PythonBindingWorkload)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(format!("attach failed: {e}")))?;
             let ais_endpoint = attached.ais_endpoint().to_string();
@@ -217,9 +241,14 @@ impl ActrRef {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let ctx = inner.app_context().await;
-            ctx.tell_raw(&target_dest, route_key, payload_type.to_rust(), message_bytes)
-                .await
-                .map_err(map_protocol_error)?;
+            ctx.tell_raw(
+                &target_dest,
+                route_key,
+                payload_type.to_rust(),
+                message_bytes,
+            )
+            .await
+            .map_err(map_protocol_error)?;
             Ok(Python::attach(|py| py.None()))
         })
     }

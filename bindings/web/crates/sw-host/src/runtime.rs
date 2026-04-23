@@ -303,7 +303,7 @@ impl SignalingClient {
 
     /// Close the underlying WebSocket connection.
     ///
-    /// This triggers cleanup on the signaling server side (which removes
+    /// This triggers cleanup on the signaling host side (which removes
     /// the actor from the ServiceRegistry) and causes background loops
     /// (heartbeat, relay) to naturally terminate.
     fn close(&self) {
@@ -2635,7 +2635,7 @@ pub async fn register_client(
                     is_tell
                 );
 
-                // Build RuntimeContext for the handler (server-side: uses Peer gate for outbound)
+                // Build RuntimeContext for the handler (outbound peer gate)
                 // Look up system/peer_gate from CLIENTS (initialized after scheduler setup)
                 let (outgate, bridge) = CLIENTS.with(|cell| {
                     let map = cell.borrow();
@@ -2975,7 +2975,7 @@ pub async fn unregister_client(client_id: String) {
 /// - With `WORKLOAD`: `DOM -> workload.dispatch(route_key, payload, ctx) -> response`
 ///   - Local route: the workload processes locally and may call remote targets via `ctx.call_raw()`
 ///   - Remote route: the workload forwards to a remote actor via `ctx.call_raw()`
-/// - Without `WORKLOAD`: `DOM -> HostGate -> Gate -> WebRTC` (legacy compatibility path)
+/// - Without `WORKLOAD`: `DOM -> HostGate -> Gate -> WebRTC`
 #[wasm_bindgen]
 pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(), JsValue> {
     let call: DomRpcCall = serde_wasm_bindgen::from_value(payload)?;

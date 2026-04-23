@@ -23,7 +23,7 @@ pub(crate) type DataStreamCallback =
 /// - Concurrently invoke user-registered data stream callbacks
 ///
 /// # Typical Use Cases
-/// - Streaming RPC (server-side push streams)
+/// - Streaming RPC (peer push streams)
 /// - Real-time collaborative editing (multi-user editing sync)
 /// - Game state streams (position updates, event streams)
 /// - Log streams, sensor data streams, metrics streams

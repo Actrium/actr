@@ -25,9 +25,9 @@ pub struct RemoteServiceInfo {
 /// Code generator role
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeneratorRole {
-    /// Generate server-side code for exports
+    /// Generate export-side code for exports
     ServerSide,
-    /// Generate client-side code for dependencies
+    /// Generate dependency-side code for dependencies
     ClientSide,
 }
 
@@ -55,7 +55,7 @@ impl ModernGenerator {
         }
     }
 
-    /// Generate server-side code with remote forwarding
+    /// Generate export-side code with remote forwarding
     pub fn generate_with_remotes(
         &self,
         methods: &[MethodDescriptorProto],
@@ -67,7 +67,7 @@ impl ModernGenerator {
         }
     }
 
-    /// Generate server-side code (exports)
+    /// Generate export-side code (exports)
     fn generate_server_code(
         &self,
         methods: &[MethodDescriptorProto],
@@ -91,7 +91,7 @@ impl ModernGenerator {
         Ok(sections.join("\n\n"))
     }
 
-    /// Generate client-side code (dependencies)
+    /// Generate dependency-side code (dependencies)
     fn generate_client_code(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let sections = [
             // 1. Generate imports
@@ -459,7 +459,7 @@ impl RpcRequest for {input_type} {{
 
             /// Context extension trait
             ///
-            /// Adds convenient client methods to Context
+            /// Adds convenient caller methods to Context
             pub trait ContextExt {
                 fn #extension_method_ident(&self) -> #client_ident<'_, Self> where Self: Sized + Context;
             }
@@ -473,7 +473,7 @@ impl RpcRequest for {input_type} {{
         .to_string())
     }
 
-    /// Generate server-side usage docs
+    /// Generate export-side usage docs
     fn generate_usage_docs(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let handler_trait = format!("{}Handler", self.service_name);
         let first_method = methods.first();
@@ -533,7 +533,7 @@ Users only need to implement {handler_trait}; the framework auto-provides routin
         ))
     }
 
-    /// Generate client-side usage docs
+    /// Generate dependency-side usage docs
     fn generate_client_usage_docs(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let service_name_snake = self.service_name.to_snake_case();
         let method_name_snake = methods
@@ -543,7 +543,7 @@ Users only need to implement {handler_trait}; the framework auto-provides routin
 
         Ok(format!(
             r#"/*
-## Client Usage Example
+## Dependency Usage Example
 
 ```rust
 use actr_framework::Context;

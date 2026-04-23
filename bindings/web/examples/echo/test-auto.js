@@ -1399,7 +1399,7 @@ async function suiteErrorRecovery(browser) {
         try {
             await waitForEchoWorking(clientCtx.page, TIMEOUT_LONG);
 
-            // Close DataChannels via client-side JavaScript
+            // Close DataChannels via browser-side JavaScript
             const closeResult = await clientCtx.page.evaluate(() => {
                 // Access the WebRTC coordinator's peers
                 const coord = window.__webrtcCoordinator;

@@ -42,10 +42,9 @@ use crate::wire::webrtc::{HookCallback, HookEvent};
 /// This trait is the object-safe surface behind
 /// [`crate::LinkedWorkloadHandle`] — the linked-workload handle is a
 /// `WorkloadHookObserver` plus (at a future point) a dispatch method. The
-/// current `Node<Init>::attach_linked_handle` entry point stores the
-/// handle as this hook observer; inbound RPC dispatch into a
-/// linked-workload guest is not yet implemented (linked nodes are
-/// client-only).
+/// current `Node::attach_linked_handle` entry point stores the handle as
+/// this hook observer; inbound RPC dispatch for linked workloads is not
+/// yet implemented, so this path currently covers hook delivery only.
 #[async_trait]
 #[allow(dead_code)]
 pub(crate) trait WorkloadHookObserver: Send + Sync + 'static {

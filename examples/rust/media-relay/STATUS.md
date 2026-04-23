@@ -7,7 +7,7 @@ This example demonstrates **real Actor-RTC distributed communication** using Web
 ## Architecture
 
 ```
-actr-a (Relay/Client)          actr-b (Receiver/Server)
+actr-a (Relay/Caller)          actr-b (Receiver/Host)
 ┌─────────────────────┐        ┌──────────────────────┐
 │ TestPatternSource   │        │  RelayService        │
 │  ↓                  │  RPC   │      ↓               │
@@ -93,12 +93,14 @@ actr-a (Relay/Client)          actr-b (Receiver/Server)
 
 ### To Complete 100% Real Example
 
-**Option 1: Shell Client (Recommended)**
+**Option 1: Shell Caller (Recommended)**
 ```rust
 // In actr-a/src/main.rs
 let workload = RelayClientWorkload::new();
-let node = hyper.attach_none(config).await?;
-let actr_ref = node.start().await?;
+let init = Node::from_hyper(hyper, config).await?;
+let attached = init.attach_linked(workload).await?;
+let ais_endpoint = attached.ais_endpoint().to_string();
+let actr_ref = attached.register(&ais_endpoint).await?.start().await?;
 
 for frame in video_source {
     let request = RelayFrameRequest { frame: Some(frame) };

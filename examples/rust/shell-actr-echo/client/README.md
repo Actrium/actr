@@ -1,11 +1,11 @@
 # Echo Real Client App
 
-Interactive client application for testing Echo service using Actor-RTC framework.
+Interactive caller application for testing Echo service using Actor-RTC framework.
 
 ## Architecture
 
-This is a **client-only** application that:
-- Runs as an Actor node (ClientWorkload)
+This is a peer-side caller application that:
+- Runs as an Actor node with a local forwarding workload
 - Connects to signaling server
 - Calls remote Echo service
 - Provides interactive CLI for user input
@@ -30,23 +30,23 @@ The `src/generated/` folder is re-generated via `actr gen --input=proto --output
 
 ## Design Principles
 
-1. **No Server Code**: Client does NOT contain server implementation
+1. **No Packaged Service**: This app does not contain the packaged Echo service implementation
 2. **Minimal Generated Code**: Only protobuf messages (EchoRequest, EchoResponse)
 3. **Manual Message Trait**: Implements `Message` trait manually for type-safe RPC
 4. **Two-Layer Architecture**:
    - **App Side**: User interaction (stdin/stdout)
-   - **Client Workload**: Actor node (message forwarding)
+   - **Forwarding Workload**: Actor node (message forwarding)
 
 ## Components
 
 ### 1. ClientWorkload (Actor Layer)
 
-Runs as an Actor node, forwards messages from App to remote server:
+Runs as an Actor node, forwards messages from App to the remote Echo service peer:
 
 ```
 App → call(local_id, request) → ClientWorkload
                                      ↓
-                              ctx.call(server_id, request)
+                              ctx.call(remote_id, request)
                                      ↓
                                 Remote Server
 ```
@@ -77,14 +77,14 @@ impl Message for EchoRequest {
 # Build
 cargo build
 
-# Run (requires signaling-server and echo-real-server running)
+# Run (requires signaling service and echo service running)
 cargo run
 ```
 
 Example session:
 ```
 ===== Echo Client App =====
-Type messages to send to server (type 'quit' to exit):
+Type messages to send to the remote peer (type 'quit' to exit):
 > Hello
 [Received reply] Echo: Hello
 > World

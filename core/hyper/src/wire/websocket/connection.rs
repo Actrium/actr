@@ -135,10 +135,12 @@ impl WebSocketConnection {
         self
     }
 
-    /// Create connection from a server-side WebSocket stream with completed handshake (used for direct-connect inbound)
+    /// Create connection from an inbound WebSocket stream with completed
+    /// handshake (used for direct-connect ingress).
     ///
-    /// Unlike `new()` + `connect()`, this method is for already-accepted server connections
-    /// where the handshake has been completed by `WebSocketServer`, entering Ready state directly.
+    /// Unlike `new()` + `connect()`, this method is for already-accepted
+    /// inbound connections where the handshake has been completed by
+    /// `WebSocketServer`, entering Ready state directly.
     ///
     /// `server.rs` uses `accept_hdr_async(MaybeTlsStream::Plain(stream), ...)` to produce
     /// `WebSocketStream<MaybeTlsStream<TcpStream>>`, identical to the client type, no conversion needed.

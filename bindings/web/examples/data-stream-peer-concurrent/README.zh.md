@@ -2,9 +2,9 @@
 
 这个示例把 [examples/rust/data-stream-peer-concurrent](../../../../examples/rust/data-stream-peer-concurrent/README.md) 的核心流程搬到了浏览器端：
 
-- 浏览器 Client Actor 发起 `StartStream`
-- Client 在本地 WASM handler 中发现远端 Server Actor
-- Server 调回 Client 的 `PrepareClientStream`
+- 浏览器发起 `StartStream`
+- 发起方在本地 WASM handler 中发现远端对等节点
+- 远端节点调回 `PrepareClientStream`
 - 双方分别调用 `ctx.register_stream()` 注册 `stream_id`
 - Client / Server 通过 `ctx.send_data_stream()` 在 WebRTC DataChannel 上双向发送数据
 - `test-auto.js` 用 Puppeteer 同时拉起多个 Client 页面，验证并发场景
@@ -41,7 +41,7 @@ cd bindings/web/examples/data-stream-peer-concurrent
 `start.sh` 会：
 
 1. 安装测试/示例依赖
-2. 编译 client/server WASM
+2. 编译 sender/receiver WASM
 3. 启动两个 Vite dev server
 4. 运行 `test-auto.js` 做并发验证
 

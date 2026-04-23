@@ -48,7 +48,7 @@ export interface SwRuntimeConfig {
   // ── Package verification (Web verify_package) ──
 
   /** Trust anchors for verifying the .actr package signature. Array form
-   *  mirrors the server-side `[[trust]]` config in `actr.toml`.
+   *  mirrors the runtime `[[trust]]` config in `actr.toml`.
    *
    *  The browser Service Worker currently honours only `kind = "static"`
    *  anchors (using `pubkey_b64`); `kind = "registry"` anchors cause the SW
@@ -59,7 +59,7 @@ export interface SwRuntimeConfig {
   trust?: TrustAnchor[];
 }
 
-/** Trust anchor config, matching `actr_config::TrustAnchor` on the server. */
+/** Trust anchor config, matching `actr_config::TrustAnchor` in `actr_config`. */
 export type TrustAnchor =
   | {
       /** Pre-shared Ed25519 public key; accepts any manufacturer. */

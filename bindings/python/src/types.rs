@@ -1,8 +1,6 @@
 use actr_framework::Dest as RtDest;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{
-    ActrId as RtActrId, ActrType as RtActrType, PayloadType as RpPayloadType,
-};
+use actr_protocol::{ActrId as RtActrId, ActrType as RtActrType, PayloadType as RpPayloadType};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::collections::HashMap;
@@ -18,12 +16,16 @@ pub struct Dest {
 impl Dest {
     #[staticmethod]
     fn shell() -> Self {
-        Dest { inner: RtDest::Shell }
+        Dest {
+            inner: RtDest::Shell,
+        }
     }
 
     #[staticmethod]
     fn local() -> Self {
-        Dest { inner: RtDest::Local }
+        Dest {
+            inner: RtDest::Local,
+        }
     }
 
     #[staticmethod]

@@ -1,12 +1,12 @@
 /**
  * Unified Actor API
  *
- * P2P ， client/server。 Actor ：
- * -  Signaling、 WebRTC 
- * -  WASM handler（UnifiedDispatcher）
- * -  callRaw/call  Actor
+ * Peer-to-peer ACTR actor runtime:
+ * - signaling and WebRTC coordination
+ * - WASM handler (UnifiedDispatcher)
+ * - callRaw / call on a peer actor
  *
- *  Kotlin  UnifiedHandler + ContextBridge 。
+ * Kotlin uses UnifiedHandler + ContextBridge.
  */
 
 import { initActrDom, type ActrDomRuntime } from '@actr/dom';
@@ -22,23 +22,23 @@ import type {
 } from './types';
 
 /**
- * Actor 
+ * Actor configuration.
  */
 export interface ActorConfig extends ActorClientConfig {
     /**
-     * WASM （）
+     * WASM handler URL.
      *
-     * ， Service Worker  WASM  handler。
-     * WASM  handler  register_workload() ，
-     * （ ctx.call_raw()）。
+     * The Service Worker hosts the WASM handler; the handler itself
+     * registers a workload and routes outbound calls through
+     * `ctx.call_raw()`.
      */
     wasmUrl?: string;
 }
 
 /**
- * Actor 
+ * Actor runtime.
  *
- *  P2P Actor，。
+ * Peer-to-peer ACTR actor wrapper.
  */
 export class Actor {
     private config: Required<ActorConfig>;

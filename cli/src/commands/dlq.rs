@@ -360,7 +360,7 @@ async fn cmd_purge(args: &DlqPurgeArgs) -> Result<()> {
         .transpose()?;
 
     // Query matching records, then delete each. We restrict to DlqQuery's filters
-    // (category, created_after); `created_before` is applied client-side.
+    // (category, created_after); `created_before` is applied after the query.
     let query = DlqQuery {
         error_category: args.category.clone(),
         limit: None,

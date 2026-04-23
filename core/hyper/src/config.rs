@@ -174,9 +174,9 @@ pub(crate) async fn node_from_config_file(
         ))
     })?;
 
-    // Derive a minimal PackageInfo from the raw toml when `[package]`
-    // is absent (client-only flow). Otherwise, let ConfigParser handle
-    // it from its embedded `[package]` section.
+    // Derive a minimal PackageInfo from the raw toml when `[package]` is
+    // absent. Otherwise, let ConfigParser handle it from its embedded
+    // `[package]` section.
     let raw_runtime: actr_config::RuntimeRawConfig = raw_text.parse().map_err(|e| {
         HyperError::Config(format!(
             "failed to parse runtime config `{}`: {e}",
@@ -184,8 +184,7 @@ pub(crate) async fn node_from_config_file(
         ))
     })?;
     // `RuntimeConfig` requires a PackageInfo; synthesise a placeholder
-    // one for client-only loads so `from_config_file` can work without a
-    // sibling manifest.
+    // one so `from_config_file` can work without a sibling manifest.
     let package_info = actr_config::PackageInfo {
         name: "client".to_string(),
         actr_type: actr_protocol::ActrType {

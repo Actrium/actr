@@ -430,7 +430,7 @@ impl ServiceDiscovery for NetworkServiceDiscovery {
 
         // Try to get ServiceSpec with proto files
         // Use actr_type.name (e.g., "EchoService") as the lookup key,
-        // matching server-side ServiceSpec.name = package.name
+        // matching package ServiceSpec.name = package.name
         let spec_lookup_name = &entry.actr_type.name;
         let proto_files = match self.get_service_proto(spec_lookup_name).await {
             Ok(proto_files) => proto_files,

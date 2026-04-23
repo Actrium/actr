@@ -296,7 +296,7 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
 
     // ActorClientConfig
     // Every actor — whether it typically initiates or accepts — needs the
-    // same client-side knobs. Role is negotiated per-peer at connect time.
+    // same peer-side knobs. Role is negotiated per-peer at connect time.
     out.push_str("// ── ActorClientConfig (passed to createActor) ──\n\n");
     out.push_str(
         "/**\n * Actor client config\n * Extracted from system config in actr.toml\n */\n",

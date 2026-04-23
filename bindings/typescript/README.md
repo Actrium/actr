@@ -4,8 +4,8 @@
 
 TypeScript/Node.js bindings for ACTR. The binding is now `package-first`:
 local source-defined workloads were removed. `actr-ts` currently supports
-client-only nodes created from `manifest.toml` plus a sibling `actr.toml`,
-then uses discovery plus explicit remote calls.
+an `ActrNode` wrapper booted from `manifest.toml` plus a sibling
+`actr.toml`, then uses discovery plus explicit remote calls.
 
 ## Overview
 
@@ -61,7 +61,8 @@ main().catch(console.error);
 
 ## API
 
-- `ActrNode.fromConfig(configPath)` creates a client-only node from `manifest.toml`
+- `ActrNode.fromConfig(configPath)` boots an `ActrNode` wrapper from
+  `manifest.toml`
   and auto-loads `actr.toml` from the same directory.
 - `ActrRef.discover(targetType, count)` resolves remote actors.
 - `ActrRef.call(target, routeKey, payloadType, payload, timeoutMs)` sends a remote RPC.
@@ -77,13 +78,14 @@ code can observe and customize each transition. The TypeScript binding
 deliberately collapses that pipeline into a single
 `ActrNode.fromConfig(path).start()` call: application developers rarely
 need the intermediate states, and the flatter surface is the simplest
-shape for a client-only SDK. If you need fine-grained control (custom
-`TrustProvider`, pre-built `Hyper`, attaching a Rust `Workload`, etc.),
-drop down to the `actr_hyper::{Hyper, Node}` API in native Rust.
+shape for the current TypeScript binding surface. If you need
+fine-grained control (custom `TrustProvider`, pre-built `Hyper`,
+workload hosting, etc.), drop down to the `actr_hyper::{Hyper, Node}`
+API in native Rust.
 
 ## Current Scope
 
-- Supported: client-only nodes, discovery, remote RPC, shutdown.
+- Supported today: manifest bootstrap, discovery, remote RPC, and shutdown.
 - Removed: source-defined local workloads, `ActrSystem`, `system.attach(...)`, `Workload`.
 - For service hosting, build a verified `.actr` package and run it with Rust `Hyper.attach_package(...)`.
 

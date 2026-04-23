@@ -443,7 +443,7 @@ impl InstallCommand {
         println!("  ├─ 🔍 Service discovered: {}", service_name);
 
         // Get full service details (proto files etc.)
-        // Use actr_type.name for ServiceSpec lookup (matching server-side spec.name = package.name)
+        // Use actr_type.name for ServiceSpec lookup (matching package spec.name = package.name)
         let service_details = service_discovery.get_service_details(&service_name).await?;
 
         println!(

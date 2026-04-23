@@ -27,6 +27,7 @@ actr-framework = { path = "../../core/framework" }
 actr-hyper = { path = "../../core/hyper" }
 actr-protocol = { path = "../../core/protocol" }
 bytes = "1.10"
+async-trait = "0.1"
 # Force vendored OpenSSL for all platforms to avoid system dependency issues
 openssl = { version = "0.10", features = ["vendored"] }
 prost = "0.14"

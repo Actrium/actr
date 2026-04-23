@@ -2,7 +2,7 @@
 
 [English](./README.md) | 中文
 
-这是 ACTR 的 TypeScript/Node.js 绑定。当前实现已经切到 `package-first`：本地源码形式的 workload 已被移除。`actr-ts` 现在只支持从 `manifest.toml` 创建 client-only 节点，然后通过发现 + 显式远端调用访问服务。
+这是 ACTR 的 TypeScript/Node.js 绑定。当前实现已经切到 `package-first`：本地源码形式的 workload 已被移除。`actr-ts` 现在会从 `manifest.toml` 启动一个 `ActrNode` 包装层，自动加载同目录的 `actr.toml`，然后通过发现 + 显式远端调用访问服务。
 
 ## 快速开始
 
@@ -39,18 +39,18 @@ main().catch(console.error);
 
 ## API
 
-- `ActrNode.fromConfig(configPath)`：创建 client-only 节点。
+- `ActrNode.fromConfig(configPath)`：从 `manifest.toml` 启动 `ActrNode` 包装层。
 - `ActrRef.discover(targetType, count)`：发现远端 actor。
 - `ActrRef.call(target, routeKey, payloadType, payload, timeoutMs)`：发起远端 RPC。
 - `ActrRef.tell(target, routeKey, payloadType, payload)`：发送单向远端消息。
 
 ## 与 Rust Node Typestate 的关系
 
-Rust 宿主暴露 typestate 链 `Node<Init> → Node<Attached> → Node<Registered> → ActrRef`（`from_config_file` → `attach_*` → `register` → `start`），便于系统层观察并自定义每次状态迁移。TypeScript 绑定有意把这条流水线压扁为一步 `ActrNode.fromConfig(path).start()`：应用开发者几乎不需要中间态，扁平接口更契合 client-only SDK。需要精细控制（自定义 `TrustProvider`、复用 `Hyper`、挂接 Rust `Workload` 等）时，请下沉到原生 Rust 的 `actr_hyper::{Hyper, Node}` 接口。
+Rust 宿主暴露 typestate 链 `Node<Init> → Node<Attached> → Node<Registered> → ActrRef`（`from_config_file` → `attach_*` → `register` → `start`），便于系统层观察并自定义每次状态迁移。TypeScript 绑定有意把这条流水线压扁为一步 `ActrNode.fromConfig(path).start()`：应用开发者几乎不需要中间态，扁平接口更契合当前 TypeScript 绑定表面。需要精细控制（自定义 `TrustProvider`、复用 `Hyper`、工作负载托管等）时，请下沉到原生 Rust 的 `actr_hyper::{Hyper, Node}` 接口。
 
 ## 当前边界
 
-- 支持：client-only 节点、服务发现、远端 RPC、关闭流程。
+- 当前支持：manifest 启动、服务发现、远端 RPC、关闭流程。
 - 已移除：源码定义的本地 workload、`ActrSystem`、`system.attach(...)`、`Workload`。
 - 如果要承载服务，请构建经过验证的 `.actr` 包，并通过 Rust `Hyper.attach_package(...)` 运行。
 
