@@ -1,11 +1,11 @@
 //! WebRTC P2P Connection implementation
 
-use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::session::ConnectionSession;
 use crate::transport::{
     ConnType, DataLane, NetworkError, NetworkResult, WebRtcDataLane, WireHandle,
 };
-use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
+use crate::transport::{ConnectionEvent, ConnectionState};
+use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
 use async_trait::async_trait;

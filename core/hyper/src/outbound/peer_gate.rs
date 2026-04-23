@@ -6,8 +6,7 @@
 //! - Maintain pending_requests (Request/Response matching)
 //! - Block new requests to peers being cleaned up (closing_peers)
 
-use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
-use crate::transport::{Dest, PayloadTypeExt, PeerTransport};
+use crate::transport::{ConnectionEvent, ConnectionState, Dest, PayloadTypeExt, PeerTransport};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, Classify, PayloadType, RpcEnvelope};

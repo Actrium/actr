@@ -5,8 +5,8 @@
 //! contract.
 
 pub(crate) mod component_bindings;
-pub mod error;
-pub mod host;
+mod error;
+mod host;
 
 pub use error::WasmError;
 pub use host::WasmHost;

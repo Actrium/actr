@@ -72,7 +72,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::wire::webrtc::{SignalingClient, coordinator::WebRtcCoordinator};
+use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
 
 /// Network event type
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

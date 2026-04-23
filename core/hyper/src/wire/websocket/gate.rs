@@ -19,7 +19,7 @@ use crate::key_cache::AisKeyCache;
 use crate::lifecycle::CredentialState;
 use crate::wire::SignalingKeyFetcher;
 use crate::wire::webrtc::SignalingClient;
-use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
+use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{AIdCredential, ActrId, DataStream, IdentityClaims, PayloadType, RpcEnvelope};
@@ -556,10 +556,10 @@ mod tests {
 
     #[async_trait]
     impl crate::wire::SignalingClient for NullSignaling {
-        async fn connect(&self) -> crate::transport::error::NetworkResult<()> {
+        async fn connect(&self) -> crate::transport::NetworkResult<()> {
             Ok(())
         }
-        async fn disconnect(&self) -> crate::transport::error::NetworkResult<()> {
+        async fn disconnect(&self) -> crate::transport::NetworkResult<()> {
             Ok(())
         }
         fn is_connected(&self) -> bool {
@@ -579,7 +579,7 @@ mod tests {
         async fn send_register_request(
             &self,
             _: actr_protocol::RegisterRequest,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> {
+        ) -> crate::transport::NetworkResult<actr_protocol::RegisterResponse> {
             unimplemented!()
         }
         async fn send_unregister_request(
@@ -587,7 +587,7 @@ mod tests {
             _: ActrId,
             _: AIdCredential,
             _: Option<String>,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::UnregisterResponse> {
+        ) -> crate::transport::NetworkResult<actr_protocol::UnregisterResponse> {
             unimplemented!()
         }
         async fn send_heartbeat(
@@ -597,7 +597,7 @@ mod tests {
             _: actr_protocol::ServiceAvailabilityState,
             _: f32,
             _: f32,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::Pong> {
+        ) -> crate::transport::NetworkResult<actr_protocol::Pong> {
             unimplemented!()
         }
         async fn send_route_candidates_request(
@@ -605,27 +605,25 @@ mod tests {
             _: ActrId,
             _: AIdCredential,
             _: actr_protocol::RouteCandidatesRequest,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::RouteCandidatesResponse>
-        {
+        ) -> crate::transport::NetworkResult<actr_protocol::RouteCandidatesResponse> {
             unimplemented!()
         }
         async fn send_credential_update_request(
             &self,
             _: ActrId,
             _: AIdCredential,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> {
+        ) -> crate::transport::NetworkResult<actr_protocol::RegisterResponse> {
             unimplemented!()
         }
         async fn send_envelope(
             &self,
             _: actr_protocol::SignalingEnvelope,
-        ) -> crate::transport::error::NetworkResult<()> {
+        ) -> crate::transport::NetworkResult<()> {
             unimplemented!()
         }
         async fn receive_envelope(
             &self,
-        ) -> crate::transport::error::NetworkResult<Option<actr_protocol::SignalingEnvelope>>
-        {
+        ) -> crate::transport::NetworkResult<Option<actr_protocol::SignalingEnvelope>> {
             unimplemented!()
         }
         async fn get_signing_key(
@@ -633,8 +631,8 @@ mod tests {
             _: ActrId,
             _: AIdCredential,
             _: u32,
-        ) -> crate::transport::error::NetworkResult<(u32, Vec<u8>)> {
-            Err(crate::transport::error::NetworkError::ConnectionError(
+        ) -> crate::transport::NetworkResult<(u32, Vec<u8>)> {
+            Err(crate::transport::NetworkError::ConnectionError(
                 "should not be called".into(),
             ))
         }

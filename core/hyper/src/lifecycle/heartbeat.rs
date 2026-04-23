@@ -5,9 +5,9 @@
 
 use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
-use crate::transport::error::NetworkError;
+use crate::transport::NetworkError;
 use crate::wire::webrtc::SignalingClient;
-use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
+use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_protocol::{ActrId, RegisterRequest, ServiceAvailabilityState};
 use actr_runtime_mailbox::Mailbox;
 use std::sync::Arc;

@@ -28,7 +28,7 @@ use super::{SignalingClient, WebRtcConfig};
 use crate::INITIAL_CONNECTION_TIMEOUT;
 use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::CredentialState;
-use crate::transport::connection_event::{ConnectionEvent, ConnectionEventBroadcaster};
+use crate::transport::{ConnectionEvent, ConnectionEventBroadcaster};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError};
@@ -165,7 +165,7 @@ pub struct WebRtcCoordinator {
     event_broadcaster: ConnectionEventBroadcaster,
 
     /// Hook callback for synchronous lifecycle notification (set once, shared with connections)
-    hook_callback: std::sync::OnceLock<crate::wire::webrtc::signaling::HookCallback>,
+    hook_callback: std::sync::OnceLock<crate::wire::webrtc::HookCallback>,
 
     /// Root tracing contexts for connection initiation (ActrId → Context)
     #[cfg(feature = "opentelemetry")]
@@ -208,7 +208,7 @@ impl WebRtcCoordinator {
     }
 
     /// Set the hook callback (once). Shared with all new connections.
-    pub fn set_hook_callback(&self, cb: crate::wire::webrtc::signaling::HookCallback) {
+    pub fn set_hook_callback(&self, cb: crate::wire::webrtc::HookCallback) {
         let _ = self.hook_callback.set(cb);
     }
 
@@ -386,7 +386,7 @@ impl WebRtcCoordinator {
                                     state,
                                     ..
                                 } => {
-                                    use crate::transport::connection_event::ConnectionState;
+                                    use crate::transport::ConnectionState;
                                     if matches!(state, ConnectionState::Closed) {
                                         let peers_guard = coord.peers.read().await;
                                         match peers_guard.get(peer_id) {

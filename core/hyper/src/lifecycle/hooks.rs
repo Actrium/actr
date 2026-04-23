@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use futures_util::FutureExt as _;
 
 use crate::context::RuntimeContext;
-use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
+use crate::wire::webrtc::{HookCallback, HookEvent};
 
 /// Object-safe observer that mirrors the observation hooks defined on
 /// [`actr_framework::Workload`] but uses the concrete [`RuntimeContext`]

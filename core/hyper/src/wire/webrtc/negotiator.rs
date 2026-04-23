@@ -3,7 +3,7 @@
 //! Responsible for WebRTC Connect's Offer/Answer protocol quotient
 
 use crate::lifecycle::CredentialState;
-use crate::transport::error::NetworkResult;
+use crate::transport::NetworkResult;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
@@ -296,7 +296,7 @@ impl WebRtcNegotiator {
         // Apply UDP port strategy
         if let Some((min, max)) = advanced.udp_ports {
             let ephemeral = EphemeralUDP::new(min, max).map_err(|e| {
-                crate::transport::error::NetworkError::Other(anyhow::anyhow!(
+                crate::transport::NetworkError::Other(anyhow::anyhow!(
                     "Failed to create EphemeralUDP: {}",
                     e
                 ))

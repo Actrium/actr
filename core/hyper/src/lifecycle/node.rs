@@ -78,7 +78,7 @@ pub(crate) struct Inner {
     pub(crate) credential_state: Option<CredentialState>,
 
     /// WebRTC coordinator (created after startup)
-    pub(crate) webrtc_coordinator: Option<Arc<crate::wire::webrtc::coordinator::WebRtcCoordinator>>,
+    pub(crate) webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
 
     /// WebRTC Gate (created after startup)
     pub(crate) webrtc_gate: Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
@@ -986,7 +986,7 @@ impl Inner {
         // Node-level hook callback, built inside the registration
         // setup block below and published back out into this wider
         // scope so the mailbox backpressure watchdog can subscribe.
-        let node_hook_callback: Option<crate::wire::webrtc::signaling::HookCallback>;
+        let node_hook_callback: Option<crate::wire::webrtc::HookCallback>;
 
         {
             let actor_id = register_ok.actr_id;
@@ -1060,8 +1060,7 @@ impl Inner {
                 let new_expiry = std::time::UNIX_EPOCH
                     + std::time::Duration::from_secs(expires_at.seconds.max(0) as u64);
                 if let Some(cb) = node_hook_callback.as_ref() {
-                    cb(crate::wire::webrtc::signaling::HookEvent::CredentialRenewed { new_expiry })
-                        .await;
+                    cb(crate::wire::webrtc::HookEvent::CredentialRenewed { new_expiry }).await;
                 } else {
                     tracing::info!(new_expiry = ?new_expiry, "credential renewed");
                 }
@@ -1084,7 +1083,7 @@ impl Inner {
             let media_frame_registry = self.media_frame_registry.clone();
 
             // Create WebRtcCoordinator
-            let coordinator = Arc::new(crate::wire::webrtc::coordinator::WebRtcCoordinator::new(
+            let coordinator = Arc::new(crate::wire::webrtc::WebRtcCoordinator::new(
                 actor_id.clone(),
                 credential_state.clone(),
                 self.signaling_client.clone(),
@@ -1810,7 +1809,7 @@ impl Inner {
                             if let Some(cb) = hook_cb.as_ref() {
                                 let cb = cb.clone();
                                 tokio::spawn(async move {
-                                    cb(crate::wire::webrtc::signaling::HookEvent::MailboxBackpressure {
+                                    cb(crate::wire::webrtc::HookEvent::MailboxBackpressure {
                                         queue_len,
                                         threshold: backpressure_threshold,
                                     })

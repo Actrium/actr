@@ -55,7 +55,7 @@ impl TestPeer {
     /// Subscribe to connection events from this peer's coordinator
     pub fn subscribe_events(
         &self,
-    ) -> tokio::sync::broadcast::Receiver<crate::transport::connection_event::ConnectionEvent> {
+    ) -> tokio::sync::broadcast::Receiver<crate::transport::ConnectionEvent> {
         self.coordinator.subscribe_events()
     }
 
@@ -98,7 +98,7 @@ impl TestPeer {
     }
 
     /// Send a ConnectionEvent to simulate state changes
-    pub fn send_event(&self, event: crate::transport::connection_event::ConnectionEvent) {
+    pub fn send_event(&self, event: crate::transport::ConnectionEvent) {
         let _ = self.coordinator.event_sender().send(event);
     }
 

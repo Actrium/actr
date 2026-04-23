@@ -9,9 +9,9 @@
 //! - WireBuilder: Wire layer component builder
 
 mod backoff;
-pub mod connection_event;
+mod connection_event;
 mod dest_transport;
-pub mod error;
+mod error;
 mod host_transport;
 pub(crate) mod lane;
 mod peer_transport;
@@ -50,9 +50,10 @@ pub use error::{NetworkError, NetworkResult};
 // Retry and backoff strategies
 pub use backoff::ExponentialBackoff;
 
-// Connection events (trait consumers reach the broadcaster via
-// `crate::transport::connection_event::*` where needed).
-pub use connection_event::ConnectionEvent;
+// Connection events are re-exported at the transport module boundary; the
+// broadcaster stays crate-internal.
+pub(crate) use connection_event::ConnectionEventBroadcaster;
+pub use connection_event::{ConnectionEvent, ConnectionState};
 
 // Connection session
 pub(crate) mod session;

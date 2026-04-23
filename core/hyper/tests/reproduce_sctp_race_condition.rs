@@ -17,8 +17,8 @@ use actr_hyper::{
         spawn_response_receiver,
     },
     transport::{
-        DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport,
-        connection_event::{ConnectionEvent, ConnectionState},
+        ConnectionEvent, ConnectionState, DefaultWireBuilder, DefaultWireBuilderConfig,
+        PeerTransport,
     },
 };
 use actr_protocol::RpcEnvelope;

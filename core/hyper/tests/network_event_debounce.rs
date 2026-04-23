@@ -5,7 +5,7 @@ use std::time::Duration;
 use actr_hyper::lifecycle::{
     CredentialState, DebounceConfig, DefaultNetworkEventProcessor, NetworkEventProcessor,
 };
-use actr_hyper::transport::error::{NetworkError, NetworkResult};
+use actr_hyper::transport::{NetworkError, NetworkResult};
 use actr_hyper::wire::webrtc::{SignalingClient, SignalingEvent, SignalingStats};
 use actr_protocol::{
     AIdCredential, ActrId, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,

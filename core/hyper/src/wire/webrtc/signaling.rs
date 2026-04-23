@@ -5,7 +5,7 @@
 #[cfg(feature = "opentelemetry")]
 use super::trace;
 use crate::lifecycle::CredentialState;
-use crate::transport::error::{NetworkError, NetworkResult};
+use crate::transport::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
 use actr_protocol::prost::Message as ProstMessage;

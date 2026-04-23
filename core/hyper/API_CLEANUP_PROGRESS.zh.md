@@ -1,6 +1,6 @@
 # core/hyper API 清理进展
 
-更新日期：2026-04-22
+更新日期：2026-04-23
 
 ## 背景
 
@@ -25,7 +25,9 @@
   - `INITIAL_CONNECTION_TIMEOUT`
 - 更新依赖这些入口的测试与 example 测试。
 
-### 第二批：当前待提交
+### 第二批：已提交
+
+提交：`9faa0753 refactor(hyper): hide low-level engine instantiation APIs`
 
 主要内容：
 
@@ -48,14 +50,33 @@
   - `workload::Workload` → `pub(crate)`
   - 从 crate 顶层 re-export 中移除 `Workload`
 
+### 第三批：当前工作区
+
+主要内容：
+
+- 收敛冗余公开子模块路径，保留现有 re-export，不改变对外类型名：
+  - `transport::connection_event` → 私有模块，改由 `transport::{ConnectionEvent, ConnectionState}` 暴露
+  - `transport::error` → 私有模块，改由 `transport::{NetworkError, NetworkResult}` 暴露
+  - `wire::webrtc::{signaling, coordinator}` → 私有模块，改由 `wire::webrtc::*` 边界暴露
+  - `storage::db` → 私有模块，保留 `storage::ActorStore`
+  - `verify::{trust, cert_cache}` → 私有模块，保留 `verify::*`
+  - `wasm::{host, error}` → 私有模块，保留 `wasm::{WasmHost, WasmError}`
+- 清理 crate 内部和 integration tests 对这些深路径模块的直接依赖，统一改走模块边界 re-export。
+
 ## 验证
 
-本轮改动已通过：
+前两批已通过：
 
 - `cargo fmt --all`
 - `cargo check -p actr-hyper --all-features --quiet`
 - `cargo check -p actr-hyper --tests --all-features --quiet`
 - `git diff --check`
+
+第三批当前工作区已通过：
+
+- `cargo fmt --all`
+- `cargo check -p actr-hyper --all-features --quiet`
+- `cargo check -p actr-hyper --tests --all-features --quiet`
 
 ## 当前判断
 
