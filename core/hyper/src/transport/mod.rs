@@ -28,27 +28,39 @@ pub use actr_framework::Dest;
 // without duplicating re-exports here.
 
 // DataLane core abstraction (trait kept pub for sw-host/peer_transport).
+#[cfg(feature = "test-utils")]
 pub use lane::DataLane;
+#[cfg(not(feature = "test-utils"))]
+pub(crate) use lane::DataLane;
 pub(crate) use lane::{MpscLane, WebRtcDataLane, WebSocketDataLane, WsSink};
 pub(crate) use route_table::PayloadTypeExt;
 
 // ConnType leaks through the public `WireHandle::connection_type` method,
 // so it must stay pub even though the `wire_pool` module itself is private.
+#[cfg(feature = "test-utils")]
 pub use wire_pool::ConnType;
+#[cfg(not(feature = "test-utils"))]
+pub(crate) use wire_pool::ConnType;
 
 // Transport management
+#[cfg(feature = "test-utils")]
 pub use host_transport::HostTransport;
+#[cfg(not(feature = "test-utils"))]
+pub(crate) use host_transport::HostTransport;
+#[cfg(not(feature = "test-utils"))]
+pub(crate) use peer_transport::PeerTransport;
 #[cfg(feature = "test-utils")]
 pub use peer_transport::{PeerTransport, WireBuilder};
-#[cfg(not(feature = "test-utils"))]
-pub(crate) use peer_transport::{PeerTransport, WireBuilder};
 
 // Wire layer management
 #[cfg(feature = "test-utils")]
 pub use wire_builder::{DefaultWireBuilder, DefaultWireBuilderConfig};
 #[cfg(not(feature = "test-utils"))]
 pub(crate) use wire_builder::{DefaultWireBuilder, DefaultWireBuilderConfig};
+#[cfg(feature = "test-utils")]
 pub use wire_handle::WireHandle;
+#[cfg(not(feature = "test-utils"))]
+pub(crate) use wire_handle::WireHandle;
 
 // Error types
 pub use error::{NetworkError, NetworkResult};

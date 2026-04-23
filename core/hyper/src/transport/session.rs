@@ -45,6 +45,7 @@ impl ConnectionSession {
             .is_ok()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }

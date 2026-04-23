@@ -7,7 +7,7 @@
 //! ## Guest Side (Subscribe to data streams)
 //!
 //! ```rust,ignore
-//! use actr_hyper::HostTransport;
+//! use actr_hyper::transport::HostTransport;
 //! use std::sync::Arc;
 //!
 //! struct MyGuest {
@@ -156,6 +156,7 @@ impl HostTransport {
     }
 
     /// Create LatencyFirst channel
+    #[cfg(feature = "test-utils")]
     pub async fn create_latency_first_channel(
         &self,
         channel_id: String,
@@ -184,6 +185,7 @@ impl HostTransport {
     }
 
     /// Create MediaTrack channel
+    #[cfg(feature = "test-utils")]
     pub async fn create_media_track_channel(
         &self,
         track_id: String,
@@ -354,6 +356,7 @@ impl HostTransport {
     /// # Returns
     /// - `Some(envelope)`: received message (response matching already handled)
     /// - `None`: all channels closed
+    #[cfg(feature = "test-utils")]
     pub async fn recv(&self) -> Option<RpcEnvelope> {
         loop {
             tokio::select! {
@@ -429,6 +432,7 @@ impl HostTransport {
     }
 
     /// Handle response matching (returns true if it was a response)
+    #[cfg(feature = "test-utils")]
     async fn try_complete_response(&self, envelope: &RpcEnvelope) -> bool {
         let mut pending = self.pending_requests.write().await;
         if let Some(tx) = pending.remove(&envelope.request_id) {
@@ -466,12 +470,14 @@ impl HostTransport {
 
     // ========== Helper methods ==========
 
+    #[cfg(feature = "test-utils")]
     async fn recv_from_channel(
         rx: &Arc<Mutex<mpsc::Receiver<RpcEnvelope>>>,
     ) -> Option<RpcEnvelope> {
         rx.lock().await.recv().await
     }
 
+    #[cfg(feature = "test-utils")]
     async fn recv_from_channel_opt(opt: &Arc<Mutex<Option<ChannelPair>>>) -> Option<RpcEnvelope> {
         let rx = {
             let guard = opt.lock().await;

@@ -23,12 +23,14 @@ pub trait WireHandle: Send + Sync + std::fmt::Debug {
     fn connection_type(&self) -> ConnType;
 
     /// Connection priority (higher number = higher priority)
+    #[allow(dead_code)]
     fn priority(&self) -> u8;
 
     /// Establish connection
     async fn connect(&self) -> NetworkResult<()>;
 
     /// Check if connected
+    #[allow(dead_code)]
     fn is_connected(&self) -> bool;
 
     /// Close connection

@@ -41,7 +41,7 @@
 //! │  Layer 3: Inbound Dispatch                          │  DataStreamRegistry
 //! │           (Fast Path Routing)                       │  MediaFrameRegistry
 //! ├─────────────────────────────────────────────────────┤
-//! │  Layer 2: Outbound Gate                             │  HostGate
+//! │  Layer 2: Outbound Adapters (internal)             │  HostGate
 //! │           (Message Sending)                         │  PeerGate
 //! ├─────────────────────────────────────────────────────┤
 //! │  Layer 1: Transport                                 │  Lane (core abstraction)
@@ -90,12 +90,16 @@ pub(crate) mod key_cache;
 pub mod storage;
 
 // Runtime infrastructure modules (native-only)
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-utils"))]
 pub mod inbound;
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "test-utils")))]
+pub(crate) mod inbound;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lifecycle;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-utils"))]
 pub mod outbound;
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "test-utils")))]
+pub(crate) mod outbound;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
 #[cfg(not(target_arch = "wasm32"))]
@@ -177,21 +181,14 @@ pub use actr_ref::ActrRef;
 #[cfg(not(target_arch = "wasm32"))]
 pub use lifecycle::{CredentialState, NetworkEventHandle};
 
-// Layer 3: Inbound dispatch layer
-#[cfg(not(target_arch = "wasm32"))]
-pub use inbound::MediaFrameRegistry;
-
-// Layer 2: Outbound gate abstraction layer
-#[cfg(not(target_arch = "wasm32"))]
-pub use outbound::{HostGate, PeerGate};
-
 // Layer 1: Transport layer
-#[cfg(not(target_arch = "wasm32"))]
-pub use transport::{
-    DataLane, Dest, ExponentialBackoff, HostTransport, NetworkError, NetworkResult, WireHandle,
-};
 #[cfg(all(not(target_arch = "wasm32"), feature = "test-utils"))]
-pub use transport::{DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport, WireBuilder};
+pub use transport::{
+    ConnType, DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, HostTransport, PeerTransport,
+    WireBuilder, WireHandle,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use transport::{Dest, ExponentialBackoff, NetworkError, NetworkResult};
 
 // Layer 0: Wire layer
 #[cfg(not(target_arch = "wasm32"))]
@@ -246,16 +243,8 @@ pub mod prelude {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::actr_ref::ActrRef;
 
-    // ── Layer 3: Inbound dispatch (native-only) ─────────────────────────────
-    #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::inbound::MediaFrameRegistry;
-
     // Re-export MediaSample and MediaType from framework (dependency inversion)
     pub use actr_framework::{MediaSample, MediaType};
-
-    // ── Layer 2: Outbound gate (native-only) ────────────────────────────────
-    #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::outbound::{HostGate, PeerGate};
 
     // ── Layer 0: Wire / WebRTC (native-only) ────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
@@ -273,14 +262,13 @@ pub mod prelude {
     };
 
     // ── Layer 1: Transport (native-only) ────────────────────────────────────
-    #[cfg(not(target_arch = "wasm32"))]
-    pub use crate::transport::{
-        DataLane, Dest, HostTransport, NetworkError, NetworkResult, WireHandle,
-    };
     #[cfg(feature = "test-utils")]
     pub use crate::transport::{
-        DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport, WireBuilder,
+        ConnType, DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, HostTransport,
+        PeerTransport, WireBuilder, WireHandle,
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use crate::transport::{Dest, NetworkError, NetworkResult};
 
     // ── Error types ─────────────────────────────────────────────────────────
     pub use crate::runtime_error::{ActorResult, ActrError};

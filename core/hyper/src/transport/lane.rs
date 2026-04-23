@@ -234,6 +234,7 @@ pub trait DataLane: Send + Sync + std::fmt::Debug {
     ///
     /// Default implementation returns `InvalidOperation` error.
     /// Override for network-based lanes (WebRTC, WebSocket).
+    #[allow(dead_code)]
     async fn try_recv(&self) -> NetworkResult<Option<bytes::Bytes>> {
         Err(NetworkError::InvalidOperation(
             "try_recv() not supported on this lane type".to_string(),
@@ -261,6 +262,7 @@ pub trait DataLane: Send + Sync + std::fmt::Debug {
     }
 
     /// Get DataLane type name (for logging)
+    #[allow(dead_code)]
     fn lane_type(&self) -> &'static str;
 
     /// Check if the underlying transport is healthy.

@@ -94,6 +94,7 @@ type DestState = Either<Arc<Notify>, Arc<DestTransport>>;
 /// ```
 pub struct PeerTransport {
     /// Local Actor ID
+    #[allow(dead_code)]
     local_id: ActrId,
 
     /// Dest -> DestState mapping (Either state machine)
@@ -128,6 +129,7 @@ impl PeerTransport {
     }
 
     /// Check if a destination is currently being closed
+    #[allow(dead_code)]
     pub async fn is_closing(&self, dest: &Dest) -> bool {
         self.closing_peers.read().await.contains(dest)
     }
@@ -401,6 +403,7 @@ impl PeerTransport {
     }
 
     /// Close all DestTransports
+    #[allow(dead_code)]
     pub async fn close_all(&self) -> NetworkResult<()> {
         let mut transports = self.transports.write().await;
 
@@ -423,22 +426,26 @@ impl PeerTransport {
     }
 
     /// Get count of currently managed Dests
+    #[cfg(feature = "test-utils")]
     pub async fn dest_count(&self) -> usize {
         self.transports.read().await.len()
     }
 
     /// Get local Actor ID
     #[inline]
+    #[cfg(feature = "test-utils")]
     pub fn local_id(&self) -> &ActrId {
         &self.local_id
     }
 
     /// List all connected Dests
+    #[cfg(feature = "test-utils")]
     pub async fn list_dests(&self) -> Vec<Dest> {
         self.transports.read().await.keys().cloned().collect()
     }
 
     /// Check if connection to specified Dest exists
+    #[cfg(feature = "test-utils")]
     pub async fn has_dest(&self, dest: &Dest) -> bool {
         self.transports.read().await.contains_key(dest)
     }
@@ -502,6 +509,7 @@ impl PeerTransport {
     /// let mgr = Arc::new(PeerTransport::new(local_id, factory));
     /// let health_check_handle = mgr.spawn_health_checker(Duration::from_secs(10));
     /// ```
+    #[cfg(feature = "test-utils")]
     pub fn spawn_health_checker(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
         let transports = Arc::clone(&self.transports);
         let conn_factory = Arc::clone(&self.conn_factory);

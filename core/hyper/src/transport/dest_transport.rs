@@ -167,6 +167,7 @@ impl DestTransport {
     /// # Arguments
     /// - `dest`: destination (used by WireBuilder)
     /// - `wire_builder`: factory to create new WireHandles
+    #[cfg(feature = "test-utils")]
     pub(crate) async fn retry_failed_connections(
         &self,
         dest: &Dest,
@@ -225,6 +226,7 @@ impl DestTransport {
     /// # Returns
     /// - `true`: at least one connection is healthy (connected)
     /// - `false`: all connections are unhealthy or no connections exist
+    #[cfg(feature = "test-utils")]
     pub(crate) async fn has_healthy_connection(&self) -> bool {
         for conn_type in [ConnType::WebRTC, ConnType::WebSocket] {
             if let Some(conn) = self.conn_mgr.get_connection(conn_type).await {

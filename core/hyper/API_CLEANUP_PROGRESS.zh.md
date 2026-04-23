@@ -98,10 +98,16 @@
 - `signaling / transport` 继续按“契约公开、实现内收”收敛：
   - 默认公开：`SignalingConfig`、`ReconnectConfig`、`AuthConfig`、`AuthType`、`DisconnectReason`、`SignalingEvent`、`SignalingStats` 等契约/值对象
   - `PeerTransport`、`WireBuilder`、`DefaultWireBuilder`、`WebRtcCoordinator`、`WebSocketSignalingClient` 只在 `test-utils` 下对外
+- `outbound` / `inbound` / 低层 transport 实现进一步从默认公开面退出：
+  - `outbound` 模块默认改为 crate 内部，`HostGate` / `PeerGate` 只在 `test-utils` 下公开
+  - `inbound` 模块默认改为 crate 内部，`MediaFrameRegistry` 不再作为默认公开 API
+  - `HostTransport`、`DataLane`、`WireHandle`、`ConnType` 改为仅在 `test-utils` 下公开
 - 清理这批内部 warning：
   - `Hyper::load_workload_package()` 仅在 `test-utils` 下编译
   - `WebSocketSignalingClient::connect_to()` 改为 test-only
   - 删除未使用的 `WorkloadAdapter::from_arc()`
+  - 清理 `outbound` / transport 内部 test-only helper 引起的默认构建 `dead_code` warning
+  - 修正 `WebRtcConnection` / `WebSocketConnection` 的 `is_connected()` 低层实现，避免递归歧义
 - 扩展术语清理，把 `WebSocket C/S`、`client-side`、`server only` 一类描述从相关框架 / FFI / 绑定生成代码注释中一并扫掉。
 
 ## 验证

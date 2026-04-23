@@ -246,12 +246,6 @@ impl WebRtcConnection {
         });
     }
 
-    /// Whether the session is still open.
-    #[inline]
-    pub(crate) fn is_connected(&self) -> bool {
-        !self.session.is_closed()
-    }
-
     /// Return a snapshot of the current DataChannel cache.
     ///
     /// Used by the coordinator to query `buffered_amount` on abnormal disconnect.
@@ -992,7 +986,7 @@ impl WireHandle for WebRtcConnection {
     }
 
     fn is_connected(&self) -> bool {
-        Self::is_connected(self)
+        !self.session.is_closed()
     }
 
     async fn close(&self) -> NetworkResult<()> {

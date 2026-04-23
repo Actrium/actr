@@ -245,6 +245,7 @@ impl WirePool {
     /// # Use Case
     /// Perfect for reconnection scenarios where you want to retry failed connections
     /// without disrupting working ones.
+    #[cfg(feature = "test-utils")]
     pub(crate) async fn add_connection_smart(&self, connection: Arc<dyn WireHandle>) {
         let conn_type = connection.connection_type();
 

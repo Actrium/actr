@@ -220,12 +220,6 @@ impl WebSocketConnection {
         Ok(())
     }
 
-    /// Checkwhether already Connect
-    #[inline]
-    pub fn is_connected(&self) -> bool {
-        *self.connected.blocking_read()
-    }
-
     /// Startmessage dispatch device （in background task）
     fn spawn_dispatcher(
         mut stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
@@ -406,7 +400,7 @@ impl WireHandle for WebSocketConnection {
     }
 
     fn is_connected(&self) -> bool {
-        self.is_connected()
+        *self.connected.blocking_read()
     }
 
     async fn close(&self) -> NetworkResult<()> {
