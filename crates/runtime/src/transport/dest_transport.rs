@@ -21,6 +21,9 @@ use tokio::sync::watch;
 /// - Cache Lanes within WireHandle
 /// - WirePool handles priority selection
 pub struct DestTransport {
+    /// Target destination for logging and cleanup correlation.
+    dest: Dest,
+
     /// Connection manager
     conn_mgr: Arc<WirePool>,
 }
@@ -40,7 +43,7 @@ impl DestTransport {
             conn_mgr.add_connection(conn);
         }
 
-        Ok(Self { conn_mgr })
+        Ok(Self { dest, conn_mgr })
     }
 
     /// Send message
@@ -55,7 +58,8 @@ impl DestTransport {
     )]
     pub async fn send(&self, payload_type: PayloadType, data: &[u8]) -> NetworkResult<()> {
         tracing::debug!(
-            "📤 Sending message: type={:?}, size={}",
+            "📤 DestTransport send start: dest={:?}, payload_type={:?}, size={}",
+            self.dest,
             payload_type,
             data.len()
         );
@@ -72,11 +76,17 @@ impl DestTransport {
         // 2. Subscribe to connection status changes
         let mut conn_watcher = self.conn_mgr.watch_ready();
 
-        loop {
+        'send: loop {
             // 3. Check currently available connections (clone to avoid borrowing across await)
             let ready_connections = {
                 let ready = conn_watcher.borrow_and_update();
-                tracing::trace!("🔍 Available connections: {:?}", ready);
+                tracing::debug!(
+                    "🔍 DestTransport ready snapshot: dest={:?}, payload_type={:?}, ready_snapshot={:?}, lane_types={:?}",
+                    self.dest,
+                    payload_type,
+                    *ready,
+                    lane_types
+                );
                 ready.clone()
             };
 
@@ -97,13 +107,25 @@ impl DestTransport {
 
                 // Get connection and create/get Lane
                 if let Some(conn) = self.conn_mgr.get_connection(conn_type).await {
+                    let wire_identity = conn.identity();
+                    tracing::debug!(
+                        "🎯 DestTransport selected connection: dest={:?}, payload_type={:?}, conn_type={:?}, wire_identity={:?}",
+                        self.dest,
+                        payload_type,
+                        conn_type,
+                        wire_identity
+                    );
+
                     // Use original payload_type to create DataLane
                     match conn.get_lane(payload_type).await {
                         Ok(lane) => {
                             tracing::debug!(
-                                "✅ Using DataLane: {:?} (type={:?})",
+                                "✅ Using DataLane: dest={:?}, lane_type={:?}, payload_type={:?}, conn_type={:?}, wire_identity={:?}",
+                                self.dest,
                                 lane_type,
-                                payload_type
+                                payload_type,
+                                conn_type,
+                                wire_identity
                             );
                             // Convert to Bytes (zero-copy)
                             let payload = bytes::Bytes::copy_from_slice(data);
@@ -113,8 +135,11 @@ impl DestTransport {
                             if let Err(NetworkError::DataChannelError(msg)) = &result {
                                 if msg.contains("closed") {
                                     tracing::warn!(
-                                        "♻️ DataChannel closed for {:?}, invalidating lane and retrying once",
-                                        payload_type
+                                        "♻️ DataChannel closed during send: dest={:?}, payload_type={:?}, conn_type={:?}, wire_identity={:?}; invalidating lane and retrying once",
+                                        self.dest,
+                                        payload_type,
+                                        conn_type,
+                                        wire_identity
                                     );
                                     conn.invalidate_lane(payload_type).await;
                                     if let Ok(new_lane) = conn.get_lane(payload_type).await {
@@ -126,7 +151,42 @@ impl DestTransport {
                             return result;
                         }
                         Err(e) => {
-                            tracing::warn!("❌ Failed to get DataLane: {:?}: {}", lane_type, e);
+                            let is_closed_like =
+                                conn_type == ConnType::WebRTC && Self::is_closed_like_error(&e);
+                            tracing::warn!(
+                                "❌ Failed to get DataLane: dest={:?}, lane_type={:?}, payload_type={:?}, conn_type={:?}, wire_identity={:?}, is_closed_like={}, error={}",
+                                self.dest,
+                                lane_type,
+                                payload_type,
+                                conn_type,
+                                wire_identity,
+                                is_closed_like,
+                                e
+                            );
+
+                            if is_closed_like {
+                                conn.invalidate_lane(payload_type).await;
+
+                                let changed = match wire_identity.as_ref() {
+                                    Some(identity) => {
+                                        self.conn_mgr
+                                            .mark_connection_closed_if_same(conn_type, identity)
+                                            .await
+                                    }
+                                    None => false,
+                                };
+
+                                tracing::warn!(
+                                    "♻️ DestTransport stale self-heal: dest={:?}, payload_type={:?}, conn_type={:?}, expected_identity={:?}, changed={}",
+                                    self.dest,
+                                    payload_type,
+                                    conn_type,
+                                    wire_identity,
+                                    changed
+                                );
+
+                                continue 'send;
+                            }
                             continue;
                         }
                     }
@@ -134,7 +194,12 @@ impl DestTransport {
             }
 
             // 5. All attempts failed, wait for connection status change
-            tracing::info!("⏳ Waiting for connection status...");
+            tracing::info!(
+                "⏳ Waiting for connection status: dest={:?}, payload_type={:?}, ready_snapshot={:?}, reason=no_available_lane",
+                self.dest,
+                payload_type,
+                ready_connections
+            );
 
             if self.conn_mgr.is_closed() {
                 return Err(NetworkError::ChannelClosed(
@@ -150,6 +215,28 @@ impl DestTransport {
             }
 
             tracing::debug!("🔔 Connection status updated, retrying...");
+        }
+    }
+
+    fn is_closed_like_error(err: &NetworkError) -> bool {
+        fn contains_closed_like(msg: &str) -> bool {
+            let msg = msg.to_ascii_lowercase();
+            msg.contains("connection closed")
+                || msg.contains("peer connection closed")
+                || msg.contains("datachannel closed")
+                || msg.contains("data channel closed")
+                || msg.contains("websocket connection closed")
+                || msg.contains("closed")
+        }
+
+        match err {
+            NetworkError::ConnectionClosed(_) => true,
+            NetworkError::ConnectionError(msg)
+            | NetworkError::WebRtcError(msg)
+            | NetworkError::DataChannelError(msg)
+            | NetworkError::WebSocketError(msg)
+            | NetworkError::SendError(msg) => contains_closed_like(msg),
+            _ => false,
         }
     }
 
@@ -191,7 +278,7 @@ impl DestTransport {
 
     /// Close DestTransport and release all connection resources
     pub async fn close(&self) -> NetworkResult<()> {
-        tracing::info!("🔌 Closing DestTransport");
+        tracing::info!("🔌 Closing DestTransport: dest={:?}", self.dest);
 
         // 1. Get all connections and close them one by one
         for conn_type in [ConnType::WebSocket, ConnType::WebRTC] {

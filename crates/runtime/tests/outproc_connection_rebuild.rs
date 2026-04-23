@@ -103,6 +103,7 @@ async fn test_connection_rebuild_after_failure() {
         .event_sender()
         .send(ConnectionEvent::StateChanged {
             peer_id: id_b.clone(),
+            session_id: 0,
             state: TransportConnectionState::Failed,
         })
         .ok();
@@ -205,6 +206,7 @@ async fn test_pending_requests_cleanup_on_close() {
         .event_sender()
         .send(ConnectionEvent::ConnectionClosed {
             peer_id: id_b.clone(),
+            session_id: 0,
         })
         .ok();
 
@@ -304,6 +306,7 @@ async fn test_reconnect_and_send_after_close() {
         .event_sender()
         .send(ConnectionEvent::ConnectionClosed {
             peer_id: id_b.clone(),
+            session_id: 0,
         })
         .ok();
 

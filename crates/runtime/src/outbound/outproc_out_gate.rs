@@ -41,6 +41,19 @@ pub struct OutprocOutGate {
 }
 
 impl OutprocOutGate {
+    fn event_kind(event: &ConnectionEvent) -> &'static str {
+        match event {
+            ConnectionEvent::StateChanged { .. } => "StateChanged",
+            ConnectionEvent::DataChannelClosed { .. } => "DataChannelClosed",
+            ConnectionEvent::DataChannelOpened { .. } => "DataChannelOpened",
+            ConnectionEvent::ConnectionClosed { .. } => "ConnectionClosed",
+            ConnectionEvent::IceRestartStarted { .. } => "IceRestartStarted",
+            ConnectionEvent::IceRestartCompleted { .. } => "IceRestartCompleted",
+            ConnectionEvent::NewOfferReceived { .. } => "NewOfferReceived",
+            ConnectionEvent::NewRoleAssignment { .. } => "NewRoleAssignment",
+        }
+    }
+
     /// Create new OutprocOutGate
     ///
     /// # Arguments
@@ -102,7 +115,12 @@ impl OutprocOutGate {
                         break;
                     }
                 };
-                tracing::debug!("🔄 OutprocOutGate received connection event: {:?}", event);
+                tracing::debug!(
+                    "🔄 OutprocOutGate received connection event: event_kind={}, event_session_id={:?}, event={:?}",
+                    Self::event_kind(&event),
+                    event.session_id(),
+                    event
+                );
                 match &event {
                     // Block new requests when connection enters Disconnected/Failed state
                     ConnectionEvent::StateChanged {
@@ -124,10 +142,21 @@ impl OutprocOutGate {
                         ..
                     }
                     | ConnectionEvent::ConnectionClosed { peer_id, .. } => {
+                        let event_kind = Self::event_kind(&event);
+                        let event_session_id = event.session_id();
+
                         // Mark peer as closing (release lock immediately to avoid deadlock)
                         {
                             closing_peers.write().await.insert(peer_id.clone());
                         } // Lock released here
+
+                        let pending_before = {
+                            let pending = pending_requests.read().await;
+                            pending
+                                .values()
+                                .filter(|(target, _)| target == peer_id)
+                                .count()
+                        };
 
                         // 1. Trigger downstream cleanup (OutprocTransportManager → DestTransport → WirePool)
                         // Note: We don't hold closing_peers lock here to avoid deadlock when
@@ -150,6 +179,8 @@ impl OutprocOutGate {
                             }
                         }
 
+                        let transport_exists_after_cleanup = transport_manager.has_dest(&dest).await;
+
                         // 2. Clean pending requests for this peer
                         let mut pending = pending_requests.write().await;
 
@@ -167,10 +198,14 @@ impl OutprocOutGate {
 
                         let cleaned_count = keys_to_remove.len();
 
-                        tracing::info!(
-                            "🧹 Cleaned {} pending requests for peer {}",
+                        tracing::debug!(
+                            "🧹 OutprocOutGate cleanup result: peer_id={}, event_kind={}, event_session_id={:?}, pending_before={}, pending_cleaned={}, transport_exists_after_cleanup={}",
+                            peer_id,
+                            event_kind,
+                            event_session_id,
+                            pending_before,
                             cleaned_count,
-                            peer_id
+                            transport_exists_after_cleanup
                         );
 
                         // Remove and send error to all pending requests for this peer

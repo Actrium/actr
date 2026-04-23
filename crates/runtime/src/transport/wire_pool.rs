@@ -5,7 +5,7 @@
 
 use super::backoff::ExponentialBackoff;
 use super::error::NetworkResult;
-use super::wire_handle::{WireHandle, WireStatus};
+use super::wire_handle::{WireHandle, WireIdentity, WireStatus};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -121,6 +121,18 @@ impl WirePool {
         }
     }
 
+    fn collect_ready_set(conns: &[Option<WireStatus>; 2]) -> ReadySet {
+        let mut ready_set = HashSet::new();
+
+        for conn_type in ConnType::ALL {
+            if let Some(WireStatus::Ready(_)) = &conns[conn_type.as_index()] {
+                ready_set.insert(conn_type);
+            }
+        }
+
+        ready_set
+    }
+
     /// Add connection and start connection task in background
     ///
     /// Non-blocking, returns immediately and attempts connection concurrently in background
@@ -206,7 +218,12 @@ impl WirePool {
                         }
 
                         // Broadcast new ready connection set (keep all connections, no replacement)
-                        Self::broadcast_ready_connections(&connections, &ready_tx).await;
+                        Self::broadcast_ready_connections(
+                            &connections,
+                            &ready_tx,
+                            "connection_established",
+                        )
+                        .await;
 
                         return; // Success, exit
                     }
@@ -290,20 +307,22 @@ impl WirePool {
     async fn broadcast_ready_connections(
         connections: &Arc<RwLock<[Option<WireStatus>; 2]>>,
         ready_tx: &watch::Sender<ReadySet>,
+        reason: &'static str,
     ) {
-        let conns = connections.read().await;
+        let ready_before = ready_tx.borrow().clone();
+        let ready_after = {
+            let conns = connections.read().await;
+            Self::collect_ready_set(&conns)
+        };
 
-        // Collect all ready connections
-        let mut ready_set: ReadySet = HashSet::new();
+        let _ = ready_tx.send(ready_after.clone());
 
-        for conn_type in ConnType::ALL {
-            if let Some(WireStatus::Ready(_)) = &conns[conn_type.as_index()] {
-                ready_set.insert(conn_type);
-            }
-        }
-
-        // Broadcast ready set
-        let _ = ready_tx.send(ready_set);
+        tracing::debug!(
+            "📡 WirePool broadcast ready set: reason={}, ready_before={:?}, ready_after={:?}",
+            reason,
+            ready_before,
+            ready_after
+        );
     }
 
     /// Watch for connection status changes
@@ -350,9 +369,55 @@ impl WirePool {
         }
 
         // Update ready set
-        Self::broadcast_ready_connections(&self.connections, &self.ready_tx).await;
+        Self::broadcast_ready_connections(
+            &self.connections,
+            &self.ready_tx,
+            "mark_connection_closed",
+        )
+        .await;
 
         tracing::debug!("🔌 Marked {:?} connection as closed", conn_type);
+    }
+
+    /// Mark a connection as failed only if the active slot still points at the same wire.
+    pub async fn mark_connection_closed_if_same(
+        &self,
+        conn_type: ConnType,
+        expected_identity: &WireIdentity,
+    ) -> bool {
+        let (changed, current_identity, ready_before, ready_after) = {
+            let mut conns = self.connections.write().await;
+            let ready_before = Self::collect_ready_set(&conns);
+
+            let current_identity = match &conns[conn_type.as_index()] {
+                Some(WireStatus::Ready(current)) => current.identity(),
+                _ => None,
+            };
+
+            let changed = current_identity.as_ref() == Some(expected_identity);
+            if changed {
+                conns[conn_type.as_index()] = Some(WireStatus::Failed);
+            }
+
+            let ready_after = Self::collect_ready_set(&conns);
+            (changed, current_identity, ready_before, ready_after)
+        };
+
+        if changed {
+            let _ = self.ready_tx.send(ready_after.clone());
+        }
+
+        tracing::warn!(
+            "🔌 WirePool conditional close: conn_type={:?}, expected_identity={:?}, current_identity={:?}, changed={}, ready_before={:?}, ready_after={:?}",
+            conn_type,
+            expected_identity,
+            current_identity,
+            changed,
+            ready_before,
+            ready_after
+        );
+
+        changed
     }
 
     /// Close all connections in the pool

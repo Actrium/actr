@@ -5,7 +5,7 @@
 
 use super::error::NetworkResult;
 use super::lane::DataLane;
-use actr_protocol::PayloadType;
+use actr_protocol::{ActrId, PayloadType};
 
 // Re-export Wire layer connection types
 pub use crate::wire::webrtc::WebRtcConnection;
@@ -24,6 +24,12 @@ pub enum WireHandle {
 
     /// WebRTC connection handle
     WebRTC(WebRtcConnection),
+}
+
+/// Stable identity for compare-and-swap cleanup on the active wire slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WireIdentity {
+    WebRtc { peer_id: ActrId, session_id: u64 },
 }
 
 impl WireHandle {
@@ -102,6 +108,15 @@ impl WireHandle {
         match self {
             WireHandle::WebSocket(ws) => Some(ws),
             _ => None,
+        }
+    }
+
+    /// Return a stable identity when this wire supports compare-and-swap cleanup.
+    #[inline]
+    pub fn identity(&self) -> Option<WireIdentity> {
+        match self {
+            WireHandle::WebRTC(rtc) => Some(rtc.identity()),
+            WireHandle::WebSocket(_) => None,
         }
     }
 

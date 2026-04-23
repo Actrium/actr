@@ -110,7 +110,7 @@ async fn test_reproduce_sctp_race_after_ice_restart() {
     loop {
         tokio::select! {
             Ok(event) = event_rx.recv() => {
-                if let ConnectionEvent::StateChanged { peer_id, state } = event {
+                if let ConnectionEvent::StateChanged { peer_id, state, .. } = event {
                     if peer_id == id_b && state == ConnectionState::Connected {
                         send_attempts += 1;
 

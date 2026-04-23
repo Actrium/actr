@@ -3,7 +3,7 @@
 use crate::transport::ConnectionSession;
 use crate::transport::DataLane;
 use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
-use crate::transport::{NetworkError, NetworkResult};
+use crate::transport::{NetworkError, NetworkResult, WireIdentity};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
 use bytes::Bytes;
@@ -102,6 +102,14 @@ impl WebRtcConnection {
         self.session.session_id
     }
 
+    /// Get a stable identity for compare-and-swap cleanup.
+    pub fn identity(&self) -> WireIdentity {
+        WireIdentity::WebRtc {
+            peer_id: self.peer_id.clone(),
+            session_id: self.session.session_id,
+        }
+    }
+
     /// Install a state-change handler on the underlying RTCPeerConnection.
     ///
     /// This keeps `connected` in sync with the WebRTC connection state and
@@ -130,9 +138,13 @@ impl WebRtcConnection {
         };
 
         tracing::info!(
-            "🔄 WebRtcConnection peer state changed: {:?}, connected={}",
+            "🔄 WebRtcConnection peer state changed: peer_id={}, session_id={}, state={:?}, connected={}, was_connected_proxy={}, is_cancelled={}",
+            self.peer_id,
+            self.session.session_id,
             state,
-            is_connected
+            is_connected,
+            was_connected,
+            self.session.is_cancelled()
         );
 
         // Broadcast state change event for upper layers
@@ -181,6 +193,7 @@ impl WebRtcConnection {
     }
 
     /// Broadcast DataChannel closed event
+    #[allow(dead_code)]
     fn notify_data_channel_closed(&self, payload_type: PayloadType) {
         let _ = self.event_tx.send(ConnectionEvent::DataChannelClosed {
             peer_id: self.peer_id.clone(),
@@ -335,23 +348,42 @@ impl WebRtcConnection {
                         RTCDataChannelState::Closed | RTCDataChannelState::Closing
                     ) {
                         tracing::warn!(
-                            "♻️ Cached DataChannel for {:?} is {:?}, recreating lane",
+                            "♻️ Cached DataChannel requires recreate: peer_id={}, session_id={}, payload_type={:?}, dc_state={:?}",
+                            self.peer_id,
+                            self.session.session_id,
                             payload_type,
                             state
                         );
                         need_recreate = true;
                     } else {
-                        tracing::debug!("📦 ReuseCache DataLane: {:?}", payload_type);
+                        tracing::debug!(
+                            "📦 Reusing cached DataLane: peer_id={}, session_id={}, payload_type={:?}, cached_lane=true, dc_ready_state={:?}, need_recreate=false",
+                            self.peer_id,
+                            self.session.session_id,
+                            payload_type,
+                            state
+                        );
                         return Ok(lane.clone());
                     }
                 } else {
-                    tracing::debug!("📦 ReuseCache DataLane: {:?}", payload_type);
+                    tracing::debug!(
+                        "📦 Reusing cached DataLane: peer_id={}, session_id={}, payload_type={:?}, cached_lane=true, dc_ready_state=non_datachannel, need_recreate=false",
+                        self.peer_id,
+                        self.session.session_id,
+                        payload_type
+                    );
                     return Ok(lane.clone());
                 }
             }
         }
 
         if need_recreate {
+            tracing::debug!(
+                "♻️ Invalidating stale cached lane before recreate: peer_id={}, session_id={}, payload_type={:?}",
+                self.peer_id,
+                self.session.session_id,
+                payload_type
+            );
             // Clear stale cache entries before recreating.
             let mut channels = self.data_channels.write().await;
             channels[idx] = None;
@@ -368,7 +400,13 @@ impl WebRtcConnection {
             cache[idx] = Some(lane.clone());
         }
 
-        tracing::info!("✨ WebRtcConnection Createnew DataLane: {:?}", payload_type);
+        tracing::info!(
+            "✨ WebRtcConnection created new DataLane: peer_id={}, session_id={}, payload_type={:?}, need_recreate={}",
+            self.peer_id,
+            self.session.session_id,
+            payload_type,
+            need_recreate
+        );
 
         Ok(lane)
     }
@@ -379,6 +417,12 @@ impl WebRtcConnection {
     /// to be recreated on next `get_lane` call.
     pub async fn invalidate_lane(&self, payload_type: PayloadType) {
         let idx = payload_type as usize;
+        tracing::debug!(
+            "🧹 Invalidating cached WebRTC lane: peer_id={}, session_id={}, payload_type={:?}",
+            self.peer_id,
+            self.session.session_id,
+            payload_type
+        );
         // Canonical lock order: data_channels → lane_cache
         let mut channels = self.data_channels.write().await;
         channels[idx] = None;
@@ -417,7 +461,12 @@ impl WebRtcConnection {
             let peer_id = peer_id_for_open.clone();
             let payload_type = payload_type_for_open;
 
-            tracing::info!("🔄 WebRTC DataChannel opened: {:?}", payload_type);
+            tracing::info!(
+                "🔄 WebRTC DataChannel opened: peer_id={}, session_id={}, payload_type={:?}",
+                peer_id,
+                session_id_for_open,
+                payload_type
+            );
 
             Box::pin(async move {
                 let _ = event_tx.send(ConnectionEvent::DataChannelOpened {
@@ -447,11 +496,13 @@ impl WebRtcConnection {
         }));
 
         let session_for_close = self.session.clone();
+        let peer_id_for_close = self.peer_id.clone();
         let payload_type_for_close = payload_type;
         let label_for_close = label;
         let channel_id_for_close = channel_id;
         data_channel.on_close(Box::new(move || {
             let session = session_for_close.clone();
+            let peer_id = peer_id_for_close.clone();
             let payload_type = payload_type_for_close;
             let label = label_for_close;
             let channel_id = channel_id_for_close;
@@ -459,14 +510,18 @@ impl WebRtcConnection {
                 // Guard: if session cancelled, skip to avoid corrupting a new connection
                 if session.is_cancelled() {
                     tracing::debug!(
-                        "🚫 DC.on_close session {} cancelled, ignoring for {:?}",
+                        "🚫 DC.on_close ignored: peer_id={}, session_id={}, payload_type={:?}, channel_id={}, reason=session_cancelled",
+                        peer_id,
                         session.session_id,
-                        payload_type
+                        payload_type,
+                        channel_id
                     );
                     return;
                 }
                 tracing::warn!(
-                    "⚠️ WebRTC DataChannel closed [{}] (payload_type={:?}, channel_id={})",
+                    "⚠️ WebRTC DataChannel closed: peer_id={}, session_id={}, label={}, payload_type={:?}, channel_id={}",
+                    peer_id,
+                    session.session_id,
                     label,
                     payload_type,
                     channel_id
@@ -660,7 +715,9 @@ impl WebRtcConnection {
             let payload_type = payload_type_for_open;
 
             tracing::info!(
-                "🔄 WebRTC DataChannel opened (received): {:?}",
+                "🔄 WebRTC DataChannel opened (received): peer_id={}, session_id={}, payload_type={:?}",
+                peer_id,
+                session_id_for_open,
                 payload_type
             );
 
@@ -691,11 +748,13 @@ impl WebRtcConnection {
 
         // Set close handler
         let session_for_close = self.session.clone();
+        let peer_id_for_close = self.peer_id.clone();
         let payload_type_for_close = payload_type;
         let label_for_close = label.clone();
 
         data_channel.on_close(Box::new(move || {
             let session = session_for_close.clone();
+            let peer_id = peer_id_for_close.clone();
             let payload_type = payload_type_for_close;
             let label = label_for_close.clone();
 
@@ -703,14 +762,17 @@ impl WebRtcConnection {
                 // Guard: if session cancelled, skip to avoid corrupting a new connection
                 if session.is_cancelled() {
                     tracing::debug!(
-                        "🚫 DC.on_close session {} cancelled, ignoring for {:?}",
+                        "🚫 DC.on_close ignored: peer_id={}, session_id={}, payload_type={:?}, reason=session_cancelled",
+                        peer_id,
                         session.session_id,
                         payload_type
                     );
                     return;
                 }
                 tracing::warn!(
-                    "⚠️ WebRTC DataChannel closed [{}] (payload_type={:?})",
+                    "⚠️ WebRTC DataChannel closed (received): peer_id={}, session_id={}, label={}, payload_type={:?}",
+                    peer_id,
+                    session.session_id,
                     label,
                     payload_type,
                 );
