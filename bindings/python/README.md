@@ -49,7 +49,7 @@ etc.), drop down to the `actr_hyper::{Hyper, Node}` API in native Rust.
 
 - Supported today: manifest bootstrap, discovery, remote RPC, and shutdown.
 - Removed: source-defined Python workloads, `WorkloadBase`, `system.attach(...)`, local-service hosting from Python.
-- For service hosting, build a verified `.actr` package and run it with Rust `Hyper.attach_package(...)`.
+- For service hosting, build a verified `.actr` package and run it with Rust `Node::attach(...)` (`wasm` / `dyn lib`).
 
 ## Build
 

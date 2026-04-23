@@ -552,7 +552,7 @@ impl DataLane for WebRtcDataLane {
 
 // ── WebSocketDataLane ─────────────────────────────────────────────────────────
 
-/// WebSocket Lane - Business data transmission in C/S architecture
+/// WebSocket lane for business data transmission over WebSocket transport
 ///
 /// All PayloadTypes share the same underlying WebSocket connection,
 /// distinguished by a message header.

@@ -1,4 +1,4 @@
-//! WebSocket C/S Connection implementation
+//! WebSocket transport connection implementation
 
 use crate::transport::{
     ConnType, DataLane, NetworkError, NetworkResult, WebSocketDataLane, WireHandle, WsSink,
@@ -77,7 +77,7 @@ impl TransportMessage {
     }
 }
 
-/// WebSocketConnection - WebSocket C/S Connect
+/// WebSocket transport connection
 #[derive(Clone, Debug)]
 pub(crate) struct WebSocketConnection {
     /// URL

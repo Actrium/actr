@@ -201,7 +201,7 @@ pub trait SignalingObserverBridge: Send + Sync + 'static {
     async fn on_disconnected(&self, ctx: Arc<ContextBridge>);
 }
 
-/// Optional observer for WebSocket C/S peer events.
+/// Optional observer for WebSocket peer events.
 #[uniffi::export(callback_interface)]
 #[async_trait::async_trait]
 pub trait WebSocketObserverBridge: Send + Sync + 'static {

@@ -6002,7 +6002,7 @@ public object FfiConverterTypeWebRtcObserverBridge: FfiConverterCallbackInterfac
 
 
 /**
- * Optional observer for WebSocket C/S peer events.
+ * Optional observer for WebSocket peer events.
  */
 public interface WebSocketObserverBridge {
     
@@ -6813,5 +6813,4 @@ public object FfiConverterSequenceTypeMetadataEntry: FfiConverterRustBuffer<List
     )
     }
     
-
 

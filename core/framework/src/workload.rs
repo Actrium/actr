@@ -151,7 +151,7 @@ pub struct BackpressureEvent {
 /// - [`Workload::on_signaling_connected`]
 /// - [`Workload::on_signaling_disconnected`]
 ///
-/// ## Transport — WebSocket C/S (3) — infallible
+/// ## Transport — WebSocket (3) — infallible
 /// - [`Workload::on_websocket_connecting`]
 /// - [`Workload::on_websocket_connected`]
 /// - [`Workload::on_websocket_disconnected`]
@@ -265,7 +265,7 @@ pub trait Workload: Send + Sync + 'static {
     }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Transport — WebSocket C/S
+    // Transport — WebSocket
     // ─────────────────────────────────────────────────────────────────────
 
     /// Called when a WebSocket connection attempt to a peer begins.

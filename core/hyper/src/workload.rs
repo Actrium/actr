@@ -61,8 +61,8 @@ pub type HostAbiFn = Arc<
 /// actor's business code as a struct rather than a packaged binary).
 ///
 /// Plugged into a [`crate::Node`] via
-/// [`crate::Node::attach_linked_handle`] (object-safe path used by FFI
-/// bindings) or [`crate::Node::attach_linked`] (generic convenience that
+/// `Node::link_handle` (crate-internal object-safe path) or
+/// [`crate::Node::link`] (generic convenience that
 /// wraps any [`FrameworkWorkload`] implementation in a
 /// [`WorkloadAdapter`]).
 ///
@@ -75,11 +75,12 @@ pub type HostAbiFn = Arc<
 ///    [`crate::lifecycle::hooks::WorkloadHookObserver`] plumbing.
 /// 2. **Inbound RPC dispatch** — the [`LinkedWorkloadHandle::dispatch`]
 ///    method is invoked by the node's `handle_incoming` path when the
-///    node has been attached via `attach_linked*`. Package-backed
+///    node has been linked through the host path. Package-backed
 ///    attaches (`attach`) continue to dispatch through the WASM / dynclib
 ///    guest ABI.
 #[async_trait]
-pub trait LinkedWorkloadHandle: Send + Sync + 'static {
+#[allow(dead_code)]
+pub(crate) trait LinkedWorkloadHandle: Send + Sync + 'static {
     // Lifecycle (fallible — hook-path errors are logged & swallowed)
     async fn on_start(&self, _ctx: &RuntimeContext) {}
     async fn on_ready(&self, _ctx: &RuntimeContext) {}
@@ -91,7 +92,7 @@ pub trait LinkedWorkloadHandle: Send + Sync + 'static {
     async fn on_signaling_connected(&self, _ctx: Option<&RuntimeContext>) {}
     async fn on_signaling_disconnected(&self, _ctx: &RuntimeContext) {}
 
-    // WebSocket C/S
+    // WebSocket
     async fn on_websocket_connecting(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
     async fn on_websocket_connected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
     async fn on_websocket_disconnected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
@@ -137,8 +138,8 @@ pub trait LinkedWorkloadHandle: Send + Sync + 'static {
 /// `<W::Dispatcher as MessageDispatcher>::dispatch`.
 ///
 /// Callers rarely construct this directly; prefer
-/// [`crate::Node::attach_linked`] which wraps the workload automatically.
-pub struct WorkloadAdapter<W: FrameworkWorkload> {
+/// [`crate::Node::link`] which wraps the workload automatically.
+pub(crate) struct WorkloadAdapter<W: FrameworkWorkload> {
     inner: Arc<W>,
 }
 
@@ -150,13 +151,6 @@ impl<W: FrameworkWorkload> WorkloadAdapter<W> {
         Arc::new(Self {
             inner: Arc::new(workload),
         })
-    }
-
-    /// Wrap an already-shared workload (useful when the caller needs to
-    /// hold a second `Arc<W>` outside the adapter, e.g. for inspection in
-    /// tests).
-    pub fn from_arc(workload: Arc<W>) -> Arc<Self> {
-        Arc::new(Self { inner: workload })
     }
 
     /// Test-friendly dispatch entry point: forwards to the workload's
@@ -212,7 +206,7 @@ impl<W: FrameworkWorkload> LinkedWorkloadHandle for WorkloadAdapter<W> {
         self.inner.on_signaling_disconnected(ctx).await
     }
 
-    // ── WebSocket C/S ────────────────────────────────────────────────────
+    // ── WebSocket ────────────────────────────────────────────────────────
     async fn on_websocket_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
         self.inner.on_websocket_connecting(ctx, event).await
     }
@@ -325,9 +319,8 @@ impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
 ///   [`crate::Node::attach`]. The package carries a guest binary that the
 ///   host dispatches RPC envelopes into.
 /// - `Linked` — an in-process workload handle bound through
-///   [`crate::Node::attach_linked`] /
-///   [`crate::Node::attach_linked_handle`]. Inbound RPC envelopes are
-///   forwarded to the handle via [`LinkedWorkloadHandle::dispatch`].
+///   [`crate::Node::link`]. Inbound RPC envelopes are forwarded to the
+///   handle via [`LinkedWorkloadHandle::dispatch`].
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Workload {
     /// Linked in-process workload handle — hosts dispatch and lifecycle

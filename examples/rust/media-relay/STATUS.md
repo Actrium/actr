@@ -98,7 +98,7 @@ actr-a (Relay/Caller)          actr-b (Receiver/Host)
 // In actr-a/src/main.rs
 let workload = RelayClientWorkload::new();
 let init = Node::from_hyper(hyper, config).await?;
-let attached = init.attach_linked(workload).await?;
+let attached = init.link(workload).await?;
 let ais_endpoint = attached.ais_endpoint().to_string();
 let actr_ref = attached.register(&ais_endpoint).await?.start().await?;
 

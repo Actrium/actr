@@ -104,7 +104,7 @@ export const workload = {
     onSignalingConnected(): void {},
     onSignalingDisconnected(): void {},
 
-    // ── Transport: WebSocket C/S (3, infallible) ─────────────────────────
+    // ── Transport: WebSocket (3, infallible) ─────────────────────────────
 
     onWebsocketConnecting(_event: PeerEvent): void {},
     onWebsocketConnected(_event: PeerEvent): void {},

@@ -4465,7 +4465,7 @@ public func FfiConverterCallbackInterfaceWebRtcObserverBridge_lower(_ v: WebRtcO
 
 
 /**
- * Optional observer for WebSocket C/S peer events.
+ * Optional observer for WebSocket peer events.
  */
 public protocol WebSocketObserverBridge: AnyObject, Sendable {
     

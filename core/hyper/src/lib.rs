@@ -188,16 +188,19 @@ pub use outbound::{HostGate, PeerGate};
 // Layer 1: Transport layer
 #[cfg(not(target_arch = "wasm32"))]
 pub use transport::{
-    DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, ExponentialBackoff,
-    HostTransport, NetworkError, NetworkResult, PeerTransport, WireBuilder, WireHandle,
+    DataLane, Dest, ExponentialBackoff, HostTransport, NetworkError, NetworkResult, WireHandle,
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-utils"))]
+pub use transport::{DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport, WireBuilder};
 
 // Layer 0: Wire layer
 #[cfg(not(target_arch = "wasm32"))]
 pub use wire::{
-    ReconnectConfig, SignalingClient, SignalingConfig, SignalingEvent, SignalingStats,
-    WebRtcConfig, WebRtcCoordinator, WebSocketSignalingClient,
+    AuthConfig, AuthType, DisconnectReason, ReconnectConfig, SignalingClient, SignalingConfig,
+    SignalingEvent, SignalingStats, WebRtcConfig,
 };
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-utils"))]
+pub use wire::{WebRtcCoordinator, WebSocketSignalingClient};
 
 // Mailbox (from actr-runtime-mailbox crate)
 #[cfg(not(target_arch = "wasm32"))]
@@ -210,10 +213,7 @@ pub use actr_runtime_mailbox::{
 
 // Runtime workload abstraction
 #[cfg(not(target_arch = "wasm32"))]
-pub use workload::{
-    HostAbiFn, HostOperation, HostOperationResult, InvocationContext, LinkedWorkloadHandle,
-    WorkloadAdapter,
-};
+pub use workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -260,9 +260,11 @@ pub mod prelude {
     // ── Layer 0: Wire / WebRTC (native-only) ────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::wire::webrtc::{
-        ReconnectConfig, SignalingClient, SignalingConfig, WebRtcConfig, WebRtcCoordinator,
-        WebSocketSignalingClient,
+        AuthConfig, AuthType, DisconnectReason, ReconnectConfig, SignalingClient, SignalingConfig,
+        SignalingEvent, SignalingStats, WebRtcConfig,
     };
+    #[cfg(feature = "test-utils")]
+    pub use crate::wire::webrtc::{WebRtcCoordinator, WebSocketSignalingClient};
 
     // ── Mailbox (native-only) ───────────────────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
@@ -273,8 +275,11 @@ pub mod prelude {
     // ── Layer 1: Transport (native-only) ────────────────────────────────────
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::transport::{
-        DataLane, DefaultWireBuilder, DefaultWireBuilderConfig, Dest, HostTransport, NetworkError,
-        NetworkResult, PeerTransport, WireBuilder, WireHandle,
+        DataLane, Dest, HostTransport, NetworkError, NetworkResult, WireHandle,
+    };
+    #[cfg(feature = "test-utils")]
+    pub use crate::transport::{
+        DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport, WireBuilder,
     };
 
     // ── Error types ─────────────────────────────────────────────────────────
@@ -335,8 +340,8 @@ use actr_protocol::{Realm, RegisterRequest, register_response};
 #[cfg(not(target_arch = "wasm32"))]
 /// Compile-time state marker: a [`Node`] has been born from a [`Hyper`]
 /// plus a [`actr_config::RuntimeConfig`], but no attachment path has been
-/// chosen yet. Transition to [`Attached`] via [`Node::attach`],
-/// [`Node::attach_linked`], or [`Node::attach_linked_handle`].
+/// chosen yet. Transition to [`Attached`] via [`Node::attach`] or
+/// [`Node::link`].
 pub struct Init;
 #[cfg(not(target_arch = "wasm32"))]
 /// Compile-time state marker: a package has been verified and attached; AIS credential still pending.
@@ -377,9 +382,8 @@ impl NodeState for Registered {}
 /// ```text
 /// Node::from_config_file(path)    -> Node<Init>              (framework only)
 /// Node::from_hyper(hyper, config) -> Node<Init>              (escape hatch)
-///     .attach(package)            -> Node<Attached>          (package-backed)
-///     .attach_linked(workload)    -> Node<Attached>          (generic Rust Workload)
-///     .attach_linked_handle(h)    -> Node<Attached>          (embedded app / FFI handle)
+///     .attach(package)            -> Node<Attached>          (attach: wasm / dyn lib)
+///     .link(workload)             -> Node<Attached>          (link: static lib)
 ///     .register(ais_endpoint)     -> Node<Registered>        (credential obtained)
 ///     .start()                    -> ActrRef                 (running node)
 /// ```
@@ -426,9 +430,8 @@ struct Attachment {
 ///
 /// ```text
 /// Node::from_config_file(path) -> Node<Init>
-///     .attach(package)         -> Node<Attached>   (package-backed)
-///     .attach_linked(workload) -> Node<Attached>   (generic Rust Workload)
-///     .attach_linked_handle(h) -> Node<Attached>   (embedded app / FFI handle)
+///     .attach(package)         -> Node<Attached>   (attach: wasm / dyn lib)
+///     .link(workload)          -> Node<Attached>   (link: static lib)
 ///
 /// Node<Attached>.register(ais) -> Node<Registered>
 /// Node<Registered>.start()     -> ActrRef
@@ -602,6 +605,7 @@ impl Hyper {
     /// and prepare a runtime workload from it.
     ///
     /// Internal helper used by attachment flow and test-support shims.
+    #[cfg(feature = "test-utils")]
     pub(crate) async fn load_workload_package(
         &self,
         package: &WorkloadPackage,
@@ -698,6 +702,7 @@ impl Node<Init> {
     /// signature through the configured `TrustProvider`, loads its guest
     /// binary (WASM or dynclib), and advances the node to
     /// `Node<Attached>`.
+    /// Attach a packaged workload (`wasm` / `dyn lib`) to this node.
     pub async fn attach(self, package: &WorkloadPackage) -> HyperResult<Node<Attached>> {
         let runtime_config = self
             .pending_runtime_config
@@ -740,16 +745,16 @@ impl Node<Init> {
         })
     }
 
-    /// Bind a linked-workload handle (embedded app side) to this node.
+    /// Bind an internal workload handle for the `link` path to this node.
     ///
     /// No package is loaded; the host process *is* the workload. The
     /// handle provides both observation hooks and an inbound-dispatch
     /// entry point (see [`workload::LinkedWorkloadHandle::dispatch`]).
     ///
-    /// Prefer [`Node::attach_linked`] when you already have a generic
+    /// Prefer [`Node::link`] when you already have a generic
     /// [`actr_framework::Workload`] implementation — it wraps the
     /// workload in a [`workload::WorkloadAdapter`] automatically.
-    pub async fn attach_linked_handle(
+    pub(crate) async fn link_handle(
         self,
         handle: Arc<dyn workload::LinkedWorkloadHandle>,
     ) -> HyperResult<Node<Attached>> {
@@ -785,21 +790,21 @@ impl Node<Init> {
         })
     }
 
-    /// Bind a generic [`actr_framework::Workload`] implementation to this
-    /// node.
+    /// Link a generic [`actr_framework::Workload`] implementation
+    /// (`static lib`) into this node.
     ///
-    /// This is the preferred linked-attach path for Rust hosts: the
+    /// This is the preferred `link` path for Rust hosts: the
     /// workload is wrapped in a [`workload::WorkloadAdapter`] so that its
     /// associated [`actr_framework::MessageDispatcher`] drives inbound
     /// RPC dispatch and its hook methods are bridged into the node's
     /// observer plumbing.
-    pub async fn attach_linked<W: actr_framework::Workload>(
+    pub async fn link<W: actr_framework::Workload>(
         self,
         workload: W,
     ) -> HyperResult<Node<Attached>> {
         let handle: Arc<dyn workload::LinkedWorkloadHandle> =
             workload::WorkloadAdapter::new(workload);
-        self.attach_linked_handle(handle).await
+        self.link_handle(handle).await
     }
 }
 

@@ -87,7 +87,7 @@ API in native Rust.
 
 - Supported today: manifest bootstrap, discovery, remote RPC, and shutdown.
 - Removed: source-defined local workloads, `ActrSystem`, `system.attach(...)`, `Workload`.
-- For service hosting, build a verified `.actr` package and run it with Rust `Hyper.attach_package(...)`.
+- For service hosting, build a verified `.actr` package and run it with Rust `Node::attach(...)` (`wasm` / `dyn lib`).
 
 ## Configuration
 

@@ -254,7 +254,7 @@ interface workload {
     on-signaling-connected: func();
     on-signaling-disconnected: func();
 
-    // ── Transport: WebSocket C/S (3, infallible) ─────────────────────────
+    // ── Transport: WebSocket (3, infallible) ─────────────────────────────
 
     on-websocket-connecting: func(event: peer-event);
     on-websocket-connected: func(event: peer-event);

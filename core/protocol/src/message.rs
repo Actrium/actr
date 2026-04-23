@@ -1,7 +1,7 @@
 //! RpcRequest trait for type-safe RPC calls
 //!
 //! This module defines the `RpcRequest` trait which associates RPC Request types with their
-//! corresponding Response types. This enables compile-time type safety for client-side
+//! corresponding Response types. This enables compile-time type safety for caller-side
 //! RPC calls through type inference.
 //!
 //! # Design Rationale

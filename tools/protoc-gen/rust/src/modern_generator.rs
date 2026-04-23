@@ -134,7 +134,7 @@ use super::{proto_module}::*;
     ///
     /// Generates RpcRequest trait impls for each RPC method's Request type,
     /// associating it with the corresponding Response type. This enables
-    /// type-safe API calls on the client side:
+    /// type-safe API calls on the calling side:
     ///
     /// ```rust,ignore
     /// let response: EchoResponse = ctx.call(&target, request).await?;

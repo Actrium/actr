@@ -52,9 +52,9 @@ impl ActrNode {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             // Accept the manifest.toml path (historical contract), resolve
             // the sibling actr.toml, and hand off to Node::from_config_file
-            // for config + trust + Hyper construction. Python bindings boot
-            // a minimal linked workload here; this surface exposes discovery
-            // and outbound calls, not Python-defined service hosting.
+            // for config + trust + Hyper construction. Python bindings link
+            // a minimal static-lib workload here; this surface exposes
+            // discovery and outbound calls, not Python-defined service hosting.
             let manifest = ConfigParser::from_manifest_file(&path)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             let runtime_path = manifest.config_dir.join("actr.toml");
@@ -65,9 +65,9 @@ impl ActrNode {
             ensure_observability_initialized(Some(init.runtime_config().observability.clone()));
 
             let attached = init
-                .attach_linked(PythonBindingWorkload)
+                .link(PythonBindingWorkload)
                 .await
-                .map_err(|e| PyRuntimeError::new_err(format!("attach failed: {e}")))?;
+                .map_err(|e| PyRuntimeError::new_err(format!("link failed: {e}")))?;
             let ais_endpoint = attached.ais_endpoint().to_string();
             let registered = attached
                 .register(&ais_endpoint)

@@ -43,6 +43,8 @@ impl KeyFetcher for SignalingKeyFetcher {
 // connection / websocket) stay reachable via module paths rather than
 // duplicated re-exports here.
 pub use webrtc::{
-    ReconnectConfig, SignalingClient, SignalingConfig, SignalingEvent, SignalingStats,
-    WebRtcConfig, WebRtcCoordinator, WebSocketSignalingClient,
+    AuthConfig, AuthType, DisconnectReason, ReconnectConfig, SignalingClient, SignalingConfig,
+    SignalingEvent, SignalingStats, WebRtcConfig,
 };
+#[cfg(feature = "test-utils")]
+pub use webrtc::{WebRtcCoordinator, WebSocketSignalingClient};

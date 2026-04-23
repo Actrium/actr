@@ -39,12 +39,10 @@ use crate::wire::webrtc::{HookCallback, HookEvent};
 /// `DynamicWorkload`). Each method has a no-op default so adopters can
 /// override only the hooks they care about.
 ///
-/// This trait is the object-safe surface behind
-/// [`crate::LinkedWorkloadHandle`] — the linked-workload handle is a
-/// `WorkloadHookObserver` plus (at a future point) a dispatch method. The
-/// current `Node::attach_linked_handle` entry point stores the handle as
-/// this hook observer; inbound RPC dispatch for linked workloads is not
-/// yet implemented, so this path currently covers hook delivery only.
+/// This trait is the object-safe hook surface behind the internal handle
+/// used by `Node::link(...)`. Hook delivery flows through this trait;
+/// inbound RPC dispatch is handled separately by the sibling
+/// `LinkedWorkloadHandle` path in `workload.rs`.
 #[async_trait]
 #[allow(dead_code)]
 pub(crate) trait WorkloadHookObserver: Send + Sync + 'static {
@@ -61,7 +59,7 @@ pub(crate) trait WorkloadHookObserver: Send + Sync + 'static {
     async fn on_signaling_connected(&self, _ctx: Option<&RuntimeContext>) {}
     async fn on_signaling_disconnected(&self, _ctx: &RuntimeContext) {}
 
-    // WebSocket C/S
+    // WebSocket
     async fn on_websocket_connecting(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
     async fn on_websocket_connected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}
     async fn on_websocket_disconnected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {}

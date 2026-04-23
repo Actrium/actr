@@ -189,7 +189,7 @@ if [ ! -d "$PROTO_DIR" ]; then
     exit 1
 fi
 
-# Generate code for server only (with scaffold)
+# Generate code for the service scaffold only
 cd "$SERVER_DIR"
 echo "Running actr deps install (server)..."
 if ! $ACTR_GEN_CMD deps install > "$LOG_DIR/actr-deps-server.log" 2>&1; then

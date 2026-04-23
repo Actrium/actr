@@ -38,10 +38,16 @@ pub use wire_pool::ConnType;
 
 // Transport management
 pub use host_transport::HostTransport;
+#[cfg(feature = "test-utils")]
 pub use peer_transport::{PeerTransport, WireBuilder};
+#[cfg(not(feature = "test-utils"))]
+pub(crate) use peer_transport::{PeerTransport, WireBuilder};
 
 // Wire layer management
+#[cfg(feature = "test-utils")]
 pub use wire_builder::{DefaultWireBuilder, DefaultWireBuilderConfig};
+#[cfg(not(feature = "test-utils"))]
+pub(crate) use wire_builder::{DefaultWireBuilder, DefaultWireBuilderConfig};
 pub use wire_handle::WireHandle;
 
 // Error types

@@ -250,7 +250,7 @@ pub async fn run_on_signaling_disconnected<W: Workload>(workload: &W) {
     workload.on_signaling_disconnected(&ctx).await;
 }
 
-// ── WebSocket C/S (3, infallible) ─────────────────────────────────────────
+// ── WebSocket (3, infallible) ─────────────────────────────────────────────
 
 pub async fn run_on_websocket_connecting<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
     let ctx = WasmContext::lifecycle_placeholder();

@@ -52,7 +52,7 @@ Rust 宿主暴露 typestate 链 `Node<Init> → Node<Attached> → Node<Register
 
 - 当前支持：manifest 启动、服务发现、远端 RPC、关闭流程。
 - 已移除：源码定义的本地 workload、`ActrSystem`、`system.attach(...)`、`Workload`。
-- 如果要承载服务，请构建经过验证的 `.actr` 包，并通过 Rust `Hyper.attach_package(...)` 运行。
+- 如果要承载服务，请构建经过验证的 `.actr` 包，并通过 Rust `Node::attach(...)`（`wasm` / `dyn lib`）运行。
 
 ## 构建
 

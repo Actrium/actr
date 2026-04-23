@@ -44,7 +44,7 @@ impl ActrNode {
     pub async fn from_file(config_path: String) -> Result<ActrNode> {
         // Accept the manifest.toml path, resolve its sibling actr.toml,
         // and let Node::from_config_file own config + trust + Hyper
-        // construction. TypeScript bindings boot a minimal linked
+        // construction. TypeScript bindings link a minimal static-lib
         // workload here; this surface exposes discovery and outbound
         // calls, not TypeScript-defined service hosting.
         let manifest = ConfigParser::from_manifest_file(&config_path)
@@ -56,7 +56,7 @@ impl ActrNode {
             .map_err(crate::error::hyper_error_to_napi)?;
         crate::logger::init_observability(init.runtime_config().observability.clone());
         let attached = init
-            .attach_linked(TypeScriptBindingWorkload)
+            .link(TypeScriptBindingWorkload)
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
         let ais_endpoint = attached.ais_endpoint().to_string();

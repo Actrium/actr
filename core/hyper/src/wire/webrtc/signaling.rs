@@ -301,7 +301,7 @@ pub enum HookEvent {
     WebRtcConnectStart { peer_id: ActrId },
     WebRtcConnected { peer_id: ActrId, relayed: bool },
     WebRtcDisconnected { peer_id: ActrId },
-    // ── WebSocket C/S ──
+    // ── WebSocket ──
     WebSocketConnectStart { peer_id: ActrId },
     WebSocketConnected { peer_id: ActrId },
     WebSocketDisconnected { peer_id: ActrId },
@@ -391,11 +391,6 @@ impl WebSocketSignalingClient {
     ///
     /// The manager waits on a `Notify` and runs an exponential-backoff retry loop
     /// each time it is woken up.
-    /// Set the hook callback (once). Subsequent calls are silently ignored.
-    pub fn set_hook_callback(&self, cb: HookCallback) {
-        let _ = self.hook_callback.set(cb);
-    }
-
     /// Invoke the hook callback and await its completion.
     /// No-op if no callback has been set yet.
     async fn invoke_hook(&self, event: HookEvent) {
@@ -489,7 +484,8 @@ impl WebSocketSignalingClient {
         // After cooldown, the loop returns to notify.notified() and can be woken again
     }
 
-    /// simple for convenience construct create Function
+    /// Test-only convenience constructor: create, connect, and return a client.
+    #[cfg(feature = "test-utils")]
     pub async fn connect_to(url: &str) -> NetworkResult<Arc<Self>> {
         let config = SignalingConfig {
             server_url: url.parse()?,
