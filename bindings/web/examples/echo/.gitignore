@@ -18,6 +18,14 @@ server-guest/Cargo.lock
 client-guest/target/
 client-guest/Cargo.lock
 
+# Server/client guest (Option U / wasm-bindgen path)
+server-guest-wbg/target/
+server-guest-wbg/Cargo.lock
+server-guest-wbg/pkg/
+client-guest-wbg/target/
+client-guest-wbg/Cargo.lock
+client-guest-wbg/pkg/
+
 # Generated WASM artifacts
 server/public/echo_server_bg.wasm*
 server/public/echo_server.js

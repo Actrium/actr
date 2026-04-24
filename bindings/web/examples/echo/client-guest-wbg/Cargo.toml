@@ -1,0 +1,31 @@
+[package]
+name = "echo-client-guest-wbg"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Echo Client Guest WASM for Web — wasm-bindgen + actr-web-abi (Option U)"
+
+# Standalone project, not part of any workspace. Mirrors the sibling
+# `client-guest/` crate layout but targets `wasm32-unknown-unknown`
+# via wasm-pack rather than the Component Model pipeline.
+[workspace]
+
+[lib]
+name = "echo_client_guest_wbg"
+crate-type = ["cdylib"]
+
+[dependencies]
+# Option U browser ABI: brings in the guest-side `actrHost*`
+# wrappers (`discover`, `call_raw`, …) and the `Workload` trait.
+actr-web-abi = { path = "../../../crates/actr-web-abi" }
+
+# Kept in lockstep with sw-host / actr-web-abi on wasm-bindgen 0.2.108
+# so all guest / host modules share one ABI.
+wasm-bindgen = "0.2.108"
+wasm-bindgen-futures = "0.4"
+
+# Workload trait is `#[async_trait(?Send)]`.
+async-trait = "0.1"
+
+[profile.release]
+opt-level = "s"
