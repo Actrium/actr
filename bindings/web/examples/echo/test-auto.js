@@ -89,7 +89,7 @@ function record(id, title, status, ms, reason, consoleLogs) {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 async function launchBrowser() {
-    return puppeteer.launch({
+    const browser = await puppeteer.launch({
         headless: 'new',
         protocolTimeout: 300_000, // 5 min — prevent generic protocolTimeout masking real errors
         args: [
@@ -102,6 +102,30 @@ async function launchBrowser() {
             // SW needs secure context — localhost is fine
         ],
     });
+
+    // page.on('console') only captures page (DOM) console — it does NOT see
+    // Service Worker console output. Rust log::info! via wasm-logger lands in
+    // the SW console, so every SW-side log is invisible by default. Set
+    // CAPTURE_SW_CONSOLE=1 to route SW console lines through stdout with a
+    // [SW-CONSOLE <port>] prefix for diagnostic runs.
+    if (process.env.CAPTURE_SW_CONSOLE === '1') {
+        browser.on('targetcreated', async (target) => {
+            if (target.type() !== 'service_worker') return;
+            try {
+                const worker = await target.worker();
+                if (!worker) return;
+                const tag = (() => {
+                    try { return new URL(target.url()).port || 'sw'; }
+                    catch { return 'sw'; }
+                })();
+                worker.on('console', (msg) => {
+                    console.log(`[SW-CONSOLE ${tag}] ${msg.type()}: ${msg.text()}`);
+                });
+            } catch { /* SW target may be unavailable */ }
+        });
+    }
+
+    return browser;
 }
 
 /**
