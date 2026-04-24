@@ -12,11 +12,14 @@
 | **2 guest.rs 生成** | ✓ | `actr-web-abi/src/guest.rs`（8 host imports + async wrappers） |
 | **3 host.rs 生成** | ✓ | `actr-web-abi/src/host.rs`（`Workload` trait + 17 `#[wasm_bindgen]` exports） |
 | **4 Echo 接入 + e2e** | ✓ | `server/client-guest-wbg` + `actor-wbg.sw.js` + `start-mock-wbg.sh`；**BasicFunction 6/6 PASS** |
-| **4.5 MultiTab 压测** | ⚠️ 部分 | 1/6（只 6-1 过） |
+| **4.5 MultiTab 压测（pre-Phase-6）** | ⚠️ 部分 | 1/6（只 6-1 过）；后续被 γ + TD-004 α' + Phase 6c 推进到 **8/12** |
 | **5 CI drift + 文档收尾** | 待办 | CI 接 `cargo run -p actr-wit-compile-web -- --check`；T18 doc 标 resolved |
-| **6a-I γ-unified 整合** | ✓ 架构完成 | 6 commits (framework/sw-host/codegen/examples/sw.js)；BasicFunction 6/6 ✓；MultiTab 验证被 [TD-004](./tech-debt.zh.md#td-004) 阻塞 |
-| **6b entry! 宏 + protoc 跨 target** | 待办 | 见下 §11 |
-| **6c echo 一份化 + 全套件** | 待办 | 见下 §11 |
+| **6a-I γ-unified 整合** | ✓ | 6 commits；BasicFunction 6/6 ✓；架构落地 |
+| **6b entry! 宏 + protoc 跨 target** | ✓ | 5 commits（ServiceHandler + WebWorkloadAdapter + 宏 + protoc-gen + smoke test crate） |
+| **6c echo 一份化** | ✓ | 3 commits 合入 main（`87b3401d` / `a4ec581b` / `cff7f71a`），`*-guest-wbg` 已删，`*-guest` 单 crate 跨 target |
+| **TD-004 α'** | ✓ | cred namespace 按 client_id；mock-actrix rebind WARN；BasicFunction 6/6 保留 |
+
+**最终 MultiTab 结果（Phase 6 完成后）**：**8/12 PASS** — BasicFunction 6/6 + MultiTab 6-1 + MultiTab 6-6。剩余 4 个（6-2/6-3/6-4/6-5）被 [TD-006](./tech-debt.zh.md#td-006) 阻塞（2-client 并发 RPC 仍挂，嫌疑是 WebRTC 或 signaling 层第三处隐含单例 / 共享状态）。
 
 Option U 核心路径已跑通 —— jco / Component Model / JSPI 全部绕开，echo 简单 RPC ✓。暴露出的 TD-003 是 sw-host 原有并发模型问题，不是 WBG 特有。
 
