@@ -79,8 +79,18 @@ async fn handle_connection(
         if let Some(actr_id) = parse_actor_id(actor_id_str) {
             let mut registry = state.registry.write().await;
             let mut found = false;
+            // TD-004 defensive WARN: if we are overwriting a non-empty
+            // `client_id` on this registry entry, we are "rebinding" the
+            // registry row to a new WebSocket. The previous session silently
+            // loses its relay binding. This is not normally expected on a
+            // healthy client — capture the rebind so we can spot AIS
+            // credential reuse across tabs during diagnostics.
+            let mut rebound_from: Option<String> = None;
             for entry in registry.iter_mut() {
                 if entry.actr_id == actr_id {
+                    if !entry.client_id.is_empty() && entry.client_id != client_id {
+                        rebound_from = Some(entry.client_id.clone());
+                    }
                     entry.client_id = client_id.clone();
                     found = true;
                     break;
@@ -93,6 +103,14 @@ async fn handle_connection(
                     .write()
                     .await
                     .insert(client_id.clone(), actr_id);
+                if let Some(old_ws) = rebound_from.as_deref() {
+                    tracing::warn!(
+                        actor_id = %actor_id_str,
+                        old_ws = %old_ws,
+                        new_ws = %client_id,
+                        "mock-actrix: WS actor rebound — previous session loses this binding"
+                    );
+                }
                 tracing::info!(
                     actor_id = %actor_id_str,
                     "mock-actrix: WS bound to HTTP-registered actor"
