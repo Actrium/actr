@@ -723,7 +723,7 @@ fn emit_host(model: &WitModel) -> String {
          //! deserialises JS arguments, dispatches to the registered\n\
          //! workload instance, and serialises the response back.\n\
          //!\n\
-         //! The `Workload` trait is deliberately `pub(crate)` — the\n\
+         //! The `Workload` trait is `#[doc(hidden)] pub` — the\n\
          //! public entry point is [`register_workload`], which the\n\
          //! `actr_framework::entry!` macro (Phase 6b) expands to. User\n\
          //! code never implements this trait directly; the framework\n\
@@ -750,13 +750,20 @@ fn emit_host(model: &WitModel) -> String {
          /// `actr_framework::entry!` which expands into a blanket impl\n\
          /// that routes into the user's typed handlers.\n\
          ///\n\
+         /// Marked `#[doc(hidden)] pub` rather than `pub(crate)` so it\n\
+         /// can appear as a bound on the public [`register_workload`]\n\
+         /// function without triggering `private_bounds`. Users must\n\
+         /// still not implement it manually — the `actr_framework::entry!`\n\
+         /// macro is the only sanctioned impl path.\n\
+         ///\n\
          /// Method shapes mirror the WIT `workload` interface exactly,\n\
          /// including which hooks are fallible (the four lifecycle\n\
          /// hooks return `Result<_, ActrError>`) and which are\n\
          /// infallible (all the observation hooks).\n",
     );
     out.push_str("#[async_trait(?Send)]\n");
-    out.push_str("pub(crate) trait Workload: 'static {\n");
+    out.push_str("#[doc(hidden)]\n");
+    out.push_str("pub trait Workload: 'static {\n");
     for func in &model.guest_exports {
         emit_trait_method_signature(&mut out, func);
         out.push_str(";\n");
@@ -1107,10 +1114,12 @@ mod tests {
     fn host_rs_has_crate_private_trait_and_register() {
         let model = load_inmem(MINI_WIT);
         let out = emit_host(&model);
-        assert!(out.contains("pub(crate) trait Workload"));
+        // Trait is `#[doc(hidden)] pub` so it can bound the public
+        // `register_workload` fn without triggering `private_bounds`.
+        assert!(out.contains("#[doc(hidden)]\npub trait Workload"));
         assert!(
-            !out.contains("pub trait Workload"),
-            "Workload trait must not be re-exported publicly"
+            !out.contains("pub(crate) trait Workload"),
+            "Workload trait should no longer be pub(crate)"
         );
         assert!(out.contains("pub fn register_workload"));
         assert!(out.contains("W: Workload + Clone + 'static"));

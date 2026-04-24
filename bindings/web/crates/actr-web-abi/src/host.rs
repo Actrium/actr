@@ -20,7 +20,7 @@
 //! deserialises JS arguments, dispatches to the registered
 //! workload instance, and serialises the response back.
 //!
-//! The `Workload` trait is deliberately `pub(crate)` — the
+//! The `Workload` trait is `#[doc(hidden)] pub` — the
 //! public entry point is [`register_workload`], which the
 //! `actr_framework::entry!` macro (Phase 6b) expands to. User
 //! code never implements this trait directly; the framework
@@ -46,12 +46,19 @@ use crate::types::*;
 /// `actr_framework::entry!` which expands into a blanket impl
 /// that routes into the user's typed handlers.
 ///
+/// Marked `#[doc(hidden)] pub` rather than `pub(crate)` so it
+/// can appear as a bound on the public [`register_workload`]
+/// function without triggering `private_bounds`. Users must
+/// still not implement it manually — the `actr_framework::entry!`
+/// macro is the only sanctioned impl path.
+///
 /// Method shapes mirror the WIT `workload` interface exactly,
 /// including which hooks are fallible (the four lifecycle
 /// hooks return `Result<_, ActrError>`) and which are
 /// infallible (all the observation hooks).
 #[async_trait(?Send)]
-pub(crate) trait Workload: 'static {
+#[doc(hidden)]
+pub trait Workload: 'static {
     async fn dispatch(&self, envelope: RpcEnvelope) -> Result<Vec<u8>, ActrError>;
     async fn on_credential_expiring(&self, event: CredentialEvent);
     async fn on_credential_renewed(&self, event: CredentialEvent);
