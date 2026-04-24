@@ -41,19 +41,25 @@
 //! ```text
 //!  inbound RPC ─► WasmWorkload ─► ServiceHandlerFn
 //!                                   │
-//!                                   ├─ set GUEST_CTX (thread-local)
+//!                                   ├─ ctx_insert(request_id, ctx)
 //!                                   ├─ build envelope JS object
 //!                                   ├─ await dispatchFn(envelope)          ─┐
 //!                                   │    (jco: workload.dispatch — async)   │
 //!                                   │                                       │
 //!                                   │      during guest execution, jco      │
-//!                                   │      calls back into host_*_async     │
-//!                                   │      which reads GUEST_CTX and        │
-//!                                   │      routes through RuntimeContext    │
+//!                                   │      calls host_*_async(request_id,   │
+//!                                   │      …) which looks the ctx up in     │
+//!                                   │      DISPATCH_CTXS and routes         │
+//!                                   │      through RuntimeContext           │
 //!                                   │                                       │
-//!                                   ├─ clear GUEST_CTX                     ◄┘
+//!                                   ├─ ctx_remove(request_id)              ◄┘
 //!                                   └─ return reply bytes
 //! ```
+//!
+//! Multiple concurrent dispatches coexist in `DISPATCH_CTXS`; each host
+//! import resolves the owning context by the `request_id` the runtime wove
+//! through the WIT surface. See TD-003 for the single-slot bug this
+//! replaces.
 //!
 //! # Legacy path removed
 //!
@@ -64,6 +70,7 @@
 //! **DynClib** backend and are untouched here.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -81,45 +88,97 @@ use crate::workload::{ServiceHandlerFn, WasmWorkload};
 // Per-dispatch context
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Thread-local storage for the current `RuntimeContext` during guest
-// dispatch. Set before calling the JS dispatch function (which then drives
-// the jco-transpiled component), cleared after.
+// Per-request `RuntimeContext` table, keyed by `request_id`. Each concurrent
+// guest dispatch registers its context on entry and removes it on exit; the
+// host-import functions (`host_*_async`) look up the context by the
+// `request_id` passed as their first parameter.
 //
-// The host-import functions (`host_*_async`) read this to service outbound
-// calls triggered by the guest's `.await` on a WIT host import.
+// JS is single-threaded, so `RefCell::borrow_mut` is race-free: insert /
+// remove happen at dispatch boundaries, lookups are bounded by a borrow that
+// drops before the host-import function awaits anything else.
+//
+// This replaces the former single `GUEST_CTX` slot, which only supported one
+// in-flight dispatch at a time and was the root cause of TD-003.
 thread_local! {
-    static GUEST_CTX: RefCell<Option<Rc<RuntimeContext>>> = const { RefCell::new(None) };
+    // NOTE: `HashMap::new` is not `const` on stable Rust, so this slot cannot
+    // use the `const { ... }` form (that shortcut is available for the old
+    // `Option<Rc<_>>` slot). The lazy-init cost is a one-time `Default`
+    // invocation per thread; irrelevant in the single-threaded SW.
+    static DISPATCH_CTXS: RefCell<HashMap<String, Rc<RuntimeContext>>> =
+        RefCell::new(HashMap::new());
 }
 
-/// Install a `RuntimeContext` for the duration of a guest dispatch. Panics if
-/// one is already installed — the web runtime is single-threaded and
-/// dispatches are serialized per actor instance.
-fn install_ctx(ctx: Rc<RuntimeContext>) {
-    GUEST_CTX.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if slot.is_some() {
+/// Register a `RuntimeContext` for the given `request_id` at the start of a
+/// guest dispatch. Logs an error if the slot is already occupied — the
+/// runtime should guarantee unique request IDs; collisions indicate a
+/// framework-level invariant violation.
+fn ctx_insert(request_id: String, ctx: Rc<RuntimeContext>) {
+    DISPATCH_CTXS.with(|cell| {
+        let mut map = cell.borrow_mut();
+        if map.contains_key(&request_id) {
             log::error!(
-                "[GuestBridge] install_ctx called while another context is active — dispatch overlap?"
+                "[GuestBridge] ctx_insert overwriting existing entry for request_id={request_id}"
             );
         }
-        *slot = Some(ctx);
+        map.insert(request_id, ctx);
     });
 }
 
-/// Clear the per-dispatch context. Safe to call even when no context is set.
-fn clear_ctx() {
-    GUEST_CTX.with(|cell| cell.replace(None));
+/// Look up the `RuntimeContext` for an in-flight dispatch by `request_id`.
+/// Returns a JS error string if no matching entry is present — host imports
+/// called outside an active dispatch (or with a stale `request_id`) reject
+/// rather than panic.
+///
+/// Unused until the 8 `host_*_async` signatures are migrated to take
+/// `request_id` as the first parameter (Phase 6-S step S4).
+#[allow(dead_code)]
+fn ctx_get(request_id: &str) -> Result<Rc<RuntimeContext>, JsValue> {
+    DISPATCH_CTXS.with(|cell| {
+        cell.borrow().get(request_id).cloned().ok_or_else(|| {
+            JsValue::from_str(&format!("no guest context for request_id={request_id}"))
+        })
+    })
 }
 
-/// Retrieve the currently installed `RuntimeContext`, returning a JS error
-/// string if no dispatch is active. Host-import implementations use this to
-/// reject calls originating outside an active dispatch (e.g. lifecycle
-/// hooks, which the component model routes through the same exports but
-/// under a host-driven context injection).
-fn current_ctx() -> Result<Rc<RuntimeContext>, JsValue> {
-    GUEST_CTX
-        .with(|cell| cell.borrow().clone())
-        .ok_or_else(|| JsValue::from_str("no guest context active"))
+/// Remove the per-dispatch context after the guest's `dispatch` future
+/// completes (success or failure). Safe to call when the entry is already
+/// absent.
+fn ctx_remove(request_id: &str) {
+    DISPATCH_CTXS.with(|cell| {
+        cell.borrow_mut().remove(request_id);
+    });
+}
+
+/// RAII guard: removes the dispatch context on drop so early-return / panic /
+/// future-cancellation paths all clean up deterministically.
+struct DispatchCtxGuard {
+    request_id: String,
+}
+
+impl Drop for DispatchCtxGuard {
+    fn drop(&mut self) {
+        ctx_remove(&self.request_id);
+    }
+}
+
+/// Legacy single-slot accessor for the 8 `host_*_async` functions that have
+/// not yet been migrated to the `request_id`-first signature. Resolves by
+/// peeking the sole entry of `DISPATCH_CTXS`; returns an error if there are
+/// zero or more than one in-flight dispatches.
+///
+/// Scheduled for removal in the commit that rewrites `host_*_async` to
+/// accept `request_id: String` as the first parameter (Phase 6-S step S4).
+fn current_ctx_legacy() -> Result<Rc<RuntimeContext>, JsValue> {
+    DISPATCH_CTXS.with(|cell| {
+        let map = cell.borrow();
+        match map.len() {
+            1 => Ok(map.values().next().unwrap().clone()),
+            0 => Err(JsValue::from_str("no guest context active")),
+            n => Err(JsValue::from_str(&format!(
+                "ambiguous guest context: {n} dispatches in flight (legacy host_*_async cannot disambiguate — migrate caller to pass request_id)"
+            ))),
+        }
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -292,7 +351,7 @@ pub async fn host_call_raw_async(
     route_key: String,
     payload: js_sys::Uint8Array,
 ) -> Result<js_sys::Uint8Array, JsValue> {
-    let ctx = current_ctx()?;
+    let ctx = current_ctx_legacy()?;
     let target = parse_actr_id(&target)?;
     let payload_bytes = payload.to_vec();
 
@@ -324,7 +383,7 @@ pub async fn host_call_async(
     route_key: String,
     payload: js_sys::Uint8Array,
 ) -> Result<js_sys::Uint8Array, JsValue> {
-    let ctx = current_ctx()?;
+    let ctx = current_ctx_legacy()?;
     let dest = parse_dest(&target)?;
     let payload_bytes = payload.to_vec();
 
@@ -363,7 +422,7 @@ pub async fn host_tell_async(
     route_key: String,
     payload: js_sys::Uint8Array,
 ) -> Result<(), JsValue> {
-    let ctx = current_ctx()?;
+    let ctx = current_ctx_legacy()?;
     let dest = parse_dest(&target)?;
     let payload_bytes = payload.to_vec();
 
@@ -385,7 +444,7 @@ pub async fn host_tell_async(
 /// WIT `host.discover(target_type) -> result<actr-id, actr-error>`.
 #[wasm_bindgen]
 pub async fn host_discover_async(target_type: JsValue) -> Result<JsValue, JsValue> {
-    let ctx = current_ctx()?;
+    let ctx = current_ctx_legacy()?;
     let target_type = parse_actr_type(&target_type)?;
 
     log::info!(
@@ -419,7 +478,7 @@ pub fn host_log_message(level: String, message: String) {
 /// WIT `host.get-self-id() -> actr-id`.
 #[wasm_bindgen]
 pub fn host_get_self_id() -> Result<JsValue, JsValue> {
-    let ctx = current_ctx()?;
+    let ctx = current_ctx_legacy()?;
     Ok(actr_id_to_js(ctx.self_id()))
 }
 
@@ -427,7 +486,7 @@ pub fn host_get_self_id() -> Result<JsValue, JsValue> {
 /// host did not install a caller for this dispatch (lifecycle hooks).
 #[wasm_bindgen]
 pub fn host_get_caller_id() -> Result<JsValue, JsValue> {
-    let ctx = current_ctx()?;
+    let ctx = current_ctx_legacy()?;
     Ok(match ctx.caller_id() {
         Some(id) => actr_id_to_js(id),
         None => JsValue::NULL,
@@ -437,7 +496,7 @@ pub fn host_get_caller_id() -> Result<JsValue, JsValue> {
 /// WIT `host.get-request-id() -> string`.
 #[wasm_bindgen]
 pub fn host_get_request_id() -> Result<String, JsValue> {
-    let ctx = current_ctx()?;
+    let ctx = current_ctx_legacy()?;
     Ok(ctx.request_id().to_string())
 }
 
@@ -477,8 +536,11 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
             let body = body.to_vec();
 
             Box::pin(async move {
+                let request_id = ctx.request_id().to_string();
+
                 log::info!(
-                    "[SW][GuestBridge] dispatch enter route={} body_len={}",
+                    "[SW][GuestBridge] dispatch enter request_id={} route={} body_len={}",
+                    request_id,
                     route_key,
                     body.len()
                 );
@@ -488,7 +550,7 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                 let _ = js_sys::Reflect::set(
                     &envelope_js,
                     &JsValue::from_str("requestId"),
-                    &JsValue::from_str(ctx.request_id()),
+                    &JsValue::from_str(&request_id),
                 );
                 let _ = js_sys::Reflect::set(
                     &envelope_js,
@@ -501,19 +563,27 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                     &js_sys::Uint8Array::from(&body[..]).into(),
                 );
 
-                install_ctx(ctx.clone());
+                // Register the context for this request_id, and ensure it is
+                // removed on every exit path (sync throw, promise reject,
+                // promise resolve, future-cancellation) via the RAII guard.
+                ctx_insert(request_id.clone(), ctx.clone());
+                let _guard = DispatchCtxGuard {
+                    request_id: request_id.clone(),
+                };
 
                 let result = match dispatch_fn.call1(&JsValue::NULL, &envelope_js) {
                     Ok(v) => v,
                     Err(e) => {
-                        clear_ctx();
-                        log::error!("[SW][GuestBridge] dispatch threw synchronously: {e:?}");
+                        log::error!(
+                            "[SW][GuestBridge] dispatch threw synchronously request_id={request_id}: {e:?}"
+                        );
                         return Err(format!("guest dispatch threw: {e:?}"));
                     }
                 };
 
                 log::info!(
-                    "[SW][GuestBridge] dispatch_fn invoked, awaiting promise (is_promise={})",
+                    "[SW][GuestBridge] dispatch_fn invoked request_id={}, awaiting promise (is_promise={})",
+                    request_id,
                     result.is_instance_of::<js_sys::Promise>()
                 );
 
@@ -524,8 +594,9 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                     match wasm_bindgen_futures::JsFuture::from(promise).await {
                         Ok(v) => v,
                         Err(e) => {
-                            clear_ctx();
-                            log::error!("[SW][GuestBridge] dispatch promise rejected: {e:?}");
+                            log::error!(
+                                "[SW][GuestBridge] dispatch promise rejected request_id={request_id}: {e:?}"
+                            );
                             // jco rejects with the jco `Error`-shaped variant;
                             // tag/message was set by `actr_error_to_js` on the
                             // host side, or by the guest-thrown error directly.
@@ -537,9 +608,9 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                     result
                 };
 
-                clear_ctx();
-
-                log::info!("[SW][GuestBridge] dispatch promise resolved");
+                log::info!(
+                    "[SW][GuestBridge] dispatch promise resolved request_id={request_id}"
+                );
 
                 if resolved.is_null() || resolved.is_undefined() {
                     return Err("guest dispatch returned null/undefined".to_string());
@@ -549,6 +620,7 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                     .dyn_into::<js_sys::Uint8Array>()
                     .map_err(|e| format!("guest dispatch did not return Uint8Array: {e:?}"))?;
                 Ok(arr.to_vec())
+                // `_guard` drops here, calling ctx_remove(&request_id).
             }) as Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, String>>>>
         },
     );
