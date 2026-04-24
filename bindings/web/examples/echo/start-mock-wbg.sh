@@ -352,7 +352,7 @@ if [ -f "$SCRIPT_DIR/test-auto.js" ]; then
     CLIENT_URL="http://localhost:5173" \
     SERVER_URL="http://localhost:5174" \
     CAPTURE_SW_CONSOLE=1 \
-    node "$SCRIPT_DIR/test-auto.js" BasicFunction
+    node "$SCRIPT_DIR/test-auto.js" ${SUITES:-BasicFunction}
     TEST_EXIT_CODE=$?
     set -e
 else
