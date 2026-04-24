@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# Clear host-toolchain RUSTFLAGS so host-linker flags (e.g. `-fuse-ld=mold`
+# from a global ~/.cargo/config.toml `[build] rustflags`) do not leak into
+# the wasm32 target build. rust-lld does not recognize those linker args
+# and errors out.
+export RUSTFLAGS=""
+export CARGO_ENCODED_RUSTFLAGS=""
+
 echo "Building DOM Bridge..."
 
 # Clean old builds
