@@ -1,0 +1,51 @@
+[package]
+name = "framework-web-entry-smoke"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+description = "Compile-only smoke test for Option U Phase 6b `entry!` web branch."
+
+# Standalone crate, not in any workspace — mirrors the `server-guest-wbg`
+# layout so its wasm32-unknown-unknown build does not pull in workspace
+# dev-dependencies (tokio + mio) that don't cross-compile.
+[workspace]
+
+[lib]
+name = "framework_web_entry_smoke"
+crate-type = ["cdylib"]
+
+[dependencies]
+# The framework under test. The user-facing `web` feature below is the
+# one `entry!` consults at macro-expansion time — it propagates here via
+# `actr-framework/web`.
+actr-framework = { path = "../../../../core/framework" }
+actr-protocol = { path = "../../../../core/protocol" }
+async-trait = "0.1"
+bytes = "1.0"
+# `#[wasm_bindgen(start)]` expands to code that references the
+# `wasm_bindgen` crate by root-level name. The framework re-exports the
+# attribute macro under its own path, but the *expansion's* output
+# references `::wasm_bindgen::...` — which means the consuming crate has
+# to depend on `wasm-bindgen` directly. Keep the version pinned to the
+# same major the rest of the web stack uses so the runtime shim and the
+# generated glue share one ABI.
+wasm-bindgen = "0.2.108"
+
+[features]
+# Users invoking `actr_framework::entry!` on `wasm32-unknown-unknown`
+# must expose their own `web` feature that forwards to
+# `actr-framework/web`. The macro's `cfg` arms are evaluated in the
+# *consumer* crate's feature scope, so the flag has to exist here too.
+default = ["web"]
+web = ["actr-framework/web"]
+
+# The `entry!` macro's `#[cfg(feature = "cdylib")]` arm is not relevant on
+# wasm32-unknown-unknown, but check-cfg evaluates the `cfg` at expansion
+# time in the consumer crate. Declare the flag as a silent pass-through
+# so the lint does not fire.
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("cdylib"))'] }
+
+[profile.release]
+opt-level = "s"
