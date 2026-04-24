@@ -14,20 +14,32 @@
 //!
 //! # Supported platforms
 //!
-//! - **WASM Component Model** (`target_arch = "wasm32"`): wit-bindgen
-//!   generates the `Guest` trait + `host` imports from
+//! - **WASM Component Model** (`target_arch = "wasm32"`, no `web` feature):
+//!   wit-bindgen generates the `Guest` trait + `host` imports from
 //!   `core/framework/wit/actr-workload.wit`; the [`entry!`] macro
 //!   produces an adapter that bridges the user's [`Workload`] impl into
 //!   the generated `Guest`. Targets `wasm32-wasip2` and requires
 //!   `wasm-component-ld 0.5.22+` as the linker (see
 //!   `experiments/component-spike-async/REPORT.md`).
+//! - **Web ABI / wasm-bindgen** (`target_arch = "wasm32"` + `feature = "web"`):
+//!   expands to a [`wasm_bindgen(start)`][wbgstart] bootstrap that wraps the
+//!   user [`Workload`] in `web::WebWorkloadAdapter` and hands it to
+//!   `actr_web_abi::host::register_workload`. Per Option U γ-unified §4.5
+//!   the same user source compiles against both wasm32 ABIs; only the
+//!   macro expansion differs. Targets `wasm32-unknown-unknown`.
 //! - **cdylib** (`feature = "cdylib"`): HostVTable function-pointer
 //!   bridge used for native shared-library guests (iOS / Android).
+//!
+//! [wbgstart]: https://rustwasm.github.io/wasm-bindgen/reference/attributes/on-rust-exports/start.html
 
 pub mod dynclib_abi;
 pub mod vtable;
 
-#[cfg(target_arch = "wasm32")]
+// The Component Model wasm runtime glue is gated on `not(feature = "web")`
+// so the `wasm32-unknown-unknown` + `web` target (which routes through
+// `actr-web-abi` instead) does not link the wit-bindgen host imports that
+// only resolve in a `wasm32-wasip2` Component environment.
+#[cfg(all(target_arch = "wasm32", not(feature = "web")))]
 pub mod wasm;
 
 #[cfg(feature = "cdylib")]
@@ -36,7 +48,7 @@ pub mod dynclib;
 // Re-exports used by the `entry!` macro so macro expansions under a
 // user crate can reference adapter / binding items via a stable path
 // without having to know the internal module layout.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(feature = "web")))]
 #[doc(hidden)]
 pub mod __wasm_macro_support {
     // The `entry!` macro expands inside the user's crate, so every name
@@ -64,12 +76,17 @@ pub mod __wasm_macro_support {
 ///
 /// Platform ABI is auto-selected by target:
 ///
-/// - `#[cfg(target_arch = "wasm32")]` — expands to an
-///   `impl Guest for __ActrEntryAdapter { ... }` bridging the user's
+/// - `#[cfg(all(target_arch = "wasm32", not(feature = "web")))]` — expands
+///   to an `impl Guest for __ActrEntryAdapter { ... }` bridging the user's
 ///   [`Workload`][crate::Workload] into the `actr:workload/workload`
 ///   export contract. The runtime calls `Dispatcher::dispatch` through
 ///   the `dispatch` export and every observation hook through its
 ///   matching WIT export.
+/// - `#[cfg(all(target_arch = "wasm32", feature = "web"))]` — expands to a
+///   `#[wasm_bindgen(start)]` bootstrap that wraps the user workload in a
+///   `WebWorkloadAdapter` and calls `actr_web_abi::host::register_workload`.
+///   Only the 17 `#[wasm_bindgen]` entry points generated inside
+///   `actr-web-abi::host` are exported to the Service Worker host.
 /// - `#[cfg(feature = "cdylib")]` — expands to the legacy
 ///   `actr_init` / `actr_handle` / `actr_free_response` C-ABI exports
 ///   used by native shared-library hosts.
@@ -109,7 +126,11 @@ macro_rules! entry {
         // trait with 17 async methods (one `dispatch` + sixteen hooks). We
         // emit a single zero-sized adapter struct in user-crate scope and
         // route every method through helpers in `actr_framework::guest::wasm::adapter`.
-        #[cfg(target_arch = "wasm32")]
+        //
+        // Skipped when the `web` feature is on — that path uses the
+        // wasm-bindgen + `actr-web-abi` pipeline below instead of the
+        // Component Model exports.
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
         const _: () = {
             // Module-local singleton cell. Lazy-init on first call; subsequent
             // dispatches reuse the same instance.
@@ -280,6 +301,35 @@ macro_rules! entry {
             }
 
             $crate::guest::wasm::generated::export!(__ActrEntryAdapter with_types_in $crate::guest::wasm::generated);
+        };
+
+        // ── Web (wasm-bindgen + actr-web-abi) exports ─────────────────────
+        //
+        // Phase 6b: wrap the user workload in `WebWorkloadAdapter` and hand
+        // it to `actr_web_abi::host::register_workload` from a wasm-bindgen
+        // `start` hook. The 17 `#[wasm_bindgen]` entry points exported by
+        // `actr-web-abi::host` are the public surface the Service Worker
+        // dispatches into; they resolve through the registered adapter back
+        // into the user's `Workload` impl. See
+        // `bindings/web/docs/option-u-phase6-gamma-unified.zh.md` §4.5.
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
+        const _: () = {
+            // `wasm_bindgen(start)` functions are invoked once per module
+            // instantiation by the wasm-bindgen runtime. `register_workload`
+            // itself panics on double-registration, so wrapping it inside a
+            // `start` fn naturally enforces single-shot bootstrap.
+            //
+            // The attribute is referenced through its fully-qualified path
+            // so the user's crate does not need its own `wasm-bindgen`
+            // dependency — `actr-framework` re-exports the attribute through
+            // `web::__web_macro_support` under `feature = "web"`.
+            #[$crate::web::__web_macro_support::wasm_bindgen(start)]
+            fn __actr_web_bootstrap() {
+                let workload: $workload_type = $init_expr;
+                let adapter =
+                    $crate::web::__web_macro_support::WebWorkloadAdapter::new(workload);
+                $crate::web::__web_macro_support::register_workload(adapter);
+            }
         };
 
         // ── cdylib ABI exports ────────────────────────────────────────────
