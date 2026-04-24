@@ -183,7 +183,14 @@ function actrIdKebabToCamel(id) {
 // ─────────────────────────────────────────────────────────────────────────
 
 function installActrHostGlobals() {
-    self.actrHostCall = async function (target, routeKey, payload) {
+    // γ-unified (Option U Phase 6 §3.4/§3.6): every `actrHost*` global now
+    // accepts `requestId` as the first argument, threading it into the
+    // sw-host `host_*_async` wasm-bindgen imports so the `DISPATCH_CTXS`
+    // HashMap can look up the per-dispatch `RuntimeContext` keyed on that
+    // id. This lets multiple concurrent dispatches share the single-threaded
+    // JS bridge without clobbering each other's runtime context (TD-003).
+
+    self.actrHostCall = async function (requestId, target, routeKey, payload) {
         // actr-web-abi `call` passes `Dest` variant as `{ actor: {...} }` or
         // `"shell"`/`"local"`; sw-host's `host_call_async` reads `{ tag, val }`.
         // The WBG path is only exercised by the echo client which uses
@@ -198,7 +205,7 @@ function installActrHostGlobals() {
         }
         const u8 = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
         try {
-            const reply = await wasm_bindgen.host_call_async(destCamel, routeKey, u8);
+            const reply = await wasm_bindgen.host_call_async(requestId, destCamel, routeKey, u8);
             return { ok: Array.from(reply) };
         } catch (e) {
             // Host rejects with Error carrying `actrErrorTag`; fold into the
@@ -207,14 +214,14 @@ function installActrHostGlobals() {
         }
     };
 
-    self.actrHostCallRaw = async function (target, routeKey, payload) {
+    self.actrHostCallRaw = async function (requestId, target, routeKey, payload) {
         // `target` is an `ActrId` (kebab) from the guest.
         const targetCamel = actrIdKebabToCamel(target);
         const u8 = payload instanceof Uint8Array
             ? payload
             : new Uint8Array(payload);
         try {
-            const reply = await wasm_bindgen.host_call_raw_async(targetCamel, routeKey, u8);
+            const reply = await wasm_bindgen.host_call_raw_async(requestId, targetCamel, routeKey, u8);
             // `reply` is a `Uint8Array` from Rust; guest expects Vec<u8> —
             // serde-wasm-bindgen deserialises Array / Uint8Array / numbers
             // buffer — Uint8Array works directly, but the outer Result
@@ -228,20 +235,20 @@ function installActrHostGlobals() {
         }
     };
 
-    self.actrHostDiscover = async function (targetType) {
+    self.actrHostDiscover = async function (requestId, targetType) {
         // `targetType` is `ActrType { manufacturer, name, version }` —
         // identical shape on both sides.
         try {
-            const id = await wasm_bindgen.host_discover_async(targetType);
+            const id = await wasm_bindgen.host_discover_async(requestId, targetType);
             return { Ok: actrIdCamelToKebab(id) };
         } catch (e) {
             return { Err: mapHostErrorToActr(e) };
         }
     };
 
-    self.actrHostGetCallerId = async function () {
+    self.actrHostGetCallerId = async function (requestId) {
         try {
-            const id = wasm_bindgen.host_get_caller_id();
+            const id = wasm_bindgen.host_get_caller_id(requestId);
             if (id == null || id === undefined) return null;
             return actrIdCamelToKebab(id);
         } catch (e) {
@@ -250,25 +257,25 @@ function installActrHostGlobals() {
         }
     };
 
-    self.actrHostGetRequestId = async function () {
+    self.actrHostGetRequestId = async function (requestId) {
         try {
-            return wasm_bindgen.host_get_request_id();
+            return wasm_bindgen.host_get_request_id(requestId);
         } catch (e) {
             console.warn('[WBG] host_get_request_id threw:', e);
             return '';
         }
     };
 
-    self.actrHostGetSelfId = async function () {
-        const id = wasm_bindgen.host_get_self_id();
+    self.actrHostGetSelfId = async function (requestId) {
+        const id = wasm_bindgen.host_get_self_id(requestId);
         return actrIdCamelToKebab(id);
     };
 
-    self.actrHostLogMessage = async function (level, message) {
-        wasm_bindgen.host_log_message(level, message);
+    self.actrHostLogMessage = async function (requestId, level, message) {
+        wasm_bindgen.host_log_message(requestId, level, message);
     };
 
-    self.actrHostTell = async function (target, routeKey, payload) {
+    self.actrHostTell = async function (requestId, target, routeKey, payload) {
         let destCamel;
         if (target === 'shell' || target === 'local') {
             destCamel = { tag: target };
@@ -279,14 +286,14 @@ function installActrHostGlobals() {
         }
         const u8 = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
         try {
-            await wasm_bindgen.host_tell_async(destCamel, routeKey, u8);
+            await wasm_bindgen.host_tell_async(requestId, destCamel, routeKey, u8);
             return { Ok: null };
         } catch (e) {
             return { Err: mapHostErrorToActr(e) };
         }
     };
 
-    console.log('[SW][WBG] actrHost* globals installed');
+    console.log('[SW][WBG] actrHost* globals installed (γ-unified, request_id-threaded)');
 }
 
 function mapHostErrorToActr(e) {
