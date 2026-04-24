@@ -701,6 +701,29 @@ impl RunCommand {
             None
         };
 
+        // Option U / Phase 4: sibling `<stem>.wbg/` directory carrying the
+        // wasm-bindgen guest bundle (produced by `wasm-pack --target
+        // no-modules` in the `*-guest-wbg` crates). Mounted with the same
+        // `<package_url>.wbg/...` convention actor-wbg.sw.js expects. Exists
+        // in parallel with `.jco/`; either, both, or neither may be present
+        // on disk.
+        let wbg_dir = package_path.as_ref().and_then(|pkg_path| {
+            let stem = pkg_path.file_stem().map(|s| s.to_os_string())?;
+            let mut wbg = pkg_path.with_file_name(stem);
+            wbg.as_mut_os_string().push(".wbg");
+            if wbg.is_dir() { Some(wbg) } else { None }
+        });
+        let wbg_route_prefix = if wbg_dir.is_some() {
+            let stem = package_path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "package".to_string());
+            Some(format!("/packages/{}.wbg", stem))
+        } else {
+            None
+        };
+
         // Build runtime config JSON — auto-inject embedded asset URLs
         let runtime_config_json =
             self.build_web_runtime_config(&raw_config, &config_path, &package_filename)?;
@@ -737,6 +760,15 @@ impl RunCommand {
                 jco_dir.display()
             );
             app = app.nest_service(prefix, ServeDir::new(jco_dir));
+        }
+
+        if let (Some(wbg_dir), Some(prefix)) = (wbg_dir.as_ref(), wbg_route_prefix.as_ref()) {
+            info!(
+                "📦 Mounting wasm-bindgen guest bundle at {} -> {}",
+                prefix,
+                wbg_dir.display()
+            );
+            app = app.nest_service(prefix, ServeDir::new(wbg_dir));
         }
 
         let app = app
@@ -948,15 +980,30 @@ async fn serve_host_html(
 }
 
 /// Serve the embedded actor.sw.js Service Worker.
+///
+/// Selects between two bodies at request time based on the
+/// `ACTR_WEB_GUEST_MODE` environment variable:
+///
+/// - unset / `"cm"` / anything else → `ACTOR_SW_JS` (Component Model + jco,
+///   the default)
+/// - `"wbg"` → `ACTOR_WBG_SW_JS` (Option U wasm-bindgen guest path)
+///
+/// Reading the env var per-request (rather than at server start) keeps the
+/// CLI surface identical between the two modes — a developer can switch
+/// paths by restarting with a different env without rebuilding the binary.
 async fn serve_actor_sw_js(
     axum::extract::State(_state): axum::extract::State<Arc<WebServerState>>,
 ) -> impl axum::response::IntoResponse {
+    let body = match std::env::var("ACTR_WEB_GUEST_MODE").as_deref() {
+        Ok("wbg") => crate::web_assets::ACTOR_WBG_SW_JS,
+        _ => crate::web_assets::ACTOR_SW_JS,
+    };
     (
         [(
             axum::http::header::CONTENT_TYPE,
             "application/javascript; charset=utf-8",
         )],
-        crate::web_assets::ACTOR_SW_JS,
+        body,
     )
 }
 
