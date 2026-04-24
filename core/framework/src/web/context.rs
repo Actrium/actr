@@ -83,6 +83,22 @@ impl WebContext {
         }
     }
 
+    /// Build a placeholder context for lifecycle hooks that fire outside
+    /// an active dispatch (`on_start`, `on_ready`, `on_stop`, the signaling
+    /// / transport observers, ...).
+    ///
+    /// The sw-host `DISPATCH_CTXS` HashMap is keyed by `request_id`, so
+    /// outbound host imports carrying an empty id will correctly fail with
+    /// "no ctx for request_id=" — which is the desired behaviour since
+    /// lifecycle hooks must not issue user-level RPC calls on the web
+    /// target until Phase 6c / 7 adds a lifecycle-scoped RuntimeContext.
+    ///
+    /// `self_id` / `caller_id` are zero-valued placeholders matching the
+    /// native `WasmContext::lifecycle_placeholder` shape.
+    pub fn for_lifecycle() -> Self {
+        Self::new(ActrId::default(), None, String::new())
+    }
+
     fn not_implemented(feature: &'static str) -> ActrError {
         ActrError::NotImplemented(format!("WebContext::{feature}"))
     }
