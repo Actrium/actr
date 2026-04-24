@@ -257,12 +257,59 @@ echo client 的 dispatch 实现恰好是 `discover(...).await → call_raw(...).
 - **更前置的问题**：SW 看到 2 个 client actor 登记时，某条路径失效；不影响 server 端 inbound dispatch
 - γ 的真并发效果只能**等 TD-004 修好后间接验证**
 
-### 初步假说（未诊断）
+### 初步假说（诊断后结论见下节）
 
-1. **AIS 注册冲突**：client-guest 每次 page load 调 `register via AIS HTTP`，两 client 用同一 pubkey/psk 撞车
-2. **sw-host 单 client 假设**：`RuntimeContext` 或相邻组件隐含"SW 里只一个 client"，登记第二个覆盖状态
-3. **actor-wbg.sw.js port 管理**：两 tab 共享 SW 但各自 MessagePort，SW 侧 port 表错配
-4. **signaling/WebSocket 冲突**：同 SW 只留一条到 mock-actrix 的 ws，第二次 register 覆盖第一次会话
+1. ~~AIS 注册冲突~~：两 client 用同 pubkey/psk 撞车
+2. ~~sw-host 单 client 假设~~：隐含"SW 里只一个 client"
+3. ~~actor-wbg.sw.js port 管理~~：MessagePort 表错配
+4. ~~signaling/WebSocket 冲突~~：同 SW 只留一条 ws
+
+### 诊断结果（2026-04-24 完成）
+
+经 TD-004 diagnostic agent 通过 mock-actrix 端 trace 锁定根因：
+
+| 假说 | 验证 |
+|------|------|
+| 1 AIS 注册冲突 | **半证实的变体**：不是"两次 register 撞车"，而是"第 2 个 client **根本没重新 register**，从 IndexedDB 恢复了第 1 个 client 的 credential" |
+| 2 sw-host 单 client | **证伪**：`CLIENTS: HashMap<client_id, Rc<ClientContext>>` 已是 per-client，`SwRuntime` 每 tab 独立 |
+| 3 actor-wbg.sw.js port 管理 | **证伪**：`clientPorts: Map<clientId, port>` 每 tab 独立 |
+| 4 ws 会话冲突 | **证实为下游症状**：因假说 1 导致两 ws 同 actor_id，mock-actrix 的 rebind 语义覆盖前者 |
+
+### 真正的根因
+
+**SW 侧 IndexedDB credential namespace 按 actr-type 而非 per-client**：
+
+- `bindings/web/crates/sw-host/src/runtime.rs:1001-1006` 的 `cred_kv_namespace` 只按 `client_actr_type` 命名
+- `runtime.rs:646-657` 的 `obtain_credential_from_ais` 里 `try_restore_credential_static` 命中即 return，跳过重新 AIS 注册
+- 第 2 个 client 页加载时，从 IndexedDB 恢复到第 1 个 client 的 `actor_id/credential`
+- 两个 ws 会话在 mock-actrix 注册成**同一 actor_id**
+- `testing/mock-actrix/src/signaling.rs:78-107` 的 `handle_connection` 用 `entry.client_id = new` 无条件覆盖
+- 后连的 ws 抢走 registry binding，第 1 个 client 失去所有回程 relay
+
+### 时间线证据（mock-actrix.log）
+
+```
+09:40:36  build_register_ok acme:EchoService     serial=1  (server, HTTP register)
+09:40:36  build_register_ok acme:echo-client-app serial=2  (client1, HTTP register)
+09:40:36  WS bind OK actor_id=2@...echo-client-app  ws=12a83734  (client1 ws)
+09:41:03  WARN  WS actor rebound  actor_id=2  new_ws=0c68d540  stolen_from_ws=12a83734  (client2 抢走)
+09:41:30  handle_actr_relay target=2  matched_ws=[0c68d540]  (client1 relay 走 client2 的 ws)
+```
+
+服务端**只有 1 次** HTTP register（serial=2），client2 page **没有**独立 AIS 注册 —— 直接复用 IndexedDB 恢复的 cred。
+
+### 修复选项
+
+- **α'（推荐）**：`cred_kv_namespace` 改为 `actr_credentials_{client_actr_type}_{client_id}`。简单、彻底，副作用是每 tab 一条 cred 持久条目（可接受）。echo/multi-tab 场景立即通
+- **β' AIS 协议层支持"同 type 多实例"**：真 AIS gate + mock-actrix 改协议。跨层工作量大
+- **γ' 接受"1 SW 1 client"**：MultiTab 6-2/6-3/6-4/6-6 正式 skip。与多 tab 观察同 actor 的 UX 冲突，不推荐
+- **额外防御补丁**：mock-actrix `handle_connection` 的 rebind 至少 WARN（agent 已验证本次 rebind WARN 能 fire），甚至拒绝 rebind 返 conflict
+
+**推荐路径：α' 为主 + mock-actrix WARN 作为长期防御**。α' 是一处 `runtime.rs` 改动，与 TD-003 的 γ request-id threading 正交。
+
+### 次要发现（独立 TD 候选）
+
+client1 warmup 在 **client2 还没出现前就已经失败**（30s 无 `📥`）。这可能是 puppeteer headless + default context 下 WebRTC DC 建立的**另一个独立问题**（类似 MultiTab 6-6 的 "0ms Connection closed"）。TD-004 锁定的 credential 共享问题解决后，这条独立 bug 是否仍存在需要重新观察。
 
 ### 暂缓理由
 
