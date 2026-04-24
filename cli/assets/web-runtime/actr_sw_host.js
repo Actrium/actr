@@ -128,15 +128,18 @@ let wasm_bindgen = (function(exports) {
      * no in-browser Shell/Local routing); other variants return
      * `not-implemented`. Keeps the WIT contract uniform between server and
      * browser — the variant arm exists, it just isn't wired.
+     * @param {string} request_id
      * @param {any} target
      * @param {string} route_key
      * @param {Uint8Array} payload
      * @returns {Promise<Uint8Array>}
      */
-    function host_call_async(target, route_key, payload) {
-        const ptr0 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    function host_call_async(request_id, target, route_key, payload) {
+        const ptr0 = passStringToWasm0(request_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.host_call_async(target, ptr0, len0, payload);
+        const ptr1 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.host_call_async(ptr0, len0, target, ptr1, len1, payload);
         return ret;
     }
     exports.host_call_async = host_call_async;
@@ -146,26 +149,38 @@ let wasm_bindgen = (function(exports) {
      *
      * Async; returns a Promise that resolves to a `Uint8Array` on success or
      * rejects with a JS `Error` whose `actrErrorTag` names the WIT variant.
+     *
+     * The `request_id` first parameter identifies the owning dispatch and is
+     * threaded through by the guest-side wrapper
+     * (`actr_web_abi::guest::call_raw_with_request_id`). Two concurrent
+     * dispatches no longer share a single thread-local context slot — they
+     * resolve their respective `RuntimeContext` via `DISPATCH_CTXS`.
+     * @param {string} request_id
      * @param {any} target
      * @param {string} route_key
      * @param {Uint8Array} payload
      * @returns {Promise<Uint8Array>}
      */
-    function host_call_raw_async(target, route_key, payload) {
-        const ptr0 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    function host_call_raw_async(request_id, target, route_key, payload) {
+        const ptr0 = passStringToWasm0(request_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.host_call_raw_async(target, ptr0, len0, payload);
+        const ptr1 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.host_call_raw_async(ptr0, len0, target, ptr1, len1, payload);
         return ret;
     }
     exports.host_call_raw_async = host_call_raw_async;
 
     /**
      * WIT `host.discover(target_type) -> result<actr-id, actr-error>`.
+     * @param {string} request_id
      * @param {any} target_type
      * @returns {Promise<any>}
      */
-    function host_discover_async(target_type) {
-        const ret = wasm.host_discover_async(target_type);
+    function host_discover_async(request_id, target_type) {
+        const ptr0 = passStringToWasm0(request_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.host_discover_async(ptr0, len0, target_type);
         return ret;
     }
     exports.host_discover_async = host_discover_async;
@@ -173,10 +188,13 @@ let wasm_bindgen = (function(exports) {
     /**
      * WIT `host.get-caller-id() -> option<actr-id>`. Returns `null` when the
      * host did not install a caller for this dispatch (lifecycle hooks).
+     * @param {string} request_id
      * @returns {any}
      */
-    function host_get_caller_id() {
-        const ret = wasm.host_get_caller_id();
+    function host_get_caller_id(request_id) {
+        const ptr0 = passStringToWasm0(request_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.host_get_caller_id(ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -186,34 +204,47 @@ let wasm_bindgen = (function(exports) {
 
     /**
      * WIT `host.get-request-id() -> string`.
+     *
+     * Retaining the `request_id` input here is deliberate: the input and output
+     * MUST match. It is asserted, giving us a cheap round-trip sanity check
+     * between the guest-side wrapper (which has the request_id in hand from the
+     * envelope) and the host-side dispatch table. The alternative — omitting
+     * the parameter and treating it as a sentinel — would break uniformity
+     * with the other 7 imports and require the WIT codegen to special-case it.
+     * @param {string} request_id
      * @returns {string}
      */
-    function host_get_request_id() {
-        let deferred2_0;
-        let deferred2_1;
+    function host_get_request_id(request_id) {
+        let deferred3_0;
+        let deferred3_1;
         try {
-            const ret = wasm.host_get_request_id();
-            var ptr1 = ret[0];
-            var len1 = ret[1];
+            const ptr0 = passStringToWasm0(request_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.host_get_request_id(ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
             if (ret[3]) {
-                ptr1 = 0; len1 = 0;
+                ptr2 = 0; len2 = 0;
                 throw takeFromExternrefTable0(ret[2]);
             }
-            deferred2_0 = ptr1;
-            deferred2_1 = len1;
-            return getStringFromWasm0(ptr1, len1);
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
         } finally {
-            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     exports.host_get_request_id = host_get_request_id;
 
     /**
      * WIT `host.get-self-id() -> actr-id`.
+     * @param {string} request_id
      * @returns {any}
      */
-    function host_get_self_id() {
-        const ret = wasm.host_get_self_id();
+    function host_get_self_id(request_id) {
+        const ptr0 = passStringToWasm0(request_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.host_get_self_id(ptr0, len0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -225,16 +256,22 @@ let wasm_bindgen = (function(exports) {
      * WIT `host.log-message(level, message)`.
      *
      * Maps to `log` crate levels. Levels outside the `trace/debug/info/warn/error`
-     * set silently fall through to `info`.
+     * set silently fall through to `info`. The `request_id` parameter is carried
+     * for uniformity with the other host imports (and to annotate the log line);
+     * it does not gate execution — logging from unknown dispatches still
+     * surfaces.
+     * @param {string} request_id
      * @param {string} level
      * @param {string} message
      */
-    function host_log_message(level, message) {
-        const ptr0 = passStringToWasm0(level, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    function host_log_message(request_id, level, message) {
+        const ptr0 = passStringToWasm0(request_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(message, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr1 = passStringToWasm0(level, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        wasm.host_log_message(ptr0, len0, ptr1, len1);
+        const ptr2 = passStringToWasm0(message, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.host_log_message(ptr0, len0, ptr1, len1, ptr2, len2);
     }
     exports.host_log_message = host_log_message;
 
@@ -243,15 +280,18 @@ let wasm_bindgen = (function(exports) {
      *
      * Fire-and-forget semantics. The web runtime maps this to `call_raw` with
      * `timeout_ms=0`; the result is discarded. Only `Dest::Actor` is wired.
+     * @param {string} request_id
      * @param {any} target
      * @param {string} route_key
      * @param {Uint8Array} payload
      * @returns {Promise<void>}
      */
-    function host_tell_async(target, route_key, payload) {
-        const ptr0 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    function host_tell_async(request_id, target, route_key, payload) {
+        const ptr0 = passStringToWasm0(request_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.host_tell_async(target, ptr0, len0, payload);
+        const ptr1 = passStringToWasm0(route_key, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.host_tell_async(ptr0, len0, target, ptr1, len1, payload);
         return ret;
     }
     exports.host_tell_async = host_tell_async;
@@ -872,7 +912,7 @@ let wasm_bindgen = (function(exports) {
                         const a = state0.a;
                         state0.a = 0;
                         try {
-                            return wasm_bindgen__convert__closures_____invoke__h3723085f30ee1e7b(a, state0.b, arg0, arg1);
+                            return wasm_bindgen__convert__closures_____invoke__h172f3d8ee5a23471(a, state0.b, arg0, arg1);
                         } finally {
                             state0.a = a;
                         }
@@ -1139,42 +1179,42 @@ let wasm_bindgen = (function(exports) {
             },
             __wbindgen_cast_0000000000000001: function(arg0, arg1) {
                 // Cast intrinsic for `Closure(Closure { dtor_idx: 310, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 311, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hf3fbdabe71a6d662, wasm_bindgen__convert__closures_____invoke__hcf5e849db9fbbfd3);
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__ha8ba50f656bda8a9, wasm_bindgen__convert__closures_____invoke__h0cdc4ba27c63538c);
                 return ret;
             },
             __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 365, function: Function { arguments: [], shim_idx: 366, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h49de89ef63a886b3, wasm_bindgen__convert__closures_____invoke__hb03af46c6a89e211);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 363, function: Function { arguments: [], shim_idx: 364, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hb85a1a1e8a078ab2, wasm_bindgen__convert__closures_____invoke__hbf31df456ef4a6b4);
                 return ret;
             },
             __wbindgen_cast_0000000000000003: function(arg0, arg1) {
                 // Cast intrinsic for `Closure(Closure { dtor_idx: 4, function: Function { arguments: [Externref], shim_idx: 5, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h192c55cf99085898, wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0);
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h7b717101bb68f3e2, wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7);
                 return ret;
             },
             __wbindgen_cast_0000000000000004: function(arg0, arg1) {
                 // Cast intrinsic for `Closure(Closure { dtor_idx: 4, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 5, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h192c55cf99085898, wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_3);
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h7b717101bb68f3e2, wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_3);
                 return ret;
             },
             __wbindgen_cast_0000000000000005: function(arg0, arg1) {
                 // Cast intrinsic for `Closure(Closure { dtor_idx: 4, function: Function { arguments: [NamedExternref("ExtendableMessageEvent")], shim_idx: 5, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h192c55cf99085898, wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_4);
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h7b717101bb68f3e2, wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_4);
                 return ret;
             },
             __wbindgen_cast_0000000000000006: function(arg0, arg1) {
                 // Cast intrinsic for `Closure(Closure { dtor_idx: 4, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 5, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h192c55cf99085898, wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_5);
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h7b717101bb68f3e2, wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_5);
                 return ret;
             },
             __wbindgen_cast_0000000000000007: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 562, function: Function { arguments: [NamedExternref("Event")], shim_idx: 563, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__hcfab7346d26cf62b, wasm_bindgen__convert__closures_____invoke__h246a745c818e306e);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 561, function: Function { arguments: [NamedExternref("Event")], shim_idx: 562, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h4a03f55997c7c583, wasm_bindgen__convert__closures_____invoke__h45b1fec314290b8a);
                 return ret;
             },
             __wbindgen_cast_0000000000000008: function(arg0, arg1) {
-                // Cast intrinsic for `Closure(Closure { dtor_idx: 626, function: Function { arguments: [Externref], shim_idx: 639, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h4a98bea0abd10553, wasm_bindgen__convert__closures_____invoke__h6427da94e6b0a761);
+                // Cast intrinsic for `Closure(Closure { dtor_idx: 625, function: Function { arguments: [Externref], shim_idx: 637, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+                const ret = makeMutClosure(arg0, arg1, wasm.wasm_bindgen__closure__destroy__h82bb74823aa18820, wasm_bindgen__convert__closures_____invoke__h043e00e69930865b);
                 return ret;
             },
             __wbindgen_cast_0000000000000009: function(arg0) {
@@ -1218,43 +1258,43 @@ let wasm_bindgen = (function(exports) {
         };
     }
 
-    function wasm_bindgen__convert__closures_____invoke__hb03af46c6a89e211(arg0, arg1) {
-        wasm.wasm_bindgen__convert__closures_____invoke__hb03af46c6a89e211(arg0, arg1);
+    function wasm_bindgen__convert__closures_____invoke__hbf31df456ef4a6b4(arg0, arg1) {
+        wasm.wasm_bindgen__convert__closures_____invoke__hbf31df456ef4a6b4(arg0, arg1);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__hcf5e849db9fbbfd3(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__hcf5e849db9fbbfd3(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h0cdc4ba27c63538c(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h0cdc4ba27c63538c(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_3(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_3(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_3(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_3(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_4(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_4(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_4(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_4(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_5(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h2dbc36afb386d4f0_5(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_5(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h10d23fe6f43a58b7_5(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h246a745c818e306e(arg0, arg1, arg2) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h246a745c818e306e(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h45b1fec314290b8a(arg0, arg1, arg2) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h45b1fec314290b8a(arg0, arg1, arg2);
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h6427da94e6b0a761(arg0, arg1, arg2) {
-        const ret = wasm.wasm_bindgen__convert__closures_____invoke__h6427da94e6b0a761(arg0, arg1, arg2);
+    function wasm_bindgen__convert__closures_____invoke__h043e00e69930865b(arg0, arg1, arg2) {
+        const ret = wasm.wasm_bindgen__convert__closures_____invoke__h043e00e69930865b(arg0, arg1, arg2);
         if (ret[1]) {
             throw takeFromExternrefTable0(ret[0]);
         }
     }
 
-    function wasm_bindgen__convert__closures_____invoke__h3723085f30ee1e7b(arg0, arg1, arg2, arg3) {
-        wasm.wasm_bindgen__convert__closures_____invoke__h3723085f30ee1e7b(arg0, arg1, arg2, arg3);
+    function wasm_bindgen__convert__closures_____invoke__h172f3d8ee5a23471(arg0, arg1, arg2, arg3) {
+        wasm.wasm_bindgen__convert__closures_____invoke__h172f3d8ee5a23471(arg0, arg1, arg2, arg3);
     }
 
 
