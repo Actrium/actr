@@ -32,20 +32,28 @@ use futures_util::future::BoxFuture;
 ///     let response = ctx.call(&target, request).await?;
 /// }
 /// ```
-/// Auto-trait-style marker that is `Send + Sync` on native targets and empty
-/// on `wasm32`. Per Option U γ-unified §3.1 the user-facing `Context` bound
-/// is `Clone + 'static`, but native runtime layers (tokio multi-thread,
-/// `WorkloadHookObserver`) must produce `Send` futures; pinning `Send + Sync`
-/// behind this marker lets the framework trait carry a single `?Send`
-/// definition while silently re-asserting the native auto traits through a
-/// cfg-gated blanket impl.
+
+// ── MaybeSendSync marker ────────────────────────────────────────────────
+//
+// Auto-trait-style marker that is `Send + Sync` on native targets and empty
+// on `wasm32`. Per Option U γ-unified §3.1 the user-facing `Context` bound
+// is `Clone + 'static`, but native runtime layers (tokio multi-thread,
+// `WorkloadHookObserver`) must produce `Send` futures; pinning `Send + Sync`
+// behind this marker lets the framework trait carry a single `?Send`
+// definition while silently re-asserting the native auto traits through a
+// cfg-gated blanket impl.
+
+/// Auto-trait-style marker — `Send + Sync` on native, empty on `wasm32`.
+///
+/// Used as a supertrait on `Context`, `Workload`, and `MessageDispatcher`
+/// so `async_trait` default bodies compile in both modes without adding
+/// explicit `Send` / `Sync` bounds to the user-visible trait definition.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait MaybeSendSync: Send + Sync {}
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Send + Sync + ?Sized> MaybeSendSync for T {}
 
-/// Auto-trait-style marker that is `Send + Sync` on native targets and empty
-/// on `wasm32`.
+/// Auto-trait-style marker — `Send + Sync` on native, empty on `wasm32`.
 #[cfg(target_arch = "wasm32")]
 pub trait MaybeSendSync {}
 #[cfg(target_arch = "wasm32")]
