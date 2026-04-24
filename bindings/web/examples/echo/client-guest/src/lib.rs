@@ -1,4 +1,4 @@
-//! Echo Client Guest WASM for Web.
+//! Echo Client Guest WASM for Web — unified source (Option U γ-unified Phase 6c).
 //!
 //! Implements the transparent proxy for `echo.EchoService.Echo`:
 //! 1. Discover `acme:EchoService:0.1.0` (cached after first success)
@@ -6,22 +6,29 @@
 //! 3. Return the reply to the host
 //! 4. On failure with a cached target, clear cache and retry once
 //!
-//! Built for `wasm32-wasip2` and linked by `wasm-component-ld` into a
-//! Component Model binary that implements the `actr:workload/actr-workload-guest`
-//! world (see `core/framework/wit/actr-workload.wit`). The `entry!` macro
-//! auto-selects the Component Model export path for `target_arch = "wasm32"`,
-//! so this file reads like any other actr workload — the same source compiles
-//! against the native runtime's Component Model bindings.
+//! One source tree, two wasm32 ABIs — selected by Cargo feature:
+//!
+//!   * **default**  → `wasm32-wasip2` + wasm-component-ld (Component Model).
+//!   * **`--features web`** → `wasm32-unknown-unknown` + wasm-pack
+//!     (wasm-bindgen + `actr-web-abi`).
+//!
+//! `actr_framework::entry!` inspects `cfg(feature = "web")` at expansion
+//! time and emits the matching bootstrap (`Guest` impl vs
+//! `#[wasm_bindgen(start)]`). The handler / dispatcher business logic
+//! below is identical across both branches — every out-of-process call
+//! funnels through the `Context` trait, whose web and wasip2 impls both
+//! thread `request_id` through the host bridge.
 //!
 //! After `cargo build --target wasm32-wasip2`, the resulting
-//! `target/wasm32-wasip2/release/echo_client_guest_web.wasm` is a Component
-//! and must be further transpiled by `jco transpile --instantiation async`
-//! (see `bindings/web/scripts/transpile-component.sh`) before the browser
-//! Service Worker can load it.
+//! `target/wasm32-wasip2/release/echo_client_guest_web.wasm` is a
+//! Component and must be further transpiled by `jco transpile
+//! --instantiation async` before the browser Service Worker can load it.
 
 pub mod echo {
     include!(concat!(env!("OUT_DIR"), "/echo.rs"));
 }
+
+use std::cell::RefCell;
 
 use actr_framework::{Context, Dest, MessageDispatcher, Workload, entry};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcEnvelope, RpcRequest};
@@ -47,17 +54,16 @@ impl RpcRequest for EchoRequest {
     }
 }
 
-/// Client guest workload — holds cached server ActrId.
+/// Client guest workload — holds cached server `ActrId`.
+///
+/// `Clone` is required by `actr_framework::web::WebWorkloadAdapter`'s
+/// `W: Clone` bound under the `web` feature. `RefCell<Option<ActrId>>`
+/// clones by cloning the currently-held value (a single `prost`-derived
+/// `ActrId`); the cache is per-module anyway, so clone semantics
+/// ("snapshot then independent") are fine.
+#[derive(Clone, Default)]
 pub struct ClientGuestWorkload {
-    cached_server_id: std::cell::Cell<Option<ActrId>>,
-}
-
-impl Default for ClientGuestWorkload {
-    fn default() -> Self {
-        Self {
-            cached_server_id: std::cell::Cell::new(None),
-        }
-    }
+    cached_server_id: RefCell<Option<ActrId>>,
 }
 
 // Safety: cdylib guest is single-threaded (host serializes actr_handle calls).
@@ -106,10 +112,10 @@ async fn proxy_echo<C: Context>(
     match ctx.call(&Dest::Actor(server_id.clone()), echo_req).await {
         Ok(resp) => Ok(resp),
         Err(e) => {
-            // Cache miss: clear cached id and retry once with fresh discovery
-            workload.cached_server_id.set(None);
+            // Cache miss: clear cached id and retry once with fresh discovery.
+            *workload.cached_server_id.borrow_mut() = None;
             let fresh_id = discover_server(ctx).await?;
-            workload.cached_server_id.set(Some(fresh_id.clone()));
+            *workload.cached_server_id.borrow_mut() = Some(fresh_id.clone());
 
             let echo_req2 = EchoRequest {
                 message: req.message.clone(),
@@ -129,12 +135,11 @@ async fn resolve_server<C: Context>(
     workload: &ClientGuestWorkload,
     ctx: &C,
 ) -> ActorResult<ActrId> {
-    if let Some(id) = workload.cached_server_id.take() {
-        workload.cached_server_id.set(Some(id.clone()));
+    if let Some(id) = workload.cached_server_id.borrow().clone() {
         return Ok(id);
     }
     let id = discover_server(ctx).await?;
-    workload.cached_server_id.set(Some(id.clone()));
+    *workload.cached_server_id.borrow_mut() = Some(id.clone());
     Ok(id)
 }
 

@@ -7,13 +7,18 @@ name = "actr-framework"
 version = "0.2.0"
 dependencies = [
  "actr-protocol",
+ "actr-web-abi",
  "anyhow",
  "async-trait",
  "bytes",
  "futures-util",
+ "js-sys",
  "prost",
+ "serde-wasm-bindgen",
  "tracing",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wit-bindgen 0.57.1",
 ]
 
@@ -34,6 +39,18 @@ dependencies = [
  "thiserror",
  "uniffi",
  "uuid",
+]
+
+[[package]]
+name = "actr-web-abi"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -230,6 +247,7 @@ dependencies = [
  "bytes",
  "prost",
  "prost-build",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -446,6 +464,8 @@ version = "0.3.93"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "797146bb2677299a1eb6b7b50a890f4c361b29ef967addf5b2fa45dae1bb6d7d"
 dependencies = [
+ "cfg-if",
+ "futures-util",
  "once_cell",
  "wasm-bindgen",
 ]
@@ -734,6 +754,17 @@ checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
  "serde_derive",
+]
+
+[[package]]
+name = "serde-wasm-bindgen"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8302e169f0eddcc139c70f139d19d6467353af16f9fce27e8c30158036a1e16b"
+dependencies = [
+ "js-sys",
+ "serde",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1102,6 +1133,16 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.66"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19280959e2844181895ef62f065c63e0ca07ece4771b53d89bfdb967d97cbf05"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

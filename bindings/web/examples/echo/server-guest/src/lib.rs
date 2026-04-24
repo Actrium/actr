@@ -1,16 +1,26 @@
-//! Echo Server Guest WASM for Web.
+//! Echo Server Guest WASM for Web — unified source (Option U γ-unified Phase 6c).
 //!
-//! Built for `wasm32-wasip2` and linked by `wasm-component-ld` into a
-//! Component Model binary that implements the `actr:workload/actr-workload-guest`
-//! world (see `core/framework/wit/actr-workload.wit`). The `entry!` macro
-//! auto-selects the Component Model export path for `target_arch = "wasm32"`,
-//! so the source below is identical to a native actr workload.
+//! One source tree, two wasm32 ABIs:
+//!
+//!   * **default**  → `wasm32-wasip2` + wasm-component-ld. The
+//!     `actr_framework::entry!` macro's Component Model arm emits the
+//!     17-method `Guest` impl that wit-bindgen expects, and the linker
+//!     wraps the cdylib into a Component binary.
+//!   * **`--features web`** → `wasm32-unknown-unknown` + wasm-pack. The
+//!     same `entry!` macro's `cfg(feature = "web")` arm instead emits a
+//!     `#[wasm_bindgen(start)]` bootstrap that wraps the workload in
+//!     `actr_framework::web::WebWorkloadAdapter` and registers it with
+//!     `actr_web_abi::host::register_workload`.
+//!
+//! The user code below is identical in both branches — target and
+//! feature selection happens entirely inside the macro.
 //!
 //! After `cargo build --target wasm32-wasip2`, the resulting
-//! `target/wasm32-wasip2/release/echo_guest.wasm` is a Component and must be
-//! transpiled by `jco transpile --instantiation async`
+//! `target/wasm32-wasip2/release/echo_guest.wasm` is a Component and must
+//! be transpiled by `jco transpile --instantiation async`
 //! (see `bindings/web/scripts/transpile-component.sh`) before the browser
-//! Service Worker can load it.
+//! Service Worker can load it. Under `--features web` the wasm-pack
+//! output is a plain core module consumed directly by the WBG SW path.
 
 // ── Proto-generated types ────────────────────────────────────────────────────
 mod echo {
@@ -43,14 +53,17 @@ use generated::{EchoServiceHandler, EchoServiceWorkload};
 
 /// Concrete implementation of the EchoService.
 ///
-/// This is the only type you need to write. Add your state here and implement
-/// [`EchoServiceHandler`] to provide the actual RPC logic.
+/// Stateless. `Clone` is required by
+/// `actr_framework::web::WebWorkloadAdapter`'s `W: Clone` bound under the
+/// `web` feature — and comes for free for a zero-field struct. The CM
+/// path never clones the workload, so the bound is a no-op there.
+#[derive(Clone, Default)]
 pub struct EchoService;
 
 // `?Send` on wasm32 so the generated `EchoServiceHandler` trait (whose
-// async methods are now `async_trait(?Send)` on wasm32 per γ-unified
-// §3.1) and this impl agree on the future's auto-trait. Native builds
-// keep the default Send-future form.
+// async methods are `async_trait(?Send)` on wasm32 per γ-unified §3.1)
+// and this impl agree on the future's auto-trait. Native builds keep
+// the default Send-future form.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl EchoServiceHandler for EchoService {
@@ -59,6 +72,19 @@ impl EchoServiceHandler for EchoService {
             reply: format!("Echo: {}", req.message),
             timestamp: current_timestamp(),
         })
+    }
+}
+
+// ── Clone shim for the generated wrapper ─────────────────────────────────────
+//
+// `protoc-gen-actrframework` emits `pub struct EchoServiceWorkload<T>(pub T)`
+// without deriving `Clone`. `WebWorkloadAdapter` requires `W: Workload + Clone`,
+// so we bolt `Clone` on from the consuming crate — legal because the type is
+// generated into our own module via `include!(...)`. CM builds never call
+// `.clone()` on the wrapper; the impl is strictly a web-path prerequisite.
+impl<T: EchoServiceHandler + Clone> Clone for EchoServiceWorkload<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 

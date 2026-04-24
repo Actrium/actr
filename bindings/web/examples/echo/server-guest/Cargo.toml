@@ -3,15 +3,22 @@ name = "echo-server-guest-web"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Echo Server Guest WASM for Web — Component Model (wasm32-wasip2)"
+description = "Echo Server Guest WASM for Web — unified (CM wasm32-wasip2 + WBG wasm32-unknown-unknown)"
 
-# Standalone project, not part of any workspace
+# Standalone project, not part of any workspace. Same source compiles
+# against both wasm32 ABIs per Option U γ-unified §4.6:
+#
+#   * default (no feature)  → `wasm32-wasip2` + wasm-component-ld
+#     (`entry!` expands the Component Model export branch)
+#   * `--features web`      → `wasm32-unknown-unknown` + wasm-pack
+#     (`entry!` expands the wasm-bindgen + `actr-web-abi` branch)
 [workspace]
 
 [lib]
 name = "echo_guest"
-# cdylib is the correct crate-type for wasm32-wasip2 Component Model
-# builds — wasm-component-ld wraps a cdylib into a Component binary.
+# cdylib is required for both wasm32 targets:
+#   * wasm-component-ld wraps a cdylib into a Component binary
+#   * wasm-pack expects a cdylib to generate its JS glue
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -23,8 +30,26 @@ bytes = "1.0"
 prost = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 
+# wasm-bindgen only pulled in under `web`. The `entry!` macro's
+# `feature = "web"` arm expands to `#[wasm_bindgen(start)]`, whose
+# generated code references the `wasm_bindgen` crate by root-level
+# name — so the consuming crate must depend on it directly. Pinned
+# to the same major as sw-host / actr-web-abi so the JS glue stays
+# ABI-compatible across modules sharing a page.
+wasm-bindgen = { version = "0.2.108", optional = true }
+
 [build-dependencies]
 prost-build = "0.14"
+
+[features]
+# Default = Component Model (wasm32-wasip2) path. No extra features.
+default = []
+
+# Opt-in = wasm-bindgen (wasm32-unknown-unknown) path. Propagates
+# `actr-framework/web` so the framework pulls in `actr-web-abi` +
+# `WebWorkloadAdapter`; the `entry!` macro's `cfg(feature = "web")`
+# arm consults this flag at expansion time in this crate's scope.
+web = ["actr-framework/web", "dep:wasm-bindgen"]
 
 # `actr-framework` gates its native-shared-library `entry!` branch behind
 # a `cdylib` Cargo feature. On `wasm32-wasip2` the `entry!` macro auto-

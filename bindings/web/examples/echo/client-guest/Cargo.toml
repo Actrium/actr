@@ -3,14 +3,17 @@ name = "echo-client-guest-web"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Echo Client Guest WASM for Web — Component Model (wasm32-wasip2)"
+description = "Echo Client Guest WASM for Web — unified (CM wasm32-wasip2 + WBG wasm32-unknown-unknown)"
 
-# Standalone project, not part of any workspace
+# Standalone project, not part of any workspace. Same source compiles
+# against both wasm32 ABIs per Option U γ-unified §4.6 — see sibling
+# `server-guest/Cargo.toml` for the feature-selection matrix.
 [workspace]
 
 [lib]
-# cdylib is the correct crate-type for wasm32-wasip2 Component Model
-# builds — wasm-component-ld wraps a cdylib into a Component binary.
+# cdylib is required for both wasm32 targets:
+#   * wasm-component-ld wraps a cdylib into a Component binary
+#   * wasm-pack expects a cdylib to generate its JS glue
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -20,8 +23,20 @@ async-trait = "0.1"
 bytes = "1.0"
 prost = "0.14"
 
+# wasm-bindgen only pulled in under `web`. See server-guest for the
+# rationale (the `entry!` macro's web arm references `::wasm_bindgen::*`
+# from within the consuming crate).
+wasm-bindgen = { version = "0.2.108", optional = true }
+
 [build-dependencies]
 prost-build = "0.14"
+
+[features]
+# Default = Component Model (wasm32-wasip2) path.
+default = []
+
+# Opt-in = wasm-bindgen (wasm32-unknown-unknown) path via wasm-pack.
+web = ["actr-framework/web", "dep:wasm-bindgen"]
 
 # `actr-framework` gates its native-shared-library `entry!` branch behind
 # a `cdylib` Cargo feature. On `wasm32-wasip2` the `entry!` macro auto-
