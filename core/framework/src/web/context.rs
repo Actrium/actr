@@ -15,11 +15,17 @@
 //!
 //! # Where the RPC methods actually route
 //!
-//! `call_raw` / `call` / `tell` / `discover_route_candidate` are intentional
-//! `todo!()` placeholders on this commit: the wasm-bindgen host surface
-//! (`actr_web_abi::guest::call_raw_with_request_id` et al.) is being
-//! regenerated in parallel by agent P6-C. Once that lands, agent P6-I
-//! wires each method to the corresponding host import.
+//! `call_raw` / `call` / `tell` / `discover_route_candidate` thread
+//! `self.request_id()` into the `actr_web_abi::guest::*_with_request_id`
+//! wrappers. The sw-host `DISPATCH_CTXS` HashMap (γ-unified §3.6) keys
+//! every per-dispatch `RuntimeContext` by that string, so multiple
+//! concurrent dispatches never cross wires on the shared JS thread.
+//!
+//! Only `Dest::Actor(_)` is routable from the browser right now — the
+//! `Shell` / `Local` variants have no meaning once the guest runs in a
+//! wasm module and the host lives in the service worker. Callers get
+//! `ActrError::NotImplemented` for those two shapes; if a future phase
+//! adds same-realm shortcuts we can revisit.
 //!
 //! DataStream / MediaTrack fast paths are not part of Phase 6 γ and
 //! remain permanently `NotImplemented` on the web target.
@@ -27,12 +33,17 @@
 use std::rc::Rc;
 
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, RpcRequest,
+    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, Realm, RpcRequest,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
+use prost::Message as ProstMessage;
 
 use crate::{Context, Dest, LogLevel, MediaSample};
+
+// Pull in the WIT-lowered mirror types from `actr-web-abi` under aliases
+// so the guest-import call sites don't have to disambiguate per line.
+use actr_web_abi::types as wit;
 
 /// Inner state shared by clones of a [`WebContext`].
 ///
@@ -77,6 +88,89 @@ impl WebContext {
     }
 }
 
+// ── WIT ⇄ protocol value conversions ───────────────────────────────────
+//
+// The WIT-lowered mirror types in `actr_web_abi::types` are structurally
+// identical to the protocol ones but live in a different crate (and
+// therefore a different type). Every call that crosses the host-import
+// boundary rebuilds the value; these helpers keep the boilerplate out of
+// the trait method bodies.
+
+fn actr_type_to_wit(t: &ActrType) -> wit::ActrType {
+    wit::ActrType {
+        manufacturer: t.manufacturer.clone(),
+        name: t.name.clone(),
+        version: t.version.clone(),
+    }
+}
+
+fn actr_type_from_wit(t: &wit::ActrType) -> ActrType {
+    ActrType {
+        manufacturer: t.manufacturer.clone(),
+        name: t.name.clone(),
+        version: t.version.clone(),
+    }
+}
+
+fn actr_id_to_wit(id: &ActrId) -> wit::ActrId {
+    wit::ActrId {
+        realm: wit::Realm {
+            realm_id: id.realm.realm_id,
+        },
+        serial_number: id.serial_number,
+        actr_type: actr_type_to_wit(&id.r#type),
+    }
+}
+
+fn actr_id_from_wit(id: &wit::ActrId) -> ActrId {
+    ActrId {
+        realm: Realm {
+            realm_id: id.realm.realm_id,
+        },
+        serial_number: id.serial_number,
+        r#type: actr_type_from_wit(&id.actr_type),
+    }
+}
+
+fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
+    match e {
+        wit::ActrError::Unavailable(m) => ActrError::Unavailable(m),
+        wit::ActrError::TimedOut => ActrError::TimedOut,
+        wit::ActrError::NotFound(m) => ActrError::NotFound(m),
+        wit::ActrError::PermissionDenied(m) => ActrError::PermissionDenied(m),
+        wit::ActrError::InvalidArgument(m) => ActrError::InvalidArgument(m),
+        wit::ActrError::UnknownRoute(m) => ActrError::UnknownRoute(m),
+        wit::ActrError::DependencyNotFound(p) => {
+            // DependencyNotFound carries a {service_name, message} pair on
+            // both sides; flatten into the protocol shape.
+            ActrError::DependencyNotFound {
+                service_name: p.service_name,
+                message: p.message,
+            }
+        }
+        wit::ActrError::DecodeFailure(m) => ActrError::DecodeFailure(m),
+        wit::ActrError::NotImplemented(m) => ActrError::NotImplemented(m),
+        wit::ActrError::Internal(m) => ActrError::Internal(m),
+    }
+}
+
+/// Collapse the double-Result returned by every
+/// `actr_web_abi::guest::*_with_request_id` wrapper into a single
+/// [`ActorResult`]. The outer `Result<_, JsValue>` reflects a JS-side
+/// trap (serde marshaling, undefined host fn), the inner
+/// `Result<T, wit::ActrError>` is the WIT-declared return variant. Both
+/// are errors from the caller's perspective.
+fn flatten_js<T>(outcome: Result<Result<T, wit::ActrError>, wasm_bindgen::JsValue>) -> ActorResult<T> {
+    match outcome {
+        Ok(Ok(v)) => Ok(v),
+        Ok(Err(e)) => Err(wit_error_to_proto(e)),
+        Err(js) => Err(ActrError::Internal(format!(
+            "WebContext: host import trap: {}",
+            js.as_string().unwrap_or_else(|| format!("{js:?}"))
+        ))),
+    }
+}
+
 #[async_trait(?Send)]
 impl Context for WebContext {
     // ── Identity ────────────────────────────────────────────────────────
@@ -101,31 +195,78 @@ impl Context for WebContext {
     // integration phase. Leaving them as `todo!()` here lets dependents
     // type-check against the contract while the integration lands.
 
-    async fn call<R: RpcRequest>(&self, _target: &Dest, _request: R) -> ActorResult<R::Response> {
-        // P6-I: route through `actr_web_abi::guest::call_raw_with_request_id`
-        // then decode the response via `R::Response::decode`.
-        todo!("WebContext::call — wired up in P6-I integration")
+    async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
+        // Typed convenience: encode request via prost, delegate to call_raw,
+        // decode response back to the typed Response. Mirrors the wasip2
+        // `WasmContext::call` path so handler code is target-agnostic.
+        let actor = match target {
+            Dest::Actor(id) => id,
+            Dest::Shell | Dest::Local => {
+                return Err(Self::not_implemented("call → Shell/Local dest"));
+            }
+        };
+        let payload = request.encode_to_vec();
+        let bytes = self
+            .call_raw(actor, R::route_key(), bytes::Bytes::from(payload))
+            .await?;
+        R::Response::decode(bytes.as_ref()).map_err(|e| {
+            ActrError::DecodeFailure(format!(
+                "WebContext::call: response decode failed: {e}"
+            ))
+        })
     }
 
-    async fn tell<R: RpcRequest>(&self, _target: &Dest, _message: R) -> ActorResult<()> {
-        // P6-I: route through `actr_web_abi::guest::tell_with_request_id`.
-        todo!("WebContext::tell — wired up in P6-I integration")
+    async fn tell<R: RpcRequest>(&self, target: &Dest, message: R) -> ActorResult<()> {
+        // Fire-and-forget: route through `tell_with_request_id` so the host
+        // can short-circuit without a response round-trip. Dest conversion
+        // matches the guest-import contract exactly (§3.4).
+        let payload = message.encode_to_vec();
+        let wit_dest = match target {
+            Dest::Shell => wit::Dest::Shell,
+            Dest::Local => wit::Dest::Local,
+            Dest::Actor(id) => wit::Dest::Actor(actr_id_to_wit(id)),
+        };
+        let outcome = actr_web_abi::guest::tell_with_request_id(
+            self.request_id(),
+            wit_dest,
+            R::route_key().to_string(),
+            payload,
+        )
+        .await;
+        flatten_js(outcome)
     }
 
     async fn call_raw(
         &self,
-        _target: &ActrId,
-        _route_key: &str,
-        _payload: bytes::Bytes,
+        target: &ActrId,
+        route_key: &str,
+        payload: bytes::Bytes,
     ) -> ActorResult<bytes::Bytes> {
-        // P6-I: forward `self.request_id()` + target + route_key + payload
-        // to `actr_web_abi::guest::call_raw_with_request_id` (§3.4).
-        todo!("WebContext::call_raw — wired up in P6-I integration")
+        // The raw entry point is the one the typed `call` delegates to and
+        // the only shape that actually traverses the sw-host HashMap
+        // keyed by `request_id` (γ-unified §3.6).
+        let outcome = actr_web_abi::guest::call_raw_with_request_id(
+            self.request_id(),
+            actr_id_to_wit(target),
+            route_key.to_string(),
+            payload.to_vec(),
+        )
+        .await;
+        flatten_js(outcome).map(bytes::Bytes::from)
     }
 
-    async fn discover_route_candidate(&self, _target_type: &ActrType) -> ActorResult<ActrId> {
-        // P6-I: forward to `actr_web_abi::guest::discover_with_request_id`.
-        todo!("WebContext::discover_route_candidate — wired up in P6-I integration")
+    async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {
+        // Signalling lookup. Even though discovery doesn't depend on the
+        // per-dispatch runtime context today, we still thread the
+        // `request_id` so the host import signatures stay uniform and the
+        // sw-host can attribute the lookup to the correct dispatch in
+        // logs / metrics.
+        let outcome = actr_web_abi::guest::discover_with_request_id(
+            self.request_id(),
+            actr_type_to_wit(target_type),
+        )
+        .await;
+        flatten_js(outcome).map(|wit_id| actr_id_from_wit(&wit_id))
     }
 
     // ── DataStream fast path (not supported on web) ─────────────────────

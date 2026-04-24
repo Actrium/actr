@@ -41,6 +41,7 @@ web = [
     "dep:wasm-bindgen-futures",
     "dep:js-sys",
     "dep:serde-wasm-bindgen",
+    "dep:actr-web-abi",
 ]
 geoip = [
     "maxminddb",
@@ -61,6 +62,13 @@ wasm-bindgen = { version = "0.2.108", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
 serde-wasm-bindgen = { version = "0.6", optional = true }
+# `actr-web-abi` is the WIT-lowered browser ABI crate that lives in the
+# separately-gated `bindings/web` workspace. `WebContext` routes every
+# outbound call through its `guest::*_with_request_id` wrappers (Option U
+# γ-unified §3.3/§3.4). Kept optional + path-only so native builds never
+# pull it (or its wasm-bindgen tail) and so the cross-workspace path is
+# explicit.
+actr-web-abi = { path = "../../bindings/web/crates/actr-web-abi", optional = true }
 
 [dev-dependencies]
 tokio.workspace = true
