@@ -60,6 +60,7 @@ members = [
     # === Developer Tools ===
     "tools/protoc-gen/rust",
     "tools/protoc-gen/web",
+    "tools/wit-compile-web",
     "tools/wit-lint",
     # === CLI ===
     "cli",

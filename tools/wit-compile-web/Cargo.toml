@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# wit-compile-web: codegen that lowers the canonical actr WIT contract
+# (core/framework/wit/actr-workload.wit) into hand-maintained Rust sources
+# under bindings/web/crates/actr-web-abi/src/. Browsers cannot consume the
+# Component Model product directly (see bindings/web/docs/t18-...), so
+# Option U keeps WIT as the single source of truth and compiles it to a
+# core wasm + wasm-bindgen shape the browser can load natively.
+#
+# The tool is a workspace-local binary: nothing in the runtime pulls it
+# in, and it never runs on `cargo build`. Either the developer invokes it
+# explicitly to regenerate sources, or CI uses `--check` as a drift gate.
+
+[package]
+name = "actr-wit-compile-web"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Codegen: actr-workload.wit -> bindings/web/crates/actr-web-abi/src/*.rs"
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "wit-compile-web"
+path = "src/main.rs"
+
+[lib]
+name = "actr_wit_compile_web"
+path = "src/lib.rs"
+
+[dependencies]
+# Pinned to the same wit-parser release wit-lint uses, so both tools see
+# identical parse output and CI does not have to reconcile two views of
+# the WIT file. Bumping this pin is a conscious cross-tool decision.
+wit-parser = "=0.247.0"
+anyhow = { workspace = true }
+heck = "0.5"

@@ -357,6 +357,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "actr-wit-compile-web"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "heck",
+ "wit-parser 0.247.0",
+]
+
+[[package]]
 name = "addr2line"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
