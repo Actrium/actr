@@ -123,6 +123,7 @@
 mod context;
 mod dest;
 mod dispatcher;
+mod service_handler;
 mod workload;
 
 // Optional utilities module
@@ -146,6 +147,7 @@ pub mod test_support;
 pub use context::{Context, LogLevel, MaybeSendSync, MediaSample, MediaType};
 pub use dest::Dest;
 pub use dispatcher::MessageDispatcher;
+pub use service_handler::ServiceHandler;
 pub use workload::{
     BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent, Workload,
 };
