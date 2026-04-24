@@ -554,7 +554,10 @@ impl SwRuntime {
         // Step 1: Obtain credential via AIS HTTP registration
         //   Try to restore persisted credentials first; if expired or missing,
         //   perform a fresh AIS HTTP registration.
-        let cred_kv_ns = format!("actr_credentials_{}", client_actr_type.to_string_repr());
+        //
+        // TD-004: partition the namespace by `client_id` so each tab performs
+        // an independent AIS registration and receives its own `actor_id`.
+        let cred_kv_ns = Self::build_cred_kv_namespace(&client_actr_type, &client_id);
         let (actor_id, credential, turn_credential) = Self::obtain_credential_from_ais(
             &config.ais_endpoint,
             &client_actr_type,
@@ -998,10 +1001,28 @@ impl SwRuntime {
     }
 
     /// KV namespace for persisting credentials across SW restarts.
+    ///
+    /// TD-004 fix: the namespace is keyed by `{client_actr_type}_{client_id}`.
+    /// Rationale: within a same-origin Service Worker, multiple client pages
+    /// share the SW instance. If the namespace only included `actr_type`, a
+    /// second client page would restore the first client's credential from
+    /// IndexedDB, both WS sessions would land on the same `actor_id`, and the
+    /// mock-actrix registry rebind would steal the relay binding from the
+    /// original client. Partitioning by `client_id` guarantees every client
+    /// page performs its own AIS registration and persists its own credential.
     fn cred_kv_namespace(&self) -> String {
+        Self::build_cred_kv_namespace(&self.client_actr_type, &self.client_id)
+    }
+
+    /// Build a credential KV namespace for a given `(actr_type, client_id)` pair.
+    ///
+    /// Exposed as a static helper so that `SwRuntime::new()` can build the
+    /// namespace before `self` exists without duplicating the format string.
+    fn build_cred_kv_namespace(client_actr_type: &ActrType, client_id: &str) -> String {
         format!(
-            "actr_credentials_{}",
-            self.client_actr_type.to_string_repr()
+            "actr_credentials_{}_{}",
+            client_actr_type.to_string_repr(),
+            client_id
         )
     }
 
