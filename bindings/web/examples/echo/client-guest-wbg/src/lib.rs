@@ -19,7 +19,7 @@
 //! dispatcher and drive the full client → server round-trip.
 
 use actr_web_abi::guest as host_api;
-use actr_web_abi::host::{Workload, set_workload};
+use actr_web_abi::host::{Workload, register_workload};
 use actr_web_abi::types::{
     ActrError, ActrType, BackpressureEvent, CredentialEvent, Dest, ErrorEvent, PeerEvent,
     RpcEnvelope,
@@ -37,6 +37,9 @@ const ECHO_SERVICE_VERSION: &str = "0.1.0";
 /// forwards the payload untouched. The legacy crate keeps a cache;
 /// for the Phase 4a smoke test we drop the cache to keep the surface
 /// minimal — correctness/perf tuning lives in Phase 4c.
+///
+/// `Clone` is required by [`register_workload`], see server-side note.
+#[derive(Clone)]
 pub struct EchoClientWorkload;
 
 #[async_trait(?Send)]
@@ -48,21 +51,33 @@ impl Workload for EchoClientWorkload {
             version: ECHO_SERVICE_VERSION.to_string(),
         };
 
-        // Discover a reachable server. `discover` returns
-        // `Result<Result<ActrId, ActrError>, JsValue>`: the outer
-        // layer is the JS transport error (bridge missing /
-        // Promise rejected), the inner layer is the WIT-declared
-        // host error (no candidate registered, etc.).
-        let server_id = host_api::discover(target_type)
+        // γ-unified §3.4: every host import now takes `request_id` as
+        // its first arg so the sw-host `DISPATCH_CTXS` HashMap can key
+        // on the inbound envelope's dispatch id. This lets multiple
+        // concurrent dispatches share the single-threaded JS bridge
+        // without stomping on each other's runtime context.
+        let request_id = envelope.request_id.as_str();
+
+        // Discover a reachable server. `discover_with_request_id`
+        // returns `Result<Result<ActrId, ActrError>, JsValue>`: the
+        // outer layer is the JS transport error (bridge missing /
+        // Promise rejected), the inner layer is the WIT-declared host
+        // error (no candidate registered, etc.).
+        let server_id = host_api::discover_with_request_id(request_id, target_type)
             .await
             .map_err(|e| ActrError::Internal(format!("host discover transport error: {e:?}")))?
             .map_err(|e| ActrError::Internal(format!("host discover: {e:?}")))?;
 
-        // Forward the raw payload via `call_raw`, keeping the same
-        // route-key the inbound envelope carried.
-        host_api::call_raw(server_id, envelope.route_key, envelope.payload)
-            .await
-            .map_err(|e| ActrError::Internal(format!("host call_raw transport error: {e:?}")))?
+        // Forward the raw payload via `call_raw_with_request_id`,
+        // keeping the same route-key the inbound envelope carried.
+        host_api::call_raw_with_request_id(
+            request_id,
+            server_id,
+            envelope.route_key,
+            envelope.payload,
+        )
+        .await
+        .map_err(|e| ActrError::Internal(format!("host call_raw transport error: {e:?}")))?
     }
 
     async fn on_start(&self) -> Result<(), ActrError> {
@@ -114,6 +129,6 @@ fn _dest_touched() -> Dest {
 /// Bootstrap hook — wasm-bindgen calls this on module instantiation,
 /// installing the single workload singleton before any export runs.
 #[wasm_bindgen(start)]
-pub fn __actr_guest_bootstrap() -> Result<(), JsValue> {
-    set_workload(EchoClientWorkload).map_err(JsValue::from_str)
+pub fn __actr_guest_bootstrap() {
+    register_workload(EchoClientWorkload);
 }

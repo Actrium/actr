@@ -18,7 +18,7 @@
 //! Phase 4a scope: compile + emit valid wasm/js. Runtime wiring to
 //! `sw-host` is Phase 4c.
 
-use actr_web_abi::host::{Workload, set_workload};
+use actr_web_abi::host::{Workload, register_workload};
 use actr_web_abi::types::{
     ActrError, BackpressureEvent, CredentialEvent, ErrorEvent, PeerEvent, RpcEnvelope,
 };
@@ -28,6 +28,12 @@ use wasm_bindgen::prelude::*;
 /// Echo server workload. Stateless: every `dispatch` just returns the
 /// inbound payload bytes verbatim, which is the simplest function that
 /// still exercises the full request/response path.
+///
+/// `Clone` is required because [`register_workload`] consumes the
+/// workload by value and internally leaks a `&'static dyn Workload` —
+/// the bound documents the P6-I intent of being able to hand a cloned
+/// handle to each per-dispatch `WebContext` once the unified path lands.
+#[derive(Clone)]
 pub struct EchoServerWorkload;
 
 #[async_trait(?Send)]
@@ -82,10 +88,10 @@ impl Workload for EchoServerWorkload {
 /// module is instantiated, installing the single workload singleton
 /// before any export is called.
 ///
-/// `set_workload` is single-shot: a second call would return
-/// `Err(...)`. In the browser path each guest module is instantiated
-/// exactly once per service-worker session, so this is fine.
+/// `register_workload` is single-shot: a second call panics. In the
+/// browser path each guest module is instantiated exactly once per
+/// service-worker session, so this is fine.
 #[wasm_bindgen(start)]
-pub fn __actr_guest_bootstrap() -> Result<(), JsValue> {
-    set_workload(EchoServerWorkload).map_err(JsValue::from_str)
+pub fn __actr_guest_bootstrap() {
+    register_workload(EchoServerWorkload);
 }
