@@ -132,3 +132,102 @@ commit 548ad7d9 的 commit message 第一条明确提到过这点：
   ```
 - 浏览器 e2e 出现"SW 侧 Rust 新加的日志没打印"时，**先怀疑 cli/assets 没同步**，而不是先怀疑代码逻辑
 - diagnostic agent prompt 里要显式提醒这一步（已更新 memory `feedback_puppeteer_sw_console.md` 范畴外的另一个 feedback 点可以考虑单独记）
+
+---
+
+## TD-003：guest dispatch context 单例，并发场景互相覆盖
+
+**发现时间**：2026-04-24
+**发现路径**：Option U Phase 4 跑通后对 MultiTab 压测，1/6 PASS
+
+### 现象
+
+| 测试 | 结果 | 场景 |
+|------|------|------|
+| BasicFunction 1-1 … 1-6 | 6/6 ✓ | 单 client 顺序 RPC |
+| MultiTab 6-1 Two Client Tabs | ✓ | 两 tab 各自轮流 echo（不并发） |
+| MultiTab 6-2 Concurrent Multi-Client | ✗ timeout 30s | 两 client 同时发 RPC |
+| MultiTab 6-3 Close One Client | ✗ timeout 60s | 关一个 tab 后另一个继续 |
+| MultiTab 6-4 Refresh One Client | ✗ timeout 60s | 刷新一个 tab 后重新 RPC |
+| MultiTab 6-5 Multiple Server Instances | ✗ timeout 60s | 多 server 共存路由 |
+| MultiTab 6-6 Shared SW Isolation | ✗ Connection closed 0ms | 多 client 共享 SW 状态隔离 |
+
+### 根因
+
+`bindings/web/crates/sw-host/src/guest_bridge.rs:90`：
+
+```rust
+thread_local! {
+    static GUEST_CTX: RefCell<Option<Rc<RuntimeContext>>> = const { RefCell::new(None) };
+}
+
+fn install_ctx(ctx: Rc<RuntimeContext>) {
+    // 如已有 ctx，仅 log::error! 但仍覆盖
+    *slot = Some(ctx);
+}
+```
+
+dispatch 入口（line 504）流程：
+
+```
+install_ctx(ctx)
+  → dispatch_fn.call1()                       ← 进入 guest wasm
+    → guest 代码 host::discover(...).await    ← 读 current_ctx() 并快照；让出
+    → [此时别的 dispatch 可能 install_ctx 覆盖]
+    → guest 代码 host::call_raw(...).await    ← 重新读 current_ctx() = 被覆盖的
+clear_ctx()
+```
+
+单 host import 内部：`current_ctx()` 快照后即使 yield 也用那份 ✓
+跨 host import 之间：`current_ctx()` 再次被读时已被覆盖 ✗
+
+echo client 的 dispatch 实现恰好是 `discover(...).await → call_raw(...).await`，精准踩坑。
+
+### 影响
+
+- **不是 WBG 特有**：CM 路径也这个 bug。之前没暴露是因为 CM 挂在更浅的 JSPI 层
+- 任何并发 dispatch（多 client 或同 client 快速连发）都会触发
+- 顺序单 client 不受影响
+
+### 修法选项
+
+| # | 方案 | 改动规模 | 并发性 |
+|---|------|---------|-------|
+| α | 加 async mutex 把所有 dispatch 在 sw-host 层串行化 | 一处 | 无（排队） |
+| β | 在 actor-wbg.sw.js 的 JS 桥层 serialize（一个 dispatch 结束再派下一个） | 一处 | 无（排队） |
+| γ | host imports 签名加 request_id 参数；sw-host 用 HashMap\<RequestId, Ctx\> 查找 | WIT + codegen + sw-host | 真并发 |
+| δ | 每次 dispatch 在 JS 层构造独立的 host imports 闭包捕获 ctx，替换全局 `self.actrHost*` | actor-wbg.sw.js 重写；但 wasm 侧 `__host_*` import 查表是 binding-time，不是每次调用 | 不可行或很 hack |
+| ε | 每 client 一个独立 SW（无 `navigator.serviceWorker` 单例共享） | 架构大改 | 真并发 |
+
+推荐路径：**α 快速止血 → γ 长期真并发**。α 改一处 `Mutex<()>` 就能让 MultiTab 6-2/6-3/6-4 通，6-5/6-6 另议。
+
+### MultiTab 6-5 "Multiple Server Instances"
+
+**独立问题**：`actr-web-abi::host::set_workload` 是 one-shot（`Box::leak` 到 `'static`）。6-5 要求同一 SW 里能注册多个 workload。方案：
+- **set_workload 改 HashMap<ActrType, Box<dyn Workload>>**，lookup 时按 dispatch 里的 target actor type
+- 或承认"一 SW 一 workload"，把 6-5 重新分类为 "不适用的测试"（写 note 在 test-auto.js）
+
+### MultiTab 6-6 "Shared SW Isolation"
+
+"Connection closed 0ms" —— 没挂 timeout，是启动阶段就失败。可能是：
+- 两 client 同时 register_client，sw-host 的 client 状态撞了
+- 或者 puppeteer 的 BrowserContext 隔离带来的 SW 注册冲突
+
+需要单独调试，非本条主线。
+
+### 暂缓理由
+
+- 单 client 路径已通（Option U 核心价值兑现）
+- 修法有分歧，要架构拍板 α vs γ
+- Phase 5（CI drift + 文档收尾）优先级更高
+
+### 修复后应达到的覆盖面
+
+| 套件 | 修 α 后 | 修 γ 后 |
+|------|---------|---------|
+| BasicFunction | 6/6（已达） | 6/6 |
+| MultiTab 6-1 | ✓（已达） | ✓ |
+| MultiTab 6-2 / 6-3 / 6-4 | ✓ | ✓ |
+| MultiTab 6-5 | 另修 `set_workload` | 另修 |
+| MultiTab 6-6 | 另修 | 另修 |
+| Webrtc 5-1 / 5-4 | 待跑 | 待跑 |
