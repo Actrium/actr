@@ -606,9 +606,7 @@ fn emit_host_import_wrapper(out: &mut String, func: &FuncDef) {
     //
     // `request_id: &str` leads the list so the signature mirrors the
     // SW-host `host_*_async` exports on the other side of the bridge.
-    out.push_str(&format!(
-        "pub async fn {wrapper_fn}(request_id: &str"
-    ));
+    out.push_str(&format!("pub async fn {wrapper_fn}(request_id: &str"));
     let mut arg_surface: Vec<(String, String)> = Vec::new();
     for (pname, pty) in func.params.iter() {
         let rust_pname = wit_ident_to_rust(pname);
@@ -623,9 +621,7 @@ fn emit_host_import_wrapper(out: &mut String, func: &FuncDef) {
 
     // Serialise the request_id (as a plain JS string) and then each
     // typed argument into its own `JsValue`.
-    out.push_str(
-        "    let __js_request_id = JsValue::from_str(request_id);\n",
-    );
+    out.push_str("    let __js_request_id = JsValue::from_str(request_id);\n");
     for (idx, (pname, _pty)) in func.params.iter().enumerate() {
         let rust_pname = wit_ident_to_rust(pname);
         let var = format!("__js_arg{idx}");
@@ -636,7 +632,9 @@ fn emit_host_import_wrapper(out: &mut String, func: &FuncDef) {
     }
 
     // Call the raw import — request_id first, then the WIT-typed args.
-    out.push_str(&format!("    let __js_promise = {raw_name}(__js_request_id"));
+    out.push_str(&format!(
+        "    let __js_promise = {raw_name}(__js_request_id"
+    ));
     for idx in 0..func.params.len() {
         out.push_str(&format!(", __js_arg{idx}"));
     }

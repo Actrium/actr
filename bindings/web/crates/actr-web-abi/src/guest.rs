@@ -37,94 +37,142 @@ fn serde_err(e: serde_wasm_bindgen::Error) -> JsValue {
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(catch, js_name = "actrHostCall")]
-    fn __actr_host_call(target: JsValue, route_key: JsValue, payload: JsValue) -> Result<js_sys::Promise, JsValue>;
+    fn __actr_host_call(request_id: JsValue, target: JsValue, route_key: JsValue, payload: JsValue) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = "actrHostCallRaw")]
-    fn __actr_host_call_raw(target: JsValue, route_key: JsValue, payload: JsValue) -> Result<js_sys::Promise, JsValue>;
+    fn __actr_host_call_raw(request_id: JsValue, target: JsValue, route_key: JsValue, payload: JsValue) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = "actrHostDiscover")]
-    fn __actr_host_discover(target_type: JsValue) -> Result<js_sys::Promise, JsValue>;
+    fn __actr_host_discover(request_id: JsValue, target_type: JsValue) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = "actrHostGetCallerId")]
-    fn __actr_host_get_caller_id() -> Result<js_sys::Promise, JsValue>;
+    fn __actr_host_get_caller_id(request_id: JsValue) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = "actrHostGetRequestId")]
-    fn __actr_host_get_request_id() -> Result<js_sys::Promise, JsValue>;
+    fn __actr_host_get_request_id(request_id: JsValue) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = "actrHostGetSelfId")]
-    fn __actr_host_get_self_id() -> Result<js_sys::Promise, JsValue>;
+    fn __actr_host_get_self_id(request_id: JsValue) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = "actrHostLogMessage")]
-    fn __actr_host_log_message(level: JsValue, message: JsValue) -> Result<js_sys::Promise, JsValue>;
+    fn __actr_host_log_message(request_id: JsValue, level: JsValue, message: JsValue) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = "actrHostTell")]
-    fn __actr_host_tell(target: JsValue, route_key: JsValue, payload: JsValue) -> Result<js_sys::Promise, JsValue>;
+    fn __actr_host_tell(request_id: JsValue, target: JsValue, route_key: JsValue, payload: JsValue) -> Result<js_sys::Promise, JsValue>;
 }
 
 /// Guest-side wrapper for WIT `host.call`.
-pub async fn call(target: Dest, route_key: String, payload: Vec<u8>) -> Result<Result<Vec<u8>, ActrError>, JsValue> {
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn call_with_request_id(request_id: &str, target: Dest, route_key: String, payload: Vec<u8>) -> Result<Result<Vec<u8>, ActrError>, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
     let __js_arg0 = serde_wasm_bindgen::to_value(&target).map_err(serde_err)?;
     let __js_arg1 = serde_wasm_bindgen::to_value(&route_key).map_err(serde_err)?;
     let __js_arg2 = serde_wasm_bindgen::to_value(&payload).map_err(serde_err)?;
-    let __js_promise = __actr_host_call(__js_arg0, __js_arg1, __js_arg2)?;
+    let __js_promise = __actr_host_call(__js_request_id, __js_arg0, __js_arg1, __js_arg2)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)
 }
 
 /// Guest-side wrapper for WIT `host.call-raw`.
-pub async fn call_raw(target: ActrId, route_key: String, payload: Vec<u8>) -> Result<Result<Vec<u8>, ActrError>, JsValue> {
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn call_raw_with_request_id(request_id: &str, target: ActrId, route_key: String, payload: Vec<u8>) -> Result<Result<Vec<u8>, ActrError>, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
     let __js_arg0 = serde_wasm_bindgen::to_value(&target).map_err(serde_err)?;
     let __js_arg1 = serde_wasm_bindgen::to_value(&route_key).map_err(serde_err)?;
     let __js_arg2 = serde_wasm_bindgen::to_value(&payload).map_err(serde_err)?;
-    let __js_promise = __actr_host_call_raw(__js_arg0, __js_arg1, __js_arg2)?;
+    let __js_promise = __actr_host_call_raw(__js_request_id, __js_arg0, __js_arg1, __js_arg2)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)
 }
 
 /// Guest-side wrapper for WIT `host.discover`.
-pub async fn discover(target_type: ActrType) -> Result<Result<ActrId, ActrError>, JsValue> {
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn discover_with_request_id(request_id: &str, target_type: ActrType) -> Result<Result<ActrId, ActrError>, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
     let __js_arg0 = serde_wasm_bindgen::to_value(&target_type).map_err(serde_err)?;
-    let __js_promise = __actr_host_discover(__js_arg0)?;
+    let __js_promise = __actr_host_discover(__js_request_id, __js_arg0)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)
 }
 
 /// Guest-side wrapper for WIT `host.get-caller-id`.
-pub async fn get_caller_id() -> Result<Option<ActrId>, JsValue> {
-    let __js_promise = __actr_host_get_caller_id()?;
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn get_caller_id_with_request_id(request_id: &str) -> Result<Option<ActrId>, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
+    let __js_promise = __actr_host_get_caller_id(__js_request_id)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)
 }
 
 /// Guest-side wrapper for WIT `host.get-request-id`.
-pub async fn get_request_id() -> Result<String, JsValue> {
-    let __js_promise = __actr_host_get_request_id()?;
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn get_request_id_with_request_id(request_id: &str) -> Result<String, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
+    let __js_promise = __actr_host_get_request_id(__js_request_id)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)
 }
 
 /// Guest-side wrapper for WIT `host.get-self-id`.
-pub async fn get_self_id() -> Result<ActrId, JsValue> {
-    let __js_promise = __actr_host_get_self_id()?;
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn get_self_id_with_request_id(request_id: &str) -> Result<ActrId, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
+    let __js_promise = __actr_host_get_self_id(__js_request_id)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)
 }
 
 /// Guest-side wrapper for WIT `host.log-message`.
-pub async fn log_message(level: String, message: String) -> Result<(), JsValue> {
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn log_message_with_request_id(request_id: &str, level: String, message: String) -> Result<(), JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
     let __js_arg0 = serde_wasm_bindgen::to_value(&level).map_err(serde_err)?;
     let __js_arg1 = serde_wasm_bindgen::to_value(&message).map_err(serde_err)?;
-    let __js_promise = __actr_host_log_message(__js_arg0, __js_arg1)?;
+    let __js_promise = __actr_host_log_message(__js_request_id, __js_arg0, __js_arg1)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let _ = __js_result;
     Ok(())
 }
 
 /// Guest-side wrapper for WIT `host.tell`.
-pub async fn tell(target: Dest, route_key: String, payload: Vec<u8>) -> Result<Result<(), ActrError>, JsValue> {
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn tell_with_request_id(request_id: &str, target: Dest, route_key: String, payload: Vec<u8>) -> Result<Result<(), ActrError>, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
     let __js_arg0 = serde_wasm_bindgen::to_value(&target).map_err(serde_err)?;
     let __js_arg1 = serde_wasm_bindgen::to_value(&route_key).map_err(serde_err)?;
     let __js_arg2 = serde_wasm_bindgen::to_value(&payload).map_err(serde_err)?;
-    let __js_promise = __actr_host_tell(__js_arg0, __js_arg1, __js_arg2)?;
+    let __js_promise = __actr_host_tell(__js_request_id, __js_arg0, __js_arg1, __js_arg2)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)

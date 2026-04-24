@@ -6,18 +6,32 @@
 // Regenerate with: cargo run -p actr-wit-compile-web
 // Drift check:      cargo run -p actr-wit-compile-web -- --check
 
+// TODO(P6-I): wire `WebContext` into each exported fn. The
+// integration agent will swap the current no-context trait
+// calls for `ctx_insert(request_id, WebContext::new(...))` +
+// a `Handler<WebContext>` dispatch. Keep this file and the
+// `register_workload` signature stable until then.
+
 //! Host-side wrappers around `interface workload` exports.
 //!
-//! Emits the `Workload` trait the user implements and a set
-//! of `#[wasm_bindgen]` free functions the browser host
+//! Emits an internal `Workload` trait and a set of
+//! `#[wasm_bindgen]` free functions the browser host
 //! (service worker / DOM bridge) calls. Each entry point
 //! deserialises JS arguments, dispatches to the registered
-//! `Workload` instance, and serialises the response back.
+//! workload instance, and serialises the response back.
 //!
-//! Registration is single-shot via `set_workload` — the wasm
-//! bootstrap installs one boxed handler, and every export
-//! call resolves against it. Attempting to dispatch before
-//! registration traps with an explicit JsError.
+//! The `Workload` trait is deliberately `pub(crate)` — the
+//! public entry point is [`register_workload`], which the
+//! `actr_framework::entry!` macro (Phase 6b) expands to. User
+//! code never implements this trait directly; the framework
+//! glues a WIT-generated dispatcher onto the user's
+//! domain-specific workload and hands *that* to
+//! `register_workload`.
+//!
+//! Registration is single-shot — the wasm bootstrap installs
+//! one boxed handler, and every export call resolves against
+//! it. Attempting to dispatch before registration traps with
+//! an explicit JsError.
 #![allow(clippy::unused_unit)]
 
 use std::cell::RefCell;
@@ -27,15 +41,17 @@ use wasm_bindgen::prelude::*;
 
 use crate::types::*;
 
-/// User-implemented workload trait. One instance per wasm
-/// module; install with `set_workload`.
+/// Internal workload adapter trait. Not for direct
+/// implementation by user code — use
+/// `actr_framework::entry!` which expands into a blanket impl
+/// that routes into the user's typed handlers.
 ///
 /// Method shapes mirror the WIT `workload` interface exactly,
 /// including which hooks are fallible (the four lifecycle
 /// hooks return `Result<_, ActrError>`) and which are
 /// infallible (all the observation hooks).
 #[async_trait(?Send)]
-pub trait Workload: 'static {
+pub(crate) trait Workload: 'static {
     async fn dispatch(&self, envelope: RpcEnvelope) -> Result<Vec<u8>, ActrError>;
     async fn on_credential_expiring(&self, event: CredentialEvent);
     async fn on_credential_renewed(&self, event: CredentialEvent);
@@ -59,23 +75,28 @@ thread_local! {
     static WORKLOAD: RefCell<Option<&'static dyn Workload>> = const { RefCell::new(None) };
 }
 
-/// Install the single workload implementation. Returns an error if
-/// called more than once — the second caller's `Box` is discarded so
-/// the first registration stays authoritative.
+/// Install the workload implementation for this wasm module. Called
+/// exactly once during the module's bootstrap — typically from the
+/// `#[wasm_bindgen(start)]` glue that `actr_framework::entry!`
+/// expands to.
 ///
 /// The installed handler is intentionally leaked to `'static`: the
 /// browser path registers exactly one workload during bootstrap and
-/// keeps it alive for the lifetime of the wasm instance.
-pub fn set_workload<W: Workload>(w: W) -> Result<(), &'static str> {
+/// keeps it alive for the lifetime of the wasm instance. Passing a
+/// `Clone` bound anticipates the P6-I integration where a cloned
+/// handle may be handed to each per-dispatch `WebContext`.
+///
+/// Panics if called more than once — double-registration is always a
+/// programming error (one wasm module = one workload).
+pub fn register_workload<W: Workload + Clone + 'static>(w: W) {
     WORKLOAD.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_some() {
-            return Err("actr-web-abi: workload already registered");
+            panic!("actr-web-abi: workload already registered");
         }
         let leaked: &'static dyn Workload = Box::leak(Box::new(w));
         *slot = Some(leaked);
-        Ok(())
-    })
+    });
 }
 
 #[inline]
