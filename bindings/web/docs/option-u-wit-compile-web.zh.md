@@ -1,7 +1,20 @@
 # Option U：WIT → wasm-bindgen 编译器设计
 
-**状态**：设计阶段（2026-04-24）
+**状态**：Phase 0/1/2/3 已完成，Phase 4/5 待办（2026-04-24）
 **上下文文档**：[T18 分析](./t18-jco-async-lift-hang.zh.md) §7 选项空间
+
+## 进度快照
+
+| Phase | 状态 | 交付 |
+|-------|------|------|
+| **0 探查** | 已完成 | `/tmp/wit-content-dump.md` + `/tmp/wit-parser-raw-dump.txt`；结论 GREEN LIGHT |
+| **1 types.rs 生成** | 已完成 | `tools/wit-compile-web/` + 生成 `bindings/web/crates/actr-web-abi/src/types.rs`（10 record + 3 variant） |
+| **2 guest.rs 生成** | 已完成 | 生成 `bindings/web/crates/actr-web-abi/src/guest.rs`（8 个 host imports + async wrappers） |
+| **3 host.rs 生成** | 已完成 | 生成 `bindings/web/crates/actr-web-abi/src/host.rs`（`Workload` trait + 17 个 `#[wasm_bindgen]` 导出入口） |
+| **4 Echo 接入** | 待办 | 把 `actr-web-abi` 接到 echo example，e2e 1-0 PASS |
+| **5 CI drift + 收尾** | 待办 | CI 接 `cargo run -p actr-wit-compile-web -- --check`；删除 jco / transpile-component.sh |
+
+`actr-web-abi` 在 `cargo check`（native + `wasm32-unknown-unknown`）均通过，但尚未被任何运行时 crate 依赖——Phase 4 才接入。
 
 ---
 
