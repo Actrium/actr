@@ -228,13 +228,22 @@ impl RpcRequest for {input_type} {{
             ///     }
             /// }
             /// ```
-            pub trait #handler_trait_ident: Send + Sync + 'static {
+            pub trait #handler_trait_ident: actr_framework::MaybeSendSync + 'static {
                 #(#method_sigs)*
             }
         };
 
-        // Manually add #[async_trait] attribute to avoid quote! inserting spaces
-        Ok(format!("#[async_trait]\n{handler_trait_without_attr}"))
+        // Manually add #[async_trait] attribute to avoid quote! inserting spaces.
+        //
+        // `?Send` on wasm32 so the generated impl matches `Context`'s
+        // per-target auto-trait contract (γ-unified §3.1). Native keeps the
+        // default Send-future form so handler futures compose with tokio
+        // multi-threaded executors.
+        Ok(format!(
+            "#[cfg_attr(not(target_arch = \"wasm32\"), async_trait)]\n\
+             #[cfg_attr(target_arch = \"wasm32\", async_trait(?Send))]\n\
+             {handler_trait_without_attr}"
+        ))
     }
 
     /// Generate Dispatcher and Workload wrapper types
@@ -388,8 +397,16 @@ impl RpcRequest for {input_type} {{
             }
         };
 
-        // Manually add #[async_trait] attribute to avoid quote! inserting spaces
-        let router_impl = format!("#[async_trait]\n{router_impl_without_attr}");
+        // Manually add #[async_trait] attribute to avoid quote! inserting spaces.
+        // Same `?Send` on wasm32 rationale as the Handler trait above — the
+        // `MessageDispatcher` trait is declared `async_trait(?Send)` on
+        // wasm32 in `core/framework/src/dispatcher.rs`, so the impl has to
+        // match or the async future's auto-trait bound will disagree.
+        let router_impl = format!(
+            "#[cfg_attr(not(target_arch = \"wasm32\"), async_trait)]\n\
+             #[cfg_attr(target_arch = \"wasm32\", async_trait(?Send))]\n\
+             {router_impl_without_attr}"
+        );
 
         Ok(format!("{workload_struct}\n{router_struct}\n{router_impl}"))
     }

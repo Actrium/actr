@@ -47,7 +47,12 @@ use generated::{EchoServiceHandler, EchoServiceWorkload};
 /// [`EchoServiceHandler`] to provide the actual RPC logic.
 pub struct EchoService;
 
-#[async_trait]
+// `?Send` on wasm32 so the generated `EchoServiceHandler` trait (whose
+// async methods are now `async_trait(?Send)` on wasm32 per γ-unified
+// §3.1) and this impl agree on the future's auto-trait. Native builds
+// keep the default Send-future form.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl EchoServiceHandler for EchoService {
     async fn echo<C: Context>(&self, req: EchoRequest, _ctx: &C) -> ActorResult<EchoResponse> {
         Ok(EchoResponse {
