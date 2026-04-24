@@ -131,6 +131,12 @@ pub mod util;
 // Guest-side runtime module (WASM and dynclib ABI)
 pub mod guest;
 
+// Web-target (`wasm32-unknown-unknown`) runtime glue. Compiled only when
+// the `web` feature is enabled on a wasm32 build — see `src/web/mod.rs`
+// for the target / feature gating rationale.
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub mod web;
+
 // Test helpers (lightweight Context implementation)
 // Only compiled under the test-utils feature (includes uuid v4, incompatible with wasm32 target)
 #[cfg(feature = "test-utils")]
