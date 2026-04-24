@@ -272,6 +272,33 @@ crates/js-component-bindgen/src/intrinsics/p3/async_task.rs
 - 不动代码。把本次所有成果（H_Y 判定、#1361 patch 留痕、诊断设施 commit、TD-001/TD-002）都已经落盘
 - 原生（wasmtime）路径不受影响，该条 T18 只影响浏览器 e2e demo 和未来浏览器部署
 - 等战略层拍板 P / Q / R
+- **乐观叙述**：WASI Preview 3 把 async 做 first-class（async task / future / stream 类型）。jco 当前的 async-lift 实现处在 P2→P3 过渡期，很可能这就是坑的源头。P3 稳定后 jco 会重写 async task 调度，我们这个 bug 可能**自然消失**。2025 年上半年原计划发布，2026-04 仍未最终稳定，**节奏不可控**
+
+---
+
+## 7.1 社区层 jco 替代品调研（2026-04）
+
+走了一圈社区，**Component Model + 浏览器 JS host 这个组合 2026-04 没有 jco 替代品**。
+
+| 候选 | Component Model 支持 | 浏览器 JS host | 结论 |
+|------|-------------------|----------------|------|
+| **jco** (Bytecode Alliance) | ✓ | ✓ | 事实上的唯一选项 |
+| **wasmer-js SDK** | ✗（走 WASIX 路线） | ✓ | 不同模型 |
+| **Extism** (dylibso) | ✗（自家 PDK 协议） | ✓ | 不同模型 |
+| **wasm-bindgen** | ✗（core wasm + JS 桥） | ✓ | 就是选项 R 的路径 |
+| **wasmtime / WAMR** | ✓ | ✗（原生 only） | 不适用浏览器 |
+| **Wasmer 原生** | 计划中（roadmap） | — | 未发布 |
+| **`<wasm-compat>` custom element** | 概念提案（2025-09） | — | 未成熟 |
+
+几乎所有 2026 CM 综述都默认 jco 是**唯一**的 JS host：
+
+> "Browsers currently support raw .wasm modules, not full WASM components directly, which means that to use component-style bundles in the browser, you often need a transpilation step."
+> 
+> "Tools like the jco package on npm bridge the gap of component bundles not being directly supported in browsers..."
+
+**含义**：
+- "换一个 CM runtime 解决问题"**不成立**。要么 P / Q / R，要么等上游（S 的乐观叙述）
+- 如果未来 Wasmer 的 CM 浏览器 runtime 发布，本节需要重新评估
 
 ---
 
