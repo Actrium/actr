@@ -212,6 +212,15 @@ impl RpcRequest for {input_type} {{
             });
         }
 
+        // Per Option U γ-unified §4.5 / Phase 6b the handler trait keeps
+        // its minimal bound (`MaybeSendSync + 'static`) so user structs do
+        // not need an extra `Sized` clause; the `Workload` association is
+        // exposed through a separate `ServiceHandler` impl emitted for the
+        // generated `{Service}Workload` wrapper (see
+        // `generate_workload_blanket_impl`). Rust's orphan rules forbid a
+        // blanket `impl ServiceHandler for T where T: {Service}Handler` on
+        // the handler type itself — the wrapper shape avoids that by
+        // putting the impl on a local type.
         let handler_trait_without_attr = quote! {
             /// Service handler trait - users must implement this trait
             ///
@@ -420,6 +429,17 @@ impl RpcRequest for {input_type} {{
         let handler_trait = format!("{}Handler", self.service_name);
         let handler_trait_ident = format_ident!("{}", handler_trait);
 
+        // `ServiceHandler` impl goes on the generated `{Service}Workload`
+        // wrapper (a local type) rather than on the user's handler type
+        // — the latter would need a blanket `impl<T> ForeignTrait for T
+        // where T: LocalTrait` that Rust's orphan rule rejects. Putting
+        // the impl on the local wrapper keeps coherence happy and still
+        // lets downstream code recover the concrete `Workload` type by
+        // projecting `<{Service}Workload<T> as ServiceHandler>::Workload`.
+        //
+        // `type Workload = Self` because the wrapper *is* the workload
+        // (it already carries `impl Workload for {Service}Workload<T>`);
+        // the association is purely reflexive.
         Ok(quote! {
             /// Workload trait implementation
             ///
@@ -427,6 +447,18 @@ impl RpcRequest for {input_type} {{
             /// and dispatched by ActorSystem
             impl<T: #handler_trait_ident> Workload for #workload_ident<T> {
                 type Dispatcher = #router_ident<T>;
+            }
+
+            /// `ServiceHandler` witness: expose the workload type via
+            /// associated-type projection.
+            ///
+            /// Emitted on the generated wrapper (a local type) rather than
+            /// on the user's handler to stay within Rust's orphan rules.
+            /// `entry!` and other meta-macros consult
+            /// `<{Service}Workload<T> as actr_framework::ServiceHandler>::Workload`
+            /// to recover the concrete workload type.
+            impl<T: #handler_trait_ident> actr_framework::ServiceHandler for #workload_ident<T> {
+                type Workload = Self;
             }
         }
         .to_string())
