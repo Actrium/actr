@@ -44,8 +44,12 @@ use crate::{Context, Workload};
 ///     }
 /// }
 /// ```
-#[async_trait]
-pub trait MessageDispatcher: Send + Sync + 'static {
+// Same cross-target rationale as `Context` / `Workload`: `?Send` on wasm32,
+// native default `Send` auto trait elsewhere. `MaybeSendSync` silently
+// re-adds `Send + Sync` on native.
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait MessageDispatcher: crate::MaybeSendSync + 'static {
     /// Associated Workload type
     type Workload: Workload<Dispatcher = Self>;
 

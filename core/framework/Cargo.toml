@@ -32,6 +32,16 @@ default = []
 cdylib = []
 # `test-utils`: enable testing helpers such as `DummyContext` (includes UUID v4 generation and is not compatible with `wasm32`)
 test-utils = ["uuid/v4"]
+# `web`: opt-in `WebContext` implementation targeting
+# `wasm32-unknown-unknown` via wasm-bindgen (Option U γ-unified).
+# The feature only pulls in the wasm-bindgen toolchain crates; native
+# builds (`default = []`) never see them.
+web = [
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:serde-wasm-bindgen",
+]
 geoip = [
     "maxminddb",
     "reqwest",
@@ -44,6 +54,13 @@ geoip = [
 # never pull it in.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wit-bindgen = "=0.57.1"
+
+# Optional wasm-bindgen stack — only compiled in when `web` feature is
+# enabled (which itself requires a `wasm32-unknown-unknown` target).
+wasm-bindgen = { version = "0.2.108", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
 
 [dev-dependencies]
 tokio.workspace = true

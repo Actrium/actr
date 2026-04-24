@@ -123,7 +123,7 @@ impl WasmContext {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Context for WasmContext {
     fn self_id(&self) -> &ActrId {
         &self.self_id

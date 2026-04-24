@@ -37,7 +37,8 @@ impl DummyContext {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Context for DummyContext {
     fn self_id(&self) -> &ActrId {
         &self.self_id

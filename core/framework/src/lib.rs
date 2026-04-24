@@ -137,7 +137,7 @@ pub mod guest;
 pub mod test_support;
 
 // Public re-exports
-pub use context::{Context, MediaSample, MediaType};
+pub use context::{Context, LogLevel, MaybeSendSync, MediaSample, MediaType};
 pub use dest::Dest;
 pub use dispatcher::MessageDispatcher;
 pub use workload::{
