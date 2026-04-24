@@ -128,10 +128,6 @@ fn ctx_insert(request_id: String, ctx: Rc<RuntimeContext>) {
 /// Returns a JS error string if no matching entry is present — host imports
 /// called outside an active dispatch (or with a stale `request_id`) reject
 /// rather than panic.
-///
-/// Unused until the 8 `host_*_async` signatures are migrated to take
-/// `request_id` as the first parameter (Phase 6-S step S4).
-#[allow(dead_code)]
 fn ctx_get(request_id: &str) -> Result<Rc<RuntimeContext>, JsValue> {
     DISPATCH_CTXS.with(|cell| {
         cell.borrow().get(request_id).cloned().ok_or_else(|| {
@@ -159,26 +155,6 @@ impl Drop for DispatchCtxGuard {
     fn drop(&mut self) {
         ctx_remove(&self.request_id);
     }
-}
-
-/// Legacy single-slot accessor for the 8 `host_*_async` functions that have
-/// not yet been migrated to the `request_id`-first signature. Resolves by
-/// peeking the sole entry of `DISPATCH_CTXS`; returns an error if there are
-/// zero or more than one in-flight dispatches.
-///
-/// Scheduled for removal in the commit that rewrites `host_*_async` to
-/// accept `request_id: String` as the first parameter (Phase 6-S step S4).
-fn current_ctx_legacy() -> Result<Rc<RuntimeContext>, JsValue> {
-    DISPATCH_CTXS.with(|cell| {
-        let map = cell.borrow();
-        match map.len() {
-            1 => Ok(map.values().next().unwrap().clone()),
-            0 => Err(JsValue::from_str("no guest context active")),
-            n => Err(JsValue::from_str(&format!(
-                "ambiguous guest context: {n} dispatches in flight (legacy host_*_async cannot disambiguate — migrate caller to pass request_id)"
-            ))),
-        }
-    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -345,18 +321,26 @@ fn actr_error_to_js(error: ActrError) -> JsValue {
 ///
 /// Async; returns a Promise that resolves to a `Uint8Array` on success or
 /// rejects with a JS `Error` whose `actrErrorTag` names the WIT variant.
+///
+/// The `request_id` first parameter identifies the owning dispatch and is
+/// threaded through by the guest-side wrapper
+/// (`actr_web_abi::guest::call_raw_with_request_id`). Two concurrent
+/// dispatches no longer share a single thread-local context slot — they
+/// resolve their respective `RuntimeContext` via `DISPATCH_CTXS`.
 #[wasm_bindgen]
 pub async fn host_call_raw_async(
+    request_id: String,
     target: JsValue,
     route_key: String,
     payload: js_sys::Uint8Array,
 ) -> Result<js_sys::Uint8Array, JsValue> {
-    let ctx = current_ctx_legacy()?;
+    let ctx = ctx_get(&request_id)?;
     let target = parse_actr_id(&target)?;
     let payload_bytes = payload.to_vec();
 
     log::info!(
-        "[SW][GuestBridge] host.call-raw target=<{}> route={} len={}",
+        "[SW][GuestBridge] host.call-raw request_id={} target=<{}> route={} len={}",
+        request_id,
         target.serial_number,
         route_key,
         payload_bytes.len()
@@ -379,11 +363,12 @@ pub async fn host_call_raw_async(
 /// browser — the variant arm exists, it just isn't wired.
 #[wasm_bindgen]
 pub async fn host_call_async(
+    request_id: String,
     target: JsValue,
     route_key: String,
     payload: js_sys::Uint8Array,
 ) -> Result<js_sys::Uint8Array, JsValue> {
-    let ctx = current_ctx_legacy()?;
+    let ctx = ctx_get(&request_id)?;
     let dest = parse_dest(&target)?;
     let payload_bytes = payload.to_vec();
 
@@ -397,7 +382,8 @@ pub async fn host_call_async(
     };
 
     log::info!(
-        "[SW][GuestBridge] host.call target=<{}> route={} len={}",
+        "[SW][GuestBridge] host.call request_id={} target=<{}> route={} len={}",
+        request_id,
         actor_id.serial_number,
         route_key,
         payload_bytes.len()
@@ -418,11 +404,12 @@ pub async fn host_call_async(
 /// `timeout_ms=0`; the result is discarded. Only `Dest::Actor` is wired.
 #[wasm_bindgen]
 pub async fn host_tell_async(
+    request_id: String,
     target: JsValue,
     route_key: String,
     payload: js_sys::Uint8Array,
 ) -> Result<(), JsValue> {
-    let ctx = current_ctx_legacy()?;
+    let ctx = ctx_get(&request_id)?;
     let dest = parse_dest(&target)?;
     let payload_bytes = payload.to_vec();
 
@@ -443,12 +430,16 @@ pub async fn host_tell_async(
 
 /// WIT `host.discover(target_type) -> result<actr-id, actr-error>`.
 #[wasm_bindgen]
-pub async fn host_discover_async(target_type: JsValue) -> Result<JsValue, JsValue> {
-    let ctx = current_ctx_legacy()?;
+pub async fn host_discover_async(
+    request_id: String,
+    target_type: JsValue,
+) -> Result<JsValue, JsValue> {
+    let ctx = ctx_get(&request_id)?;
     let target_type = parse_actr_type(&target_type)?;
 
     log::info!(
-        "[SW][GuestBridge] host.discover target={}:{}:{}",
+        "[SW][GuestBridge] host.discover request_id={} target={}:{}:{}",
+        request_id,
         target_type.manufacturer,
         target_type.name,
         target_type.version
@@ -463,30 +454,33 @@ pub async fn host_discover_async(target_type: JsValue) -> Result<JsValue, JsValu
 /// WIT `host.log-message(level, message)`.
 ///
 /// Maps to `log` crate levels. Levels outside the `trace/debug/info/warn/error`
-/// set silently fall through to `info`.
+/// set silently fall through to `info`. The `request_id` parameter is carried
+/// for uniformity with the other host imports (and to annotate the log line);
+/// it does not gate execution — logging from unknown dispatches still
+/// surfaces.
 #[wasm_bindgen]
-pub fn host_log_message(level: String, message: String) {
+pub fn host_log_message(request_id: String, level: String, message: String) {
     match level.as_str() {
-        "error" => log::error!("[guest] {message}"),
-        "warn" => log::warn!("[guest] {message}"),
-        "debug" => log::debug!("[guest] {message}"),
-        "trace" => log::trace!("[guest] {message}"),
-        _ => log::info!("[guest] {message}"),
+        "error" => log::error!("[guest][req={request_id}] {message}"),
+        "warn" => log::warn!("[guest][req={request_id}] {message}"),
+        "debug" => log::debug!("[guest][req={request_id}] {message}"),
+        "trace" => log::trace!("[guest][req={request_id}] {message}"),
+        _ => log::info!("[guest][req={request_id}] {message}"),
     }
 }
 
 /// WIT `host.get-self-id() -> actr-id`.
 #[wasm_bindgen]
-pub fn host_get_self_id() -> Result<JsValue, JsValue> {
-    let ctx = current_ctx_legacy()?;
+pub fn host_get_self_id(request_id: String) -> Result<JsValue, JsValue> {
+    let ctx = ctx_get(&request_id)?;
     Ok(actr_id_to_js(ctx.self_id()))
 }
 
 /// WIT `host.get-caller-id() -> option<actr-id>`. Returns `null` when the
 /// host did not install a caller for this dispatch (lifecycle hooks).
 #[wasm_bindgen]
-pub fn host_get_caller_id() -> Result<JsValue, JsValue> {
-    let ctx = current_ctx_legacy()?;
+pub fn host_get_caller_id(request_id: String) -> Result<JsValue, JsValue> {
+    let ctx = ctx_get(&request_id)?;
     Ok(match ctx.caller_id() {
         Some(id) => actr_id_to_js(id),
         None => JsValue::NULL,
@@ -494,10 +488,22 @@ pub fn host_get_caller_id() -> Result<JsValue, JsValue> {
 }
 
 /// WIT `host.get-request-id() -> string`.
+///
+/// Retaining the `request_id` input here is deliberate: the input and output
+/// MUST match. It is asserted, giving us a cheap round-trip sanity check
+/// between the guest-side wrapper (which has the request_id in hand from the
+/// envelope) and the host-side dispatch table. The alternative — omitting
+/// the parameter and treating it as a sentinel — would break uniformity
+/// with the other 7 imports and require the WIT codegen to special-case it.
 #[wasm_bindgen]
-pub fn host_get_request_id() -> Result<String, JsValue> {
-    let ctx = current_ctx_legacy()?;
-    Ok(ctx.request_id().to_string())
+pub fn host_get_request_id(request_id: String) -> Result<String, JsValue> {
+    let ctx = ctx_get(&request_id)?;
+    let stored = ctx.request_id();
+    debug_assert_eq!(
+        stored, request_id,
+        "host_get_request_id round-trip mismatch: stored={stored}, param={request_id}"
+    );
+    Ok(stored.to_string())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
