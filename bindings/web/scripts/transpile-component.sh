@@ -70,12 +70,27 @@ mkdir -p "$OUT_DIR"
 # clone that hasn't yet installed the workspace devDependencies.
 JCO_VERSION="1.18.1"
 
-echo "[transpile-component] running jco@${JCO_VERSION} transpile on ${INPUT} -> ${OUT_DIR}"
-
-npx --yes "@bytecodealliance/jco@${JCO_VERSION}" transpile \
-    "$INPUT" \
-    --instantiation async \
-    --out-dir "$OUT_DIR"
+# JCO_LOCAL override: point at a jco.js from a local checkout/patch to use
+# that build instead of the pinned npm version. Intended for diagnosing or
+# carrying local patches against upstream bytecodealliance/jco issues.
+# Example: JCO_LOCAL=/path/to/jco/packages/jco/src/jco.js ./transpile-component.sh ...
+if [[ -n "${JCO_LOCAL:-}" ]]; then
+    if [[ ! -f "$JCO_LOCAL" ]]; then
+        echo "Error: JCO_LOCAL is set but file not found: $JCO_LOCAL" >&2
+        exit 1
+    fi
+    echo "[transpile-component] using JCO_LOCAL=${JCO_LOCAL} (override)"
+    node "$JCO_LOCAL" transpile \
+        "$INPUT" \
+        --instantiation async \
+        --out-dir "$OUT_DIR"
+else
+    echo "[transpile-component] running jco@${JCO_VERSION} transpile on ${INPUT} -> ${OUT_DIR}"
+    npx --yes "@bytecodealliance/jco@${JCO_VERSION}" transpile \
+        "$INPUT" \
+        --instantiation async \
+        --out-dir "$OUT_DIR"
+fi
 
 # Derive the stem jco used (matches the input .wasm's basename without
 # extension) and optionally rename every emitted artifact to the caller-
