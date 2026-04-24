@@ -551,6 +551,12 @@ fn serde_err(e: serde_wasm_bindgen::Error) -> JsValue {
     // DOM bridge exposes one top-level function per import, which
     // composes more cleanly with ES-module exports than a namespaced
     // object would.
+    //
+    // Every declaration takes `request_id: JsValue` as the first
+    // parameter so the SW-host side can route the call back to the
+    // correct per-dispatch `RuntimeContext` (see Phase 6 γ-unified
+    // design §3.4 / §3.6). This fixes the TD-003 concurrency hazard
+    // where a single thread-local context was shared across dispatches.
     out.push_str("#[wasm_bindgen]\n");
     out.push_str("extern \"C\" {\n");
     for func in &model.host_imports {
@@ -559,13 +565,10 @@ fn serde_err(e: serde_wasm_bindgen::Error) -> JsValue {
         out.push_str(&format!(
             "    #[wasm_bindgen(catch, js_name = \"{js_name}\")]\n"
         ));
-        out.push_str(&format!("    fn {raw_name}("));
-        for (idx, (pname, _pty)) in func.params.iter().enumerate() {
-            if idx > 0 {
-                out.push_str(", ");
-            }
+        out.push_str(&format!("    fn {raw_name}(request_id: JsValue"));
+        for (pname, _pty) in func.params.iter() {
             let rust_pname = wit_ident_to_rust(pname);
-            out.push_str(&format!("{rust_pname}: JsValue"));
+            out.push_str(&format!(", {rust_pname}: JsValue"));
         }
         out.push_str(") -> Result<js_sys::Promise, JsValue>;\n");
     }
@@ -582,33 +585,47 @@ fn serde_err(e: serde_wasm_bindgen::Error) -> JsValue {
 
 fn emit_host_import_wrapper(out: &mut String, func: &FuncDef) {
     let rust_fn = wit_fn_to_rust(&func.name);
+    let wrapper_fn = format!("{rust_fn}_with_request_id");
     let raw_name = format!("__actr_host_{rust_fn}");
 
     out.push_str(&format!(
         "/// Guest-side wrapper for WIT `host.{}`.\n",
         func.name
     ));
+    out.push_str(
+        "///\n\
+         /// The `request_id` first parameter threads per-dispatch context\n\
+         /// through to the SW host (Phase 6 γ-unified §3.4). Callers are\n\
+         /// expected to pass `Context::request_id()`; manual construction\n\
+         /// is discouraged.\n",
+    );
 
     // Parameter list on the Rust surface. Scalars pass by value; heap
     // and named types pass by reference so the caller doesn't give up
     // ownership to a function that is only going to serialise it.
-    out.push_str(&format!("pub async fn {rust_fn}("));
+    //
+    // `request_id: &str` leads the list so the signature mirrors the
+    // SW-host `host_*_async` exports on the other side of the bridge.
+    out.push_str(&format!(
+        "pub async fn {wrapper_fn}(request_id: &str"
+    ));
     let mut arg_surface: Vec<(String, String)> = Vec::new();
-    for (idx, (pname, pty)) in func.params.iter().enumerate() {
-        if idx > 0 {
-            out.push_str(", ");
-        }
+    for (pname, pty) in func.params.iter() {
         let rust_pname = wit_ident_to_rust(pname);
         let (rust_ty, is_ref) = rust_param_type(pty);
         arg_surface.push((rust_pname.clone(), rust_ty.clone()));
-        out.push_str(&format!("{rust_pname}: {rust_ty}"));
+        out.push_str(&format!(", {rust_pname}: {rust_ty}"));
         let _ = is_ref; // kept for readability; unused directly
     }
     out.push_str(") -> ");
     out.push_str(&wrapper_return_type(func.result.as_ref()));
     out.push_str(" {\n");
 
-    // Serialise each argument into a `JsValue`.
+    // Serialise the request_id (as a plain JS string) and then each
+    // typed argument into its own `JsValue`.
+    out.push_str(
+        "    let __js_request_id = JsValue::from_str(request_id);\n",
+    );
     for (idx, (pname, _pty)) in func.params.iter().enumerate() {
         let rust_pname = wit_ident_to_rust(pname);
         let var = format!("__js_arg{idx}");
@@ -618,13 +635,10 @@ fn emit_host_import_wrapper(out: &mut String, func: &FuncDef) {
         let _ = var;
     }
 
-    // Call the raw import.
-    out.push_str(&format!("    let __js_promise = {raw_name}("));
+    // Call the raw import — request_id first, then the WIT-typed args.
+    out.push_str(&format!("    let __js_promise = {raw_name}(__js_request_id"));
     for idx in 0..func.params.len() {
-        if idx > 0 {
-            out.push_str(", ");
-        }
-        out.push_str(&format!("__js_arg{idx}"));
+        out.push_str(&format!(", __js_arg{idx}"));
     }
     out.push_str(")?;\n");
 
@@ -695,18 +709,34 @@ fn emit_host(model: &WitModel) -> String {
     out.push_str(HEADER);
     out.push('\n');
     out.push_str(
+        "// TODO(P6-I): wire `WebContext` into each exported fn. The\n\
+         // integration agent will swap the current no-context trait\n\
+         // calls for `ctx_insert(request_id, WebContext::new(...))` +\n\
+         // a `Handler<WebContext>` dispatch. Keep this file and the\n\
+         // `register_workload` signature stable until then.\n\
+         \n",
+    );
+    out.push_str(
         "//! Host-side wrappers around `interface workload` exports.\n\
          //!\n\
-         //! Emits the `Workload` trait the user implements and a set\n\
-         //! of `#[wasm_bindgen]` free functions the browser host\n\
+         //! Emits an internal `Workload` trait and a set of\n\
+         //! `#[wasm_bindgen]` free functions the browser host\n\
          //! (service worker / DOM bridge) calls. Each entry point\n\
          //! deserialises JS arguments, dispatches to the registered\n\
-         //! `Workload` instance, and serialises the response back.\n\
+         //! workload instance, and serialises the response back.\n\
          //!\n\
-         //! Registration is single-shot via `set_workload` — the wasm\n\
-         //! bootstrap installs one boxed handler, and every export\n\
-         //! call resolves against it. Attempting to dispatch before\n\
-         //! registration traps with an explicit JsError.\n",
+         //! The `Workload` trait is deliberately `pub(crate)` — the\n\
+         //! public entry point is [`register_workload`], which the\n\
+         //! `actr_framework::entry!` macro (Phase 6b) expands to. User\n\
+         //! code never implements this trait directly; the framework\n\
+         //! glues a WIT-generated dispatcher onto the user's\n\
+         //! domain-specific workload and hands *that* to\n\
+         //! `register_workload`.\n\
+         //!\n\
+         //! Registration is single-shot — the wasm bootstrap installs\n\
+         //! one boxed handler, and every export call resolves against\n\
+         //! it. Attempting to dispatch before registration traps with\n\
+         //! an explicit JsError.\n",
     );
     out.push_str("#![allow(clippy::unused_unit)]\n\n");
     out.push_str("use std::cell::RefCell;\n\n");
@@ -714,10 +744,13 @@ fn emit_host(model: &WitModel) -> String {
     out.push_str("use wasm_bindgen::prelude::*;\n\n");
     out.push_str("use crate::types::*;\n\n");
 
-    // Trait definition.
+    // Trait definition — crate-private. External callers use
+    // `register_workload` plus the framework-generated dispatcher.
     out.push_str(
-        "/// User-implemented workload trait. One instance per wasm\n\
-         /// module; install with `set_workload`.\n\
+        "/// Internal workload adapter trait. Not for direct\n\
+         /// implementation by user code — use\n\
+         /// `actr_framework::entry!` which expands into a blanket impl\n\
+         /// that routes into the user's typed handlers.\n\
          ///\n\
          /// Method shapes mirror the WIT `workload` interface exactly,\n\
          /// including which hooks are fallible (the four lifecycle\n\
@@ -725,20 +758,21 @@ fn emit_host(model: &WitModel) -> String {
          /// infallible (all the observation hooks).\n",
     );
     out.push_str("#[async_trait(?Send)]\n");
-    out.push_str("pub trait Workload: 'static {\n");
+    out.push_str("pub(crate) trait Workload: 'static {\n");
     for func in &model.guest_exports {
         emit_trait_method_signature(&mut out, func);
         out.push_str(";\n");
     }
     out.push_str("}\n\n");
 
-    // Handler slot + setter. The wasm-bindgen browser target is
+    // Handler slot + registration. The wasm-bindgen browser target is
     // strictly single-threaded, so `thread_local!` + `RefCell` is
     // sound here: every export entry point runs on the same worker /
-    // main thread the `set_workload` call ran on. Using a `static
-    // OnceLock` would force the trait object to be `Send + Sync`,
-    // which is both false for many user workloads and a false
-    // promise (browsers cannot schedule it across threads anyway).
+    // main thread the `register_workload` call ran on. Using a
+    // `static OnceLock` would force the trait object to be
+    // `Send + Sync`, which is both false for many user workloads and
+    // a false promise (browsers cannot schedule it across threads
+    // anyway).
     //
     // The `Box<dyn Workload>` is leaked into a `&'static dyn Workload`
     // inside `workload()` so awaited method calls can outlive the
@@ -749,23 +783,28 @@ fn emit_host(model: &WitModel) -> String {
     static WORKLOAD: RefCell<Option<&'static dyn Workload>> = const { RefCell::new(None) };
 }
 
-/// Install the single workload implementation. Returns an error if
-/// called more than once — the second caller's `Box` is discarded so
-/// the first registration stays authoritative.
+/// Install the workload implementation for this wasm module. Called
+/// exactly once during the module's bootstrap — typically from the
+/// `#[wasm_bindgen(start)]` glue that `actr_framework::entry!`
+/// expands to.
 ///
 /// The installed handler is intentionally leaked to `'static`: the
 /// browser path registers exactly one workload during bootstrap and
-/// keeps it alive for the lifetime of the wasm instance.
-pub fn set_workload<W: Workload>(w: W) -> Result<(), &'static str> {
+/// keeps it alive for the lifetime of the wasm instance. Passing a
+/// `Clone` bound anticipates the P6-I integration where a cloned
+/// handle may be handed to each per-dispatch `WebContext`.
+///
+/// Panics if called more than once — double-registration is always a
+/// programming error (one wasm module = one workload).
+pub fn register_workload<W: Workload + Clone + 'static>(w: W) {
     WORKLOAD.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_some() {
-            return Err("actr-web-abi: workload already registered");
+            panic!("actr-web-abi: workload already registered");
         }
         let leaked: &'static dyn Workload = Box::leak(Box::new(w));
         *slot = Some(leaked);
-        Ok(())
-    })
+    });
 }
 
 #[inline]
@@ -1040,18 +1079,55 @@ mod tests {
     fn guest_rs_has_async_wrappers() {
         let model = load_inmem(MINI_WIT);
         let out = emit_guest(&model);
-        assert!(out.contains("pub async fn ping"));
-        assert!(out.contains("pub async fn log_message"));
+        assert!(out.contains("pub async fn ping_with_request_id"));
+        assert!(out.contains("pub async fn log_message_with_request_id"));
         assert!(out.contains("JsFuture::from"));
     }
 
     #[test]
-    fn host_rs_has_trait_and_exports() {
+    fn guest_rs_threads_request_id_through() {
+        let model = load_inmem(MINI_WIT);
+        let out = emit_guest(&model);
+        // Wrapper takes `request_id: &str` as the leading parameter.
+        assert!(
+            out.contains("pub async fn ping_with_request_id(request_id: &str"),
+            "output was:\n{out}"
+        );
+        // Extern declaration takes `request_id: JsValue` first so the
+        // SW host can dispatch by request_id.
+        assert!(
+            out.contains("fn __actr_host_ping(request_id: JsValue"),
+            "output was:\n{out}"
+        );
+        // Body converts it to a JsString before the raw call.
+        assert!(out.contains("JsValue::from_str(request_id)"));
+        // Call threads the request_id JS value as the first argument.
+        assert!(out.contains("__actr_host_ping(__js_request_id"));
+    }
+
+    #[test]
+    fn host_rs_has_crate_private_trait_and_register() {
         let model = load_inmem(MINI_WIT);
         let out = emit_host(&model);
-        assert!(out.contains("pub trait Workload"));
+        assert!(out.contains("pub(crate) trait Workload"));
+        assert!(
+            !out.contains("pub trait Workload"),
+            "Workload trait must not be re-exported publicly"
+        );
+        assert!(out.contains("pub fn register_workload"));
+        assert!(out.contains("W: Workload + Clone + 'static"));
         assert!(out.contains("async fn dispatch"));
         assert!(out.contains("async fn on_start"));
         assert!(out.contains("#[wasm_bindgen(js_name = \"dispatch\")"));
+    }
+
+    #[test]
+    fn host_rs_carries_p6i_todo() {
+        let model = load_inmem(MINI_WIT);
+        let out = emit_host(&model);
+        assert!(
+            out.contains("TODO(P6-I)"),
+            "P6-I integration hook comment is missing:\n{out}"
+        );
     }
 }
