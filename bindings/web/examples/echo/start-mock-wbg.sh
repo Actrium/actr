@@ -31,18 +31,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ACTR_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
 
-# The wasip2 Component guest crates (unchanged): `actr build --no-compile`
-# still needs *some* core wasm inside the .actr to pass verification. We
-# reuse the Component-Model produced binary so the .actr stays signable the
-# same way; the WBG path only uses the .actr for verify + metadata, the
-# actual code shipped to the SW is the wasm-pack output.
-SERVER_GUEST_CM_DIR="$SCRIPT_DIR/server-guest"
-CLIENT_GUEST_CM_DIR="$SCRIPT_DIR/client-guest"
-
-# The new WBG variants — built as plain wasm32-unknown-unknown via
-# wasm-pack. These produce `pkg/*_bg.wasm` + `pkg/*.js` glue.
-SERVER_GUEST_WBG_DIR="$SCRIPT_DIR/server-guest-wbg"
-CLIENT_GUEST_WBG_DIR="$SCRIPT_DIR/client-guest-wbg"
+# Unified guest crates (Option U γ-unified Phase 6c). Same source
+# directory feeds both the CM build (wasm32-wasip2, default features,
+# for signing the .actr) and the WBG build (wasm32-unknown-unknown,
+# `--features web --no-default-features`, for the SW-loaded core module).
+SERVER_GUEST_DIR="$SCRIPT_DIR/server-guest"
+CLIENT_GUEST_DIR="$SCRIPT_DIR/client-guest"
 
 RELEASE_DIR="$SCRIPT_DIR/release"
 SERVER_ACTR_TOML="$SCRIPT_DIR/server-actr.toml"
@@ -156,53 +150,63 @@ else
     echo -e "${RED}wasm-component-ld not found${NC}"; exit 1
 fi
 
-# ---- Step 1a: build CM guests (for .actr signing path only) ----
+# ---- Step 1a: build CM guests (default features, wasm32-wasip2) ----
+#
+# The .actr signing step later needs a valid Component binary to embed;
+# we build the default-feature output so `actr build --no-compile` can
+# pick it up. The same crate's `--features web` output (wasm32-unknown-
+# unknown) feeds the SW via wasm-pack in step 1b.
 
 echo ""
-echo -e "${BLUE}Step 1a: Building CM guests for .actr signing...${NC}"
+echo -e "${BLUE}Step 1a: Building CM guests (default features) for .actr signing...${NC}"
 
 (
     export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
-    cd "$SERVER_GUEST_CM_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
+    cd "$SERVER_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
 )
-SERVER_GUEST_CM_WASM="$SERVER_GUEST_CM_DIR/target/wasm32-wasip2/release/echo_guest.wasm"
+SERVER_GUEST_CM_WASM="$SERVER_GUEST_DIR/target/wasm32-wasip2/release/echo_guest.wasm"
 [ -f "$SERVER_GUEST_CM_WASM" ] || { echo -e "${RED}server CM guest missing${NC}"; exit 1; }
 
 (
     export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
-    cd "$CLIENT_GUEST_CM_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
+    cd "$CLIENT_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
 )
-CLIENT_GUEST_CM_WASM="$CLIENT_GUEST_CM_DIR/target/wasm32-wasip2/release/echo_client_guest_web.wasm"
+CLIENT_GUEST_CM_WASM="$CLIENT_GUEST_DIR/target/wasm32-wasip2/release/echo_client_guest_web.wasm"
 [ -f "$CLIENT_GUEST_CM_WASM" ] || { echo -e "${RED}client CM guest missing${NC}"; exit 1; }
 
 echo -e "${GREEN}CM guests built${NC}"
 
-# ---- Step 1b: build WBG guests via wasm-pack ----
+# ---- Step 1b: build WBG guests via wasm-pack (same crates, --features web) ----
 
 echo ""
-echo -e "${BLUE}Step 1b: Building WBG guests via wasm-pack...${NC}"
+echo -e "${BLUE}Step 1b: Building WBG guests via wasm-pack (--features web)...${NC}"
 
 # `~/.cargo/config.toml` injects `-fuse-ld=mold` for host builds; rust-lld
 # (the wasm32 linker) rejects that flag. Clear the rustflags explicitly
 # only for the wasm-pack invocations — other steps still need them.
+#
+# `--no-default-features --features web` flips the crate off the CM /
+# wasm32-wasip2 path and onto the wasm-bindgen / `actr-web-abi` path.
 (
     export RUSTFLAGS=""
     export CARGO_ENCODED_RUSTFLAGS=""
-    cd "$SERVER_GUEST_WBG_DIR"
-    wasm-pack build --target no-modules --release --out-dir pkg 2>&1 | tail -8
+    cd "$SERVER_GUEST_DIR"
+    wasm-pack build --target no-modules --release --out-dir pkg \
+        -- --no-default-features --features web 2>&1 | tail -8
 )
-SERVER_WBG_JS="$SERVER_GUEST_WBG_DIR/pkg/echo_server_guest_wbg.js"
-SERVER_WBG_WASM="$SERVER_GUEST_WBG_DIR/pkg/echo_server_guest_wbg_bg.wasm"
+SERVER_WBG_JS="$SERVER_GUEST_DIR/pkg/echo_guest.js"
+SERVER_WBG_WASM="$SERVER_GUEST_DIR/pkg/echo_guest_bg.wasm"
 [ -f "$SERVER_WBG_JS" ] && [ -f "$SERVER_WBG_WASM" ] || { echo -e "${RED}server WBG pkg incomplete${NC}"; exit 1; }
 
 (
     export RUSTFLAGS=""
     export CARGO_ENCODED_RUSTFLAGS=""
-    cd "$CLIENT_GUEST_WBG_DIR"
-    wasm-pack build --target no-modules --release --out-dir pkg 2>&1 | tail -8
+    cd "$CLIENT_GUEST_DIR"
+    wasm-pack build --target no-modules --release --out-dir pkg \
+        -- --no-default-features --features web 2>&1 | tail -8
 )
-CLIENT_WBG_JS="$CLIENT_GUEST_WBG_DIR/pkg/echo_client_guest_wbg.js"
-CLIENT_WBG_WASM="$CLIENT_GUEST_WBG_DIR/pkg/echo_client_guest_wbg_bg.wasm"
+CLIENT_WBG_JS="$CLIENT_GUEST_DIR/pkg/echo_client_guest_web.js"
+CLIENT_WBG_WASM="$CLIENT_GUEST_DIR/pkg/echo_client_guest_web_bg.wasm"
 [ -f "$CLIENT_WBG_JS" ] && [ -f "$CLIENT_WBG_WASM" ] || { echo -e "${RED}client WBG pkg incomplete${NC}"; exit 1; }
 
 echo -e "${GREEN}WBG guests built${NC}"
@@ -218,14 +222,14 @@ MFR_PUBKEY=$(python3 -c "import json; print(json.load(open('$MFR_KEY_FILE'))['pu
 echo "  MFR pubkey: ${MFR_PUBKEY:0:20}..."
 
 SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.actr"
-(cd "$SERVER_GUEST_CM_DIR" && "$ACTR_CMD" build \
+(cd "$SERVER_GUEST_DIR" && "$ACTR_CMD" build \
     --no-compile \
     --target "wasm32-wasip2" \
     --key "$MFR_KEY_FILE" \
     --output "$SERVER_ACTR_PACKAGE")
 
 CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.actr"
-(cd "$CLIENT_GUEST_CM_DIR" && "$ACTR_CMD" build \
+(cd "$CLIENT_GUEST_DIR" && "$ACTR_CMD" build \
     --no-compile \
     --target "wasm32-wasip2" \
     --key "$MFR_KEY_FILE" \
