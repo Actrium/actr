@@ -70,3 +70,65 @@ $ grep -rn "set_dom_channel\|set_dom_lane\|set_sw_channel" \
 
 - 这五个 setter 里 `log::info!` 永远不会打印 —— 看到 `[SW][SwTransport]`、`[WebWireBuilder]` 之类的静默，别误以为它们已被触达
 - public API 公开面（T5.5 Batch 5 bindings/web 扫描时）要注意是否把它们降级 —— 以免把未使用的 pub 暴露成外部承诺
+
+---
+
+## TD-002：sw-host wasm 产物到 `cli/assets/web-runtime/` 无自动同步
+
+**发现时间**：2026-04-24
+**发现路径**：T18 H_X/H_Y bisect spike（诊断 agent 把 HX-PROBE 加进 `guest_bridge.rs` 并编译成功，但跑测试时零命中，排查后发现服务端 actr 读到的是老 wasm）
+
+### 现象
+
+`bindings/web/crates/sw-host/build.sh` 产出：
+```
+bindings/web/dist/sw/actr_sw_host_bg.wasm
+bindings/web/dist/sw/actr_sw_host.js
+```
+
+`cli/assets/web-runtime/` 需要同名两个文件，通过 `cli/src/web_assets.rs:14` 的 `include_bytes!("../assets/web-runtime/actr_sw_host_bg.wasm")` 嵌入 actr binary。但仓内**没有自动同步脚本或 build rule**把 dist/sw 拷贝到 cli/assets。
+
+### 证据
+
+```
+$ grep -rn "cli/assets/web-runtime\|include_bytes.*actr_sw_host" cli/ bindings/web/
+cli/src/web_assets.rs:14:pub const RUNTIME_WASM: &[u8] = include_bytes!(".../actr_sw_host_bg.wasm");
+cli/src/commands/run.rs:728:    .route("/packages/actr_sw_host_bg.wasm", get(serve_runtime_wasm))
+bindings/web/crates/sw-host/build.sh:24:  --out-dir ../../dist/sw \
+```
+
+`bindings/web/crates/sw-host/build.sh` 只写 `dist/sw/`，不碰 `cli/assets/`。
+
+### 后果
+
+改动 sw-host 的 Rust 代码后，`bash bindings/web/crates/sw-host/build.sh` + `cargo build -p actr-cli --bin actr` **两步都做了仍会失败** ——
+仅当 cli/assets 里的 wasm 是旧内容时，`include_bytes!` 也是旧的，无论 actr 怎么重编都一样。
+
+commit 548ad7d9 的 commit message 第一条明确提到过这点：
+> "CLI-embedded assets were stale. `cli/assets/web-runtime/actor.sw.js` still used the legacy `loadWithGuestBridge` dynclib path while `web-sdk/src` already switched to `loadWithComponentBridge`... Re-sync the SDK source and the freshly-built `sw-host` wasm-bindgen output into cli/assets."
+
+也就是说：548ad7d9 把 "再同步一次" 作为一次性修复做了，但没把这个同步动作固化到任何构建脚本里，所以下次又会踩。
+
+### 暂缓理由
+
+加一个 sync 脚本工作量很小，但决定"谁调它"要看整体 web 构建流水线的责任划分（`bindings/web/scripts/build-wasm.sh` 是顶层入口，但当前为空壳）。T18 主线更紧，先登记。
+
+### 修复选项
+
+- **A. 在 `sw-host/build.sh` 末尾直接 `cp` 到 `cli/assets/web-runtime/`**：最直接；坏处是绑定 sw-host 的 build.sh 知道 cli 的目录结构，跨 crate 耦合
+- **B. 新增 `bindings/web/scripts/sync-cli-assets.sh`**：把"同步"单独成一步；让上层 build-wasm.sh 或 CI 显式调用
+- **C. `build.rs` in cli/actr-cli**：让 cargo 在编译 cli 时自动从 `../bindings/web/dist/sw/` 拉最新；但这样 cli 会变成弱依赖 web/dist 存在
+- **D. 软链**：`cli/assets/web-runtime/actr_sw_host_bg.wasm` 不入库，改成指向 `bindings/web/dist/sw/`；但 `include_bytes!` 需要存在的文件，clone 新仓库时会断
+
+推荐 **B**：显式、职责清晰、失败可见。
+
+### 如果不修复就应该知道的事
+
+- 任何改了 sw-host 代码的 spike 都必须**手动**执行：
+  ```
+  cp bindings/web/dist/sw/actr_sw_host_bg.wasm cli/assets/web-runtime/
+  cp bindings/web/dist/sw/actr_sw_host.js     cli/assets/web-runtime/
+  cargo build -p actr-cli --bin actr
+  ```
+- 浏览器 e2e 出现"SW 侧 Rust 新加的日志没打印"时，**先怀疑 cli/assets 没同步**，而不是先怀疑代码逻辑
+- diagnostic agent prompt 里要显式提醒这一步（已更新 memory `feedback_puppeteer_sw_console.md` 范畴外的另一个 feedback 点可以考虑单独记）
