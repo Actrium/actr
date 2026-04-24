@@ -231,3 +231,54 @@ echo client 的 dispatch 实现恰好是 `discover(...).await → call_raw(...).
 | MultiTab 6-5 | 另修 `set_workload` | 另修 |
 | MultiTab 6-6 | 另修 | 另修 |
 | Webrtc 5-1 / 5-4 | 待跑 | 待跑 |
+
+---
+
+## TD-004：同源 SW 下第二个 client 注册破坏第一个 client 的 RPC 响应
+
+**发现时间**：2026-04-24
+**发现路径**：Option U Phase 6 γ-unified 整合后的 γ 轻量验证尝试
+
+### 现象
+
+三种场景对照实验（全走 WBG 路径）：
+
+| 场景 | 结果 |
+|------|------|
+| 1 client，default BrowserContext | BasicFunction 6/6 ✓ |
+| 2 clients，default BrowserContext（共享 SW） | 首个 client warmup 60s 无 `📥` ✗ |
+| 2 clients，incognito BrowserContext（隔离 SW）= MultiTab 6-2/6-3/6-4 | 首个 client 首次 RPC 30s timeout ✗ |
+
+共同模式：**一旦 SW 登记了第 2 个 client**，**第 1 个 client 也失去 echo 响应**。button 能 re-enable（~60ms 正常），但 DOM 里永远收不到 `📥` 回复日志。
+
+### 与 TD-003 / γ 的关系
+
+- **不是 γ 的问题**：γ 已架构修正 thread_local GUEST_CTX 单例（现 HashMap<RequestId, Ctx>）；BasicFunction 6/6 证明 request_id threading 全通
+- **更前置的问题**：SW 看到 2 个 client actor 登记时，某条路径失效；不影响 server 端 inbound dispatch
+- γ 的真并发效果只能**等 TD-004 修好后间接验证**
+
+### 初步假说（未诊断）
+
+1. **AIS 注册冲突**：client-guest 每次 page load 调 `register via AIS HTTP`，两 client 用同一 pubkey/psk 撞车
+2. **sw-host 单 client 假设**：`RuntimeContext` 或相邻组件隐含"SW 里只一个 client"，登记第二个覆盖状态
+3. **actor-wbg.sw.js port 管理**：两 tab 共享 SW 但各自 MessagePort，SW 侧 port 表错配
+4. **signaling/WebSocket 冲突**：同 SW 只留一条到 mock-actrix 的 ws，第二次 register 覆盖第一次会话
+
+### 暂缓理由
+
+- γ 架构已落地；γ 正确性独立于 TD-004
+- TD-004 是独立 blocker，修它不在 Phase 6 scope
+- Phase 6b/6c 不依赖 MultiTab 通过（靠 BasicFunction 回归）
+
+### 诊断入口
+
+- `CAPTURE_SW_CONSOLE=1` 必须开（`feedback_puppeteer_sw_console.md`）
+- puppeteer `browser.on('targetcreated')` 在 incognito 下可能不触发 SW target；用 CDP `Target.setDiscoverTargets` + 手动 attach
+- 2 client 同时跑时，mock-actrix log 里 client_id / 注册序列是关键
+- sw-host `runtime.rs::register_client` + `InboundPacketDispatcher` + client_id 路由是嫌疑区
+
+### 修复选项（占位）
+
+- **α'**：sw-host 改为"N client per SW"原生支持；每 client 独立 state
+- **β'**：若是 AIS 会话冲突，actor-wbg.sw.js 给每 client 独立 session
+- **γ'**：接受"1 SW 1 client"，MultiTab 6-2/6-3/6-4 正式 skip（与 `set_workload` 单例的 6-5 同类处理）
