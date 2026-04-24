@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/actr-web-abi",
     "crates/common",
     "crates/sw-host",
     "crates/dom-bridge",

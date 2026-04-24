@@ -186,6 +186,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "actr-web-abi"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "actr-web-common"
 version = "0.2.0"
 dependencies = [
