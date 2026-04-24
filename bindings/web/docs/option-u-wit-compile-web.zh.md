@@ -1,7 +1,7 @@
 # Option U：WIT → wasm-bindgen 编译器设计
 
 **状态**：Phase 0-4 已完成，Phase 5/6 待办（2026-04-24）
-**上下文文档**：[T18 分析](./t18-jco-async-lift-hang.zh.md) §7 选项空间；[TD-003 并发 dispatch context bug](./tech-debt.zh.md#td-003)
+**上下文文档**：[T18 分析](./t18-jco-async-lift-hang.zh.md) §7 选项空间；[TD-003 并发 dispatch context bug](./tech-debt.zh.md#td-003)；**[Phase 6 γ-unified 详细设计](./option-u-phase6-gamma-unified.zh.md)**
 
 ## 进度快照
 
