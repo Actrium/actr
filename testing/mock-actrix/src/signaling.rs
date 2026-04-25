@@ -345,32 +345,19 @@ async fn handle_actr_to_server(
 
         actr_to_signaling::Payload::RouteCandidatesRequest(req) => {
             let registry = state.registry.read().await;
-
-            let mut candidates = Vec::new();
-            let mut ws_address_map = Vec::new();
-
-            for entry in registry.iter() {
-                if entry.actr_type == req.target_type {
-                    if entry.actr_id.serial_number == actr_msg.source.serial_number {
-                        continue;
-                    }
-                    candidates.push(entry.actr_id.clone());
-                    if let Some(ws_addr) = &entry.ws_address {
-                        ws_address_map.push(actr_protocol::WsAddressEntry {
-                            candidate_id: entry.actr_id.clone(),
-                            ws_address: Some(ws_addr.clone()),
-                        });
-                    }
-                }
-            }
+            let (mut candidates, mut ws_address_map, skipped_unbound) =
+                collect_reachable_route_candidates(&registry, &actr_msg.source, &req.target_type);
 
             if let Some(criteria) = &req.criteria {
                 let max = criteria.candidate_count as usize;
                 candidates.truncate(max);
+                ws_address_map
+                    .retain(|entry| candidates.iter().any(|id| id == &entry.candidate_id));
             }
 
             tracing::info!(
                 count = candidates.len(),
+                skipped_unbound,
                 target_type = format!("{}.{}", req.target_type.manufacturer, req.target_type.name),
                 "mock-actrix: route candidates response"
             );
@@ -598,15 +585,29 @@ async fn handle_actr_relay(
             tracestate: None,
         };
 
-        let clients = state.clients.read().await;
-        for (cid, tx) in clients.iter() {
-            if cid == sender_id {
-                let encoded = envelope_for_from.encode_to_vec();
-                let _ = tx.send(Message::Binary(Bytes::from(encoded)));
-            } else {
-                let encoded = envelope_for_to.encode_to_vec();
-                let _ = tx.send(Message::Binary(Bytes::from(encoded)));
-            }
+        let (from_client_id, to_client_id) = {
+            let client_map = state.client_to_actr_id.read().await;
+            resolve_role_negotiation_targets(&client_map, sender_id, &role_neg.from, &role_neg.to)
+        };
+
+        tracing::info!(
+            from_actor = %role_neg.from.to_string_repr(),
+            to_actor = %role_neg.to.to_string_repr(),
+            from_client_id = ?from_client_id,
+            to_client_id = ?to_client_id,
+            "mock-actrix: role negotiation routed pairwise"
+        );
+
+        send_to_client(&from_client_id, &envelope_for_from, state).await;
+
+        if let Some(target_client_id) = to_client_id.as_deref() {
+            send_to_client(target_client_id, &envelope_for_to, state).await;
+        } else {
+            tracing::warn!(
+                from_actor = %role_neg.from.to_string_repr(),
+                to_actor = %role_neg.to.to_string_repr(),
+                "mock-actrix: role negotiation target has no bound websocket"
+            );
         }
         return;
     }
@@ -628,15 +629,21 @@ async fn handle_actr_relay(
         if let Some(tx) = clients.get(&target_cid) {
             let encoded = envelope.encode_to_vec();
             let _ = tx.send(Message::Binary(Bytes::from(encoded)));
+        } else {
+            tracing::warn!(
+                source = %relay.source.to_string_repr(),
+                target = %relay.target.to_string_repr(),
+                target_client_id = %target_cid,
+                "mock-actrix: relay target client missing websocket sender"
+            );
         }
     } else {
-        // Fallback: broadcast to all other clients (legacy test compatibility).
-        let encoded = envelope.encode_to_vec();
-        for (cid, tx) in clients.iter() {
-            if cid != sender_id {
-                let _ = tx.send(Message::Binary(Bytes::from(encoded.clone())));
-            }
-        }
+        tracing::warn!(
+            source = %relay.source.to_string_repr(),
+            target = %relay.target.to_string_repr(),
+            sender_id = %sender_id,
+            "mock-actrix: dropping relay for unbound target instead of broadcasting"
+        );
     }
 }
 
@@ -670,6 +677,58 @@ async fn send_to_client(client_id: &str, envelope: &SignalingEnvelope, state: &A
     }
 }
 
+fn resolve_role_negotiation_targets(
+    client_map: &std::collections::HashMap<String, ActrId>,
+    sender_id: &str,
+    from: &ActrId,
+    to: &ActrId,
+) -> (String, Option<String>) {
+    let from_client_id = client_map
+        .iter()
+        .find_map(|(client_id, actor_id)| (actor_id == from).then(|| client_id.clone()))
+        .unwrap_or_else(|| sender_id.to_string());
+    let to_client_id = client_map
+        .iter()
+        .find_map(|(client_id, actor_id)| (actor_id == to).then(|| client_id.clone()));
+    (from_client_id, to_client_id)
+}
+
+fn collect_reachable_route_candidates(
+    registry: &[RegisteredActor],
+    source: &ActrId,
+    target_type: &actr_protocol::ActrType,
+) -> (Vec<ActrId>, Vec<actr_protocol::WsAddressEntry>, usize) {
+    let mut candidates = Vec::new();
+    let mut ws_address_map = Vec::new();
+    let mut skipped_unbound = 0;
+
+    // Prefer the newest live registration. During page-refresh / cross-suite
+    // churn the mock can temporarily retain older WS-bound rows, and choosing
+    // the oldest entry makes fresh clients rediscover dead sessions.
+    for entry in registry.iter().rev() {
+        if entry.actr_type != *target_type {
+            continue;
+        }
+        if entry.actr_id.serial_number == source.serial_number {
+            continue;
+        }
+        if entry.client_id.is_empty() {
+            skipped_unbound += 1;
+            continue;
+        }
+
+        candidates.push(entry.actr_id.clone());
+        if let Some(ws_addr) = &entry.ws_address {
+            ws_address_map.push(actr_protocol::WsAddressEntry {
+                candidate_id: entry.actr_id.clone(),
+                ws_address: Some(ws_addr.clone()),
+            });
+        }
+    }
+
+    (candidates, ws_address_map, skipped_unbound)
+}
+
 fn now_timestamp() -> prost_types::Timestamp {
     prost_types::Timestamp {
         seconds: chrono::Utc::now().timestamp(),
@@ -681,4 +740,95 @@ fn now_timestamp() -> prost_types::Timestamp {
 /// after HTTP registration.
 fn parse_actor_id(s: &str) -> Option<ActrId> {
     ActrId::from_string_repr(s).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{collect_reachable_route_candidates, resolve_role_negotiation_targets};
+    use crate::state::RegisteredActor;
+    use actr_protocol::{ActrId, ActrType, Realm};
+    use std::collections::HashMap;
+
+    fn actor(serial: u64, name: &str) -> ActrId {
+        ActrId {
+            realm: Realm { realm_id: 7 },
+            serial_number: serial,
+            r#type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+            },
+        }
+    }
+
+    fn registered_actor(serial: u64, name: &str, client_id: &str) -> RegisteredActor {
+        RegisteredActor {
+            actr_id: actor(serial, name),
+            actr_type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: name.to_string(),
+                version: "0.1.0".to_string(),
+            },
+            client_id: client_id.to_string(),
+            ws_address: Some(format!("ws://example.invalid/{serial}")),
+            service_spec: None,
+        }
+    }
+
+    #[test]
+    fn role_negotiation_targets_only_from_and_to() {
+        let from = actor(1, "client-a");
+        let to = actor(2, "server");
+        let bystander = actor(3, "client-b");
+
+        let mut client_map = HashMap::new();
+        client_map.insert("ws-from".to_string(), from.clone());
+        client_map.insert("ws-to".to_string(), to.clone());
+        client_map.insert("ws-bystander".to_string(), bystander);
+
+        let (from_client_id, to_client_id) =
+            resolve_role_negotiation_targets(&client_map, "ws-from", &from, &to);
+
+        assert_eq!(from_client_id, "ws-from");
+        assert_eq!(to_client_id.as_deref(), Some("ws-to"));
+    }
+
+    #[test]
+    fn role_negotiation_falls_back_to_sender_when_from_not_bound() {
+        let from = actor(1, "client-a");
+        let to = actor(2, "server");
+
+        let mut client_map = HashMap::new();
+        client_map.insert("ws-to".to_string(), to.clone());
+
+        let (from_client_id, to_client_id) =
+            resolve_role_negotiation_targets(&client_map, "ws-sender", &from, &to);
+
+        assert_eq!(from_client_id, "ws-sender");
+        assert_eq!(to_client_id.as_deref(), Some("ws-to"));
+    }
+
+    #[test]
+    fn route_candidates_skip_unbound_history_rows() {
+        let source = actor(10, "echo-client-app");
+        let target_type = ActrType {
+            manufacturer: "acme".to_string(),
+            name: "EchoService".to_string(),
+            version: "0.1.0".to_string(),
+        };
+        let registry = vec![
+            registered_actor(1, "EchoService", ""),
+            registered_actor(4, "EchoService", "ws-live"),
+            registered_actor(5, "EchoService", ""),
+            registered_actor(6, "OtherService", "ws-other"),
+        ];
+
+        let (candidates, ws_address_map, skipped_unbound) =
+            collect_reachable_route_candidates(&registry, &source, &target_type);
+
+        assert_eq!(candidates, vec![actor(4, "EchoService")]);
+        assert_eq!(ws_address_map.len(), 1);
+        assert_eq!(ws_address_map[0].candidate_id, actor(4, "EchoService"));
+        assert_eq!(skipped_unbound, 2);
+    }
 }

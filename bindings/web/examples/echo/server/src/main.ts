@@ -152,6 +152,26 @@ function handleSwLog(data: {
     msg = msg.replace(/^\s*WARN\s+/, '⚠️ ');
     msg = msg.replace(/^\s*ERROR\s+/, '❌ ');
 
+    let statsChanged = false;
+    if (
+        msg.includes('[Scheduler] Processing RPC request:') &&
+        msg.includes('route_key=echo.EchoService.Echo')
+    ) {
+        requestCount++;
+        statsChanged = true;
+    }
+    if (msg.includes('[Scheduler] Service handler success:')) {
+        successCount++;
+        statsChanged = true;
+    }
+    if (msg.includes('[Scheduler] Service handler error:')) {
+        errorCount++;
+        statsChanged = true;
+    }
+    if (statsChanged) {
+        updateStatsUI();
+    }
+
     log(uiLevel, msg);
 }
 

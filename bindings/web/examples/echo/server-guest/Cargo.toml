@@ -27,6 +27,7 @@ actr-protocol = { path = "../../../../../core/protocol" }
 anyhow = "1.0"
 async-trait = "0.1"
 bytes = "1.0"
+log = "0.4"
 prost = "0.14"
 serde = { version = "1.0", features = ["derive"] }
 

@@ -29,10 +29,10 @@ use std::sync::Arc;
 use actr_mailbox_web::{IndexedDbMailbox, Mailbox, MessageRecord};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Ping,
-    RegisterRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
-    ServiceAvailabilityState, SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling,
-    route_candidates_request, session_description, signaling_envelope, signaling_to_actr,
+    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Ping, RegisterRequest,
+    RoleNegotiation, RouteCandidatesRequest, RpcEnvelope, ServiceAvailabilityState,
+    SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling, route_candidates_request,
+    session_description, signaling_envelope, signaling_to_actr,
 };
 use actr_protocol::{IceCandidate, SessionDescription, prost_types};
 use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, WebAisClient};
@@ -1398,6 +1398,16 @@ impl SwRuntime {
     async fn ensure_peer(&mut self) -> Result<String, JsValue> {
         let target = self.discover_target().await?;
         let peer_id = target.to_string_repr();
+
+        if self.peer_requires_reconnect(&peer_id) {
+            log::warn!(
+                "[SW] ensure_peer: reconnecting stale peer={} state={:?}",
+                peer_id,
+                self.peer_connection_states.get(&peer_id)
+            );
+            self.reset_peer_for_reconnect(&peer_id);
+        }
+
         if !self.known_peers.contains(&peer_id) {
             self.send_webrtc_command("create_peer", &peer_id, JsValue::NULL)?;
             self.known_peers.insert(peer_id.clone());
@@ -1886,6 +1896,27 @@ impl SwRuntime {
 
                 match data.state.as_str() {
                     "disconnected" => {
+                        // Treat all previously opened lanes as stale once the
+                        // peer enters disconnected. Some browsers do not emit
+                        // per-channel close events promptly during refresh/
+                        // reload churn, so relying on `datachannel_close`
+                        // alone leaves `open_channels` falsely marked open and
+                        // prevents the next outbound RPC from forcing a clean
+                        // reconnect.
+                        self.open_channels.remove(&data.peer_id);
+                        if let Some(ctx) =
+                            CLIENTS.with(|cell| cell.borrow().get(&self.client_id).map(Rc::clone))
+                        {
+                            let dest = actr_web_common::Dest::Peer(data.peer_id.clone());
+                            if let Err(e) = ctx.transport_manager.close_transport(&dest).await {
+                                log::warn!(
+                                    "[SW] disconnected: failed to close transport for peer={} error={}",
+                                    data.peer_id,
+                                    e
+                                );
+                            }
+                        }
+
                         // Only the offerer should initiate ICE restart
                         let is_offerer = self
                             .role_assignments
@@ -1909,6 +1940,18 @@ impl SwRuntime {
                             "[SW] connection_state_changed: peer={} FAILED — cleaning up immediately",
                             data.peer_id
                         );
+                        if let Some(ctx) =
+                            CLIENTS.with(|cell| cell.borrow().get(&self.client_id).map(Rc::clone))
+                        {
+                            let dest = actr_web_common::Dest::Peer(data.peer_id.clone());
+                            if let Err(e) = ctx.transport_manager.close_transport(&dest).await {
+                                log::warn!(
+                                    "[SW] failed: failed to close transport for peer={} error={}",
+                                    data.peer_id,
+                                    e
+                                );
+                            }
+                        }
                         self.send_webrtc_command("close_peer", &data.peer_id, JsValue::NULL)?;
                         self.ice_restart_inflight.remove(&data.peer_id);
                         self.ice_restart_attempts.remove(&data.peer_id);
@@ -1939,6 +1982,18 @@ impl SwRuntime {
                     }
                     "closed" => {
                         // Peer is fully closed, clean up all associated state
+                        if let Some(ctx) =
+                            CLIENTS.with(|cell| cell.borrow().get(&self.client_id).map(Rc::clone))
+                        {
+                            let dest = actr_web_common::Dest::Peer(data.peer_id.clone());
+                            if let Err(e) = ctx.transport_manager.close_transport(&dest).await {
+                                log::warn!(
+                                    "[SW] closed: failed to close transport for peer={} error={}",
+                                    data.peer_id,
+                                    e
+                                );
+                            }
+                        }
                         self.ice_restart_inflight.remove(&data.peer_id);
                         self.ice_restart_attempts.remove(&data.peer_id);
                         self.known_peers.remove(&data.peer_id);
@@ -1999,16 +2054,11 @@ impl SwRuntime {
                         data.action,
                         data.error
                     );
-                    // If the error is about a missing peer, clean up stale state
-                    if data.error.contains("not found") {
-                        self.known_peers.remove(&data.peer_id);
-                        self.open_channels.remove(&data.peer_id);
-                        self.role_negotiated.remove(&data.peer_id);
-                        self.role_assignments.remove(&data.peer_id);
-                        self.ice_restart_inflight.remove(&data.peer_id);
-                        self.ice_restart_attempts.remove(&data.peer_id);
-                        self.peer_connection_states.remove(&data.peer_id);
-                        log::info!("[SW] cleaned up stale peer state for peer={}", data.peer_id);
+                    let should_reset_peer = data.error.contains("not found")
+                        || data.error.starts_with("datachannel_not_open:");
+                    if should_reset_peer {
+                        self.handle_stale_peer_failure(&data.peer_id, &data.action, &data.error)
+                            .await?;
                     }
                 }
             }
@@ -2122,6 +2172,55 @@ impl SwRuntime {
             .insert(channel_id);
     }
 
+    fn peer_requires_reconnect(&self, peer_id: &str) -> bool {
+        match self.peer_connection_states.get(peer_id).map(String::as_str) {
+            Some("disconnected" | "failed" | "closed") => true,
+            _ => false,
+        }
+    }
+
+    fn reset_peer_for_reconnect(&mut self, peer_id: &str) {
+        let _ = self.send_webrtc_command("close_peer", peer_id, JsValue::NULL);
+        self.known_peers.remove(peer_id);
+        self.open_channels.remove(peer_id);
+        self.pending_channel_data.remove(peer_id);
+        self.role_negotiated.remove(peer_id);
+        self.role_assignments.remove(peer_id);
+        self.peer_connection_states.remove(peer_id);
+        self.ice_restart_inflight.remove(peer_id);
+        self.ice_restart_attempts.remove(peer_id);
+    }
+
+    async fn handle_stale_peer_failure(
+        &mut self,
+        peer_id: &str,
+        action: &str,
+        error: &str,
+    ) -> Result<(), JsValue> {
+        log::warn!(
+            "[SW] stale peer send failure: peer={} action={} error={}",
+            peer_id,
+            action,
+            error
+        );
+
+        if let Some(ctx) = CLIENTS.with(|cell| cell.borrow().get(&self.client_id).map(Rc::clone)) {
+            let dest = actr_web_common::Dest::Peer(peer_id.to_string());
+            if let Err(e) = ctx.transport_manager.close_transport(&dest).await {
+                log::warn!(
+                    "[SW] stale peer cleanup: failed to close transport for peer={} error={}",
+                    peer_id,
+                    e
+                );
+            }
+        }
+
+        self.reset_peer_for_reconnect(peer_id);
+        self.invalidate_discovered_target(peer_id);
+        self.notify_connection_failure(peer_id)?;
+        Ok(())
+    }
+
     #[allow(dead_code)]
     fn queue_channel_data(&mut self, peer_id: &str, data: Vec<u8>) {
         self.pending_channel_data
@@ -2201,10 +2300,16 @@ impl SwRuntime {
                     let _ = self.send_dom_message(&msg_js_value);
                 }
                 PendingRpcTarget::Internal => {
-                    // Internal RPCs: resolved via System/HostGate error handling
+                    // Internal RPCs use HostGate oneshots under workload dispatch.
+                    // Reject the sender so ctx.call_raw() fails fast.
                     CLIENTS.with(|cell| {
                         if let Some(ctx) = cell.borrow().get(&self.client_id) {
-                            ctx.system.handle_remote_response(request_id, Bytes::new());
+                            ctx.system.host_gate().reject_request(request_id);
+                        } else {
+                            log::warn!(
+                                "[SW] notify_connection_failure: client context missing for client_id={}",
+                                self.client_id
+                            );
                         }
                     });
                 }
@@ -3072,6 +3177,12 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             let rt = runtime_for_response.lock().await;
             match result {
                 Ok(response_bytes) => {
+                    log::info!(
+                        "[SW] workload_dom_response: client_id={} request_id={} ok len={}",
+                        rt.client_id,
+                        request_id,
+                        response_bytes.len()
+                    );
                     let js_payload: JsValue =
                         js_sys::Uint8Array::from(response_bytes.as_slice()).into();
                     let response = SwMessage {
@@ -3087,6 +3198,12 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
                     }
                 }
                 Err(err) => {
+                    log::error!(
+                        "[SW] workload_dom_response: client_id={} request_id={} err={}",
+                        rt.client_id,
+                        request_id,
+                        err
+                    );
                     log::error!(
                         "[SW] Handler error: request_id={} error={}",
                         request_id,

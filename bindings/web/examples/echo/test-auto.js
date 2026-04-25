@@ -259,6 +259,38 @@ async function sendEchoMessage(page, message, timeout = TIMEOUT_ECHO) {
 }
 
 /**
+ * Retry a labeled echo send until the exact reply appears in client logs.
+ *
+ * Useful for post-refresh recovery checks where the first outbound attempt may
+ * race a transient reconnect window even though the client becomes healthy
+ * shortly afterwards.
+ */
+async function sendEchoMessageWithRetry(page, message, timeout = TIMEOUT_LONG) {
+    const deadline = Date.now() + timeout;
+    let lastError = null;
+
+    while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        if (remaining < 5000) break;
+
+        try {
+            await sendEchoMessage(page, message, Math.min(TIMEOUT_ECHO, remaining - 1000));
+            const logs = await getClientLogs(page);
+            if (logs.some((l) => l.includes('📥') && l.includes(message))) {
+                return;
+            }
+            lastError = new Error(`Reply for "${message}" not found after send`);
+        } catch (error) {
+            lastError = error;
+        }
+
+        await sleep(2000);
+    }
+
+    throw lastError || new Error(`sendEchoMessageWithRetry: failed for "${message}"`);
+}
+
+/**
  * Get all log entries from the client #result element.
  */
 async function getClientLogs(page) {
@@ -385,7 +417,7 @@ async function waitForEchoWorking(page, timeout = TIMEOUT_LONG) {
 async function closeAllPages(browser) {
     const pages = await browser.pages();
     for (let i = pages.length - 1; i >= 1; i--) {
-        await pages[i].close().catch(() => { });
+        await pages[i].close({ runBeforeUnload: true }).catch(() => { });
     }
     // Give SW time to detect client disconnections and clean up
     if (pages.length > 1) await sleep(3000);
@@ -571,8 +603,8 @@ async function suiteBasicFunction(browser) {
             if (!newLogs.includes('📥')) throw new Error('Enter key did not trigger send+reply');
         });
     } finally {
-        if (serverCtx) await serverCtx.page.close().catch(() => { });
-        if (clientCtx) await clientCtx.page.close().catch(() => { });
+        if (serverCtx) await serverCtx.page.close({ runBeforeUnload: true }).catch(() => { });
+        if (clientCtx) await clientCtx.page.close({ runBeforeUnload: true }).catch(() => { });
     }
 }
 
@@ -960,7 +992,7 @@ async function suiteMultiTab(browser) {
             }
 
             // Client1 should also still work
-            await sendEchoMessage(client1.page, 'c1-after-c2-refresh');
+            await sendEchoMessageWithRetry(client1.page, 'c1-after-c2-refresh', TIMEOUT_LONG);
             const logs1 = await getClientLogs(client1.page);
             if (!logs1.some((l) => l.includes('📥') && l.includes('c1-after-c2-refresh'))) {
                 throw new Error('Client1 broken after client2 refresh');

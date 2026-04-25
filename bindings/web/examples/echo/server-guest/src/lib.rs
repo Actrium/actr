@@ -68,8 +68,11 @@ pub struct EchoService;
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl EchoServiceHandler for EchoService {
     async fn echo<C: Context>(&self, req: EchoRequest, _ctx: &C) -> ActorResult<EchoResponse> {
+        log::info!("📨 Echo request message='{}'", req.message);
+        let reply = format!("Echo: {}", req.message);
+        log::info!("📤 Echo response reply='{}'", reply);
         Ok(EchoResponse {
-            reply: format!("Echo: {}", req.message),
+            reply,
             timestamp: current_timestamp(),
         })
     }

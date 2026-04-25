@@ -100,6 +100,7 @@ let wsProbeDone = false;
 
 const clientPorts = new Map();
 const browserToSwClient = new Map();
+let staleCleanupTimer = null;
 
 async function cleanupStaleClients() {
     if (!wasmReady) return;
@@ -121,6 +122,16 @@ async function cleanupStaleClients() {
     } catch (e) {
         console.warn('[SW] cleanupStaleClients error:', e);
     }
+}
+
+function scheduleStaleClientCleanup(delayMs = 0) {
+    if (staleCleanupTimer) {
+        clearTimeout(staleCleanupTimer);
+    }
+    staleCleanupTimer = setTimeout(() => {
+        staleCleanupTimer = null;
+        cleanupStaleClients();
+    }, delayMs);
 }
 
 function emitSwLog(level, message, detail) {
@@ -485,11 +496,30 @@ self.addEventListener('activate', (event) => {
     event.waitUntil(self.clients.claim());
 });
 
-self.addEventListener('message', (event) => {
+self.addEventListener('message', async (event) => {
     if (event.data && event.data.type === 'PING') {
         if (event.source && event.source.postMessage) {
             event.source.postMessage({ type: 'PONG' });
         }
+        return;
+    }
+
+    if (event.data && event.data.type === 'CLIENT_UNREGISTER') {
+        const clientId = event.data.clientId;
+        if (!clientId) return;
+        try {
+            await ensureWasmReady();
+            await wasm_bindgen.unregister_client(clientId);
+        } catch (e) {
+            console.warn('[SW] top-level unregister_client error for', clientId, ':', e);
+        }
+        clientPorts.delete(clientId);
+        for (const [browserId, swClientId] of browserToSwClient.entries()) {
+            if (swClientId === clientId) {
+                browserToSwClient.delete(browserId);
+            }
+        }
+        emitSwLog('info', 'client_unregistered', { clientId, variant: 'cm', source: 'top-level' });
         return;
     }
 
@@ -505,13 +535,32 @@ self.addEventListener('message', (event) => {
         RUNTIME_CONFIG = event.data.runtimeConfig;
     }
 
-    clientPorts.set(clientId, port);
     const browserId = event.source && event.source.id;
+    if (browserId) {
+        const previousClientId = browserToSwClient.get(browserId);
+        if (previousClientId && previousClientId !== clientId) {
+            console.log('[SW] browser client remapped, unregistering previous client:', previousClientId, 'browser:', browserId);
+            const previousPort = clientPorts.get(previousClientId);
+            if (previousPort) {
+                try { previousPort.close(); } catch (_) { /* ignore */ }
+                clientPorts.delete(previousClientId);
+            }
+            try {
+                await ensureWasmReady();
+                await wasm_bindgen.unregister_client(previousClientId);
+            } catch (e) {
+                console.warn('[SW] remap unregister_client error for', previousClientId, ':', e);
+            }
+        }
+    }
+
+    clientPorts.set(clientId, port);
     if (browserId) {
         browserToSwClient.set(browserId, clientId);
     }
 
     cleanupStaleClients();
+    scheduleStaleClientCleanup(1500);
 
     console.log('[SW] port initialized for client:', clientId, 'total:', clientPorts.size);
 
@@ -527,7 +576,9 @@ self.addEventListener('message', (event) => {
         totalClients: clientPorts.size,
     });
 
-    port.onmessage = async (portEvent) => {
+    let portMessageChain = Promise.resolve();
+
+    async function processPortMessage(message) {
         try {
             await ensureWasmReady();
         } catch (error) {
@@ -535,7 +586,6 @@ self.addEventListener('message', (event) => {
             return;
         }
 
-        const message = portEvent.data;
         if (!message || !message.type) return;
 
         switch (message.type) {
@@ -581,10 +631,36 @@ self.addEventListener('message', (event) => {
                 }
                 break;
 
+            case 'unregister_client':
+                try {
+                    await wasm_bindgen.unregister_client(clientId);
+                    clientPorts.delete(clientId);
+                    for (const [browserId, swClientId] of browserToSwClient.entries()) {
+                        if (swClientId === clientId) {
+                            browserToSwClient.delete(browserId);
+                        }
+                    }
+                    emitSwLog('info', 'client_unregistered', { clientId, variant: 'cm' });
+                } catch (error) {
+                    console.error('[SW] unregister_client failed:', error);
+                    emitSwLog('error', 'unregister_client_failed', { clientId, error: String(error) });
+                }
+                break;
+
             default:
                 console.log('[SW] unknown message type:', message.type);
                 break;
         }
+    }
+
+    port.onmessage = (portEvent) => {
+        const message = portEvent.data;
+        portMessageChain = portMessageChain
+            .then(() => processPortMessage(message))
+            .catch((error) => {
+                console.error('[SW] port message pipeline failed:', error);
+                emitSwLog('error', 'port_message_pipeline_failed', String(error));
+            });
     };
 
     port.start();

@@ -5,6 +5,7 @@
 use super::dest_transport::DestTransport;
 use super::wire_builder::WireBuilder;
 use actr_web_common::{Dest, PayloadType, WebResult};
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use std::sync::Arc;
 
@@ -68,90 +69,73 @@ impl PeerTransport {
     /// 2. If `Connecting`, wait until completion
     /// 3. If missing, insert `Connecting`, create it, then promote to `Connected`
     pub async fn get_or_create_transport(&self, dest: &Dest) -> WebResult<Arc<DestTransport>> {
-        // 1. Fast path: check whether it already exists.
-        if let Some(entry) = self.transports.get(dest) {
-            match entry.value() {
-                DestState::Connected(transport) => {
-                    log::debug!("[PeerTransport] Reusing existing DestTransport: {:?}", dest);
-                    return Ok(Arc::clone(transport));
-                }
-                DestState::Connecting(_rx) => {
-                    // Wait for the ongoing creation to finish.
-                    log::debug!("[PeerTransport] Waiting for ongoing connection: {:?}", dest);
-                    drop(entry); // Release the lock.
+        loop {
+            // 1. Fast path: reuse the established transport if present.
+            if let Some(entry) = self.transports.get(dest) {
+                match entry.value() {
+                    DestState::Connected(transport) => {
+                        log::debug!("[PeerTransport] Reusing existing DestTransport: {:?}", dest);
+                        return Ok(Arc::clone(transport));
+                    }
+                    DestState::Connecting(_rx) => {
+                        log::debug!("[PeerTransport] Waiting for ongoing connection: {:?}", dest);
+                        drop(entry);
 
-                    // Note: a oneshot receiver can only be consumed once, so this
-                    // simplified implementation rechecks the map instead.
-                    loop {
-                        if let Some(entry) = self.transports.get(dest) {
-                            if let DestState::Connected(transport) = entry.value() {
-                                return Ok(Arc::clone(transport));
-                            }
-                        }
-
-                        // Retry after a short delay using `gloo_timers`, which works in SW.
+                        // A oneshot receiver can only be consumed once, so wait for
+                        // the state machine to publish `Connected` in the map.
                         gloo_timers::future::TimeoutFuture::new(10).await;
+                        continue;
                     }
                 }
             }
-        }
 
-        // 2. Slow path: create a new connection.
-        log::info!("[PeerTransport] Creating new connection for: {:?}", dest);
-
-        // Create the oneshot channel.
-        let (tx, rx) = futures::channel::oneshot::channel();
-
-        // Try to insert the `Connecting` state.
-        let inserted = self
-            .transports
-            .insert(dest.clone(), DestState::Connecting(Arc::new(rx)))
-            .is_none();
-
-        if !inserted {
-            // Another caller inserted it first, so wait for that path.
-            return Box::pin(self.get_or_create_transport(dest)).await;
-        }
-
-        // This caller is responsible for creating the connection.
-        let result = async {
-            let connections = self.wire_builder.create_connections(dest).await?;
-
-            // Zero initial connections are allowed. `WireBuilder` may only trigger
-            // asynchronous connection creation, such as asking the DOM to create P2P.
-            // The real `WireHandle` can be injected later, and `DestTransport`
-            // waits on `ReadyWatcher` in its event-driven send loop.
-            log::info!(
-                "[PeerTransport] Creating DestTransport: {:?} ({} initial connections)",
-                dest,
-                connections.len()
-            );
-
-            let transport = DestTransport::new(dest.clone(), connections).await?;
-            Ok(Arc::new(transport))
-        }
-        .await;
-
-        // Update the state.
-        match result {
-            Ok(transport) => {
-                log::info!("[PeerTransport] Connection established: {:?}", dest);
-                self.transports
-                    .insert(dest.clone(), DestState::Connected(Arc::clone(&transport)));
-
-                // Notify waiters.
-                tx.send(Arc::clone(&transport)).ok();
-
-                Ok(transport)
+            // 2. Slow path: publish `Connecting` only if the slot is still vacant.
+            let (tx, rx) = futures::channel::oneshot::channel();
+            match self.transports.entry(dest.clone()) {
+                Entry::Occupied(entry) => {
+                    drop(entry);
+                    gloo_timers::future::TimeoutFuture::new(10).await;
+                    continue;
+                }
+                Entry::Vacant(entry) => {
+                    log::info!("[PeerTransport] Creating new connection for: {:?}", dest);
+                    entry.insert(DestState::Connecting(Arc::new(rx)));
+                }
             }
-            Err(e) => {
-                log::error!("[PeerTransport] Connection failed: {:?}: {}", dest, e);
-                self.transports.remove(dest);
 
-                // Notify waiters of failure by closing the channel.
-                drop(tx);
+            // 3. This caller owns creation for the now-reserved slot.
+            let result = async {
+                let connections = self.wire_builder.create_connections(dest).await?;
 
-                Err(e)
+                // Zero initial connections are allowed. `WireBuilder` may only trigger
+                // asynchronous connection creation, such as asking the DOM to create P2P.
+                // The real `WireHandle` can be injected later, and `DestTransport`
+                // waits on `ReadyWatcher` in its event-driven send loop.
+                log::info!(
+                    "[PeerTransport] Creating DestTransport: {:?} ({} initial connections)",
+                    dest,
+                    connections.len()
+                );
+
+                let transport = DestTransport::new(dest.clone(), connections).await?;
+                Ok(Arc::new(transport))
+            }
+            .await;
+
+            match result {
+                Ok(transport) => {
+                    log::info!("[PeerTransport] Connection established: {:?}", dest);
+                    self.transports
+                        .insert(dest.clone(), DestState::Connected(Arc::clone(&transport)));
+                    tx.send(Arc::clone(&transport)).ok();
+                    return Ok(transport);
+                }
+                Err(e) => {
+                    log::error!("[PeerTransport] Connection failed: {:?}: {}", dest, e);
+                    self.transports.remove(dest);
+                    drop(tx);
+                    return Err(e);
+                }
             }
         }
     }
@@ -263,7 +247,9 @@ impl PeerTransport {
         wire_handle: super::wire_handle::WireHandle,
     ) -> WebResult<()> {
         let transport = self.get_or_create_transport(dest).await?;
-        transport.wire_pool().add_connection(wire_handle);
+        // Replace any stale ready handle immediately so the next send cannot
+        // race on an orphaned MessagePort after a DOM-side rebind.
+        transport.wire_pool().reconnect(wire_handle);
         log::info!("[PeerTransport] Injected connection into {:?}", dest);
         Ok(())
     }

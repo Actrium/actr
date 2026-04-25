@@ -308,6 +308,7 @@
         class ServiceWorkerBridge {
             constructor() {
                 this.swPort = null;
+                this.swTarget = null;
                 this.handlers = new Set();
                 this._ready = null;
                 this._resolveReady = null;
@@ -327,6 +328,7 @@
                 }
                 const target = navigator.serviceWorker.controller ?? reg.active;
                 if (!target) throw new Error('SW target not available');
+                this.swTarget = target;
                 const ch = new MessageChannel();
                 this.swPort = ch.port1;
                 this.swPort.onmessage = e => this._dispatch(e.data);
@@ -344,7 +346,18 @@
             onMessage(handler) { this.handlers.add(handler); return () => this.handlers.delete(handler); }
             _dispatch(msg) { for (const h of this.handlers) { try { h(msg); } catch (e) { console.error('[Bridge]', e); } } }
             getClientId() { return this.clientId; }
-            close() { if (this.swPort) { this.swPort.close(); this.swPort = null; } this.handlers.clear(); }
+            close() {
+                if (this.swTarget && this.swTarget.postMessage) {
+                    try { this.swTarget.postMessage({ type: 'CLIENT_UNREGISTER', clientId: this.clientId }); } catch (_) { }
+                }
+                if (this.swPort) {
+                    try { this.swPort.postMessage({ type: 'unregister_client' }); } catch (_) { }
+                    this.swPort.close();
+                    this.swPort = null;
+                }
+                this.swTarget = null;
+                this.handlers.clear();
+            }
         }
 
         // ── WebRtcCoordinator ──
@@ -353,6 +366,9 @@
                 this.bridge = bridge;
                 this.forwarder = forwarder;
                 this.peers = new Map();
+                this.pendingSends = new Map();
+                this.pendingPortFrames = new Map();
+                this.rpcPorts = new Map();
                 this.turnCred = null;
                 this.iceServers = config.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }];
                 this.icePolicy = config.iceTransportPolicy;
@@ -368,6 +384,30 @@
                     else if (m.type === 'update_turn_credential') {
                         this.turnCred = { username: m.payload.username, credential: m.payload.password };
                     }
+                });
+            }
+            _canBindRpcPort(peer, ch) {
+                return !!(peer
+                    && ch
+                    && ch.readyState === 'open'
+                    && peer.state === 'connected'
+                    && peer.connection
+                    && peer.connection.connectionState === 'connected');
+            }
+            _dropRpcPort(pid) {
+                const port = this.rpcPorts.get(pid);
+                if (port) {
+                    try { port.close(); } catch (_) { }
+                    this.rpcPorts.delete(pid);
+                }
+            }
+            _reportStaleRpcPeer(pid, peer, ch, reason = 'unknown') {
+                const state = ch ? ch.readyState : (peer ? peer.state : 'missing');
+                console.log(`[HostPage] staleRpcPeer peer=${pid} reason=${reason} state=${state}`);
+                this._notify('command_error', {
+                    peerId: pid,
+                    action: 'send_port_frame',
+                    error: `datachannel_not_open:${state}`,
                 });
             }
             async _handle(cmd) {
@@ -387,7 +427,15 @@
                 } catch (e) { this._notify('command_error', { peerId, action, error: String(e) }); }
             }
             _createPeer(peerId) {
-                if (this.peers.has(peerId)) return;
+                const existing = this.peers.get(peerId);
+                if (existing) {
+                    const state = existing.connection && existing.connection.connectionState
+                        ? existing.connection.connectionState
+                        : existing.state;
+                    if (state === 'connected' || state === 'connecting') return;
+                    console.log(`[HostPage] replaceStalePeer peer=${peerId} state=${state}`);
+                    this._close(peerId);
+                }
                 const servers = (this.iceServers || []).map(s => {
                     const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
                     if (urls.some(u => u.startsWith('turn:') || u.startsWith('turns:')) && this.turnCred) {
@@ -402,6 +450,13 @@
                 pc.onconnectionstatechange = () => {
                     this._notify('connection_state_changed', { peerId, state: pc.connectionState });
                     const p = this.peers.get(peerId); if (p) p.state = pc.connectionState;
+                    if (pc.connectionState === 'connected') {
+                        const rpc = dcs.get(0);
+                        if (this._canBindRpcPort(this.peers.get(peerId), rpc)) this._bindRpcPort(peerId, rpc, 'connection_state_connected');
+                    } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+                        this._dropRpcPort(peerId);
+                        this._dropPendingPeerFrames(peerId);
+                    }
                 };
                 this.peers.set(peerId, { peerId, connection: pc, dataChannels: dcs, state: pc.connectionState });
             }
@@ -419,8 +474,99 @@
             }
             _send(pid, cid, data) {
                 const p = this.peers.get(pid); if (!p) { this._notify('command_error', { peerId: pid, action: 'send_data', error: 'no peer' }); return; }
-                const ch = p.dataChannels.get(cid); if (!ch) return;
-                if (ch.readyState === 'open') { const out = new Uint8Array(1 + data.byteLength); out[0] = cid; out.set(data, 1); ch.send(out); }
+                const ch = p.dataChannels.get(cid);
+                if (!ch) { this._queuePendingSend(pid, cid, data); return; }
+                if (ch.readyState === 'open') {
+                    const out = new Uint8Array(1 + data.byteLength);
+                    out[0] = cid;
+                    out.set(data, 1);
+                    ch.send(out);
+                    return;
+                }
+                if (ch.readyState === 'connecting') {
+                    this._queuePendingSend(pid, cid, data);
+                    return;
+                }
+                this._dropPendingPeerFrames(pid);
+                this._notify('command_error', { peerId: pid, action: 'send_data', error: `datachannel_not_open:${ch.readyState}` });
+            }
+            _queuePendingSend(pid, cid, data) {
+                let byChannel = this.pendingSends.get(pid);
+                if (!byChannel) {
+                    byChannel = new Map();
+                    this.pendingSends.set(pid, byChannel);
+                }
+                let queue = byChannel.get(cid);
+                if (!queue) {
+                    queue = [];
+                    byChannel.set(cid, queue);
+                }
+                queue.push(new Uint8Array(data));
+            }
+            _flushPendingSends(pid, cid) {
+                const byChannel = this.pendingSends.get(pid);
+                const queue = byChannel && byChannel.get(cid);
+                if (!queue || queue.length === 0) return;
+                byChannel.delete(cid);
+                if (byChannel.size === 0) this.pendingSends.delete(pid);
+                for (const payload of queue) this._send(pid, cid, payload);
+            }
+            _queuePendingPortFrame(pid, frame) {
+                let queue = this.pendingPortFrames.get(pid);
+                if (!queue) {
+                    queue = [];
+                    this.pendingPortFrames.set(pid, queue);
+                }
+                queue.push(new Uint8Array(frame));
+            }
+            _dropPendingPeerFrames(pid) {
+                this.pendingSends.delete(pid);
+                this.pendingPortFrames.delete(pid);
+            }
+            _bindRpcPort(pid, ch, reason = 'unknown') {
+                const peer = this.peers.get(pid);
+                if (!this._canBindRpcPort(peer, ch)) {
+                    console.log(`[HostPage] skipBindRpcPort peer=${pid} reason=${reason} state=${peer ? peer.state : 'missing'} dc=${ch ? ch.readyState : 'missing'}`);
+                    return;
+                }
+                const prev = this.rpcPorts.get(pid);
+                if (prev) {
+                    try { prev.close(); } catch (_) { }
+                }
+                console.log(`[HostPage] bindRpcPort peer=${pid} reason=${reason}`);
+                const mc = new MessageChannel();
+                mc.port1.onmessage = e => {
+                    const src = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
+                    const out = new Uint8Array(1 + (src.length - 5));
+                    out[0] = src[0];
+                    out.set(src.subarray(5), 1);
+                    if (ch.readyState === 'open') ch.send(out);
+                    else if (ch.readyState === 'connecting') this._queuePendingPortFrame(pid, out);
+                    else {
+                        this._dropPendingPeerFrames(pid);
+                        this._notify('command_error', { peerId: pid, action: 'send_port_frame', error: `datachannel_not_open:${ch.readyState}` });
+                    }
+                };
+                this.rpcPorts.set(pid, mc.port1);
+                this.bridge.sendDataChannelPort(pid, mc.port2);
+                this._flushPendingPortFrames(pid, ch);
+            }
+            refreshRpcPorts(reason = 'manual_refresh') {
+                for (const [pid, peer] of this.peers.entries()) {
+                    const rpc = peer.dataChannels.get(0);
+                    if (this._canBindRpcPort(peer, rpc)) {
+                        this._bindRpcPort(pid, rpc, reason);
+                    } else if (reason === 'call_raw' && (rpc || peer.state !== 'connected')) {
+                        this._reportStaleRpcPeer(pid, peer, rpc, reason);
+                    }
+                }
+            }
+            _flushPendingPortFrames(pid, ch) {
+                const queue = this.pendingPortFrames.get(pid);
+                if (!queue || queue.length === 0) return;
+                if (ch.readyState !== 'open') return;
+                this.pendingPortFrames.delete(pid);
+                for (const frame of queue) ch.send(frame);
             }
             _attach(pid, lid, ch) {
                 ch.binaryType = 'arraybuffer';
@@ -436,17 +582,17 @@
                 ch.onopen = () => {
                     this._notify('datachannel_open', { peerId: pid, channelId: lid, label: ch.label });
                     if (lid === 0) {
-                        const mc = new MessageChannel();
-                        mc.port1.onmessage = e => {
-                            if (ch.readyState === 'open') {
-                                const src = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
-                                const out = new Uint8Array(1 + (src.length - 5)); out[0] = src[0]; out.set(src.subarray(5), 1); ch.send(out);
-                            }
-                        };
-                        this.bridge.sendDataChannelPort(pid, mc.port2);
+                        this._bindRpcPort(pid, ch, 'channel_open');
                     }
+                    this._flushPendingSends(pid, lid);
                 };
-                ch.onclose = () => this._notify('datachannel_close', { peerId: pid, channelId: lid });
+                ch.onclose = () => {
+                    if (lid === 0) {
+                        this._dropRpcPort(pid);
+                    }
+                    this._dropPendingPeerFrames(pid);
+                    this._notify('datachannel_close', { peerId: pid, channelId: lid });
+                };
                 const p = this.peers.get(pid); if (p) p.dataChannels.set(lid, ch);
             }
             async _ensureChannels(pid) {
@@ -456,6 +602,9 @@
             _close(pid) {
                 const p = this.peers.get(pid); if (!p) return;
                 for (const c of p.dataChannels.values()) c.close(); p.connection.close(); this.peers.delete(pid);
+                this._dropRpcPort(pid);
+                this.pendingSends.delete(pid);
+                this.pendingPortFrames.delete(pid);
             }
             _notify(eventType, data) { this.bridge.sendToSW({ type: 'webrtc_event', payload: { eventType, data } }); }
             dispose() { for (const pid of this.peers.keys()) this._close(pid); }
@@ -527,6 +676,7 @@
 
         // Global bridge ref (used by callRaw)
         let _bridge = null;
+        let _coordinator = null;
         let _rpcId = 0;
         const _pendingRpc = new Map();
 
@@ -551,6 +701,22 @@
             while (resultEl.children.length > 200) resultEl.removeChild(resultEl.firstChild);
         }
 
+        function shouldMirrorRuntimeLog(msg) {
+            return msg.includes('route_candidates')
+                || msg.includes('role_negotiation')
+                || msg.includes('handle_dom_control')
+                || msg.includes('workload_dom_response')
+                || msg.includes('host.call-raw')
+                || msg.includes('State Path: request')
+                || msg.includes('[Scheduler]')
+                || msg.includes('send_channel_data')
+                || msg.includes('register_datachannel_port')
+                || msg.includes('handle_rpc_response')
+                || msg.includes('connection_state_changed')
+                || msg.includes('datachannel_open')
+                || msg.includes('datachannel_close');
+        }
+
         /** Generic runtime log (also writes .log-entry to #log, for SW events) */
         function runtimeLog(level, msg) {
             const d = document.createElement('div');
@@ -558,6 +724,7 @@
             d.innerHTML = '<span class="time">' + timeStr() + '</span>' + escapeHtml(msg);
             logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
             while (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
+            if (shouldMirrorRuntimeLog(msg)) console.log('[HostRuntime]', msg);
         }
 
         function updateInboundStats() {
@@ -566,10 +733,29 @@
             document.getElementById('errorCount').textContent = String(errorCount);
         }
 
+        function applyInboundStatsFromRuntimeLog(msg) {
+            let changed = false;
+            if (msg.includes('[Scheduler] Processing RPC request:') && msg.includes('route_key=echo.EchoService.Echo')) {
+                requestCount++;
+                changed = true;
+            }
+            if (msg.includes('[Scheduler] Service handler success:')) {
+                successCount++;
+                changed = true;
+            }
+            if (msg.includes('[Scheduler] Service handler error:')) {
+                errorCount++;
+                changed = true;
+            }
+            if (changed) updateInboundStats();
+        }
+
         /** callRaw — send RPC via SW bridge (mirrors @actr/web ActorRef.callRaw) */
         function callRaw(routeKey, payload, timeout) {
             timeout = timeout || 30000;
+            if (_coordinator) _coordinator.refreshRpcPorts('call_raw');
             const requestId = 'req_' + (++_rpcId) + '_' + Date.now();
+            console.log('[HostPage] callRaw send request_id=' + requestId + ' clientId=' + (_bridge ? _bridge.getClientId() : 'none') + ' route=' + routeKey);
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
                     _pendingRpc.delete(requestId);
@@ -649,11 +835,13 @@
 
                 const forwarder = new FastPathForwarder(bridge);
                 const coordinator = new WebRtcCoordinator(bridge, forwarder, { iceServers, iceTransportPolicy: cfg.force_relay ? 'relay' : undefined });
+                _coordinator = coordinator;
 
                 // Handle RPC responses for callRaw (client mode)
                 bridge.onMessage(m => {
                     if (m.type === 'control_response' && m.payload) {
                         const { request_id, data, error } = m.payload;
+                        console.log('[HostPage] control_response request_id=' + request_id + ' clientId=' + bridge.getClientId() + ' error=' + (error ? (error.code || '?') + ':' + (error.message || '') : 'none'));
                         const pending = _pendingRpc.get(request_id);
                         if (pending) {
                             clearTimeout(pending.timer);
@@ -683,6 +871,7 @@
                         msg = msg.replace(/^\s*INFO\s+/, '');
                         msg = msg.replace(/^\s*WARN\s+/, '⚠️ ');
                         msg = msg.replace(/^\s*ERROR\s+/, '❌ ');
+                        applyInboundStatsFromRuntimeLog(msg);
                         runtimeLog(e.data.level || 'info', msg);
                     } else if (e.data.type === 'echo_event') {
                         switch (e.data.event) {

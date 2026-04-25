@@ -26,6 +26,9 @@ export class WebRtcCoordinator {
   private swBridge: ServiceWorkerBridge;
   private forwarder: FastPathForwarder;
   private peers: Map<string, PeerConnectionInfo> = new Map();
+  private pendingSends: Map<string, Map<number, Uint8Array[]>> = new Map();
+  private pendingPortFrames: Map<string, Uint8Array[]> = new Map();
+  private rpcPorts: Map<string, MessagePort> = new Map();
   private config: WebRtcConfig;
   /** Dynamic TURN credentials received from SW (AIS registration) */
   private turnCredential: { username: string; credential: string } | null = null;
@@ -68,13 +71,62 @@ export class WebRtcCoordinator {
     });
   }
 
+  private canBindRpcPort(
+    peer: PeerConnectionInfo | undefined,
+    channel: RTCDataChannel | undefined
+  ): boolean {
+    return !!(
+      peer &&
+      channel &&
+      channel.readyState === 'open' &&
+      peer.state === 'connected' &&
+      peer.connection.connectionState === 'connected'
+    );
+  }
+
+  private dropRpcPort(peerId: string): void {
+    const port = this.rpcPorts.get(peerId);
+    if (!port) {
+      return;
+    }
+
+    try {
+      port.close();
+    } catch {
+      // Ignore close errors for stale ports.
+    }
+    this.rpcPorts.delete(peerId);
+  }
+
+  private reportStaleRpcPeer(
+    peerId: string,
+    peer: PeerConnectionInfo | undefined,
+    channel: RTCDataChannel | undefined,
+    reason = 'unknown'
+  ): void {
+    const state = channel?.readyState ?? peer?.state ?? 'missing';
+    console.log(`[HostPage] staleRpcPeer peer=${peerId} reason=${reason} state=${state}`);
+    this.notifySW('command_error', {
+      peerId,
+      action: 'send_port_frame',
+      error: `datachannel_not_open:${state}`,
+    });
+  }
+
   /**
    *  Peer Connection
    */
   async createPeerConnection(peerId: string): Promise<void> {
-    if (this.peers.has(peerId)) {
-      console.warn(`[WebRTC] Peer ${peerId} already exists`);
-      return;
+    const existing = this.peers.get(peerId);
+    if (existing) {
+      const state = existing.connection.connectionState || existing.state;
+      if (state === 'connected' || state === 'connecting') {
+        console.warn(`[WebRTC] Peer ${peerId} already exists`);
+        return;
+      }
+
+      console.warn(`[WebRTC] Replacing stale peer ${peerId} state=${state}`);
+      this.closePeerConnection(peerId);
     }
 
     // Build ICE server list with TURN credentials injected
@@ -139,6 +191,20 @@ export class WebRtcCoordinator {
       const peerInfo = this.peers.get(peerId);
       if (peerInfo) {
         peerInfo.state = connection.connectionState;
+      }
+
+      if (connection.connectionState === 'connected') {
+        const rpcChannel = dataChannels.get(0);
+        if (this.canBindRpcPort(this.peers.get(peerId), rpcChannel)) {
+          this.bindRpcPort(peerId, rpcChannel);
+        }
+      } else if (
+        connection.connectionState === 'disconnected' ||
+        connection.connectionState === 'failed' ||
+        connection.connectionState === 'closed'
+      ) {
+        this.dropRpcPort(peerId);
+        this.dropPendingPeerFrames(peerId);
       }
     };
 
@@ -414,6 +480,7 @@ export class WebRtcCoordinator {
     const channel = peer.dataChannels.get(channelId);
     if (!channel) {
       console.warn(`[WebRTC] sendData: DataChannel ${channelId} not found for peer ${peerId}`);
+      this.queuePendingSend(peerId, channelId, data);
       return;
     }
 
@@ -430,8 +497,114 @@ export class WebRtcCoordinator {
       // This avoids unnecessary memory copying.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       channel.send(out as any);
+    } else if (channel.readyState === 'connecting') {
+      this.queuePendingSend(peerId, channelId, data);
     } else {
       console.warn(`[WebRTC] DataChannel ${channelId} not open (state: ${channel.readyState})`);
+      this.dropPendingPeerFrames(peerId);
+      this.notifySW('command_error', {
+        peerId,
+        action: 'send_data',
+        error: `datachannel_not_open:${channel.readyState}`,
+      });
+    }
+  }
+
+  private queuePendingSend(peerId: string, channelId: number, data: Uint8Array): void {
+    let byChannel = this.pendingSends.get(peerId);
+    if (!byChannel) {
+      byChannel = new Map();
+      this.pendingSends.set(peerId, byChannel);
+    }
+    let queue = byChannel.get(channelId);
+    if (!queue) {
+      queue = [];
+      byChannel.set(channelId, queue);
+    }
+    queue.push(new Uint8Array(data));
+  }
+
+  private queuePendingPortFrame(peerId: string, frame: Uint8Array): void {
+    const queue = this.pendingPortFrames.get(peerId) ?? [];
+    queue.push(new Uint8Array(frame));
+    this.pendingPortFrames.set(peerId, queue);
+  }
+
+  private dropPendingPeerFrames(peerId: string): void {
+    this.pendingSends.delete(peerId);
+    this.pendingPortFrames.delete(peerId);
+  }
+
+  private bindRpcPort(peerId: string, channel: RTCDataChannel): void {
+    const peer = this.peers.get(peerId);
+    if (!this.canBindRpcPort(peer, channel)) {
+      console.log(
+        `[HostPage] skipBindRpcPort peer=${peerId} state=${peer?.state ?? 'missing'} dc=${channel.readyState}`
+      );
+      return;
+    }
+
+    const previousPort = this.rpcPorts.get(peerId);
+    if (previousPort) {
+      try {
+        previousPort.close();
+      } catch {
+        // Ignore close errors for stale ports.
+      }
+    }
+
+    const mc = new MessageChannel();
+    mc.port1.onmessage = (e: MessageEvent) => {
+      const src = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : (e.data as Uint8Array);
+      const out = new Uint8Array(1 + (src.length - 5));
+      out[0] = src[0]; // PayloadType byte
+      out.set(src.subarray(5), 1); // Data after header
+
+      if (channel.readyState === 'open') {
+        channel.send(out);
+      } else if (channel.readyState === 'connecting') {
+        this.queuePendingPortFrame(peerId, out);
+      } else {
+        this.dropPendingPeerFrames(peerId);
+        this.notifySW('command_error', {
+          peerId,
+          action: 'send_port_frame',
+          error: `datachannel_not_open:${channel.readyState}`,
+        });
+      }
+    };
+
+    this.rpcPorts.set(peerId, mc.port1);
+    this.swBridge.sendDataChannelPort(peerId, mc.port2);
+    this.flushPendingPortFrames(peerId, channel);
+  }
+
+  private flushPendingSends(peerId: string, channelId: number): void {
+    const byChannel = this.pendingSends.get(peerId);
+    const queue = byChannel?.get(channelId);
+    if (!queue || queue.length === 0) {
+      return;
+    }
+
+    byChannel?.delete(channelId);
+    if (byChannel && byChannel.size === 0) {
+      this.pendingSends.delete(peerId);
+    }
+
+    for (const payload of queue) {
+      this.sendData(peerId, channelId, payload);
+    }
+  }
+
+  private flushPendingPortFrames(peerId: string, channel: RTCDataChannel): void {
+    const queue = this.pendingPortFrames.get(peerId);
+    if (!queue || queue.length === 0 || channel.readyState !== 'open') {
+      return;
+    }
+
+    this.pendingPortFrames.delete(peerId);
+    for (const frame of queue) {
+      channel.send(frame);
     }
   }
 
@@ -467,35 +640,18 @@ export class WebRtcCoordinator {
       // and uses it as the virtual channel_id for stream_id construction, so the SW
       // can correctly route channel 0/1 → RPC and channel 2/3 → data_stream.
       if (laneId === 0) {
-        const mc = new MessageChannel();
-        mc.port1.onmessage = (e: MessageEvent) => {
-          if (channel.readyState === 'open') {
-            // SW DataLane::PostMessage payload has a 5-byte header:
-            //   [PayloadType(1) | Length(4) | Data(N)]
-            // We strip the 4-byte Length field but KEEP the PayloadType byte so
-            // the receiver can route correctly.  Result: [PayloadType(1) | Data(N)]
-            if (e.data instanceof ArrayBuffer) {
-              const src = new Uint8Array(e.data);
-              const out = new Uint8Array(1 + (src.byteLength - 5));
-              out[0] = src[0]; // PayloadType byte
-              out.set(src.subarray(5), 1); // Data after header
-              channel.send(out);
-            } else {
-              const src = e.data as Uint8Array;
-              const out = new Uint8Array(1 + (src.length - 5));
-              out[0] = src[0]; // PayloadType byte
-              out.set(src.subarray(5), 1); // Data after header
-              channel.send(out);
-            }
-          }
-        };
-        // port2 as Transferable to SW → WirePool → DataLane::PostMessage
-        this.swBridge.sendDataChannelPort(peerId, mc.port2);
+        this.bindRpcPort(peerId, channel);
       }
+
+      this.flushPendingSends(peerId, laneId);
     };
 
     channel.onclose = () => {
       console.log(`[WebRTC] DataChannel ${channel.label} closed`); // [DEBUG] Keep for now
+      if (laneId === 0) {
+        this.dropRpcPort(peerId);
+      }
+      this.dropPendingPeerFrames(peerId);
       this.notifySW('datachannel_close', {
         peerId,
         channelId: laneId,
@@ -550,6 +706,8 @@ export class WebRtcCoordinator {
     peer.connection.close();
 
     this.peers.delete(peerId);
+    this.dropRpcPort(peerId);
+    this.dropPendingPeerFrames(peerId);
     console.log(`[WebRTC] Peer connection closed: ${peerId}`);
   }
 
