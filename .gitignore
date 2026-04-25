@@ -11,6 +11,7 @@ logs/
 .vscode/
 .idea/
 .serena/
+.claude/
 *.swp
 *.swo
 *~
@@ -65,3 +66,6 @@ release/reports/
 
 # Git worktrees
 .worktrees/
+
+# Standalone smoke-test crate ([workspace] of its own — lockfile is not tracked)
+bindings/web/crates/framework-web-entry-smoke/Cargo.lock
