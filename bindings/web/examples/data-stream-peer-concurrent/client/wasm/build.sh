@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Clear host-toolchain RUSTFLAGS so host-linker flags (e.g. `-fuse-ld=mold`
+# from a global ~/.cargo/config.toml `[build] rustflags`) don't leak into
+# the wasm32 target build — rust-lld errors out on them.
+export RUSTFLAGS=""
+export CARGO_ENCODED_RUSTFLAGS=""
+
 TMPDIR="${TMPDIR:-$(pwd)/.tmp}"
 export TMPDIR
 mkdir -p "$TMPDIR"

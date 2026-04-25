@@ -320,7 +320,7 @@ Option U 核心路径已落地（Phase 0-4 完成，BasicFunction 6/6 PASS）。
 | # | 项目 | 状态 | 落点 |
 |---|------|------|------|
 | 5.1 | CI drift check：`cargo run -p actr-wit-compile-web -- --check` 与 `bash bindings/web/scripts/sync-cli-assets.sh --check` 双 gate | ✓ | `.github/workflows/ci-web.yml` |
-| 5.2 | `wit-lint` 与 `wit-compile-web` 并存关系：两者各自职责文档化（lint 仍用 `wit-parser=0.247.0`，与编译器钉同版本） | 待办（低优先） | 后续在 `tools/wit-lint/README.md` 补一段 |
+| 5.2 | `wit-lint` 与 `wit-compile-web` 并存关系：两者各自职责文档化（lint 仍用 `wit-parser=0.247.0`，与编译器钉同版本） | ✓ | `tools/wit-lint/README.md` 末段对比表（"Relationship to actr-wit-compile-web"） |
 | 5.3 | T18 doc 标"已绕开（Option U）"作为实际采用路径 | ✓ | `t18-jco-async-lift-hang.zh.md` 头部 |
 | 5.4 | Option U doc 进度快照刷新 | ✓ | 本文档 §进度快照 |
 | 5.5 | CM 路径 deprecate 节奏决策 | ✓ | **决策**：Phase 7 跳过 + Phase 8 直接删（见进度快照 Phase 7/8 行）。删除已落地，全套 e2e（BasicFunction + MultiTab 12/12）通过 |

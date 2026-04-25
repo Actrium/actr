@@ -16,7 +16,6 @@ pub mod keepalive;
 pub mod lifecycle;
 pub mod system;
 pub mod transport;
-pub mod webrtc;
 
 pub use actr_web_common::{
     ConnectionState, ConnectionStrategy, Dest, ErrorCategory, ErrorContext, ErrorSeverity,
@@ -31,7 +30,6 @@ pub use keepalive::ServiceWorkerKeepalive;
 pub use lifecycle::DomLifecycleManager;
 pub use system::DomSystem;
 pub use transport::{DataLane, DomTransport, PostMessageLaneBuilder};
-pub use webrtc::WebRtcCoordinator;
 
 /// Initialize the DOM runtime.
 ///

@@ -514,6 +514,11 @@ impl WasmWorkload {
     /// Phase 1 exposes this as a distinct entry point so the host can
     /// pump the lifecycle after instantiation. Returns `Err` on a host
     /// trap or an `actr-error` variant from the guest.
+    ///
+    /// Currently only consumed by `test_support` (gated on `test-utils`),
+    /// so the gate matches; remove the gate once a production caller
+    /// pumps lifecycle here.
+    #[cfg(feature = "test-utils")]
     pub(crate) async fn call_on_start(&mut self) -> WasmResult<()> {
         let result = self
             .bindings

@@ -2173,10 +2173,10 @@ impl SwRuntime {
     }
 
     fn peer_requires_reconnect(&self, peer_id: &str) -> bool {
-        match self.peer_connection_states.get(peer_id).map(String::as_str) {
-            Some("disconnected" | "failed" | "closed") => true,
-            _ => false,
-        }
+        matches!(
+            self.peer_connection_states.get(peer_id).map(String::as_str),
+            Some("disconnected" | "failed" | "closed")
+        )
     }
 
     fn reset_peer_for_reconnect(&mut self, peer_id: &str) {

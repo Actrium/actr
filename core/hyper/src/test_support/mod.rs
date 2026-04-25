@@ -4,7 +4,10 @@
 //! so their public APIs are treated as externally reachable rather than dead
 //! code inside each individual integration test crate.
 
-use crate::{BinaryKind, HostAbiFn, Hyper, InvocationContext, WorkloadPackage};
+use crate::{BinaryKind, Hyper, WorkloadPackage};
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+use crate::{HostAbiFn, InvocationContext};
+#[cfg(feature = "dynclib-engine")]
 use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_pack::PackageManifest;
 

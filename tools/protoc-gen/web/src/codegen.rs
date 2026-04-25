@@ -1047,6 +1047,8 @@ fn make_executable(path: &Path) -> Result<(), String> {
         std::fs::set_permissions(path, perms)
             .map_err(|e| format!("Failed to set permissions: {e}"))?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 

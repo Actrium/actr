@@ -67,5 +67,6 @@ release/reports/
 # Git worktrees
 .worktrees/
 
-# Standalone smoke-test crate ([workspace] of its own — lockfile is not tracked)
+# Standalone smoke / codegen-test crates ([workspace] of their own — lockfile not tracked)
 bindings/web/crates/framework-web-entry-smoke/Cargo.lock
+bindings/web/examples/codegen-test/Cargo.lock

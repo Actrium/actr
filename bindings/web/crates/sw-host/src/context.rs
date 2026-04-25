@@ -259,25 +259,23 @@ impl WebContext for RuntimeContext {
 
     async fn register_media_track(
         &self,
-        track_id: String,
+        _track_id: String,
         _callback: Box<dyn FnMut(Bytes) + 'static>,
     ) -> ActorResult<()> {
-        // TODO: Send the registration request to the DOM side via PostMessage.
-        // The DOM-side MediaFrameHandlerRegistry owns the actual callback.
-        log::info!(
-            "[Context] register_media_track: {} (forwarding to DOM)",
-            track_id
-        );
-        Ok(())
+        // Media-track fast path is intentionally not wired on the web target
+        // (see core/framework/src/web/context.rs §"DataStream / MediaTrack
+        // fast paths"). Returning Unavailable is consistent with the
+        // framework `WebContext` shape so callers fail loud rather than
+        // believe a registration that did nothing.
+        Err(actr_protocol::ActrError::Unavailable(
+            "register_media_track is not supported in the web runtime".to_string(),
+        ))
     }
 
-    async fn unregister_media_track(&self, track_id: &str) -> ActorResult<()> {
-        // TODO: Send the unregister request to the DOM side via PostMessage.
-        log::info!(
-            "[Context] unregister_media_track: {} (forwarding to DOM)",
-            track_id
-        );
-        Ok(())
+    async fn unregister_media_track(&self, _track_id: &str) -> ActorResult<()> {
+        Err(actr_protocol::ActrError::Unavailable(
+            "unregister_media_track is not supported in the web runtime".to_string(),
+        ))
     }
 
     // ========== Stream Sending ==========
