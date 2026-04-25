@@ -73,7 +73,12 @@ $ grep -rn "set_dom_channel\|set_dom_lane\|set_sw_channel" \
 
 ---
 
-## TD-002：sw-host wasm 产物到 `cli/assets/web-runtime/` 无自动同步
+## TD-002（**已解决**）：sw-host wasm 产物到 `cli/assets/web-runtime/` 无自动同步
+
+**状态**：已修复（2026-04-25）  
+**修复方式**：方案 B —— 新增 `bindings/web/scripts/sync-cli-assets.sh`，并在 `bindings/web/crates/sw-host/build.sh` 末尾自动调用。脚本支持 `--build`（顺带跑 wasm-pack）与 `--check`（CI drift gate）。  
+**覆盖文件**：`actr_sw_host_bg.wasm` / `actr_sw_host.js` / `actor.sw.js` / `actor-wbg.sw.js`（`actr-host.html` 在 cli/assets 是唯一源，不参与 sync）。  
+**遗留动作**：完成 sync 后仍需手动 `cargo build -p actr-cli --bin actr` 让 `include_bytes!` 重新嵌入；脚本结尾会打印这条提示。
 
 **发现时间**：2026-04-24
 **发现路径**：T18 H_X/H_Y bisect spike（诊断 agent 把 HX-PROBE 加进 `guest_bridge.rs` 并编译成功，但跑测试时零命中，排查后发现服务端 actr 读到的是老 wasm）
@@ -122,16 +127,16 @@ commit 548ad7d9 的 commit message 第一条明确提到过这点：
 
 推荐 **B**：显式、职责清晰、失败可见。
 
-### 如果不修复就应该知道的事
+### 修复后的工作流
 
-- 任何改了 sw-host 代码的 spike 都必须**手动**执行：
-  ```
-  cp bindings/web/dist/sw/actr_sw_host_bg.wasm cli/assets/web-runtime/
-  cp bindings/web/dist/sw/actr_sw_host.js     cli/assets/web-runtime/
-  cargo build -p actr-cli --bin actr
-  ```
-- 浏览器 e2e 出现"SW 侧 Rust 新加的日志没打印"时，**先怀疑 cli/assets 没同步**，而不是先怀疑代码逻辑
-- diagnostic agent prompt 里要显式提醒这一步（已更新 memory `feedback_puppeteer_sw_console.md` 范畴外的另一个 feedback 点可以考虑单独记）
+- 改 sw-host Rust 代码：`bash bindings/web/crates/sw-host/build.sh`（结尾自动 sync）→ `cargo build -p actr-cli --bin actr`
+- 改 `bindings/web/packages/web-sdk/src/actor*.sw.js`：`bash bindings/web/scripts/sync-cli-assets.sh` → `cargo build -p actr-cli --bin actr`
+- CI drift gate：`bash bindings/web/scripts/sync-cli-assets.sh --check`（在 PR 检查中阻断未同步的提交）
+
+### 历史教训
+
+- 浏览器 e2e 出现"SW 侧 Rust 新加的日志没打印"时，先怀疑 cli/assets 没同步，再怀疑代码逻辑
+- 用 `--check` 模式作为单一真相源：本地或 CI 都能用同一脚本判断是否漂移
 
 ---
 

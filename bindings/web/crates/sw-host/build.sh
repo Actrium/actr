@@ -44,3 +44,15 @@ EOF
 echo "✓ Service Worker Host built successfully"
 echo "  Output: dist/sw/"
 ls -lh ../../dist/sw/
+
+# Sync the freshly built wasm + JS glue into cli/assets/web-runtime/, where
+# the actr CLI embeds them via include_bytes!. Without this step, edits to
+# sw-host source silently drift from what `actr run --web` serves — see
+# bindings/web/docs/tech-debt.zh.md TD-002 for context.
+SYNC_SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/sync-cli-assets.sh"
+if [ -x "$SYNC_SCRIPT" ]; then
+  echo
+  bash "$SYNC_SCRIPT"
+else
+  echo "(skip sync: $SYNC_SCRIPT not executable)"
+fi
