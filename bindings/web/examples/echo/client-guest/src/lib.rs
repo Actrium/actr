@@ -19,10 +19,10 @@
 //! funnels through the `Context` trait, whose web and wasip2 impls both
 //! thread `request_id` through the host bridge.
 //!
-//! After `cargo build --target wasm32-wasip2`, the resulting
-//! `target/wasm32-wasip2/release/echo_client_guest_web.wasm` is a
-//! Component and must be further transpiled by `jco transpile
-//! --instantiation async` before the browser Service Worker can load it.
+//! `cargo build --target wasm32-wasip2` produces a Component Model binary
+//! consumed by the native wasmtime host (see core/hyper). Browser-side
+//! consumption goes through the `--features web` build instead — the
+//! Component Model + jco transpile path was deleted in Option U Phase 8.
 
 pub mod echo {
     include!(concat!(env!("OUT_DIR"), "/echo.rs"));

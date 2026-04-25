@@ -72,23 +72,24 @@ This is a complete, production-ready example demonstrating Actor-RTC Web communi
 
 ### Automated Setup (Recommended)
 
-There are two entry points depending on whether you want to run against a real
-`actrix` instance or the in-repo `mock-actrix` test server:
+Self-contained launcher using the in-repo `actr-mock-actrix` crate as
+signaling/AIS/MFR — no external `actrix` checkout or SQLite seeding required:
 
 ```bash
-# Option A — run against a real actrix binary (requires ../../../actrix checkout).
 cd bindings/web/examples/echo
-./start.sh
-
-# Option B — self-contained: use the actr-mock-actrix crate as signaling/AIS/MFR.
-#           No actrix checkout or SQLite seeding required.
 ./start-mock.sh [PORT]
 ```
 
 `start-mock.sh` launches the `mock-actrix` binary (`cargo run -p
 actr-mock-actrix --bin mock-actrix`), seeds the realm/MFR/packages via
-`register-mock.sh` (HTTP `/admin/*`, no `sqlite3`), and then runs the same
-puppeteer `test-auto.js BasicFunction` against the web client and server.
+`register-mock.sh` (HTTP `/admin/*`, no `sqlite3`), and then runs the
+puppeteer `test-auto.js` matrix (default `BasicFunction`; pass
+`SUITES='BasicFunction MultiTab'` for the full set) against the web client
+and server.
+
+The historical real-actrix entry (`start.sh`) was deleted with the
+Component Model browser path in Option U Phase 8 — the example now runs
+exclusively on the wasm-bindgen guest pipeline.
 
 The script will:
 1. ✅ Check dependencies (Rust, Node.js, protoc)
@@ -108,7 +109,7 @@ The script will:
 - **Node.js** 18+ (`https://nodejs.org/`)
 - **protoc** (`apt install protobuf-compiler` or `brew install protobuf`)
 - **wasm-pack** (`cargo install wasm-pack`)
-- **protoc-gen-grpc-web** (auto-installed by start.sh)
+- **protoc-gen-grpc-web** (auto-installed by start-mock.sh when needed)
 
 #### Step by Step
 
@@ -190,7 +191,7 @@ echo/
 │           ├── echo_pb.js
 │           └── EchoServiceClientPb.ts
 │
-├── start.sh                    # Automated launcher
+├── start-mock.sh               # Automated launcher (mock-actrix flavor)
 └── README.md                   # This file
 ```
 

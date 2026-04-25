@@ -154,7 +154,8 @@ function emitSwLog(level, message, detail) {
 // (kebab-case, from serde with `#[serde(rename = "...")]`).
 //
 // sw-host's `actr_id_to_js` emits `{ realm: { realmId }, serialNumber,
-// type: { manufacturer, name, version } }` (tuned for jco).
+// type: { manufacturer, name, version } }` (camelCase, the WBG guest's
+// `serde-wasm-bindgen` shape).
 // actr-web-abi `ActrId` deserialises from `{ realm: { "realm-id" },
 // "serial-number", type: {...} }`.
 // ─────────────────────────────────────────────────────────────────────────

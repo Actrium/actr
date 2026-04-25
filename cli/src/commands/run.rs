@@ -675,32 +675,6 @@ impl RunCommand {
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "package.actr".to_string());
 
-        // Resolve the jco-transpiled bundle directory sibling of the .actr.
-        // The Phase 3 browser pipeline packages the Component Model guest as
-        // a `.actr` (binary.kind=Component) plus a companion `<stem>.jco/`
-        // directory produced by `bindings/web/scripts/transpile-component.sh`.
-        // The Service Worker loads `<package_url>.jco/guest.js` at runtime;
-        // we expose the directory under the matching URL so the SW default
-        // convention works out-of-the-box.
-        let jco_dir = package_path.as_ref().and_then(|pkg_path| {
-            let stem = pkg_path.file_stem().map(|s| s.to_os_string())?;
-            let mut jco = pkg_path.with_file_name(stem);
-            jco.as_mut_os_string().push(".jco");
-            if jco.is_dir() { Some(jco) } else { None }
-        });
-        let jco_route_prefix = if jco_dir.is_some() {
-            // Derive the URL prefix from `<package_filename stem>.jco`. Must
-            // mirror the default SW convention (`<packageUrl>.jco/...`).
-            let stem = package_path
-                .as_ref()
-                .and_then(|p| p.file_stem())
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "package".to_string());
-            Some(format!("/packages/{}.jco", stem))
-        } else {
-            None
-        };
-
         // Option U / Phase 4: sibling `<stem>.wbg/` directory carrying the
         // wasm-bindgen guest bundle (produced by `wasm-pack --target
         // no-modules` from the unified guest crates, see Phase 6c). Mounted
@@ -735,14 +709,13 @@ impl RunCommand {
 
         // Build router:
         // 1. /actr-runtime-config.json — generated runtime config
-        // 2. /actor.sw.js — embedded Service Worker
+        // 2. /actor.sw.js — embedded Service Worker (wasm-bindgen guest bridge)
         // 3. /packages/actr_sw_host_bg.wasm — embedded SW host WASM
         // 4. /packages/actr_sw_host.js — embedded SW host JS glue
         // 5. /packages/<name>.actr — the .actr package from [package].path
-        // 6. /packages/<name>.jco/* — jco-transpiled Component ES module
-        //    bundle (sibling of the .actr; produced at build time by
-        //    `bindings/web/scripts/transpile-component.sh`). Only mounted
-        //    when the directory exists.
+        // 6. /packages/<name>.wbg/* — wasm-bindgen guest bundle sibling of
+        //    the .actr (produced at build time by `wasm-pack --target
+        //    no-modules`). Only mounted when the directory exists.
         // 7. / — embedded host HTML (fallback: static_dir)
         let mut app = Router::new()
             .route("/actr-runtime-config.json", get(serve_runtime_config))
@@ -751,15 +724,6 @@ impl RunCommand {
             .route("/packages/actr_sw_host.js", get(serve_runtime_js))
             .route("/packages/{filename}", get(serve_actr_package))
             .with_state(shared_state.clone());
-
-        if let (Some(jco_dir), Some(prefix)) = (jco_dir.as_ref(), jco_route_prefix.as_ref()) {
-            info!(
-                "📦 Mounting jco-transpiled bundle at {} -> {}",
-                prefix,
-                jco_dir.display()
-            );
-            app = app.nest_service(prefix, ServeDir::new(jco_dir));
-        }
 
         if let (Some(wbg_dir), Some(prefix)) = (wbg_dir.as_ref(), wbg_route_prefix.as_ref()) {
             info!(

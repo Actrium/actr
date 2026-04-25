@@ -15,12 +15,10 @@
 //! The user code below is identical in both branches — target and
 //! feature selection happens entirely inside the macro.
 //!
-//! After `cargo build --target wasm32-wasip2`, the resulting
-//! `target/wasm32-wasip2/release/echo_guest.wasm` is a Component and must
-//! be transpiled by `jco transpile --instantiation async`
-//! (see `bindings/web/scripts/transpile-component.sh`) before the browser
-//! Service Worker can load it. Under `--features web` the wasm-pack
-//! output is a plain core module consumed directly by the WBG SW path.
+//! `cargo build --target wasm32-wasip2` produces a Component Model binary
+//! consumed by the native wasmtime host (see core/hyper). Browser-side
+//! consumption goes through the `--features web` build instead — the
+//! Component Model + jco transpile path was deleted in Option U Phase 8.
 
 // ── Proto-generated types ────────────────────────────────────────────────────
 mod echo {

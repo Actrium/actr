@@ -1,38 +1,18 @@
-# Server
+# Server (TS Hono wrapper)
 server/target/
 server/Cargo.lock
-server/wasm/target/
-server/wasm/Cargo.lock
 
-# Client
+# Client (Vite + React)
 client/node_modules/
 client/dist/
-client/wasm/target/
-client/wasm/Cargo.lock
 
-# Server guest
+# Unified guest crates (Option U Phase 6c)
 server-guest/target/
 server-guest/Cargo.lock
-
-# Client guest
 client-guest/target/
 client-guest/Cargo.lock
 
-# Server/client guest (Option U / wasm-bindgen path)
-server-guest-wbg/target/
-server-guest-wbg/Cargo.lock
-server-guest-wbg/pkg/
-client-guest-wbg/target/
-client-guest-wbg/Cargo.lock
-client-guest-wbg/pkg/
-
-# Generated WASM artifacts
-server/public/echo_server_bg.wasm*
-server/public/echo_server.js
-server/public/echo_server.d.ts
-client/public/echo_client_bg.wasm*
-client/public/echo_client.js
-client/public/echo_client.d.ts
+# Generated TS bindings (proto -> ts)
 client/src/generated/
 
 # Release directory (ignore everything except dev-key.json)
