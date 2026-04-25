@@ -39,3 +39,9 @@ jobs:
       - name: Check web workspace
         working-directory: bindings/web
         run: cargo check --workspace --target wasm32-unknown-unknown --locked
+
+      - name: WIT codegen drift gate (Option U)
+        run: cargo run -p actr-wit-compile-web -- --check
+
+      - name: cli/assets sync drift gate
+        run: bash bindings/web/scripts/sync-cli-assets.sh --check

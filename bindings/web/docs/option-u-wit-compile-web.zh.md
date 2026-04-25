@@ -1,7 +1,7 @@
 # Option U：WIT → wasm-bindgen 编译器设计
 
-**状态**：Phase 0-4 已完成，Phase 5/6 待办（2026-04-24）
-**上下文文档**：[T18 分析](./t18-jco-async-lift-hang.zh.md) §7 选项空间；[TD-003 并发 dispatch context bug](./tech-debt.zh.md#td-003)；**[Phase 6 γ-unified 详细设计](./option-u-phase6-gamma-unified.zh.md)**
+**状态**：Phase 0-6 + TD-003/004/006 全部落地（2026-04-25）；Phase 5 收尾已合入；剩余 Phase 7/8 在 [§11](#11-phase-5--phase-6-todo下阶段执行清单) 列出。
+**上下文文档**：[T18 分析（已绕开）](./t18-jco-async-lift-hang.zh.md)；[TD-006 multi-client RPC 分析（已修）](./td-006-multi-client-rpc-analysis.zh.md)；**[Phase 6 γ-unified 详细设计](./option-u-phase6-gamma-unified.zh.md)**
 
 ## 进度快照
 
@@ -12,16 +12,20 @@
 | **2 guest.rs 生成** | ✓ | `actr-web-abi/src/guest.rs`（8 host imports + async wrappers） |
 | **3 host.rs 生成** | ✓ | `actr-web-abi/src/host.rs`（`Workload` trait + 17 `#[wasm_bindgen]` exports） |
 | **4 Echo 接入 + e2e** | ✓ | `server/client-guest-wbg` + `actor-wbg.sw.js` + `start-mock-wbg.sh`；**BasicFunction 6/6 PASS** |
-| **4.5 MultiTab 压测（pre-Phase-6）** | ⚠️ 部分 | 1/6（只 6-1 过）；后续被 γ + TD-004 α' + Phase 6c 推进到 **8/12** |
-| **5 CI drift + 文档收尾** | 待办 | CI 接 `cargo run -p actr-wit-compile-web -- --check`；T18 doc 标 resolved |
+| **5 CI drift + 文档收尾** | ✓ | `.github/workflows/ci-web.yml` 接 `actr-wit-compile-web --check` + `sync-cli-assets.sh --check`；T18 doc 标"已绕开" |
 | **6a-I γ-unified 整合** | ✓ | 6 commits；BasicFunction 6/6 ✓；架构落地 |
 | **6b entry! 宏 + protoc 跨 target** | ✓ | 5 commits（ServiceHandler + WebWorkloadAdapter + 宏 + protoc-gen + smoke test crate） |
 | **6c echo 一份化** | ✓ | 3 commits 合入 main（`87b3401d` / `a4ec581b` / `cff7f71a`），`*-guest-wbg` 已删，`*-guest` 单 crate 跨 target |
-| **TD-004 α'** | ✓ | cred namespace 按 client_id；mock-actrix rebind WARN；BasicFunction 6/6 保留 |
+| **TD-002 sync-cli-assets** | ✓ | `bindings/web/scripts/sync-cli-assets.sh` + sw-host build.sh 末尾自动触发 |
+| **TD-003 γ HashMap** | ✓ | `guest_bridge.rs::DISPATCH_CTXS: HashMap<RequestId, Ctx>` |
+| **TD-004 α'** | ✓ | cred namespace 按 client_id；mock-actrix rebind WARN |
+| **TD-006 multi-client RPC** | ✓ | mock-actrix relay 精确投递 + sw-host stale peer cleanup + DOM/SW client lifecycle 修复（commit `301c58d6`） |
+| **Phase 7 data-stream 迁 WBG** | 待办 | `bindings/web/examples/data-stream-peer-concurrent` 仍走 CM；迁后 Phase 8 才能删 CM |
+| **Phase 8 CM 路径删除** | 待办 | 依赖 Phase 7；目标删 jco / wit-bindgen async / actor.sw.js |
 
-**最终 MultiTab 结果（Phase 6 完成后）**：**8/12 PASS** — BasicFunction 6/6 + MultiTab 6-1 + MultiTab 6-6。剩余 4 个（6-2/6-3/6-4/6-5）被 [TD-006](./tech-debt.zh.md#td-006) 阻塞（2-client 并发 RPC 仍挂，嫌疑是 WebRTC 或 signaling 层第三处隐含单例 / 共享状态）。
+**最终 MultiTab 结果**：**`SUITES='BasicFunction MultiTab' bash start-mock-wbg.sh` 12/12 全过**。`1-0 Basic Echo Connectivity` / `6-2 Concurrent Multi-Client` / `6-3 Close One Client` / `6-4 Refresh One Client` / `6-5 Multiple Server Instances` 全部包含在内。
 
-Option U 核心路径已跑通 —— jco / Component Model / JSPI 全部绕开，echo 简单 RPC ✓。暴露出的 TD-003 是 sw-host 原有并发模型问题，不是 WBG 特有。
+Option U 核心路径已跑通 —— jco / Component Model / JSPI 全部绕开，echo 单 client + 多 client 都过。下一里程碑是 Phase 7（data-stream 迁 WBG）解锁 Phase 8（CM 路径整体删除）。
 
 ---
 
@@ -311,15 +315,15 @@ cargo run --example dump-wit-content -- core/framework/wit/actr-workload.wit
 
 Option U 核心路径已落地（Phase 0-4 完成，BasicFunction 6/6 PASS）。剩余工作拆两批：**Phase 5 是"收尾 + 保护"**，**Phase 6 是"并发修复"**。两者**逻辑上独立**，可以并行推，但 Phase 6 建议有架构决策后再动。
 
-### Phase 5：Option U 收尾（~0.5 天，无架构决策）
+### Phase 5：Option U 收尾（已完成）
 
-| # | 项目 | 成本 | 产物 |
+| # | 项目 | 状态 | 落点 |
 |---|------|------|------|
-| 5.1 | CI drift check：给 GitHub Actions / 本仓 CI 配置加一步 `cargo run -p actr-wit-compile-web -- --check`。失败即拦截 PR | 15 min | `.github/workflows/*` 或 `scripts/ci-*.sh` 一个增量 |
-| 5.2 | `wit-lint` 和 `wit-compile-web` 并存关系确认：是否合并 / 各自职责文档化 | 15 min | `tools/wit-lint/README.md` 加一段 / 或一份 TD |
-| 5.3 | T18 doc (`t18-jco-async-lift-hang.zh.md`) 加 §11：标记"Option U 绕开"作为实际采用路径；#1361 patch / jco fork 在 /tmp 留痕状态 | 15 min | T18 doc 更新 |
-| 5.4 | Option U doc 本身更新"进度快照"到 Phase 5-6 完成态 | 5 min | 本文档 |
-| 5.5 | decision：CM 路径何时 deprecate？data-stream-peer-concurrent 是否也迁 WBG？ | 讨论 | 本文档新增决策记录 |
+| 5.1 | CI drift check：`cargo run -p actr-wit-compile-web -- --check` 与 `bash bindings/web/scripts/sync-cli-assets.sh --check` 双 gate | ✓ | `.github/workflows/ci-web.yml` |
+| 5.2 | `wit-lint` 与 `wit-compile-web` 并存关系：两者各自职责文档化（lint 仍用 `wit-parser=0.247.0`，与编译器钉同版本） | 待办（低优先） | 后续在 `tools/wit-lint/README.md` 补一段 |
+| 5.3 | T18 doc 标"已绕开（Option U）"作为实际采用路径 | ✓ | `t18-jco-async-lift-hang.zh.md` 头部 |
+| 5.4 | Option U doc 进度快照刷新 | ✓ | 本文档 §进度快照 |
+| 5.5 | CM 路径 deprecate 节奏决策 | ✓（决策已记录） | **决策**：Phase 7 完成后在 Phase 8 一次性删除（user 选项 (b)）。在 Phase 7 完成前 CM 路径作为只读历史保留，但默认运行路径已经是 WBG（`ACTR_WEB_GUEST_MODE` 缺省即 wbg） |
 
 ### Phase 6：TD-003 并发 dispatch context（依赖架构决策）
 

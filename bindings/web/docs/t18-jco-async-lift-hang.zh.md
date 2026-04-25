@@ -1,9 +1,11 @@
 # T18: 浏览器 e2e 中 jco async-lift dispatch 永挂
 
-**状态**：未决（2026-04-24）
-**影响**：浏览器 Component Model 路径下的 e2e 跑不通。原生（native wasmtime）路径不受影响。
-**关联 commits**：`548ad7d9`（Component Model bridge 完成）、`c6deaeb0`（core/hyper pub 面收缩）、`b6b90f33`（TD-001）、`10e830da` / `936cd555` / `829aec4c`（诊断设施落盘）
-**关联文档**：[tech-debt.zh.md](./tech-debt.zh.md) TD-001 / TD-002
+**状态**：已绕开（2026-04-25）—— 浏览器主路径切到 Option U（WIT → wasm-bindgen 直产物），不再依赖 jco / JSPI。本节正文保留为修复前的诊断历史。  
+**当前生产路径**：`actr_framework::entry!` 宏 + `bindings/web/crates/actr-web-abi/`（由 `tools/wit-compile-web` 从 WIT 直接生成）+ `actor-wbg.sw.js`，整链已在 BasicFunction + MultiTab 12/12 e2e 中验证。  
+**CM 路径状态**：仍随仓内一份 `actor.sw.js` 保留作历史副本，但默认不再启用；`ACTR_WEB_GUEST_MODE=wbg` 已是事实主路径，CM 路径退役决策见 `option-u-phase6-gamma-unified.zh.md`。  
+**影响**（修复前历史描述）：浏览器 Component Model 路径下的 e2e 跑不通。原生（native wasmtime）路径不受影响。  
+**关联 commits**：`548ad7d9`（Component Model bridge 完成）、`c6deaeb0`（core/hyper pub 面收缩）、`b6b90f33`（TD-001）、`10e830da` / `936cd555` / `829aec4c`（诊断设施落盘）；Option U 主线 `87b3401d` / `301c58d6`  
+**关联文档**：[tech-debt.zh.md](./tech-debt.zh.md) TD-001 / TD-002、[option-u-wit-compile-web.zh.md](./option-u-wit-compile-web.zh.md)、[option-u-phase6-gamma-unified.zh.md](./option-u-phase6-gamma-unified.zh.md)
 
 ---
 
