@@ -19,7 +19,6 @@ pub mod system;
 pub mod trace;
 pub mod transport;
 pub mod web_context; // Web-specific Context trait
-pub mod webrtc_recovery;
 pub mod workload;
 pub use actr_framework::Workload;
 pub use actr_platform_web::WebPlatformProvider;
@@ -59,7 +58,6 @@ pub use workload::{ServiceHandlerFn, WasmWorkload}; // Re-export WebContext trai
 
 // Re-export actr_protocol so downstream crates don't need a direct dependency
 pub use actr_protocol;
-pub use webrtc_recovery::{RecoveryStatus, WebRtcRecoveryManager};
 
 #[cfg(test)]
 mod tests {

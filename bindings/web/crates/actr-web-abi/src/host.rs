@@ -6,12 +6,6 @@
 // Regenerate with: cargo run -p actr-wit-compile-web
 // Drift check:      cargo run -p actr-wit-compile-web -- --check
 
-// TODO(P6-I): wire `WebContext` into each exported fn. The
-// integration agent will swap the current no-context trait
-// calls for `ctx_insert(request_id, WebContext::new(...))` +
-// a `Handler<WebContext>` dispatch. Keep this file and the
-// `register_workload` signature stable until then.
-
 //! Host-side wrappers around `interface workload` exports.
 //!
 //! Emits an internal `Workload` trait and a set of

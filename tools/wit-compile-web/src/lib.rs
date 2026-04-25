@@ -707,14 +707,6 @@ fn emit_host(model: &WitModel) -> String {
     out.push_str(HEADER);
     out.push('\n');
     out.push_str(
-        "// TODO(P6-I): wire `WebContext` into each exported fn. The\n\
-         // integration agent will swap the current no-context trait\n\
-         // calls for `ctx_insert(request_id, WebContext::new(...))` +\n\
-         // a `Handler<WebContext>` dispatch. Keep this file and the\n\
-         // `register_workload` signature stable until then.\n\
-         \n",
-    );
-    out.push_str(
         "//! Host-side wrappers around `interface workload` exports.\n\
          //!\n\
          //! Emits an internal `Workload` trait and a set of\n\
@@ -1128,13 +1120,4 @@ mod tests {
         assert!(out.contains("#[wasm_bindgen(js_name = \"dispatch\")"));
     }
 
-    #[test]
-    fn host_rs_carries_p6i_todo() {
-        let model = load_inmem(MINI_WIT);
-        let out = emit_host(&model);
-        assert!(
-            out.contains("TODO(P6-I)"),
-            "P6-I integration hook comment is missing:\n{out}"
-        );
-    }
 }

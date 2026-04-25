@@ -128,16 +128,19 @@ impl SwErrorHandler {
                 }
             }
             ErrorSeverity::Critical => {
-                // Critical level: log it and trigger recovery.
+                // Critical: log, then leave recovery to subscribers. The
+                // framework intentionally does not bake in an automatic
+                // recovery policy — see `register_callback` for the
+                // application-level hook (e.g. echo's recovery harness in
+                // `actor-wbg.sw.js` listens here).
                 log::error!("[ErrorHandler] CRITICAL error: {}", report.message);
-
-                // TODO: trigger automatic recovery.
             }
             ErrorSeverity::Fatal => {
-                // Fatal level: log it and potentially require a full restart.
+                // Fatal: log loudly and let subscribers act. Same rationale
+                // as Critical above; the framework holds no policy on what a
+                // "fatal" event should trigger (full restart, surface to UI,
+                // page reload, ...) — that's host-application territory.
                 log::error!("[ErrorHandler] FATAL error: {}", report.message);
-
-                // TODO: trigger emergency recovery or notify the user.
             }
         }
     }

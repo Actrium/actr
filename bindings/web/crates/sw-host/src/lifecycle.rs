@@ -189,11 +189,13 @@ impl SwLifecycleManager {
 
     /// Handle the `DOM_PING` message.
     ///
-    /// Used by the DOM side to check whether the Service Worker is alive.
+    /// `DOM_PING` is fire-and-forget keepalive from the DOM side
+    /// (`bindings/web/crates/dom-bridge/src/lifecycle.rs::send_ping`): the
+    /// browser garbage-collects an idle Service Worker, so the DOM merely
+    /// has to *send* a message to keep this worker resident. The DOM does
+    /// not await a `SW_PONG`; logging here is sufficient.
     fn handle_dom_ping(session_id: &str) {
         log::debug!("[SwLifecycle] DOM_PING received from {}", session_id);
-
-        // TODO: send a PONG response once there is a return channel.
     }
 
     /// Clean up stale WebRTC connections.
@@ -444,8 +446,6 @@ mod tests {
     fn test_handle_dom_ping() {
         // Handling `DOM_PING` should not crash.
         SwLifecycleManager::handle_dom_ping("ping-session");
-
-        // TODO: Add stronger assertions once PONG responses are implemented.
     }
 
     #[test]

@@ -151,9 +151,15 @@ impl System {
                         .unwrap_or(false);
 
                     if is_local {
-                        // TODO: local actor calls (Phase 2).
+                        // In-SW local actor invocations are intentionally
+                        // unsupported on the web target: every actor lives in
+                        // its own browser tab / Service Worker pair, and
+                        // "local" addressing collapses to "same actor calling
+                        // itself" — which is a programming error. Reject loud
+                        // through the host gate so the caller's `await` returns
+                        // an error instead of hanging.
                         log::warn!(
-                            "[System] Local actor calls not yet implemented, request_id={}",
+                            "[System] Local actor invocation rejected (unsupported on web), request_id={}",
                             envelope.request_id
                         );
                         host_gate.reject_request(&envelope.request_id);
