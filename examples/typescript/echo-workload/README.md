@@ -11,6 +11,14 @@ This is a **guest workload** — the TS source becomes a wasm Component
 loaded inside an actr actor process. It is **not** a client SDK binding;
 for the Node.js client API, see `bindings/typescript/`.
 
+> **Note on `jco`:** this example uses `jco componentize` (JS → CM
+> wasm, server-side guest production). That is a different feature
+> from `jco transpile` (CM wasm → ES module, browser-side consumption),
+> which was deleted in Option U Phase 8 — see
+> `bindings/web/docs/option-u-wit-compile-web.zh.md` §11. The
+> `componentize` path is unaffected: server-side actr workloads still
+> run as Component Model guests inside wasmtime.
+
 ## Status: experimental / demo-only
 
 ComponentizeJS embeds the full StarlingMonkey SpiderMonkey build, so the
