@@ -2,16 +2,17 @@
 //!
 //! Routes incoming messages to the correct handling path based on PayloadType:
 //! - `RPC_RELIABLE` / `RPC_SIGNAL` -> Mailbox (State Path)
-//! - `STREAM_RELIABLE` / `STREAM_LATENCY_FIRST` -> DOM StreamHandlerRegistry (Fast Path)
-//! - `MEDIA_RTP` -> DOM MediaFrameRegistry (Fast Path, typically via WebRTC MediaTrack)
+//!
+//! `STREAM_*` and `MEDIA_RTP` are owned by the DOM-side JS Fast Path and are
+//! never delivered to this dispatcher. The historical Rust-side DOM lane was
+//! retired when the SW↔DOM control plane moved into JS (see TD-001 in
+//! `tech-debt.zh.md`).
 
 use actr_mailbox_web::{Mailbox, MessagePriority};
 use actr_web_common::{MessageFormat, PayloadType, WebError, WebResult};
-use parking_lot::Mutex;
 use std::sync::Arc;
 
 use crate::inbound::MailboxNotifier;
-use crate::transport::DataLane;
 
 /// Inbound message dispatcher.
 ///
@@ -19,9 +20,6 @@ use crate::transport::DataLane;
 pub struct InboundPacketDispatcher {
     /// Mailbox for State Path RPC messages.
     mailbox: Arc<dyn Mailbox>,
-
-    /// DOM communication lane used to forward Fast Path traffic.
-    dom_lane: Arc<Mutex<Option<DataLane>>>,
 
     /// Notifier used to wake MailboxProcessor when new messages arrive.
     notifier: Option<MailboxNotifier>,
@@ -32,7 +30,6 @@ impl InboundPacketDispatcher {
     pub fn new(mailbox: Arc<dyn Mailbox>) -> Self {
         Self {
             mailbox,
-            dom_lane: Arc::new(Mutex::new(None)),
             notifier: None,
         }
     }
@@ -41,13 +38,6 @@ impl InboundPacketDispatcher {
     pub fn with_notifier(mut self, notifier: MailboxNotifier) -> Self {
         self.notifier = Some(notifier);
         self
-    }
-
-    /// Set the DOM communication lane.
-    pub fn set_dom_lane(&self, lane: DataLane) {
-        let mut dom_lane = self.dom_lane.lock();
-        *dom_lane = Some(lane);
-        log::info!("[InboundPacketDispatcher] DOM lane set");
     }
 
     /// Dispatch a received message.
@@ -62,18 +52,24 @@ impl InboundPacketDispatcher {
                 self.dispatch_to_mailbox(from, message).await
             }
             PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                // Fast Path: forward to the DOM StreamHandlerRegistry.
-                self.dispatch_to_stream_registry(from, message).await
+                // Fast Path is handled in the DOM-side JS layer and must never arrive here.
+                log::error!(
+                    "[InboundPacketDispatcher] Unexpected STREAM payload routed to Rust dispatcher; \
+                     fast-path traffic should stay in the DOM-side JS bridge"
+                );
+                Err(WebError::Protocol(
+                    "STREAM payload reached SW Rust dispatcher".to_string(),
+                ))
             }
             PayloadType::MediaRtp => {
-                // Fast Path: forward to the DOM MediaFrameRegistry.
-                // MediaRtp normally should not arrive through DataChannel and is expected
-                // to flow through WebRTC track primitives instead.
-                log::warn!(
-                    "[InboundPacketDispatcher] Received MEDIA_RTP via DataChannel, \
-                     this is unusual. Media should come via RTCTrackRemote."
+                // MediaRtp is delivered via WebRTC track primitives in the DOM-side JS layer.
+                log::error!(
+                    "[InboundPacketDispatcher] Unexpected MEDIA_RTP routed to Rust dispatcher; \
+                     media frames should arrive via RTCTrackRemote on the DOM side"
                 );
-                self.dispatch_to_media_registry(from, message).await
+                Err(WebError::Protocol(
+                    "MEDIA_RTP reached SW Rust dispatcher".to_string(),
+                ))
             }
         }
     }
@@ -111,59 +107,6 @@ impl InboundPacketDispatcher {
         Ok(())
     }
 
-    /// Dispatch to StreamHandlerRegistry through the Fast Path.
-    ///
-    /// Forwards the message to the DOM-side StreamHandlerRegistry through the DOM lane.
-    async fn dispatch_to_stream_registry(
-        &self,
-        _from: Vec<u8>,
-        message: MessageFormat,
-    ) -> WebResult<()> {
-        let lane_opt = {
-            let dom_lane = self.dom_lane.lock();
-            dom_lane.clone()
-        };
-
-        if let Some(ref lane) = lane_opt {
-            // Forward to the DOM, which will parse and dispatch into StreamHandlerRegistry.
-            lane.send(message.data.clone())
-                .await
-                .map_err(|e| WebError::Transport(format!("Failed to forward to DOM: {}", e)))?;
-
-            log::debug!("[InboundPacketDispatcher] Stream message forwarded to DOM");
-        } else {
-            log::warn!("[InboundPacketDispatcher] DOM lane not set, cannot forward stream message");
-        }
-
-        Ok(())
-    }
-
-    /// Dispatch to MediaFrameRegistry through the Fast Path.
-    ///
-    /// Forwards the message to the DOM-side MediaFrameRegistry through the DOM lane.
-    async fn dispatch_to_media_registry(
-        &self,
-        _from: Vec<u8>,
-        message: MessageFormat,
-    ) -> WebResult<()> {
-        let lane_opt = {
-            let dom_lane = self.dom_lane.lock();
-            dom_lane.clone()
-        };
-
-        if let Some(ref lane) = lane_opt {
-            // Forward to the DOM, which will parse and dispatch into MediaFrameRegistry.
-            lane.send(message.data.clone())
-                .await
-                .map_err(|e| WebError::Transport(format!("Failed to forward to DOM: {}", e)))?;
-
-            log::debug!("[InboundPacketDispatcher] Media frame forwarded to DOM");
-        } else {
-            log::warn!("[InboundPacketDispatcher] DOM lane not set, cannot forward media frame");
-        }
-
-        Ok(())
-    }
 }
 
 #[cfg(test)]

@@ -2,14 +2,15 @@
 //!
 //! This wrapper:
 //! - Manages the WebSocket connection pool
-//! - Manages the PostMessage channel to the DOM side
-//! - Routes messages automatically based on `PayloadType`
-//! - Forwards `MEDIA_RTP` traffic to the DOM side
+//! - Routes RPC / stream traffic over WebSocket
+//!
+//! `MEDIA_RTP` traffic is owned by the DOM-side JS layer and never reaches
+//! this transport. The historical Rust-side DOM bridge was retired when the
+//! SW↔DOM control plane moved into JS (see TD-001 in `tech-debt.zh.md`).
 
 use super::lane::DataLane;
 use actr_web_common::{
-    ConnectionState, ConnectionStrategy, Dest, ForwardMessage, PayloadType, TransportStats,
-    WebError, WebResult,
+    ConnectionState, ConnectionStrategy, Dest, PayloadType, TransportStats, WebError, WebResult,
 };
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -30,9 +31,6 @@ pub struct SwTransport {
     /// WebSocket pool: `Dest -> (DataLane, ConnectionState)`.
     websocket_pool: Arc<DashMap<Dest, (DataLane, ConnectionState)>>,
 
-    /// DOM channel carried over PostMessage.
-    dom_channel: Arc<Mutex<Option<DataLane>>>,
-
     /// Connection strategy.
     strategy: ConnectionStrategy,
 
@@ -52,27 +50,11 @@ impl SwTransport {
         Self {
             local_id,
             websocket_pool: Arc::new(DashMap::new()),
-            dom_channel: Arc::new(Mutex::new(None)),
             strategy: strategy.unwrap_or_default(),
             stats: Arc::new(Mutex::new(TransportStats::default())),
             rx: Arc::new(Mutex::new(rx)),
             tx,
         }
-    }
-
-    /// Set the DOM channel.
-    ///
-    /// Called when the DOM side connects to the SW through a `MessagePort`.
-    pub fn set_dom_channel(&self, lane: DataLane) -> WebResult<()> {
-        let mut dom_channel = self.dom_channel.lock();
-        *dom_channel = Some(lane);
-
-        log::info!("[SwTransport] DOM channel established");
-
-        // Start the DOM receive loop.
-        self.start_dom_receiver();
-
-        Ok(())
     }
 
     /// Send a message.
@@ -100,9 +82,13 @@ impl SwTransport {
                 stats.messages_sent += 1;
             }
 
-            // MEDIA_RTP must be forwarded to the DOM side.
+            // MEDIA_RTP is owned by the DOM-side JS WebRTC path; it must not be
+            // routed through the SW transport.
             PayloadType::MediaRtp => {
-                self.forward_to_dom(dest, payload_type, data).await?;
+                return Err(WebError::Transport(
+                    "MEDIA_RTP must be sent via the DOM-side WebRTC path, not SwTransport"
+                        .to_string(),
+                ));
             }
         }
 
@@ -169,38 +155,6 @@ impl SwTransport {
         Ok(lane)
     }
 
-    /// Forward a message to the DOM side.
-    async fn forward_to_dom(
-        &self,
-        dest: &Dest,
-        payload_type: PayloadType,
-        data: Bytes,
-    ) -> WebResult<()> {
-        let lane_opt = {
-            let dom_channel = self.dom_channel.lock();
-            dom_channel.clone()
-        };
-
-        if let Some(lane) = lane_opt.as_ref() {
-            let forward_msg = ForwardMessage::new(dest.clone(), payload_type, data);
-            let serialized = forward_msg.serialize()?;
-
-            lane.send(serialized).await?;
-
-            log::trace!(
-                "[SwTransport] Forwarded to DOM: dest={:?}, payload_type={:?}",
-                dest,
-                payload_type
-            );
-
-            Ok(())
-        } else {
-            Err(WebError::Transport(
-                "DOM channel not available, cannot forward MEDIA_RTP".to_string(),
-            ))
-        }
-    }
-
     /// Start the WebSocket receive loop.
     fn start_websocket_receiver(&self, dest: Dest, lane: DataLane) {
         let tx = self.tx.clone();
@@ -225,61 +179,6 @@ impl SwTransport {
                         log::warn!("[SwTransport] WebSocket receiver closed: {:?}", dest);
                         break;
                     }
-                }
-            }
-        });
-    }
-
-    /// Start the DOM receive loop.
-    fn start_dom_receiver(&self) {
-        let dom_channel = self.dom_channel.clone();
-        let tx = self.tx.clone();
-
-        wasm_bindgen_futures::spawn_local(async move {
-            loop {
-                let lane = {
-                    let channel = dom_channel.lock();
-                    channel.as_ref().cloned()
-                };
-
-                if let Some(lane) = lane {
-                    match lane.recv().await {
-                        Some(data) => {
-                            // Parse the forwarded message.
-                            match ForwardMessage::deserialize(&data) {
-                                Ok(forward_msg) => {
-                                    log::trace!(
-                                        "[SwTransport] Received from DOM: dest={:?}, payload_type={:?}",
-                                        forward_msg.dest,
-                                        forward_msg.payload_type
-                                    );
-
-                                    if let Err(e) = tx.unbounded_send((
-                                        forward_msg.dest,
-                                        forward_msg.payload_type,
-                                        forward_msg.data,
-                                    )) {
-                                        log::error!(
-                                            "[SwTransport] Failed to forward DOM message: {:?}",
-                                            e
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    log::error!(
-                                        "[SwTransport] Failed to parse forward message: {:?}",
-                                        e
-                                    );
-                                }
-                            }
-                        }
-                        None => {
-                            log::warn!("[SwTransport] DOM receiver closed");
-                            break;
-                        }
-                    }
-                } else {
-                    break;
                 }
             }
         });

@@ -4,7 +4,16 @@
 
 ---
 
-## TD-001：SW↔DOM 的 Rust `DataLane` 桥接层有 5 个 zero-call setter
+## TD-001（**已解决**）：SW↔DOM 的 Rust `DataLane` 桥接层有 5 个 zero-call setter
+
+**状态**：已解决（2026-04-25）
+**修复方式**：方案 A —— 五个 setter 连同其字段、私有接收循环、私有转发方法及 `dispatch()`/`send()` 中 provably-dead 的 payload-type 分支一并删除；保留 `WebWireBuilder` / `SwTransport` / `InboundPacketDispatcher` / `DomTransport` / `WebRtcCoordinator` 五个结构体的构造器和其余仍被调用的方法（`pub use` 公开面不变）。`SwTransport::send` 与 `DomTransport::send` 中 RPC / MEDIA_RTP 等不再支持的分支改为返回 `WebError::Transport`，`InboundPacketDispatcher::dispatch` 对 STREAM / MEDIA_RTP 改为 `WebError::Protocol` + `log::error!`，避免静默吞掉路由错误。`WebRtcCoordinator` 退化为只持有 `peer_connections` + `close_peer/close_all` 的薄壳（`start()` / `handle_create_p2p` / `send_*` / `create_peer_connection` 全删）。`ServiceWorkerKeepalive` 类型本身保留（仍被 `pub use`），仅删除 `DomTransport::set_sw_channel` 内的实例化路径。
+**测试**：`cargo build -p actr-sw-host && cargo build -p actr-dom-bridge && cargo build -p actr-cli --bin actr` 全绿；clippy 无新增警告。
+**遗留动作**：无。后续若 MediaFrame / 大 payload fast-path 需要复用 Rust 侧 Lane，按新设计重新引入即可，无需依赖此处遗留接口。
+
+---
+
+### 历史描述（保留作为上下文）
 
 **发现时间**：2026-04-24
 **发现路径**：T18 诊断 spike（定位 `handle_dom_control` 为什么没 fire 时顺手观察到）

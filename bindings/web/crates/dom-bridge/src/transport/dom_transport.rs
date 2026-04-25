@@ -2,18 +2,20 @@
 //!
 //! Unified transport wrapper responsible for:
 //! - Managing the WebRTC P2P connection pool (DataChannel + MediaTrack)
-//! - Managing the PostMessage channel to the Service Worker
 //! - Applying concurrent connection attempts (P2P + WebSocket fallback)
 //! - Preferring the connection that becomes ready first
-//! - Automatic routing and forwarding
 //! - Fast Path integration
+//!
+//! The PostMessage channel to the Service Worker is owned by the JS bridge
+//! (see `actor.sw.js` + `actr-dom`); the historical Rust-side SW lane was
+//! retired (see TD-001 in `bindings/web/docs/tech-debt.zh.md`). RPC traffic
+//! reaches the SW through the JS layer, so this transport handles only the
+//! DOM-local P2P paths.
 
 use super::lane::DataLane;
 use crate::fastpath::{MediaFrameHandlerRegistry, StreamHandlerRegistry};
-use crate::keepalive::ServiceWorkerKeepalive;
 use actr_web_common::{
-    ConnectionState, ConnectionStrategy, Dest, ForwardMessage, PayloadType, TransportStats,
-    WebError, WebResult,
+    ConnectionState, ConnectionStrategy, Dest, PayloadType, TransportStats, WebError, WebResult,
 };
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -56,15 +58,9 @@ pub struct DomTransport {
     /// Connection pool keyed by destination.
     connections: Arc<DashMap<Dest, DestConnection>>,
 
-    /// Service Worker PostMessage channel.
-    sw_channel: Arc<Mutex<Option<DataLane>>>,
-
     /// Fast Path Registries
     stream_registry: Arc<StreamHandlerRegistry>,
     media_registry: Arc<MediaFrameHandlerRegistry>,
-
-    /// Keepalive
-    keepalive: Arc<Mutex<Option<ServiceWorkerKeepalive>>>,
 
     /// Connection strategy.
     strategy: ConnectionStrategy,
@@ -85,39 +81,13 @@ impl DomTransport {
         Self {
             local_id,
             connections: Arc::new(DashMap::new()),
-            sw_channel: Arc::new(Mutex::new(None)),
             stream_registry: Arc::new(StreamHandlerRegistry::new()),
             media_registry: Arc::new(MediaFrameHandlerRegistry::new()),
-            keepalive: Arc::new(Mutex::new(None)),
             strategy: strategy.unwrap_or_default(),
             stats: Arc::new(Mutex::new(TransportStats::default())),
             rx: Arc::new(Mutex::new(rx)),
             tx,
         }
-    }
-
-    /// Set the Service Worker channel and start keepalive.
-    pub fn set_sw_channel(&self, lane: DataLane) -> WebResult<()> {
-        // Create the keepalive helper.
-        let keepalive = ServiceWorkerKeepalive::new(Arc::new(lane.clone()), None);
-        keepalive.start();
-
-        {
-            let mut sw_channel = self.sw_channel.lock();
-            *sw_channel = Some(lane);
-        }
-
-        {
-            let mut ka = self.keepalive.lock();
-            *ka = Some(keepalive);
-        }
-
-        log::info!("[DomTransport] SW channel established with keepalive");
-
-        // Start the Service Worker receive loop.
-        self.start_sw_receiver();
-
-        Ok(())
     }
 
     /// Send a message.
@@ -130,22 +100,25 @@ impl DomTransport {
         );
 
         match payload_type {
-            // RPC is forwarded to the Service Worker through the State Path.
+            // RPC is owned by the JS-side SW bridge and must not reach DomTransport.
             PayloadType::RpcReliable | PayloadType::RpcSignal => {
-                self.forward_to_sw(dest, payload_type, data).await?;
+                return Err(WebError::Transport(
+                    "RPC payloads must be sent via the JS-side SW bridge, not DomTransport"
+                        .to_string(),
+                ));
             }
 
-            // STREAM payloads are handled on the DOM side.
+            // STREAM payloads are handled on the DOM side over P2P.
             PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
                 let data_len = data.len();
 
-                // Try to use the P2P connection.
                 if let Some(lane) = self.get_connection(dest).await {
                     lane.send(data).await?;
                 } else {
-                    // Fall back to the Service Worker over WebSocket.
-                    log::warn!("[DomTransport] P2P not available, fallback to SW for STREAM");
-                    self.forward_to_sw(dest, payload_type, data).await?;
+                    return Err(WebError::Transport(
+                        "No P2P connection available for STREAM; SW fallback is owned by the JS bridge"
+                            .to_string(),
+                    ));
                 }
 
                 // Update statistics.
@@ -381,86 +354,6 @@ impl DomTransport {
         }
 
         None
-    }
-
-    /// Forward a message to the Service Worker.
-    #[allow(clippy::await_holding_lock)] // wasm single-threaded: parking_lot Mutex is not contended
-    async fn forward_to_sw(
-        &self,
-        dest: &Dest,
-        payload_type: PayloadType,
-        data: Bytes,
-    ) -> WebResult<()> {
-        let sw_channel = self.sw_channel.lock();
-
-        if let Some(lane) = sw_channel.as_ref() {
-            let forward_msg = ForwardMessage::new(dest.clone(), payload_type, data);
-            let serialized = forward_msg.serialize()?;
-
-            lane.send(serialized).await?;
-
-            log::trace!(
-                "[DomTransport] Forwarded to SW: dest={:?}, payload_type={:?}",
-                dest,
-                payload_type
-            );
-
-            Ok(())
-        } else {
-            Err(WebError::Transport("SW channel not available".to_string()))
-        }
-    }
-
-    /// Start the Service Worker receive loop.
-    fn start_sw_receiver(&self) {
-        let sw_channel = self.sw_channel.clone();
-        let tx = self.tx.clone();
-
-        wasm_bindgen_futures::spawn_local(async move {
-            loop {
-                let lane = {
-                    let channel = sw_channel.lock();
-                    channel.as_ref().cloned()
-                };
-
-                if let Some(lane) = lane {
-                    match lane.recv().await {
-                        Some(data) => match ForwardMessage::deserialize(&data) {
-                            Ok(forward_msg) => {
-                                log::trace!(
-                                    "[DomTransport] Received from SW: dest={:?}, payload_type={:?}",
-                                    forward_msg.dest,
-                                    forward_msg.payload_type
-                                );
-
-                                if let Err(e) = tx.unbounded_send((
-                                    forward_msg.dest,
-                                    forward_msg.payload_type,
-                                    forward_msg.data,
-                                )) {
-                                    log::error!(
-                                        "[DomTransport] Failed to forward SW message: {:?}",
-                                        e
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "[DomTransport] Failed to parse forward message: {:?}",
-                                    e
-                                );
-                            }
-                        },
-                        None => {
-                            log::warn!("[DomTransport] SW receiver closed");
-                            break;
-                        }
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
     }
 
     /// Disconnect a destination.
