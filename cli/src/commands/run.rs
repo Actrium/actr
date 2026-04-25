@@ -703,10 +703,9 @@ impl RunCommand {
 
         // Option U / Phase 4: sibling `<stem>.wbg/` directory carrying the
         // wasm-bindgen guest bundle (produced by `wasm-pack --target
-        // no-modules` in the `*-guest-wbg` crates). Mounted with the same
-        // `<package_url>.wbg/...` convention actor-wbg.sw.js expects. Exists
-        // in parallel with `.jco/`; either, both, or neither may be present
-        // on disk.
+        // no-modules` from the unified guest crates, see Phase 6c). Mounted
+        // with the same `<package_url>.wbg/...` convention actor.sw.js
+        // expects.
         let wbg_dir = package_path.as_ref().and_then(|pkg_path| {
             let stem = pkg_path.file_stem().map(|s| s.to_os_string())?;
             let mut wbg = pkg_path.with_file_name(stem);
@@ -979,31 +978,21 @@ async fn serve_host_html(
     )
 }
 
-/// Serve the embedded actor.sw.js Service Worker.
+/// Serve the embedded actor.sw.js Service Worker (wasm-bindgen guest bridge).
 ///
-/// Selects between two bodies at request time based on the
-/// `ACTR_WEB_GUEST_MODE` environment variable:
-///
-/// - unset / `"cm"` / anything else → `ACTOR_SW_JS` (Component Model + jco,
-///   the default)
-/// - `"wbg"` → `ACTOR_WBG_SW_JS` (Option U wasm-bindgen guest path)
-///
-/// Reading the env var per-request (rather than at server start) keeps the
-/// CLI surface identical between the two modes — a developer can switch
-/// paths by restarting with a different env without rebuilding the binary.
+/// Phase 8 collapsed this to a single body — the previous Component Model
+/// path and its `ACTR_WEB_GUEST_MODE` selector were deleted along with
+/// `actor.sw.js` (CM variant). See `bindings/web/docs/option-u-wit-compile-web.zh.md`
+/// §11.
 async fn serve_actor_sw_js(
     axum::extract::State(_state): axum::extract::State<Arc<WebServerState>>,
 ) -> impl axum::response::IntoResponse {
-    let body = match std::env::var("ACTR_WEB_GUEST_MODE").as_deref() {
-        Ok("wbg") => crate::web_assets::ACTOR_WBG_SW_JS,
-        _ => crate::web_assets::ACTOR_SW_JS,
-    };
     (
         [(
             axum::http::header::CONTENT_TYPE,
             "application/javascript; charset=utf-8",
         )],
-        body,
+        crate::web_assets::ACTOR_SW_JS,
     )
 }
 

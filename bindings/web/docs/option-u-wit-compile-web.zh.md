@@ -11,7 +11,7 @@
 | **1 types.rs 生成** | ✓ | `tools/wit-compile-web/` + `actr-web-abi/src/types.rs`（10 record + 3 variant） |
 | **2 guest.rs 生成** | ✓ | `actr-web-abi/src/guest.rs`（8 host imports + async wrappers） |
 | **3 host.rs 生成** | ✓ | `actr-web-abi/src/host.rs`（`Workload` trait + 17 `#[wasm_bindgen]` exports） |
-| **4 Echo 接入 + e2e** | ✓ | `server/client-guest-wbg` + `actor-wbg.sw.js` + `start-mock-wbg.sh`；**BasicFunction 6/6 PASS** |
+| **4 Echo 接入 + e2e** | ✓ | `server/client-guest-wbg` + `actor.sw.js`（Phase 8 后 WBG 即唯一）+ `start-mock.sh`；**BasicFunction 6/6 PASS** |
 | **5 CI drift + 文档收尾** | ✓ | `.github/workflows/ci-web.yml` 接 `actr-wit-compile-web --check` + `sync-cli-assets.sh --check`；T18 doc 标"已绕开" |
 | **6a-I γ-unified 整合** | ✓ | 6 commits；BasicFunction 6/6 ✓；架构落地 |
 | **6b entry! 宏 + protoc 跨 target** | ✓ | 5 commits（ServiceHandler + WebWorkloadAdapter + 宏 + protoc-gen + smoke test crate） |
@@ -20,10 +20,10 @@
 | **TD-003 γ HashMap** | ✓ | `guest_bridge.rs::DISPATCH_CTXS: HashMap<RequestId, Ctx>` |
 | **TD-004 α'** | ✓ | cred namespace 按 client_id；mock-actrix rebind WARN |
 | **TD-006 multi-client RPC** | ✓ | mock-actrix relay 精确投递 + sw-host stale peer cleanup + DOM/SW client lifecycle 修复（commit `301c58d6`） |
-| **Phase 7 data-stream 迁 WBG** | 待办 | `bindings/web/examples/data-stream-peer-concurrent` 仍走 CM；迁后 Phase 8 才能删 CM |
-| **Phase 8 CM 路径删除** | 待办 | 依赖 Phase 7；目标删 jco / wit-bindgen async / actor.sw.js |
+| **Phase 7 data-stream 迁 WBG** | 跳过 | 复盘后发现 `data-stream-peer-concurrent` 实际就在 wbg-compatible 架构上（直接用 `actr_sw_host::register_workload(WasmWorkload::new(...))`），不依赖 CM。Phase 8 不被它阻塞 |
+| **Phase 8 CM 路径删除** | ✓ | 删除 `bindings/web/packages/web-sdk/src/actor.sw.js`（CM 旧版）+ `cli/assets/web-runtime/actor.sw.js`（同步副本）+ `bindings/web/scripts/transpile-component.sh`；将 `actor-wbg.sw.js` → `actor.sw.js`、`start-mock-wbg.sh` → `start-mock.sh`；`register_component_workload` → `register_guest_workload`；移除 `cli` 内 `ACTR_WEB_GUEST_MODE` env 选择器；保留 `host_*_async` 等 host imports（WBG 路径仍用） |
 
-**最终 MultiTab 结果**：**`SUITES='BasicFunction MultiTab' bash start-mock-wbg.sh` 12/12 全过**。`1-0 Basic Echo Connectivity` / `6-2 Concurrent Multi-Client` / `6-3 Close One Client` / `6-4 Refresh One Client` / `6-5 Multiple Server Instances` 全部包含在内。
+**最终 MultiTab 结果**：**`SUITES='BasicFunction MultiTab' bash start-mock.sh` 12/12 全过**。`1-0 Basic Echo Connectivity` / `6-2 Concurrent Multi-Client` / `6-3 Close One Client` / `6-4 Refresh One Client` / `6-5 Multiple Server Instances` 全部包含在内。
 
 Option U 核心路径已跑通 —— jco / Component Model / JSPI 全部绕开，echo 单 client + 多 client 都过。下一里程碑是 Phase 7（data-stream 迁 WBG）解锁 Phase 8（CM 路径整体删除）。
 
@@ -323,7 +323,7 @@ Option U 核心路径已落地（Phase 0-4 完成，BasicFunction 6/6 PASS）。
 | 5.2 | `wit-lint` 与 `wit-compile-web` 并存关系：两者各自职责文档化（lint 仍用 `wit-parser=0.247.0`，与编译器钉同版本） | 待办（低优先） | 后续在 `tools/wit-lint/README.md` 补一段 |
 | 5.3 | T18 doc 标"已绕开（Option U）"作为实际采用路径 | ✓ | `t18-jco-async-lift-hang.zh.md` 头部 |
 | 5.4 | Option U doc 进度快照刷新 | ✓ | 本文档 §进度快照 |
-| 5.5 | CM 路径 deprecate 节奏决策 | ✓（决策已记录） | **决策**：Phase 7 完成后在 Phase 8 一次性删除（user 选项 (b)）。在 Phase 7 完成前 CM 路径作为只读历史保留，但默认运行路径已经是 WBG（`ACTR_WEB_GUEST_MODE` 缺省即 wbg） |
+| 5.5 | CM 路径 deprecate 节奏决策 | ✓ | **决策**：Phase 7 跳过 + Phase 8 直接删（见进度快照 Phase 7/8 行）。删除已落地，全套 e2e（BasicFunction + MultiTab 12/12）通过 |
 
 ### Phase 6：TD-003 并发 dispatch context（依赖架构决策）
 

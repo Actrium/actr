@@ -342,8 +342,8 @@ pub async fn host_call_raw_async(
 
 - [I1] 等 P6-F / P6-S / P6-C 三个 commit 都 cherry-pick 到 main
 - [I2] 更新 `server-guest-wbg/src/lib.rs` + `client-guest-wbg/src/lib.rs` 用新的 `register_workload + WebContext` API（暂不用 entry! 宏，手动调）
-- [I3] `actor-wbg.sw.js`：`dispatchFn` 把 envelope.requestId 透传给 guest bootstrap 代码（检查是否已经走通）
-- [I4] `bash start-mock-wbg.sh`：BasicFunction + MultiTab 6-1~6-4 全跑
+- [I3] `actor.sw.js`（Phase 8 后即原 wbg 版本）：`dispatchFn` 把 envelope.requestId 透传给 guest bootstrap 代码（检查是否已经走通）
+- [I4] `bash start-mock.sh`：BasicFunction + MultiTab 6-1~6-4 全跑
 - [I5] 验收：BasicFunction 6/6 ✓，MultiTab 6-1 ✓，6-2/6-3/6-4 ✓ (γ 并发隔离证明)
 
 **前置依赖**：P6-F + P6-S + P6-C

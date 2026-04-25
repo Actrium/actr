@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
-# Web Echo Example — mock-actrix flavored start script.
+# Web Echo Example — mock-actrix flavored start script (Option U / wasm-bindgen).
 #
-# Same as start.sh but replaces the real actrix binary (+ sqlite3 seeding)
-# with the in-repo `actr-mock-actrix` crate. This makes the echo e2e flow
-# self-contained: no external actrix project or SQLite schema coupling.
+# Pipeline:
+#   - builds the unified guest crates with `wasm-pack` (`--features web
+#     --no-default-features`); output goes under the `<stem>.wbg/` sibling
+#     of the signed .actr, matching the convention `cli/src/commands/run.rs`
+#     expects (see `wbg_dir` resolution)
+#   - signs the resulting wasm into a `.actr` package
+#   - boots the in-repo `actr-mock-actrix` (signaling WS + HTTP AIS + MFR)
+#   - starts `actr run --web` for server + client
+#   - drives the Puppeteer test suite (BasicFunction by default; pass
+#     `SUITES='BasicFunction MultiTab'` for the full matrix)
 #
-# Steps:
-#   1. Build guest WASMs (cargo build)
-#   2. actr build --no-compile — pack into signed .actr packages
-#   3. Start mock-actrix (signaling WS + HTTP AIS + MFR at :8081)
-#   4. Seed realm + MFR + packages via HTTP /admin/* (see register-mock.sh)
-#   5. actr run --web for server + client
-#   6. node test-auto.js BasicFunction
+# Phase 8 collapsed the prior CM (jco) `start-mock.sh` into this script;
+# `ACTR_WEB_GUEST_MODE` is no longer read by the CLI.
 #
 # Usage: ./start-mock.sh [MOCK_PORT]
 
@@ -24,15 +26,20 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-echo "Web Echo (mock-actrix)"
-echo "build -> sign -> register (mock) -> actr run --web"
+echo "Web Echo (mock-actrix, Option U / wasm-bindgen guest)"
+echo "build (wasm-pack) -> sign -> register (mock) -> actr run --web (WBG mode)"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ACTR_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
 
+# Unified guest crates (Option U γ-unified Phase 6c). Same source
+# directory feeds both the CM build (wasm32-wasip2, default features,
+# for signing the .actr) and the WBG build (wasm32-unknown-unknown,
+# `--features web --no-default-features`, for the SW-loaded core module).
 SERVER_GUEST_DIR="$SCRIPT_DIR/server-guest"
 CLIENT_GUEST_DIR="$SCRIPT_DIR/client-guest"
+
 RELEASE_DIR="$SCRIPT_DIR/release"
 SERVER_ACTR_TOML="$SCRIPT_DIR/server-actr.toml"
 CLIENT_ACTR_TOML="$SCRIPT_DIR/client-actr.toml"
@@ -46,14 +53,11 @@ cd "$SCRIPT_DIR"
 LOG_DIR="$SCRIPT_DIR/logs"
 mkdir -p "$LOG_DIR" "$RELEASE_DIR"
 
-# Portable in-place sed (BSD/macOS + GNU).
 sed_inplace() {
     local expr="$1"; shift
     if sed --version >/dev/null 2>&1; then
-        # GNU sed
         sed -i "$expr" "$@"
     else
-        # BSD sed (macOS)
         sed -i '' "$expr" "$@"
     fi
 }
@@ -72,9 +76,6 @@ for PORT in "$MOCK_PORT" 5173 5174; do
     fi
 done
 
-# Reset MFR pubkey placeholder. The canonical field in actr.toml `[[trust]]`
-# blocks is `pubkey_b64` (see core/pack StaticTrust); keep the regex aligned
-# with that name so stale keys from a previous run do not leak into the next.
 sed_inplace \
     "s|pubkey_b64 = [\"'][A-Za-z0-9+/=]\{20,\}[\"']|pubkey_b64 = \"__MFR_PUBKEY_PLACEHOLDER__\"|g" \
     "$SERVER_ACTR_TOML" 2>/dev/null || true
@@ -84,8 +85,6 @@ sed_inplace \
 
 echo -e "${GREEN}Stale data cleaned${NC}"
 
-# ---- Cleanup handler ----
-
 MOCK_PID=""
 SERVER_PID=""
 CLIENT_PID=""
@@ -93,12 +92,8 @@ CLIENT_PID=""
 cleanup() {
     echo ""
     echo "Cleaning up..."
-    if [ -n "$CLIENT_PID" ]; then
-        kill "$CLIENT_PID" 2>/dev/null || true
-    fi
-    if [ -n "$SERVER_PID" ]; then
-        kill "$SERVER_PID" 2>/dev/null || true
-    fi
+    if [ -n "$CLIENT_PID" ]; then kill "$CLIENT_PID" 2>/dev/null || true; fi
+    if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
     if [ -n "$MOCK_PID" ]; then
         echo "Stopping mock-actrix (PID: $MOCK_PID)"
         kill "$MOCK_PID" 2>/dev/null || true
@@ -114,7 +109,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ---- Step 0: Check dependencies ----
+# ---- Step 0: dependencies ----
 
 echo ""
 echo -e "${BLUE}Step 0: Checking dependencies...${NC}"
@@ -138,41 +133,87 @@ if [ ! -x "$MOCK_BIN" ]; then
     echo -e "${YELLOW}mock-actrix not built, building...${NC}"
     (cd "$ACTR_ROOT" && cargo build -p actr-mock-actrix --bin mock-actrix 2>&1 | tail -5)
 fi
-if [ ! -x "$MOCK_BIN" ]; then
-    echo -e "${RED}mock-actrix binary not found at $MOCK_BIN${NC}"
-    exit 1
-fi
+[ -x "$MOCK_BIN" ] || { echo -e "${RED}mock-actrix not found at $MOCK_BIN${NC}"; exit 1; }
 echo -e "${GREEN}mock-actrix: $MOCK_BIN${NC}"
 
-# ---- Preflight: Component Model toolchain ----
+if ! command -v wasm-pack >/dev/null 2>&1; then
+    echo -e "${RED}wasm-pack not found (install: cargo install wasm-pack)${NC}"
+    exit 1
+fi
 
-# `wasm-component-ld 0.5.22+` is required to link wasm32-wasip2 Components.
+# Component Model toolchain — still needed to build the signed .actr whose
+# verification the WBG SW path still runs. Kept identical to start-mock.sh
+# so a broken wasm-component-ld surfaces the same way.
 if [ -x "${WASM_COMPONENT_LD:-$HOME/.cargo/bin/wasm-component-ld}" ]; then
     WASM_COMPONENT_LD="${WASM_COMPONENT_LD:-$HOME/.cargo/bin/wasm-component-ld}"
 elif command -v wasm-component-ld > /dev/null 2>&1; then
     WASM_COMPONENT_LD="$(command -v wasm-component-ld)"
 else
-    echo -e "${RED}wasm-component-ld not found (install: cargo install wasm-component-ld --version 0.5.22)${NC}"
-    exit 1
+    echo -e "${RED}wasm-component-ld not found${NC}"; exit 1
 fi
-export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
 
-# ---- Step 1: Build guest Components (wasm32-wasip2) ----
+# ---- Step 1a: build CM guests (default features, wasm32-wasip2) ----
+#
+# The .actr signing step later needs a valid Component binary to embed;
+# we build the default-feature output so `actr build --no-compile` can
+# pick it up. The same crate's `--features web` output (wasm32-unknown-
+# unknown) feeds the SW via wasm-pack in step 1b.
 
 echo ""
-echo -e "${BLUE}Step 1: Building guest Components (wasm32-wasip2)...${NC}"
+echo -e "${BLUE}Step 1a: Building CM guests (default features) for .actr signing...${NC}"
 
-(cd "$SERVER_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5)
-SERVER_GUEST_WASM="$SERVER_GUEST_DIR/target/wasm32-wasip2/release/echo_guest.wasm"
-[ -f "$SERVER_GUEST_WASM" ] || { echo -e "${RED}server guest Component missing${NC}"; exit 1; }
+(
+    export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
+    cd "$SERVER_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
+)
+SERVER_GUEST_CM_WASM="$SERVER_GUEST_DIR/target/wasm32-wasip2/release/echo_guest.wasm"
+[ -f "$SERVER_GUEST_CM_WASM" ] || { echo -e "${RED}server CM guest missing${NC}"; exit 1; }
 
-(cd "$CLIENT_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5)
-CLIENT_GUEST_WASM="$CLIENT_GUEST_DIR/target/wasm32-wasip2/release/echo_client_guest_web.wasm"
-[ -f "$CLIENT_GUEST_WASM" ] || { echo -e "${RED}client guest Component missing${NC}"; exit 1; }
+(
+    export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
+    cd "$CLIENT_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
+)
+CLIENT_GUEST_CM_WASM="$CLIENT_GUEST_DIR/target/wasm32-wasip2/release/echo_client_guest_web.wasm"
+[ -f "$CLIENT_GUEST_CM_WASM" ] || { echo -e "${RED}client CM guest missing${NC}"; exit 1; }
 
-echo -e "${GREEN}Guest Components built${NC}"
+echo -e "${GREEN}CM guests built${NC}"
 
-# ---- Step 2: Build signed .actr packages ----
+# ---- Step 1b: build WBG guests via wasm-pack (same crates, --features web) ----
+
+echo ""
+echo -e "${BLUE}Step 1b: Building WBG guests via wasm-pack (--features web)...${NC}"
+
+# `~/.cargo/config.toml` injects `-fuse-ld=mold` for host builds; rust-lld
+# (the wasm32 linker) rejects that flag. Clear the rustflags explicitly
+# only for the wasm-pack invocations — other steps still need them.
+#
+# `--no-default-features --features web` flips the crate off the CM /
+# wasm32-wasip2 path and onto the wasm-bindgen / `actr-web-abi` path.
+(
+    export RUSTFLAGS=""
+    export CARGO_ENCODED_RUSTFLAGS=""
+    cd "$SERVER_GUEST_DIR"
+    wasm-pack build --target no-modules --release --out-dir pkg \
+        -- --no-default-features --features web 2>&1 | tail -8
+)
+SERVER_WBG_JS="$SERVER_GUEST_DIR/pkg/echo_guest.js"
+SERVER_WBG_WASM="$SERVER_GUEST_DIR/pkg/echo_guest_bg.wasm"
+[ -f "$SERVER_WBG_JS" ] && [ -f "$SERVER_WBG_WASM" ] || { echo -e "${RED}server WBG pkg incomplete${NC}"; exit 1; }
+
+(
+    export RUSTFLAGS=""
+    export CARGO_ENCODED_RUSTFLAGS=""
+    cd "$CLIENT_GUEST_DIR"
+    wasm-pack build --target no-modules --release --out-dir pkg \
+        -- --no-default-features --features web 2>&1 | tail -8
+)
+CLIENT_WBG_JS="$CLIENT_GUEST_DIR/pkg/echo_client_guest_web.js"
+CLIENT_WBG_WASM="$CLIENT_GUEST_DIR/pkg/echo_client_guest_web_bg.wasm"
+[ -f "$CLIENT_WBG_JS" ] && [ -f "$CLIENT_WBG_WASM" ] || { echo -e "${RED}client WBG pkg incomplete${NC}"; exit 1; }
+
+echo -e "${GREEN}WBG guests built${NC}"
+
+# ---- Step 2: sign .actr packages (Component binary inside) ----
 
 echo ""
 echo -e "${BLUE}Step 2: Building signed .actr packages...${NC}"
@@ -198,25 +239,26 @@ CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.actr"
 
 echo -e "${GREEN}.actr packages built${NC}"
 
-# ---- Step 2b: jco transpile ----
+# ---- Step 2b: lay out `<stem>.wbg/` sibling bundles ----
+#
+# The WBG SW entry resolves `<packageUrl>.wbg/guest.js` by default. CLI
+# mounts `<package stem>.wbg/` under `/packages/<stem>.wbg/` when it
+# exists. We rename the wasm-pack output to the conventional `guest.js` /
+# `guest_bg.wasm` pair so the SW URL resolution is trivial.
 
-echo ""
-echo -e "${BLUE}Step 2b: Transpiling Components via jco...${NC}"
+SERVER_WBG_DIR="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.wbg"
+CLIENT_WBG_DIR="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.wbg"
+rm -rf "$SERVER_WBG_DIR" "$CLIENT_WBG_DIR"
+mkdir -p "$SERVER_WBG_DIR" "$CLIENT_WBG_DIR"
 
-TRANSPILE_SCRIPT="$PROJECT_ROOT/scripts/transpile-component.sh"
-SERVER_JCO_DIR="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.jco"
-rm -rf "$SERVER_JCO_DIR"
-"$TRANSPILE_SCRIPT" "$SERVER_GUEST_WASM" "$SERVER_JCO_DIR" --name guest 2>&1 | tail -5
-[ -f "$SERVER_JCO_DIR/guest.js" ] || { echo -e "${RED}server jco transpile failed${NC}"; exit 1; }
+cp "$SERVER_WBG_JS"   "$SERVER_WBG_DIR/guest.js"
+cp "$SERVER_WBG_WASM" "$SERVER_WBG_DIR/guest_bg.wasm"
+cp "$CLIENT_WBG_JS"   "$CLIENT_WBG_DIR/guest.js"
+cp "$CLIENT_WBG_WASM" "$CLIENT_WBG_DIR/guest_bg.wasm"
 
-CLIENT_JCO_DIR="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.jco"
-rm -rf "$CLIENT_JCO_DIR"
-"$TRANSPILE_SCRIPT" "$CLIENT_GUEST_WASM" "$CLIENT_JCO_DIR" --name guest 2>&1 | tail -5
-[ -f "$CLIENT_JCO_DIR/guest.js" ] || { echo -e "${RED}client jco transpile failed${NC}"; exit 1; }
+echo -e "${GREEN}WBG sibling bundles laid out under release/*.wbg/${NC}"
 
-echo -e "${GREEN}jco bundles built${NC}"
-
-# ---- Step 3: Start mock-actrix ----
+# ---- Step 3: start mock-actrix ----
 
 echo ""
 echo -e "${BLUE}Step 3: Starting mock-actrix on port $MOCK_PORT...${NC}"
@@ -227,29 +269,21 @@ MOCK_LOG="$LOG_DIR/mock-actrix.log"
 MOCK_PID=$!
 echo "  mock-actrix started (PID: $MOCK_PID)"
 
-# Wait for the `listening on` banner (emitted by src/bin/mock_actrix.rs).
 READY=0
 for _ in $(seq 1 100); do
     if ! kill -0 "$MOCK_PID" 2>/dev/null; then
         echo -e "${RED}mock-actrix exited during startup${NC}"
-        cat "$MOCK_LOG"
-        exit 1
+        cat "$MOCK_LOG"; exit 1
     fi
     if grep -q "listening on 127.0.0.1:$MOCK_PORT" "$MOCK_LOG"; then
-        READY=1
-        break
+        READY=1; break
     fi
-    # Short wait on the log tail rather than a blind sleep loop.
     sleep 0.1
 done
-if [ "$READY" -ne 1 ]; then
-    echo -e "${RED}mock-actrix did not reach 'listening on' within 10s${NC}"
-    cat "$MOCK_LOG"
-    exit 1
-fi
+[ "$READY" -eq 1 ] || { echo -e "${RED}mock-actrix did not reach 'listening on' within 10s${NC}"; cat "$MOCK_LOG"; exit 1; }
 echo -e "${GREEN}mock-actrix ready on http://127.0.0.1:$MOCK_PORT${NC}"
 
-# ---- Step 4: Seed realm + MFR + packages via HTTP ----
+# ---- Step 4: seed realm + MFR + packages ----
 
 echo ""
 echo -e "${BLUE}Step 4: Seeding realm + MFR + packages on mock-actrix...${NC}"
@@ -259,7 +293,7 @@ bash "$SCRIPT_DIR/register-mock.sh" --endpoint "$ENDPOINT"
 
 echo -e "${GREEN}Registration complete${NC}"
 
-# ---- Step 5: Start actr run --web ----
+# ---- Step 5: `actr run --web` ----
 
 echo ""
 echo -e "${BLUE}Step 5: Starting actr run --web (server + client)...${NC}"
@@ -272,33 +306,26 @@ echo "  Server started (PID: $SERVER_PID) on port 5174"
 CLIENT_PID=$!
 echo "  Client started (PID: $CLIENT_PID) on port 5173"
 
-# Wait for both web servers to open their ports.
 for PORT in 5173 5174; do
     READY=0
     for _ in $(seq 1 60); do
         if lsof -i:"$PORT" >/dev/null 2>&1 || nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
-            READY=1
-            break
+            READY=1; break
         fi
         sleep 0.1
     done
-    if [ "$READY" -ne 1 ]; then
-        echo -e "${RED}port $PORT not bound within 6s${NC}"
-        cat "$LOG_DIR/server.log" "$LOG_DIR/client.log" 2>/dev/null || true
-        exit 1
-    fi
+    [ "$READY" -eq 1 ] || { echo -e "${RED}port $PORT not bound within 6s${NC}"; cat "$LOG_DIR/server.log" "$LOG_DIR/client.log" 2>/dev/null || true; exit 1; }
 done
 echo -e "${GREEN}Server at http://localhost:5174, client at http://localhost:5173${NC}"
 
-# ---- Step 6: Run automated test ----
+# ---- Step 6: run automated test ----
 
 echo ""
-echo -e "${BLUE}Step 6: Running automated test...${NC}"
+echo -e "${BLUE}Step 6: Running automated test (CAPTURE_SW_CONSOLE=1)...${NC}"
 
 TEST_EXIT_CODE=-1
 if [ -f "$SCRIPT_DIR/test-auto.js" ]; then
     if ! node -e "require('puppeteer')" 2>/dev/null; then
-        # Try common locations where puppeteer might be installed.
         for CANDIDATE in \
             "$PROJECT_ROOT/tests/e2e/node_modules" \
             "$PROJECT_ROOT/node_modules" \
@@ -321,26 +348,25 @@ if [ -f "$SCRIPT_DIR/test-auto.js" ]; then
         elif command -v chromium >/dev/null 2>&1; then
             CHROME_PATH="$(which chromium)"
         fi
-        if [ -n "$CHROME_PATH" ]; then
-            export PUPPETEER_EXECUTABLE_PATH="$CHROME_PATH"
-        fi
+        [ -n "$CHROME_PATH" ] && export PUPPETEER_EXECUTABLE_PATH="$CHROME_PATH"
     fi
 
     set +e
     CLIENT_URL="http://localhost:5173" \
     SERVER_URL="http://localhost:5174" \
-    node "$SCRIPT_DIR/test-auto.js" BasicFunction
+    CAPTURE_SW_CONSOLE=1 \
+    node "$SCRIPT_DIR/test-auto.js" ${SUITES:-BasicFunction}
     TEST_EXIT_CODE=$?
     set -e
 else
-    echo -e "${YELLOW}test-auto.js not found, skipping automated test${NC}"
+    echo -e "${YELLOW}test-auto.js not found, skipping${NC}"
 fi
 
 # ---- Summary ----
 
 echo ""
 echo "Services:"
-echo "  mock-actrix: http://127.0.0.1:$MOCK_PORT (ws://127.0.0.1:$MOCK_PORT/signaling/ws)"
+echo "  mock-actrix: http://127.0.0.1:$MOCK_PORT"
 echo "  Server:      http://localhost:5174"
 echo "  Client:      http://localhost:5173"
 echo ""

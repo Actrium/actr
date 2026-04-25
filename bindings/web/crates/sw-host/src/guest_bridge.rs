@@ -1,27 +1,23 @@
-//! Component Model guest bridge for the Web runtime.
+//! Wasm-bindgen guest bridge for the Web runtime.
 //!
-//! # Phase 3 (post-migration) shape
+//! # Role
 //!
-//! The browser runtime consumes user guests as **Component Model** binaries
-//! (WIT contract `core/framework/wit/actr-workload.wit`), transpiled by
-//! `jco` into an ES module + core wasm bundle. The Service Worker JS loads
-//! that bundle via `WebAssembly.instantiate`, obtains the `workload`
-//! interface, and wires the sw-host-provided host imports into the
-//! component's `host` interface.
+//! This crate (`actr-sw-host`, Rust compiled to wasm32 via wasm-bindgen) plays
+//! two roles in the SW-side guest pipeline:
 //!
-//! This crate (`actr-sw-host`, Rust compiled to wasm32 via wasm-bindgen)
-//! provides two roles:
-//!
-//! 1. **Guest dispatch driver** — [`register_component_workload`] accepts a
-//!    JS callback that forwards to the jco-generated `workload.dispatch`
-//!    export. The runtime wraps it behind the [`WasmWorkload`] abstraction
-//!    used by the inbound packet dispatcher.
-//! 2. **Host import implementations** — functions like
-//!    [`host_call_raw_async`], [`host_discover_async`], [`host_log_message`]
-//!    and the per-dispatch context getters expose the Rust side of the WIT
-//!    `actr:workload/host` interface as wasm-bindgen JS functions. The SW
-//!    glue JS builds an import object from these and hands it to jco's
-//!    `instantiate`.
+//! 1. **Guest dispatch driver** — [`register_guest_workload`] accepts a JS
+//!    callback that forwards to the wasm-bindgen guest module's `dispatch`
+//!    export (emitted by `actr-web-abi`, see Option U in
+//!    `bindings/web/docs/option-u-wit-compile-web.zh.md`). The runtime wraps
+//!    that callback behind the [`WasmWorkload`] abstraction used by the
+//!    inbound packet dispatcher, threading per-dispatch `RuntimeContext`
+//!    into [`DISPATCH_CTXS`] keyed by `request_id`.
+//! 2. **Host import implementations** — [`host_call_async`],
+//!    [`host_call_raw_async`], [`host_discover_async`], [`host_log_message`],
+//!    [`host_tell_async`] and the per-dispatch context getters expose the
+//!    Rust side of the WIT `actr:workload/host` interface as `#[wasm_bindgen]`
+//!    JS functions. The SW glue (`actor.sw.js`) installs `actrHost*` JS
+//!    globals that proxy onto these.
 //!
 //! # WIT host interface, as JS function names
 //!
@@ -43,16 +39,17 @@
 //!                                   │
 //!                                   ├─ ctx_insert(request_id, ctx)
 //!                                   ├─ build envelope JS object
-//!                                   ├─ await dispatchFn(envelope)          ─┐
-//!                                   │    (jco: workload.dispatch — async)   │
-//!                                   │                                       │
-//!                                   │      during guest execution, jco      │
-//!                                   │      calls host_*_async(request_id,   │
-//!                                   │      …) which looks the ctx up in     │
-//!                                   │      DISPATCH_CTXS and routes         │
-//!                                   │      through RuntimeContext           │
-//!                                   │                                       │
-//!                                   ├─ ctx_remove(request_id)              ◄┘
+//!                                   ├─ await dispatchFn(envelope)         ─┐
+//!                                   │    (wasm-bindgen guest dispatch)     │
+//!                                   │                                      │
+//!                                   │      during guest execution the      │
+//!                                   │      `actrHost*` globals call back   │
+//!                                   │      into host_*_async(request_id,   │
+//!                                   │      …) which looks the ctx up in    │
+//!                                   │      DISPATCH_CTXS and routes        │
+//!                                   │      through RuntimeContext          │
+//!                                   │                                      │
+//!                                   ├─ ctx_remove(request_id)             ◄┘
 //!                                   └─ return reply bytes
 //! ```
 //!
@@ -61,13 +58,13 @@
 //! through the WIT surface. See TD-003 for the single-slot bug this
 //! replaces.
 //!
-//! # Legacy path removed
+//! # History
 //!
-//! The previous handwritten prost `AbiFrame` / `GuestHandleV1` bridge and the
-//! cdylib `actr_init` / `actr_handle` entry points are gone from this crate
-//! as of the Component Model browser migration. The Rust-side legacy ABI
-//! types in `actr_framework::guest::dynclib_abi` remain in use by the native
-//! **DynClib** backend and are untouched here.
+//! This module previously also fronted a Component Model + `jco`-transpiled
+//! guest path. Phase 8 (Option U §11) deleted that path; the function
+//! historically exported as `register_component_workload` is now the
+//! generically-named [`register_guest_workload`], used by the wasm-bindgen
+//! guest pipeline that replaced it.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -162,7 +159,7 @@ impl Drop for DispatchCtxGuard {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Parse a WIT `actr-id` record (as a JS object) into the protobuf
-/// `ActrId`. The JS caller builds this from the jco-generated types shape
+/// `ActrId`. The JS caller builds this from the WBG guest's `actrIdToJs` shape
 /// — `{ realm: { realmId }, serialNumber, type: { manufacturer, name, version } }`
 /// — and passes it through to Rust.
 fn parse_actr_id(value: &JsValue) -> Result<ActrId, JsValue> {
@@ -175,7 +172,7 @@ fn parse_actr_id(value: &JsValue) -> Result<ActrId, JsValue> {
     let serial_number = if let Some(f) = serial_number.as_f64() {
         f as u64
     } else {
-        // jco emits `bigint` for WIT u64; fall back to string parse.
+        // The WBG guest emits `bigint` for WIT u64; fall back to string parse.
         let s = serial_number
             .as_string()
             .ok_or_else(|| JsValue::from_str("serialNumber not number/string"))?;
@@ -183,7 +180,7 @@ fn parse_actr_id(value: &JsValue) -> Result<ActrId, JsValue> {
             .map_err(|e| JsValue::from_str(&format!("serialNumber parse: {e}")))?
     };
 
-    // `type` collides with the WIT escape (`%type`); jco emits plain `type`
+    // `type` collides with the WIT escape (`%type`); the WBG guest emits plain `type`
     // on the JS object. Probe both for robustness.
     let ty = js_sys::Reflect::get(value, &JsValue::from_str("type"))?;
     let ty = if ty.is_undefined() {
@@ -212,7 +209,7 @@ fn parse_actr_id(value: &JsValue) -> Result<ActrId, JsValue> {
     })
 }
 
-/// Serialise `ActrId` into the JS-object shape jco expects. Mirror of
+/// Serialise `ActrId` into the JS-object shape the WBG guest expects. Mirror of
 /// [`parse_actr_id`].
 fn actr_id_to_js(id: &ActrId) -> JsValue {
     let realm_obj = js_sys::Object::new();
@@ -242,7 +239,7 @@ fn actr_id_to_js(id: &ActrId) -> JsValue {
 
     let obj = js_sys::Object::new();
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("realm"), &realm_obj);
-    // Use `BigInt` for serial-number to match jco's `bigint` u64 representation.
+    // Use `BigInt` for serial-number to match the guest's `bigint` u64 representation.
     let serial = js_sys::BigInt::from(id.serial_number);
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("serialNumber"), &serial);
     let _ = js_sys::Reflect::set(&obj, &JsValue::from_str("type"), &type_obj);
@@ -283,7 +280,7 @@ fn parse_actr_type(value: &JsValue) -> Result<ActrType, JsValue> {
     })
 }
 
-/// Translate an internal `ActrError` into a JS `Error` suitable for jco's
+/// Translate an internal `ActrError` into a JS `Error` suitable for the guest's
 /// `result<_, actr-error>` error arm. The JS glue in the SW wraps these
 /// with the matching variant tags; here we flatten to message text plus a
 /// machine-readable `name` attribute so the SW can re-tag deterministically.
@@ -507,34 +504,42 @@ pub fn host_get_request_id(request_id: String) -> Result<String, JsValue> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Component workload registration — guest dispatch surface
+// Guest workload registration — dispatch surface
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Register a Component Model guest workload.
+/// Register a wasm-bindgen guest workload.
 ///
-/// `dispatch_fn` is a JS callback that forwards to the jco-transpiled
-/// component's `workload.dispatch(envelope)` export. Its signature must match:
+/// `dispatch_fn` is a JS callback that forwards to the guest module's
+/// `dispatch` export (emitted by `actr-web-abi`'s `__actr_workload_dispatch`).
+/// Its signature must match:
 ///
 /// ```text
 /// async (envelope: RpcEnvelopeJs) => Uint8Array
 /// ```
 ///
-/// where `RpcEnvelopeJs` is the jco-emitted record:
-/// `{ requestId: string, routeKey: string, payload: Uint8Array }`.
+/// where `RpcEnvelopeJs` is the camelCase record built by sw-host on the
+/// inbound side: `{ requestId: string, routeKey: string, payload: Uint8Array }`.
 ///
 /// The JS side is responsible for:
-/// 1. Loading the jco-transpiled ES module (`<name>.js`) and calling its
-///    `instantiate(getCoreModule, imports)` with `imports['actr:workload/host@0.1.0']`
-///    bound to the `host_*_async` / `host_*` wasm-bindgen exports from this crate.
-/// 2. Calling `instantiate(...)` exactly once and holding the returned
-///    exports object.
-/// 3. Passing `(envelope) => exports['actr:workload/workload@0.1.0'].dispatch(envelope)`
-///    here as `dispatch_fn`.
+/// 1. Instantiating the wasm-bindgen guest bundle (`<name>.wbg/guest.js` +
+///    `_bg.wasm`) emitted by `tools/wit-compile-web` for the generated
+///    `actr-web-abi` shim.
+/// 2. Installing the `actrHost*` JS globals that the guest imports — they
+///    proxy onto the `host_*_async` / `host_*` wasm-bindgen exports from
+///    this crate (see `bindings/web/packages/web-sdk/src/actor.sw.js`).
+/// 3. Passing `(envelope) => guestBindgen.dispatch(envelope)` here as
+///    `dispatch_fn`.
 ///
 /// When this function is invoked the runtime installs the `ServiceHandlerFn`
 /// used by [`WasmWorkload`], which the inbound dispatcher drives.
+///
+/// # Naming
+///
+/// Pre-Phase-8 this was `register_component_workload`, when the SW also
+/// supported a Component Model + `jco`-transpiled guest. With CM removed
+/// (Option U §11), the WBG-only name is the accurate one.
 #[wasm_bindgen]
-pub fn register_component_workload(dispatch_fn: js_sys::Function) {
+pub fn register_guest_workload(dispatch_fn: js_sys::Function) {
     let handler: ServiceHandlerFn = Rc::new(
         move |route_key: &str, body: &[u8], ctx: Rc<RuntimeContext>| {
             let dispatch_fn = dispatch_fn.clone();
@@ -551,7 +556,7 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                     body.len()
                 );
 
-                // Build the jco `rpc-envelope` JS object.
+                // Build the `rpc-envelope` JS object the WBG guest expects.
                 let envelope_js = js_sys::Object::new();
                 let _ = js_sys::Reflect::set(
                     &envelope_js,
@@ -593,8 +598,8 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                     result.is_instance_of::<js_sys::Promise>()
                 );
 
-                // jco `workload.dispatch` is async; the return is always a
-                // Promise. Await it, then convert to bytes.
+                // The WBG guest's `dispatch` (from `actr-web-abi`) is async;
+                // the return is always a Promise. Await it, then to bytes.
                 let resolved = if result.is_instance_of::<js_sys::Promise>() {
                     let promise = js_sys::Promise::from(result);
                     match wasm_bindgen_futures::JsFuture::from(promise).await {
@@ -603,7 +608,7 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
                             log::error!(
                                 "[SW][GuestBridge] dispatch promise rejected request_id={request_id}: {e:?}"
                             );
-                            // jco rejects with the jco `Error`-shaped variant;
+                            // The guest rejects with an `Error`-shaped variant;
                             // tag/message was set by `actr_error_to_js` on the
                             // host side, or by the guest-thrown error directly.
                             return Err(format!("guest dispatch rejected: {e:?}"));
@@ -632,7 +637,7 @@ pub fn register_component_workload(dispatch_fn: js_sys::Function) {
     );
 
     crate::register_workload(WasmWorkload::new(handler));
-    log::info!("[SW] Component workload registered via jco bridge");
+    log::info!("[SW] Guest workload registered via wasm-bindgen bridge");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

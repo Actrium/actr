@@ -11,7 +11,6 @@
 #   bindings/web/dist/sw/actr_sw_host_bg.wasm   ← from sw-host/build.sh
 #   bindings/web/dist/sw/actr_sw_host.js        ← from sw-host/build.sh
 #   bindings/web/packages/web-sdk/src/actor.sw.js
-#   bindings/web/packages/web-sdk/src/actor-wbg.sw.js
 #
 # Destination:
 #   cli/assets/web-runtime/<same names>
@@ -38,7 +37,6 @@ PAIRS=(
   "$DIST_SW/actr_sw_host_bg.wasm:actr_sw_host_bg.wasm"
   "$DIST_SW/actr_sw_host.js:actr_sw_host.js"
   "$WEB_SDK_SRC/actor.sw.js:actor.sw.js"
-  "$WEB_SDK_SRC/actor-wbg.sw.js:actor-wbg.sw.js"
 )
 
 mode="sync"

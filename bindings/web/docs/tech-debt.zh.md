@@ -86,7 +86,7 @@ $ grep -rn "set_dom_channel\|set_dom_lane\|set_sw_channel" \
 
 **状态**：已修复（2026-04-25）  
 **修复方式**：方案 B —— 新增 `bindings/web/scripts/sync-cli-assets.sh`，并在 `bindings/web/crates/sw-host/build.sh` 末尾自动调用。脚本支持 `--build`（顺带跑 wasm-pack）与 `--check`（CI drift gate）。  
-**覆盖文件**：`actr_sw_host_bg.wasm` / `actr_sw_host.js` / `actor.sw.js` / `actor-wbg.sw.js`（`actr-host.html` 在 cli/assets 是唯一源，不参与 sync）。  
+**覆盖文件**：`actr_sw_host_bg.wasm` / `actr_sw_host.js` / `actor.sw.js`（Phase 8 后单一 SW 入口；`actr-host.html` 在 cli/assets 是唯一源，不参与 sync）。  
 **遗留动作**：完成 sync 后仍需手动 `cargo build -p actr-cli --bin actr` 让 `include_bytes!` 重新嵌入；脚本结尾会打印这条提示。
 
 **发现时间**：2026-04-24
@@ -417,7 +417,7 @@ Phase 6 主体完成后 MultiTab 最终结果 **8/12 PASS**：
 
 ### 诊断入口
 
-- `SUITES=MultiTab CAPTURE_SW_CONSOLE=1 bash start-mock-wbg.sh` 复现
+- `SUITES=MultiTab CAPTURE_SW_CONSOLE=1 bash start-mock.sh` 复现
 - 对比 6-1（过）和 6-2（挂）的差异：前者不做 RPC round-trip，后者做；所以挂在 RPC 路径
 - 重点嫌疑：`sw-host/src/wire/` 下的 WebRTC coordinator / signaling 的 per-client state 隔离
 - `mock-actrix.log` 观察 `handle_actr_relay` 是否正确分发到两个 client 的 ws

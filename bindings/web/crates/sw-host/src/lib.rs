@@ -39,7 +39,7 @@ pub use error_handler::{
 pub use guest_bridge::{
     host_call_async, host_call_raw_async, host_discover_async, host_get_caller_id,
     host_get_request_id, host_get_self_id, host_log_message, host_tell_async,
-    register_component_workload,
+    register_guest_workload,
 };
 pub use inbound::{InboundPacketDispatcher, MailboxMessageHandler, MailboxProcessor};
 pub use lifecycle::SwLifecycleManager;

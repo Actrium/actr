@@ -324,37 +324,6 @@ let wasm_bindgen = (function(exports) {
     exports.register_client = register_client;
 
     /**
-     * Register a Component Model guest workload.
-     *
-     * `dispatch_fn` is a JS callback that forwards to the jco-transpiled
-     * component's `workload.dispatch(envelope)` export. Its signature must match:
-     *
-     * ```text
-     * async (envelope: RpcEnvelopeJs) => Uint8Array
-     * ```
-     *
-     * where `RpcEnvelopeJs` is the jco-emitted record:
-     * `{ requestId: string, routeKey: string, payload: Uint8Array }`.
-     *
-     * The JS side is responsible for:
-     * 1. Loading the jco-transpiled ES module (`<name>.js`) and calling its
-     *    `instantiate(getCoreModule, imports)` with `imports['actr:workload/host@0.1.0']`
-     *    bound to the `host_*_async` / `host_*` wasm-bindgen exports from this crate.
-     * 2. Calling `instantiate(...)` exactly once and holding the returned
-     *    exports object.
-     * 3. Passing `(envelope) => exports['actr:workload/workload@0.1.0'].dispatch(envelope)`
-     *    here as `dispatch_fn`.
-     *
-     * When this function is invoked the runtime installs the `ServiceHandlerFn`
-     * used by [`WasmWorkload`], which the inbound dispatcher drives.
-     * @param {Function} dispatch_fn
-     */
-    function register_component_workload(dispatch_fn) {
-        wasm.register_component_workload(dispatch_fn);
-    }
-    exports.register_component_workload = register_component_workload;
-
-    /**
      * Register a dedicated DataChannel `MessagePort` received from the DOM side.
      *
      * After the DOM creates the DataChannel bridge:
@@ -378,6 +347,45 @@ let wasm_bindgen = (function(exports) {
         return ret;
     }
     exports.register_datachannel_port = register_datachannel_port;
+
+    /**
+     * Register a wasm-bindgen guest workload.
+     *
+     * `dispatch_fn` is a JS callback that forwards to the guest module's
+     * `dispatch` export (emitted by `actr-web-abi`'s `__actr_workload_dispatch`).
+     * Its signature must match:
+     *
+     * ```text
+     * async (envelope: RpcEnvelopeJs) => Uint8Array
+     * ```
+     *
+     * where `RpcEnvelopeJs` is the camelCase record built by sw-host on the
+     * inbound side: `{ requestId: string, routeKey: string, payload: Uint8Array }`.
+     *
+     * The JS side is responsible for:
+     * 1. Instantiating the wasm-bindgen guest bundle (`<name>.wbg/guest.js` +
+     *    `_bg.wasm`) emitted by `tools/wit-compile-web` for the generated
+     *    `actr-web-abi` shim.
+     * 2. Installing the `actrHost*` JS globals that the guest imports — they
+     *    proxy onto the `host_*_async` / `host_*` wasm-bindgen exports from
+     *    this crate (see `bindings/web/packages/web-sdk/src/actor.sw.js`).
+     * 3. Passing `(envelope) => guestBindgen.dispatch(envelope)` here as
+     *    `dispatch_fn`.
+     *
+     * When this function is invoked the runtime installs the `ServiceHandlerFn`
+     * used by [`WasmWorkload`], which the inbound dispatcher drives.
+     *
+     * # Naming
+     *
+     * Pre-Phase-8 this was `register_component_workload`, when the SW also
+     * supported a Component Model + `jco`-transpiled guest. With CM removed
+     * (Option U §11), the WBG-only name is the accurate one.
+     * @param {Function} dispatch_fn
+     */
+    function register_guest_workload(dispatch_fn) {
+        wasm.register_guest_workload(dispatch_fn);
+    }
+    exports.register_guest_workload = register_guest_workload;
 
     /**
      * Unregister a client (browser tab) from the SW runtime.
