@@ -45,3 +45,68 @@ jobs:
 
       - name: cli/assets sync drift gate
         run: bash bindings/web/scripts/sync-cli-assets.sh --check
+
+  browser-e2e:
+    name: Web Browser E2E (Puppeteer)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # echo example builds CM-targeted guest workloads (wasm32-wasip2)
+          # plus the wasm-bindgen guest (wasm32-unknown-unknown).
+          targets: wasm32-wasip2,wasm32-unknown-unknown
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Install wasm Component Model toolchain
+        run: |
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.247.0 --locked
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux test deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lsof
+          # Headless Chrome for Puppeteer; the snap-only chromium on
+          # ubuntu-latest cannot launch under sudo, so prefer the apt
+          # google-chrome-stable mirror that the runner already ships.
+          which google-chrome || which google-chrome-stable || true
+          google-chrome --version || google-chrome-stable --version || true
+
+      - name: Install web binding root deps (puppeteer)
+        working-directory: bindings/web
+        run: npm install --no-audit --no-fund
+
+      - name: Pre-build actr CLI (release, embeds web assets)
+        run: cargo build --release --bin actr
+
+      - name: Pre-build mock-actrix
+        run: cargo build --release -p actr-mock-actrix --bin mock-actrix
+
+      - name: Run echo browser e2e
+        working-directory: bindings/web/examples/echo
+        env:
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+          # BasicFunction is the default; expand here if more suites
+          # are stable in headless CI.
+          SUITES: BasicFunction
+        run: bash start-mock.sh

@@ -298,6 +298,61 @@ jobs:
       - name: Check web workspace
         working-directory: bindings/web
         run: cargo check --workspace --target wasm32-unknown-unknown --locked
+      - name: WIT codegen drift gate (Option U)
+        run: cargo run -p actr-wit-compile-web -- --check
+      - name: cli/assets sync drift gate
+        run: bash bindings/web/scripts/sync-cli-assets.sh --check
+
+  web_browser_e2e:
+    name: Web Browser E2E
+    needs: determine
+    if: needs.determine.outputs.web_binding == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2,wasm32-unknown-unknown
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install wasm Component Model toolchain
+        run: |
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.247.0 --locked
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux test deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lsof
+          google-chrome --version || google-chrome-stable --version || true
+      - name: Install web binding root deps (puppeteer)
+        working-directory: bindings/web
+        run: npm install --no-audit --no-fund
+      - name: Pre-build actr CLI (release)
+        run: cargo build --release --bin actr
+      - name: Pre-build mock-actrix
+        run: cargo build --release -p actr-mock-actrix --bin mock-actrix
+      - name: Run echo browser e2e
+        working-directory: bindings/web/examples/echo
+        env:
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+          SUITES: BasicFunction
+        run: bash start-mock.sh
 
   gate:
     name: Gate
@@ -312,6 +367,7 @@ jobs:
       - swift
       - kotlin
       - web
+      - web_browser_e2e
     env:
       MODE: ${{ needs.determine.outputs.mode }}
       CHANGED_FILES_JSON: ${{ needs.determine.outputs.changed_files_json }}
@@ -323,6 +379,7 @@ jobs:
       SWIFT_RESULT: ${{ needs.swift.result }}
       KOTLIN_RESULT: ${{ needs.kotlin.result }}
       WEB_RESULT: ${{ needs.web.result }}
+      WEB_BROWSER_E2E_RESULT: ${{ needs.web_browser_e2e.result }}
     steps:
       - name: Summarize gate
         run: |
@@ -339,6 +396,7 @@ jobs:
               "swift": os.environ["SWIFT_RESULT"],
               "kotlin": os.environ["KOTLIN_RESULT"],
               "web": os.environ["WEB_RESULT"],
+              "web_browser_e2e": os.environ["WEB_BROWSER_E2E_RESULT"],
           }
 
           changed_files = json.loads(os.environ["CHANGED_FILES_JSON"])
