@@ -129,17 +129,14 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Run dynclib tests in isolated processes
+      - name: Run dynclib tests
         run: |
           set -euo pipefail
-          # Run each dynclib test in its own process so guest globals cannot
-          # leak across tests.
-          # dynclib_actor_e2e
-          cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_actor_e2e dynclib_unknown_route_returns_error -- --ignored --exact --nocapture
-          cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_actor_e2e dynclib_echo_returns_payload -- --ignored --exact --nocapture
-          cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_actor_e2e dynclib_double_dispatch -- --ignored --exact --nocapture
-          cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_actor_e2e dynclib_multiple_dispatches -- --ignored --exact --nocapture
-          # dynclib_host
+          # dynclib_actor_e2e tests serialise themselves via DYNCLIB_SERIAL,
+          # so a single invocation is safe.
+          cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_actor_e2e -- --nocapture
+          # dynclib_host (still #[ignore]d; run each in its own process so
+          # guest globals cannot leak across tests)
           cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_host test_load_and_instantiate -- --ignored --exact --nocapture
           cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_host test_basic_echo_dispatch -- --ignored --exact --nocapture
           cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_host test_basic_double_dispatch -- --ignored --exact --nocapture
