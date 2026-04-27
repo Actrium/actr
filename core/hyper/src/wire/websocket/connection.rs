@@ -298,6 +298,14 @@ impl WebSocketConnection {
 }
 
 impl WebSocketConnection {
+    /// Return a clone of the shared write sink for this connection.
+    ///
+    /// Used by `WebSocketGate` to send responses back over an inbound
+    /// connection without going through the lane/router abstraction.
+    pub(crate) fn sink(&self) -> WsSink {
+        self.sink.clone()
+    }
+
     /// Get or create DataLane (with caching)
     pub async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
         self.get_lane_internal(payload_type).await

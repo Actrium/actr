@@ -96,6 +96,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "actr-error-fixture"
+version = "0.1.0"
+dependencies = [
+ "actr-config",
+ "actr-framework",
+ "actr-hyper",
+ "actr-mock-actrix",
+ "actr-protocol",
+ "anyhow",
+ "async-trait",
+ "base64",
+ "bytes",
+ "clap",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "actr-framework"
 version = "0.3.7"
 dependencies = [

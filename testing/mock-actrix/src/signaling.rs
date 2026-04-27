@@ -296,7 +296,9 @@ pub async fn build_register_ok(
 
     let claims = actr_protocol::IdentityClaims {
         realm_id: req.realm.realm_id,
-        actor_id: format!("{serial}"),
+        // Use the full ActrId string representation so WebSocketGate's
+        // credential verifier can match it against the X-Actr-Source-ID header.
+        actor_id: actr_id.to_string_repr(),
         expires_at: chrono::Utc::now().timestamp() as u64 + 86400,
     };
     let claims_bytes = claims.encode_to_vec();

@@ -520,6 +520,7 @@ mod tests {
             signaling_client,
             test_credential(),
             None,
+            Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         )
     }
 

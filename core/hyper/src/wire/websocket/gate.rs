@@ -17,6 +17,7 @@ use super::server::InboundWsConn;
 use crate::inbound::DataStreamRegistry;
 use crate::key_cache::AisKeyCache;
 use crate::lifecycle::CredentialState;
+use crate::transport::WsSink;
 use crate::wire::SignalingKeyFetcher;
 use crate::wire::webrtc::SignalingClient;
 use crate::wire::webrtc::{HookCallback, HookEvent};
@@ -26,9 +27,11 @@ use actr_protocol::{AIdCredential, ActrId, DataStream, IdentityClaims, PayloadTy
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use ed25519_dalek::{Signature, Verifier as Ed25519Verifier};
+use futures_util::SinkExt;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 /// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
 type PendingRequestsMap =
@@ -50,6 +53,14 @@ pub(crate) struct WsAuthContext {
     pub(crate) signaling_client: Arc<dyn SignalingClient>,
 }
 
+/// Registry type: inbound peer ActrId → write-half of the WebSocket connection.
+///
+/// Populated when a peer connects inbound (after credential verification).
+/// Used by `send_response` to route server-to-client responses back over the
+/// same connection the client used to send the request — avoiding the need for
+/// a reverse WebRTC/WebSocket dial which would fail in test environments.
+type InboundSinkMap = Arc<RwLock<HashMap<ActrId, WsSink>>>;
+
 /// WebSocketGate - receives and routes inbound WebSocket messages
 pub(crate) struct WebSocketGate {
     /// Inbound connection channel (taken once and moved into background task)
@@ -68,6 +79,13 @@ pub(crate) struct WebSocketGate {
     /// Hook callback for WebSocket peer lifecycle events
     /// (`WebSocketConnectStart` / `Connected` / `Disconnected`).
     hook_callback: OnceLock<HookCallback>,
+
+    /// Inbound peer sinks: peer ActrId → WsSink.
+    ///
+    /// Populated when a verified peer establishes an inbound connection;
+    /// cleaned up on disconnect.  Used by `send_response` to route replies
+    /// back over the same inbound WebSocket connection.
+    inbound_sinks: InboundSinkMap,
 }
 
 impl WebSocketGate {
@@ -90,6 +108,7 @@ impl WebSocketGate {
             data_stream_registry,
             auth_ctx: auth_ctx.map(Arc::new),
             hook_callback: OnceLock::new(),
+            inbound_sinks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -99,6 +118,57 @@ impl WebSocketGate {
     /// during node startup.
     pub fn set_hook_callback(&self, cb: HookCallback) {
         let _ = self.hook_callback.set(cb);
+    }
+
+    /// Send a response envelope back to a peer that connected to us inbound.
+    ///
+    /// Looks up the peer's write-half in `inbound_sinks`.  Returns `Ok(false)`
+    /// (not an error) when no inbound connection from `peer` is known — the
+    /// caller should fall back to another transport (e.g. `WebRtcGate`).
+    /// Returns `Ok(true)` on a successful send.
+    pub async fn send_response(&self, peer: &ActrId, envelope: RpcEnvelope) -> ActorResult<bool> {
+        let sink_opt = {
+            let map = self.inbound_sinks.read().await;
+            map.get(peer).cloned()
+        };
+
+        let sink = match sink_opt {
+            Some(s) => s,
+            None => return Ok(false),
+        };
+
+        // Serialize envelope
+        let mut payload_buf = Vec::new();
+        envelope.encode(&mut payload_buf).map_err(|e| {
+            ActrError::Internal(format!("WebSocketGate: encode response failed: {e}"))
+        })?;
+
+        // Frame: [payload_type: 1 byte][len: 4 bytes BE][data: N bytes]
+        let pt = PayloadType::RpcReliable as u8;
+        let len = payload_buf.len() as u32;
+        let mut frame = Vec::with_capacity(5 + payload_buf.len());
+        frame.push(pt);
+        frame.extend_from_slice(&len.to_be_bytes());
+        frame.extend_from_slice(&payload_buf);
+
+        let mut sink_guard = sink.lock().await;
+        match sink_guard.as_mut() {
+            Some(s) => {
+                s.send(WsMessage::Binary(frame.into())).await.map_err(|e| {
+                    ActrError::Unavailable(format!("WebSocketGate: send_response failed: {e}"))
+                })?;
+                tracing::debug!(
+                    peer = %peer,
+                    request_id = %envelope.request_id,
+                    "WebSocketGate: response sent via inbound connection"
+                );
+                Ok(true)
+            }
+            None => {
+                tracing::warn!(peer = %peer, "WebSocketGate: inbound sink gone, cannot send response");
+                Ok(false)
+            }
+        }
     }
 
     /// Handle RpcEnvelope: Response wakes the waiting party, Request enqueues into Mailbox
@@ -123,10 +193,10 @@ impl WebSocketGate {
 
             let result = match (envelope.payload, envelope.error) {
                 (Some(payload), None) => Ok(payload),
-                (None, Some(error)) => Err(ActrError::Unavailable(format!(
-                    "RPC error {}: {}",
-                    error.code, error.message
-                ))),
+                (None, Some(error)) => Err(crate::lifecycle::node::wire_code_to_actr_error(
+                    error.code,
+                    error.message,
+                )),
                 _ => Err(ActrError::DecodeFailure(
                     "Invalid RpcEnvelope: payload and error fields inconsistent".to_string(),
                 )),
@@ -264,13 +334,21 @@ impl WebSocketGate {
     ///
     /// Reads `PayloadType::RpcReliable`, `RpcSignal`, `StreamReliable`,
     /// `StreamLatencyFirst` -- four lanes total, spawning an independent task for each.
-    fn spawn_connection_tasks(
+    ///
+    /// `inbound_sinks`: shared map into which the connection's write-half is
+    /// inserted keyed by the peer ActrId.  Removed when all lane tasks exit.
+    ///
+    /// The sink is registered synchronously (before any lane task is spawned)
+    /// so that `send_response` can find it even when the first request arrives
+    /// via a parallel transport (e.g. WebRTC) before the lanes are fully up.
+    async fn spawn_connection_tasks(
         conn: WebSocketConnection,
         source_id: Vec<u8>,
         pending_requests: PendingRequestsMap,
         data_stream_registry: Arc<DataStreamRegistry>,
         mailbox: Arc<dyn Mailbox>,
         hook_callback: Option<HookCallback>,
+        inbound_sinks: InboundSinkMap,
     ) {
         // Fire `WebSocketConnected` for the peer once the connection is
         // accepted. Decoding the peer `ActrId` may fail if the source-id
@@ -285,8 +363,18 @@ impl WebSocketGate {
             });
         }
 
+        // Register the write-half so `send_response` can route replies back.
+        // Done here (synchronously, before any lane-reader is spawned) so that
+        // the first RPC response after connection establishment can always find
+        // the sink even when the request arrives via a different transport
+        // (e.g. WebRTC) that is already in use.
+        if let Some(ref peer) = peer_id {
+            let sink = conn.sink();
+            inbound_sinks.write().await.insert(peer.clone(), sink);
+        }
+
         // Count active per-lane reader tasks. When the last one exits
-        // we fire `WebSocketDisconnected` exactly once.
+        // we fire `WebSocketDisconnected` exactly once (and remove the sink).
         let active_lanes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         // Spawn per-PayloadType receive tasks
         for pt in [
@@ -303,6 +391,7 @@ impl WebSocketGate {
             let active_lanes = active_lanes.clone();
             let peer_id_for_lane = peer_id.clone();
             let hook_cb_for_lane = hook_callback.clone();
+            let sinks_for_lane = inbound_sinks.clone();
             active_lanes.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
             tokio::spawn(async move {
@@ -388,11 +477,16 @@ impl WebSocketGate {
 
                 tracing::debug!("📡 WS lane reader exited for {:?}", pt);
 
-                // Last lane out fires the disconnected hook exactly once.
+                // Last lane out fires the disconnected hook exactly once
+                // and removes the inbound sink from the registry.
                 let remaining = active_lanes
                     .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
                     .saturating_sub(1);
                 if remaining == 0 {
+                    if let Some(ref peer) = peer_id_for_lane {
+                        sinks_for_lane.write().await.remove(peer);
+                        tracing::debug!(peer = %peer, "WS inbound sink removed (all lanes closed)");
+                    }
                     if let (Some(peer), Some(cb)) = (peer_id_for_lane, hook_cb_for_lane) {
                         cb(HookEvent::WebSocketDisconnected { peer_id: peer }).await;
                     }
@@ -415,6 +509,7 @@ impl WebSocketGate {
         let data_stream_registry = self.data_stream_registry.clone();
         let auth_ctx = self.auth_ctx.clone();
         let hook_cb = self.hook_callback.get().cloned();
+        let inbound_sinks = self.inbound_sinks.clone();
 
         tokio::spawn(async move {
             tracing::info!("🚀 WebSocketGate receive loop started");
@@ -470,7 +565,9 @@ impl WebSocketGate {
                         data_stream_registry.clone(),
                         mailbox.clone(),
                         hook_cb.clone(),
-                    );
+                        inbound_sinks.clone(),
+                    )
+                    .await;
                 } else {
                     tracing::error!(
                         "WS auth_ctx not configured, rejecting connection (configuration error)"

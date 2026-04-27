@@ -422,6 +422,7 @@ fn is_expected_bounded_transport_failure(message: &str) -> bool {
     [
         "connection",
         "request timeout",
+        "timed out",
         "closed",
         "recovering",
         "data channel",
@@ -747,7 +748,7 @@ async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
 
         let err = expect_bounded_failure(request, &request_id, Duration::from_secs(5)).await;
         assert!(
-            err.contains("Request timeout"),
+            (err.contains("Request timeout") || err.contains("timed out")),
             "long offline should time out the in-flight request, got: {err}"
         );
         assert_pending_empty(&harness, direction.from_serial, &request_id).await;

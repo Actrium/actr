@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 
 /// Pending requests map type: request_id -> (target_actor_id, oneshot response sender)
-type PendingRequestsMap =
+pub(crate) type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 
 /// Internal upper bound for a single DataStream send operation.
@@ -168,11 +168,48 @@ impl PeerGate {
         record_state == DataStreamRecordState::Missing
     }
 
+    /// Create new PeerGate with a pre-allocated `pending_requests` map.
+    ///
+    /// Use this when the map must be shared with other components (e.g.
+    /// `DefaultWireBuilder`) before `PeerGate` itself is constructed.
+    pub fn with_pending_requests(
+        transport_manager: Arc<PeerTransport>,
+        webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
+        pending_requests: PendingRequestsMap,
+    ) -> Self {
+        let closing_peers = Arc::new(RwLock::new(HashSet::new()));
+        let recovering_peers = Arc::new(RwLock::new(HashMap::new()));
+        let active_data_streams = Arc::new(RwLock::new(DataStreamActivityTracker::default()));
+
+        // Start event listener if coordinator is available
+        if let Some(ref coordinator) = webrtc_coordinator {
+            Self::spawn_event_listener(
+                coordinator.subscribe_events(),
+                Arc::clone(coordinator),
+                Arc::clone(&pending_requests),
+                Arc::clone(&closing_peers),
+                Arc::clone(&recovering_peers),
+                Arc::clone(&active_data_streams),
+                Arc::clone(&transport_manager),
+            );
+        }
+
+        Self {
+            transport_manager,
+            pending_requests,
+            webrtc_coordinator,
+            closing_peers,
+            recovering_peers,
+            active_data_streams,
+        }
+    }
+
     /// Create new PeerGate
     ///
     /// # Arguments
     /// - `transport_manager`: PeerTransport instance
     /// - `webrtc_coordinator`: Optional WebRTC coordinator for MediaTrack support
+    #[allow(dead_code)]
     pub fn new(
         transport_manager: Arc<PeerTransport>,
         webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
@@ -208,8 +245,10 @@ impl PeerGate {
 
     /// Spawn event listener task to handle connection events
     ///
-    /// This is the **ONLY** event subscriber in the cleanup chain.
-    /// It triggers top-down cleanup by calling transport_manager.close_transport().
+    /// This is the **ONLY** WebRTC event subscriber in the cleanup chain.
+    /// On `ConnectionClosed` it closes only the WebRTC handle so that an
+    /// outbound WebSocket connection (if present) continues to serve
+    /// response-reader tasks.
     fn spawn_event_listener(
         mut event_rx: broadcast::Receiver<ConnectionEvent>,
         webrtc_coordinator: Arc<WebRtcCoordinator>,
@@ -478,18 +517,26 @@ impl PeerGate {
                             closing_peers.write().await.insert(peer_id.clone());
                         } // Lock released here
 
-                        // 1. Session-guarded cleanup: only close the transport if the
-                        //    active WebRTC wire still carries the same session_id.
-                        //    If the identity mismatches (stale event from an old session
-                        //    that has already been replaced), skip the close and do NOT
-                        //    clean pending requests — they belong to the current wire.
+                        // 1. Session-guarded cleanup: only close the WebRTC wire if it
+                        //    still carries the same session_id.  If the identity
+                        //    mismatches (stale event from an old session that has
+                        //    already been replaced), skip the close and do NOT clean
+                        //    pending requests — they belong to the current wire.
+                        //
+                        //    We intentionally do NOT tear down the whole transport here
+                        //    because that would also close any outbound WebSocket
+                        //    connection in the same DestTransport.  The WebSocket
+                        //    connection carries response-reader tasks that must
+                        //    survive a WebRTC disconnect.  `spawn_ready_monitor`
+                        //    will remove the DestTransport entry once all
+                        //    connections (including WebSocket) are gone.
                         match transport_manager
-                            .close_transport_if_webrtc_session(&dest, peer_id, *event_session_id)
+                            .close_webrtc_transport_if_session(&dest, peer_id, *event_session_id)
                             .await
                         {
                             Ok(true) => {
                                 tracing::info!(
-                                    "Successfully closed transport chain for peer {} (session {})",
+                                    "Closed WebRTC connection for peer {} (session {}, WebSocket kept alive)",
                                     peer_id,
                                     event_session_id
                                 );
@@ -505,7 +552,7 @@ impl PeerGate {
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "Failed to close transport for peer {}: {}",
+                                    "Failed to close WebRTC connection for peer {}: {}",
                                     peer_id,
                                     e
                                 );
@@ -977,7 +1024,10 @@ impl PeerGate {
                 inner
             }
             Err(_) => {
-                // Timeout — covers both send retry and response wait
+                // Deadline expired — return TimedOut (retryable) rather than
+                // Unavailable so callers and language bindings can distinguish
+                // "request never reached the server" from "server did not reply
+                // in time".
                 self.pending_requests.write().await.remove(&request_id);
                 let transport_manager = self.transport_manager.clone();
                 let stale_dest = dest.clone();
@@ -992,10 +1042,7 @@ impl PeerGate {
                     )
                     .await;
                 });
-                Err(ActrError::Unavailable(format!(
-                    "Request timeout: {}ms",
-                    envelope.timeout_ms
-                )))
+                Err(ActrError::TimedOut)
             }
         }
     }
