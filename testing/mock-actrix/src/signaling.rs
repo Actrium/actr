@@ -73,21 +73,25 @@ async fn handle_connection(
         .insert(client_id.clone(), client_tx);
 
     // If the peer connected with `?actor_id=...` (web/service-worker path
-    // after HTTP register), bind its existing registry entry to this WS
-    // client_id so route discovery can see it.
+    // after HTTP register, plus integration tests that pre-pick actor IDs),
+    // bind its registry entry to this WS client_id so relays can reach it.
+    //
+    // If the actor was *not* previously HTTP-registered, lazily create a
+    // registry stub. Production AIS bootstraps via HTTP first; integration
+    // tests skip that step and connect WS directly with a synthetic credential.
+    // Auto-binding restores parity with the legacy mock-signaling broadcast
+    // fallback without weakening the rebind diagnostic below.
     if let Some(actor_id_str) = actor_id_param.as_deref() {
         if let Some(actr_id) = parse_actor_id(actor_id_str) {
             let mut registry = state.registry.write().await;
-            let mut found = false;
-            // TD-004 defensive WARN: if we are overwriting a non-empty
-            // `client_id` on this registry entry, we are "rebinding" the
-            // registry row to a new WebSocket. The previous session silently
-            // loses its relay binding. This is not normally expected on a
-            // healthy client — capture the rebind so we can spot AIS
-            // credential reuse across tabs during diagnostics.
             let mut rebound_from: Option<String> = None;
+            let mut found = false;
             for entry in registry.iter_mut() {
                 if entry.actr_id == actr_id {
+                    // TD-004 defensive WARN: overwriting a non-empty client_id
+                    // means a second WS is rebinding the same registry row;
+                    // the previous session silently loses its relay binding.
+                    // Useful for spotting AIS credential reuse across tabs.
                     if !entry.client_id.is_empty() && entry.client_id != client_id {
                         rebound_from = Some(entry.client_id.clone());
                     }
@@ -96,29 +100,37 @@ async fn handle_connection(
                     break;
                 }
             }
+            if !found {
+                registry.push(crate::state::RegisteredActor {
+                    actr_id: actr_id.clone(),
+                    actr_type: actr_id.r#type.clone(),
+                    client_id: client_id.clone(),
+                    ws_address: None,
+                    service_spec: None,
+                });
+            }
             drop(registry);
-            if found {
-                state
-                    .client_to_actr_id
-                    .write()
-                    .await
-                    .insert(client_id.clone(), actr_id);
-                if let Some(old_ws) = rebound_from.as_deref() {
-                    tracing::warn!(
-                        actor_id = %actor_id_str,
-                        old_ws = %old_ws,
-                        new_ws = %client_id,
-                        "mock-actrix: WS actor rebound — previous session loses this binding"
-                    );
-                }
+            state
+                .client_to_actr_id
+                .write()
+                .await
+                .insert(client_id.clone(), actr_id);
+            if let Some(old_ws) = rebound_from.as_deref() {
+                tracing::warn!(
+                    actor_id = %actor_id_str,
+                    old_ws = %old_ws,
+                    new_ws = %client_id,
+                    "mock-actrix: WS actor rebound — previous session loses this binding"
+                );
+            } else if found {
                 tracing::info!(
                     actor_id = %actor_id_str,
                     "mock-actrix: WS bound to HTTP-registered actor"
                 );
             } else {
-                tracing::warn!(
+                tracing::debug!(
                     actor_id = %actor_id_str,
-                    "mock-actrix: WS actor_id has no prior HTTP registration"
+                    "mock-actrix: WS bound to lazily-created registry entry (no prior HTTP register)"
                 );
             }
         }

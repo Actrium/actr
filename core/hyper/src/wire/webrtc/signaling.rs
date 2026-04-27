@@ -485,6 +485,12 @@ impl WebSocketSignalingClient {
     }
 
     /// Test-only convenience constructor: create, connect, and return a client.
+    ///
+    /// The returned client has no `actor_id` / `credential_state` bound, so the
+    /// signaling URL carries no identity query parameters — mock-actrix will
+    /// not bind the WebSocket to any registry entry. Use this only for tests
+    /// that explicitly exercise the unbound path; integration tests that need
+    /// peer-to-peer relay should use [`Self::connect_to_with_identity`].
     #[cfg(feature = "test-utils")]
     pub async fn connect_to(url: &str) -> NetworkResult<Arc<Self>> {
         let config = SignalingConfig {
@@ -497,6 +503,34 @@ impl WebSocketSignalingClient {
         };
 
         let client = Arc::new(Self::new(config));
+        client.start_reconnect_manager();
+        client.connect().await?;
+        Ok(client)
+    }
+
+    /// Test-only constructor that pins identity *before* the WebSocket
+    /// handshake so mock-actrix can bind the connection to the actor on
+    /// register (`?actor_id=…` query parameter). Required by integration
+    /// tests that rely on peer-to-peer signaling relay — without this binding
+    /// mock-actrix drops outbound relays for "unbound target".
+    #[cfg(feature = "test-utils")]
+    pub async fn connect_to_with_identity(
+        url: &str,
+        actor_id: ActrId,
+        credential_state: CredentialState,
+    ) -> NetworkResult<Arc<Self>> {
+        let config = SignalingConfig {
+            server_url: url.parse()?,
+            connection_timeout: 5,
+            heartbeat_interval: 30,
+            reconnect_config: ReconnectConfig::default(),
+            auth_config: None,
+            webrtc_role: None,
+        };
+
+        let client = Arc::new(Self::new(config));
+        client.set_actor_id(actor_id).await;
+        client.set_credential_state(credential_state).await;
         client.start_reconnect_manager();
         client.connect().await?;
         Ok(client)

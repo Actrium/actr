@@ -39,16 +39,25 @@ pub fn create_credential_state_for_test(credential: AIdCredential) -> Credential
 
 /// Create a WebRTC peer with WebSocket signaling
 ///
-/// Returns both the coordinator and the signaling client
+/// Pins the actor identity on the signaling client *before* the WebSocket
+/// connect so mock-actrix binds the WS to this actor and forwards relays to
+/// it; otherwise outbound OFFERs are dropped as "unbound target" and the
+/// peer connection times out.
+///
+/// Returns both the coordinator and the signaling client.
 pub async fn create_peer_with_websocket(
     id: ActrId,
     server_url: &str,
 ) -> anyhow::Result<(Arc<WebRtcCoordinator>, Arc<dyn SignalingClient>)> {
     let credential_state = create_credential_state_for_test(dummy_credential());
 
-    let signaling_client = WebSocketSignalingClient::connect_to(server_url)
-        .await
-        .expect("Failed to connect to test server");
+    let signaling_client = WebSocketSignalingClient::connect_to_with_identity(
+        server_url,
+        id.clone(),
+        credential_state.clone(),
+    )
+    .await
+    .expect("Failed to connect to test server");
 
     let config = WebRtcConfig::default();
     let media_registry = Arc::new(MediaFrameRegistry::new());
@@ -91,9 +100,13 @@ pub async fn create_peer_with_vnet(
 ) -> anyhow::Result<(Arc<WebRtcCoordinator>, Arc<dyn SignalingClient>)> {
     let credential_state = create_credential_state_for_test(dummy_credential());
 
-    let signaling_client = WebSocketSignalingClient::connect_to(server_url)
-        .await
-        .expect("Failed to connect to test server");
+    let signaling_client = WebSocketSignalingClient::connect_to_with_identity(
+        server_url,
+        id.clone(),
+        credential_state.clone(),
+    )
+    .await
+    .expect("Failed to connect to test server");
 
     let config = WebRtcConfig::default();
     let media_registry = Arc::new(MediaFrameRegistry::new());
