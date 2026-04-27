@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_web_wire_builder_default() {
-        let _builder = WebWireBuilder::default();
+        let _builder = <WebWireBuilder as Default>::default();
     }
 
     #[wasm_bindgen_test]

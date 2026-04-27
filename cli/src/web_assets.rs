@@ -8,8 +8,7 @@
 //! - `actr_sw_host_bg.wasm` — shared SW host WASM (wasm-pack from sw-host)
 //! - `actr_sw_host.js`      — wasm-bindgen JS glue for the SW host
 //! - `actor.sw.js`          — Service Worker entry point (Option U /
-//!                            wasm-bindgen guest path; sole browser path
-//!                            after Phase 8)
+//!   wasm-bindgen guest path; sole browser path after Phase 8)
 //! - `actr-host.html`       — self-contained host page with inline @actr/dom
 
 /// Shared SW host WASM binary (compiled from actr-sw-host via wasm-pack).

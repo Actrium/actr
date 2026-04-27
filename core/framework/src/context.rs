@@ -4,35 +4,6 @@ use actr_protocol::{ActorResult, ActrId, ActrType, DataStream, PayloadType};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
-/// Context - Actor execution context interface
-///
-/// Defines the complete interface for Actor interaction with the system, including:
-/// - Context data access (self_id, request_id, etc.)
-/// - Communication capabilities (call, tell)
-///
-/// # Design Principles
-///
-/// - **Interface only**: Framework does not provide implementation, runtime implements
-/// - **Generic parameter**: User code uses `<C: Context>` instead of `&dyn Context`
-/// - **Zero virtual calls**: Static dispatch via generic monomorphization
-///
-/// # Implementation Requirements
-///
-/// Runtime must implement this trait and use enum dispatch or other
-/// zero-overhead mechanisms internally (avoiding virtual function calls).
-///
-/// # Example
-///
-/// ```rust,ignore
-/// async fn my_handler<C: Context>(ctx: &C) {
-///     // Access data
-///     let id = ctx.self_id();
-///
-///     // Type-safe call
-///     let response = ctx.call(&target, request).await?;
-/// }
-/// ```
-
 // ── MaybeSendSync marker ────────────────────────────────────────────────
 //
 // Auto-trait-style marker that is `Send + Sync` on native targets and empty
@@ -59,13 +30,38 @@ pub trait MaybeSendSync {}
 #[cfg(target_arch = "wasm32")]
 impl<T: ?Sized> MaybeSendSync for T {}
 
-// Context trait is `?Send` on `wasm32` (browser single-threaded, futures can
-// legitimately not be `Send`) and `#[async_trait]` (Send mode) elsewhere so
-// tokio-multi-thread spawners downstream keep working. The `MaybeSendSync`
-// supertrait adds `Send + Sync` on native only — per Option U γ-unified
-// §3.1 the user-visible bound stays `Clone + 'static` but `Workload` default
-// method bodies (which need `Send` futures under the native `async_trait`)
-// compile without any extra constraint on the generic `C`.
+/// Actor execution context interface.
+///
+/// Defines the complete interface for an actor to interact with the runtime:
+/// - Context data access (`self_id`, `request_id`, …)
+/// - Communication primitives (`call`, `tell`)
+///
+/// # Design principles
+///
+/// - **Interface only**: the framework provides no implementation; the runtime
+///   does.
+/// - **Generic parameter**: user code accepts `<C: Context>` rather than
+///   `&dyn Context`, so dispatch monomorphises and avoids vtables.
+///
+/// # cfg dispatch
+///
+/// The trait is `?Send` on `wasm32` (browser single-threaded, futures can
+/// legitimately not be `Send`) and `#[async_trait]` (Send mode) on native
+/// targets so tokio-multi-thread spawners downstream keep working. The
+/// `MaybeSendSync` supertrait adds `Send + Sync` on native only — per
+/// Option U γ-unified §3.1 the user-visible bound stays `Clone + 'static`
+/// while `Workload` default method bodies (which need `Send` futures under
+/// the native `async_trait`) compile without any extra constraint on the
+/// generic `C`.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// async fn my_handler<C: Context>(ctx: &C) {
+///     let id = ctx.self_id();
+///     let response = ctx.call(&target, request).await?;
+/// }
+/// ```
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 pub trait Context: Clone + MaybeSendSync + 'static {
