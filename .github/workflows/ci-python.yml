@@ -40,8 +40,14 @@ jobs:
         with:
           repo-token: ${{ github.token }}
 
-      - name: Install maturin
-        run: python -m pip install -U maturin
+      - name: Install maturin and pytest
+        run: python -m pip install -U maturin pytest
 
       - name: Build Python binding
         run: maturin build --manifest-path Cargo.toml
+
+      - name: Install Python binding (editable)
+        run: maturin develop --manifest-path Cargo.toml
+
+      - name: Run smoke tests
+        run: pytest tests/ -v

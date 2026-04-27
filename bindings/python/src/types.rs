@@ -243,6 +243,7 @@ pub enum PayloadType {
     RpcSignal,
     StreamReliable,
     StreamLatencyFirst,
+    MediaRtp,
 }
 
 impl PayloadType {
@@ -252,6 +253,7 @@ impl PayloadType {
             PayloadType::RpcSignal => RpPayloadType::RpcSignal,
             PayloadType::StreamReliable => RpPayloadType::StreamReliable,
             PayloadType::StreamLatencyFirst => RpPayloadType::StreamLatencyFirst,
+            PayloadType::MediaRtp => RpPayloadType::MediaRtp,
         }
     }
 }

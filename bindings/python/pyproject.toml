@@ -22,6 +22,12 @@ Homepage = "https://github.com/actor-rtc/actr-python"
 Issues = "https://github.com/actor-rtc/actr-python/issues"
 Source = "https://github.com/actor-rtc/actr-python"
 
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [build-system]
 requires = ["maturin>=1.8,<2.0"]
 build-backend = "maturin"

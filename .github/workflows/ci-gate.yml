@@ -140,6 +140,9 @@ jobs:
       - name: Build
         working-directory: bindings/typescript
         run: npm run build
+      - name: Run unit tests
+        working-directory: bindings/typescript
+        run: npm test
       - name: Cargo check
         working-directory: bindings/typescript
         run: cargo check --locked --manifest-path Cargo.toml
@@ -171,10 +174,14 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-      - name: Install maturin
-        run: python -m pip install -U maturin
+      - name: Install maturin and pytest
+        run: python -m pip install -U maturin pytest
       - name: Build Python binding
         run: maturin build --manifest-path Cargo.toml
+      - name: Install Python binding (editable)
+        run: maturin develop --manifest-path Cargo.toml
+      - name: Run smoke tests
+        run: pytest tests/ -v
 
   python_codegen:
     name: Python Codegen
