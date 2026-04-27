@@ -381,6 +381,105 @@ impl OutprocTransportManager {
         Ok(())
     }
 
+    /// Close a DestTransport only if its active WebRTC wire still matches the session.
+    ///
+    /// This prevents late close events from an old WebRTC session from deleting a
+    /// freshly rebuilt DestTransport for the same peer.
+    pub async fn close_transport_if_webrtc_session(
+        &self,
+        dest: &Dest,
+        peer_id: &ActrId,
+        session_id: u64,
+    ) -> NetworkResult<bool> {
+        let transport = {
+            let transports = self.transports.read().await;
+            match transports.get(dest) {
+                Some(Either::Right(transport)) => Arc::clone(transport),
+                Some(Either::Left(_)) => {
+                    tracing::debug!(
+                        "⏭️ Skip session-guarded close for {:?}: transport is still connecting (event_session_id={})",
+                        dest,
+                        session_id
+                    );
+                    return Ok(false);
+                }
+                None => {
+                    tracing::debug!(
+                        "⏭️ Skip session-guarded close for {:?}: no active transport (event_session_id={})",
+                        dest,
+                        session_id
+                    );
+                    return Ok(false);
+                }
+            }
+        };
+
+        if !transport.matches_webrtc_session(peer_id, session_id).await {
+            tracing::warn!(
+                "⏭️ Skip session-guarded close for {:?}: active WebRTC session does not match event_session_id={}",
+                dest,
+                session_id
+            );
+            return Ok(false);
+        }
+
+        // Mark as closing only after the active session has been verified.
+        self.closing_peers.write().await.insert(dest.clone());
+
+        // Cancel in-progress connection creation for this destination, if any.
+        {
+            let mut tokens = self.pending_tokens.lock().await;
+            if let Some(token) = tokens.remove(dest) {
+                tracing::info!("🚫 Cancelling in-progress connection for {:?}", dest);
+                token.cancel();
+            }
+        }
+
+        let state_to_close = {
+            let mut transports = self.transports.write().await;
+            let matched = matches!(
+                transports.get(dest),
+                Some(Either::Right(existing)) if Arc::ptr_eq(existing, &transport)
+            );
+
+            if matched {
+                transports.remove(dest)
+            } else {
+                None
+            }
+        };
+
+        let removed = state_to_close.is_some();
+        let close_result = match state_to_close {
+            Some(Either::Right(transport)) => {
+                tracing::info!(
+                    "🔌 Closing DestTransport with matched WebRTC session: {:?}, session_id={}",
+                    dest,
+                    session_id
+                );
+                transport.close().await
+            }
+            Some(Either::Left(notify)) => {
+                tracing::debug!("⏸️ Removed Connecting state for: {:?}", dest);
+                notify.notify_waiters();
+                Ok(())
+            }
+            None => {
+                tracing::debug!(
+                    "⏭️ Skip session-guarded close for {:?}: transport changed before removal (event_session_id={})",
+                    dest,
+                    session_id
+                );
+                Ok(())
+            }
+        };
+
+        self.closing_peers.write().await.remove(dest);
+        close_result?;
+
+        Ok(removed)
+    }
+
     /// Close all DestTransports
     pub async fn close_all(&self) -> NetworkResult<()> {
         let mut transports = self.transports.write().await;

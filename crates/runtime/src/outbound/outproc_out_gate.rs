@@ -138,12 +138,16 @@ impl OutprocOutGate {
                     // Clean pending requests and trigger downstream cleanup when connection is fully closed
                     ConnectionEvent::StateChanged {
                         peer_id,
+                        session_id,
                         state: ConnectionState::Closed,
                         ..
                     }
-                    | ConnectionEvent::ConnectionClosed { peer_id, .. } => {
+                    | ConnectionEvent::ConnectionClosed {
+                        peer_id,
+                        session_id,
+                    } => {
                         let event_kind = Self::event_kind(&event);
-                        let event_session_id = event.session_id();
+                        let event_session_id = *session_id;
 
                         // Mark peer as closing (release lock immediately to avoid deadlock)
                         {
@@ -163,23 +167,45 @@ impl OutprocOutGate {
                         // close_transport needs to acquire its own locks or when multiple
                         // connections are closing simultaneously during shutdown.
                         let dest = Dest::actor(peer_id.clone());
-                        match transport_manager.close_transport(&dest).await {
-                            Ok(_) => {
+                        let should_cleanup_pending = match transport_manager
+                            .close_transport_if_webrtc_session(&dest, peer_id, event_session_id)
+                            .await
+                        {
+                            Ok(true) => {
                                 tracing::info!(
-                                    "✅ Successfully closed transport chain for peer {}",
-                                    peer_id
+                                    "✅ Successfully closed transport chain for peer {} (session_id={})",
+                                    peer_id,
+                                    event_session_id
                                 );
+                                true
+                            }
+                            Ok(false) => {
+                                tracing::warn!(
+                                    "⏭️ Skipped transport cleanup for peer {} because event session is stale or transport changed (event_kind={}, event_session_id={})",
+                                    peer_id,
+                                    event_kind,
+                                    event_session_id
+                                );
+                                false
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "⚠️ Failed to close transport for peer {}: {}",
+                                    "⚠️ Failed to close transport for peer {} (session_id={}): {}",
                                     peer_id,
+                                    event_session_id,
                                     e
                                 );
+                                true
                             }
+                        };
+
+                        if !should_cleanup_pending {
+                            closing_peers.write().await.remove(peer_id);
+                            continue;
                         }
 
-                        let transport_exists_after_cleanup = transport_manager.has_dest(&dest).await;
+                        let transport_exists_after_cleanup =
+                            transport_manager.has_dest(&dest).await;
 
                         // 2. Clean pending requests for this peer
                         let mut pending = pending_requests.write().await;
@@ -202,7 +228,7 @@ impl OutprocOutGate {
                             "🧹 OutprocOutGate cleanup result: peer_id={}, event_kind={}, event_session_id={:?}, pending_before={}, pending_cleaned={}, transport_exists_after_cleanup={}",
                             peer_id,
                             event_kind,
-                            event_session_id,
+                            Some(event_session_id),
                             pending_before,
                             cleaned_count,
                             transport_exists_after_cleanup

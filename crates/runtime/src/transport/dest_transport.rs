@@ -6,9 +6,9 @@
 use super::Dest; // Re-exported from actr-framework
 use super::error::{NetworkError, NetworkResult};
 use super::route_table::PayloadTypeExt;
-use super::wire_handle::WireHandle;
+use super::wire_handle::{WireHandle, WireIdentity};
 use super::wire_pool::{ConnType, ReadySet, RetryConfig, WirePool};
-use actr_protocol::PayloadType;
+use actr_protocol::{ActrId, PayloadType};
 use std::sync::Arc;
 use tokio::sync::watch;
 
@@ -317,6 +317,17 @@ impl DestTransport {
             }
         }
         false
+    }
+
+    /// Check whether the current WebRTC wire belongs to the given connection session.
+    pub async fn matches_webrtc_session(&self, peer_id: &ActrId, session_id: u64) -> bool {
+        let expected_identity = WireIdentity::WebRtc {
+            peer_id: peer_id.clone(),
+            session_id,
+        };
+        self.conn_mgr
+            .connection_matches_identity(ConnType::WebRTC, &expected_identity)
+            .await
     }
 
     /// Subscribe to ready-set changes (used for manager-side cleanup).

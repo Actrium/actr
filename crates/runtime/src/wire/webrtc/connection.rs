@@ -255,14 +255,16 @@ impl WebRtcConnection {
         );
         self.peer_connection.close().await?;
 
-        // Clear each cache under a dedicated lock scope
-        {
-            let mut cache = self.lane_cache.write().await;
-            *cache = [None, None, None, None];
-        }
+        // Clear each cache under a dedicated lock scope, preserving the
+        // canonical lock order used by invalidate_lane() and stale recreation:
+        // data_channels → lane_cache.
         {
             let mut channels = self.data_channels.write().await;
             *channels = [None, None, None, None];
+        }
+        {
+            let mut cache = self.lane_cache.write().await;
+            *cache = [None, None, None, None];
         }
         {
             let mut tracks = self.media_tracks.write().await;

@@ -364,11 +364,16 @@ impl WebRtcCoordinator {
                             let peer_id_to_cleanup = match &event {
                                 ConnectionEvent::DataChannelClosed {
                                     peer_id,
+                                    session_id,
                                     payload_type,
-                                    ..
                                 } => {
                                     // Only cleanup if peer still exists (avoid duplicate cleanup)
-                                    if coord.peers.read().await.contains_key(peer_id) {
+                                    let is_active_session =
+                                        coord.peers.read().await.get(peer_id).is_some_and(
+                                            |state| state.webrtc_conn.session_id() == *session_id,
+                                        );
+
+                                    if is_active_session {
                                         tracing::warn!(
                                             "⚠️ DataChannel closed for peer {}, payload_type={:?}; triggering coordinator cleanup",
                                             peer_id,
@@ -383,8 +388,16 @@ impl WebRtcCoordinator {
                                         None
                                     }
                                 }
-                                ConnectionEvent::ConnectionClosed { peer_id, .. } => {
-                                    if coord.peers.read().await.contains_key(peer_id) {
+                                ConnectionEvent::ConnectionClosed {
+                                    peer_id,
+                                    session_id,
+                                } => {
+                                    let is_active_session =
+                                        coord.peers.read().await.get(peer_id).is_some_and(
+                                            |state| state.webrtc_conn.session_id() == *session_id,
+                                        );
+
+                                    if is_active_session {
                                         tracing::warn!(
                                             "⚠️ Connection closed for peer {}; triggering coordinator cleanup",
                                             peer_id
@@ -398,10 +411,21 @@ impl WebRtcCoordinator {
                                         None
                                     }
                                 }
-                                ConnectionEvent::StateChanged { peer_id, state, .. } => {
+                                ConnectionEvent::StateChanged {
+                                    peer_id,
+                                    session_id,
+                                    state,
+                                } => {
                                     use crate::transport::connection_event::ConnectionState;
                                     if matches!(state, ConnectionState::Closed) {
-                                        if coord.peers.read().await.contains_key(peer_id) {
+                                        let is_active_session =
+                                            coord.peers.read().await.get(peer_id).is_some_and(
+                                                |state| {
+                                                    state.webrtc_conn.session_id() == *session_id
+                                                },
+                                            );
+
+                                        if is_active_session {
                                             tracing::warn!(
                                                 "⚠️ PeerConnection state changed to Closed for peer {}; triggering coordinator cleanup",
                                                 peer_id
@@ -766,11 +790,17 @@ impl WebRtcCoordinator {
         tracing::info!("🔻 Closing all WebRTC peer connections");
 
         // Take snapshot of peers (with peer_id) and clear map
-        let peers_snapshot: Vec<(ActrId, Arc<RTCPeerConnection>)> = {
+        let peers_snapshot: Vec<(ActrId, WebRtcConnection, Arc<RTCPeerConnection>)> = {
             let mut peers = self.peers.write().await;
-            let snapshot: Vec<(ActrId, Arc<RTCPeerConnection>)> = peers
+            let snapshot: Vec<(ActrId, WebRtcConnection, Arc<RTCPeerConnection>)> = peers
                 .iter()
-                .map(|(id, state)| (id.clone(), state.peer_connection.clone()))
+                .map(|(id, state)| {
+                    (
+                        id.clone(),
+                        state.webrtc_conn.clone(),
+                        state.peer_connection.clone(),
+                    )
+                })
                 .collect();
             peers.clear();
             snapshot
@@ -786,17 +816,13 @@ impl WebRtcCoordinator {
         #[cfg(feature = "opentelemetry")]
         self.root_context_map.write().await.clear();
 
-        // Close each RTCPeerConnection and send ConnectionClosed event
-        for (peer_id, pc) in peers_snapshot {
+        // Close each WebRtcConnection and RTCPeerConnection.
+        for (peer_id, webrtc_conn, pc) in peers_snapshot {
             tracing::info!("🔻 Closing PeerConnection for {}", peer_id);
 
-            // CRITICAL: Send ConnectionClosed event BEFORE closing PeerConnection
-            // This allows OutprocOutGate to cleanup DestTransport cache
-            self.event_broadcaster
-                .send(ConnectionEvent::ConnectionClosed {
-                    peer_id: peer_id.clone(),
-                    session_id: 0,
-                });
+            if let Err(e) = webrtc_conn.close().await {
+                tracing::warn!("⚠️ Failed to close WebRtcConnection: {}", e);
+            }
 
             if let Err(e) = pc.close().await {
                 tracing::warn!("⚠️ Failed to close PeerConnection: {}", e);
@@ -1002,20 +1028,6 @@ impl WebRtcCoordinator {
             peers.remove(target)
         }; // Lock released here
 
-        // 🆕 Send ConnectionClosed event BEFORE closing connections
-        //    This allows WirePool and other components to update their state immediately
-        if state_to_close.is_some() {
-            tracing::info!(
-                "🔔 Broadcasting ConnectionClosed event for peer {} (failed connection cleanup)",
-                target
-            );
-            self.event_broadcaster
-                .send(ConnectionEvent::ConnectionClosed {
-                    peer_id: target.clone(),
-                    session_id: 0,
-                });
-        }
-
         if let Some(state) = state_to_close {
             if let Err(e) = state.peer_connection.close().await {
                 tracing::warn!(
@@ -1065,20 +1077,6 @@ impl WebRtcCoordinator {
             let mut peers = self.peers.write().await;
             peers.remove(target)
         }; // Lock released here
-
-        // 2. 🆕 Send ConnectionClosed event BEFORE closing connections
-        //    This allows WirePool and other components to update their state immediately
-        if state_to_close.is_some() {
-            tracing::info!(
-                "🔔 Broadcasting ConnectionClosed event for peer {} (health check cleanup)",
-                target
-            );
-            self.event_broadcaster
-                .send(ConnectionEvent::ConnectionClosed {
-                    peer_id: target.clone(),
-                    session_id: 0,
-                });
-        }
 
         // 3. Now close outside the lock (close() may send additional events)
         if let Some(state) = state_to_close {

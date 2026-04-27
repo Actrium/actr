@@ -345,6 +345,19 @@ impl WirePool {
         }
     }
 
+    /// Check whether the active ready slot still points at the expected wire.
+    pub async fn connection_matches_identity(
+        &self,
+        conn_type: ConnType,
+        expected_identity: &WireIdentity,
+    ) -> bool {
+        let conns = self.connections.read().await;
+        matches!(
+            &conns[conn_type.as_index()],
+            Some(WireStatus::Ready(conn)) if conn.identity().as_ref() == Some(expected_identity)
+        )
+    }
+
     /// Wait for any connection to become ready
     pub async fn wait_for_any(&self) -> NetworkResult<()> {
         let mut rx = self.ready_rx.clone();

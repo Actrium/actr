@@ -20,6 +20,39 @@ use std::time::Duration;
 
 use common::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 
+async fn wait_for_peer_session_id(
+    event_rx: &mut tokio::sync::broadcast::Receiver<ConnectionEvent>,
+    peer_id: &actr_protocol::ActrId,
+) -> u64 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let event = tokio::time::timeout(remaining, event_rx.recv())
+            .await
+            .expect("timeout waiting for peer session event")
+            .expect("connection event channel closed");
+
+        match event {
+            ConnectionEvent::StateChanged {
+                peer_id: event_peer,
+                session_id,
+                ..
+            }
+            | ConnectionEvent::DataChannelOpened {
+                peer_id: event_peer,
+                session_id,
+                ..
+            }
+            | ConnectionEvent::ConnectionClosed {
+                peer_id: event_peer,
+                session_id,
+            } if &event_peer == peer_id => return session_id,
+            _ => {}
+        }
+    }
+}
+
 // ========== Tests ==========
 
 #[tokio::test]
@@ -165,6 +198,7 @@ async fn test_pending_requests_cleanup_on_close() {
 
     tracing::info!("🔗 Establishing connection...");
 
+    let mut event_rx = coord_a.subscribe_events();
     let ready_rx = coord_a
         .initiate_connection(&id_b)
         .await
@@ -173,6 +207,7 @@ async fn test_pending_requests_cleanup_on_close() {
         .await
         .expect("timeout")
         .expect("failed");
+    let session_id = wait_for_peer_session_id(&mut event_rx, &id_b).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -199,14 +234,40 @@ async fn test_pending_requests_cleanup_on_close() {
     tracing::info!("📊 Pending before close: {}", pending_before);
     assert_eq!(pending_before, 1);
 
-    tracing::info!("💥 Closing connection...");
+    tracing::info!("💥 Sending stale close event first...");
+
+    coord_a
+        .event_sender()
+        .send(ConnectionEvent::ConnectionClosed {
+            peer_id: id_b.clone(),
+            session_id: session_id + 10_000,
+        })
+        .ok();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let pending_after_stale_close = gate_a.pending_count().await;
+    tracing::info!(
+        "📊 Pending after stale close: {}",
+        pending_after_stale_close
+    );
+    assert_eq!(
+        pending_after_stale_close, 1,
+        "Stale close event should not clean pending requests"
+    );
+    assert!(
+        !request_handle.is_finished(),
+        "Request should still be waiting after stale close event"
+    );
+
+    tracing::info!("💥 Closing connection with active session...");
 
     // Simulate connection close
     coord_a
         .event_sender()
         .send(ConnectionEvent::ConnectionClosed {
             peer_id: id_b.clone(),
-            session_id: 0,
+            session_id,
         })
         .ok();
 
@@ -267,6 +328,7 @@ async fn test_reconnect_and_send_after_close() {
 
     tracing::info!("🔗 Step 1: Establishing initial connection...");
 
+    let mut event_rx = coord_a.subscribe_events();
     let ready_rx = coord_a
         .initiate_connection(&id_b)
         .await
@@ -275,6 +337,7 @@ async fn test_reconnect_and_send_after_close() {
         .await
         .expect("timeout")
         .expect("failed");
+    let session_id = wait_for_peer_session_id(&mut event_rx, &id_b).await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -306,7 +369,7 @@ async fn test_reconnect_and_send_after_close() {
         .event_sender()
         .send(ConnectionEvent::ConnectionClosed {
             peer_id: id_b.clone(),
-            session_id: 0,
+            session_id,
         })
         .ok();
 
