@@ -303,6 +303,24 @@ impl From<actr_protocol::ActrIdError> for NetworkError {
 /// This is the single boundary where transport failures become user-visible errors.
 impl From<NetworkError> for ActrError {
     fn from(err: NetworkError) -> Self {
+        // Preserve specific variants where the protocol surface has a precise
+        // counterpart (e.g. caller-deadline TimedOut), so binding consumers can
+        // branch on the exact failure mode instead of a coarse Unavailable.
+        match &err {
+            NetworkError::TimeoutError(_) => return ActrError::TimedOut,
+            NetworkError::PermissionError(msg)
+            | NetworkError::AuthenticationError(msg)
+            | NetworkError::CredentialExpired(msg) => {
+                return ActrError::PermissionDenied(msg.clone());
+            }
+            NetworkError::NoRoute(msg)
+            | NetworkError::ConnectionNotFound(msg)
+            | NetworkError::ChannelNotFound(msg)
+            | NetworkError::ServiceDiscoveryError(msg) => {
+                return ActrError::NotFound(msg.clone());
+            }
+            _ => {}
+        }
         match err.kind() {
             ErrorKind::Transient => ActrError::Unavailable(err.to_string()),
             ErrorKind::Client => ActrError::NotFound(err.to_string()),
