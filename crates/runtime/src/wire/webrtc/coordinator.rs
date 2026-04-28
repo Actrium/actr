@@ -3017,8 +3017,8 @@ impl WebRtcCoordinator {
                 gathering_started_at = None;
             }
 
-            // ========== Both guards passed, safe to create offer ==========
-            let (offer_sdp, attempt) = {
+            // ========== Both guards passed, safe to start an offer attempt ==========
+            let attempt = {
                 let mut peers_guard = peers.write().await;
                 let state = match peers_guard.get_mut(target) {
                     Some(s) if s.webrtc_conn.session_id() == restart_session_id => s,
@@ -3059,13 +3059,38 @@ impl WebRtcCoordinator {
                 state.ice_restart_inflight = true;
 
                 state.ice_restart_attempts += 1;
-                let attempt = state.ice_restart_attempts;
+                state.ice_restart_attempts
+            };
 
-                let offer_sdp = negotiator
-                    .create_ice_restart_offer(&peer_connection)
-                    .await?;
+            // Do not hold `peers` while setting the local description. That can
+            // synchronously trigger ICE-candidate callbacks which also inspect
+            // `peers`, creating a self-deadlock.
+            let offer_sdp = negotiator
+                .create_ice_restart_offer(&peer_connection)
+                .await?;
 
-                (offer_sdp, attempt)
+            {
+                let peers_guard = peers.read().await;
+                match peers_guard.get(target) {
+                    Some(state) if state.webrtc_conn.session_id() == restart_session_id => {}
+                    Some(state) => {
+                        tracing::debug!(
+                            "⏭️ Stopping stale ICE restart after offer creation for serial={}, task_session_id={}, active_session_id={}",
+                            target,
+                            restart_session_id,
+                            state.webrtc_conn.session_id()
+                        );
+                        return Ok(true);
+                    }
+                    None => {
+                        tracing::warn!(
+                            "🚫 Peer state removed after ICE restart offer creation for serial={}, session_id={}",
+                            target,
+                            restart_session_id
+                        );
+                        return Ok(true);
+                    }
+                }
             };
 
             // Send ICE restart offer
