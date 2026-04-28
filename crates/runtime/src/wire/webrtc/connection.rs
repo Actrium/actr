@@ -498,12 +498,14 @@ impl WebRtcConnection {
         }));
 
         let session_for_close = self.session.clone();
+        let event_tx_for_close = self.event_tx.clone();
         let peer_id_for_close = self.peer_id.clone();
         let payload_type_for_close = payload_type;
         let label_for_close = label;
         let channel_id_for_close = channel_id;
         data_channel.on_close(Box::new(move || {
             let session = session_for_close.clone();
+            let event_tx = event_tx_for_close.clone();
             let peer_id = peer_id_for_close.clone();
             let payload_type = payload_type_for_close;
             let label = label_for_close;
@@ -528,8 +530,11 @@ impl WebRtcConnection {
                     payload_type,
                     channel_id
                 );
-                // Invalidate cached lane when DataChannel closes
-                // (session still active so safe to call)
+                let _ = event_tx.send(ConnectionEvent::DataChannelClosed {
+                    peer_id,
+                    session_id: session.session_id,
+                    payload_type,
+                });
             })
         }));
 
@@ -750,12 +755,14 @@ impl WebRtcConnection {
 
         // Set close handler
         let session_for_close = self.session.clone();
+        let event_tx_for_close = self.event_tx.clone();
         let peer_id_for_close = self.peer_id.clone();
         let payload_type_for_close = payload_type;
         let label_for_close = label.clone();
 
         data_channel.on_close(Box::new(move || {
             let session = session_for_close.clone();
+            let event_tx = event_tx_for_close.clone();
             let peer_id = peer_id_for_close.clone();
             let payload_type = payload_type_for_close;
             let label = label_for_close.clone();
@@ -778,6 +785,11 @@ impl WebRtcConnection {
                     label,
                     payload_type,
                 );
+                let _ = event_tx.send(ConnectionEvent::DataChannelClosed {
+                    peer_id,
+                    session_id: session.session_id,
+                    payload_type,
+                });
             })
         }));
 
