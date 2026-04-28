@@ -443,10 +443,13 @@ impl HostTransport {
                     tracing::debug!("Completed pending request: {}", envelope.request_id);
                 }
                 (None, Some(error)) => {
-                    let protocol_err = ActrError::Unavailable(format!(
-                        "RPC error {}: {}",
-                        error.code, error.message
-                    ));
+                    // Reconstruct the precise ActrError variant from the wire code
+                    // so test-utils tests observe the same classification production
+                    // call sites do — not a flat Unavailable.
+                    let protocol_err = crate::lifecycle::node::wire_code_to_actr_error(
+                        error.code,
+                        error.message.clone(),
+                    );
                     let _ = tx.send(Err(protocol_err));
                     tracing::debug!(
                         "Completed pending request with error: {}",

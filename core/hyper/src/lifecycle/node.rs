@@ -1977,8 +1977,11 @@ impl Inner {
                                                 }
                                             }
                                             (None, Some(error)) => {
-                                                // Error response - convert to ActrError and complete with error
-                                                let actr_err = ActrError::Unavailable(format!("RPC error {}: {}", error.code, error.message));
+                                                // Error response — reconstruct the precise ActrError variant
+                                                // from the wire code so binding-visible classification
+                                                // (UnknownRoute / PermissionDenied / TimedOut / …) is preserved
+                                                // instead of collapsing every error into Unavailable.
+                                                let actr_err = wire_code_to_actr_error(error.code, error.message);
                                                 if let Err(e) = request_mgr
                                                     .complete_error(&envelope.request_id, actr_err)
                                                     .await
