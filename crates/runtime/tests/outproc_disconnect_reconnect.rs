@@ -9,6 +9,8 @@
 
 mod common;
 
+use actr_protocol::{ActrId, PayloadType};
+use actr_runtime::transport::{ConnectionEvent, ConnectionState, DataLane, Dest};
 use common::TestHarness;
 use std::time::Duration;
 
@@ -21,6 +23,217 @@ fn init_tracing() {
         .with_test_writer()
         .try_init()
         .ok();
+}
+
+async fn wait_for_data_channel_opened(
+    event_rx: &mut tokio::sync::broadcast::Receiver<ConnectionEvent>,
+    peer_id: &ActrId,
+    payload_type: PayloadType,
+    timeout: Duration,
+) -> u64 {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for {:?} DataChannelOpened for peer {}",
+            payload_type,
+            peer_id
+        );
+
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Ok(ConnectionEvent::DataChannelOpened {
+                peer_id: event_peer,
+                session_id,
+                payload_type: event_payload_type,
+            })) if &event_peer == peer_id && event_payload_type == payload_type => {
+                return session_id;
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                tracing::warn!("Connection event receiver lagged by {} events", n);
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("connection event channel closed while waiting for DataChannelOpened");
+            }
+            Err(_) => {
+                panic!(
+                    "timed out waiting for {:?} DataChannelOpened for peer {}",
+                    payload_type, peer_id
+                );
+            }
+        }
+    }
+}
+
+async fn wait_for_data_channel_close_chain(
+    event_rx: &mut tokio::sync::broadcast::Receiver<ConnectionEvent>,
+    peer_id: &ActrId,
+    session_id: u64,
+    timeout: Duration,
+) -> PayloadType {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut closed_payload_type = None;
+    let mut saw_peer_connection_closed = false;
+    let mut saw_connection_closed = false;
+
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let event = match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Ok(event)) => event,
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                tracing::warn!("Connection event receiver lagged by {} events", n);
+                continue;
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("connection event channel closed while waiting for close chain");
+            }
+            Err(_) => break,
+        };
+
+        match event {
+            ConnectionEvent::DataChannelClosed {
+                peer_id: event_peer,
+                session_id: event_session_id,
+                payload_type,
+            } if &event_peer == peer_id && event_session_id == session_id => {
+                tracing::info!(
+                    "Observed DataChannelClosed for peer {}, session_id={}, payload_type={:?}",
+                    peer_id,
+                    session_id,
+                    payload_type
+                );
+                closed_payload_type.get_or_insert(payload_type);
+            }
+            ConnectionEvent::ConnectionClosed {
+                peer_id: event_peer,
+                session_id: event_session_id,
+            } if &event_peer == peer_id && event_session_id == session_id => {
+                tracing::info!(
+                    "Observed ConnectionClosed for peer {}, session_id={}",
+                    peer_id,
+                    session_id
+                );
+                saw_connection_closed = true;
+            }
+            ConnectionEvent::StateChanged {
+                peer_id: event_peer,
+                session_id: event_session_id,
+                state: ConnectionState::Closed,
+            } if &event_peer == peer_id && event_session_id == session_id => {
+                tracing::info!(
+                    "Observed PeerConnection Closed for peer {}, session_id={}",
+                    peer_id,
+                    session_id
+                );
+                saw_peer_connection_closed = true;
+            }
+            _ => {}
+        }
+
+        if closed_payload_type.is_some() && saw_peer_connection_closed && saw_connection_closed {
+            return closed_payload_type.expect("closed payload type should be set");
+        }
+    }
+
+    panic!(
+        "timed out waiting for DataChannelClosed -> PeerConnection Closed -> ConnectionClosed chain for peer {}, session_id={}, saw_data_channel_closed={}, saw_peer_connection_closed={}, saw_connection_closed={}",
+        peer_id,
+        session_id,
+        closed_payload_type.is_some(),
+        saw_peer_connection_closed,
+        saw_connection_closed
+    );
+}
+
+// ==================== DataChannel close cleanup ====================
+
+#[tokio::test]
+async fn test_data_channel_on_close_cleans_webrtc_transport() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    let target_id = harness.peer(200).id.clone();
+    let dest = Dest::actor(target_id.clone());
+    let mut event_rx = harness.peer(100).subscribe_events();
+
+    tracing::info!("Step 1: Establishing WebRTC connection 100 -> 200");
+    harness.connect(100, 200).await;
+
+    let session_id = wait_for_data_channel_opened(
+        &mut event_rx,
+        &target_id,
+        PayloadType::RpcReliable,
+        Duration::from_secs(5),
+    )
+    .await;
+    tracing::info!(
+        "Observed initial RpcReliable DataChannel for peer {}, session_id={}",
+        target_id,
+        session_id
+    );
+
+    assert!(
+        harness.peer(100).transport_manager.has_dest(&dest).await,
+        "initial DestTransport should be cached before DataChannel close"
+    );
+
+    tracing::info!("Step 2: Closing RpcReliable DataChannel to trigger on_close cleanup");
+    let webrtc_conn = harness
+        .peer(100)
+        .coordinator
+        .create_connection(&dest, None)
+        .await
+        .expect("active WebRTC connection should be reusable");
+    assert_eq!(
+        webrtc_conn.session_id(),
+        session_id,
+        "test should close the same WebRTC session observed during connect"
+    );
+
+    let lane = webrtc_conn
+        .get_lane(PayloadType::RpcReliable)
+        .await
+        .expect("RpcReliable lane should be cached/open before close");
+    match lane {
+        DataLane::WebRtcDataChannel { data_channel, .. } => {
+            data_channel
+                .close()
+                .await
+                .expect("closing RTCDataChannel should trigger on_close");
+        }
+        _ => panic!("RpcReliable lane should use WebRTC DataChannel"),
+    }
+
+    let closed_payload_type = wait_for_data_channel_close_chain(
+        &mut event_rx,
+        &target_id,
+        session_id,
+        Duration::from_secs(10),
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(
+        !webrtc_conn.has_open_data_channel().await,
+        "DataChannel on_close should leave no open DataChannel on the closed WebRTC session"
+    );
+    assert!(
+        !harness.peer(100).transport_manager.has_dest(&dest).await,
+        "DataChannel on_close should lead to ConnectionClosed and remove stale DestTransport"
+    );
+
+    tracing::info!(
+        "DataChannel close chain cleaned transport for peer {}, session_id={}, first_closed_payload_type={:?}",
+        target_id,
+        session_id,
+        closed_payload_type
+    );
 }
 
 // ==================== Test 1: Two-peer disconnect/reconnect with NetworkEvent ====================
