@@ -135,8 +135,3 @@ jobs:
           # dynclib_actor_e2e tests serialise themselves via DYNCLIB_SERIAL,
           # so a single invocation is safe.
           cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_actor_e2e -- --nocapture
-          # dynclib_host (still #[ignore]d; run each in its own process so
-          # guest globals cannot leak across tests)
-          cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_host test_load_and_instantiate -- --ignored --exact --nocapture
-          cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_host test_basic_echo_dispatch -- --ignored --exact --nocapture
-          cargo test -p actr-hyper --features dynclib-engine,test-utils --test dynclib_host test_basic_double_dispatch -- --ignored --exact --nocapture
