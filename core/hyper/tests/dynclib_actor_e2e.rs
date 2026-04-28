@@ -97,14 +97,19 @@ fn noop_executor() -> HostAbiFn {
 /// producing undefined behaviour. The lock serialises the full lifecycle
 /// (load → init → handle → drop) for each test without requiring
 /// `--test-threads=1` for the entire binary.
-static DYNCLIB_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+///
+/// `tokio::sync::Mutex` rather than `std::sync::Mutex` so the guard can be
+/// held safely across the `instance.handle(...).await` dispatch — the std
+/// guard would trip clippy's `await_holding_lock` lint and could deadlock
+/// if the runtime moved the awaiting task to a different thread mid-await.
+static DYNCLIB_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---- tests -----------------------------------------------------------------
 
 /// Unknown route -> dispatch returns error
 #[tokio::test]
 async fn dynclib_unknown_route_returns_error() {
-    let _guard = DYNCLIB_SERIAL.lock().unwrap();
+    let _guard = DYNCLIB_SERIAL.lock().await;
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
     let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
@@ -120,7 +125,7 @@ async fn dynclib_unknown_route_returns_error() {
 /// Echo route -> returns payload without outbound calls
 #[tokio::test]
 async fn dynclib_echo_returns_payload() {
-    let _guard = DYNCLIB_SERIAL.lock().unwrap();
+    let _guard = DYNCLIB_SERIAL.lock().await;
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
     let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
@@ -140,7 +145,7 @@ async fn dynclib_echo_returns_payload() {
 /// Double route -> triggers vtable call trampoline, returns x*2
 #[tokio::test]
 async fn dynclib_double_dispatch() {
-    let _guard = DYNCLIB_SERIAL.lock().unwrap();
+    let _guard = DYNCLIB_SERIAL.lock().await;
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
     let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
@@ -190,7 +195,7 @@ async fn dynclib_double_dispatch() {
 /// Multiple dispatches -> verifies state does not leak between calls
 #[tokio::test]
 async fn dynclib_multiple_dispatches() {
-    let _guard = DYNCLIB_SERIAL.lock().unwrap();
+    let _guard = DYNCLIB_SERIAL.lock().await;
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
     let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
