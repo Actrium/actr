@@ -482,6 +482,22 @@ fn init_subscriber(
         let mut security_layer = None;
         let mut operations_layer = None;
 
+        // OTel EnvFilter: suppress noisy third-party spans from OTLP export.
+        // Uses OTEL_SPAN_FILTER env var for overrides.
+        let otel_env_filter = EnvFilter::try_new(
+            std::env::var("OTEL_SPAN_FILTER")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    "info,tokio_tungstenite=error,\
+                     webrtc_mdns::conn=warn,webrtc_ice::agent::agent_internal=warn,\
+                     webrtc_sctp=warn"
+                        .to_string()
+                }),
+        )
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
         if let Some(otlp) = &observability_otlp {
             let provider =
                 build_tracing_provider(config, otlp, Some(RecordingChannel::Observability))?;
@@ -499,7 +515,8 @@ fn init_subscriber(
             observability_layer = Some(
                 tracing_opentelemetry::layer()
                     .with_tracer(tracer)
-                    .with_filter(filter_fn(otlp_observability_filter)),
+                    .with_filter(filter_fn(otlp_observability_filter))
+                    .with_filter(otel_env_filter),
             );
         }
 

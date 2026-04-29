@@ -637,6 +637,23 @@ impl ServiceRegistry {
         }
     }
 
+    /// 只从内存中注销 Actor 的所有服务，不删除数据库缓存。
+    ///
+    /// 用于 WebSocket 连接断开这类瞬时离线场景，保留数据库数据以便同一 Actor
+    /// 重连后通过心跳恢复服务注册。
+    pub fn unregister_actor_memory_only(&mut self, actor_id: &ActrId) {
+        platform::recording::info!(
+            "仅从内存注销 Actor {} 的所有服务",
+            actor_id.to_string_repr()
+        );
+
+        if let Some(service_names) = self.actor_index.get(actor_id).cloned() {
+            for service_name in &service_names {
+                let _ = self.unregister_service_memory_only(actor_id, service_name);
+            }
+        }
+    }
+
     /// 清理过期服务（超过指定时间未更新）
     ///
     /// 注意：此方法只清理内存中的服务，不删除数据库中的数据。

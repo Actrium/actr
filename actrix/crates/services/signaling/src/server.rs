@@ -94,6 +94,12 @@ pub struct ClientConnection {
     pub webrtc_role: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupMode {
+    ConnectionClosed,
+    ExplicitUnregister,
+}
+
 /// 信令服务器句柄 - 用于在异步任务中操作服务器
 #[derive(Debug, Clone)]
 pub struct SignalingServerHandle {
@@ -187,6 +193,7 @@ pub async fn handle_websocket_connection(
         None => (None, None),
     };
     let actor_id_for_registry = actor_id.clone();
+    let mut stale_client_ids: Vec<String> = Vec::new();
     {
         let mut clients_guard = server.clients.write().await;
 
@@ -212,8 +219,13 @@ pub async fn handle_websocket_connection(
                         cid,
                         aid
                     );
+                    stale_client_ids.push(cid);
                 }
             }
+            // 同步更新 actor_id_index：在持有 clients write lock 时获取 actor_id_index write lock
+            // 保持锁顺序 clients -> actor_id_index
+            let mut actor_index = server.actor_id_index.write().await;
+            actor_index.insert(aid.clone(), client_id.clone());
         }
 
         clients_guard.insert(
@@ -227,6 +239,13 @@ pub async fn handle_websocket_connection(
                 webrtc_role: webrtc_role.clone(),
             },
         );
+    }
+
+    // Clean up rate limiter for displaced stale connections (outside lock to avoid holding lock across await)
+    for stale_id in stale_client_ids {
+        if let Some(ref limiter) = server.message_rate_limiter {
+            limiter.remove_connection(&stale_id).await;
+        }
     }
 
     // Register actor in service registry for discovery/routing (only when URL identity is provided)
@@ -309,10 +328,6 @@ pub async fn handle_websocket_connection(
                 }
             }
         }
-        {
-            let mut actor_index = server.actor_id_index.write().await;
-            actor_index.insert(actor_id_for_registry, client_id.clone());
-        }
     }
 
     // 处理客户端消息的任务
@@ -346,7 +361,12 @@ pub async fn handle_websocket_connection(
         }
 
         // 清理客户端
-        cleanup_client(&client_id_for_receive, &server_for_receive).await;
+        cleanup_client(
+            &client_id_for_receive,
+            &server_for_receive,
+            CleanupMode::ConnectionClosed,
+        )
+        .await;
     });
 
     // 处理发送消息的任务
@@ -375,7 +395,7 @@ pub async fn handle_websocket_connection(
     }
 
     // 清理客户端连接
-    cleanup_client(&client_id, &server).await;
+    cleanup_client(&client_id, &server, CleanupMode::ConnectionClosed).await;
     platform::recording::info!("🔌 客户端 {} 已断开连接", client_id);
 
     Ok(())
@@ -540,7 +560,7 @@ async fn send_register_error(
 }
 
 /// 处理 ActrToSignaling 流程（注册后）
-#[cfg_attr(feature = "opentelemetry", instrument(level = "debug", skip_all, fields(client_id, envelope_id = request_envelope_id)))]
+#[cfg_attr(feature = "opentelemetry", instrument(level = "debug", skip_all, fields(client_id, envelope_id = request_envelope_id, actr_id = %actr_to_server.source.to_string_repr())))]
 async fn handle_actr_to_server(
     actr_to_server: ActrToSignaling,
     client_id: &str,
@@ -812,7 +832,7 @@ async fn handle_unregister(
     send_envelope_to_client(client_id, response_envelope, server).await?;
 
     // 清理客户端连接
-    cleanup_client(client_id, server).await;
+    cleanup_client(client_id, server, CleanupMode::ExplicitUnregister).await;
 
     Ok(())
 }
@@ -823,27 +843,25 @@ async fn resolve_client_id_by_actor_id(
     actor_id: &ActrId,
     server: &SignalingServerHandle,
 ) -> Result<String, String> {
-    let client_id = {
-        let index_guard = server.actor_id_index.read().await;
-        index_guard.get(actor_id).cloned()
-    };
+    let clients_guard = server.clients.read().await;
+    let index_guard = server.actor_id_index.read().await;
+    let client_id = index_guard.get(actor_id).cloned();
 
     let client_id = match client_id {
         Some(id) => id,
         None => {
             platform::recording::warn!(
                 "⚠️  Actor {} 缺少 client_id 索引，可能尚未注册或已清理",
-                format_actor_id(actor_id)
+                actor_id.to_string_repr()
             );
             return Err("client_id not found for actor_id".into());
         }
     };
 
-    let exists = server.clients.read().await.contains_key(&client_id);
-    if !exists {
+    if !clients_guard.contains_key(&client_id) {
         platform::recording::warn!(
             "⚠️  Actor {} 索引指向不存在的客户端 {}，索引可能已过期",
-            format_actor_id(actor_id),
+            actor_id.to_string_repr(),
             client_id
         );
         return Err("actor_id_index stale for actor_id".into());
@@ -852,16 +870,8 @@ async fn resolve_client_id_by_actor_id(
     Ok(client_id)
 }
 
-#[allow(dead_code)]
-fn format_actor_id(actor_id: &ActrId) -> String {
-    format!(
-        "realm={} serial={}",
-        actor_id.realm.realm_id, actor_id.serial_number
-    )
-}
-
 /// 处理 ActrRelay（WebRTC 信令中继）
-#[cfg_attr(feature = "opentelemetry", instrument(level = "debug", skip_all, fields(client_id, envelope_id = request_envelope_id)))]
+#[cfg_attr(feature = "opentelemetry", instrument(level = "debug", skip_all, fields(client_id, envelope_id = request_envelope_id, actr_id = %relay.source.to_string_repr(), target_id = %relay.target.to_string_repr())))]
 async fn handle_actr_relay(
     relay: ActrRelay,
     client_id: &str,
@@ -1203,35 +1213,88 @@ async fn send_envelope_to_client(
 }
 
 /// 清理客户端连接
-async fn cleanup_client(client_id: &str, server: &SignalingServerHandle) {
-    let removed_client = {
+async fn cleanup_client(client_id: &str, server: &SignalingServerHandle, mode: CleanupMode) {
+    let (removed_client, actor_cleanup) = {
         let mut clients_guard = server.clients.write().await;
-        clients_guard.remove(client_id)
+        let removed_client = clients_guard.remove(client_id);
+
+        let actor_cleanup = removed_client
+            .as_ref()
+            .and_then(|client| client.actor_id.clone())
+            .map(|actor_id| {
+                let replacement_client_id = clients_guard
+                    .iter()
+                    .find(|(id, client)| {
+                        id.as_str() != client_id && client.actor_id.as_ref() == Some(&actor_id)
+                    })
+                    .map(|(id, _)| id.clone());
+
+                (actor_id, replacement_client_id)
+            });
+
+        if let Some((actor_id, replacement_client_id)) = actor_cleanup.as_ref() {
+            let mut actor_index = server.actor_id_index.write().await;
+            match actor_index.get(actor_id).cloned() {
+                Some(mapped_client) if mapped_client == client_id => {
+                    if let Some(replacement_client_id) = replacement_client_id {
+                        actor_index.insert(actor_id.clone(), replacement_client_id.clone());
+                        platform::recording::info!(
+                            "🔁 Actor {} 已切换到新客户端 {}，保留索引",
+                            actor_id.to_string_repr(),
+                            replacement_client_id
+                        );
+                    } else {
+                        actor_index.remove(actor_id);
+                    }
+                }
+                Some(mapped_client) => {
+                    platform::recording::warn!(
+                        "⚠️  Actor {} 索引指向其他客户端 {}，保留索引",
+                        actor_id.to_string_repr(),
+                        mapped_client
+                    );
+                }
+                None => {
+                    if let Some(replacement_client_id) = replacement_client_id {
+                        actor_index.insert(actor_id.clone(), replacement_client_id.clone());
+                        platform::recording::warn!(
+                            "⚠️  Actor {} 清理时索引缺失，已修复为新客户端 {}",
+                            actor_id.to_string_repr(),
+                            replacement_client_id
+                        );
+                    } else {
+                        platform::recording::warn!(
+                            "⚠️  Actor {} 清理时未找到索引条目",
+                            actor_id.to_string_repr()
+                        );
+                    }
+                }
+            }
+        }
+
+        (removed_client, actor_cleanup)
     };
 
-    if let Some(client) = removed_client {
-        if let Some(actor_id) = client.actor_id {
+    if let Some(_client) = removed_client {
+        if let Some((actor_id, replacement_client_id)) = actor_cleanup {
             platform::recording::info!("🧹 清理 Actor {} 的连接", actor_id.to_string_repr());
 
-            // Remove all services for this Actor from the ServiceRegistry to avoid stale ghost instances
-            server
-                .service_registry
-                .write()
-                .await
-                .unregister_actor(&actor_id);
-
-            let mut actor_index = server.actor_id_index.write().await;
-            match actor_index.remove(&actor_id) {
-                Some(mapped_client) if mapped_client != client_id => platform::recording::warn!(
-                    "⚠️  Actor {} 索引指向意外客户端 {}，已移除",
+            if let Some(replacement_client_id) = replacement_client_id {
+                platform::recording::info!(
+                    "⏭️ Actor {} 已有新连接 {}，跳过服务注销",
                     actor_id.to_string_repr(),
-                    mapped_client
-                ),
-                None => platform::recording::warn!(
-                    "⚠️  Actor {} 清理时未找到索引条目",
-                    actor_id.to_string_repr()
-                ),
-                _ => {}
+                    replacement_client_id
+                );
+            } else {
+                let mut registry = server.service_registry.write().await;
+                match mode {
+                    CleanupMode::ConnectionClosed => {
+                        registry.unregister_actor_memory_only(&actor_id);
+                    }
+                    CleanupMode::ExplicitUnregister => {
+                        registry.unregister_actor(&actor_id);
+                    }
+                }
             }
         }
 
@@ -1786,14 +1849,127 @@ mod tests {
 
     /// 创建测试用的 ClientConnection
     fn create_test_client(actor_id: ActrId, webrtc_role: Option<String>) -> ClientConnection {
+        create_test_client_with_id(&uuid::Uuid::new_v4().to_string(), actor_id, webrtc_role)
+    }
+
+    fn create_test_client_with_id(
+        id: &str,
+        actor_id: ActrId,
+        webrtc_role: Option<String>,
+    ) -> ClientConnection {
         ClientConnection {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: id.to_string(),
             actor_id: Some(actor_id),
             credential: None,
             direct_sender: tokio::sync::mpsc::unbounded_channel().0,
             client_ip: None,
             webrtc_role,
         }
+    }
+
+    fn create_test_server_handle() -> SignalingServerHandle {
+        let server = SignalingServer::new();
+        SignalingServerHandle {
+            clients: server.clients.clone(),
+            actor_id_index: server.actor_id_index.clone(),
+            service_registry: server.service_registry.clone(),
+            presence_manager: server.presence_manager.clone(),
+            connection_rate_limiter: server.connection_rate_limiter.clone(),
+            message_rate_limiter: server.message_rate_limiter.clone(),
+        }
+    }
+
+    async fn register_test_service(server: &SignalingServerHandle, actor_id: &ActrId) {
+        server
+            .service_registry
+            .write()
+            .await
+            .register_service(
+                actor_id.clone(),
+                "test_service".to_string(),
+                vec!["TestMessage".to_string()],
+                None,
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_stale_connection_keeps_replacement_service() {
+        let server = create_test_server_handle();
+        let actor_id = create_test_actr_id(1);
+        register_test_service(&server, &actor_id).await;
+
+        {
+            let mut clients = server.clients.write().await;
+            clients.insert(
+                "old-client".to_string(),
+                create_test_client_with_id("old-client", actor_id.clone(), None),
+            );
+            clients.insert(
+                "new-client".to_string(),
+                create_test_client_with_id("new-client", actor_id.clone(), None),
+            );
+        }
+        server
+            .actor_id_index
+            .write()
+            .await
+            .insert(actor_id.clone(), "new-client".to_string());
+
+        cleanup_client("old-client", &server, CleanupMode::ConnectionClosed).await;
+
+        assert!(
+            server.clients.read().await.contains_key("new-client"),
+            "replacement client should remain connected"
+        );
+        assert_eq!(
+            server.actor_id_index.read().await.get(&actor_id).cloned(),
+            Some("new-client".to_string())
+        );
+        assert_eq!(
+            server
+                .service_registry
+                .read()
+                .await
+                .discover_by_service_name("test_service")
+                .len(),
+            1,
+            "stale connection cleanup must not unregister a live replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_connection_cleanup_removes_service_from_memory_only() {
+        let server = create_test_server_handle();
+        let actor_id = create_test_actr_id(1);
+        register_test_service(&server, &actor_id).await;
+
+        server.clients.write().await.insert(
+            "client".to_string(),
+            create_test_client_with_id("client", actor_id.clone(), None),
+        );
+        server
+            .actor_id_index
+            .write()
+            .await
+            .insert(actor_id.clone(), "client".to_string());
+
+        cleanup_client("client", &server, CleanupMode::ConnectionClosed).await;
+
+        assert_eq!(
+            server
+                .service_registry
+                .read()
+                .await
+                .discover_by_service_name("test_service")
+                .len(),
+            0,
+            "connection cleanup should remove offline services from memory"
+        );
+        assert!(
+            !server.actor_id_index.read().await.contains_key(&actor_id),
+            "connection cleanup should clear the old actor index"
+        );
     }
 
     #[test]
