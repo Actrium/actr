@@ -546,6 +546,14 @@ impl LanguageGenerator for SwiftGenerator {
     }
 
     async fn validate_code(&self, context: &GenContext) -> Result<()> {
+        // Without scaffolding, there's no user-facing Xcode project to refresh.
+        // Skip the xcodegen pass so non-Xcode Swift workflows (the
+        // polyglot-echo harness, SwiftPM-only consumers, Linux CI) don't
+        // hard-fail on a missing macOS-only dependency.
+        if context.no_scaffold {
+            info!("🔍 Skipping xcodegen (--no-scaffold)");
+            return Ok(());
+        }
         info!("🔍 Running xcodegen generate...");
         self.ensure_xcodegen_available()?;
         let project_root = self.find_xcodegen_root(context)?;
