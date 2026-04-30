@@ -121,9 +121,13 @@ impl PeerGate {
                     ConnectionEvent::StateChanged {
                         peer_id,
                         state: ConnectionState::Closed,
+                        session_id: event_session_id,
                         ..
                     }
-                    | ConnectionEvent::ConnectionClosed { peer_id, .. } => {
+                    | ConnectionEvent::ConnectionClosed {
+                        peer_id,
+                        session_id: event_session_id,
+                    } => {
                         let dest = Dest::actor(peer_id.clone());
 
                         // A close event may belong to a failed intermediate WebRTC attempt while
@@ -142,16 +146,30 @@ impl PeerGate {
                             closing_peers.write().await.insert(peer_id.clone());
                         } // Lock released here
 
-                        // 1. Trigger downstream cleanup (PeerTransport -> DestTransport -> WirePool)
-                        // Note: We don't hold closing_peers lock here to avoid deadlock when
-                        // close_transport needs to acquire its own locks or when multiple
-                        // connections are closing simultaneously during shutdown.
-                        match transport_manager.close_transport(&dest).await {
-                            Ok(_) => {
+                        // 1. Session-guarded cleanup: only close the transport if the
+                        //    active WebRTC wire still carries the same session_id.
+                        //    If the identity mismatches (stale event from an old session
+                        //    that has already been replaced), skip the close and do NOT
+                        //    clean pending requests — they belong to the current wire.
+                        match transport_manager
+                            .close_transport_if_webrtc_session(&dest, peer_id, *event_session_id)
+                            .await
+                        {
+                            Ok(true) => {
                                 tracing::info!(
-                                    "Successfully closed transport chain for peer {}",
-                                    peer_id
+                                    "Successfully closed transport chain for peer {} (session {})",
+                                    peer_id,
+                                    event_session_id
                                 );
+                            }
+                            Ok(false) => {
+                                tracing::debug!(
+                                    "Stale close event for peer {} (session {}), skipping cleanup",
+                                    peer_id,
+                                    event_session_id
+                                );
+                                closing_peers.write().await.remove(peer_id);
+                                continue;
                             }
                             Err(e) => {
                                 tracing::warn!(

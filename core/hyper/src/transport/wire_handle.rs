@@ -7,9 +7,18 @@
 use super::error::NetworkResult;
 use super::lane::DataLane;
 use super::wire_pool::ConnType;
-use actr_protocol::PayloadType;
+use actr_protocol::{ActrId, PayloadType};
 use async_trait::async_trait;
 use std::sync::Arc;
+
+/// Wire identity — distinguishes connection sessions even for the same peer.
+///
+/// Used for stale detection: if a close event arrives with a session_id that
+/// no longer matches the active wire, the event is stale and should be ignored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WireIdentity {
+    WebRtc { peer_id: ActrId, session_id: u64 },
+}
 
 /// WireHandle - Unified interface for Wire layer connections
 ///
@@ -42,6 +51,16 @@ pub trait WireHandle: Send + Sync + std::fmt::Debug {
     /// Used when the underlying transport (e.g. DataChannel) has closed
     /// and needs to be recreated on next `get_lane` call.
     async fn invalidate_lane(&self, _payload_type: PayloadType) {}
+
+    /// Connection identity for stale detection (default: None).
+    ///
+    /// WebRTC connections return `WireIdentity::WebRtc { peer_id, session_id }`
+    /// so that upper layers can detect whether a close event belongs to the
+    /// current active session or a stale one. WebSocket connections return None
+    /// since they lack a comparable session concept.
+    fn identity(&self) -> Option<WireIdentity> {
+        None
+    }
 }
 
 /// Wire connection status

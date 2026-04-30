@@ -6,7 +6,7 @@
 use super::Dest; // Re-exported from actr-framework
 use super::error::{NetworkError, NetworkResult};
 use super::route_table::PayloadTypeExt;
-use super::wire_handle::WireHandle;
+use super::wire_handle::{WireHandle, WireIdentity};
 use super::wire_pool::{ConnType, ReadySet, RetryConfig, WirePool};
 use actr_protocol::PayloadType;
 use std::sync::Arc;
@@ -49,6 +49,10 @@ impl DestTransport {
     /// - If connection available, send immediately
     /// - If not, wait for connection status change (via watch channel)
     /// - WirePool already handles priority, only need to try DataLane Types in order
+    /// - Stale self-heal: when `get_lane()` returns a closed-like error, the
+    ///   current WebRTC wire may be stale. We conditionally mark it Failed
+    ///   (only if it still carries the same identity) so the outer loop can
+    ///   wait for a new connection or fallback instead of spinning forever.
     #[cfg_attr(
         feature = "opentelemetry",
         tracing::instrument(skip_all, name = "DestTransport.send")
@@ -72,7 +76,7 @@ impl DestTransport {
         // 2. Subscribe to connection status changes
         let mut conn_watcher = self.conn_mgr.watch_ready();
 
-        loop {
+        'send: loop {
             // 3. Check currently available connections (clone to avoid borrowing across await)
             let ready_connections = {
                 let ready = conn_watcher.borrow_and_update();
@@ -127,6 +131,39 @@ impl DestTransport {
                             return result;
                         }
                         Err(e) => {
+                            let is_closed_like =
+                                conn_type == ConnType::WebRTC && is_closed_like_error(&e);
+
+                            if is_closed_like {
+                                tracing::warn!(
+                                    "❌ get_lane returned closed-like error for {:?}, invalidating lane",
+                                    conn_type
+                                );
+                                conn.invalidate_lane(payload_type).await;
+
+                                // Stale self-heal: if the wire still carries the same
+                                // identity, mark it Failed so the outer loop can re-read
+                                // readiness and retry/fallback without waiting on a
+                                // watch update that may never arrive.
+                                let wire_identity = conn.identity();
+                                let changed = match wire_identity.as_ref() {
+                                    Some(identity) => {
+                                        self.conn_mgr
+                                            .mark_connection_closed_if_same(conn_type, identity)
+                                            .await
+                                    }
+                                    None => false,
+                                };
+                                tracing::warn!(
+                                    "♻️ DestTransport stale self-heal: payload_type={:?}, conn_type={:?}, expected_identity={:?}, changed={}",
+                                    payload_type,
+                                    conn_type,
+                                    wire_identity,
+                                    changed
+                                );
+
+                                continue 'send;
+                            }
                             tracing::warn!("❌ Failed to get DataLane: {:?}: {}", lane_type, e);
                             continue;
                         }
@@ -236,5 +273,49 @@ impl DestTransport {
     /// Subscribe to ready-set changes (used for manager-side cleanup).
     pub fn watch_ready(&self) -> watch::Receiver<ReadySet> {
         self.conn_mgr.watch_ready()
+    }
+
+    /// Check whether the active WebRTC wire still carries the given identity.
+    ///
+    /// Used by PeerTransport (session-guarded cleanup) to decide whether a
+    /// `ConnectionClosed` event is stale or matches the current wire.
+    pub async fn matches_webrtc_session(
+        &self,
+        peer_id: &actr_protocol::ActrId,
+        session_id: u64,
+    ) -> bool {
+        let expected = WireIdentity::WebRtc {
+            peer_id: peer_id.clone(),
+            session_id,
+        };
+        self.conn_mgr
+            .connection_matches_identity(ConnType::WebRTC, &expected)
+            .await
+    }
+}
+
+/// Heuristic: errors that indicate the underlying transport is gone.
+// FIXME: Replace heuristic substring matching with precise error discrimination (typed
+// `NetworkError` variants, stable error codes, or structured payloads). Parsing display strings is
+// brittle and risks false positives when unrelated messages contain substrings like "closed".
+fn is_closed_like_error(e: &NetworkError) -> bool {
+    fn contains_closed_like(msg: &str) -> bool {
+        let msg = msg.to_ascii_lowercase();
+        msg.contains("connection closed")
+            || msg.contains("peer connection closed")
+            || msg.contains("datachannel closed")
+            || msg.contains("data channel closed")
+            || msg.contains("websocket connection closed")
+            || msg.contains("closed")
+    }
+
+    match e {
+        NetworkError::ConnectionClosed(_) => true,
+        NetworkError::ConnectionError(msg)
+        | NetworkError::WebRtcError(msg)
+        | NetworkError::DataChannelError(msg)
+        | NetworkError::WebSocketError(msg)
+        | NetworkError::SendError(msg) => contains_closed_like(msg),
+        _ => false,
     }
 }
