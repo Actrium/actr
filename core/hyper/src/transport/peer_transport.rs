@@ -397,6 +397,52 @@ impl PeerTransport {
         Ok(())
     }
 
+    /// Session-guarded close: only tear down the transport if the active
+    /// WebRTC wire still matches the given `(peer_id, session_id)` pair.
+    ///
+    /// Returns `Ok(true)` when the transport was actually closed.
+    /// Returns `Ok(false)` when the event is stale (identity mismatch)
+    /// or the transport state has already changed — in that case **no**
+    /// pending requests should be cleaned, and the peer should be removed
+    /// from `closing_peers` immediately.
+    pub async fn close_transport_if_webrtc_session(
+        &self,
+        dest: &Dest,
+        peer_id: &ActrId,
+        session_id: u64,
+    ) -> NetworkResult<bool> {
+        // 1. Clone the current transport without awaiting under the map lock.
+        let transport = {
+            let transports = self.transports.read().await;
+            match transports.get(dest) {
+                Some(Either::Right(transport)) => Some(Arc::clone(transport)),
+                _ => None, // Connecting or absent → stale
+            }
+        };
+
+        let Some(transport) = transport else {
+            tracing::debug!(
+                "Stale close event for {:?} (session {} mismatch or transport absent)",
+                dest,
+                session_id
+            );
+            return Ok(false);
+        };
+
+        if !transport.matches_webrtc_session(peer_id, session_id).await {
+            tracing::debug!(
+                "Stale close event for {:?} (session {} mismatch or transport absent)",
+                dest,
+                session_id
+            );
+            return Ok(false);
+        }
+
+        // 2. Identity matches → proceed with the normal close path.
+        self.close_transport(dest).await?;
+        Ok(true)
+    }
+
     /// Close all DestTransports
     pub async fn close_all(&self) -> NetworkResult<()> {
         let mut transports = self.transports.write().await;

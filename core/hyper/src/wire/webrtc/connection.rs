@@ -1046,6 +1046,13 @@ impl WireHandle for WebRtcConnection {
     async fn invalidate_lane(&self, payload_type: PayloadType) {
         self.invalidate_lane_internal(payload_type).await;
     }
+
+    fn identity(&self) -> Option<crate::transport::WireIdentity> {
+        Some(crate::transport::WireIdentity::WebRtc {
+            peer_id: self.peer_id().clone(),
+            session_id: self.session_id(),
+        })
+    }
 }
 
 #[cfg(test)]

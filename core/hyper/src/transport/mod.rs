@@ -35,7 +35,7 @@ pub use dest_transport::DestTransport;
 
 // Wire layer management
 pub use wire_builder::{DefaultWireBuilder, DefaultWireBuilderConfig};
-pub use wire_handle::WireHandle;
+pub use wire_handle::{WireHandle, WireIdentity};
 pub use wire_pool::{ConnType, WirePool};
 
 // Error types

@@ -5,7 +5,7 @@
 
 use super::backoff::ExponentialBackoff;
 use super::error::NetworkResult;
-use super::wire_handle::{WireHandle, WireStatus};
+use super::wire_handle::{WireHandle, WireIdentity, WireStatus};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -351,6 +351,67 @@ impl WirePool {
         Self::broadcast_ready_connections(&self.connections, &self.ready_tx).await;
 
         tracing::debug!("🔌 Marked {:?} connection as closed", conn_type);
+    }
+
+    /// Check whether the active ready slot for a connection type still matches
+    /// the given `WireIdentity`.
+    ///
+    /// Returns `true` only when the slot is `Ready` and the underlying wire
+    /// reports the same identity. Returns `false` for `Connecting`, `Failed`,
+    /// `None`, or a mismatched wire (stale or replaced).
+    pub async fn connection_matches_identity(
+        &self,
+        conn_type: ConnType,
+        expected_identity: &WireIdentity,
+    ) -> bool {
+        let conns = self.connections.read().await;
+        match &conns[conn_type.as_index()] {
+            Some(WireStatus::Ready(handle)) => {
+                handle.identity().as_ref() == Some(expected_identity)
+            }
+            _ => false,
+        }
+    }
+
+    /// Compare-and-swap close: mark a connection as Failed **only if** the
+    /// current ready wire still carries the expected identity.
+    ///
+    /// Returns `true` when the slot was actually transitioned to Failed.
+    /// Returns `false` when the identity no longer matches (the wire has
+    /// already been replaced by a fresh connection) — in that case the
+    /// ready set is left untouched.
+    pub async fn mark_connection_closed_if_same(
+        &self,
+        conn_type: ConnType,
+        expected_identity: &WireIdentity,
+    ) -> bool {
+        {
+            let mut conns = self.connections.write().await;
+            match &conns[conn_type.as_index()] {
+                Some(WireStatus::Ready(handle)) => {
+                    if handle.identity().as_ref() != Some(expected_identity) {
+                        tracing::debug!(
+                            "🔌 {:?} identity mismatch — not marking closed (wire already replaced)",
+                            conn_type
+                        );
+                        return false;
+                    }
+                }
+                _ => {
+                    // Not Ready — nothing to mark
+                    return false;
+                }
+            }
+            conns[conn_type.as_index()] = Some(WireStatus::Failed);
+        }
+
+        Self::broadcast_ready_connections(&self.connections, &self.ready_tx).await;
+        tracing::debug!(
+            "🔌 Marked {:?} closed (identity matched {:?})",
+            conn_type,
+            expected_identity
+        );
+        true
     }
 
     /// Close all connections in the pool
