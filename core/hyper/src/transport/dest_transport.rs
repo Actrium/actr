@@ -76,7 +76,7 @@ impl DestTransport {
         // 2. Subscribe to connection status changes
         let mut conn_watcher = self.conn_mgr.watch_ready();
 
-        loop {
+        'send: loop {
             // 3. Check currently available connections (clone to avoid borrowing across await)
             let ready_connections = {
                 let ready = conn_watcher.borrow_and_update();
@@ -131,7 +131,10 @@ impl DestTransport {
                             return result;
                         }
                         Err(e) => {
-                            if is_closed_like_error(&e) {
+                            let is_closed_like =
+                                conn_type == ConnType::WebRTC && is_closed_like_error(&e);
+
+                            if is_closed_like {
                                 tracing::warn!(
                                     "❌ get_lane returned closed-like error for {:?}, invalidating lane",
                                     conn_type
@@ -139,16 +142,27 @@ impl DestTransport {
                                 conn.invalidate_lane(payload_type).await;
 
                                 // Stale self-heal: if the wire still carries the same
-                                // identity, mark it Failed so the outer loop waits for
-                                // a fresh connection instead of spinning.
-                                if let Some(identity) = conn.identity() {
-                                    self.conn_mgr
-                                        .mark_connection_closed_if_same(conn_type, &identity)
-                                        .await;
-                                }
-                                // Break inner loop → back to outer loop to await
-                                // new ready set (new connection or fallback).
-                                break;
+                                // identity, mark it Failed so the outer loop can re-read
+                                // readiness and retry/fallback without waiting on a
+                                // watch update that may never arrive.
+                                let wire_identity = conn.identity();
+                                let changed = match wire_identity.as_ref() {
+                                    Some(identity) => {
+                                        self.conn_mgr
+                                            .mark_connection_closed_if_same(conn_type, identity)
+                                            .await
+                                    }
+                                    None => false,
+                                };
+                                tracing::warn!(
+                                    "♻️ DestTransport stale self-heal: payload_type={:?}, conn_type={:?}, expected_identity={:?}, changed={}",
+                                    payload_type,
+                                    conn_type,
+                                    wire_identity,
+                                    changed
+                                );
+
+                                continue 'send;
                             }
                             tracing::warn!("❌ Failed to get DataLane: {:?}: {}", lane_type, e);
                             continue;
@@ -281,16 +295,27 @@ impl DestTransport {
 }
 
 /// Heuristic: errors that indicate the underlying transport is gone.
+// FIXME: Replace heuristic substring matching with precise error discrimination (typed
+// `NetworkError` variants, stable error codes, or structured payloads). Parsing display strings is
+// brittle and risks false positives when unrelated messages contain substrings like "closed".
 fn is_closed_like_error(e: &NetworkError) -> bool {
+    fn contains_closed_like(msg: &str) -> bool {
+        let msg = msg.to_ascii_lowercase();
+        msg.contains("connection closed")
+            || msg.contains("peer connection closed")
+            || msg.contains("datachannel closed")
+            || msg.contains("data channel closed")
+            || msg.contains("websocket connection closed")
+            || msg.contains("closed")
+    }
+
     match e {
-        NetworkError::ConnectionClosed(_)
-        | NetworkError::ChannelClosed(_)
-        | NetworkError::ConnectionNotFound(_)
-        | NetworkError::ChannelNotFound(_) => true,
-        NetworkError::WebRtcError(msg)
+        NetworkError::ConnectionClosed(_) => true,
+        NetworkError::ConnectionError(msg)
+        | NetworkError::WebRtcError(msg)
         | NetworkError::DataChannelError(msg)
         | NetworkError::WebSocketError(msg)
-        | NetworkError::SendError(msg) => msg.contains("closed"),
+        | NetworkError::SendError(msg) => contains_closed_like(msg),
         _ => false,
     }
 }
