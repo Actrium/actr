@@ -16,5 +16,6 @@ pub use compat_lock::{CompatLockFile, CompatLockManager, CompatibilityCheck, Neg
 pub use heartbeat::heartbeat_task;
 pub use network_event::{
     DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle,
-    NetworkEventProcessor, NetworkEventResult,
+    NetworkEventProcessor, NetworkEventResult, NetworkRecoveryAction, process_network_event_batch,
+    run_network_event_reconciler, select_network_recovery_action,
 };

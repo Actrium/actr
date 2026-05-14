@@ -10,6 +10,10 @@
 mod common;
 
 use actr_protocol::{ActrId, PayloadType};
+use actr_runtime::lifecycle::{
+    NetworkEvent, NetworkRecoveryAction, process_network_event_batch,
+    select_network_recovery_action,
+};
 use actr_runtime::transport::{ConnectionEvent, ConnectionState, DataLane, Dest};
 use common::TestHarness;
 use std::time::Duration;
@@ -309,6 +313,123 @@ async fn test_two_peer_disconnect_reconnect() {
     }
 
     tracing::info!("✅ test_two_peer_disconnect_reconnect passed!");
+}
+
+#[tokio::test]
+async fn test_lost_available_type_changed_batch_restores_webrtc_end_to_end() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("🔗 Step 1: Establishing connection 100 → 200...");
+    harness.connect(100, 200).await;
+
+    harness.reset_counters();
+
+    tracing::info!("🔴 Step 2: Simulating full network outage (VNet + signaling)...");
+    harness.simulate_disconnect();
+    tokio::time::sleep(Duration::from_secs(8)).await;
+
+    tracing::info!("🟢 Step 3: Restoring network (VNet + signaling)...");
+    harness.simulate_reconnect();
+
+    let events = vec![
+        NetworkEvent::Lost,
+        NetworkEvent::Available,
+        NetworkEvent::TypeChanged {
+            is_wifi: true,
+            is_cellular: false,
+        },
+    ];
+    assert_eq!(
+        select_network_recovery_action(&events),
+        NetworkRecoveryAction::Restore
+    );
+
+    tracing::info!("📱 Step 4: Processing Lost -> Available -> TypeChanged as one batch...");
+    let results = process_network_event_batch(events, harness.peer(100).network_processor()).await;
+    assert_eq!(results.len(), 3);
+    assert!(results.iter().all(|result| result.success));
+
+    let restart_count = harness
+        .wait_for_ice_restart_count(1, Duration::from_secs(10))
+        .await;
+    tracing::info!(
+        "📊 ICE restart count after batched restore: {}",
+        restart_count
+    );
+
+    tracing::info!("📤 Step 5: Verifying WebRTC recovery via gate message...");
+    let request_handle =
+        harness
+            .peer(100)
+            .spawn_request(200, "batched_network_restore_verify", 10000);
+
+    match tokio::time::timeout(Duration::from_secs(10), request_handle).await {
+        Ok(Ok(Ok(response))) => {
+            tracing::info!(
+                "✅ WebRTC recovered after batched network events: {} bytes",
+                response.len()
+            );
+        }
+        Ok(Ok(Err(e))) => panic!("❌ WebRTC not recovered — request failed: {}", e),
+        Ok(Err(e)) => panic!("Request task panicked: {}", e),
+        Err(_) => panic!("❌ WebRTC not recovered — request timed out after 10s"),
+    }
+}
+
+#[tokio::test]
+async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("🔗 Step 1: Establishing connection 100 → 200...");
+    harness.connect(100, 200).await;
+
+    harness.reset_counters();
+
+    let events = vec![
+        NetworkEvent::CleanupConnections,
+        NetworkEvent::Available,
+        NetworkEvent::TypeChanged {
+            is_wifi: true,
+            is_cellular: false,
+        },
+    ];
+    assert_eq!(
+        select_network_recovery_action(&events),
+        NetworkRecoveryAction::CleanupConnectionsCompat
+    );
+
+    tracing::info!(
+        "📱 Step 2: Processing cleanup_connections -> Available -> TypeChanged as one batch..."
+    );
+    let results = process_network_event_batch(events, harness.peer(100).network_processor()).await;
+    assert_eq!(results.len(), 3);
+    assert!(results.iter().all(|result| result.success));
+
+    tracing::info!("📤 Step 3: Verifying WebRTC can rebuild via gate message...");
+    let request_handle =
+        harness
+            .peer(100)
+            .spawn_request(200, "cleanup_batch_rebuild_verify", 15000);
+
+    match tokio::time::timeout(Duration::from_secs(15), request_handle).await {
+        Ok(Ok(Ok(response))) => {
+            tracing::info!(
+                "✅ WebRTC rebuilt after cleanup batch: {} bytes",
+                response.len()
+            );
+        }
+        Ok(Ok(Err(e))) => panic!("❌ WebRTC not rebuilt — request failed: {}", e),
+        Ok(Err(e)) => panic!("Request task panicked: {}", e),
+        Err(_) => panic!("❌ WebRTC not rebuilt — request timed out after 15s"),
+    }
 }
 
 // ==================== Test 2: Offerer recovery latency ====================

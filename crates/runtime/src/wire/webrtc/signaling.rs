@@ -25,7 +25,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
 #[cfg(feature = "opentelemetry")]
@@ -136,6 +136,14 @@ pub trait SignalingClient: Send + Sync {
     /// Connecttosignaling server
     async fn connect(&self) -> NetworkResult<()>;
 
+    /// Perform a single explicit connection attempt.
+    ///
+    /// Network recovery events use this path so a failed restore attempt can
+    /// return quickly instead of sleeping inside the normal reconnect backoff.
+    async fn connect_once(&self) -> NetworkResult<()> {
+        self.connect().await
+    }
+
     /// DisconnectConnect
     async fn disconnect(&self) -> NetworkResult<()>;
 
@@ -243,6 +251,8 @@ pub struct WebSocketSignalingClient {
     connected: Arc<AtomicBool>,
     /// Connection in progress flag (prevents concurrent connect attempts)
     connecting: Arc<AtomicBool>,
+    /// Wakes a retrying connect() when a new explicit reconnect request arrives.
+    reconnect_wakeup: Arc<Notify>,
     /// statistics info
     stats: Arc<AtomicSignalingStats>,
     /// Envelope count number device
@@ -277,6 +287,7 @@ impl WebSocketSignalingClient {
             ws_stream: tokio::sync::Mutex::new(None),
             connected: Arc::new(AtomicBool::new(false)),
             connecting: Arc::new(AtomicBool::new(false)),
+            reconnect_wakeup: Arc::new(Notify::new()),
             stats: Arc::new(AtomicSignalingStats::default()),
             envelope_counter: tokio::sync::Mutex::new(0),
             pending_replies: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -414,13 +425,41 @@ impl WebSocketSignalingClient {
         url
     }
 
+    fn redact_signaling_url_for_log(url: &Url) -> String {
+        let mut redacted = url.clone();
+        let pairs: Vec<(String, String)> = redacted
+            .query_pairs()
+            .map(|(key, value)| {
+                let value = if key == "token" {
+                    "REDACTED".to_string()
+                } else {
+                    value.into_owned()
+                };
+                (key.into_owned(), value)
+            })
+            .collect();
+
+        redacted.set_query(None);
+        if !pairs.is_empty() {
+            let mut query = redacted.query_pairs_mut();
+            for (key, value) in pairs {
+                query.append_pair(&key, &value);
+            }
+        }
+
+        redacted.to_string()
+    }
+
     /// Establish a single signaling WebSocket connection attempt, honoring connection_timeout.
     ///
     /// This does not perform any retry logic; callers that want retries should wrap this.
     async fn establish_connection_once(&self) -> NetworkResult<()> {
         let url = self.build_url_with_identity().await;
         let timeout_secs = self.config.connection_timeout;
-        tracing::debug!("Establishing connection to URL: {}", url.as_str());
+        tracing::debug!(
+            "Establishing connection to URL: {}",
+            Self::redact_signaling_url_for_log(&url)
+        );
         // 断网后，写入到缓冲区的数据，网络恢复后会继续发送
         let config = WebSocketConfig::default().write_buffer_size(0);
         // Connect with an optional timeout. A timeout of 0 means "no timeout".
@@ -490,7 +529,16 @@ impl WebSocketSignalingClient {
 
                     let sleep_secs = delay_secs.min(cfg.max_delay.max(1));
                     tracing::info!("Retry signaling connect after {}s", sleep_secs);
-                    tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)) => {}
+                        _ = self.reconnect_wakeup.notified() => {
+                            tracing::info!(
+                                "Signaling reconnect backoff interrupted by explicit reconnect request"
+                            );
+                            delay_secs = cfg.initial_delay.max(1);
+                            continue;
+                        }
+                    }
 
                     // Exponential backoff for next attempt
                     delay_secs = ((delay_secs as f64) * cfg.backoff_multiplier)
@@ -779,7 +827,10 @@ impl SignalingClient for WebSocketSignalingClient {
             .is_err()
         {
             // Another task is connecting, wait for state change using watch channel
-            tracing::debug!("Another connection attempt in progress, waiting for state change...");
+            tracing::debug!(
+                "Another connection attempt in progress, waking retry backoff and waiting..."
+            );
+            self.reconnect_wakeup.notify_waiters();
 
             return self.wait_for_connection_result().await;
         }
@@ -805,6 +856,49 @@ impl SignalingClient for WebSocketSignalingClient {
                 // This allows them to retry immediately instead of waiting for timeout
                 let _ = self.state_tx.send(ConnectionState::Disconnected);
                 tracing::error!("Connection failed: {e}");
+                Err(e)
+            }
+        }
+    }
+
+    async fn connect_once(&self) -> NetworkResult<()> {
+        // 🔐 Fast path: Check if already connected
+        if self.connected.load(Ordering::Acquire) {
+            tracing::debug!("Already connected, skipping connect_once()");
+            return Ok(());
+        }
+
+        // Wake any retrying connect() so network recovery is not stuck behind
+        // an old backoff sleep.
+        self.reconnect_wakeup.notify_waiters();
+
+        if self
+            .connecting
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            tracing::debug!(
+                "Another connection attempt in progress, waking retry backoff and waiting..."
+            );
+            self.reconnect_wakeup.notify_waiters();
+            return self.wait_for_connection_result().await;
+        }
+
+        tracing::debug!(
+            "Acquired connection lock, establishing one signaling connection attempt..."
+        );
+        let result = self.establish_connection_once().await;
+        self.connecting.store(false, Ordering::Release);
+
+        match result {
+            Ok(()) => {
+                self.start_receiver().await;
+                self.start_ping_task().await;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.state_tx.send(ConnectionState::Disconnected);
+                tracing::error!("Connection attempt failed: {e}");
                 Err(e)
             }
         }
@@ -1354,5 +1448,23 @@ mod tests {
         let client = WebSocketSignalingClient::new(config);
         let state_rx = client.subscribe_state();
         assert_eq!(*state_rx.borrow(), ConnectionState::Disconnected);
+    }
+
+    #[test]
+    fn test_signaling_url_log_redacts_token_query_param() {
+        let url = Url::parse(
+            "wss://example.com/signaling?actor_id=abc&token=secret-token&token_key_id=7",
+        )
+        .unwrap();
+
+        let redacted = WebSocketSignalingClient::redact_signaling_url_for_log(&url);
+
+        assert!(redacted.contains("actor_id=abc"));
+        assert!(redacted.contains("token=REDACTED"));
+        assert!(redacted.contains("token_key_id=7"));
+        assert!(
+            !redacted.contains("secret-token"),
+            "credential token must not appear in signaling URL logs"
+        );
     }
 }
