@@ -619,9 +619,7 @@ pub fn register_guest_workload(dispatch_fn: js_sys::Function) {
                     result
                 };
 
-                log::info!(
-                    "[SW][GuestBridge] dispatch promise resolved request_id={request_id}"
-                );
+                log::info!("[SW][GuestBridge] dispatch promise resolved request_id={request_id}");
 
                 if resolved.is_null() || resolved.is_undefined() {
                     return Err("guest dispatch returned null/undefined".to_string());

@@ -94,7 +94,7 @@ fn test_load_nonexistent_library() {
 
 /// Loading and instantiating a valid SO should succeed
 #[test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 fn test_load_and_instantiate() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load should succeed");
@@ -104,7 +104,7 @@ fn test_load_and_instantiate() {
 
 /// Basic echo dispatch through loaded instance
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 async fn test_basic_echo_dispatch() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load");
@@ -126,7 +126,7 @@ async fn test_basic_echo_dispatch() {
 
 /// Basic double dispatch through loaded instance
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 async fn test_basic_double_dispatch() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load");
@@ -138,7 +138,7 @@ async fn test_basic_double_dispatch() {
     let executor: HostAbiFn = std::sync::Arc::new(|pending| {
         Box::pin(async move {
             match pending {
-                HostOperation::Call(req) => {
+                HostOperation::CallRaw(req) => {
                     let val = i32::from_le_bytes([
                         req.payload[0],
                         req.payload[1],

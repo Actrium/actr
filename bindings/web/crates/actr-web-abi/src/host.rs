@@ -258,4 +258,3 @@ pub async fn __actr_workload_on_websocket_disconnected(event: JsValue) -> Result
     __w.on_websocket_disconnected(__p_event).await;
     Ok(JsValue::UNDEFINED)
 }
-

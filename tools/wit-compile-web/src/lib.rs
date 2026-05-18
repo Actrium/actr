@@ -1119,5 +1119,4 @@ mod tests {
         assert!(out.contains("async fn on_start"));
         assert!(out.contains("#[wasm_bindgen(js_name = \"dispatch\")"));
     }
-
 }

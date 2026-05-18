@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 [features]
 default = ["cdylib"]
 cdylib = ["actr-framework/cdylib"]
+web = []
 
 [dependencies]
 actr-framework = { path = "../../../../core/framework" }

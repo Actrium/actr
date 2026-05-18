@@ -106,7 +106,6 @@ impl InboundPacketDispatcher {
 
         Ok(())
     }
-
 }
 
 #[cfg(test)]

@@ -176,7 +176,9 @@ fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
 /// trap (serde marshaling, undefined host fn), the inner
 /// `Result<T, wit::ActrError>` is the WIT-declared return variant. Both
 /// are errors from the caller's perspective.
-fn flatten_js<T>(outcome: Result<Result<T, wit::ActrError>, wasm_bindgen::JsValue>) -> ActorResult<T> {
+fn flatten_js<T>(
+    outcome: Result<Result<T, wit::ActrError>, wasm_bindgen::JsValue>,
+) -> ActorResult<T> {
     match outcome {
         Ok(Ok(v)) => Ok(v),
         Ok(Err(e)) => Err(wit_error_to_proto(e)),
@@ -226,9 +228,7 @@ impl Context for WebContext {
             .call_raw(actor, R::route_key(), bytes::Bytes::from(payload))
             .await?;
         R::Response::decode(bytes.as_ref()).map_err(|e| {
-            ActrError::DecodeFailure(format!(
-                "WebContext::call: response decode failed: {e}"
-            ))
+            ActrError::DecodeFailure(format!("WebContext::call: response decode failed: {e}"))
         })
     }
 

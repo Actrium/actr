@@ -6,9 +6,7 @@
 use std::rc::Rc;
 
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{
-    ActorResult, ActrId, ActrType, MetadataEntry, RpcEnvelope, RpcRequest,
-};
+use actr_protocol::{ActorResult, ActrId, ActrType, MetadataEntry, RpcEnvelope, RpcRequest};
 use bytes::Bytes;
 
 use crate::WebContext;

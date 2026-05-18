@@ -5,8 +5,8 @@
 use super::dest_transport::DestTransport;
 use super::wire_builder::WireBuilder;
 use actr_web_common::{Dest, PayloadType, WebResult};
-use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use std::sync::Arc;
 
 /// Per-destination transport state.

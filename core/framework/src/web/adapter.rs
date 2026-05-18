@@ -30,9 +30,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::web::context::WebContext;
-use crate::workload::{
-    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent,
-};
+use crate::workload::{BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent};
 use crate::{MessageDispatcher, Workload};
 
 use actr_web_abi::host as web_host;

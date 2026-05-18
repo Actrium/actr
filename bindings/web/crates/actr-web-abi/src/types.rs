@@ -6,10 +6,10 @@
 // Regenerate with: cargo run -p actr-wit-compile-web
 // Drift check:      cargo run -p actr-wit-compile-web -- --check
 
-//! Serde-derived record / variant definitions lowered from 
+//! Serde-derived record / variant definitions lowered from
 //! `core/framework/wit/actr-workload.wit`.
 //!
-//! Every type derives `Serialize` + `Deserialize` so 
+//! Every type derives `Serialize` + `Deserialize` so
 //! `serde-wasm-bindgen` can carry them across the Rust <-> JS
 //! boundary without a hand-written converter. Field names are
 //! snake-cased Rust idents; `#[serde(rename)]` keeps the wire
@@ -148,4 +148,3 @@ pub enum ErrorCategory {
     #[serde(rename = "transport-failure")]
     TransportFailure,
 }
-
