@@ -308,7 +308,7 @@ impl TypeScriptGenerator {
         for service in catalog
             .local_services
             .into_iter()
-            .chain(catalog.remote_services.into_iter())
+            .chain(catalog.remote_services)
         {
             services_by_file
                 .entry(normalize_proto_lookup_key(&service.proto_file))
