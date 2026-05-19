@@ -424,6 +424,10 @@ impl DefaultNetworkEventProcessor {
     }
 
     async fn restore_signaling_and_webrtc(&self, reason: &str) -> Result<(), String> {
+        if let Some(coordinator) = self.webrtc_coordinator.clone() {
+            coordinator.begin_network_recovery().await;
+        }
+
         self.rebuild_signaling_once(reason).await?;
 
         let coordinator = self.webrtc_coordinator.clone();

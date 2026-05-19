@@ -48,7 +48,7 @@ pub struct TestPeer {
     pub id: ActrId,
     /// WebRTC coordinator (connection management, ICE restart, signaling)
     pub coordinator: Arc<WebRtcCoordinator>,
-    /// Signaling client used by the coordinator.
+    /// Signaling client used by network event processors in mobile-style tests.
     pub signaling_client: Arc<dyn SignalingClient>,
     /// OutprocOutGate (message sending, pending request management)
     pub gate: Arc<OutprocOutGate>,
