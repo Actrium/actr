@@ -307,21 +307,53 @@ fn materialize_events(specs: &[EventSpec]) -> Vec<NetworkEvent> {
 }
 
 async fn expect_request_ok(harness: &TestHarness, request_id: &str, timeout: Duration) {
-    let handle = harness
-        .peer(100)
-        .spawn_request(200, request_id, timeout.as_millis() as u32);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut attempt = 0;
+    let mut last_error = String::new();
 
-    match tokio::time::timeout(timeout, handle).await {
-        Ok(Ok(Ok(response))) => {
-            assert!(
-                !response.is_empty(),
-                "{} should receive a non-empty response",
-                request_id
+    loop {
+        attempt += 1;
+        let attempt_request_id = format!("{}_attempt_{}", request_id, attempt);
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            panic!(
+                "{} request did not recover within {:?}; last error: {}",
+                request_id, timeout, last_error
             );
         }
-        Ok(Ok(Err(e))) => panic!("{} request failed: {}", request_id, e),
-        Ok(Err(e)) => panic!("{} request task panicked: {}", request_id, e),
-        Err(_) => panic!("{} request timed out after {:?}", request_id, timeout),
+
+        let attempt_timeout = remaining.min(Duration::from_secs(3));
+        let handle = harness.peer(100).spawn_request(
+            200,
+            &attempt_request_id,
+            attempt_timeout.as_millis() as u32,
+        );
+
+        match tokio::time::timeout(attempt_timeout + Duration::from_millis(250), handle).await {
+            Ok(Ok(Ok(response))) => {
+                assert!(
+                    !response.is_empty(),
+                    "{} should receive a non-empty response",
+                    request_id
+                );
+                return;
+            }
+            Ok(Ok(Err(e))) => {
+                last_error = e.to_string();
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("{} request failed: {}", request_id, last_error);
+                }
+            }
+            Ok(Err(e)) => panic!("{} request task panicked: {}", request_id, e),
+            Err(_) => {
+                last_error = format!("attempt {} timed out after {:?}", attempt, attempt_timeout);
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("{} request timed out after {:?}", request_id, timeout);
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 
