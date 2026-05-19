@@ -10,6 +10,7 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::Duration;
 use tokio::sync::{RwLock, broadcast, mpsc};
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
@@ -18,6 +19,8 @@ use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 
 /// Type alias for media track storage (track_id → (Track, Sender))
 type MediaTracks = Arc<RwLock<HashMap<String, (Arc<TrackLocalStaticRTP>, Arc<RTCRtpSender>)>>>;
+
+const PEER_CONNECTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// WebRtcConnection - WebRTC P2P Connect
 #[derive(Clone)]
@@ -245,15 +248,37 @@ impl WebRtcConnection {
             return Ok(());
         }
 
-        // Cancel session token to silence stale DataChannel callbacks
+        // Cancel session token to silence stale DataChannel callbacks.
         self.session.cancel();
+
+        // Notify upper layers before awaiting RTCPeerConnection::close().
+        // On mobile resume/background paths the lower-level close can stall
+        // while SCTP/ICE is already broken; send-path recovery must not depend
+        // on that await completing.
+        let _ = self.event_tx.send(ConnectionEvent::ConnectionClosed {
+            peer_id: self.peer_id.clone(),
+            session_id: self.session.session_id,
+        });
 
         tracing::debug!(
             "🔒 [close] session={} Calling peer_connection.close() for peer {:?}",
             self.session.session_id,
             self.peer_id
         );
-        self.peer_connection.close().await?;
+        let close_result =
+            tokio::time::timeout(PEER_CONNECTION_CLOSE_TIMEOUT, self.peer_connection.close()).await;
+        let close_error = match close_result {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(e),
+            Err(_) => {
+                tracing::warn!(
+                    "⏱️ RTCPeerConnection close timed out for peer {:?} (session_id={})",
+                    self.peer_id,
+                    self.session.session_id
+                );
+                None
+            }
+        };
 
         // Clear each cache under a dedicated lock scope, preserving the
         // canonical lock order used by invalidate_lane() and stale recreation:
@@ -279,17 +304,14 @@ impl WebRtcConnection {
             ssrcs.clear();
         }
 
-        // Broadcast ConnectionClosed event with real session_id
-        let _ = self.event_tx.send(ConnectionEvent::ConnectionClosed {
-            peer_id: self.peer_id.clone(),
-            session_id: self.session.session_id,
-        });
-
         tracing::info!(
             "🔌 WebRtcConnection closed for peer {:?} (session_id={})",
             self.peer_id,
             self.session.session_id
         );
+        if let Some(error) = close_error {
+            return Err(error.into());
+        }
         Ok(())
     }
 

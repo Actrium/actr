@@ -425,7 +425,7 @@ impl DefaultNetworkEventProcessor {
 
     async fn restore_signaling_and_webrtc(&self, reason: &str) -> Result<(), String> {
         if let Some(coordinator) = self.webrtc_coordinator.clone() {
-            coordinator.begin_network_recovery().await;
+            coordinator.begin_network_recovery(reason).await;
         }
 
         self.rebuild_signaling_once(reason).await?;
@@ -435,8 +435,8 @@ impl DefaultNetworkEventProcessor {
         if let Some(coordinator) = coordinator {
             tracing::info!("🧹 Clearing stale ICE restart attempts before recovery...");
             coordinator.clear_pending_restarts().await;
-            tracing::info!("♻️ Triggering ICE restart for failed connections...");
-            coordinator.retry_failed_connections().await;
+            tracing::info!("♻️ Triggering ICE restart for recovering connections...");
+            coordinator.restart_network_recovery_connections().await;
         }
 
         Ok(())
@@ -446,6 +446,7 @@ impl DefaultNetworkEventProcessor {
         tracing::info!("📱 Processing: Network offline");
 
         if let Some(ref coordinator) = self.webrtc_coordinator {
+            coordinator.begin_network_recovery("NetworkLost").await;
             tracing::info!("🧹 Clearing pending ICE restart attempts...");
             coordinator.clear_pending_restarts().await;
         }
