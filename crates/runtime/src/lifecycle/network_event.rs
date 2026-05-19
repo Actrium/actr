@@ -394,8 +394,37 @@ impl DefaultNetworkEventProcessor {
         Ok(())
     }
 
+    async fn rebuild_signaling_once(&self, reason: &str) -> Result<(), String> {
+        let _guard = self.recovery_state.connect_lock.lock().await;
+
+        if self.signaling_client.is_connected() {
+            tracing::info!(
+                reason = reason,
+                "🔌 Rebuilding signaling: disconnecting existing WebSocket"
+            );
+            if let Err(e) = self.signaling_client.disconnect().await {
+                tracing::warn!(
+                    reason = reason,
+                    "⚠️ Failed to disconnect existing signaling before rebuild: {}",
+                    e
+                );
+            }
+        }
+
+        tracing::info!(reason = reason, "🔄 Rebuilding signaling: connecting");
+        self.signaling_client.connect_once().await.map_err(|e| {
+            let err_msg = format!("WebSocket rebuild failed: {}", e);
+            tracing::error!("❌ {}", err_msg);
+            err_msg
+        })?;
+
+        *self.recovery_state.last_successful_connect.lock().await = Some(Instant::now());
+        tracing::info!(reason = reason, "✅ Signaling rebuilt");
+        Ok(())
+    }
+
     async fn restore_signaling_and_webrtc(&self, reason: &str) -> Result<(), String> {
-        self.ensure_signaling_connected_once(reason).await?;
+        self.rebuild_signaling_once(reason).await?;
 
         let coordinator = self.webrtc_coordinator.clone();
 
