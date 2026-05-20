@@ -346,17 +346,20 @@ impl Context for WebContext {
     // ── Observation ─────────────────────────────────────────────────────
 
     fn log(&self, level: LogLevel, msg: &str) {
-        // `wasm-bindgen` + `tracing-web` (installed by the runtime glue)
-        // route these records to `console.*` automatically; we therefore
-        // delegate to the default `tracing` body. If a downstream host
-        // wires a different sink (e.g. a host-import log channel) it can
-        // override this method in its own wrapper.
-        match level {
-            LogLevel::Trace => tracing::trace!(target: "actr_framework::workload", "{msg}"),
-            LogLevel::Debug => tracing::debug!(target: "actr_framework::workload", "{msg}"),
-            LogLevel::Info => tracing::info!(target: "actr_framework::workload", "{msg}"),
-            LogLevel::Warn => tracing::warn!(target: "actr_framework::workload", "{msg}"),
-            LogLevel::Error => tracing::error!(target: "actr_framework::workload", "{msg}"),
+        let request_id = self.request_id().to_string();
+        let level = match level {
+            LogLevel::Trace => "trace",
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
         }
+        .to_string();
+        let message = msg.to_string();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ =
+                actr_web_abi::guest::log_message_with_request_id(&request_id, level, message).await;
+        });
     }
 }

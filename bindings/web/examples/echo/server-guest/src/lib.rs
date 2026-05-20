@@ -39,7 +39,7 @@ mod generated {
     include!(concat!(env!("OUT_DIR"), "/echo_actor.rs"));
 }
 
-use actr_framework::{Context, entry};
+use actr_framework::{Context, LogLevel, entry};
 use actr_protocol::ActorResult;
 use async_trait::async_trait;
 
@@ -65,10 +65,16 @@ pub struct EchoService;
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl EchoServiceHandler for EchoService {
-    async fn echo<C: Context>(&self, req: EchoRequest, _ctx: &C) -> ActorResult<EchoResponse> {
-        log::info!("📨 Echo request message='{}'", req.message);
+    async fn echo<C: Context>(&self, req: EchoRequest, ctx: &C) -> ActorResult<EchoResponse> {
+        ctx.log(
+            LogLevel::Info,
+            &format!("📨 Echo request message='{}'", req.message),
+        );
         let reply = format!("Echo: {}", req.message);
-        log::info!("📤 Echo response reply='{}'", reply);
+        ctx.log(
+            LogLevel::Info,
+            &format!("📤 Echo response reply='{}'", reply),
+        );
         Ok(EchoResponse {
             reply,
             timestamp: current_timestamp(),
