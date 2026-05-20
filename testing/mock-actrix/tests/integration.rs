@@ -24,7 +24,7 @@ fn test_register_request() -> RegisterRequest {
         manifest_raw: Some(b"manifest".to_vec().into()),
         mfr_signature: Some(vec![0u8; 64].into()),
         psk_token: None,
-        target: Some("wasm32-unknown-unknown".into()),
+        target: Some("wasm32-wasip2".into()),
     }
 }
 
@@ -178,7 +178,7 @@ async fn publish_flow_via_nonce_and_publish() {
             "manufacturer": "acme",
             "name": "EchoSvc",
             "version": "0.1.0",
-            "target": "wasm32-unknown-unknown",
+            "target": "wasm32-wasip2",
             "manifest": "edition = 1\n",
             "signature": "sig",
             "proto_files": null,
@@ -201,7 +201,7 @@ async fn publish_flow_via_nonce_and_publish() {
             "manufacturer": "acme",
             "name": "EchoSvc",
             "version": "0.1.0",
-            "target": "wasm32-unknown-unknown",
+            "target": "wasm32-wasip2",
             "manifest": "edition = 1\n",
             "signature": "sig",
             "proto_files": null,

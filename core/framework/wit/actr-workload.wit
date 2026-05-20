@@ -158,7 +158,7 @@ interface types {
 // ─────────────────────────────────────────────────────────────────────────
 //
 // Corresponds to the HostCallV1 / HostTellV1 / HostCallRawV1 /
-// HostDiscoverV1 operations dispatched through `actr_host_invoke` today.
+// HostDiscoverV1 operations routed through the host ABI bridge.
 // The plain `func` declaration keeps us on the WIT-sync path; the
 // binding-time `default: async` flag on the host side turns these into
 // `async fn` at the Rust surface.

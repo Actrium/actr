@@ -762,14 +762,14 @@ version = "1.0.0"
 
 [binary]
 path = "dist/test.wasm"
-target = "wasm32-unknown-unknown"
+target = "wasm32-wasip2"
 
 [build]
 tool = "cargo"
 manifest_path = "Cargo.toml"
 artifact = "lib"
 profile = "release"
-target = "wasm32-unknown-unknown"
+target = "wasm32-wasip2"
 features = ["feature-a", "feature-b"]
 no_default_features = true
 post_build = ["echo build"]
@@ -785,7 +785,7 @@ post_build = ["echo build"]
 
         let binary = config.binary.expect("binary config should exist");
         assert_eq!(binary.path, tmpdir.path().join("dist/test.wasm"));
-        assert_eq!(binary.target.as_deref(), Some("wasm32-unknown-unknown"));
+        assert_eq!(binary.target.as_deref(), Some("wasm32-wasip2"));
 
         let build = config.build.expect("build config should exist");
         assert_eq!(build.manifest_path, tmpdir.path().join("Cargo.toml"));

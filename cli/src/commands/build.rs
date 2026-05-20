@@ -158,7 +158,7 @@ fn resolve_manifest_path(path: &Path) -> Result<PathBuf> {
 
     if !candidate.exists() {
         anyhow::bail!(
-            "manifest.toml not found: {}\nBy default `actr build` looks for ./manifest.toml. Use `-f, --file` to specify a different path.",
+            "manifest.toml not found: {}\nBy default `actr build` looks for ./manifest.toml. Use `-m, --manifest-path` to specify a different path.",
             candidate.display()
         );
     }
@@ -217,6 +217,8 @@ fn compile_project(
         );
     }
 
+    let cargo_target_dir = resolve_cargo_target_dir(&build.manifest_path)?;
+
     ensure_target_installed(effective_target)?;
     run_cargo_build(build, effective_target)?;
     run_post_build_steps(
@@ -224,6 +226,7 @@ fn compile_project(
         output_path,
         binary_path,
         effective_target,
+        &cargo_target_dir,
         build,
     )?;
 
@@ -293,11 +296,12 @@ fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
     // Component Model guests (`wasm32-wasip2`) must be linked by
     // `wasm-component-ld` so the emitted artifact is a Component rather
     // than a core module. Rust 1.91 ships `wasm-component-ld 0.5.17`,
-    // which rejects the async custom sections wit-bindgen 0.57 emits;
-    // require >=0.5.22 and point `-Clinker=` at it via `RUSTFLAGS`.
+    // which rejects the async custom sections wit-bindgen 0.57 emits.
+    // Use Cargo's target-specific linker variable so host build scripts
+    // still link with the native linker.
     if effective_target == "wasm32-wasip2" {
         let linker = resolve_wasm_component_linker()?;
-        command.env("RUSTFLAGS", format!("-Clinker={}", linker.display()));
+        command.env("CARGO_TARGET_WASM32_WASIP2_LINKER", linker);
     }
 
     let status = command
@@ -362,7 +366,84 @@ fn resolve_wasm_component_linker() -> Result<PathBuf> {
         );
     }
 
+    validate_wasm_component_linker_version(&candidate, REQUIRED)?;
+
     Ok(candidate)
+}
+
+fn validate_wasm_component_linker_version(linker: &Path, required: &str) -> Result<()> {
+    let output = StdCommand::new(linker)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| {
+            format!(
+                "Failed to run `{}` --version for wasm-component-ld validation",
+                linker.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`{}` --version failed with status {}.\n\
+             Install it with: cargo install wasm-component-ld --version {required}",
+            linker.display(),
+            output.status
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let version_text = if stdout.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+
+    let actual = extract_semver(version_text).with_context(|| {
+        format!(
+            "Failed to parse wasm-component-ld version from `{version_text}`.\n\
+             Install it with: cargo install wasm-component-ld --version {required}"
+        )
+    })?;
+    let required = parse_semver(required).expect("REQUIRED wasm-component-ld version is valid");
+
+    if actual < required {
+        anyhow::bail!(
+            "`{}` reports version {}, but wasm32-wasip2 Component linking requires >= {}.\n\
+             Install it with: cargo install wasm-component-ld --version {}",
+            linker.display(),
+            format_semver(actual),
+            format_semver(required),
+            format_semver(required)
+        );
+    }
+
+    Ok(())
+}
+
+fn extract_semver(text: &str) -> Option<(u64, u64, u64)> {
+    text.split_whitespace().find_map(parse_semver)
+}
+
+fn parse_semver(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch_text = parts.next()?;
+    let patch_len = patch_text
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if patch_len == 0 {
+        return None;
+    }
+    let patch = patch_text[..patch_len].parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn format_semver(version: (u64, u64, u64)) -> String {
+    format!("{}.{}.{}", version.0, version.1, version.2)
 }
 
 /// Walk `PATH` looking for `binary`. Returns the first hit that exists
@@ -386,6 +467,7 @@ fn run_post_build_steps(
     output_path: &Path,
     binary_path: &Path,
     effective_target: &str,
+    cargo_target_dir: &Path,
     build: &BuildConfig,
 ) -> Result<()> {
     if build.post_build.is_empty() {
@@ -408,6 +490,8 @@ fn run_post_build_steps(
             .env("ACTR_BUILD_TARGET", effective_target)
             .env("ACTR_BUILD_PROFILE", build.profile.as_str())
             .env("ACTR_BUILD_OUTPUT_PATH", output_path)
+            .env("ACTR_BUILD_CARGO_TARGET_DIR", cargo_target_dir)
+            .env("CARGO_TARGET_DIR", cargo_target_dir)
             .output()
             .with_context(|| format!("Failed to run post_build command: {command_text}"))?;
 
@@ -465,6 +549,21 @@ fn resolve_cargo_bin_name(manifest_path: &Path) -> Result<String> {
         })?;
 
     Ok(package.name.clone())
+}
+
+fn resolve_cargo_target_dir(manifest_path: &Path) -> Result<PathBuf> {
+    let metadata = MetadataCommand::new()
+        .manifest_path(manifest_path)
+        .no_deps()
+        .exec()
+        .with_context(|| {
+            format!(
+                "Failed to read Cargo metadata from {}",
+                manifest_path.display()
+            )
+        })?;
+
+    Ok(metadata.target_directory.into_std_path_buf())
 }
 
 fn resolve_host_target() -> Result<String> {

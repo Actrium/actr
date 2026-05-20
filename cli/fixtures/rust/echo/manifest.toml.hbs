@@ -15,16 +15,16 @@ EchoService = { actr_type = "{{MANUFACTURER}}:EchoService:1.0.0" }
 
 [binary]
 path = "dist/app.wasm"
-target = "wasm32-unknown-unknown"
+target = "wasm32-wasip2"
 
 [build]
 tool = "cargo"
 manifest_path = "Cargo.toml"
 artifact = "lib"
 profile = "release"
-target = "wasm32-unknown-unknown"
+target = "wasm32-wasip2"
 post_build = [
-  'mkdir -p "$(dirname "$ACTR_BUILD_BINARY_PATH")" && if command -v "${WASM_OPT:-wasm-opt}" >/dev/null 2>&1; then "${WASM_OPT:-wasm-opt}" --asyncify -O "target/wasm32-unknown-unknown/release/{{PROJECT_NAME_SNAKE}}_guest.wasm" -o "$ACTR_BUILD_BINARY_PATH"; else cp "target/wasm32-unknown-unknown/release/{{PROJECT_NAME_SNAKE}}_guest.wasm" "$ACTR_BUILD_BINARY_PATH"; fi',
+  'mkdir -p "$(dirname "$ACTR_BUILD_BINARY_PATH")" && cp "$ACTR_BUILD_CARGO_TARGET_DIR/$ACTR_BUILD_TARGET/$ACTR_BUILD_PROFILE/{{PROJECT_NAME_SNAKE}}_guest.wasm" "$ACTR_BUILD_BINARY_PATH"',
 ]
 
 [scripts]

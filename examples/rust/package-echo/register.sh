@@ -56,7 +56,7 @@ ECHO_ACTR_VERSION=$(awk '
     in_package && $1 == "version" { gsub(/"/, "", $3); print $3; exit }
 ' "$ECHO_ACTR_DIR/Cargo.toml")
 
-ACTR_PACKAGE="${ACTR_PACKAGE:-$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-wasm32-unknown-unknown.actr}"
+ACTR_PACKAGE="${ACTR_PACKAGE:-$ECHO_ACTR_DIR/dist/actrium-EchoService-${ECHO_ACTR_VERSION}-wasm32-wasip2.actr}"
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -90,7 +90,7 @@ fi
 
 if [ ! -f "$ACTR_PACKAGE" ]; then
     echo -e "${RED}❌ Package not found: $ACTR_PACKAGE${NC}"
-    echo "   Build it first: cd $ECHO_ACTR_DIR && cargo build --release --target wasm32-unknown-unknown"
+    echo "   Build it first: cd $ECHO_ACTR_DIR && ./packaging/scripts/build-wasm.sh"
     exit 1
 fi
 

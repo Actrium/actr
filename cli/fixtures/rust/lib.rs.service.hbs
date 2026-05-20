@@ -44,7 +44,8 @@ pub mod generated_stub {
             }
         }
 
-        #[async_trait]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
         pub trait EchoServiceHandler: Send + Sync + 'static {
             async fn echo<C: Context>(&self, req: EchoRequest, ctx: &C) -> ActorResult<EchoResponse>;
         }
@@ -59,7 +60,8 @@ pub mod generated_stub {
 
         pub struct EchoServiceDispatcher<T: EchoServiceHandler>(std::marker::PhantomData<T>);
 
-        #[async_trait]
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
         impl<T: EchoServiceHandler> MessageDispatcher for EchoServiceDispatcher<T> {
             type Workload = EchoServiceWorkload<T>;
 

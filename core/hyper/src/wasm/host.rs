@@ -22,8 +22,7 @@
 //! Every host import is an `async fn` on the generated Rust trait
 //! (Component Model async binding mode). Chaining `Component::instantiate_async`
 //! with `call_dispatch(&mut store, env).await` lets the guest `.await`
-//! host imports without cooperative-suspend / asyncify unwind
-//! machinery — that entire mechanism is deleted with this commit.
+//! host imports through the Component Model async ABI.
 //!
 //! Same-instance single-threadedness is compile-time-enforced: each
 //! dispatch takes `&mut Store<HostState>`, so the Rust borrow checker

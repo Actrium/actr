@@ -11,7 +11,7 @@ PY
 )}"
 ACTR_REPO_DIR="${ECHO_ACTR_ACTR_REPO_DIR:-$ROOT_DIR/../../..}"
 ACTR_CLI_MANIFEST="${ECHO_ACTR_CLI_MANIFEST:-$ACTR_REPO_DIR/cli/Cargo.toml}"
-TARGET="wasm32-unknown-unknown"
+TARGET="wasm32-wasip2"
 
 ensure_actr_cli() {
   if [ -f "$ACTR_CLI_MANIFEST" ]; then
@@ -34,6 +34,6 @@ ensure_actr_cli() {
 
 ensure_actr_cli
 "${ACTR_CLI_RUNNER[@]}" build \
-  --file "$ROOT_DIR/manifest.toml" \
+  --manifest-path "$ROOT_DIR/manifest.toml" \
   --key "$KEY_PATH" \
   --target "$TARGET"

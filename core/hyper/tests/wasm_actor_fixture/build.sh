@@ -2,11 +2,10 @@
 # Rebuild wasm_actor_fixture as a Component Model component and refresh
 # the embedded-bytes file the integration tests consume.
 #
-# Phase 1 replaces the pre-existing core-wasm + wasm-opt asyncify transform
-# with wasm-component-ld producing a real wasip2 Component. The linker
-# bundled with Rust 1.91 is 0.5.17 which rejects the async custom sections
-# wit-bindgen 0.57 emits; point RUSTFLAGS at 0.5.22+ (installable via
-# `cargo install wasm-component-ld --version 0.5.22`).
+# Build with wasm-component-ld so the output is a real wasip2 Component. The
+# linker bundled with Rust 1.91 is 0.5.17 which rejects the async custom
+# sections wit-bindgen 0.57 emits; point RUSTFLAGS at 0.5.22+ (installable
+# via `cargo install wasm-component-ld --version 0.5.22`).
 
 set -euo pipefail
 

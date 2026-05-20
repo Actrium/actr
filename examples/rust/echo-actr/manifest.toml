@@ -9,9 +9,8 @@ license = "Apache-2.0"
 
 exports = ["proto/echo.proto"]
 
-# Phase 1: the guest binary is now a Component Model component
-# (wasm32-wasip2). The host loads it through `Component::from_binary`
-# rather than the legacy core-module + asyncify transform.
+# The guest binary is a Component Model component (wasm32-wasip2).
+# The host loads it through `Component::from_binary`.
 [binary]
 path = "dist/echo-actr-0.2.2-wasm32-wasip2.wasm"
 target = "wasm32-wasip2"
@@ -26,5 +25,5 @@ target = "wasm32-wasip2"
 # RUSTFLAGS on the `actr build` command). Post-build just copies it into
 # the `dist/` tree the package builder reads.
 post_build = [
-  'mkdir -p "$(dirname "$ACTR_BUILD_BINARY_PATH")" && cp "target/wasm32-wasip2/release/echo_guest.wasm" "$ACTR_BUILD_BINARY_PATH"',
+  'mkdir -p "$(dirname "$ACTR_BUILD_BINARY_PATH")" && cp "$ACTR_BUILD_CARGO_TARGET_DIR/$ACTR_BUILD_TARGET/$ACTR_BUILD_PROFILE/echo_guest.wasm" "$ACTR_BUILD_BINARY_PATH"',
 ]

@@ -79,12 +79,14 @@ Hyper currently supports two runtime workload backends.
 
 ### 2.1 WASM Integration
 
-.wasm modules are loaded by WasmHost, implementing asynchronous I/O via asyncify suspend/resume.
+WASM Component Model binaries are loaded by WasmHost. Guest/host calls use the
+WIT contract in `core/framework/wit/actr-workload.wit` and the Component Model
+canonical ABI; legacy core-module packages are no longer loadable.
 
 - **Dispatch Path**: `ActrNode::handle_incoming` → `Workload::handle` → `WasmWorkload` (wasmtime)
 - **Scheduling**: Dynamic dispatch via `Workload` enum
 - **Feature Gate**: `wasm-engine`
-- **I/O Model**: Guest calls `actr_host_invoke` host import → asyncify suspend → Host completes I/O → Resume execution
+- **I/O Model**: Guest calls WIT host imports (`call`, `tell`, `call-raw`, `discover`) and awaits the generated Component Model async bindings
 - **Use Case**: Third-party Actor sandbox isolation, cross-platform distribution
 
 ### 2.2 Dynclib Integration
@@ -429,9 +431,9 @@ Design Constraints:
 2. Detect self.workload == Some(workload)
 3. Serialize envelope → bytes
 4. workload.handle(bytes, InvocationContext, host_abi)
-5. WASM guest execution → encounter actr_host_invoke → asyncify suspend
+5. WASM guest execution → call generated WIT host import
 6. host_abi(HostOperation::Call { ... }) → HostOperationResult::Bytes(response)
-7. asyncify resume → guest continues execution → return result bytes
+7. Component Model async binding resumes → guest continues execution → return result bytes
 ```
 
 ---
@@ -490,8 +492,8 @@ RuntimeError
 ### 10.2 Integration Testing
 
 - `actr-hyper/tests/wasm_actor_e2e.rs`: WASM actor end-to-end tests
-- `actr-hyper/tests/asyncify_poc.rs`: asyncify suspend/resume verification
-- `actr-hyper/tests/wasm_host.rs`: WasmHost/WasmWorkload tests
+- `actr-hyper/tests/component_model_dispatch.rs`: Component Model dispatch verification
+- `actr-hyper/tests/wasm_host.rs`: WasmHost invalid-binary failure-path coverage
 
 ---
 

@@ -35,11 +35,11 @@ fn main() {
 }
 
 fn ensure_plugin(name: &str) -> Option<PathBuf> {
-    if let Some(path) = find_plugin(name) {
+    if let Some(path) = bootstrap_local_workspace_plugin(name) {
         return Some(path);
     }
 
-    if let Some(path) = bootstrap_local_workspace_plugin(name) {
+    if let Some(path) = find_plugin(name) {
         return Some(path);
     }
 

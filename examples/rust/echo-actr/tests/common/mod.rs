@@ -14,7 +14,7 @@ pub fn package_path() -> Option<PathBuf> {
     }
 
     let default_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "dist/actrium-EchoService-{}-wasm32-unknown-unknown.actr",
+        "dist/actrium-EchoService-{}-wasm32-wasip2.actr",
         env!("CARGO_PKG_VERSION")
     ));
     default_path.exists().then_some(default_path)
