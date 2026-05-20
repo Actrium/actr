@@ -380,6 +380,11 @@ message RoleAssignment {
   optional bool remote_fixed = 2 [default = false];  // Whether remote peer has fixed network config
 }
 
+// Answerer asks the current Offerer to initiate an ICE restart.
+message IceRestartRequest {
+  optional string reason = 1;
+}
+
 // =========================================================================
 // Credential Warning
 // =========================================================================

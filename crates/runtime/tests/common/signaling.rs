@@ -21,6 +21,7 @@ pub struct TestSignalingServer {
     is_running: Arc<AtomicBool>,
     message_count: Arc<AtomicU32>,
     ice_restart_offer_count: Arc<AtomicU32>,
+    ice_restart_request_count: Arc<AtomicU32>,
     /// Control: when true, server will accept connections but not forward messages
     pause_forwarding: Arc<AtomicBool>,
     connection_count: Arc<AtomicU32>,
@@ -39,6 +40,7 @@ impl TestSignalingServer {
         let is_running = Arc::new(AtomicBool::new(true));
         let message_count = Arc::new(AtomicU32::new(0));
         let ice_restart_offer_count = Arc::new(AtomicU32::new(0));
+        let ice_restart_request_count = Arc::new(AtomicU32::new(0));
         let connection_count = Arc::new(AtomicU32::new(0));
         let disconnection_count = Arc::new(AtomicU32::new(0));
         let received_messages = Arc::new(Mutex::new(Vec::new()));
@@ -48,6 +50,7 @@ impl TestSignalingServer {
         let is_running_clone = is_running.clone();
         let message_count_clone = message_count.clone();
         let ice_restart_offer_count_clone = ice_restart_offer_count.clone();
+        let ice_restart_request_count_clone = ice_restart_request_count.clone();
         let received_messages_clone = received_messages.clone();
         let pause_forwarding_clone = pause_forwarding.clone();
         let connection_count_clone = connection_count.clone();
@@ -61,6 +64,7 @@ impl TestSignalingServer {
                 is_running_clone,
                 message_count_clone,
                 ice_restart_offer_count_clone,
+                ice_restart_request_count_clone,
                 received_messages_clone,
                 pause_forwarding_clone,
                 connection_count_clone,
@@ -78,6 +82,7 @@ impl TestSignalingServer {
             is_running,
             message_count,
             ice_restart_offer_count,
+            ice_restart_request_count,
             received_messages,
             pause_forwarding,
             connection_count,
@@ -91,6 +96,7 @@ impl TestSignalingServer {
         is_running: Arc<AtomicBool>,
         message_count: Arc<AtomicU32>,
         ice_restart_offer_count: Arc<AtomicU32>,
+        ice_restart_request_count: Arc<AtomicU32>,
         received_messages: Arc<Mutex<Vec<SignalingEnvelope>>>,
         pause_forwarding: Arc<AtomicBool>,
         connection_count: Arc<AtomicU32>,
@@ -115,6 +121,7 @@ impl TestSignalingServer {
                         let clients_clone = clients.clone();
                         let message_count_clone = message_count.clone();
                         let ice_restart_offer_count_clone = ice_restart_offer_count.clone();
+                        let ice_restart_request_count_clone = ice_restart_request_count.clone();
                         let received_messages_clone = received_messages.clone();
                         let pause_forwarding_clone = pause_forwarding.clone();
                         let disconnection_count_clone = disconnection_count.clone();
@@ -147,6 +154,7 @@ impl TestSignalingServer {
                                                                 &client_id,
                                                                 &clients_clone,
                                                                 &ice_restart_offer_count_clone,
+                                                                &ice_restart_request_count_clone,
                                                                 &pause_forwarding_clone,
                                                             ).await;
                                                         }
@@ -185,6 +193,7 @@ impl TestSignalingServer {
         sender_id: &str,
         clients: &Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>>,
         ice_restart_offer_count: &Arc<AtomicU32>,
+        ice_restart_request_count: &Arc<AtomicU32>,
         pause_forwarding: &Arc<AtomicBool>,
     ) {
         if let Some(actr_protocol::signaling_envelope::Flow::ActrRelay(relay)) =
@@ -202,6 +211,15 @@ impl TestSignalingServer {
                         ice_restart_offer_count.load(Ordering::SeqCst)
                     );
                 }
+            }
+            if let Some(actr_protocol::actr_relay::Payload::IceRestartRequest(_)) =
+                relay.payload.as_ref()
+            {
+                ice_restart_request_count.fetch_add(1, Ordering::SeqCst);
+                tracing::info!(
+                    "📊 ICE restart request detected (total: {})",
+                    ice_restart_request_count.load(Ordering::SeqCst)
+                );
             }
 
             // NOW check pause for forwarding behaviors
@@ -344,6 +362,11 @@ impl TestSignalingServer {
         self.ice_restart_offer_count.load(Ordering::SeqCst)
     }
 
+    /// Get ICE restart request count
+    pub fn get_ice_restart_request_count(&self) -> u32 {
+        self.ice_restart_request_count.load(Ordering::SeqCst)
+    }
+
     /// Get connection count
     pub fn get_connection_count(&self) -> u32 {
         self.connection_count.load(Ordering::SeqCst)
@@ -358,6 +381,7 @@ impl TestSignalingServer {
     pub fn reset_counters(&self) {
         self.message_count.store(0, Ordering::Relaxed);
         self.ice_restart_offer_count.store(0, Ordering::SeqCst);
+        self.ice_restart_request_count.store(0, Ordering::SeqCst);
         self.connection_count.store(0, Ordering::SeqCst);
         self.disconnection_count.store(0, Ordering::SeqCst);
     }

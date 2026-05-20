@@ -295,6 +295,56 @@ async fn wait_for_signaling_reconnect(
 // ==================== DataChannel close cleanup ====================
 
 #[tokio::test]
+async fn test_answerer_network_change_requests_offerer_ice_restart() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establishing connection with 100 as offerer and 200 as answerer");
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    tracing::info!("Step 2: Processing network change on answerer peer 200");
+    harness
+        .peer(200)
+        .network_processor()
+        .process_network_type_changed(true, false)
+        .await
+        .expect("answerer network change should process successfully");
+
+    let request_count = harness
+        .wait_for_ice_restart_request_count(1, Duration::from_secs(5))
+        .await;
+    tracing::info!(
+        "ICE restart request count after answerer network change: {}",
+        request_count
+    );
+
+    let offer_count = harness
+        .wait_for_ice_restart_count(1, Duration::from_secs(10))
+        .await;
+    tracing::info!(
+        "ICE restart offer count after answerer request: {}",
+        offer_count
+    );
+
+    let response = expect_request_eventually_ok(
+        &harness,
+        100,
+        200,
+        "answerer_requested_restart_verify",
+        Duration::from_secs(10),
+    )
+    .await;
+    tracing::info!(
+        "Connection remained usable after answerer-requested ICE restart: {} bytes",
+        response.len()
+    );
+}
+
+#[tokio::test]
 async fn test_network_recovery_guard_times_out_after_15s_and_closes_transport() {
     init_tracing();
 

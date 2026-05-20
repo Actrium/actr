@@ -418,6 +418,28 @@ impl TestHarness {
         }
     }
 
+    /// Wait until the signaling server's ICE restart request count reaches `min_count`.
+    pub async fn wait_for_ice_restart_request_count(
+        &self,
+        min_count: u32,
+        timeout: Duration,
+    ) -> u32 {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let count = self.server.get_ice_restart_request_count();
+            if count >= min_count {
+                return count;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "Timed out waiting for ICE restart request count >= {} (current: {})",
+                    min_count, count
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Reset the signaling server's counters.
     pub fn reset_counters(&self) {
         self.server.reset_counters();

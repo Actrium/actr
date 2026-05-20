@@ -33,15 +33,15 @@ use crate::transport::connection_event::{ConnectionEvent, ConnectionEventBroadca
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActrId, ActrRelay, PayloadType, RoleAssignment, RoleNegotiation, SignalingEnvelope, actr_relay,
-    session_description::Type as SdpType, signaling_envelope,
+    ActrId, ActrRelay, IceRestartRequest, PayloadType, RoleAssignment, RoleNegotiation,
+    SignalingEnvelope, actr_relay, session_description::Type as SdpType, signaling_envelope,
 };
 use std::collections::{HashMap, hash_map::Entry};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio::sync::{Mutex, Notify, RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -186,6 +186,9 @@ struct PeerState {
 
     /// In-flight ICE restart task handle (for de-duplication and lifecycle management)
     restart_task_handle: Option<JoinHandle<()>>,
+
+    /// Wake an in-flight ICE restart task when the peer explicitly requests a retry.
+    restart_wake: Arc<Notify>,
 
     /// Last state change timestamp (for health check)
     last_state_change: std::time::Instant,
@@ -337,16 +340,7 @@ impl WebRtcCoordinator {
             let peers = self.peers.read().await;
             peers
                 .iter()
-                .filter_map(|(peer_id, state)| {
-                    let should_guard = state.is_offerer
-                        || matches!(
-                            state.current_state,
-                            RTCPeerConnectionState::Disconnected
-                                | RTCPeerConnectionState::Failed
-                                | RTCPeerConnectionState::Closed
-                        );
-                    should_guard.then(|| (peer_id.clone(), state.webrtc_conn.session_id()))
-                })
+                .map(|(peer_id, state)| (peer_id.clone(), state.webrtc_conn.session_id()))
                 .collect()
         };
 
@@ -568,7 +562,7 @@ impl WebRtcCoordinator {
                     let state = peers.get(peer_id)?;
                     let session_matches =
                         state.webrtc_conn.session_id() == recovery_status.session_id;
-                    if session_matches && state.is_offerer && !state.ice_restart_inflight {
+                    if session_matches && !state.ice_restart_inflight {
                         Some(peer_id.clone())
                     } else {
                         None
@@ -1132,6 +1126,19 @@ impl WebRtcCoordinator {
                             tracing::error!("❌ Failed to handle ICE Candidate: {}", e);
                         }
                     }
+                    Some(actr_relay::Payload::IceRestartRequest(request)) => {
+                        tracing::info!(
+                            "📥 Received ICE restart request from {:?}, reason={:?}",
+                            source,
+                            request.reason
+                        );
+                        if let Err(e) = self
+                            .handle_ice_restart_request(&source, request.reason)
+                            .await
+                        {
+                            tracing::error!("❌ Failed to handle ICE restart request: {}", e);
+                        }
+                    }
                     Some(actr_relay::Payload::RoleNegotiation(_)) => {
                         tracing::trace!(
                             "📥 Received RoleNegotiation payload; ignored by WebRtcCoordinator"
@@ -1600,6 +1607,7 @@ impl WebRtcCoordinator {
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
+                    restart_wake: Arc::new(Notify::new()),
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
                 },
@@ -1831,6 +1839,7 @@ impl WebRtcCoordinator {
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
+                    restart_wake: Arc::new(Notify::new()),
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
                 },
@@ -3140,6 +3149,73 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
+    /// Ask the current offerer to initiate an ICE restart.
+    async fn request_ice_restart_from_peer(
+        &self,
+        target: &ActrId,
+        reason: &str,
+    ) -> RuntimeResult<()> {
+        let payload = actr_relay::Payload::IceRestartRequest(IceRestartRequest {
+            reason: Some(reason.to_string()),
+        });
+        self.send_actr_relay(target, payload).await
+    }
+
+    /// Handle an Answerer-originated request for us to send a fresh ICE restart offer.
+    async fn handle_ice_restart_request(
+        self: &Arc<Self>,
+        from: &ActrId,
+        reason: Option<String>,
+    ) -> RuntimeResult<()> {
+        {
+            let peers = self.peers.read().await;
+            let Some(state) = peers.get(from) else {
+                tracing::warn!(
+                    "🚫 Ignoring ICE restart request from {:?}: peer state not found",
+                    from
+                );
+                return Ok(());
+            };
+
+            if !state.is_offerer {
+                tracing::warn!(
+                    "🚫 Ignoring ICE restart request from {:?}: local peer is not offerer",
+                    from
+                );
+                return Ok(());
+            }
+
+            if let Some(handle) = &state.restart_task_handle {
+                if !handle.is_finished() {
+                    tracing::info!(
+                        "🔔 ICE restart already running for {:?}, waking retry loop; reason={:?}",
+                        from,
+                        reason
+                    );
+                    state.restart_wake.notify_one();
+                    return Ok(());
+                }
+            }
+
+            if state.ice_restart_inflight {
+                tracing::info!(
+                    "🔔 ICE restart in-flight for {:?}, waking retry loop; reason={:?}",
+                    from,
+                    reason
+                );
+                state.restart_wake.notify_one();
+                return Ok(());
+            }
+        }
+
+        tracing::info!(
+            "♻️ Starting ICE restart for {:?} after peer request; reason={:?}",
+            from,
+            reason
+        );
+        self.restart_ice(from).await
+    }
+
     /// Initiate ICE restart on an existing connection (offerer side).
     /// Uses atomic state management within peers lock for complete de-duplication.
     /// If ICE restart fails after all retries, attempts to establish a new connection.
@@ -3155,6 +3231,7 @@ impl WebRtcCoordinator {
         let credential_state = self.credential_state.clone();
         let signaling_client = Arc::clone(&self.signaling_client);
         let coordinator_weak = Arc::downgrade(self);
+        let mut request_offer_session_id = None;
 
         // CRITICAL FIX: Perform all state checks, spawn, and handle assignment
         // within a SINGLE lock scope to eliminate race condition window
@@ -3170,8 +3247,9 @@ impl WebRtcCoordinator {
                     target
                 );
                 if !is_finished {
+                    state.restart_wake.notify_one();
                     tracing::warn!(
-                        "🚫 ICE restart already in-flight for serial={}, skipping (task not finished)",
+                        "🚫 ICE restart already in-flight for serial={}, waking retry loop (task not finished)",
                         target
                     );
                     return Ok(());
@@ -3190,8 +3268,9 @@ impl WebRtcCoordinator {
                 target
             );
             if state.ice_restart_inflight {
+                state.restart_wake.notify_one();
                 tracing::warn!(
-                    "🚫 ICE restart already in-flight for serial={}, skipping (ice_restart_inflight=true)",
+                    "🚫 ICE restart already in-flight for serial={}, waking retry loop (ice_restart_inflight=true)",
                     target
                 );
                 return Ok(());
@@ -3199,144 +3278,178 @@ impl WebRtcCoordinator {
 
             // 3. Check if we are the offerer
             if !state.is_offerer {
-                tracing::warn!(
-                    "🚫 Skip ICE restart to serial={}: we are not the offerer",
-                    target
+                let session_id = state.webrtc_conn.session_id();
+                request_offer_session_id = Some(session_id);
+                tracing::info!(
+                    "📣 Requesting ICE restart from offerer serial={}, session_id={}",
+                    target,
+                    session_id
                 );
-                return Ok(());
-            }
+            } else {
+                // 4. Set flag to prevent concurrent restarts
+                state.ice_restart_inflight = true;
 
-            // 4. Set flag to prevent concurrent restarts
-            state.ice_restart_inflight = true;
+                // Clone peer_connection while we have the lock
+                let peer_connection = state.peer_connection.clone();
+                let restart_session_id = state.webrtc_conn.session_id();
+                let restart_wake = state.restart_wake.clone();
 
-            // Clone peer_connection while we have the lock
-            let peer_connection = state.peer_connection.clone();
-            let restart_session_id = state.webrtc_conn.session_id();
+                tracing::info!(
+                    "♻️ Initiating ICE restart to serial={}, session_id={}",
+                    target,
+                    restart_session_id
+                );
 
-            tracing::info!(
-                "♻️ Initiating ICE restart to serial={}, session_id={}",
-                target,
-                restart_session_id
-            );
+                self.mark_peer_recovering(target, restart_session_id, "ice restart started")
+                    .await;
 
-            self.mark_peer_recovering(target, restart_session_id, "ice restart started")
-                .await;
+                // 5. Spawn restart task (STILL WITHIN THE LOCK - this is the fix!)
+                let handle = tokio::spawn(async move {
+                    let restart_result = Self::do_ice_restart_inner(
+                        &target_clone,
+                        restart_session_id,
+                        &peers_arc,
+                        peer_connection,
+                        &negotiator,
+                        &local_id,
+                        credential_state,
+                        &signaling_client,
+                        restart_wake,
+                    )
+                    .await;
 
-            // 5. Spawn restart task (STILL WITHIN THE LOCK - this is the fix!)
-            let handle = tokio::spawn(async move {
-                let restart_result = Self::do_ice_restart_inner(
-                    &target_clone,
-                    restart_session_id,
-                    &peers_arc,
-                    peer_connection,
-                    &negotiator,
-                    &local_id,
-                    credential_state,
-                    &signaling_client,
-                )
-                .await;
-
-                match restart_result {
-                    Ok(true) => {
-                        tracing::info!(
-                            "✅ ICE restart completed for serial={}, session_id={}",
-                            target_clone,
-                            restart_session_id
-                        );
-                    }
-                    Ok(false) => {
-                        // ICE restart failed after all retries, clean up and try to establish new connection
-                        tracing::warn!(
-                            "⚠️ ICE restart exhausted for serial={}, session_id={}, cleaning up matched session",
-                            target_clone,
-                            restart_session_id
-                        );
-
-                        if let Some(coord) = coordinator_weak.upgrade() {
-                            coord
-                                .event_broadcaster
-                                .send(ConnectionEvent::IceRestartCompleted {
-                                    peer_id: target_clone.clone(),
-                                    session_id: restart_session_id,
-                                    success: false,
-                                });
-                            // First, clean up the old connection resources
+                    match restart_result {
+                        Ok(true) => {
                             tracing::info!(
-                                "🧹 Cleaning up old connection after ICE restart failure for serial={}, session_id={}",
+                                "✅ ICE restart completed for serial={}, session_id={}",
                                 target_clone,
                                 restart_session_id
                             );
-                            coord
-                                .cleanup_connection_if_session(
-                                    &target_clone,
-                                    restart_session_id,
-                                    false,
-                                    "ICE restart exhausted",
-                                )
-                                .await;
                         }
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            "❌ ICE restart failed for serial={}, session_id={}: {}",
-                            target_clone,
-                            restart_session_id,
-                            e
-                        );
-
-                        // Clean up resources on error
-                        if let Some(coord) = coordinator_weak.upgrade() {
-                            coord
-                                .event_broadcaster
-                                .send(ConnectionEvent::IceRestartCompleted {
-                                    peer_id: target_clone.clone(),
-                                    session_id: restart_session_id,
-                                    success: false,
-                                });
-                            tracing::info!(
-                                "🧹 Cleaning up connection after ICE restart error for serial={}, session_id={}",
+                        Ok(false) => {
+                            // ICE restart failed after all retries, clean up and try to establish new connection
+                            tracing::warn!(
+                                "⚠️ ICE restart exhausted for serial={}, session_id={}, cleaning up matched session",
                                 target_clone,
                                 restart_session_id
                             );
-                            coord
-                                .cleanup_connection_if_session(
-                                    &target_clone,
-                                    restart_session_id,
-                                    false,
-                                    "ICE restart error",
-                                )
-                                .await;
-                        }
-                    }
-                }
 
-                // Cleanup restart_task_handle registration
-                {
-                    let mut peers_guard = peers_arc.write().await;
-                    if let Some(state) = peers_guard.get_mut(&target_clone) {
-                        if state.webrtc_conn.session_id() == restart_session_id {
-                            state.restart_task_handle = None;
-                        } else {
-                            tracing::debug!(
-                                "⏭️ Skip clearing restart handle for stale ICE restart task: serial={}, task_session_id={}, active_session_id={}",
+                            if let Some(coord) = coordinator_weak.upgrade() {
+                                coord.event_broadcaster.send(
+                                    ConnectionEvent::IceRestartCompleted {
+                                        peer_id: target_clone.clone(),
+                                        session_id: restart_session_id,
+                                        success: false,
+                                    },
+                                );
+                                // First, clean up the old connection resources
+                                tracing::info!(
+                                    "🧹 Cleaning up old connection after ICE restart failure for serial={}, session_id={}",
+                                    target_clone,
+                                    restart_session_id
+                                );
+                                coord
+                                    .cleanup_connection_if_session(
+                                        &target_clone,
+                                        restart_session_id,
+                                        false,
+                                        "ICE restart exhausted",
+                                    )
+                                    .await;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "❌ ICE restart failed for serial={}, session_id={}: {}",
                                 target_clone,
                                 restart_session_id,
-                                state.webrtc_conn.session_id()
+                                e
                             );
+
+                            // Clean up resources on error
+                            if let Some(coord) = coordinator_weak.upgrade() {
+                                coord.event_broadcaster.send(
+                                    ConnectionEvent::IceRestartCompleted {
+                                        peer_id: target_clone.clone(),
+                                        session_id: restart_session_id,
+                                        success: false,
+                                    },
+                                );
+                                tracing::info!(
+                                    "🧹 Cleaning up connection after ICE restart error for serial={}, session_id={}",
+                                    target_clone,
+                                    restart_session_id
+                                );
+                                coord
+                                    .cleanup_connection_if_session(
+                                        &target_clone,
+                                        restart_session_id,
+                                        false,
+                                        "ICE restart error",
+                                    )
+                                    .await;
+                            }
                         }
                     }
-                }
-            });
 
-            // 6. Store the restart handle immediately (STILL WITHIN THE SAME LOCK!)
-            // This completes the atomic state transition - no race condition possible
-            state.restart_task_handle = Some(handle);
+                    // Cleanup restart_task_handle registration
+                    {
+                        let mut peers_guard = peers_arc.write().await;
+                        if let Some(state) = peers_guard.get_mut(&target_clone) {
+                            if state.webrtc_conn.session_id() == restart_session_id {
+                                state.restart_task_handle = None;
+                            } else {
+                                tracing::debug!(
+                                    "⏭️ Skip clearing restart handle for stale ICE restart task: serial={}, task_session_id={}, active_session_id={}",
+                                    target_clone,
+                                    restart_session_id,
+                                    state.webrtc_conn.session_id()
+                                );
+                            }
+                        }
+                    }
+                });
+
+                // 6. Store the restart handle immediately (STILL WITHIN THE SAME LOCK!)
+                // This completes the atomic state transition - no race condition possible
+                state.restart_task_handle = Some(handle);
+            }
         } else {
             tracing::warn!("🚫 Skip ICE restart to serial={}: peer not found", target);
         }
 
-        // Lock is released here - all state is consistent
+        // Release the peers lock before sending a signaling request from the answerer side.
+        drop(peers);
+
+        if let Some(session_id) = request_offer_session_id {
+            tracing::info!(
+                "📨 Sending ICE restart request to offerer serial={}, session_id={}",
+                target,
+                session_id
+            );
+            self.request_ice_restart_from_peer(target, "network_recovered")
+                .await?;
+        }
+
         Ok(())
+    }
+
+    async fn sleep_or_peer_restart_request(
+        delay: Duration,
+        restart_wake: &Notify,
+        target: &ActrId,
+        wait_reason: &str,
+    ) {
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            _ = restart_wake.notified() => {
+                tracing::info!(
+                    "🔔 ICE restart retry wait interrupted for serial={}, reason={}",
+                    target,
+                    wait_reason
+                );
+            }
+        }
     }
 
     /// Internal ICE restart implementation with retries
@@ -3350,6 +3463,7 @@ impl WebRtcCoordinator {
         local_id: &ActrId,
         credential_state: CredentialState,
         signaling_client: &Arc<dyn SignalingClient>,
+        restart_wake: Arc<Notify>,
     ) -> RuntimeResult<bool> {
         // Use enhanced backoff with total duration limit
         let backoff = ExponentialBackoff::with_total_duration(
@@ -3370,7 +3484,13 @@ impl WebRtcCoordinator {
                     target,
                     delay
                 );
-                tokio::time::sleep(delay).await;
+                Self::sleep_or_peer_restart_request(
+                    delay,
+                    &restart_wake,
+                    target,
+                    "signaling_not_ready",
+                )
+                .await;
                 continue; // Skip this iteration, don't create offer
             }
 
@@ -3396,7 +3516,8 @@ impl WebRtcCoordinator {
                     gathering_duration,
                     delay
                 );
-                tokio::time::sleep(delay).await;
+                Self::sleep_or_peer_restart_request(delay, &restart_wake, target, "ice_gathering")
+                    .await;
                 continue; // Skip this iteration, wait for gathering to complete
             } else {
                 // Not gathering, reset timer
@@ -3526,7 +3647,13 @@ impl WebRtcCoordinator {
                         return Ok(true);
                     }
                 }
-                tokio::time::sleep(delay).await;
+                Self::sleep_or_peer_restart_request(
+                    delay,
+                    &restart_wake,
+                    target,
+                    "send_offer_failed",
+                )
+                .await;
                 continue;
             }
 
@@ -3580,7 +3707,8 @@ impl WebRtcCoordinator {
                 delay,
                 target
             );
-            tokio::time::sleep(delay).await;
+            Self::sleep_or_peer_restart_request(delay, &restart_wake, target, "attempt_timeout")
+                .await;
         }
 
         if !restart_ok {
@@ -3741,14 +3869,18 @@ impl WebRtcCoordinator {
         offer_sdp: String,
     ) -> RuntimeResult<()> {
         // Locate peer state and ensure we are not the offerer
-        let (peer_connection, is_offerer) = {
+        let (peer_connection, is_offerer, session_id) = {
             let peers = self.peers.read().await;
             let state = peers.get(from).ok_or_else(|| {
                 RuntimeError::Other(anyhow::anyhow!(
                     "ICE restart offer received for unknown peer"
                 ))
             })?;
-            (state.peer_connection.clone(), state.is_offerer)
+            (
+                state.peer_connection.clone(),
+                state.is_offerer,
+                state.webrtc_conn.session_id(),
+            )
         };
 
         if is_offerer {
@@ -3776,6 +3908,13 @@ impl WebRtcCoordinator {
         // Flush any buffered ICE candidates collected before remote description was set
         self.flush_pending_candidates(from, &peer_connection)
             .await?;
+
+        self.event_broadcaster
+            .send(ConnectionEvent::IceRestartCompleted {
+                peer_id: from.clone(),
+                session_id,
+                success: true,
+            });
 
         tracing::info!("✅ Completed ICE restart answer to serial={}", from);
 
