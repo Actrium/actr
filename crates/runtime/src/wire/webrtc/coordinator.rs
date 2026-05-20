@@ -61,6 +61,7 @@ const ICE_RESTART_MAX_TOTAL_DURATION: Duration = Duration::from_secs(60);
 const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(10);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+const ANSWERER_RECOVERY_STALE_TIMEOUT: Duration = ICE_RESTART_MAX_TOTAL_DURATION;
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -542,7 +543,7 @@ impl WebRtcCoordinator {
     /// `Connected` to `Disconnected`, so the local offerer must proactively
     /// restart ICE instead of waiting for a delayed state callback.
     pub async fn restart_network_recovery_connections(self: &Arc<Self>) {
-        let targets: Vec<ActrId> = {
+        let (stale_answerers, targets): (Vec<(ActrId, NetworkRecoveryStatus)>, Vec<ActrId>) = {
             let recovery_snapshot: Vec<(ActrId, NetworkRecoveryStatus)> = self
                 .network_recovering_peers
                 .read()
@@ -556,20 +557,48 @@ impl WebRtcCoordinator {
             }
 
             let peers = self.peers.read().await;
-            recovery_snapshot
-                .iter()
-                .filter_map(|(peer_id, recovery_status)| {
-                    let state = peers.get(peer_id)?;
-                    let session_matches =
-                        state.webrtc_conn.session_id() == recovery_status.session_id;
-                    if session_matches && !state.ice_restart_inflight {
-                        Some(peer_id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+            let mut stale_answerers = Vec::new();
+            let mut targets = Vec::new();
+
+            for (peer_id, recovery_status) in recovery_snapshot.iter() {
+                let Some(state) = peers.get(peer_id) else {
+                    continue;
+                };
+                let session_matches = state.webrtc_conn.session_id() == recovery_status.session_id;
+                if !session_matches {
+                    continue;
+                }
+
+                if !state.is_offerer && recovery_status.elapsed() >= ANSWERER_RECOVERY_STALE_TIMEOUT
+                {
+                    stale_answerers.push((peer_id.clone(), recovery_status.clone()));
+                    continue;
+                }
+
+                if !state.ice_restart_inflight {
+                    targets.push(peer_id.clone());
+                }
+            }
+
+            (stale_answerers, targets)
         };
+
+        for (target, recovery_status) in stale_answerers {
+            tracing::warn!(
+                peer_id = ?target,
+                session_id = recovery_status.session_id,
+                elapsed_ms = recovery_status.elapsed_ms(),
+                stale_timeout_ms = ANSWERER_RECOVERY_STALE_TIMEOUT.as_millis(),
+                recovery_reason = recovery_status.reason.as_str(),
+                "⏱️ Answerer recovery is stale; closing old session before fresh connection"
+            );
+            self.close_recovering_peer(
+                &target,
+                recovery_status.session_id,
+                "answerer long network recovery timeout",
+            )
+            .await;
+        }
 
         for target in targets {
             tracing::info!("♻️ Restarting ICE for network recovery peer {}", target);
