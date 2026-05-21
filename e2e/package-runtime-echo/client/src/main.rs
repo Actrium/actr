@@ -10,8 +10,11 @@ pub mod echo {
 use std::env;
 use std::path::PathBuf;
 
-use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
-use actr_platform_native::NativePlatformProvider;
+use actr_hyper::{
+    Hyper, HyperConfig, RegistryTrust, StaticTrust, TrustProvider, WorkloadPackage,
+    init_observability,
+};
+use std::sync::Arc;
 use actr_protocol::RpcRequest;
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
@@ -103,48 +106,37 @@ async fn main() -> Result<()> {
     };
 
     let config_path = runtime_config_path();
-    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info, vec![])?;
+    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info)?;
 
     let _obs_guard = init_observability(&config.observability)?;
     info!("Package Runtime Echo client host starting");
     info!("Signaling server: {:?}", config.signaling_url);
 
     let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()?;
-    let trust_mode = if env::var("TRUST_MODE")
+    let trust: Arc<dyn TrustProvider> = if env::var("TRUST_MODE")
         .map(|v| v == "production")
         .unwrap_or(false)
     {
         let ais_endpoint =
             env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8081/ais".to_string());
         let base_endpoint = ais_endpoint.trim_end_matches("/ais").to_string();
-        TrustMode::Production {
-            ais_endpoint: base_endpoint,
-        }
+        Arc::new(RegistryTrust::new(base_endpoint))
     } else {
-        TrustMode::Development {
-            self_signed_pubkey: load_package_public_key()?,
-        }
+        Arc::new(StaticTrust::new(load_package_public_key()?).context("invalid pubkey")?)
     };
 
-    let hyper = Hyper::init_with_platform(
-        HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode),
-        std::sync::Arc::new(NativePlatformProvider::new()),
-    )
-    .await?;
-
-    let realm_id = config.realm.realm_id;
-    let service_spec = None;
-    let acl = config.acl.clone();
-    let mut node = hyper.attach_package(&package, config).await?;
+    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust)).await?;
 
     let ais_endpoint =
         env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8081/ais".to_string());
-    let register_ok = hyper
-        .bootstrap_node_credential(&node, &ais_endpoint, realm_id, service_spec, acl)
-        .await?;
-    node.inject_credential(register_ok);
 
-    let actr_ref = node.start().await?;
+    let actr_ref = actr_hyper::Node::from_hyper(hyper, config)
+        .attach(&package)
+        .await?
+        .register(&ais_endpoint)
+        .await?
+        .start()
+        .await?;
 
     println!("===== Package Runtime Echo Client =====");
     println!("Type messages to send to the echo server (type 'quit' to exit):");

@@ -1,4 +1,4 @@
-//! WebSocket C/S Connection implementation
+//! WebSocket transport connection implementation
 
 use crate::transport::{
     ConnType, DataLane, NetworkError, NetworkResult, WebSocketDataLane, WireHandle, WsSink,
@@ -77,9 +77,9 @@ impl TransportMessage {
     }
 }
 
-/// WebSocketConnection - WebSocket C/S Connect
+/// WebSocket transport connection
 #[derive(Clone, Debug)]
-pub struct WebSocketConnection {
+pub(crate) struct WebSocketConnection {
     /// URL
     url: String,
     /// Local node identity (hex-encoded protobuf ActrId bytes), sent as X-Actr-Source-ID in handshake request for direct-connect mode
@@ -135,10 +135,12 @@ impl WebSocketConnection {
         self
     }
 
-    /// Create connection from a server-side WebSocket stream with completed handshake (used for direct-connect inbound)
+    /// Create connection from an inbound WebSocket stream with completed
+    /// handshake (used for direct-connect ingress).
     ///
-    /// Unlike `new()` + `connect()`, this method is for already-accepted server connections
-    /// where the handshake has been completed by `WebSocketServer`, entering Ready state directly.
+    /// Unlike `new()` + `connect()`, this method is for already-accepted
+    /// inbound connections where the handshake has been completed by
+    /// `WebSocketServer`, entering Ready state directly.
     ///
     /// `server.rs` uses `accept_hdr_async(MaybeTlsStream::Plain(stream), ...)` to produce
     /// `WebSocketStream<MaybeTlsStream<TcpStream>>`, identical to the client type, no conversion needed.
@@ -216,12 +218,6 @@ impl WebSocketConnection {
         tracing::info!("✅ WebSocketConnection already Connect: {}", self.url);
 
         Ok(())
-    }
-
-    /// Checkwhether already Connect
-    #[inline]
-    pub fn is_connected(&self) -> bool {
-        *self.connected.blocking_read()
     }
 
     /// Startmessage dispatch device （in background task）
@@ -404,7 +400,7 @@ impl WireHandle for WebSocketConnection {
     }
 
     fn is_connected(&self) -> bool {
-        self.is_connected()
+        *self.connected.blocking_read()
     }
 
     async fn close(&self) -> NetworkResult<()> {

@@ -1,13 +1,15 @@
-//! `actr deps` — Dependency management commands
+//! `actr deps` — local dependency management.
 //!
-//! Groups install, discover, and fingerprint sub-commands.
+//! Subcommands:
+//!   - `install` — install service dependencies declared in manifest.toml,
+//!     or add a new one (`actr deps install <alias> --actr-type ...`).
 
 use anyhow::Result;
+use async_trait::async_trait;
 use clap::{Args, Subcommand};
 
-use super::discovery::DiscoveryCommand;
-use super::fingerprint::FingerprintCommand;
-use crate::core::{CommandContext, CommandResult};
+use super::install::InstallCommand;
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 
 #[derive(Args, Debug)]
 pub struct DepsArgs {
@@ -17,31 +19,36 @@ pub struct DepsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DepsCommand {
-    /// Discover network services
-    Discover(DiscoveryCommand),
-    /// Compute semantic fingerprints
-    Fingerprint(FingerprintCommand),
+    /// Install service dependencies (all from manifest.toml, or a specific one).
+    Install(InstallCommand),
 }
 
-pub async fn execute_with_context(
-    args: &DepsArgs,
-    context: &CommandContext,
-) -> Result<CommandResult> {
-    use crate::core::Command;
-    match &args.command {
-        DepsCommand::Discover(cmd) => {
-            if !std::path::Path::new("manifest.toml").exists() {
-                return Err(anyhow::anyhow!(
-                    "No manifest.toml found in current directory.\n\u{1f4a1} Hint: Run 'actr init' to initialize a new workload project first."
-                ));
+#[async_trait]
+impl Command for DepsArgs {
+    async fn execute(&self, ctx: &CommandContext) -> Result<CommandResult> {
+        match &self.command {
+            DepsCommand::Install(cmd) => {
+                let command = InstallCommand::from_args(cmd);
+                {
+                    let container = ctx.container.lock().unwrap();
+                    container.validate(&command.required_components())?;
+                }
+                command.execute(ctx).await
             }
-            let command = DiscoveryCommand::from_args(cmd);
-            {
-                let container = context.container.lock().unwrap();
-                container.validate(&command.required_components())?;
-            }
-            command.execute(context).await
         }
-        DepsCommand::Fingerprint(cmd) => cmd.execute(context).await,
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        match &self.command {
+            DepsCommand::Install(cmd) => cmd.required_components(),
+        }
+    }
+
+    fn name(&self) -> &str {
+        "deps"
+    }
+
+    fn description(&self) -> &str {
+        "Manage local service dependencies"
     }
 }

@@ -2,10 +2,10 @@
 //!
 //! WebSocket Connection implementation
 
-pub mod connection;
-pub mod gate;
-pub mod server;
+pub(crate) mod connection;
+pub(crate) mod gate;
+pub(crate) mod server;
 
-pub use connection::WebSocketConnection;
-pub use gate::{WebSocketGate, WsAuthContext};
-pub use server::WebSocketServer;
+pub(crate) use connection::WebSocketConnection;
+pub(crate) use gate::WebSocketGate;
+pub(crate) use server::WebSocketServer;

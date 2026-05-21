@@ -95,6 +95,7 @@ impl HostGate {
     ///
     /// # Default behavior
     /// Uses PayloadType::RpcReliable with no identifier
+    #[cfg(feature = "test-utils")]
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         tracing::info!(
             "HostGate::send_request to {:?}, request_id={}",
@@ -125,6 +126,7 @@ impl HostGate {
     ///
     /// # Default behavior
     /// Uses PayloadType::RpcReliable with no identifier
+    #[cfg(feature = "test-utils")]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         tracing::debug!("HostGate::send_message to {}", target);
 

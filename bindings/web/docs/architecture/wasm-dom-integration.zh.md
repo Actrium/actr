@@ -1,8 +1,10 @@
 # WASM + DOM 集成架构设计
 
 **日期**: 2025-11-11
-**状态**: 已决策
+**状态**: 已决策，已按 Option U / wasm-bindgen 路径更新
 **决策者**: 架构团队
+
+> 当前源码事实：浏览器 guest 不再使用 Component Model / jco / 手工 `wasm-bindgen --web` 示例路径。当前路径是 WIT → `tools/wit-compile-web` 生成 `bindings/web/crates/actr-web-abi/src/{types,guest,host}.rs` → guest crate 通过 `wasm-pack --target no-modules` 产出 `.wbg/guest.js` 和 `.wbg/guest_bg.wasm` → `.actr` 与 `.wbg` sibling 一起由 `actr run --web` 挂载 → `packages/web-sdk/src/actor.sw.js` 加载并桥接 guest。
 
 ---
 
@@ -15,15 +17,15 @@
 1. **用户代码全部 WASM 化**：业务逻辑（包括 Fast Path 处理）统一用 Rust/Go/C++ 编写，编译为 WASM
 2. **支持多语言**：不限于 JS/TS，拓宽语言选项
 3. **体验统一**：避免用户需要同时写 Rust（Service Worker）和 JS（DOM）的割裂体验
-4. **保持性能**：Fast Path 需要低延迟（目标 <15ms）
+4. **保持性能**：Fast Path 需要低延迟（具体预算需 benchmark 确认）
 
 ### 1.2 技术约束
 
 - **WASM 限制**：WASM 无法直接访问 DOM API 和 WebRTC API
 - **浏览器限制**：Service Worker 无法访问 WebRTC API（只有 DOM/Window 上下文可以）
 - **性能要求**：
-  - State Path (RPC): ~30-40ms（持久化 + 调度）
-  - Fast Path (Stream): 目标 <15ms（低延迟数据流）
+  - State Path (RPC): 延迟需当前 benchmark 确认（持久化 + 调度）
+  - Fast Path (Stream): 低延迟数据流，具体预算需 benchmark 确认
 
 ### 1.3 架构冲突
 
@@ -50,7 +52,7 @@ Service Worker (WASM)         DOM 侧 (手工 JS)
 ```
 
 **评估**：
-- ✅ 性能最优（Fast Path ~1-3ms）
+- ✅ 性能最优（历史对比：DOM 本地回调模型，当前未采纳）
 - ❌ **体验割裂**：用户需要写两种语言
 - ❌ 无法支持其他语言（Go/C++）
 
@@ -105,8 +107,8 @@ Service Worker (WASM)         DOM 侧 (框架固定 JS)
 - ✅ 用户代码统一（100% WASM）
 - ✅ 支持多语言（Rust/Go/C++ → WASM）
 - ✅ DOM 侧用户无需写代码
-- ⚠️ **Fast Path 延迟增加**：~1-3ms → ~6-13ms（+5-10ms 转发开销）
-- ✅ **仍然是 "Fast Path"**：6-13ms << State Path 30-40ms
+- ⚠️ **Fast Path 增加跨上下文转发**：DOM → Service Worker，具体延迟需以当前 benchmark 为准
+- ✅ **仍然是 "Fast Path"**：绕过 Mailbox / Scheduler，用 Transferable 转发数据
 
 ---
 
@@ -158,9 +160,9 @@ Service Worker (WASM)         DOM 侧 (框架固定 JS)
 │  └────────────────────────────────────────┘ │
 │                                              │
 │  ┌────────────────────────────────────────┐ │
-│  │  ActorRuntime (框架 Rust 代码)         │ │
+│  │  ActrNode (框架 Rust 代码)         │ │
 │  │  - Mailbox + Scheduler                 │ │
-│  │  - Fast Path Registry                  │ │
+│  │  - Fast Path handlers                  │ │
 │  │  - Transport Manager                   │ │
 │  └────────────┬───────────────────────────┘ │
 └───────────────┼──────────────────────────────┘
@@ -181,19 +183,21 @@ UI → actorRef.call()
           → 返回值 → PostMessage → UI
 ```
 
-**延迟**: ~30-40ms
+**延迟**: 需当前 benchmark 确认
 
 #### Fast Path（Stream 消息）
 ```
 WebRTC 数据到达 DOM
   → DOM Coordinator 接收
-    → PostMessage → Service Worker WASM
-      → Fast Path Registry.dispatch()
-        → 用户回调（Rust）
-          → (可选) emit() → PostMessage → UI
+    → FastPathForwarder.forward()
+      → ServiceWorkerBridge.sendToSW(type="fast_path_data")
+        → SW handle_dom_fast_path()
+          → runtime.handle_fast_path()
+            → stream handler / 用户逻辑
+              → (可选) emit() → PostMessage → UI
 ```
 
-**延迟**: ~6-13ms（转发模式）
+**延迟**: 当前需以 e2e/benchmark 为准（转发模式）
 
 ---
 
@@ -203,9 +207,9 @@ WebRTC 数据到达 DOM
 
 | API | 方向 | 频率 | 延迟 | 使用场景 |
 |-----|------|------|------|---------|
-| **`call()`** | UI → WASM → UI | 单次 | 30-40ms | RPC 调用、命令执行 |
-| **`subscribe()`** | WASM → UI | 持续 | 6-13ms | 视频流、消息流、实时数据 |
-| **`on()`** | WASM → UI | 不定 | <5ms | 状态变化、错误、系统事件 |
+| **`call()`** | UI → WASM → UI | 单次 | 需当前 benchmark 确认 | RPC 调用、命令执行 |
+| **`subscribe()`** | WASM → UI | 持续 | 需实测 | 视频流、消息流、实时数据 |
+| **`on()`** | WASM → UI | 不定 | 需当前 benchmark 确认 | 状态变化、错误、系统事件 |
 
 ### 4.2 API 语义说明
 
@@ -229,7 +233,7 @@ const response = await actorRef.call('video-service', 'startCall', {
 **特点**：
 - ✅ 双向通信（有返回值）
 - ✅ 走 State Path（持久化、可靠）
-- ⏱️ 延迟：30-40ms
+- ⏱️ 延迟：需当前 benchmark 确认
 
 #### `subscribe()` - 订阅数据流（Fast Path）
 
@@ -256,7 +260,7 @@ await unsubscribe();
 **特点**：
 - ✅ 持续数据流（不是单次）
 - ✅ 走 Fast Path（低延迟）
-- ⏱️ 延迟：6-13ms
+- ⏱️ 延迟：需以当前 benchmark 为准
 - 📊 适合：视频帧、音频块、实时指标
 
 #### `on()` - 事件监听（系统事件）
@@ -331,14 +335,14 @@ async function VideoCallApp() {
 ```rust
 #[wasm_bindgen]
 pub struct VideoCallActor {
-    runtime: ActorRuntime,
+    runtime: ActrNode,
     event_emitter: EventEmitter,
 }
 
 #[wasm_bindgen]
 impl VideoCallActor {
     pub async fn new() -> Self {
-        let runtime = ActorRuntime::new();
+        let runtime = ActrNode::new();
         let event_emitter = EventEmitter::new();
 
         // 注册 Fast Path 回调（在 WASM 中处理）
@@ -372,21 +376,29 @@ impl VideoCallActor {
 }
 ```
 
-### 5.2 编译产物
+### 5.2 当前 Option U 编译与运行产物
 
 ```bash
-# 编译用户代码 + 框架代码 → WASM
-cargo build --target wasm32-unknown-unknown --release
+# 1. WIT 是浏览器 ABI 的源头；生成 actr-web-abi 的类型、guest import、host export
+cargo run -p actr-wit-compile-web
 
-# 使用 wasm-bindgen 生成 JS 胶水
-wasm-bindgen --out-dir pkg --web video_call_actor.wasm
+# 2. guest crate 使用 wasm-bindgen/wasm-pack 的 no-modules 输出
+wasm-pack build --target no-modules --release
 
-# 产物
-pkg/
-├── video_call_actor.wasm       # WASM 主体（用户代码 + 框架）
-├── video_call_actor.js         # JS 胶水层
-└── video_call_actor.d.ts       # TypeScript 类型
+# 3. actr run --web 挂载 .actr 与同名 .wbg sibling
+actr run --web --package ./echo-client.actr
 ```
+
+当前浏览器侧产物约定：
+
+```text
+echo-client.actr
+echo-client.wbg/
+├── guest.js
+└── guest_bg.wasm
+```
+
+`actor.sw.js` 根据 `runtimeConfig.package_url` 推导默认 guest glue URL：`<package_url>` 去掉 `.actr` 后追加 `.wbg/guest.js`。也可以通过 `runtimeConfig.wbg_module_url` 显式覆盖。CLI 侧 `cli/src/commands/run.rs` 只在 sibling `.wbg` 目录存在时挂载 `/packages/<name>.wbg/*`。
 
 ---
 
@@ -397,13 +409,13 @@ pkg/
 **DOM 侧是框架提供的固定实现，用户无需修改**
 
 ```
-actr-web-dom/
+packages/actr-dom/
 ├── src/
-│   ├── webrtc_coordinator.ts    # WebRTC 管理（框架代码）
-│   ├── fast_path_forwarder.ts   # 数据转发到 SW（框架代码）
-│   └── sw_bridge.ts              # PostMessage 通信（框架代码）
+│   ├── webrtc-coordinator.ts    # WebRTC 管理（框架代码）
+│   ├── fast-path-forwarder.ts   # fast_path_data 转发到 SW
+│   └── sw-bridge.ts             # PostMessage 通信
 └── dist/
-    └── actr-dom.min.js           # 打包后的固定 JS
+    └── index.js                 # 打包后的固定 JS
 ```
 
 **用户只需要引入**：
@@ -417,25 +429,23 @@ actr-web-dom/
 // DOM 侧：框架提供，用户无需修改
 class FastPathForwarder {
     constructor(swPort) {
-        this.swPort = swPort;
-        this.peerConnection = null;
+        this.swBridge = swBridge;
     }
 
     // WebRTC 数据到达时
     onDataChannelMessage(streamId, data) {
         // 使用 Transferable 避免拷贝（零拷贝转移）
-        this.swPort.postMessage({
+        this.swBridge.sendToSW({
             type: 'fast_path_data',
-            streamId,
-            data: data.buffer, // Transferable!
-        }, [data.buffer]); // ← 关键：零拷贝
+            payload: {
+                streamId,
+                data: new Uint8Array(data),
+                timestamp: Date.now(),
+            },
+        }, [data]); // ← Transferable
     }
 
-    // 创建 WebRTC 连接（框架负责）
-    async createPeerConnection(config) {
-        this.peerConnection = new RTCPeerConnection(config);
-        // ... 标准 WebRTC 逻辑
-    }
+    // WebRTC 连接由 WebRtcCoordinator 负责创建和维护。
 }
 ```
 
@@ -478,21 +488,21 @@ class FastPathForwarder {
     ↓                      ↓                       ↓
 TinyGo → WASM          rustc → WASM          Emscripten → WASM
     ↓                      ↓                       ↓
-        统一的 WASM Interface (wasm-bindgen)
+        WIT contract
+                ↓
+        tools/wit-compile-web / actr-web-abi
+                ↓
+        wasm-bindgen guest bundle (.wbg)
                 ↓
         Service Worker Runtime
 ```
 
-### 8.2 接口定义（待完善）
+### 8.2 接口定义（当前方向）
 
 ```rust
-// 定义统一的 WASM 接口
-#[wasm_bindgen]
-pub trait ActorInterface {
-    fn init() -> Self;
-    fn on_message(msg: &[u8]) -> Result<Vec<u8>, String>;
-    fn on_fast_path(stream_id: &str, data: &[u8]);
-}
+// 生成源头是 WIT，不是手写 wasm-bindgen trait。
+// `tools/wit-compile-web` 生成 actr-web-abi 的 guest/host glue，
+// guest crate 再通过 `actr_framework::entry!` 或等价注册路径接入。
 ```
 
 ---
@@ -501,14 +511,14 @@ pub trait ActorInterface {
 
 | 路径 | 延迟 | 说明 |
 |------|------|------|
-| **State Path (RPC)** | 30-40ms | Mailbox 持久化 + Scheduler 调度 |
-| **Fast Path (转发)** | 6-13ms | DOM → PostMessage → SW WASM |
-| **Fast Path (原生 DOM)** | 1-3ms | 对比参考（未采纳） |
-| **系统事件 (on)** | <5ms | 直接 PostMessage |
+| **State Path (RPC)** | 需当前 benchmark 确认 | Mailbox 持久化 + Scheduler 调度 |
+| **Fast Path (转发)** | 需实测 | DOM → FastPathForwarder → SW `handle_dom_fast_path` |
+| **Fast Path (原生 DOM)** | 历史对比 | DOM 本地回调方案，当前未采纳 |
+| **系统事件 (on)** | 需当前 benchmark 确认 | 直接 PostMessage |
 
 **关键结论**：
-- Fast Path 转发延迟（6-13ms）仍远快于 State Path（30-40ms）
-- 对于大多数应用场景（视频通话、文件传输、数据同步），6-13ms 是可接受的
+- Fast Path 转发绕过 Mailbox / Scheduler，仍是数据平面路径
+- 对于大多数应用场景（视频通话、文件传输、数据同步），应以当前 benchmark 验证延迟预算
 - 换取的是**用户代码 100% 统一**和**多语言支持**
 
 ---
@@ -529,14 +539,16 @@ pub trait ActorInterface {
 - ✅ DOM 侧 TypeScript 实现 (MessageChannel 桥接)
 - ✅ PostMessage 转发机制 (register_datachannel_port)
 - ✅ WebRTC Coordinator (DOM 侧 TS 实现)
-- ⚠️ Fast Path Registry（SW 侧 handle_fast_path 已实现，register 回调待完善）
-- **目标**：Fast Path 统一模式，延迟 ~6-13ms
+- ✅ `FastPathForwarder` 通过 `fast_path_data` 把 DOM 数据转发到 SW
+- ✅ SW `handle_dom_fast_path` 调用 `runtime.handle_fast_path`
+- ⚠️ DataStream / MediaTrack 的更完整场景覆盖仍需补齐
+- **目标**：Fast Path 统一模式，延迟以当前 benchmark 为准
 
 ### Phase 3: 性能优化（规划中）
 - ⏳ Transferable 优化
 - ⏳ 批量处理
 - ⏳ 采样推送
-- **目标**：延迟优化到 <10ms
+- **目标**：通过 benchmark 驱动延迟优化
 
 ### Phase 4: 多语言支持（长期目标）
 - ⏳ 定义 WASM 接口规范
@@ -557,7 +569,7 @@ pub trait ActorInterface {
 1. **用户代码统一**：100% WASM，无需写 JS
 2. **支持多语言**：Rust/Go/C++ → WASM
 3. **DOM 侧透明**：框架提供固定实现，用户无感知
-4. **性能可接受**：Fast Path 6-13ms，仍是"快车道"
+4. **性能可验证**：Fast Path 绕过 Mailbox/Scheduler，具体数字以当前测试为准
 5. **架构清晰**：UI = 视图层，WASM = 服务层，DOM = HAL
 
 ### 11.3 权衡取舍
@@ -568,7 +580,7 @@ pub trait ActorInterface {
 - ✅ 架构清晰简洁
 
 **付出**：
-- ⚠️ Fast Path 延迟增加 5-10ms（1-3ms → 6-13ms）
+- ⚠️ Fast Path 增加 DOM → SW 转发开销
 - ⚠️ PostMessage 序列化开销（通过 Transferable 缓解）
 
 ### 11.4 关键心智模型
@@ -582,9 +594,9 @@ pub trait ActorInterface {
 ## 十二、后续行动
 
 ### 立即执行
-1. 完善 DOM 侧固定实现（WebRTC Coordinator + Fast Path Forwarder）
-2. 实现 PostMessage 转发机制（使用 Transferable）
-3. 实现 SW 侧 Fast Path Registry
+1. 扩展 DOM 侧固定实现的端到端覆盖（WebRTC Coordinator + FastPathForwarder）
+2. 持续验证 PostMessage / MessagePort Transferable 路径
+3. 完善 SW stream handler 和 MediaTrack 场景
 
 ### 近期计划
 4. 完成 `call/subscribe/on` 三个 API 的完整实现

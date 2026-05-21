@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage};
-use actr_platform_native::NativePlatformProvider;
+use actr_hyper::test_support::inspect_workload_package;
+use actr_hyper::{Hyper, HyperConfig, StaticTrust, WorkloadPackage};
 use anyhow::{Context, Result};
 use base64::Engine;
 
@@ -14,7 +14,7 @@ pub fn package_path() -> Option<PathBuf> {
     }
 
     let default_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "dist/actrium-EchoService-{}-wasm32-unknown-unknown.actr",
+        "dist/actrium-EchoService-{}-wasm32-wasip2.actr",
         env!("CARGO_PKG_VERSION")
     ));
     default_path.exists().then_some(default_path)
@@ -46,20 +46,19 @@ pub async fn load_package(package_path: &Path, pubkey_path: &Path) -> Result<Str
 
     if verified.manifest.binary.target.starts_with("wasm32-") {
         let temp_dir = tempfile::TempDir::new().context("failed to create tempdir")?;
-        let hyper = Hyper::init_with_platform(
-            HyperConfig::new(temp_dir.path()).with_trust_mode(TrustMode::Development {
-                self_signed_pubkey: verifying_key.to_bytes().to_vec(),
-            }),
-            Arc::new(NativePlatformProvider::new()),
+        let hyper = Hyper::new(
+            HyperConfig::new(
+                temp_dir.path(),
+                Arc::new(StaticTrust::new(verifying_key.to_bytes()).context("invalid pubkey")?),
+            ),
         )
         .await
         .context("failed to initialize Hyper")?;
 
-        let loaded = hyper
-            .load_workload_package(&WorkloadPackage::new(package_bytes.clone()))
+        let loaded = inspect_workload_package(&hyper, &WorkloadPackage::new(package_bytes.clone()))
             .await
             .context("failed to load package workload")?;
-        return Ok(format!("{:?}", loaded.backend));
+        return Ok(format!("{:?}", loaded.binary_kind));
     }
 
     let binary = actr_pack::load_binary(&package_bytes)?;

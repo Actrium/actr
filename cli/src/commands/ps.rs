@@ -1,6 +1,6 @@
-use crate::commands::Command;
 use crate::commands::runtime_state::{RuntimeStateStore, RuntimeStatus, resolve_hyper_dir};
-use crate::error::Result;
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use anyhow::Result;
 use async_trait::async_trait;
 use clap::Args;
 use comfy_table::{Attribute, Cell, Table};
@@ -27,7 +27,7 @@ pub struct PsCommand {
 
 #[async_trait]
 impl Command for PsCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> Result<CommandResult> {
         let hyper_dir = resolve_hyper_dir(self.config.as_deref(), self.hyper_dir.as_deref())?;
         let store = RuntimeStateStore::new(hyper_dir);
         let mut entries = store.list_records().await?;
@@ -38,7 +38,7 @@ impl Command for PsCommand {
 
         if entries.is_empty() {
             println!("No detached runtimes found.");
-            return Ok(());
+            return Ok(CommandResult::Success(String::new()));
         }
 
         let mut table = Table::new();
@@ -71,6 +71,18 @@ impl Command for PsCommand {
         }
 
         println!("{table}");
-        Ok(())
+        Ok(CommandResult::Success(String::new()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "ps"
+    }
+
+    fn description(&self) -> &str {
+        "List detached runtime instances"
     }
 }

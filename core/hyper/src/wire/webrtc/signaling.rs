@@ -5,7 +5,7 @@
 #[cfg(feature = "opentelemetry")]
 use super::trace;
 use crate::lifecycle::CredentialState;
-use crate::transport::error::{NetworkError, NetworkResult};
+use crate::transport::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
 use actr_protocol::prost::Message as ProstMessage;
@@ -301,6 +301,15 @@ pub enum HookEvent {
     WebRtcConnectStart { peer_id: ActrId },
     WebRtcConnected { peer_id: ActrId, relayed: bool },
     WebRtcDisconnected { peer_id: ActrId },
+    // ── WebSocket ──
+    WebSocketConnectStart { peer_id: ActrId },
+    WebSocketConnected { peer_id: ActrId },
+    WebSocketDisconnected { peer_id: ActrId },
+    // ── Credential ──
+    CredentialRenewed { new_expiry: std::time::SystemTime },
+    CredentialExpiring { new_expiry: std::time::SystemTime },
+    // ── Mailbox ──
+    MailboxBackpressure { queue_len: usize, threshold: usize },
 }
 
 /// Callback closure that is awaited when a hook event occurs.
@@ -382,11 +391,6 @@ impl WebSocketSignalingClient {
     ///
     /// The manager waits on a `Notify` and runs an exponential-backoff retry loop
     /// each time it is woken up.
-    /// Set the hook callback (once). Subsequent calls are silently ignored.
-    pub fn set_hook_callback(&self, cb: HookCallback) {
-        let _ = self.hook_callback.set(cb);
-    }
-
     /// Invoke the hook callback and await its completion.
     /// No-op if no callback has been set yet.
     async fn invoke_hook(&self, event: HookEvent) {
@@ -480,7 +484,14 @@ impl WebSocketSignalingClient {
         // After cooldown, the loop returns to notify.notified() and can be woken again
     }
 
-    /// simple for convenience construct create Function
+    /// Test-only convenience constructor: create, connect, and return a client.
+    ///
+    /// The returned client has no `actor_id` / `credential_state` bound, so the
+    /// signaling URL carries no identity query parameters — mock-actrix will
+    /// not bind the WebSocket to any registry entry. Use this only for tests
+    /// that explicitly exercise the unbound path; integration tests that need
+    /// peer-to-peer relay should use [`Self::connect_to_with_identity`].
+    #[cfg(feature = "test-utils")]
     pub async fn connect_to(url: &str) -> NetworkResult<Arc<Self>> {
         let config = SignalingConfig {
             server_url: url.parse()?,
@@ -492,6 +503,34 @@ impl WebSocketSignalingClient {
         };
 
         let client = Arc::new(Self::new(config));
+        client.start_reconnect_manager();
+        client.connect().await?;
+        Ok(client)
+    }
+
+    /// Test-only constructor that pins identity *before* the WebSocket
+    /// handshake so mock-actrix can bind the connection to the actor on
+    /// register (`?actor_id=…` query parameter). Required by integration
+    /// tests that rely on peer-to-peer signaling relay — without this binding
+    /// mock-actrix drops outbound relays for "unbound target".
+    #[cfg(feature = "test-utils")]
+    pub async fn connect_to_with_identity(
+        url: &str,
+        actor_id: ActrId,
+        credential_state: CredentialState,
+    ) -> NetworkResult<Arc<Self>> {
+        let config = SignalingConfig {
+            server_url: url.parse()?,
+            connection_timeout: 5,
+            heartbeat_interval: 30,
+            reconnect_config: ReconnectConfig::default(),
+            auth_config: None,
+            webrtc_role: None,
+        };
+
+        let client = Arc::new(Self::new(config));
+        client.set_actor_id(actor_id).await;
+        client.set_credential_state(credential_state).await;
         client.start_reconnect_manager();
         client.connect().await?;
         Ok(client)
@@ -535,7 +574,7 @@ impl WebSocketSignalingClient {
         let mut url = self.config.server_url.clone();
         let actor_id_opt = self.actor_id.lock().await.clone();
         if let Some(actor_id) = actor_id_opt {
-            let actor_str = actr_protocol::ActrIdExt::to_string_repr(&actor_id);
+            let actor_str = actr_protocol::ActrId::to_string_repr(&actor_id);
             url.query_pairs_mut().append_pair("actor_id", &actor_str);
         }
 

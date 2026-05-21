@@ -60,6 +60,8 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -70,6 +72,9 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
 
       - name: Resolve release train version
         id: version

@@ -3,7 +3,7 @@
 //! Now uses Handlebars templates and embedded assets for maintainability and portability.
 
 use crate::assets::FixtureAssets;
-use crate::commands::Command;
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use crate::error::{ActrCliError, Result};
 use crate::project_language::DetectedProjectLanguage;
 use actr_config::ConfigParser;
@@ -73,7 +73,28 @@ struct ConfigContext {
 
 #[async_trait]
 impl Command for DocCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> anyhow::Result<CommandResult> {
+        self.execute_inner().await.map_err(anyhow::Error::from)?;
+        Ok(CommandResult::Success(
+            "Documentation generated".to_string(),
+        ))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "doc"
+    }
+
+    fn description(&self) -> &str {
+        "Generate project documentation"
+    }
+}
+
+impl DocCommand {
+    async fn execute_inner(&self) -> Result<()> {
         let output_dir = self.output_dir.as_deref().unwrap_or("docs");
 
         if !Path::new("manifest.toml").exists()

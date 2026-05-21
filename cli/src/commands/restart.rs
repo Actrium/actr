@@ -1,10 +1,10 @@
 //! Restart command - stop a running instance and re-launch it
 
-use crate::commands::Command;
 use crate::commands::run::RunCommand;
 use crate::commands::runtime_state::{RuntimeStateStore, resolve_hyper_dir};
 use crate::commands::stop::StopCommand;
-use crate::error::Result;
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use anyhow::Result;
 use async_trait::async_trait;
 use clap::Args;
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ pub struct RestartCommand {
 
 #[async_trait]
 impl Command for RestartCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, ctx: &CommandContext) -> Result<CommandResult> {
         let hyper_dir = resolve_hyper_dir(self.config.as_deref(), self.hyper_dir.as_deref())?;
         let store = RuntimeStateStore::new(hyper_dir);
         let entry = store.resolve_wid_prefix(&self.wid).await?;
@@ -53,7 +53,7 @@ impl Command for RestartCommand {
             timeout: self.timeout,
             force: self.force,
         }
-        .execute()
+        .execute(ctx)
         .await?;
 
         println!("Starting runtime with config: {}", config_path.display());
@@ -66,7 +66,19 @@ impl Command for RestartCommand {
             web: false,
             port: None,
         }
-        .execute()
+        .execute(ctx)
         .await
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "restart"
+    }
+
+    fn description(&self) -> &str {
+        "Restart a detached runtime instance"
     }
 }

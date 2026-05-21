@@ -123,6 +123,7 @@
 mod context;
 mod dest;
 mod dispatcher;
+mod service_handler;
 mod workload;
 
 // Optional utilities module
@@ -131,16 +132,25 @@ pub mod util;
 // Guest-side runtime module (WASM and dynclib ABI)
 pub mod guest;
 
+// Web-target (`wasm32-unknown-unknown`) runtime glue. Compiled only when
+// the `web` feature is enabled on a wasm32 build — see `src/web/mod.rs`
+// for the target / feature gating rationale.
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub mod web;
+
 // Test helpers (lightweight Context implementation)
 // Only compiled under the test-utils feature (includes uuid v4, incompatible with wasm32 target)
 #[cfg(feature = "test-utils")]
 pub mod test_support;
 
 // Public re-exports
-pub use context::{Context, MediaSample, MediaType};
+pub use context::{Context, LogLevel, MaybeSendSync, MediaSample, MediaType};
 pub use dest::Dest;
 pub use dispatcher::MessageDispatcher;
-pub use workload::Workload;
+pub use service_handler::ServiceHandler;
+pub use workload::{
+    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent, Workload,
+};
 
 // Re-export commonly used types for user convenience
 pub use bytes::Bytes;

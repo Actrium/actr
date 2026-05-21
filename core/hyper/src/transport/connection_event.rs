@@ -144,18 +144,18 @@ const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 /// Manages a broadcast channel for distributing connection events
 /// to all subscribed layers.
 #[derive(Debug)]
-pub struct ConnectionEventBroadcaster {
+pub(crate) struct ConnectionEventBroadcaster {
     tx: broadcast::Sender<ConnectionEvent>,
 }
 
 impl ConnectionEventBroadcaster {
     /// Create a new broadcaster with default capacity
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_capacity(DEFAULT_CHANNEL_CAPACITY)
     }
 
     /// Create a new broadcaster with specified capacity
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity);
         Self { tx }
     }
@@ -164,22 +164,17 @@ impl ConnectionEventBroadcaster {
     ///
     /// Returns the number of receivers that received the event.
     /// Returns 0 if there are no active subscribers (not an error).
-    pub fn send(&self, event: ConnectionEvent) -> usize {
+    pub(crate) fn send(&self, event: ConnectionEvent) -> usize {
         self.tx.send(event).unwrap_or_default()
     }
 
     /// Subscribe to connection events
-    pub fn subscribe(&self) -> broadcast::Receiver<ConnectionEvent> {
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<ConnectionEvent> {
         self.tx.subscribe()
     }
 
-    /// Get the number of active subscribers
-    pub fn receiver_count(&self) -> usize {
-        self.tx.receiver_count()
-    }
-
     /// Get a clone of the sender for sharing
-    pub fn sender(&self) -> broadcast::Sender<ConnectionEvent> {
+    pub(crate) fn sender(&self) -> broadcast::Sender<ConnectionEvent> {
         self.tx.clone()
     }
 }

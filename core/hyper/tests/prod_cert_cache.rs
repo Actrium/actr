@@ -7,10 +7,11 @@
 //! 4. Different MFRs -> independent caches
 //! 5. HTTP request body and response format validation
 
-use actr_hyper::{Hyper, HyperConfig, HyperError, MfrCertCache, TrustMode, WorkloadPackage};
+use actr_hyper::{Hyper, HyperConfig, HyperError, MfrCertCache, RegistryTrust, WorkloadPackage};
 use base64::Engine;
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -21,9 +22,7 @@ fn minimal_wasm() -> Vec<u8> {
 
 /// Production mode HyperConfig pointing to a mock AIS endpoint
 fn prod_config(dir: &TempDir, ais_endpoint: &str) -> HyperConfig {
-    HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Production {
-        ais_endpoint: ais_endpoint.to_string(),
-    })
+    HyperConfig::new(dir.path(), Arc::new(RegistryTrust::new(ais_endpoint)))
 }
 
 /// Build a signed .actr package for the given manufacturer
@@ -44,6 +43,7 @@ fn make_signed_package(
             target: "wasm32-wasip1".to_string(),
             hash: String::new(),
             size: None,
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: Some(key_id),
@@ -95,17 +95,17 @@ async fn production_mode_fetches_mfr_key_and_verifies() {
     let package = make_signed_package("acme", "Sensor", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
-    let manifest = hyper
+    let verified = hyper
         .verify_package(&WorkloadPackage::new(package))
         .await
         .unwrap();
 
     mock.assert_async().await;
-    assert_eq!(manifest.manufacturer, "acme");
-    assert_eq!(manifest.actr_name, "Sensor");
-    assert_eq!(manifest.version, "1.0.0");
+    assert_eq!(verified.manifest.manufacturer, "acme");
+    assert_eq!(verified.manifest.name, "Sensor");
+    assert_eq!(verified.manifest.version, "1.0.0");
 }
 
 /// Scenario 2: two consecutive verifications for the same manufacturer -> second uses cache, no HTTP
@@ -132,7 +132,7 @@ async fn production_mode_caches_mfr_key_on_second_verify() {
     let package = make_signed_package("cached-mfr", "App", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     // First: miss -> HTTP
     hyper
@@ -168,7 +168,7 @@ async fn production_mode_returns_untrusted_for_unknown_mfr() {
     let package = make_signed_package("unknown-mfr", "App", "1.0.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
 
@@ -203,7 +203,7 @@ async fn production_mode_rejects_wrong_cached_key() {
     let package = make_signed_package("mfr-x", "X", "1.0.0", &real_signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
 
@@ -248,7 +248,7 @@ async fn production_mode_independent_caches_per_manufacturer() {
     let pkg_b = make_signed_package("mfr-b", "ActorB", "1.0.0", &key_b);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let manifest_a = hyper
         .verify_package(&WorkloadPackage::new(pkg_a))
@@ -259,8 +259,8 @@ async fn production_mode_independent_caches_per_manufacturer() {
         .await
         .unwrap();
 
-    assert_eq!(manifest_a.manufacturer, "mfr-a");
-    assert_eq!(manifest_b.manufacturer, "mfr-b");
+    assert_eq!(manifest_a.manifest.manufacturer, "mfr-a");
+    assert_eq!(manifest_b.manifest.manufacturer, "mfr-b");
 }
 
 /// Standalone MfrCertCache test: get_from_cache is synchronously readable after prefetch
@@ -311,7 +311,7 @@ async fn production_mode_no_http_for_unknown_format() {
     // No mock endpoints set; if HTTP is triggered, the test fails
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(prod_config(&dir, &server.url())).await.unwrap();
+    let hyper = Hyper::new(prod_config(&dir, &server.url())).await.unwrap();
 
     let result = hyper
         .verify_package(&WorkloadPackage::new(b"this is not a package".to_vec()))

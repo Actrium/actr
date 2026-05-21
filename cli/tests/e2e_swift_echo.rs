@@ -75,11 +75,11 @@ struct EchoServiceCLI {
             .contentsOfDirectory(atPath: distPath)
             .first(where: { $0.hasSuffix(".actr") })
         guard let packageName else {
-            throw ActrError.StateError(msg: "No .actr package found in dist/")
+            throw ActrError.Internal(msg: "No .actr package found in dist/")
         }
         let packagePath = (distPath as NSString).appendingPathComponent(packageName)
 
-        let system = try await ActrSystem.from(packageConfig: configPath, packagePath: packagePath)
+        let system = try await ActrNode.from(packageConfig: configPath, packagePath: packagePath)
         let _ = try await system.start()
         print("EchoService registered")
 
@@ -120,11 +120,11 @@ struct EchoAppCLI {
             .contentsOfDirectory(atPath: distPath)
             .first(where: { $0.hasSuffix(".actr") })
         guard let packageName else {
-            throw ActrError.StateError(msg: "No .actr package found in dist/")
+            throw ActrError.Internal(msg: "No .actr package found in dist/")
         }
         let packagePath = (distPath as NSString).appendingPathComponent(packageName)
 
-        let system = try await ActrSystem.from(packageConfig: configPath, packagePath: packagePath)
+        let system = try await ActrNode.from(packageConfig: configPath, packagePath: packagePath)
         let actr = try await system.start()
 
         var request = Echo_EchoRequest()
@@ -221,7 +221,10 @@ fn swift_echo_e2e_service_and_app() {
     pin_echo_service_dependency_version(&app_dir, "swift-e2e")
         .expect("failed to pin app echo dependency version");
 
-    assert_success(&run_actr(&["install"], &svc_dir), "actr install (svc)");
+    assert_success(
+        &run_actr(&["deps", "install"], &svc_dir),
+        "actr deps install (svc)",
+    );
     assert_success(
         &run_actr(&["gen", "-l", "swift"], &svc_dir),
         "actr gen -l swift (svc)",
@@ -249,7 +252,10 @@ fn swift_echo_e2e_service_and_app() {
         svc.logs()
     );
 
-    assert_success(&run_actr(&["install"], &app_dir), "actr install (app)");
+    assert_success(
+        &run_actr(&["deps", "install"], &app_dir),
+        "actr deps install (app)",
+    );
     assert_success(
         &run_actr(&["gen", "-l", "swift"], &app_dir),
         "actr gen -l swift (app)",

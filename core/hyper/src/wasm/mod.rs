@@ -1,8 +1,13 @@
 //! WASM workload execution engine (feature = "wasm-engine").
+//!
+//! Backed by the Component Model (wasmtime 43 + wit-bindgen) as of
+//! Phase 1 Commit 2; see `core/framework/wit/actr-workload.wit` for the
+//! contract.
 
-pub mod abi;
-pub mod error;
-pub mod host;
+pub(crate) mod component_bindings;
+mod error;
+mod host;
 
-pub use error::{WasmError, WasmResult};
-pub use host::{WasmHost, WasmWorkload};
+pub use error::WasmError;
+pub use host::WasmHost;
+pub(crate) use host::WasmWorkload;

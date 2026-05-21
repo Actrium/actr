@@ -1,217 +1,341 @@
-//! Guest-side runtime module
+//! Guest-side runtime module.
 //!
-//! Provides the unified `entry!` macro and platform-specific Context implementations.
-//! Actor developers write ONE `entry!(MyActor)` -- platform ABI is auto-selected by cfg.
+//! Provides the unified [`entry!`] macro and platform-specific runtime
+//! glue. Actor developers write one `entry!(MyActor)`; the macro selects
+//! the correct ABI at compile time based on the target.
 //!
 //! # Execution contract
 //!
-//! The current guest ABI deliberately keeps the runtime model simple:
-//!
 //! - One loaded guest instance corresponds to one logical actor instance.
-//! - The host calls `actr_init` once for that instance before the first request.
-//! - The host must serialize `actr_handle` calls for the same instance.
-//!
-//! In other words, if the host wants two actors of the same type, it must create
-//! two guest instances (for example, two `WasmWorkload`s), not reuse one instance
-//! with two independent actor states. The ABI does not expose an instance handle,
-//! so guest-side state is process/module-global within one loaded instance.
+//! - The runtime serialises dispatch into the guest instance. Concurrent
+//!   dispatches within the same instance are forbidden by the host
+//!   (wasmtime enforces this via `&mut Store<HostState>`; dynclib hosts
+//!   enforce via handle ownership).
 //!
 //! # Supported platforms
 //!
-//! - **WASM** (`target_arch = "wasm32"`): host imports + asyncify
-//! - **cdylib** (`feature = "cdylib"`): HostVTable function pointers
+//! - **WASM Component Model** (`target_arch = "wasm32"`, no `web` feature):
+//!   wit-bindgen generates the `Guest` trait + `host` imports from
+//!   `core/framework/wit/actr-workload.wit`; the [`entry!`] macro
+//!   produces an adapter that bridges the user's [`Workload`] impl into
+//!   the generated `Guest`. Targets `wasm32-wasip2` and requires
+//!   `wasm-component-ld 0.5.22+` as the linker (see
+//!   `experiments/component-spike-async/REPORT.md`).
+//! - **Web ABI / wasm-bindgen** (`target_arch = "wasm32"` + `feature = "web"`):
+//!   expands to a [`wasm_bindgen(start)`][wbgstart] bootstrap that wraps the
+//!   user [`Workload`] in `web::WebWorkloadAdapter` and hands it to
+//!   `actr_web_abi::host::register_workload`. Per Option U γ-unified §4.5
+//!   the same user source compiles against both wasm32 ABIs; only the
+//!   macro expansion differs. Targets `wasm32-unknown-unknown`.
+//! - **cdylib** (`feature = "cdylib"`): HostVTable function-pointer
+//!   bridge used for native shared-library guests (iOS / Android).
+//!
+//! [wbgstart]: https://rustwasm.github.io/wasm-bindgen/reference/attributes/on-rust-exports/start.html
 
-pub mod abi;
+pub mod dynclib_abi;
 pub mod vtable;
 
-#[cfg(target_arch = "wasm32")]
+// The Component Model wasm runtime glue is gated on `not(feature = "web")`
+// so the `wasm32-unknown-unknown` + `web` target (which routes through
+// `actr-web-abi` instead) does not link the wit-bindgen host imports that
+// only resolve in a `wasm32-wasip2` Component environment.
+#[cfg(all(target_arch = "wasm32", not(feature = "web")))]
 pub mod wasm;
 
 #[cfg(feature = "cdylib")]
 pub mod dynclib;
 
-/// Generate ABI export functions for a Workload type
+// Re-exports used by the `entry!` macro so macro expansions under a
+// user crate can reference adapter / binding items via a stable path
+// without having to know the internal module layout.
+#[cfg(all(target_arch = "wasm32", not(feature = "web")))]
+#[doc(hidden)]
+pub mod __wasm_macro_support {
+    // The `entry!` macro expands inside the user's crate, so every name
+    // it references must be reachable from an external crate path. Both
+    // the adapter helpers and the generated WIT types are re-exported
+    // here so the macro has a single stable `$crate::guest::__wasm_macro_support::*`
+    // prefix to poke at.
+    pub use super::wasm::adapter::{
+        WorkloadCell, run_dispatch, run_on_credential_expiring, run_on_credential_renewed,
+        run_on_error, run_on_mailbox_backpressure, run_on_ready, run_on_signaling_connected,
+        run_on_signaling_connecting, run_on_signaling_disconnected, run_on_start, run_on_stop,
+        run_on_webrtc_connected, run_on_webrtc_connecting, run_on_webrtc_disconnected,
+        run_on_websocket_connected, run_on_websocket_connecting, run_on_websocket_disconnected,
+    };
+    pub use super::wasm::generated::actr::workload::types::{
+        ActrError as WitActrError, BackpressureEvent as WitBackpressureEvent,
+        CredentialEvent as WitCredentialEvent, ErrorEvent as WitErrorEvent,
+        PeerEvent as WitPeerEvent, RpcEnvelope as WitRpcEnvelope,
+    };
+    pub use super::wasm::generated::exports::actr::workload::workload::Guest;
+}
+
+/// Generate Component Model exports for a [`Workload`][crate::Workload]
+/// type.
 ///
-/// Platform ABI is auto-selected:
-/// - `#[cfg(target_arch = "wasm32")]`: WASM ABI exports (actr_alloc, actr_free, actr_init, actr_handle)
-/// - `#[cfg(feature = "cdylib")]`: dynclib ABI exports (actr_init with vtable, actr_handle, actr_free_response)
+/// Platform ABI is auto-selected by target:
+///
+/// - `#[cfg(all(target_arch = "wasm32", not(feature = "web")))]` — expands
+///   to an `impl Guest for __ActrEntryAdapter { ... }` bridging the user's
+///   [`Workload`][crate::Workload] into the `actr:workload/workload`
+///   export contract. The runtime calls `Dispatcher::dispatch` through
+///   the `dispatch` export and every observation hook through its
+///   matching WIT export.
+/// - `#[cfg(all(target_arch = "wasm32", feature = "web"))]` — expands to a
+///   `#[wasm_bindgen(start)]` bootstrap that wraps the user workload in a
+///   `WebWorkloadAdapter` and calls `actr_web_abi::host::register_workload`.
+///   Only the 17 `#[wasm_bindgen]` entry points generated inside
+///   `actr-web-abi::host` are exported to the Service Worker host.
+/// - `#[cfg(feature = "cdylib")]` — expands to the legacy
+///   `actr_init` / `actr_handle` / `actr_free_response` C-ABI exports
+///   used by native shared-library hosts.
 ///
 /// # Arguments
 ///
-/// - `$workload_type`: Type implementing `actr_framework::Workload + Send + Sync + 'static`
-/// - `$init_expr` (optional): Expression to construct the Workload instance; uses `Default::default()` if omitted
+/// - `$workload_type`: type implementing
+///   `actr_framework::Workload + Send + Sync + 'static`.
+/// - `$init_expr` (optional): expression returning a fresh instance of
+///   `$workload_type`. Defaults to `<$workload_type as Default>::default()`.
 ///
 /// # Usage
 ///
 /// ```rust,ignore
 /// use actr_framework::entry;
 ///
-/// // Use Default initialization (requires MyWorkload: Default)
 /// entry!(EchoServiceWorkload<MyService>);
 ///
-/// // Or provide a custom initialization expression
-/// entry!(EchoServiceWorkload<MyService>, EchoServiceWorkload(MyService::new()));
+/// // Or with a custom constructor:
+/// entry!(
+///     EchoServiceWorkload<MyService>,
+///     EchoServiceWorkload::new(MyService::new())
+/// );
 /// ```
 #[macro_export]
 macro_rules! entry {
-    // Single-argument form: use Default::default() for initialization
+    // Single-argument form: default-construct the workload.
     ($workload_type:ty) => {
-        $crate::entry!($workload_type, <$workload_type as Default>::default());
+        $crate::entry!($workload_type, <$workload_type as ::core::default::Default>::default());
     };
 
-    // Two-argument form: use custom initialization expression
+    // Two-argument form: caller supplies the init expression.
     ($workload_type:ty, $init_expr:expr) => {
-        // ── WASM ABI exports ──────────────────────────────────────────────
-        #[cfg(target_arch = "wasm32")]
+        // ── WASM Component Model exports ──────────────────────────────────
+        //
+        // wit-bindgen generates an `exports::actr::workload::workload::Guest`
+        // trait with 17 async methods (one `dispatch` + sixteen hooks). We
+        // emit a single zero-sized adapter struct in user-crate scope and
+        // route every method through helpers in `actr_framework::guest::wasm::adapter`.
+        //
+        // Skipped when the `web` feature is on — that path uses the
+        // wasm-bindgen + `actr-web-abi` pipeline below instead of the
+        // Component Model exports.
+        #[cfg(all(target_arch = "wasm32", not(feature = "web")))]
         const _: () = {
-            static mut __ACTR_WORKLOAD: Option<$workload_type> = None;
+            // Module-local singleton cell. Lazy-init on first call; subsequent
+            // dispatches reuse the same instance.
+            static __ACTR_WORKLOAD: $crate::guest::__wasm_macro_support::WorkloadCell<$workload_type> =
+                $crate::guest::__wasm_macro_support::WorkloadCell::new();
 
-            /// Allocate WASM linear memory (host calls before writing data)
-            #[unsafe(no_mangle)]
-            pub extern "C" fn actr_alloc(size: i32) -> i32 {
-                let layout =
-                    std::alloc::Layout::from_size_align(size as usize, 1).expect("invalid layout");
-                let ptr = unsafe { std::alloc::alloc(layout) };
-                if ptr.is_null() {
-                    $crate::guest::abi::code::ALLOC_FAILED
-                } else {
-                    ptr as i32
+            fn __actr_workload() -> &'static $workload_type {
+                __ACTR_WORKLOAD.get_or_init(|| -> $workload_type { $init_expr })
+            }
+
+            struct __ActrEntryAdapter;
+
+            impl $crate::guest::__wasm_macro_support::Guest for __ActrEntryAdapter {
+                async fn dispatch(
+                    envelope: $crate::guest::__wasm_macro_support::WitRpcEnvelope,
+                ) -> ::core::result::Result<
+                    ::std::vec::Vec<u8>,
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_dispatch(
+                        __actr_workload(),
+                        envelope,
+                    )
+                    .await
+                }
+
+                async fn on_start() -> ::core::result::Result<
+                    (),
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_on_start(__actr_workload()).await
+                }
+
+                async fn on_ready() -> ::core::result::Result<
+                    (),
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_on_ready(__actr_workload()).await
+                }
+
+                async fn on_stop() -> ::core::result::Result<
+                    (),
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_on_stop(__actr_workload()).await
+                }
+
+                async fn on_error(
+                    event: $crate::guest::__wasm_macro_support::WitErrorEvent,
+                ) -> ::core::result::Result<
+                    (),
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_on_error(__actr_workload(), event)
+                        .await
+                }
+
+                async fn on_signaling_connecting() {
+                    $crate::guest::__wasm_macro_support::run_on_signaling_connecting(
+                        __actr_workload(),
+                    )
+                    .await
+                }
+
+                async fn on_signaling_connected() {
+                    $crate::guest::__wasm_macro_support::run_on_signaling_connected(
+                        __actr_workload(),
+                    )
+                    .await
+                }
+
+                async fn on_signaling_disconnected() {
+                    $crate::guest::__wasm_macro_support::run_on_signaling_disconnected(
+                        __actr_workload(),
+                    )
+                    .await
+                }
+
+                async fn on_websocket_connecting(
+                    event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_websocket_connecting(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
+                }
+
+                async fn on_websocket_connected(
+                    event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_websocket_connected(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
+                }
+
+                async fn on_websocket_disconnected(
+                    event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_websocket_disconnected(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
+                }
+
+                async fn on_webrtc_connecting(
+                    event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_webrtc_connecting(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
+                }
+
+                async fn on_webrtc_connected(
+                    event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_webrtc_connected(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
+                }
+
+                async fn on_webrtc_disconnected(
+                    event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_webrtc_disconnected(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
+                }
+
+                async fn on_credential_renewed(
+                    event: $crate::guest::__wasm_macro_support::WitCredentialEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_credential_renewed(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
+                }
+
+                async fn on_credential_expiring(
+                    event: $crate::guest::__wasm_macro_support::WitCredentialEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_credential_expiring(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
+                }
+
+                async fn on_mailbox_backpressure(
+                    event: $crate::guest::__wasm_macro_support::WitBackpressureEvent,
+                ) {
+                    $crate::guest::__wasm_macro_support::run_on_mailbox_backpressure(
+                        __actr_workload(),
+                        event,
+                    )
+                    .await
                 }
             }
 
-            /// Free WASM linear memory (host calls after read/write is done)
-            #[unsafe(no_mangle)]
-            pub extern "C" fn actr_free(ptr: i32, size: i32) {
-                if ptr == 0 || size <= 0 {
-                    return;
-                }
-                let layout =
-                    std::alloc::Layout::from_size_align(size as usize, 1).expect("invalid layout");
-                unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
-            }
+            $crate::guest::wasm::generated::export!(__ActrEntryAdapter with_types_in $crate::guest::wasm::generated);
+        };
 
-            /// Initialize actor (host calls before first `actr_handle` call).
-            ///
-            /// `init_ptr/len` contains a prost-encoded `InitPayloadV1`.
-            #[unsafe(no_mangle)]
-            pub extern "C" fn actr_init(init_ptr: i32, init_len: i32) -> i32 {
-                let init_bytes: &[u8] = unsafe {
-                    std::slice::from_raw_parts(init_ptr as *const u8, init_len as usize)
-                };
-
-                // TODO: `actr_init` currently only validates that `InitPayloadV1`
-                // is decodable. The payload fields themselves are not yet
-                // consumed by the guest runtime on either the WASM or dynclib
-                // path. This is a legacy gap carried forward from the previous
-                // init model and should be addressed by either wiring these
-                // fields into guest bootstrap state or shrinking the payload to
-                // the subset with active runtime semantics.
-                if $crate::guest::abi::decode_message::<$crate::guest::abi::InitPayloadV1>(
-                    init_bytes,
-                )
-                .is_err()
-                {
-                    return $crate::guest::abi::code::PROTOCOL_ERROR;
-                }
-
+        // ── Web (wasm-bindgen + actr-web-abi) exports ─────────────────────
+        //
+        // Phase 6b: wrap the user workload in `WebWorkloadAdapter` and hand
+        // it to `actr_web_abi::host::register_workload` from a wasm-bindgen
+        // `start` hook. The 17 `#[wasm_bindgen]` entry points exported by
+        // `actr-web-abi::host` are the public surface the Service Worker
+        // dispatches into; they resolve through the registered adapter back
+        // into the user's `Workload` impl. See
+        // `bindings/web/docs/option-u-phase6-gamma-unified.zh.md` §4.5.
+        #[cfg(all(target_arch = "wasm32", feature = "web"))]
+        const _: () = {
+            // `wasm_bindgen(start)` functions are invoked once per module
+            // instantiation by the wasm-bindgen runtime. `register_workload`
+            // itself panics on double-registration, so wrapping it inside a
+            // `start` fn naturally enforces single-shot bootstrap.
+            //
+            // The attribute is referenced through its fully-qualified path
+            // so the user's crate does not need its own `wasm-bindgen`
+            // dependency — `actr-framework` re-exports the attribute through
+            // `web::__web_macro_support` under `feature = "web"`.
+            #[$crate::web::__web_macro_support::wasm_bindgen(start)]
+            fn __actr_web_bootstrap() {
                 let workload: $workload_type = $init_expr;
-                unsafe {
-                    if __ACTR_WORKLOAD.is_some() {
-                        return $crate::guest::abi::code::INIT_FAILED;
-                    }
-                    __ACTR_WORKLOAD = Some(workload);
-                }
-                $crate::guest::abi::code::SUCCESS
-            }
-
-            /// Handle one runtime ABI frame.
-            #[unsafe(no_mangle)]
-            pub extern "C" fn actr_handle(
-                req_ptr: i32,
-                req_len: i32,
-                resp_ptr_out: i32,
-                resp_len_out: i32,
-            ) -> i32 {
-                use actr_protocol::prost::Message as ProstMessage;
-                use $crate::{MessageDispatcher, Workload};
-
-                // Read runtime frame
-                let req_bytes: &[u8] =
-                    unsafe { std::slice::from_raw_parts(req_ptr as *const u8, req_len as usize) };
-
-                let frame = match $crate::guest::abi::decode_message::<
-                    $crate::guest::abi::AbiFrame,
-                >(req_bytes) {
-                    Ok(f) => f,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
-                };
-
-                if frame.op != $crate::guest::abi::op::GUEST_HANDLE {
-                    return $crate::guest::abi::code::UNSUPPORTED_OP;
-                }
-
-                let handle = match <$crate::guest::abi::GuestHandleV1 as $crate::guest::abi::AbiPayload>::decode_payload(&frame.payload) {
-                    Ok(handle) => handle,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
-                };
-
-                let envelope = match actr_protocol::RpcEnvelope::decode(handle.rpc_envelope.as_slice()) {
-                    Ok(e) => e,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
-                };
-
-                let ctx = $crate::guest::wasm::context::WasmContext::from_invocation(handle.ctx);
-
-                // Get workload reference
-                let workload = unsafe {
-                    match __ACTR_WORKLOAD.as_ref() {
-                        Some(w) => w,
-                        None => return $crate::guest::abi::code::INIT_FAILED,
-                    }
-                };
-
-                // Route and execute via MessageDispatcher
-                type Dispatcher = <$workload_type as Workload>::Dispatcher;
-                let resp_result = $crate::guest::wasm::executor::block_on(Dispatcher::dispatch(
-                    workload, envelope, &ctx,
-                ));
-
-                let resp_bytes = match resp_result {
-                    Ok(b) => match $crate::guest::abi::success_reply(b.to_vec()) {
-                        Ok(bytes) => bytes,
-                        Err(code) => return code,
-                    },
-                    Err(err) => match $crate::guest::abi::error_reply(
-                        $crate::guest::abi::code::HANDLE_FAILED,
-                        err.to_string().into_bytes(),
-                    ) {
-                        Ok(bytes) => bytes,
-                        Err(code) => return code,
-                    },
-                };
-
-                // Allocate response buffer in WASM linear memory, return to host
-                let resp_len = resp_bytes.len();
-                let layout = std::alloc::Layout::from_size_align(resp_len.max(1), 1)
-                    .expect("invalid layout");
-                let resp_ptr = unsafe { std::alloc::alloc(layout) };
-                if resp_ptr.is_null() {
-                    return $crate::guest::abi::code::ALLOC_FAILED;
-                }
-
-                // Write response data to WASM linear memory
-                unsafe {
-                    std::ptr::copy_nonoverlapping(resp_bytes.as_ptr(), resp_ptr, resp_len);
-                    // Write response buffer address and length to host-provided output pointers
-                    *(resp_ptr_out as *mut i32) = resp_ptr as i32;
-                    *(resp_len_out as *mut i32) = resp_len as i32;
-                }
-
-                $crate::guest::abi::code::SUCCESS
+                let adapter =
+                    $crate::web::__web_macro_support::WebWorkloadAdapter::new(workload);
+                $crate::web::__web_macro_support::register_workload(adapter);
             }
         };
 
         // ── cdylib ABI exports ────────────────────────────────────────────
+        //
+        // Unchanged from pre-Phase-1; the Component Model rewrite is WASM-
+        // only and does not touch the native shared-library path.
         #[cfg(feature = "cdylib")]
         const _: () = {
             static mut __ACTR_WORKLOAD: Option<$workload_type> = None;
@@ -229,7 +353,7 @@ macro_rules! entry {
                 init_len: usize,
             ) -> i32 {
                 if vtable.is_null() {
-                    return $crate::guest::abi::code::INIT_FAILED;
+                    return $crate::guest::dynclib_abi::code::INIT_FAILED;
                 }
 
                 let init_bytes = if init_ptr.is_null() || init_len == 0 {
@@ -240,28 +364,25 @@ macro_rules! entry {
 
                 // TODO: `actr_init` currently only validates that `InitPayloadV1`
                 // is decodable. The payload fields themselves are not yet
-                // consumed by the guest runtime on either the WASM or dynclib
-                // path. This is a legacy gap carried forward from the previous
-                // init model and should be addressed by either wiring these
-                // fields into guest bootstrap state or shrinking the payload to
-                // the subset with active runtime semantics.
-                if $crate::guest::abi::decode_message::<$crate::guest::abi::InitPayloadV1>(
+                // consumed by the guest runtime on the dynclib path. This is a
+                // legacy gap carried forward from the previous init model.
+                if $crate::guest::dynclib_abi::decode_message::<$crate::guest::dynclib_abi::InitPayloadV1>(
                     init_bytes,
                 )
                 .is_err()
                 {
-                    return $crate::guest::abi::code::PROTOCOL_ERROR;
+                    return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR;
                 }
 
                 let workload: $workload_type = $init_expr;
                 unsafe {
                     if __ACTR_WORKLOAD.is_some() {
-                        return $crate::guest::abi::code::INIT_FAILED;
+                        return $crate::guest::dynclib_abi::code::INIT_FAILED;
                     }
                     __ACTR_VTABLE = Some(vtable);
                     __ACTR_WORKLOAD = Some(workload);
                 }
-                $crate::guest::abi::code::SUCCESS
+                $crate::guest::dynclib_abi::code::SUCCESS
             }
 
             /// Handle one runtime ABI frame.
@@ -278,48 +399,48 @@ macro_rules! entry {
                 // Get vtable
                 let vtable = match unsafe { __ACTR_VTABLE } {
                     Some(vt) => vt,
-                    None => return $crate::guest::abi::code::INIT_FAILED,
+                    None => return $crate::guest::dynclib_abi::code::INIT_FAILED,
                 };
 
                 // Read runtime frame
                 if req_ptr.is_null() {
-                    return $crate::guest::abi::code::PROTOCOL_ERROR;
+                    return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR;
                 }
                 let req_bytes = unsafe { std::slice::from_raw_parts(req_ptr, req_len) };
 
-                let frame = match $crate::guest::abi::decode_message::<
-                    $crate::guest::abi::AbiFrame,
+                let frame = match $crate::guest::dynclib_abi::decode_message::<
+                    $crate::guest::dynclib_abi::AbiFrame,
                 >(req_bytes) {
                     Ok(f) => f,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                    Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
 
-                if frame.op != $crate::guest::abi::op::GUEST_HANDLE {
-                    return $crate::guest::abi::code::UNSUPPORTED_OP;
+                if frame.op != $crate::guest::dynclib_abi::op::GUEST_HANDLE {
+                    return $crate::guest::dynclib_abi::code::UNSUPPORTED_OP;
                 }
 
-                let handle = match <$crate::guest::abi::GuestHandleV1 as $crate::guest::abi::AbiPayload>::decode_payload(&frame.payload) {
+                let handle = match <$crate::guest::dynclib_abi::GuestHandleV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
                     Ok(handle) => handle,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                    Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
 
                 let envelope = match actr_protocol::RpcEnvelope::decode(handle.rpc_envelope.as_slice()) {
                     Ok(e) => e,
-                    Err(_) => return $crate::guest::abi::code::PROTOCOL_ERROR,
+                    Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
 
                 let ctx = match unsafe {
                     $crate::guest::dynclib::context::DynclibContext::from_invocation(vtable, handle.ctx)
                 } {
                     Ok(c) => c,
-                    Err(_) => return $crate::guest::abi::code::HANDLE_FAILED,
+                    Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
                 };
 
                 // Get workload reference
                 let workload = unsafe {
                     match __ACTR_WORKLOAD.as_ref() {
                         Some(w) => w,
-                        None => return $crate::guest::abi::code::INIT_FAILED,
+                        None => return $crate::guest::dynclib_abi::code::INIT_FAILED,
                     }
                 };
 
@@ -327,8 +448,9 @@ macro_rules! entry {
                 type Dispatcher = <$workload_type as Workload>::Dispatcher;
 
                 // cdylib is native environment, can use tokio or synchronous execution
-                // Here we use the same single-threaded poll strategy as WASM:
-                // All host callbacks (vtable function pointers) are synchronous, Future completes in one poll.
+                // Here we use the same single-threaded poll strategy as the old WASM path:
+                // All host callbacks (vtable function pointers) are synchronous, Future
+                // completes in one poll.
                 let resp_result = {
                     let fut = Dispatcher::dispatch(workload, envelope, &ctx);
                     let waker = std::task::Waker::noop();
@@ -337,18 +459,18 @@ macro_rules! entry {
                     match pinned.as_mut().poll(&mut cx) {
                         std::task::Poll::Ready(v) => v,
                         std::task::Poll::Pending => {
-                            return $crate::guest::abi::code::HANDLE_FAILED;
+                            return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
                         }
                     }
                 };
 
                 let resp_bytes = match resp_result {
-                    Ok(b) => match $crate::guest::abi::success_reply(b.to_vec()) {
+                    Ok(b) => match $crate::guest::dynclib_abi::success_reply(b.to_vec()) {
                         Ok(bytes) => bytes,
                         Err(code) => return code,
                     },
-                    Err(err) => match $crate::guest::abi::error_reply(
-                        $crate::guest::abi::code::HANDLE_FAILED,
+                    Err(err) => match $crate::guest::dynclib_abi::error_reply(
+                        $crate::guest::dynclib_abi::code::HANDLE_FAILED,
                         err.to_string().into_bytes(),
                     ) {
                         Ok(bytes) => bytes,
@@ -360,11 +482,11 @@ macro_rules! entry {
                 let resp_len = resp_bytes.len();
                 let layout = match std::alloc::Layout::from_size_align(resp_len.max(1), 1) {
                     Ok(l) => l,
-                    Err(_) => return $crate::guest::abi::code::GENERIC_ERROR,
+                    Err(_) => return $crate::guest::dynclib_abi::code::GENERIC_ERROR,
                 };
                 let ptr = unsafe { std::alloc::alloc(layout) };
                 if ptr.is_null() {
-                    return $crate::guest::abi::code::GENERIC_ERROR;
+                    return $crate::guest::dynclib_abi::code::GENERIC_ERROR;
                 }
 
                 unsafe {
@@ -373,7 +495,7 @@ macro_rules! entry {
                     *resp_len_out = resp_len;
                 }
 
-                $crate::guest::abi::code::SUCCESS
+                $crate::guest::dynclib_abi::code::SUCCESS
             }
 
             /// Free guest-allocated response buffer

@@ -1,4 +1,10 @@
 //! Monitoring and alerting
+//!
+//! Reserved scaffolding for future observability work. The module is
+//! compiled but no runtime consumer currently invokes it; the public
+//! items are crate-private and tagged `allow(dead_code)`.
+
+#![allow(dead_code)]
 
 use actr_protocol::{ActorResult, ActrError};
 use chrono::{DateTime, Utc};

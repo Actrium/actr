@@ -1,4 +1,5 @@
 import { ActrNode as NativeActrNode } from '../index';
+import { callNative } from './error';
 import { ActrRef } from './ref';
 
 /**
@@ -10,14 +11,16 @@ export class ActrNode {
   constructor(private native: NativeActrNode) {}
 
   /**
-   * Create a client-only ActrNode from `manifest.toml`.
+   * Create an ActrNode wrapper from `manifest.toml`.
    * The sibling `actr.toml` in the same directory is loaded automatically.
    *
    * @param configPath - Path to manifest.toml
    * @returns ActrNode instance
    */
   static async fromConfig(configPath: string): Promise<ActrNode> {
-    const nativeNode = await NativeActrNode.fromFile(configPath);
+    const nativeNode = await callNative(() =>
+      NativeActrNode.fromFile(configPath),
+    );
     return new ActrNode(nativeNode);
   }
 
@@ -33,7 +36,7 @@ export class ActrNode {
    * ```
    */
   async start(): Promise<ActrRef> {
-    const nativeRef = await this.native.start();
+    const nativeRef = await callNative(() => this.native.start());
     return new ActrRef(nativeRef);
   }
 }

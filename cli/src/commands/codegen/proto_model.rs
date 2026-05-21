@@ -1,7 +1,7 @@
 use crate::error::{ActrCliError, Result};
 use crate::utils::to_snake_case;
 use actr_config::ManifestConfig;
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

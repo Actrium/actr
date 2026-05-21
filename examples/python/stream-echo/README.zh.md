@@ -48,7 +48,7 @@ stream-echo/
 cd server
 
 # 安装依赖（如果需要）
-actr install
+actr deps install
 
 # 生成代码
 actr gen --input protos --output generated --language python
@@ -65,7 +65,7 @@ python server.py --actr-toml actr.toml
 cd client
 
 # 安装依赖
-actr install
+actr deps install
 
 # 生成代码
 actr gen --input protos --output generated --language python
@@ -233,7 +233,7 @@ manufacturer = "acme"
 name = "StreamEchoClient"
 ```
 
-运行 `actr install` 会：
+运行 `actr deps install` 会：
 1. 从 Signaling Server 下载远程服务的 proto 文件
 2. 生成 `manifest.lock.toml` 锁定依赖版本
 3. 将远程 proto 文件缓存到 `protos/remote/` 目录

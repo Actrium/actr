@@ -17,14 +17,14 @@
  */
 
 import { createActor, type Actor } from '@actr/web';
-import { initConfig, actorType, system, buildActrConfig } from './generated';
+import { initConfig, actrType, system, buildActrConfig } from './generated';
 
 // ── DOM Elements ──
 const statusEl = document.getElementById('status')!;
 const serviceNameEl = document.getElementById('serviceName')!;
 const signalingUrlEl = document.getElementById('signalingUrl')!;
 const realmIdEl = document.getElementById('realmId')!;
-const actorTypeEl = document.getElementById('actorType')!;
+const actrTypeEl = document.getElementById('actrType')!;
 const requestCountEl = document.getElementById('requestCount')!;
 const successCountEl = document.getElementById('successCount')!;
 const errorCountEl = document.getElementById('errorCount')!;
@@ -78,10 +78,10 @@ function updateStatsUI(): void {
  * Update the server info display
  */
 function updateServerInfo(): void {
-    serviceNameEl.textContent = `echo.${actorType.name}`;
+    serviceNameEl.textContent = `echo.${actrType.name}`;
     signalingUrlEl.textContent = system.signaling.url;
     realmIdEl.textContent = String(system.deployment.realm_id);
-    actorTypeEl.textContent = actorType.fullType;
+    actrTypeEl.textContent = actrType.fullType;
 }
 
 /**
@@ -151,6 +151,26 @@ function handleSwLog(data: {
     msg = msg.replace(/^\s*INFO\s+/, '');
     msg = msg.replace(/^\s*WARN\s+/, '⚠️ ');
     msg = msg.replace(/^\s*ERROR\s+/, '❌ ');
+
+    let statsChanged = false;
+    if (
+        msg.includes('[Scheduler] Processing RPC request:') &&
+        msg.includes('route_key=echo.EchoService.Echo')
+    ) {
+        requestCount++;
+        statsChanged = true;
+    }
+    if (msg.includes('[Scheduler] Service handler success:')) {
+        successCount++;
+        statsChanged = true;
+    }
+    if (msg.includes('[Scheduler] Service handler error:')) {
+        errorCount++;
+        statsChanged = true;
+    }
+    if (statsChanged) {
+        updateStatsUI();
+    }
 
     log(uiLevel, msg);
 }

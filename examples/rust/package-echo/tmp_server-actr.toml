@@ -11,7 +11,7 @@ url = "http://localhost:8081/ais"
 
 [deployment]
 realm_id = 1001
-trust_mode = "production"
+
 
 [discovery]
 visible = true
@@ -32,3 +32,7 @@ turn_urls = ["turn:localhost:3478"]
 [[acl.rules]]
 permission = "allow"
 type = "acme:package-echo-client-guest:0.1.0"
+
+[[trust]]
+kind = "registry"
+endpoint = "http://localhost:8081/ais"

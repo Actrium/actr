@@ -3,7 +3,7 @@
 //! Responsible for WebRTC Connect's Offer/Answer protocol quotient
 
 use crate::lifecycle::CredentialState;
-use crate::transport::error::NetworkResult;
+use crate::transport::NetworkResult;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
@@ -13,11 +13,11 @@ use std::sync::Arc;
 use webrtc::util::vnet::net::Net;
 
 // Re-export types from actr-config
-pub use actr_config::{IceServer, IceTransportPolicy, WebRtcConfig};
+pub use actr_config::{IceTransportPolicy, WebRtcConfig};
 
 /// WebRTC negotiator
 #[derive(Clone)]
-pub struct WebRtcNegotiator {
+pub(crate) struct WebRtcNegotiator {
     /// Base WebRTC configuration (URLs + policy)
     config: WebRtcConfig,
     /// Latest credential state (updated on register/renew, contains TurnCredential)
@@ -296,7 +296,7 @@ impl WebRtcNegotiator {
         // Apply UDP port strategy
         if let Some((min, max)) = advanced.udp_ports {
             let ephemeral = EphemeralUDP::new(min, max).map_err(|e| {
-                crate::transport::error::NetworkError::Other(anyhow::anyhow!(
+                crate::transport::NetworkError::Other(anyhow::anyhow!(
                     "Failed to create EphemeralUDP: {}",
                     e
                 ))

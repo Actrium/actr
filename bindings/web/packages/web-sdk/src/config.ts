@@ -35,46 +35,47 @@ export interface SwRuntimeConfig {
   /** ACL allow-list of actor types */
   acl_allow_types: string[];
 
-  /** Whether this actor is a server (registers and waits) or client (discovers) */
-  is_server: boolean;
+  // ── Package loading (guest-bridge) ──
 
-  // ── Package loading (Web load_package_executor) ──
-
-  /** URL of the .actr package to load (e.g. "/packages/echo-server.actr").
-   *  The .actr package is a signed ZIP containing WASM binary, JS glue, and actor.sw.js.
-   *  This is the Web equivalent of Rust Hyper's load_package_executor. */
+  /** URL of the signed .actr workload package (e.g. "/packages/echo.actr"). */
   package_url?: string;
 
-  /** Name of the wasm_bindgen register function to call after init (e.g. "register_echo_service") */
-  register_fn?: string;
-
-  // ── Legacy: direct file loading (development fallback) ──
-
-  /** Filename or URL of the wasm-bindgen JS glue file (e.g. "echo_server.js").
-   *  Used when package_url is not set. */
-  package_js?: string;
-
-  /** Filename or URL of the WASM binary (e.g. "echo_server_bg.wasm").
-   *  Used when package_url is not set. */
-  package_wasm?: string;
-
-  // ── Guest Bridge: split runtime + guest loading ──
-
-  /** URL of the runtime WASM + JS glue (e.g. "/packages/echo_server_bg.wasm").
-   *  When set together with package_url, the guest bridge mode is activated:
-   *  - Runtime WASM is loaded from this URL (+ derived JS glue URL)
-   *  - The .actr package contains only the standard guest WASM (entry! FFI)
-   *  - This enables sharing guest WASMs between web and native platforms. */
+  /** URL of the SW host WASM (wasm-pack output, e.g. "/packages/actr_sw_host_bg.wasm").
+   *  Loaded independently of the workload: Hyper (runtime) and workload (guest) are
+   *  always separate artifacts. The SW derives the JS glue URL from this (`_bg.wasm` → `.js`). */
   runtime_wasm_url?: string;
 
   // ── Package verification (Web verify_package) ──
 
-  /** Base64-encoded Ed25519 MFR public key for package signature verification.
-   *  When provided, the Service Worker verifies the .actr package signature
-   *  and binary hash before loading — the Web equivalent of Rust Hyper's verify_package.
-   *  When omitted, verification is skipped (backward-compatible). */
-  mfr_pubkey?: string;
+  /** Trust anchors for verifying the .actr package signature. Array form
+   *  mirrors the runtime `[[trust]]` config in `actr.toml`.
+   *
+   *  The browser Service Worker currently honours only `kind = "static"`
+   *  anchors (using `pubkey_b64`); `kind = "registry"` anchors cause the SW
+   *  to skip verification with a warning, pending an async AIS lookup
+   *  implementation.
+   *
+   *  When the array is empty or missing, verification is skipped. */
+  trust?: TrustAnchor[];
 }
+
+/** Trust anchor config, matching `actr_config::TrustAnchor` in `actr_config`. */
+export type TrustAnchor =
+  | {
+      /** Pre-shared Ed25519 public key; accepts any manufacturer. */
+      kind: 'static';
+      /** Base64 (standard) of the 32-byte Ed25519 public key. */
+      pubkey_b64?: string;
+      /** Path to a JSON file with a `public_key` field (resolved by the host
+       *  before the config reaches the SW). */
+      pubkey_file?: string;
+    }
+  | {
+      /** Look up MFR public keys via AIS HTTP registry. Not yet implemented
+       *  in the browser SW. */
+      kind: 'registry';
+      endpoint: string;
+    };
 
 /**
  * Actor System configuration

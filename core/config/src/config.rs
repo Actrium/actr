@@ -76,9 +76,6 @@ pub struct RuntimeConfig {
     /// - `None`: use in-memory mode (`:memory:`)
     pub mailbox_path: Option<PathBuf>,
 
-    /// Service tags
-    pub tags: Vec<String>,
-
     /// Script commands
     pub scripts: HashMap<String, String>,
 
@@ -107,14 +104,45 @@ pub struct RuntimeConfig {
     /// Used for resolving relative paths and finding lock files
     pub config_dir: PathBuf,
 
-    /// Trust mode: "development" or "production"
-    pub trust_mode: String,
+    /// Trust anchors for verifying `.actr` package signatures.
+    ///
+    /// One entry means a single trust provider; multiple entries means an
+    /// automatic fallback chain (first match wins). Consumed by the CLI /
+    /// host layer to construct an `actr_hyper::TrustProvider`.
+    pub trust: Vec<TrustAnchor>,
 
     /// Path to the workload package (.actr file)
     pub package_path: Option<PathBuf>,
 
     /// Web server configuration for `actr run --web`
     pub web: Option<WebConfig>,
+}
+
+/// Trust anchor config — a single `[[trust]]` table in `actr.toml`.
+///
+/// Pure configuration data; the concrete `TrustProvider` instantiation
+/// (resolving `pubkey_file` to bytes, wiring up `StaticTrust` / `RegistryTrust`
+/// / `ChainTrust`) lives in the host crate so `actr-config` stays free of an
+/// `actr-hyper` dependency.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TrustAnchor {
+    /// Pre-shared Ed25519 public key. Accepts any manufacturer.
+    Static {
+        /// Path to a JSON file containing `public_key` (base64-encoded 32-byte key).
+        /// Resolved relative to the `actr.toml` directory during parsing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pubkey_file: Option<PathBuf>,
+        /// Inline base64 Ed25519 public key (32 bytes). Overrides
+        /// `pubkey_file` when both are present.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pubkey_b64: Option<String>,
+    },
+    /// Look up MFR public keys from an AIS HTTP endpoint.
+    Registry {
+        /// AIS HTTP endpoint, e.g. `"http://localhost:8081/ais"`.
+        endpoint: String,
+    },
 }
 
 /// Package info
@@ -319,17 +347,11 @@ pub struct WebConfig {
     /// Absolute path to the directory to serve static files from
     pub static_dir: PathBuf,
 
-    /// Whether this instance acts as a server (`true`) or client (`false`)
-    pub is_server: Option<bool>,
-
     /// URL path to the .actr package (served from static dir)
     pub package_url: Option<String>,
 
     /// URL path to the shared runtime WASM
     pub runtime_wasm_url: Option<String>,
-
-    /// MFR public key for package verification (Base64-encoded Ed25519)
-    pub mfr_pubkey: Option<String>,
 }
 
 // ============================================================================
@@ -366,71 +388,6 @@ impl ManifestConfig {
     pub fn list_scripts(&self) -> Vec<&str> {
         self.scripts.keys().map(|s| s.as_str()).collect()
     }
-
-    /// Calculate ServiceSpec from manifest
-    ///
-    /// Returns None if no proto files are exported
-    pub fn calculate_service_spec(&self) -> Option<actr_protocol::ServiceSpec> {
-        if self.exports.is_empty() {
-            return None;
-        }
-
-        let proto_files: Vec<actr_service_compat::ProtoFile> = self
-            .exports
-            .iter()
-            .map(|export| actr_service_compat::ProtoFile {
-                name: export
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown.proto")
-                    .to_string(),
-                content: export.content.clone(),
-                path: export.path.to_str().map(|s| s.to_string()),
-            })
-            .collect();
-
-        let fingerprint =
-            actr_service_compat::Fingerprint::calculate_service_semantic_fingerprint(&proto_files)
-                .ok()?;
-
-        let protobufs = self
-            .exports
-            .iter()
-            .map(|export| {
-                let file_fingerprint =
-                    actr_service_compat::Fingerprint::calculate_proto_semantic_fingerprint(
-                        &export.content,
-                    )
-                    .unwrap_or_else(|_| "error".to_string());
-
-                actr_protocol::service_spec::Protobuf {
-                    package: export
-                        .path
-                        .file_stem()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    content: export.content.clone(),
-                    fingerprint: file_fingerprint,
-                }
-            })
-            .collect();
-
-        let published_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs() as i64;
-
-        Some(actr_protocol::ServiceSpec {
-            name: self.package.name.clone(),
-            description: self.package.description.clone(),
-            fingerprint,
-            protobufs,
-            published_at: Some(published_at),
-            tags: self.tags.clone(),
-        })
-    }
 }
 
 // ============================================================================
@@ -454,14 +411,6 @@ impl RuntimeConfig {
     /// Get a script command
     pub fn get_script(&self, name: &str) -> Option<&str> {
         self.scripts.get(name).map(|s| s.as_str())
-    }
-
-    /// Calculate ServiceSpec from runtime config.
-    ///
-    /// Returns None — runtime config does not carry proto exports.
-    /// Use `ManifestConfig::calculate_service_spec()` instead.
-    pub fn calculate_service_spec(&self) -> Option<actr_protocol::ServiceSpec> {
-        None
     }
 }
 
@@ -620,7 +569,6 @@ mod tests {
             visible_in_discovery: true,
             acl: None,
             mailbox_path: None,
-            tags: vec![],
             scripts: HashMap::new(),
             webrtc: WebRtcConfig::default(),
             websocket_listen_port: None,
@@ -632,13 +580,12 @@ mod tests {
                 tracing_service_name: "test-service".to_string(),
             },
             config_dir: PathBuf::from("."),
-            trust_mode: "development".to_string(),
+            trust: vec![],
             package_path: None,
             web: None,
         };
 
         assert_eq!(config.actr_type().name, "test-service");
         assert!(config.cross_realm_dependencies().is_empty());
-        assert!(config.calculate_service_spec().is_none());
     }
 }

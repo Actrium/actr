@@ -28,7 +28,7 @@ impl ProjectInitializer for PythonInitializer {
         //   - server/protos/local/echo.proto (service definition)
         //   - client/protos/local/.gitkeep (empty directory placeholder)
         // We don't auto-run 'actr gen' here because it requires manifest.lock.toml
-        // Users should run 'actr install' first, then 'actr gen'
+        // Users should run 'actr deps install' first, then 'actr gen'
 
         Ok(())
     }
@@ -43,14 +43,14 @@ impl ProjectInitializer for PythonInitializer {
         info!(
             "  #First update manifest.toml with your signaling URL, TURN/STUN server, and realm ID"
         );
-        info!("  actr install  # Install remote protobuf dependencies from manifest.toml");
+        info!("  actr deps install  # Install remote protobuf dependencies from manifest.toml");
         info!("  actr gen -l python -i protos -o generated  # Generate code for server");
         info!("  python server.py --manifest-toml manifest.toml");
         info!("  cd ../client");
         info!(
             "  #First update manifest.toml with your signaling URL, TURN/STUN server, and realm ID"
         );
-        info!("  actr install  # Install remote protobuf dependencies from manifest.toml");
+        info!("  actr deps install  # Install remote protobuf dependencies from manifest.toml");
         info!("  actr gen -l python -i protos -o generated  # Generate code for client");
         info!("  python client.py --manifest-toml manifest.toml");
     }

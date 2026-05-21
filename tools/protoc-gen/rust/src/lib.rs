@@ -8,11 +8,13 @@
 //! - Workload wrapper types
 //! - Message trait implementations (for Context::call/tell)
 //! - PayloadType-aware client code
+//!
+//! The only external consumer of this library is the sibling binary
+//! `protoc-gen-actrframework`, which consumes the re-exported subset below.
+//! The `payload_type_extractor` module is an internal helper used by
+//! `modern_generator` and is kept crate-private.
 
-pub mod modern_generator;
-pub mod payload_type_extractor;
+pub(crate) mod modern_generator;
+pub(crate) mod payload_type_extractor;
 
 pub use modern_generator::{GeneratorRole, ModernGenerator, RemoteServiceInfo};
-pub use payload_type_extractor::{
-    PayloadType, extract_payload_type, extract_payload_type_or_default,
-};

@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
-use actr_runtime_sw::actr_protocol::ActrIdExt;
-use actr_runtime_sw::{RuntimeContext, WebContext};
+use actr_sw_host::{RuntimeContext, WebContext};
 use bytes::Bytes;
 use gloo_timers::future::TimeoutFuture;
 use serde::{Deserialize, Serialize};

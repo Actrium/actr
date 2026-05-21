@@ -1,116 +1,48 @@
 # Actor-RTC Web Documentation
 
-**Actor-RTC Web** is the browser implementation of the Actor-RTC framework. It builds on WebAssembly and Service Worker primitives to provide an Actor-model programming experience that matches the native runtime closely.
+Actor-RTC Web currently uses the Option U / wasm-bindgen browser path. User workloads are loaded from a signed `.actr` package plus a sibling `.wbg/` bundle (`guest.js` and `guest_bg.wasm`). The browser Service Worker entry is `actor.sw.js`, which installs the guest dispatch function through `register_guest_workload`.
 
----
+Component Model and jco documents are retained as historical design context only.
 
-## 📖 User Documentation
+## Current User Documentation
 
-These documents target developers building applications with Actor-RTC Web.
+- [Getting started](./getting-started.md): setup, current commands, example entry points, and React hooks.
+- [Troubleshooting](./troubleshooting.md): build, Service Worker, `.wbg/`, signaling, WebRTC, and storage checks.
+- [Error handling](./error-handling.md): how browser runtime errors should be categorized and reported.
+- [Requirements](./requirements.md): current goals, non-goals, usage modes, and platform constraints.
 
-### Getting Started
+## Current Examples
 
-- **[Getting Started Guide](./getting-started.md)** ⭐ recommended first
-  - Client mode for calling remote actors
-  - Runtime mode for running an Actor runtime in the browser
-  - React integration and end-to-end examples
+- [Echo example](../examples/echo/README.md): primary browser smoke path. Run with `bash examples/echo/start-mock.sh` from `bindings/web`.
+- [Data-stream peer concurrent example](../examples/data-stream-peer-concurrent/README.zh.md): browser-hosted service and peer scenario. Run with `bash examples/data-stream-peer-concurrent/start.sh` from `bindings/web`.
 
-### Troubleshooting
+## Current Build and Asset Commands
 
-- **[Troubleshooting Guide](./troubleshooting.md)**
-  - Common issues and fixes
-  - Debugging techniques
-  - Performance recommendations
-
----
-
-## 📋 Requirements and Planning
-
-Project requirements, goals, and planning documents:
-
-- **[Web Requirements](./requirements.md)** - full functional requirements and architecture notes
-
----
-
-## 🏗️ Architecture
-
-These documents target framework contributors and readers who want to understand the internal design.
-
-### Core Design
-
-See **[architecture/](./architecture/)** for the full architecture set:
-
-1. **[Architecture Overview](./architecture/overview.zh.md)** - dual-process model and core components
-2. **[Dual-Layer Architecture](./architecture/dual-layer.zh.md)** - State Path vs Fast Path
-3. **[API Layer Design](./architecture/api-layer.zh.md)** - Gate, Context, and ActrRef
-4. **[Technical Decisions](./architecture/decisions.zh.md)** - nine key TDRs
-5. **[Completion Status](./architecture/completion-status.zh.md)** - parity against native actr
-
----
-
-## 🚀 Quick Preview
-
-### Basic Usage
-
-```typescript
-import { createActor } from '@actr/web';
-
-// Create an actor
-const actor = await createActor({
-  signalingUrl: 'wss://signal.example.com',
-  realm: 'demo',
-});
-
-// Call a remote actor
-const response = await actor.call('echo-service', 'sendEcho', {
-  message: 'Hello, Actor-RTC!',
-});
+```bash
+cd bindings/web
+pnpm install
 ```
 
-### Runtime Mode (Advanced)
-
-Run the full Actor runtime inside the browser with a Service Worker plus DOM split-process architecture:
-
-```rust
-// Service Worker side
-use actr_runtime_sw::*;
-
-let manager = Arc::new(PeerTransport::new(...));
-let mailbox = Arc::new(IndexedDbMailbox::new().await?);
-let dispatcher = Arc::new(InboundPacketDispatcher::new(mailbox));
+```bash
+cd bindings/web
+bash crates/sw-host/build.sh
+bash scripts/sync-cli-assets.sh --build
 ```
 
-```rust
-// DOM side
-use actr_runtime_dom::*;
+## Architecture and Historical Notes
 
-let registry = Arc::new(StreamHandlerRegistry::new());
-let receiver = Arc::new(WebRtcDataChannelReceiver::new(registry));
-```
+Use these when you need implementation background. They are not the canonical user setup path.
 
----
+- [Architecture notes](./architecture/README.zh.md)
+- [Option U WIT compile web notes](./option-u-wit-compile-web.zh.md)
+- [2026-04 architecture change notes](./architecture-changes-2026-04.zh.md)
+- [Historical jco async-lift investigation](./t18-jco-async-lift-hang.zh.md)
+- [Tech debt notes](./tech-debt.zh.md)
 
-## 📊 Current Status
+## Source-of-Truth Pointers
 
-| Area | Completion | Notes |
-|------|------------|-------|
-| Core architecture | 85% | Transport, Message, and full transport stack |
-| Persistence and scheduling | 95% | Mailbox complete, Scheduler implemented |
-| Fast Path support | 50% | Framework complete, integration still in progress |
-| Overall | **78%** | Close to MVP |
-
-See [Completion Status](./architecture/completion-status.zh.md) for details.
-
----
-
-## 🔗 Related Resources
-
-- **Examples**: `../examples/`
-- **Crates**: `../crates/`
-- **Native prototype**: `/d/actor-rtc/actr/`
-- **GitHub**: https://github.com/actor-rtc/actor-rtc
-
----
-
-**Maintainer**: Actor-RTC Team
-**Last updated**: 2026-02-28
+- `packages/web-sdk/src/actor.sw.js`: Service Worker entry used by the current wasm-bindgen browser path.
+- `crates/sw-host/src/guest_bridge.rs`: `register_guest_workload` and guest dispatch bridge.
+- `crates/sw-host/build.sh`: builds the Service Worker host wasm-bindgen artifacts.
+- `scripts/sync-cli-assets.sh`: syncs canonical web assets into `cli/assets/web-runtime/`.
+- `packages/web-react/src/index.ts`: public React hook exports.

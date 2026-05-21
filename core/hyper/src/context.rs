@@ -10,8 +10,8 @@ use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
 use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, ActrType, ActrTypeExt, PayloadType,
-    RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
+    AIdCredential, ActorResult, ActrError, ActrId, ActrType, PayloadType, RouteCandidatesRequest,
+    RpcEnvelope, RpcRequest, route_candidates_request,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -42,7 +42,7 @@ pub struct RuntimeContext {
     media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack callback registry
     signaling_client: Arc<dyn SignalingClient>,
     credential: AIdCredential,
-    actr_lock: Option<LockFile>, // packaged manifest.lock.toml for fingerprint lookups
+    actr_lock: Option<Arc<LockFile>>, // packaged manifest.lock.toml for fingerprint lookups
 }
 
 impl RuntimeContext {
@@ -59,9 +59,9 @@ impl RuntimeContext {
     /// - `media_frame_registry`: callback registry for `MediaTrack`
     /// - `signaling_client`: signaling client used for route discovery
     /// - `credential`: credentials used when calling signaling interfaces
-    /// - `actr_lock`: dependency config from the packaged `manifest.lock.toml` used for fingerprint lookup
+    /// - `actr_lock`: shared packaged `manifest.lock.toml` used for fingerprint lookup (wrapped in `Arc` so context clones stay cheap)
     #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
-    pub fn new(
+    pub(crate) fn new(
         self_id: ActrId,
         caller_id: Option<ActrId>,
         request_id: String,
@@ -71,7 +71,7 @@ impl RuntimeContext {
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
         credential: AIdCredential,
-        actr_lock: Option<LockFile>,
+        actr_lock: Option<Arc<LockFile>>,
     ) -> Self {
         Self {
             self_id,
@@ -303,6 +303,82 @@ struct InternalDiscoveryResult {
     candidates: Vec<ActrId>,
 }
 
+/// Template used to materialize `RuntimeContext` instances for lifecycle
+/// bootstrap / observation paths (on_start / on_stop, signaling hooks, WebRTC
+/// hooks, ActrRef::app_context, ...).
+///
+/// Unlike the per-request dispatch path, which constructs `RuntimeContext`
+/// directly from `Inner`, this builder is a **detachable snapshot** of the
+/// handles needed to build a context. It is cloned into long-lived hook
+/// closures and into `ActrRefShared` so those paths don't need to retain a
+/// reference back to `Inner`.
+///
+/// # Fields
+///
+/// Mirrors `RuntimeContext`'s non-per-request state. `outproc_gate` is
+/// `Option` because hook builders can be captured *before* WebRTC
+/// initialization finishes; such snapshots will simply emit contexts with
+/// `outproc_gate = None`, matching the pre-existing semantics.
+#[derive(Clone)]
+pub(crate) struct BootstrapContextBuilder {
+    inproc_gate: Gate,
+    outproc_gate: Option<Gate>,
+    data_stream_registry: Arc<DataStreamRegistry>,
+    media_frame_registry: Arc<MediaFrameRegistry>,
+    signaling_client: Arc<dyn SignalingClient>,
+    actr_lock: Option<Arc<LockFile>>,
+}
+
+impl BootstrapContextBuilder {
+    /// Assemble a new builder from the runtime handles. All parameters are
+    /// snapshotted by clone; later mutations on the origin (e.g. the node's
+    /// own `actr_lock`) are intentionally not observed — callers that need
+    /// a fresh snapshot must re-build.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        inproc_gate: Gate,
+        outproc_gate: Option<Gate>,
+        data_stream_registry: Arc<DataStreamRegistry>,
+        media_frame_registry: Arc<MediaFrameRegistry>,
+        signaling_client: Arc<dyn SignalingClient>,
+        actr_lock: Option<Arc<LockFile>>,
+    ) -> Self {
+        Self {
+            inproc_gate,
+            outproc_gate,
+            data_stream_registry,
+            media_frame_registry,
+            signaling_client,
+            actr_lock,
+        }
+    }
+
+    /// Materialize a bootstrap `RuntimeContext` for lifecycle hooks.
+    ///
+    /// The produced context has no caller (`caller_id = None`) and a freshly
+    /// generated `request_id`; it is intended for on_start / on_stop /
+    /// transport-event observation where no inbound envelope drives the
+    /// request identity.
+    pub(crate) fn build_bootstrap(
+        &self,
+        self_id: &ActrId,
+        credential: &AIdCredential,
+    ) -> RuntimeContext {
+        RuntimeContext::new(
+            self_id.clone(),
+            None,
+            uuid::Uuid::new_v4().to_string(),
+            self.inproc_gate.clone(),
+            self.outproc_gate.clone(),
+            self.data_stream_registry.clone(),
+            self.media_frame_registry.clone(),
+            self.signaling_client.clone(),
+            credential.clone(),
+            self.actr_lock.clone(),
+        )
+    }
+}
+
 #[async_trait]
 impl Context for RuntimeContext {
     // ========== Data Access Methods ==========
@@ -501,13 +577,13 @@ impl Context for RuntimeContext {
                         severity = 10,
                         error_category = "dependency_missing",
                         "❌ DEPENDENCY NOT FOUND: Service '{}' is not declared in manifest.lock.toml.\n\
-                         Please run 'actr install' to generate the lock file with all dependencies.",
+                         Please run 'actr deps install' to generate the lock file with all dependencies.",
                         service_name
                     );
                     return Err(ActrError::DependencyNotFound {
                         service_name: service_name.clone(),
                         message: format!(
-                            "Dependency '{}' not found in manifest.lock.toml. Run 'actr install' to resolve dependencies.",
+                            "Dependency '{}' not found in manifest.lock.toml. Run 'actr deps install' to resolve dependencies.",
                             service_name
                         ),
                     });
@@ -544,46 +620,25 @@ impl Context for RuntimeContext {
         })
     }
 
-    #[cfg_attr(
-        feature = "opentelemetry",
-        tracing::instrument(
-            skip_all,
-            name = "RuntimeContext.call_raw",
-            fields(actr_id = %self.self_id)
-        )
-    )]
     async fn call_raw(
         &self,
         target: &ActrId,
         route_key: &str,
         payload: Bytes,
     ) -> ActorResult<Bytes> {
-        // 1. Construct RpcEnvelope with raw payload
-        #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-        let mut envelope = RpcEnvelope {
-            route_key: route_key.to_string(),
-            payload: Some(payload),
-            error: None,
-            traceparent: None,
-            tracestate: None,
-            request_id: uuid::Uuid::new_v4().to_string(),
-            metadata: vec![],
-            timeout_ms: 30000, // Default 30 second timeout
-        };
-
-        // Inject tracing context from current span
-        #[cfg(feature = "opentelemetry")]
-        inject_span_context_to_rpc(&tracing::Span::current(), &mut envelope);
-
-        // 2. Select outproc gate (raw calls are always remote)
-        let gate = self.outproc_gate.as_ref().ok_or_else(|| {
-            ActrError::Internal(
-                "PeerGate not initialized yet (WebRTC setup in progress)".to_string(),
-            )
-        })?;
-
-        // 3. Send request and return raw response bytes
-        gate.send_request(target, envelope).await
+        // Guest-facing trait entry: remote raw RPC with reliable lane and a
+        // 30 s default timeout. Delegate to the inherent `call_raw` so both
+        // entry points share one RpcEnvelope construction / gate-selection
+        // path and stay in sync.
+        RuntimeContext::call_raw(
+            self,
+            &Dest::Actor(target.clone()),
+            route_key.to_string(),
+            PayloadType::RpcReliable,
+            payload,
+            30_000,
+        )
+        .await
     }
 
     // ========== Fast Path: MediaTrack Methods ==========

@@ -1,0 +1,80 @@
+package actr:spike-async@0.1.0;
+
+// Design note on WIT async vs wit-bindgen async
+// ===============================================
+// WIT has two orthogonal async-ish concepts:
+//
+// 1. `async func` in WIT — Component-Model-level async. Semantically declares
+//    that the function may be in flight concurrently with OTHER calls on the
+//    SAME component instance (Component Model Concurrency proposal). wasmtime
+//    43 generates Accessor-based bindings for these — no `&mut self` on host
+//    traits, all static methods that take an Accessor<T, Self> to reach the
+//    Store. This is a major shape change and currently marked "very
+//    incomplete" in wasmtime config docs.
+//
+// 2. Plain `func` in WIT + `async: true` in bindgen macros — Rust-level async
+//    ergonomics WITHOUT concurrent-call semantics. The function runs one at a
+//    time per instance; async is purely so the host trait method returns a
+//    Future (letting the host do `.await` of real I/O while the guest waits).
+//    This is the pattern that maps 1:1 onto actr's existing dispatch model:
+//    "one hook call at a time per actor, but the host import may do real I/O
+//    underneath that hook."
+//
+// For actr, (2) is the match: each actor Store dispatches one hook at a time
+// anyway (single-threaded actor guarantee). We don't need Component Model
+// concurrent-call semantics; we need the existing asyncify/cooperative-suspend
+// mechanism replaced by a proper `.await` pipeline.
+//
+// So: this spike declares WIT interfaces as plain `func` and relies on the
+// bindgen macros' `async: true` / `default: async` flags to produce async
+// bindings. A second spike (future work) can try true WIT `async func` if
+// actr ever needs in-instance concurrency.
+
+interface types {
+    record actr-id {
+        serial-number: u64,
+    }
+
+    variant spike-error {
+        internal(string),
+        timeout(string),
+        bad-payload(string),
+    }
+
+    record rpc-envelope {
+        route-key: string,
+        payload: list<u8>,
+        request-id: string,
+    }
+}
+
+// Host-imported API. Plain WIT `func`; async surface is layered in by
+// bindgen's `async: true` flag on the guest and `imports: { default: async }`
+// on the host.
+interface host {
+    use types.{actr-id, spike-error};
+
+    // Simulates actr's ctx.call_raw() - real network RPC. Host-side impl
+    // will await a tokio::time::sleep.
+    call-raw: func(
+        target: actr-id,
+        route-key: string,
+        payload: list<u8>,
+    ) -> result<list<u8>, spike-error>;
+
+    // Sync log import; host-side is a plain println!.
+    log-message: func(level: string, msg: string);
+}
+
+// Guest-exported workload hooks. Plain WIT `func`, async via bindgen.
+interface workload {
+    use types.{rpc-envelope, spike-error};
+
+    on-start: func() -> result<_, spike-error>;
+    dispatch: func(env: rpc-envelope) -> result<list<u8>, spike-error>;
+}
+
+world spike-guest-async {
+    import host;
+    export workload;
+}

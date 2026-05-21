@@ -1,0 +1,65 @@
+#!/bin/bash
+set -e
+
+# Clear host-toolchain RUSTFLAGS so host-linker flags (e.g. `-fuse-ld=mold`
+# from a global ~/.cargo/config.toml `[build] rustflags`) do not leak into
+# the wasm32 target build. rust-lld does not recognize those linker args
+# and errors out.
+export RUSTFLAGS=""
+export CARGO_ENCODED_RUSTFLAGS=""
+
+echo "Building Service Worker Host..."
+
+# cd to the sw-host crate directory so wasm-pack reads the correct Cargo.toml.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Ensure a writable temp directory for wasm-bindgen install.
+TMPDIR="${TMPDIR:-$(pwd)/.tmp}"
+export TMPDIR
+mkdir -p "$TMPDIR"
+
+# Clean old builds
+rm -rf ../../dist/sw
+
+# Build WASM (target: no-modules, suitable for Service Workers)
+wasm-pack build \
+  --target no-modules \
+  --out-dir ../../dist/sw \
+  --out-name actr_sw_host \
+  --release
+
+# Generate npm package metadata
+cat > ../../dist/sw/package.json << EOF
+{
+  "name": "@actor-rtc/sw-host",
+  "version": "0.1.0",
+  "description": "Actor-RTC Service Worker Host (Component Model bridge + runtime)",
+  "main": "actr_sw_host.js",
+  "types": "actr_sw_host.d.ts",
+  "files": [
+    "actr_sw_host.wasm",
+    "actr_sw_host.js",
+    "actr_sw_host.d.ts"
+  ]
+}
+EOF
+
+echo "✓ Service Worker Host built successfully"
+echo "  Output: dist/sw/"
+ls -lh ../../dist/sw/
+
+# Sync the freshly built wasm + JS glue into cli/assets/web-runtime/, where
+# the actr CLI embeds them via include_bytes!. Without this step, edits to
+# sw-host source silently drift from what `actr run --web` serves — see
+# bindings/web/docs/tech-debt.zh.md TD-002 for context.
+SYNC_SCRIPT="$SCRIPT_DIR/../../scripts/sync-cli-assets.sh"
+if [ "${ACTR_SKIP_CLI_ASSET_SYNC:-0}" = "1" ]; then
+  echo
+  echo "(skip sync: ACTR_SKIP_CLI_ASSET_SYNC=1)"
+elif [ -x "$SYNC_SCRIPT" ]; then
+  echo
+  bash "$SYNC_SCRIPT"
+else
+  echo "(skip sync: $SYNC_SCRIPT not executable)"
+fi

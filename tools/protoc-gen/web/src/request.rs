@@ -119,8 +119,15 @@ pub struct WebCodegenResponse {
 }
 
 impl WebCodegenRequest {
-    /// Determine if this is a server project (has local services, no remote, no dependencies)
-    pub fn is_server(&self) -> bool {
+    /// Whether this project exports services only and does not call out to
+    /// any remote actor. Used by the WASM scaffold generator to decide
+    /// whether to emit a service handler (provider) or a forwarding stub.
+    ///
+    /// Note: this is purely a codegen topology signal derived from the
+    /// proto model — it does NOT imply a passive connection role. Any
+    /// actor can be called by any other actor; connection initiator /
+    /// acceptor roles are negotiated per-peer at runtime.
+    pub fn is_service_provider_only(&self) -> bool {
         !self.local_services.is_empty()
             && self.remote_services.is_empty()
             && self.dependencies.is_empty()
@@ -146,9 +153,14 @@ impl WebCodegenRequest {
         types
     }
 
-    /// Get the target actr type for peer discovery (manufacturer:name:version)
+    /// Get the target actr type for peer discovery (manufacturer:name:version).
+    ///
+    /// For an actor that imports a remote service, the target is the
+    /// declared dependency. For an actor that only exports services, the
+    /// target is the first ACL-allowed type — useful for RPCs initiated
+    /// from that actor side when it needs to reach a caller by type.
     pub fn target_actr_type(&self) -> String {
-        if self.is_server() {
+        if self.is_service_provider_only() {
             self.get_acl_allow_types()
                 .first()
                 .cloned()

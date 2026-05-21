@@ -1,9 +1,10 @@
 //! Start command - re-launch a stopped detached runtime instance
 
-use crate::commands::Command;
 use crate::commands::run::RunCommand;
 use crate::commands::runtime_state::{RuntimeStateStore, RuntimeStatus, resolve_hyper_dir};
-use crate::error::{ActrCliError, Result};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use crate::error::ActrCliError;
+use anyhow::Result;
 use async_trait::async_trait;
 use clap::Args;
 use std::path::PathBuf;
@@ -25,7 +26,7 @@ pub struct StartCommand {
 
 #[async_trait]
 impl Command for StartCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, ctx: &CommandContext) -> Result<CommandResult> {
         let hyper_dir = resolve_hyper_dir(self.config.as_deref(), self.hyper_dir.as_deref())?;
         let store = RuntimeStateStore::new(hyper_dir);
         let entry = store.resolve_wid_prefix(&self.wid).await?;
@@ -35,7 +36,8 @@ impl Command for StartCommand {
                 "Runtime {} is already running (pid {}). Use `restart` to restart it.",
                 entry.wid_short(),
                 entry.record.pid
-            )));
+            ))
+            .into());
         }
 
         let config_path = self
@@ -52,7 +54,19 @@ impl Command for StartCommand {
             web: false,
             port: None,
         }
-        .execute()
+        .execute(ctx)
         .await
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "start"
+    }
+
+    fn description(&self) -> &str {
+        "Start a stopped detached runtime instance"
     }
 }

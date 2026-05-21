@@ -1,7 +1,7 @@
 use crate::commands::SupportedLanguage;
 use crate::commands::codegen::proto_model::{MethodModel, ProtoModel, ServiceModel};
 use crate::error::{ActrCliError, Result};
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 

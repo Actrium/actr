@@ -1,5 +1,7 @@
 # Phase 3 零拷贝优化技术分析
 
+> **历史设计快照 / 非当前实现指南**（2026-01-08）：本文是零拷贝优化实施前后的方案分析材料，保留用于理解当时的设计取舍。当前 helper 与传输路径事实请以 `bindings/web/crates/common/src/zero_copy.rs`、`bindings/web/crates/sw-host/src/transport/lane.rs`、`bindings/web/crates/dom-bridge/src/transport/lane.rs` 和 postmessage 相关实现为准。文中的 Phase 规划、性能估算和 feature gate 例子不是当前 roadmap。
+
 ## 概述
 
 本文档详细分析 Phase 3 零拷贝优化的技术可行性、实施策略和风险评估。
@@ -275,12 +277,12 @@ pub async fn rust_handle_media_frame(frame: JsValue) {
 5. 性能基准测试对比
 
 **影响范围**：
-- `runtime-sw/src/transport/postmessage.rs`
-- `runtime-sw/src/transport/websocket.rs`
-- `runtime-dom/src/transport/postmessage.rs`
-- `runtime-dom/src/transport/webrtc_datachannel.rs`
-- `runtime-dom/src/transport/lane.rs`
-- `runtime-sw/src/transport/lane.rs`
+- `sw-host/src/transport/postmessage.rs`
+- `sw-host/src/transport/websocket.rs`
+- `dom-bridge/src/transport/postmessage.rs`
+- `dom-bridge/src/transport/webrtc_datachannel.rs`
+- `dom-bridge/src/transport/lane.rs`
+- `sw-host/src/transport/lane.rs`
 
 **风险评估**：
 - 风险等级：**低**
@@ -303,8 +305,8 @@ pub async fn rust_handle_media_frame(frame: JsValue) {
 4. 编写测试验证转移语义
 
 **影响范围**：
-- `runtime-sw/src/transport/lane.rs`
-- `runtime-dom/src/transport/lane.rs`
+- `sw-host/src/transport/lane.rs`
+- `dom-bridge/src/transport/lane.rs`
 
 **风险评估**：
 - 风险等级：**低-中**
@@ -358,7 +360,7 @@ pub async fn rust_handle_media_frame(frame: JsValue) {
 4. 添加浏览器特性检测
 
 **影响范围**：
-- `runtime-dom/src/transport/webrtc_mediatrack.rs`
+- `dom-bridge/src/transport/webrtc_mediatrack.rs`
 - 可能需要新增 JS glue 代码
 
 **风险评估**：

@@ -20,15 +20,15 @@ pub struct BreakingChange {
     pub message: String,
 }
 
-/// Compatibility analysis with detailed breakdown
+/// Compatibility analysis with detailed breakdown (internal helper).
 #[derive(Debug)]
-pub struct CompatibilityAnalysis {
+pub(crate) struct CompatibilityAnalysis {
     /// Overall compatibility assessment from proto-sign
-    pub compatibility: proto_fingerprint::Compatibility,
+    pub(crate) compatibility: proto_fingerprint::Compatibility,
     /// All changes detected (breaking and non-breaking)
-    pub changes: Vec<ProtocolChange>,
+    pub(crate) changes: Vec<ProtocolChange>,
     /// Only breaking changes
-    pub breaking_changes: Vec<BreakingChange>,
+    pub(crate) breaking_changes: Vec<BreakingChange>,
 }
 
 /// Main service compatibility analyzer
@@ -216,11 +216,13 @@ impl ServiceCompatibility {
         }
     }
 
-    /// Check whether breaking changes exist (for quick CI/CD decisions)
+    /// Check whether breaking changes exist (for quick CI/CD decisions).
     ///
-    /// Note: This method performs a full compatibility analysis internally. If you need
-    /// detailed information, call `analyze_compatibility` directly and inspect `result.level`.
-    pub fn is_breaking(
+    /// Note: performs a full compatibility analysis internally. For detailed
+    /// information, call `analyze_compatibility` directly and inspect
+    /// `result.level`.
+    #[cfg(test)]
+    pub(crate) fn is_breaking(
         base_service: &ServiceSpec,
         candidate_service: &ServiceSpec,
     ) -> Result<bool> {
@@ -228,11 +230,13 @@ impl ServiceCompatibility {
         Ok(matches!(result.level, CompatibilityLevel::BreakingChanges))
     }
 
-    /// Get the list of breaking changes (for generating upgrade guides, error reports, etc.)
+    /// Get the list of breaking changes (for upgrade guides, error reports, etc.).
     ///
-    /// Note: This method performs a full compatibility analysis internally. If you need
-    /// other information, call `analyze_compatibility` directly and use `result.breaking_changes`.
-    pub fn breaking_changes(
+    /// Note: performs a full compatibility analysis internally. For other
+    /// details, call `analyze_compatibility` directly and use
+    /// `result.breaking_changes`.
+    #[cfg(test)]
+    pub(crate) fn breaking_changes(
         base_service: &ServiceSpec,
         candidate_service: &ServiceSpec,
     ) -> Result<Vec<BreakingChange>> {

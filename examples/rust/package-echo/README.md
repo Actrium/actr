@@ -7,7 +7,7 @@ End-to-end test for the Actr package-driven execution flow, demonstrating how to
 This example demonstrates:
 
 1. **Build**: Compile echo-actr package (WASM or native cdylib) and package it as a signed `.actr` archive
-2. **Sign**: Create signed `.actr` archive using `actr build` (cdylib) or `actr pkg build` (wasm)
+2. **Sign**: Create signed `.actr` archive using `actr build` (cdylib) or `actr build` (wasm)
 3. **Verify**: Validate package signature with `actr pkg verify`
 4. **Publish**: Register package with MFR (Manufacturer Registry) via `actr pkg publish`
 5. **Run**: Host server loads the package and exposes the echo service
@@ -67,10 +67,11 @@ Windows users must use **WSL 2** (Windows Subsystem for Linux 2):
 
 ### All Platforms
 
-1. **Rust toolchain** (1.70+)
+1. **Rust toolchain** with `wasm32-wasip2` support
    ```bash
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   rustup target add wasm32-unknown-unknown
+   rustup target add wasm32-wasip2
+   cargo install wasm-component-ld --version 0.5.22 --locked
    ```
 
 2. **jq** (JSON processor)
@@ -78,12 +79,7 @@ Windows users must use **WSL 2** (Windows Subsystem for Linux 2):
    - Linux: Auto-installed via apt/yum/dnf if missing
    - Manual install: https://jqlang.github.io/jq/download/
 
-3. **wasm-opt** (WASM optimizer, required for `--backend wasm` only)
-   ```bash
-   cargo install wasm-opt
-   ```
-
-4. **System tools**
+3. **System tools**
    - `sqlite3` - Database operations
    - `lsof` - Port checking
    - `curl` - HTTP requests
@@ -163,7 +159,8 @@ sudo apt-get install -y \
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
-rustup target add wasm32-unknown-unknown
+rustup target add wasm32-wasip2
+cargo install wasm-component-ld --version 0.5.22 --locked
 ```
 
 **Step 3: Clone Project to WSL Filesystem**
@@ -200,7 +197,7 @@ cd examples/rust/package-echo
 # Send custom message
 ./start.sh "Hello World"
 
-# Use native cdylib backend (skips wasm-opt, uses actr build)
+# Use native cdylib backend
 ./start.sh --backend cdylib
 
 # cdylib backend with custom message
@@ -219,9 +216,7 @@ cd examples/rust/package-echo
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ✅ jq found: jq-1.8.1
 📦 Step 0: Building echo-actr (wasm)...
-✅ WASM compiled: 2.1M
-✅ wasm-opt done: 1.8M
-📦 Step 0.5: Packing signed .actr package...
+📦 Step 0.5: Building signed Component .actr package via actr build...
 ✅ .actr package built: 1.8M
 ✅ Package signature verified
 ...
@@ -240,16 +235,15 @@ The `start.sh` script performs a complete end-to-end test:
 Two backends are supported via the `--backend` flag:
 
 **wasm (default)**
-- Compiles `echo-actr` to WASM (`wasm32-unknown-unknown`)
-- Optimizes with `wasm-opt --asyncify`
-- Packages with `actr pkg build`
+- Builds `echo-actr` as a WASM Component (`wasm32-wasip2`)
+- Links with `wasm-component-ld` through `actr build`
 
 **cdylib**
 - Compiles `echo-actr` as a native shared library using `manifest-cdylib.toml`
-- Packages with `actr build` (no wasm-opt step)
+- Packages with `actr build`
 
 ### Step 0.5: Sign and Verify Package
-- Creates signed `.actr` archive using `actr pkg build`
+- Creates signed `.actr` archive using `actr build`
 - Verifies signature with `actr pkg verify`
 - Builds client-guest cdylib package
 

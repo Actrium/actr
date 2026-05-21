@@ -5,7 +5,7 @@ use crate::error::{ActrCliError, Result};
 use crate::plugin_config::{load_protoc_plugin_config, version_is_at_least};
 use crate::utils::command_exists;
 use actr_config::LockFile;
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use async_trait::async_trait;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -295,7 +295,7 @@ impl LanguageGenerator for TypeScriptGenerator {
             "1. 📖 Review generated files in {}",
             context.output.display()
         );
-        println!("2. 📦 Ensure `actr install` has been executed in project root");
+        println!("2. 📦 Ensure `actr deps install` has been executed in project root");
         println!("3. ▶️  Run your app with `npm run dev`");
     }
 }
@@ -308,7 +308,7 @@ impl TypeScriptGenerator {
         for service in catalog
             .local_services
             .into_iter()
-            .chain(catalog.remote_services.into_iter())
+            .chain(catalog.remote_services)
         {
             services_by_file
                 .entry(normalize_proto_lookup_key(&service.proto_file))
@@ -1264,7 +1264,7 @@ impl TypeScriptGenerator {
         let lock_path = config_dir.join("manifest.lock.toml");
         if !lock_path.exists() {
             return Err(ActrCliError::config_error(format!(
-                "manifest.lock.toml not found at {}. Please run `actr install` first.",
+                "manifest.lock.toml not found at {}. Please run `actr deps install` first.",
                 lock_path.display()
             )));
         }
@@ -1286,7 +1286,7 @@ impl TypeScriptGenerator {
             let actr_type = lock_mapping.get(&lock_key).ok_or_else(|| {
                 ActrCliError::config_error(format!(
                     "Remote proto '{}' missing in manifest.lock.toml.\n\
-                     Please run `actr install` and retry.",
+                     Please run `actr deps install` and retry.",
                     lock_key
                 ))
             })?;

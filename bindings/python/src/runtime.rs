@@ -1,59 +1,87 @@
-use actr_config::{ConfigParser, RuntimeConfig};
-use actr_framework::{Bytes, Context};
+use actr_config::ConfigParser;
+use actr_framework::{Bytes, Context as RtContext, MessageDispatcher, Workload as RtWorkload};
 use actr_hyper::context::RuntimeContext;
-use actr_hyper::{
-    ActrNode as RuntimeActrNode, ActrRef, Hyper, HyperConfig, TrustMode,
-};
-use actr_protocol::{ActrError, PayloadType as RpPayloadType};
+use actr_hyper::{ActrRef as RtActrRef, Node, Registered};
+use actr_protocol::{ActorResult, ActrError, PayloadType as RpPayloadType, RpcEnvelope};
+use async_trait::async_trait;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use crate::errors::map_protocol_error;
 use crate::observability::ensure_observability_initialized;
-use crate::types::{DataStreamPy, DestPy, PayloadType};
-use crate::{ActrIdPy, ActrTypePy};
+use crate::types::{DataStream, Dest, PayloadType};
+use crate::{ActrId, ActrType};
 
-type WrappedNode = RuntimeActrNode;
-type WrappedRef = ActrRef;
+type WrappedNode = Node<Registered>;
+type WrappedRef = RtActrRef;
 
-fn load_runtime_config(manifest_path: &str) -> Result<RuntimeConfig, actr_config::ConfigError> {
-    let manifest = ConfigParser::from_manifest_file(manifest_path)?;
-    let runtime_path = manifest.config_dir.join("actr.toml");
+struct PythonBindingWorkload;
 
-    ConfigParser::from_runtime_file(runtime_path, manifest.package, manifest.tags)
+#[async_trait]
+impl RtWorkload for PythonBindingWorkload {
+    type Dispatcher = PythonBindingDispatcher;
+}
+
+struct PythonBindingDispatcher;
+
+#[async_trait]
+impl MessageDispatcher for PythonBindingDispatcher {
+    type Workload = PythonBindingWorkload;
+
+    async fn dispatch<C: RtContext>(
+        _workload: &Self::Workload,
+        _envelope: RpcEnvelope,
+        _ctx: &C,
+    ) -> ActorResult<Bytes> {
+        Err(ActrError::NotImplemented(
+            "python bindings do not expose inbound local RPC dispatch".to_string(),
+        ))
+    }
 }
 
 #[pyclass(name = "ActrNode")]
-pub struct ActrNodePy {
+pub struct ActrNode {
     pub(crate) inner: Option<WrappedNode>,
 }
 
 #[pymethods]
-impl ActrNodePy {
+impl ActrNode {
     #[staticmethod]
     fn from_toml<'py>(py: Python<'py>, path: String) -> PyResult<Bound<'py, PyAny>> {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let config = load_runtime_config(&path)
+            // Accept the manifest.toml path (historical contract), resolve
+            // the sibling actr.toml, and hand off to Node::from_config_file
+            // for config + trust + Hyper construction. Python bindings link
+            // a minimal static-lib workload here; this surface exposes
+            // discovery and outbound calls, not Python-defined service hosting.
+            let manifest = ConfigParser::from_manifest_file(&path)
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            ensure_observability_initialized(Some(config.observability.clone()));
-            let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
-                .map_err(|e| PyValueError::new_err(e.to_string()))?;
-            let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
-                TrustMode::Development {
-                    self_signed_pubkey: vec![0u8; 32],
-                },
-            ))
+            let runtime_path = manifest.config_dir.join("actr.toml");
+
+            let init = Node::from_config_file(&runtime_path)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-            let node = hyper
-                .attach_package(
-                    &actr_hyper::WorkloadPackage::new(vec![]),
-                    config,
-                )
+            ensure_observability_initialized(Some(init.runtime_config().observability.clone()));
+
+            let attached = init
+                .link(PythonBindingWorkload)
                 .await
-                .map_err(|e| PyRuntimeError::new_err(format!("attach_package failed: {e}")))?;
-            Python::attach(|py| Py::new(py, ActrNodePy { inner: Some(node) }).map(Py::into_any))
+                .map_err(|e| PyRuntimeError::new_err(format!("link failed: {e}")))?;
+            let ais_endpoint = attached.ais_endpoint().to_string();
+            let registered = attached
+                .register(&ais_endpoint)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(format!("AIS register failed: {e}")))?;
+            Python::attach(|py| {
+                Py::new(
+                    py,
+                    ActrNode {
+                        inner: Some(registered),
+                    },
+                )
+                .map(Py::into_any)
+            })
         })
     }
 
@@ -67,25 +95,7 @@ impl ActrNodePy {
             Python::attach(|py| {
                 Py::new(
                     py,
-                    ActrRefPy {
-                        inner: Some(actr_ref),
-                    },
-                )
-                .map(Py::into_any)
-            })
-        })
-    }
-
-    fn try_start<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let node = self.inner.take().ok_or_else(|| {
-            PyRuntimeError::new_err("ActrNode already consumed (try_start called twice)")
-        })?;
-        pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let actr_ref = node.start().await.map_err(map_protocol_error)?;
-            Python::attach(|py| {
-                Py::new(
-                    py,
-                    ActrRefPy {
+                    ActrRef {
                         inner: Some(actr_ref),
                     },
                 )
@@ -96,25 +106,25 @@ impl ActrNodePy {
 }
 
 #[pyclass(name = "ActrRef")]
-pub struct ActrRefPy {
+pub struct ActrRef {
     pub(crate) inner: Option<WrappedRef>,
 }
 
 #[pymethods]
-impl ActrRefPy {
-    fn actor_id(&self) -> PyResult<ActrIdPy> {
+impl ActrRef {
+    fn actor_id(&self) -> PyResult<ActrId> {
         let inner = self
             .inner
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("ActrRef has been consumed"))?;
-        Ok(ActrIdPy::from_rust(inner.actor_id().clone()))
+        Ok(ActrId::from_rust(inner.actor_id().clone()))
     }
 
     #[pyo3(signature = (actr_type, count=1))]
     fn discover<'py>(
         &self,
         py: Python<'py>,
-        actr_type: ActrTypePy,
+        actr_type: ActrType,
         count: usize,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self
@@ -131,7 +141,7 @@ impl ActrRefPy {
                 .map_err(map_protocol_error)?;
             Python::attach(|py| {
                 ids.into_iter()
-                    .map(ActrIdPy::from_rust)
+                    .map(ActrId::from_rust)
                     .map(|id| Py::new(py, id))
                     .collect::<PyResult<Vec<_>>>()
             })
@@ -180,7 +190,7 @@ impl ActrRefPy {
     fn call<'py>(
         &self,
         py: Python<'py>,
-        target: &DestPy,
+        target: &Dest,
         route_key: String,
         request: &[u8],
         timeout_ms: i64,
@@ -216,7 +226,7 @@ impl ActrRefPy {
     fn tell<'py>(
         &self,
         py: Python<'py>,
-        target: &DestPy,
+        target: &Dest,
         route_key: String,
         message: &[u8],
         payload_type: PayloadType,
@@ -231,28 +241,33 @@ impl ActrRefPy {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let ctx = inner.app_context().await;
-            ctx.tell_raw(&target_dest, route_key, payload_type.to_rust(), message_bytes)
-                .await
-                .map_err(map_protocol_error)?;
+            ctx.tell_raw(
+                &target_dest,
+                route_key,
+                payload_type.to_rust(),
+                message_bytes,
+            )
+            .await
+            .map_err(map_protocol_error)?;
             Ok(Python::attach(|py| py.None()))
         })
     }
 }
 
 #[pyclass(name = "Context")]
-pub struct ContextPy {
+pub struct Context {
     pub(crate) inner: RuntimeContext,
 }
 
 #[pymethods]
-impl ContextPy {
-    fn self_id(&self) -> PyResult<ActrIdPy> {
-        Ok(ActrIdPy::from_rust(self.inner.self_id().clone()))
+impl Context {
+    fn self_id(&self) -> PyResult<ActrId> {
+        Ok(ActrId::from_rust(self.inner.self_id().clone()))
     }
 
-    fn caller_id(&self) -> PyResult<Option<ActrIdPy>> {
+    fn caller_id(&self) -> PyResult<Option<ActrId>> {
         if let Some(id) = self.inner.caller_id() {
-            Ok(Some(ActrIdPy::from_rust(id.clone())))
+            Ok(Some(ActrId::from_rust(id.clone())))
         } else {
             Ok(None)
         }
@@ -265,7 +280,7 @@ impl ContextPy {
     fn discover_route_candidate<'py>(
         &self,
         py: Python<'py>,
-        actr_type: ActrTypePy,
+        actr_type: ActrType,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ctx = self.inner.clone();
         let target_type = actr_type.inner().clone();
@@ -275,7 +290,7 @@ impl ContextPy {
                 .discover_route_candidate(&target_type)
                 .await
                 .map_err(map_protocol_error)?;
-            Python::attach(|py| Ok(Py::new(py, ActrIdPy::from_rust(id))?.into_any()))
+            Python::attach(|py| Ok(Py::new(py, ActrId::from_rust(id))?.into_any()))
         })
     }
 
@@ -283,7 +298,7 @@ impl ContextPy {
     fn call_raw<'py>(
         &self,
         py: Python<'py>,
-        target: &DestPy,
+        target: &Dest,
         route_key: String,
         request: &[u8],
         timeout_ms: i64,
@@ -313,7 +328,7 @@ impl ContextPy {
     fn tell_raw<'py>(
         &self,
         py: Python<'py>,
-        target: &DestPy,
+        target: &Dest,
         route_key: String,
         message: &[u8],
         payload_type: PayloadType,
@@ -353,10 +368,10 @@ impl ContextPy {
                         sender_id
                     );
 
-                    let (py_ds, py_sender_id) = Python::attach(|py| -> PyResult<(Py<DataStreamPy>, Py<ActrIdPy>)> {
-                        let ds = Py::new(py, DataStreamPy::from_rust(chunk.clone()))?;
+                    let (py_ds, py_sender_id) = Python::attach(|py| -> PyResult<(Py<DataStream>, Py<ActrId>)> {
+                        let ds = Py::new(py, DataStream::from_rust(chunk.clone()))?;
                         let sender_id_rust = sender_id.clone();
-                        let sid = Py::new(py, ActrIdPy::from_rust(sender_id_rust))?;
+                        let sid = Py::new(py, ActrId::from_rust(sender_id_rust))?;
                         Ok((ds, sid))
                     })
                     .map_err(|e| ActrError::Internal(format!("Failed to convert to Python objects: {e}")))?;
@@ -410,8 +425,8 @@ impl ContextPy {
     fn send_data_stream<'py>(
         &self,
         py: Python<'py>,
-        target: &DestPy,
-        data_stream: &DataStreamPy,
+        target: &Dest,
+        data_stream: &DataStream,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ctx = self.inner.clone();
         let target_dest = target.inner().clone();

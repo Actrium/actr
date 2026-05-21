@@ -22,6 +22,7 @@ use crate::error::StorageResult;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Message priority
@@ -71,6 +72,24 @@ pub struct MailboxStats {
     pub inflight_messages: u64,
     /// Queued message count by priority
     pub queued_by_priority: std::collections::HashMap<MessagePriority, u64>,
+}
+
+/// Observer notified whenever a [`Mailbox`] implementation observes a
+/// change in its queue depth.
+///
+/// Installed on a mailbox via [`Mailbox::set_depth_observer`]. Backends
+/// that cannot cheaply report depth on every enqueue may return `false`
+/// from that method, in which case consumers must fall back to periodic
+/// polling via [`Mailbox::status`].
+///
+/// The observer is called synchronously from the enqueue code path;
+/// implementations should therefore keep their work short (typically a
+/// bounded `try_send` into a channel). Implementations must not block
+/// the enqueue path and must tolerate missed notifications.
+pub trait MailboxDepthObserver: Send + Sync + 'static {
+    /// Called after an enqueue completes, carrying the post-enqueue
+    /// queued-message count.
+    fn on_depth_change(&self, queued_messages: usize);
 }
 
 /// Mailbox interface - defines core operations for message persistence
@@ -141,4 +160,20 @@ pub trait Mailbox: Send + Sync {
 
     /// Get current mailbox statistics.
     async fn status(&self) -> StorageResult<MailboxStats>;
+
+    /// Install a [`MailboxDepthObserver`] that receives a
+    /// post-enqueue queued-message count on every enqueue.
+    ///
+    /// Returns `true` if push-based depth notification is supported by
+    /// this backend and the observer has been installed. Returns
+    /// `false` when the backend cannot cheaply compute depth (e.g. a
+    /// remote store where `COUNT(*)` is expensive) and the caller must
+    /// fall back to polling [`Mailbox::status`]; the observer is then
+    /// left uninstalled.
+    ///
+    /// The default implementation returns `false`, so existing mailbox
+    /// backends compile without change.
+    fn set_depth_observer(&self, _observer: Arc<dyn MailboxDepthObserver>) -> bool {
+        false
+    }
 }

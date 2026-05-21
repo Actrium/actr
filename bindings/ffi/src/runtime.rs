@@ -3,108 +3,68 @@
 use crate::error::{ActrError, ActrResult};
 use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
 use actr_framework::{Bytes, Dest};
-use actr_hyper::{
-    ActrNode, ActrRef, Hyper, HyperConfig, NetworkEventHandle, TrustMode, WorkloadPackage,
-};
-use actr_protocol::{ActrIdExt, ActrTypeExt};
+use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
 /// Wrapper for a package-backed runtime before startup.
 #[derive(uniffi::Object)]
-pub struct ActrSystemWrapper {
-    inner: Mutex<Option<ActrNode>>,
+pub struct ActrNode {
+    inner: Mutex<Option<Node<Registered>>>,
     network_event_handle: Mutex<Option<NetworkEventHandle>>,
 }
 
 #[uniffi::export]
-impl ActrSystemWrapper {
+impl ActrNode {
     /// Create a new runtime wrapper from config and a verified `.actr` package file.
     #[uniffi::constructor(async_runtime = "tokio")]
     pub async fn new_from_package_file(
         config_path: String,
         package_path: String,
     ) -> ActrResult<Arc<Self>> {
-        let manifest_raw =
-            actr_pack::read_manifest_raw(&std::fs::read(&package_path).map_err(|e| {
-                ActrError::ConfigError {
-                    msg: format!("Failed to read package at {}: {}", package_path, e),
-                }
-            })?)
-            .map_err(|e| ActrError::ConfigError {
-                msg: format!("Failed to read manifest.toml from {}: {}", package_path, e),
-            })?;
-        let manifest: actr_config::ManifestRawConfig =
-            manifest_raw
-                .parse()
-                .map_err(|e: actr_config::ConfigError| ActrError::ConfigError {
-                    msg: format!(
-                        "Failed to parse package manifest from {}: {}",
-                        package_path, e
-                    ),
-                })?;
-        let package_info =
-            manifest
-                .package
-                .clone()
-                .into_package_info()
-                .map_err(|e| ActrError::ConfigError {
-                    msg: format!(
-                        "Failed to extract package info from {}: {}",
-                        package_path, e
-                    ),
-                })?;
-        let config = actr_config::ConfigParser::from_runtime_file(
-            &config_path,
-            package_info,
-            manifest.package.tags,
-        )
-        .map_err(|e| ActrError::ConfigError {
-            msg: format!("Failed to parse config file at {}: {}", config_path, e),
-        })?;
-
-        crate::logger::init_observability(config.observability.clone());
-
-        info!(
-            signaling_url = config.signaling_url.as_str(),
-            realm_id = config.realm.realm_id,
-            package_path = %package_path,
-            "Creating package-backed runtime wrapper",
-        );
-
-        let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()
-            .map_err(|e| ActrError::ConfigError { msg: e.to_string() })?;
-        let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
-            TrustMode::Development {
-                self_signed_pubkey: vec![0u8; 32],
-            },
-        ))
-        .await
-        .map_err(|e| {
-            error!("Failed to initialize Hyper shell: {}", e);
-            ActrError::InternalError {
-                msg: format!("Failed to initialize Hyper shell: {e}"),
-            }
-        })?;
-
         let package_bytes = std::fs::read(&package_path).map_err(|e| {
             error!("Failed to read package at {}: {}", package_path, e);
-            ActrError::InternalError {
+            ActrError::Config {
                 msg: format!("Failed to read package at {}: {}", package_path, e),
             }
         })?;
         let package = WorkloadPackage::new(package_bytes);
 
-        let node = hyper.attach_package(&package, config).await.map_err(|e| {
+        // Node::from_config_file owns config parsing, [hyper] section
+        // parsing (data_dir / trust), and Hyper construction — the shell
+        // only composes observability + attach + register + start on top
+        // of the returned Node<Init>.
+        let init = Node::from_config_file(&config_path).await.map_err(|e| {
+            error!("Failed to load runtime config: {}", e);
+            ActrError::Config {
+                msg: format!("Failed to load runtime config `{}`: {}", config_path, e),
+            }
+        })?;
+        crate::logger::init_observability(init.runtime_config().observability.clone());
+
+        info!(
+            config_path = %config_path,
+            package_path = %package_path,
+            "Creating package-backed runtime wrapper",
+        );
+
+        let attached = init.attach(&package).await.map_err(|e| {
             error!("Failed to attach package-backed node: {}", e);
-            ActrError::InternalError {
+            ActrError::Internal {
                 msg: format!("Failed to attach package-backed node: {e}"),
+            }
+        })?;
+        let ais_endpoint = attached.ais_endpoint().to_string();
+        let registered = attached.register(&ais_endpoint).await.map_err(|e| {
+            error!("AIS registration failed: {}", e);
+            ActrError::Internal {
+                msg: format!("AIS registration failed: {e}"),
             }
         })?;
 
         Ok(Arc::new(Self {
-            inner: Mutex::new(Some(node)),
+            inner: Mutex::new(Some(registered)),
             network_event_handle: Mutex::new(None),
         }))
     }
@@ -121,7 +81,7 @@ impl ActrSystemWrapper {
         }
 
         let mut node_guard = self.inner.lock();
-        let node = node_guard.as_mut().ok_or_else(|| ActrError::StateError {
+        let node = node_guard.as_mut().ok_or_else(|| ActrError::Internal {
             msg: "runtime node is no longer available".to_string(),
         })?;
 
@@ -133,23 +93,18 @@ impl ActrSystemWrapper {
 }
 
 #[uniffi::export(async_runtime = "tokio")]
-impl ActrSystemWrapper {
+impl ActrNode {
     /// Start the package-backed node and return a running actor reference.
     pub async fn start(self: Arc<Self>) -> ActrResult<Arc<ActrRefWrapper>> {
-        let node = self
+        let hyper = self
             .inner
             .lock()
             .take()
-            .ok_or_else(|| ActrError::StateError {
-                msg: "ActrSystem already started".to_string(),
+            .ok_or_else(|| ActrError::Internal {
+                msg: "ActrNode already started".to_string(),
             })?;
 
-        let actr_ref = node.start().await.map_err(|e| {
-            error!("Failed to start package-backed actor: {}", e);
-            ActrError::ConnectionError {
-                msg: format!("Failed to start actor: {e}"),
-            }
-        })?;
+        let actr_ref = hyper.start().await.map_err(ActrError::from)?;
 
         Ok(Arc::new(ActrRefWrapper { inner: actr_ref }))
     }
@@ -169,7 +124,7 @@ impl NetworkEventHandleWrapper {
             .inner
             .handle_network_available()
             .await
-            .map_err(|e| ActrError::InternalError { msg: e })?;
+            .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 
@@ -179,7 +134,7 @@ impl NetworkEventHandleWrapper {
             .inner
             .handle_network_lost()
             .await
-            .map_err(|e| ActrError::InternalError { msg: e })?;
+            .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 
@@ -193,7 +148,7 @@ impl NetworkEventHandleWrapper {
             .inner
             .handle_network_type_changed(is_wifi, is_cellular)
             .await
-            .map_err(|e| ActrError::InternalError { msg: e })?;
+            .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 
@@ -203,7 +158,7 @@ impl NetworkEventHandleWrapper {
             .inner
             .cleanup_connections()
             .await
-            .map_err(|e| ActrError::InternalError { msg: e })?;
+            .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 }
@@ -243,9 +198,7 @@ impl ActrRefWrapper {
             }
             Err(e) => {
                 error!("discover failed: {}", e);
-                Err(ActrError::RpcError {
-                    msg: format!("Discovery failed: {e}"),
-                })
+                Err(ActrError::from(e))
             }
         }
     }

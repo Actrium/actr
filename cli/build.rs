@@ -1,4 +1,9 @@
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const GENERATED_WEB_ASSETS: &[&str] = &["actr_sw_host_bg.wasm", "actr_sw_host.js"];
 
 fn main() {
     // Only run if we are in a git repository
@@ -32,4 +37,37 @@ fn main() {
     println!("cargo:rerun-if-changed=../.git/refs");
     // Re-run if web runtime assets change
     println!("cargo:rerun-if-changed=assets/web-runtime");
+
+    copy_generated_web_assets();
+}
+
+fn copy_generated_web_assets() {
+    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let asset_dir = manifest_dir.join("assets/web-runtime");
+    let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("web-runtime");
+
+    fs::create_dir_all(&out_dir).unwrap();
+
+    for name in GENERATED_WEB_ASSETS {
+        let src = asset_dir.join(name);
+        if !src.is_file() {
+            fail_missing_web_asset(&src);
+        }
+
+        fs::copy(&src, out_dir.join(name)).unwrap_or_else(|err| {
+            panic!(
+                "failed to copy generated web runtime asset {}: {err}",
+                src.display()
+            )
+        });
+    }
+}
+
+fn fail_missing_web_asset(path: &Path) -> ! {
+    panic!(
+        "missing generated web runtime asset: {}\n\
+         run `bash bindings/web/scripts/sync-cli-assets.sh --build` from the workspace root \
+         before building actr-cli",
+        path.display()
+    );
 }

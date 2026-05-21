@@ -18,7 +18,7 @@ static GUARD: OnceLock<ObservabilityGuard> = OnceLock::new();
 /// - iOS: Stdout (via `fmt::layer`, without ANSI colors)
 /// - Linux/Unix: Stdout (via `fmt::layer`, with ANSI colors for terminal)
 /// - Others: Stdout (via `fmt::layer`, without ANSI colors)
-pub fn init_observability(config: ObservabilityConfig) {
+pub(crate) fn init_observability(config: ObservabilityConfig) {
     if GUARD.get().is_some() {
         return;
     }

@@ -9,8 +9,14 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! let node = Hyper::init(hyper_config).await?.attach_package(&package, config).await?;
-//! let actr = node.start().await?;
+//! let actr = Node::from_config_file("actr.toml")
+//!     .await?
+//!     .attach(&package)
+//!     .await?
+//!     .register(&ais_endpoint)
+//!     .await?
+//!     .start()
+//!     .await?;
 //!
 //! println!("actor id = {:?}", actr.actor_id());
 //!
@@ -18,11 +24,11 @@
 //! actr.wait_for_ctrl_c_and_shutdown().await?;
 //! ```
 //!
-//! `Hyper::attach_package()` is a one-shot operation. Create a new `Hyper`
-//! instance when hosting another package.
+//! The typestate chain is `Node<Init> → Node<Attached> → Node<Registered>
+//! → ActrRef`. `Node::from_hyper` is the escape hatch when you need to own
+//! `HyperConfig` construction yourself.
 
-use crate::context::RuntimeContext;
-use crate::context_factory::ContextFactory;
+use crate::context::{BootstrapContextBuilder, RuntimeContext};
 use crate::lifecycle::CredentialState;
 use actr_framework::{Context as _, Dest};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcRequest};
@@ -39,8 +45,8 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct ActrRefShared {
     /// Actor ID
     pub(crate) actor_id: ActrId,
-    /// Context factory used to create application-side runtime contexts.
-    pub(crate) context_factory: ContextFactory,
+    /// Builder used to materialize application-side runtime contexts on demand.
+    pub(crate) bootstrap_ctx_builder: BootstrapContextBuilder,
     /// Current credential state for building application-side contexts.
     pub(crate) credential_state: CredentialState,
     /// Shutdown signal
@@ -131,8 +137,8 @@ impl ActrRef {
     pub async fn app_context(&self) -> RuntimeContext {
         let credential = self.shared.credential_state.credential().await;
         self.shared
-            .context_factory
-            .create_bootstrap(&self.shared.actor_id, &credential)
+            .bootstrap_ctx_builder
+            .build_bootstrap(&self.shared.actor_id, &credential)
     }
 
     /// Trigger Actor shutdown
@@ -142,7 +148,7 @@ impl ActrRef {
     pub fn shutdown(&self) {
         tracing::info!(
             "🛑 Shutdown requested for Actor {}",
-            actr_protocol::ActrIdExt::to_string_repr(&self.shared.actor_id)
+            actr_protocol::ActrId::to_string_repr(&self.shared.actor_id)
         );
         self.shared.shutdown_token.cancel();
     }
@@ -235,7 +241,7 @@ impl Drop for ActrRefShared {
     fn drop(&mut self) {
         tracing::info!(
             "🧹 ActrRefShared dropping - cleaning up Actor {}",
-            actr_protocol::ActrIdExt::to_string_repr(&self.actor_id)
+            actr_protocol::ActrId::to_string_repr(&self.actor_id)
         );
 
         // Cancel shutdown token
@@ -253,7 +259,7 @@ impl Drop for ActrRefShared {
 
         tracing::debug!(
             "✅ All background tasks aborted for Actor {}",
-            actr_protocol::ActrIdExt::to_string_repr(&self.actor_id)
+            actr_protocol::ActrId::to_string_repr(&self.actor_id)
         );
     }
 }

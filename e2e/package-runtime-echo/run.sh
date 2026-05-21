@@ -304,7 +304,7 @@ scaffold_service_guest() {
 
     (
         cd "$TMP_SERVICE_DIR"
-        CARGO_TARGET_DIR="$TEMP_SERVICE_TARGET_DIR" run_actr install
+        CARGO_TARGET_DIR="$TEMP_SERVICE_TARGET_DIR" run_actr deps install
         CARGO_TARGET_DIR="$TEMP_SERVICE_TARGET_DIR" run_actr gen -l rust
     )
 
@@ -370,7 +370,7 @@ build_client_guest_package() {
     client_guest_binary="$(client_guest_library_path)"
     [ -f "$client_guest_binary" ] || fail "Client guest library missing: $client_guest_binary"
 
-    run_actr pkg build \
+    run_actr build \
         --binary "$client_guest_binary" \
         --config "$SCRIPT_DIR/client-guest/manifest.toml" \
         --key "$PROVISIONED_KEYCHAIN" \

@@ -13,6 +13,7 @@ export type MessageToSW =
   }
   | { type: 'webrtc_event'; payload: WebRtcEventPayload }
   | { type: 'control'; payload: ControlCommandPayload }
+  | { type: 'unregister_client' }
   | { type: 'register_datachannel_port'; payload: { peerId: string; port: MessagePort } };
 
 /**
@@ -102,6 +103,7 @@ export type MessageHandler = (message: MessageFromSW) => void;
  */
 export class ServiceWorkerBridge {
   private swPort: MessagePort | null = null;
+  private swTarget: ServiceWorker | null = null;
   private messageHandlers: Set<MessageHandler> = new Set();
   private readyPromise: Promise<void>;
   private resolveReady!: () => void;
@@ -147,6 +149,7 @@ export class ServiceWorkerBridge {
       if (!target) {
         throw new Error('Service Worker active target not available');
       }
+      this.swTarget = target;
 
       navigator.serviceWorker.addEventListener('message', (event) => {
         console.log('[SW Bridge] <- SW (client)', event.data); // [DEBUG] Keep for now
@@ -260,7 +263,20 @@ export class ServiceWorkerBridge {
    * 
    */
   close(): void {
+    if (this.swTarget) {
+      try {
+        this.swTarget.postMessage({ type: 'CLIENT_UNREGISTER', clientId: this.clientId });
+      } catch {
+        // Ignore unload-time postMessage failures.
+      }
+      this.swTarget = null;
+    }
     if (this.swPort) {
+      try {
+        this.swPort.postMessage({ type: 'unregister_client' });
+      } catch {
+        // Ignore unload-time postMessage failures.
+      }
       this.swPort.close();
       this.swPort = null;
     }

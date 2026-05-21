@@ -1,0 +1,26 @@
+[package]
+name = "spike-host-async"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Mark as an independent workspace so the repo-root workspace does not absorb this crate.
+[workspace]
+
+[dependencies]
+# Pinned to 43.0.1 because 44.0.0 requires rustc >= 1.92; this toolchain has 1.91.1.
+# `component-model-async` pulls in the async ABI handling for components compiled
+# against WIT `async func` signatures.
+wasmtime = { version = "=43.0.1", features = [
+    "component-model",
+    "component-model-async",
+    "async",
+    "runtime",
+    "cranelift",
+] }
+wasmtime-wasi = "=43.0.1"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+opt-level = 3

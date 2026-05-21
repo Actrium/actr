@@ -11,7 +11,7 @@ description = "Data stream peer concurrent server WASM"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-actr-runtime-sw = { path = "../../../../crates/runtime-sw" }
+actr-sw-host = { path = "../../../../crates/sw-host" }
 actr-web-common = { path = "../../../../crates/common" }
 
 wasm-bindgen = "0.2"

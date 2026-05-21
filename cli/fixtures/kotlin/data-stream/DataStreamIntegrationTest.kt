@@ -80,7 +80,7 @@ class DataStreamIntegrationTest {
         var clientRef: ActrRef? = null
 
         try {
-            val clientSystem = createActrSystem(clientConfigPath)
+            val clientSystem = createActrNode(clientConfigPath)
 
             // Create UnifiedWorkload with handler
             val handler = MyUnifiedHandler()

@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::ptr;
 
-use actr_framework::guest::abi::{self as guest_abi, AbiReply, InitPayloadV1};
+use actr_framework::guest::dynclib_abi::{self as guest_abi, AbiReply, InitPayloadV1};
 use libloading::Library;
 
 /// Wrapper around a raw pointer that is `Send`.
@@ -287,49 +287,6 @@ unsafe impl Send for DynclibHost {}
 unsafe impl Sync for DynclibHost {}
 
 impl DynclibHost {
-    /// Verify package signature, then load the shared library.
-    ///
-    /// Supports both `.actr` ZIP packages and legacy binaries with embedded manifests.
-    /// For `.actr` packages, the native binary is extracted to a temporary file and loaded from there.
-    pub fn load_verified(
-        path: impl AsRef<Path>,
-        verifier: &crate::verify::PackageVerifier,
-    ) -> DynclibResult<Self> {
-        let path = path.as_ref();
-        let bytes = std::fs::read(path).map_err(|e| {
-            DynclibError::LoadFailed(format!(
-                "failed to read binary for verification: {}: {e}",
-                path.display()
-            ))
-        })?;
-        let manifest = verifier.verify(&bytes)?;
-        tracing::info!(
-            manufacturer = %manifest.manufacturer,
-            actr_name = %manifest.actr_name,
-            version = %manifest.version,
-            "dynclib package signature verified, proceeding to load"
-        );
-
-        // .actr ZIP package: extract binary to temp file and load
-        if bytes.len() >= 4 && &bytes[0..4] == b"PK\x03\x04" {
-            let binary_bytes = actr_pack::load_binary(&bytes).map_err(|e| {
-                DynclibError::LoadFailed(format!(
-                    "failed to extract binary from .actr package: {e}"
-                ))
-            })?;
-            let tmp_dir = path.parent().unwrap_or(Path::new("."));
-            let tmp_path = tmp_dir.join(format!(".actr-tmp-{}", manifest.actr_name));
-            std::fs::write(&tmp_path, &binary_bytes).map_err(|e| {
-                DynclibError::LoadFailed(format!("failed to write extracted binary: {e}"))
-            })?;
-            let result = Self::load(&tmp_path);
-            let _ = std::fs::remove_file(&tmp_path);
-            result
-        } else {
-            Self::load(path)
-        }
-    }
-
     /// Load a shared library from the given filesystem path.
     ///
     /// Resolves the required ABI symbols (`actr_init`, `actr_handle`,
@@ -393,7 +350,10 @@ impl DynclibHost {
     /// Initialise an actor instance inside the loaded library.
     ///
     /// Calls the guest's `actr_init(vtable, init_ptr, init_len)`.
-    pub fn instantiate(&self, init_payload: &InitPayloadV1) -> DynclibResult<DynclibInstance> {
+    pub(crate) fn instantiate(
+        &self,
+        init_payload: &InitPayloadV1,
+    ) -> DynclibResult<DynclibInstance> {
         let init_bytes = guest_abi::encode_message(init_payload).map_err(|code| {
             DynclibError::DispatchFailed(format!("init payload encode failed: {code}"))
         })?;
@@ -432,7 +392,7 @@ impl DynclibHost {
 /// `actr_init` initializes exactly one logical actor state inside this instance.
 /// **Not `Sync`**: callers must serialise access (e.g. via `Mutex<DynClibWorkload>`)
 /// and must not enter `actr_handle` concurrently for the same instance.
-pub struct DynclibInstance {
+pub(crate) struct DynclibInstance {
     handle_fn: HandleFn,
     free_response_fn: FreeResponseFn,
 }
@@ -452,7 +412,7 @@ unsafe impl Send for DynclibInstance {}
 /// (which holds raw function pointers into the loaded library) must be dropped
 /// before `_host` (which unloads the library).
 #[derive(Debug)]
-pub struct DynClibWorkload {
+pub(crate) struct DynClibWorkload {
     instance: DynclibInstance,
     _host: DynclibHost,
 }
@@ -479,7 +439,7 @@ impl DynclibInstance {
     /// `actr_handle`. Those trampolines use `Handle::block_on` to execute the
     /// async `call_executor` — this is safe because `actr_handle` runs inside
     /// `spawn_blocking` (off the tokio worker pool).
-    pub async fn handle(
+    pub(crate) async fn handle(
         &mut self,
         request_bytes: &[u8],
         ctx: InvocationContext,
@@ -573,7 +533,7 @@ impl DynclibInstance {
 }
 
 impl DynClibWorkload {
-    pub async fn handle(
+    pub(crate) async fn handle(
         &mut self,
         request_bytes: &[u8],
         ctx: InvocationContext,

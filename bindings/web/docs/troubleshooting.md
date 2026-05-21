@@ -1,70 +1,117 @@
 # Troubleshooting
 
-This document covers the most common problems when working with Actor-RTC Web.
+This document covers common issues in the current Actor-RTC Web Option U / wasm-bindgen path.
 
 ## Build Failures
 
-### WASM compilation fails
+### Workspace dependencies are missing
 
-Check that the WASM target and toolchain are installed:
+Install from the web workspace root:
+
+```bash
+cd bindings/web
+pnpm install
+```
+
+### Service Worker host build fails
+
+Check the browser wasm toolchain:
 
 ```bash
 rustup target add wasm32-unknown-unknown
 cargo install wasm-pack
-rustc --version
 ```
 
-Then rebuild from a clean state:
+Then rebuild:
 
 ```bash
-cargo clean
-npm run build:wasm
+cd bindings/web
+bash crates/sw-host/build.sh
 ```
 
-### Vite cannot load WASM
-
-Install and configure the required plugins:
+If you need the CLI-embedded runtime assets, run:
 
 ```bash
-npm install --save-dev vite-plugin-wasm vite-plugin-top-level-await
+cd bindings/web
+bash scripts/sync-cli-assets.sh --build
 ```
 
-Make sure `vite.config.ts` includes both plugins and the required COOP/COEP headers when SharedArrayBuffer-style behavior is needed.
+### `.wbg` guest bundle is missing
 
-### CORS or isolation errors
+The current Service Worker resolves the browser guest from a sibling `.wbg/` directory. For a package named `acme-demo-0.1.0-wasm32-wasip2.actr`, the browser path should include:
 
-Development servers must emit the right headers:
-
-```ts
-export default defineConfig({
-  server: {
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp',
-    },
-  },
-});
+```text
+acme-demo-0.1.0-wasm32-wasip2.actr
+acme-demo-0.1.0-wasm32-wasip2.wbg/guest.js
+acme-demo-0.1.0-wasm32-wasip2.wbg/guest_bg.wasm
 ```
+
+The echo script lays this out automatically:
+
+```bash
+cd bindings/web/examples/echo
+bash start-mock.sh
+```
+
+### CLI serves stale web runtime assets
+
+Refresh the CLI asset copy:
+
+```bash
+cd bindings/web
+bash scripts/sync-cli-assets.sh --build
+```
+
+Then rebuild the CLI binary that embeds `cli/assets/web-runtime/`.
 
 ## Runtime Failures
 
-### Cannot connect to the signaling server
+### Service Worker does not register
 
 Check:
 
-- The signaling URL is correct.
-- The server is reachable from the browser.
-- Firewalls or proxies are not blocking WebSocket traffic.
+- the page is served from `http://127.0.0.1`, `http://localhost`, or HTTPS
+- `actor.sw.js` is reachable at the configured Service Worker path
+- the browser devtools Application panel does not show an old waiting worker
+- the page and Service Worker are under the same origin and compatible scope
 
-Enable debug logging if the SDK supports it in the current example or app setup.
+### Guest registration fails
+
+The current path should call `register_guest_workload` from `actor.sw.js`. If registration fails, confirm:
+
+- `guest.js` loads without a JavaScript exception
+- `guest_bg.wasm` is reachable next to `guest.js`
+- the `.actr` package URL and `.wbg/` sibling URL use the same package stem
+- browser devtools show Service Worker logs, not only DOM page logs
+
+### Cannot connect to signaling
+
+For local example runs, prefer the mock actrix scripts:
+
+```bash
+cd bindings/web/examples/echo
+bash start-mock.sh
+```
+
+```bash
+cd bindings/web/examples/data-stream-peer-concurrent
+bash start.sh
+```
+
+If connecting manually, verify:
+
+- the WebSocket URL is correct
+- the HTTP health endpoint is reachable
+- the realm and package identity are registered
+- local firewalls or proxies are not blocking WebSocket traffic
 
 ### IndexedDB errors
 
 Common causes:
 
-- Private browsing mode disables or restricts IndexedDB.
-- The browser storage quota is exhausted.
-- The browser environment does not support IndexedDB.
+- private browsing mode disables or restricts IndexedDB
+- browser storage quota is exhausted
+- the page origin changed and the expected database is under a different origin
 
 Basic guard:
 
@@ -74,25 +121,20 @@ if (!window.indexedDB) {
 }
 ```
 
-### WebRTC connection setup fails
+### WebRTC setup fails
 
-Check:
+Debug in this order:
 
-- STUN and TURN configuration
-- NAT and firewall restrictions
-- Whether the signaling flow completed successfully
-
-When debugging, verify signaling first, then ICE gathering, then data-channel establishment.
+1. Signaling WebSocket connects.
+2. Offer/answer exchange completes.
+3. ICE candidates are exchanged.
+4. Data channels open.
+5. State-path RPC works before fast-path flows are tested.
 
 ## Debugging Strategy
 
-1. Confirm the build output exists and loads.
-2. Confirm the signaling endpoint is reachable.
-3. Confirm browser storage and worker registration succeed.
-4. Confirm WebRTC data channels or media channels transition to a connected state.
-
-## When in Doubt
-
-- Reduce the example to a single client and a single service.
-- Prefer the simplest echo scenario before testing fast-path or runtime-mode features.
-- Keep browser devtools open and compare DOM-side logs with Service Worker logs.
+1. Start with `examples/echo/start-mock.sh`.
+2. Confirm `actor.sw.js`, `guest.js`, and `guest_bg.wasm` return HTTP 200.
+3. Compare DOM-side console logs with Service Worker logs.
+4. Clear old Service Worker registrations and reload if the browser keeps stale assets.
+5. Move to `examples/data-stream-peer-concurrent/start.sh` only after the echo path works.

@@ -15,19 +15,19 @@ The Low Level API is located in the `Actr` module and consists of UniFFI-generat
 
 ### Core Wrapper Types
 
-#### `ActrSystemWrapper`
+#### `ActrNode` (low-level, from `ActrBindings`)
 
-System-level wrapper for creating and starting package-backed ACTR systems.
+Node-level wrapper for creating and starting package-backed ACTR nodes.
 
 **Methods:**
 
-- `static func newFromPackageFile(configPath: String, packagePath: String) async throws -> ActrSystemWrapper`
-  - Creates a new ACTR system from a TOML configuration file and a `.actr` package file
+- `static func newFromPackageFile(configPath: String, packagePath: String) async throws -> ActrNode`
+  - Creates a new ACTR node from a TOML configuration file and a `.actr` package file
   - **Parameters:**
     - `configPath`: Path to the TOML configuration file
     - `packagePath`: Path to the `.actr` package file
-  - **Returns:** An `ActrSystemWrapper` instance
-  - **Throws:** `ActrError.ConfigError` if the configuration is invalid
+  - **Returns:** An `ActrNode` instance (low-level `ActrBindings.ActrNode`)
+  - **Throws:** `ActrError.Config` if the configuration is invalid
 
 - `func createNetworkEventHandle() throws -> NetworkEventHandleWrapper`
   - Creates a network event handle for platform callbacks before startup
@@ -57,7 +57,7 @@ Wrapper for a reference to a running actor. Provides methods for RPC calls, disc
     - `requestPayload`: Request payload bytes (protobuf encoded)
     - `timeoutMs`: Timeout in milliseconds
   - **Returns:** Response payload bytes (protobuf encoded)
-  - **Throws:** `ActrError.RpcError` if the call fails
+  - **Throws:** `ActrError.Internal` if the call fails
 
 - `func discover(targetType: ActrType, count: UInt32) async throws -> [ActrId]`
   - Discovers actors of the specified type
@@ -100,7 +100,7 @@ Context provided to workloads during lifecycle callbacks. Provides access to RPC
     - `payload`: Request payload bytes
     - `timeoutMs`: Timeout in milliseconds
   - **Returns:** Response payload bytes
-  - **Throws:** `ActrError.RpcError` if the call fails
+  - **Throws:** `ActrError.Internal` if the call fails
 
 - `func discover(targetType: ActrType) async throws -> ActrId`
   - Discovers a single actor of the specified type
@@ -225,18 +225,40 @@ public struct Realm: Equatable, Hashable {
 
 #### `ActrError`
 
-Error type for ACTR operations.
+Error type for ACTR operations. Mirrors `actr_protocol::ActrError` 1:1, with
+one binding-local variant (`Config`) for pre-protocol configuration failures.
 
 ```swift
 public enum ActrError: Swift.Error, Equatable, Hashable {
-    case ConfigError(msg: String)
-    case ConnectionError(msg: String)
-    case RpcError(msg: String)
-    case StateError(msg: String)
-    case InternalError(msg: String)
-    case TimeoutError(msg: String)
-    case WorkloadError(msg: String)
+    // Transient — retry with backoff
+    case Unavailable(msg: String)
+    case TimedOut
+
+    // Client — fail fast
+    case NotFound(msg: String)
+    case PermissionDenied(msg: String)
+    case InvalidArgument(msg: String)
+    case UnknownRoute(msg: String)
+    case DependencyNotFound(serviceName: String, message: String)
+
+    // Corrupt — route to Dead Letter Queue
+    case DecodeFailure(msg: String)
+
+    // Internal — framework bug / panic
+    case NotImplemented(msg: String)
+    case Internal(msg: String)
+
+    // Binding-local (pre-protocol)
+    case Config(msg: String)
 }
+```
+
+Classification helpers (free functions, not methods — UniFFI limitation):
+
+```swift
+let kind: ErrorKind = actrErrorKind(err)             // .transient / .client / .internal / .corrupt
+let retry: Bool = actrErrorIsRetryable(err)          // true iff kind == .transient
+let dlq: Bool = actrErrorRequiresDlq(err)            // true iff kind == .corrupt
 ```
 
 ## High Level API
@@ -245,27 +267,27 @@ The High Level API is located in the `Actr` module and provides Swift-friendly w
 
 ### Core Types
 
-#### `ActrSystem`
+#### `ActrNode`
 
-High-level entry point for creating and starting a package-backed ACTR system. This is a `Sendable` class, making it safe to pass across concurrency boundaries.
+High-level entry point for creating and starting a package-backed ACTR node. This is a `Sendable` class, making it safe to pass across concurrency boundaries.
 
 **Methods:**
 
-- `static func from(packageConfig path: String, packagePath: String) async throws -> ActrSystem`
-  - Creates a system from a TOML config file path and `.actr` package path
+- `static func from(packageConfig path: String, packagePath: String) async throws -> ActrNode`
+  - Creates a node from a TOML config file path and `.actr` package path
   - **Parameters:**
     - `path`: Path to the TOML configuration file
     - `packagePath`: Path to the `.actr` package file
-  - **Returns:** An `ActrSystem` instance
-  - **Throws:** `ActrError.ConfigError` if the configuration is invalid
+  - **Returns:** An `ActrNode` instance
+  - **Throws:** `ActrError.Config` if the configuration is invalid
 
-- `static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrSystem`
-  - Creates a system from TOML config and `.actr` package URLs
+- `static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrNode`
+  - Creates a node from TOML config and `.actr` package URLs
   - **Parameters:**
     - `configURL`: File URL to the TOML configuration file
     - `packageURL`: File URL to the `.actr` package file
-  - **Returns:** An `ActrSystem` instance
-  - **Throws:** `ActrError.ConfigError` if the URL is not a file URL or configuration is invalid
+  - **Returns:** An `ActrNode` instance
+  - **Throws:** `ActrError.Config` if the URL is not a file URL or configuration is invalid
 
 - `func start() async throws -> ActrRef`
   - Starts the package-backed actor and returns a high-level actor reference
@@ -293,8 +315,8 @@ A concurrency-safe reference to a running ACTR actor. This is an `actor` type, p
     - `timeoutMs`: Timeout in milliseconds
   - **Returns:** Response message instance (`Req.Response`)
   - **Throws:** 
-    - `ActrError.StateError` if `Req.routeKey` is empty
-    - `ActrError.RpcError` if the call fails
+    - `ActrError.Internal` if `Req.routeKey` is empty
+    - `ActrError.Internal` if the call fails
   - **Note:** This method automatically handles Protobuf serialization/deserialization
 
 - `func discover(type: ActrType, limit: Int = 1) async throws -> [ActrId]`
@@ -304,7 +326,7 @@ A concurrency-safe reference to a running ACTR actor. This is an `actor` type, p
     - `limit`: Maximum number of actors to discover (default: 1)
   - **Returns:** Array of discovered actor IDs (empty if limit is 0)
   - **Throws:**
-    - `ActrError.StateError` if limit is invalid
+    - `ActrError.Internal` if limit is invalid
   - **Note:** Uses Swift `Int` instead of `UInt32` for better ergonomics
 
 - `func stop() async`
@@ -362,14 +384,14 @@ The following types are available in the `Actr` module:
 import Actr
 import SwiftProtobuf
 
-// Create system from config + package
-let system = try await ActrSystem.from(
+// Create node from config + package
+let node = try await ActrNode.from(
     packageConfig: "/path/to/config.toml",
     packagePath: "/path/to/app.actr"
 )
 
 // Start the package-backed actor
-let actrRef = try await system.start()
+let actrRef = try await node.start()
 
 // Type-safe RPC call with Protobuf
 let request = EchoRequest.with { $0.message = "Hello" }
@@ -387,15 +409,16 @@ await actrRef.stop()
 
 ```swift
 import Actr
+import ActrBindings
 
-// Create system
-let systemWrapper = try await ActrSystemWrapper.newFromPackageFile(
+// Create node (low-level wrapper)
+let node = try await ActrBindings.ActrNode.newFromPackageFile(
     configPath: "/path/to/config.toml",
     packagePath: "/path/to/app.actr"
 )
 
 // Start actor
-let refWrapper = try await systemWrapper.start()
+let refWrapper = try await node.start()
 
 // Raw RPC call with Data
 let requestData = try request.serializedData()

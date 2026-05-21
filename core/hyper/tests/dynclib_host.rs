@@ -7,11 +7,12 @@
 
 #![cfg(feature = "dynclib-engine")]
 
-use actr_framework::guest::abi::{InitPayloadV1, version};
+use actr_framework::guest::dynclib_abi::{InitPayloadV1, version};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use actr_hyper::dynclib::{DynclibError, DynclibHost};
+use actr_hyper::test_support::instantiate_dynclib_workload;
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
@@ -93,27 +94,27 @@ fn test_load_nonexistent_library() {
 
 /// Loading and instantiating a valid SO should succeed
 #[test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 fn test_load_and_instantiate() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load should succeed");
-    let _instance = host
-        .instantiate(&test_config())
-        .expect("instantiate should succeed");
+    let _instance =
+        instantiate_dynclib_workload(host, &test_config()).expect("instantiate should succeed");
 }
 
 /// Basic echo dispatch through loaded instance
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 async fn test_basic_echo_dispatch() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let payload = b"hello dynclib".to_vec();
     let req_bytes = make_envelope("test/echo", payload.clone());
 
-    let executor: HostAbiFn = Box::new(|_| Box::pin(async { HostOperationResult::Error(-1) }));
+    let executor: HostAbiFn =
+        std::sync::Arc::new(|_| Box::pin(async { HostOperationResult::Error(-1) }));
 
     let result = instance
         .handle(&req_bytes, test_ctx(), &executor)
@@ -125,19 +126,19 @@ async fn test_basic_echo_dispatch() {
 
 /// Basic double dispatch through loaded instance
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 async fn test_basic_double_dispatch() {
     let so_path = build_fixture();
     let host = DynclibHost::load(&so_path).expect("load");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let x: i32 = 21;
     let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-    let executor: HostAbiFn = Box::new(|pending| {
+    let executor: HostAbiFn = std::sync::Arc::new(|pending| {
         Box::pin(async move {
             match pending {
-                HostOperation::Call(req) => {
+                HostOperation::CallRaw(req) => {
                     let val = i32::from_le_bytes([
                         req.payload[0],
                         req.payload[1],

@@ -59,14 +59,16 @@ use thiserror::Error;
 
 pub mod compatibility;
 pub mod fingerprint;
+pub mod spec_builder;
 pub mod types;
 
 // Re-export actr-protocol types
-pub use actr_protocol::{ServiceSpec, service_spec::Protobuf as ProtoFileSpec};
+pub use actr_protocol::ServiceSpec;
 
 // Re-export our specific types
-pub use compatibility::{BreakingChange, CompatibilityAnalysis, ServiceCompatibility};
+pub use compatibility::{BreakingChange, ServiceCompatibility};
 pub use fingerprint::Fingerprint;
+pub use spec_builder::{ServiceSpecInput, build_service_spec};
 pub use types::{CompatibilityLevel, ProtoFile};
 
 /// Detailed compatibility analysis result (Rust-specific, extends proto version)
@@ -141,7 +143,7 @@ pub enum CompatibilityError {
     InvalidService(String),
 }
 
-pub type Result<T> = std::result::Result<T, CompatibilityError>;
+pub(crate) type Result<T> = std::result::Result<T, CompatibilityError>;
 
 #[cfg(test)]
 mod tests {

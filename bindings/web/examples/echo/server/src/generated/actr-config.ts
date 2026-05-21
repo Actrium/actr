@@ -8,7 +8,7 @@
  * Config now comes from the runtime config endpoint instead of build-time generation.
  */
 
-import type { ActorClientConfig, SwRuntimeConfig } from '@actr/web';
+import type { ActorClientConfig, SwRuntimeConfig, TrustAnchor } from '@actr/web';
 
 // ── Runtime Config JSON shape ──
 
@@ -16,7 +16,6 @@ export interface RuntimeConfigJson {
     signaling_url: string;
     ais_endpoint: string;
     realm_id: number;
-    trust_mode: string;
     visible: boolean;
     force_relay: boolean;
     stun_urls: string[];
@@ -29,10 +28,9 @@ export interface RuntimeConfigJson {
         full_type: string;
     };
     acl_allow_types: string[];
-    is_server: boolean;
     package_url: string;
     runtime_wasm_url: string;
-    mfr_pubkey: string;
+    trust: TrustAnchor[];
 }
 
 // ── Internal state ──
@@ -64,7 +62,7 @@ function requireConfig(): RuntimeConfigJson {
 // ── Backward-compatible exports ──
 
 /** ActrType info (available after initConfig) */
-export const actorType = {
+export const actrType = {
     get manufacturer() {
         return requireConfig().package.manufacturer;
     },
@@ -135,11 +133,9 @@ export function buildRuntimeConfig(): SwRuntimeConfig {
         target_actr_type: c.acl_allow_types[0] || '',
         service_fingerprint: '',
         acl_allow_types: c.acl_allow_types,
-        is_server: c.is_server,
         package_url: c.package_url,
-        register_fn: '',
         runtime_wasm_url: c.runtime_wasm_url,
-        mfr_pubkey: c.mfr_pubkey,
+        trust: c.trust,
     };
 }
 

@@ -13,11 +13,12 @@
 
 #![cfg(feature = "dynclib-engine")]
 
-use actr_framework::guest::abi::{InitPayloadV1, version};
+use actr_framework::guest::dynclib_abi::{InitPayloadV1, version};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use actr_hyper::dynclib::DynclibHost;
+use actr_hyper::test_support::instantiate_dynclib_workload;
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
 
@@ -85,18 +86,18 @@ fn test_config() -> InitPayloadV1 {
 }
 
 fn noop_executor() -> HostAbiFn {
-    Box::new(|_pending| Box::pin(async { HostOperationResult::Error(-1) }))
+    std::sync::Arc::new(|_pending| Box::pin(async { HostOperationResult::Error(-1) }))
 }
 
 // ---- tests -----------------------------------------------------------------
 
 /// Unknown route -> dispatch returns error
 #[tokio::test]
-#[ignore] // requires fixture compilation
+#[ignore = "requires fixture compilation"]
 async fn dynclib_unknown_route_returns_error() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let req_bytes = make_envelope("unknown/route", vec![1, 0, 0, 0]);
     let executor = noop_executor();
@@ -108,11 +109,11 @@ async fn dynclib_unknown_route_returns_error() {
 
 /// Echo route -> returns payload without outbound calls
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 async fn dynclib_echo_returns_payload() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
     let req_bytes = make_envelope("test/echo", payload.clone());
@@ -128,22 +129,21 @@ async fn dynclib_echo_returns_payload() {
 
 /// Double route -> triggers vtable call trampoline, returns x*2
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 async fn dynclib_double_dispatch() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     let x: i32 = 7;
     let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-    // host ABI: handle the vtable call from guest's ctx.call_raw()
-    // DynclibContext::call_raw encodes Dest::Actor and routes through vtable.call,
-    // which produces HostOperation::Call(HostCallV1 { route_key, dest, payload }).
-    let executor: HostAbiFn = Box::new(|pending| {
+    // The fixture calls ctx.call_raw(), which encodes HOST_CALL_RAW and decodes
+    // on the host side as HostOperation::CallRaw.
+    let executor: HostAbiFn = std::sync::Arc::new(|pending| {
         Box::pin(async move {
             match pending {
-                HostOperation::Call(req) => {
+                HostOperation::CallRaw(req) => {
                     assert_eq!(req.route_key, "test/double_impl", "route_key mismatch");
                     assert_eq!(req.payload.len(), 4, "payload should be 4 bytes");
 
@@ -160,7 +160,7 @@ async fn dynclib_double_dispatch() {
                     HostOperationResult::Bytes(doubled)
                 }
                 other => panic!(
-                    "expected HostOperation::Call, got {:?}",
+                    "expected HostOperation::CallRaw, got {:?}",
                     std::mem::discriminant(&other)
                 ),
             }
@@ -179,19 +179,19 @@ async fn dynclib_double_dispatch() {
 
 /// Multiple dispatches -> verifies state does not leak between calls
 #[tokio::test]
-#[ignore]
+#[ignore = "requires fixture compilation"]
 async fn dynclib_multiple_dispatches() {
     let so_path = fixture_so_path();
     let host = DynclibHost::load(&so_path).expect("load SO");
-    let mut instance = host.instantiate(&test_config()).expect("instantiate");
+    let mut instance = instantiate_dynclib_workload(host, &test_config()).expect("instantiate");
 
     for x in [1i32, 5, 42, 100] {
         let req_bytes = make_envelope("test/double", x.to_le_bytes().to_vec());
 
-        let executor: HostAbiFn = Box::new(|pending| {
+        let executor: HostAbiFn = std::sync::Arc::new(|pending| {
             Box::pin(async move {
                 match pending {
-                    HostOperation::Call(req) => {
+                    HostOperation::CallRaw(req) => {
                         let val = i32::from_le_bytes([
                             req.payload[0],
                             req.payload[1],

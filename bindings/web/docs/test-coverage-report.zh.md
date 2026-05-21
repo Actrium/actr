@@ -2,9 +2,9 @@
 
 **生成日期**: 2026-01-08 (Phase 4 完成)
 **项目**: Actor-RTC Web
-**状态**: 🚀 **Phase 4: 传输层全面测试完成！**
+**状态**: 历史快照（Phase 4: 传输层测试扩展完成）
 
-> **注意**: Phase 4 后有多次代码重构（合并重复测试、删除弃用模块测试等），当前实际测试数为 **210** 个。下表中“当前”列反映最新统计。
+> **历史快照 / 非当前覆盖率事实**：本文是 2026-01-08 附近的测试覆盖记录，后续 Phase 8 和清理批次删除或重组了部分模块。下表中“当前”列只是本报告当时追加的统计口径，不应作为今天的覆盖率 truth；当前测试数请以 `cargo test` / CI 输出为准。
 
 ---
 
@@ -33,7 +33,7 @@
 | 模块 | 第二轮 | 第三轮 | 增量 | 状态 |
 |------|--------|--------|------|------|
 | `wire_pool.rs` | 14 | 28 | +14 | 🟢 优秀 |
-| `webrtc_recovery.rs` | 10 | 19 | +9 | 🟢 优秀 |
+| `webrtc_recovery.rs` | 10 | 19 | +9 | 历史优秀；该独立模块后续已删除 |
 | `mailbox_processor.rs` | 2 | 12 | +10 | 🟢 优秀 |
 | **第三轮总计** | **26** | **59** | **+33** | - |
 
@@ -91,7 +91,7 @@
 
 **测试质量**: ⭐⭐⭐⭐⭐ (全面覆盖)
 
-### 3. runtime-sw/src/error_handler.rs (16 tests)
+### 3. sw-host/src/error_handler.rs (16 tests)
 
 **覆盖功能**：
 - ✅ SwErrorHandler 创建
@@ -108,7 +108,7 @@
 
 **测试质量**: ⭐⭐⭐⭐⭐ (全面覆盖核心逻辑)
 
-### 4. runtime-sw/src/transport/wire_pool.rs (14 tests)
+### 4. sw-host/src/transport/wire_pool.rs (14 tests)
 
 **覆盖功能**：
 - ✅ WirePool 创建
@@ -156,21 +156,21 @@
 
 **测试质量**: ⭐⭐ (最小覆盖)
 
-### 9. runtime-sw/src/outbound/host_gate.rs (2 tests)
+### 9. sw-host/src/outbound/host_gate.rs (2 tests)
 
 **覆盖功能**：
 - ✅ HostGate 基本功能
 
 **测试质量**: ⭐⭐⭐ (基本覆盖)
 
-### 10. runtime-sw/src/inbound/mailbox_processor.rs (2 tests)
+### 10. sw-host/src/inbound/mailbox_processor.rs (2 tests)
 
 **覆盖功能**：
 - ✅ Mailbox 处理器基本测试
 
 **测试质量**: ⭐⭐ (占位测试)
 
-### 11. runtime-sw/src/webrtc_recovery.rs (10 tests)
+### 11. sw-host/src/webrtc_recovery.rs (历史，后续已删除)
 
 **覆盖功能**：
 - ✅ WebRtcRecoveryManager 创建
@@ -183,7 +183,7 @@
 
 **测试质量**: ⭐⭐⭐⭐ (核心功能覆盖)
 
-### 12. runtime-sw/src/lifecycle.rs (22 tests)
+### 12. sw-host/src/lifecycle.rs (22 tests)
 
 **覆盖功能**：
 - ✅ SwLifecycleManager 创建和 Default trait
@@ -202,7 +202,7 @@
 
 **测试质量**: ⭐⭐⭐⭐⭐ (全面覆盖核心逻辑)
 
-### 13. runtime-dom/src/error_reporter.rs (16 tests)
+### 13. dom-bridge/src/error_reporter.rs (16 tests)
 
 **覆盖功能**：
 - ✅ DomErrorReporter 创建
@@ -221,7 +221,7 @@
 
 **测试质量**: ⭐⭐⭐⭐⭐ (全面覆盖错误报告协议)
 
-### 14. runtime-dom/src/system.rs (3 tests)
+### 14. dom-bridge/src/system.rs (3 tests)
 
 **覆盖功能**：
 - ✅ DomSystem 基本测试
@@ -242,7 +242,7 @@
 
 ### 优先级 P0（核心逻辑，必须测试）
 
-1. **runtime-sw/src/transport/outproc_transport_manager.rs** (大文件，复杂逻辑)
+1. **sw-host/src/transport/outproc_transport_manager.rs**（历史缺口；当前仓库已无此文件）
    - 出站传输管理
    - 连接优先级
    - 重试逻辑
@@ -250,31 +250,31 @@
 
 ### 优先级 P1（重要逻辑，应该测试）
 
-3. **runtime-sw/src/inbound/mailbox_processor.rs** (2 tests → 需要更多)
+3. **sw-host/src/inbound/mailbox_processor.rs** (2 tests → 需要更多)
    - Mailbox 消息处理
    - 优先级队列
    - **建议**: 添加 10+ 测试以达到充分覆盖
 
-4. **runtime-dom/src/fastpath/*.rs**
+4. **dom-bridge/src/fastpath/*.rs**
    - Fast Path 注册和分发
    - 零拷贝传输
    - **建议**: 添加 20+ 测试
 
-5. **runtime-sw/src/transport/websocket_connection.rs**
+5. **sw-host/src/transport/websocket_connection.rs**
    - WebSocket 连接管理
    - **建议**: 添加 10+ 测试
 
-6. **runtime-sw/src/transport/webrtc_connection.rs**
+6. **sw-host/src/transport/webrtc_connection.rs**（历史缺口；当前仓库已无此独立文件，相关概念已收敛到 transport 其他模块/测试）
    - WebRTC 连接管理
    - **建议**: 添加 10+ 测试
 
 ### 优先级 P2（辅助逻辑，可选测试）
 
-7. **runtime-dom/src/transport/*.rs**
+7. **dom-bridge/src/transport/*.rs**
    - DOM 侧传输层
    - **建议**: 添加 15+ 测试
 
-8. **runtime-sw/src/context.rs**
+8. **sw-host/src/context.rs**
    - Actor 上下文
    - **建议**: 添加 8+ 测试
 
@@ -287,8 +287,8 @@
 | 层级 | 文件覆盖率 | 行覆盖率（估算） | 核心逻辑覆盖率 |
 |------|------------|------------------|----------------|
 | common | 5/7 (71%) | ~75% | 90% |
-| runtime-sw | 8/30 (27%) | ~45% | 75% |
-| runtime-dom | 2/15 (13%) | ~20% | 30% |
+| sw-host | 8/30 (27%) | ~45% | 75% |
+| dom-bridge | 2/15 (13%) | ~20% | 30% |
 | **整体** | **18/59 (31%)** | **~50%** | **70%** |
 
 ### 阶段性目标
@@ -303,7 +303,7 @@
 
 #### Phase 2 ✅ 完成！
 - [x] 测试函数数量 > 150 (✅ 达到 181, 121%)
-- [x] runtime-sw 核心模块 > 50% 覆盖 (✅ 75%)
+- [x] sw-host 核心模块 > 50% 覆盖 (✅ 75%)
 - [x] 所有已测试核心模块达到优秀级别
 - [x] wire_pool 全面覆盖 (28 tests, 100%)
 - [x] webrtc_recovery 全面覆盖 (19 tests, 95%)
@@ -360,16 +360,16 @@
 
 1. ✅ 为 common/error.rs 添加测试（已完成 18 个）
 2. ✅ 为 common/events.rs 添加测试（已完成 19 个）
-3. ✅ 为 runtime-sw/error_handler.rs 添加测试（已完成 16 个）
-4. ✅ 为 runtime-sw/transport/wire_pool.rs 添加测试（已完成 14 个）
-5. ✅ 为 runtime-dom/error_reporter.rs 添加测试（已完成 16 个）
-6. ✅ 为 runtime-sw/lifecycle.rs 添加测试（从 2 → 22 个）
-7. ✅ 为 runtime-sw/webrtc_recovery.rs 添加测试（从 1 → 10 个）
+3. ✅ 为 sw-host/error_handler.rs 添加测试（已完成 16 个）
+4. ✅ 为 sw-host/transport/wire_pool.rs 添加测试（已完成 14 个）
+5. ✅ 为 dom-bridge/error_reporter.rs 添加测试（已完成 16 个）
+6. ✅ 为 sw-host/lifecycle.rs 添加测试（从 2 → 22 个）
+7. ✅ 为 sw-host/webrtc_recovery.rs 添加测试（历史记录；该独立模块后续已删除）
 8. ✅ 达到测试函数总数 > 120（当前 129）
 
 ### 短期目标（本周）
 
-1. 为 outproc_transport_manager.rs 添加 15+ 测试
+1. 历史建议：为 outproc_transport_manager.rs 添加 15+ 测试（当前仓库已无此文件）
 2. 为 mailbox_processor.rs 添加 10+ 测试（目前 2 个）
 3. 为 fastpath 模块添加 20+ 测试
 4. 达到测试函数总数 > 150
@@ -419,8 +419,8 @@ cargo test --lib
 
 # 运行特定模块
 cargo test --lib -p actr-web-common
-cargo test --lib -p actr-runtime-sw
-cargo test --lib -p actr-runtime-dom
+cargo test --lib -p actr-sw-host
+cargo test --lib -p actr-dom-bridge
 ```
 
 ### WASM 测试
@@ -429,8 +429,8 @@ cargo test --lib -p actr-runtime-dom
 cargo install wasm-pack
 
 # 运行 WASM 测试
-wasm-pack test --headless --chrome crates/runtime-dom
-wasm-pack test --headless --chrome crates/runtime-sw
+wasm-pack test --headless --chrome crates/dom-bridge
+wasm-pack test --headless --chrome crates/sw-host
 ```
 
 ### 覆盖率报告
@@ -452,18 +452,18 @@ cargo tarpaulin --out Html --output-dir coverage
 |------|--------|--------|--------|------|
 | common/events.rs | 19 | 95% | 🟢 优秀 | - |
 | common/error.rs | 18 | 100% | 🟢 优秀 | - |
-| runtime-sw/error_handler.rs | 16 | 90% | 🟢 优秀 | - |
-| runtime-sw/lifecycle.rs | 22 | 95% | 🟢 优秀 | - |
-| runtime-dom/error_reporter.rs | 16 | 90% | 🟢 优秀 | - |
-| runtime-sw/transport/wire_pool.rs | 28 | 100% | 🟢 优秀 | - |
-| runtime-sw/webrtc_recovery.rs | 19 | 95% | 🟢 优秀 | - |
-| runtime-sw/inbound/mailbox_processor.rs | 12 | 90% | 🟢 优秀 | - |
+| sw-host/error_handler.rs | 16 | 90% | 🟢 优秀 | - |
+| sw-host/lifecycle.rs | 22 | 95% | 🟢 优秀 | - |
+| dom-bridge/error_reporter.rs | 16 | 90% | 🟢 优秀 | - |
+| sw-host/transport/wire_pool.rs | 28 | 100% | 🟢 优秀 | - |
+| sw-host/webrtc_recovery.rs | 19 | 95% | 历史优秀；后续已删除 | - |
+| sw-host/inbound/mailbox_processor.rs | 12 | 90% | 🟢 优秀 | - |
 | **transport/websocket_connection.rs** | **20** | **100%** | 🟢 优秀 | 🆕 新增 |
 | **transport/wire_builder.rs** | **13** | **95%** | 🟢 优秀 | 🆕 新增 |
 | **transport/wire_handle.rs** | **24** | **100%** | 🟢 优秀 | 🆕 新增 |
 | **transport/dest_transport.rs** | **15** | **90%** | 🟢 优秀 | 🆕 新增 |
-| runtime-sw/transport/outproc_transport_manager.rs | 0 | 0% | 🔴 缺失 | (P1) |
-| runtime-dom/fastpath/*.rs | 0 | 0% | 🔴 缺失 | (P1) |
+| sw-host/transport/outproc_transport_manager.rs | 0 | 0% | 历史缺口；当前仓库已无此文件 | (P1) |
+| dom-bridge/fastpath/*.rs | 0 | 0% | 🔴 缺失 | (P1) |
 
 ### 🎉 成就解锁
 

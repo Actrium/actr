@@ -98,13 +98,6 @@ pub fn default_dist_output_path(config_path: &Path, target: &str) -> Result<Path
     Ok(manifest_dir.join("dist").join(file_name))
 }
 
-pub fn default_pkg_output_path(config_path: &Path, target: &str) -> Result<PathBuf> {
-    Ok(PathBuf::from(default_package_file_name(
-        config_path,
-        target,
-    )?))
-}
-
 fn default_package_file_name(config_path: &Path, target: &str) -> Result<String> {
     let config = ConfigParser::from_manifest_file(config_path).with_context(|| {
         format!(
@@ -177,6 +170,10 @@ pub fn build_package(input: PackageBuildInput) -> Result<PackageBuildSummary> {
             target: input.target.clone(),
             hash: String::new(),
             size: None,
+            // Target `wasm32-wasip2` implies a Component binary in the
+            // Phase-1 toolchain; every other target leaves the kind
+            // unset so the resolver falls back to the legacy default.
+            kind: (input.target == "wasm32-wasip2").then_some(actr_pack::BinaryKind::Component),
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: Some(actr_pack::compute_key_id(&verifying_key.to_bytes())),

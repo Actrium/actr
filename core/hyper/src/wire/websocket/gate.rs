@@ -19,16 +19,15 @@ use crate::key_cache::AisKeyCache;
 use crate::lifecycle::CredentialState;
 use crate::wire::SignalingKeyFetcher;
 use crate::wire::webrtc::SignalingClient;
+use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{
-    AIdCredential, ActrId, ActrIdExt, DataStream, IdentityClaims, PayloadType, RpcEnvelope,
-};
+use actr_protocol::{AIdCredential, ActrId, DataStream, IdentityClaims, PayloadType, RpcEnvelope};
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use ed25519_dalek::{Signature, Verifier as Ed25519Verifier};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::{RwLock, mpsc, oneshot};
 
 /// Pending requests map type: request_id → (target_actor_id, oneshot response sender)
@@ -40,19 +39,19 @@ type PendingRequestsMap =
 /// When configured, gate will perform Ed25519 credential verification for each inbound connection:
 /// - Connections that fail verification are dropped without starting lane readers
 /// - Connections without credentials are treated as verification failures
-pub struct WsAuthContext {
+pub(crate) struct WsAuthContext {
     /// AIS signing public key cache (local hit verifies directly, miss fetches via signaling)
-    pub ais_key_cache: Arc<AisKeyCache>,
+    pub(crate) ais_key_cache: Arc<AisKeyCache>,
     /// Local ActrId (needed when requesting public key from signaling on cache miss)
-    pub actor_id: ActrId,
+    pub(crate) actor_id: ActrId,
     /// Local credential state (needed for signaling authentication on cache miss)
-    pub credential_state: CredentialState,
+    pub(crate) credential_state: CredentialState,
     /// Signaling client (used to fetch public key on cache miss)
-    pub signaling_client: Arc<dyn SignalingClient>,
+    pub(crate) signaling_client: Arc<dyn SignalingClient>,
 }
 
 /// WebSocketGate - receives and routes inbound WebSocket messages
-pub struct WebSocketGate {
+pub(crate) struct WebSocketGate {
     /// Inbound connection channel (taken once and moved into background task)
     conn_rx: tokio::sync::Mutex<Option<mpsc::Receiver<InboundWsConn>>>,
 
@@ -65,6 +64,10 @@ pub struct WebSocketGate {
 
     /// Inbound connection authentication context
     auth_ctx: Option<Arc<WsAuthContext>>,
+
+    /// Hook callback for WebSocket peer lifecycle events
+    /// (`WebSocketConnectStart` / `Connected` / `Disconnected`).
+    hook_callback: OnceLock<HookCallback>,
 }
 
 impl WebSocketGate {
@@ -86,7 +89,16 @@ impl WebSocketGate {
             pending_requests,
             data_stream_registry,
             auth_ctx: auth_ctx.map(Arc::new),
+            hook_callback: OnceLock::new(),
         }
+    }
+
+    /// Install the WebSocket peer-lifecycle hook callback.
+    ///
+    /// Idempotent: subsequent calls are silently ignored. Invoked once
+    /// during node startup.
+    pub fn set_hook_callback(&self, cb: HookCallback) {
+        let _ = self.hook_callback.set(cb);
     }
 
     /// Handle RpcEnvelope: Response wakes the waiting party, Request enqueues into Mailbox
@@ -258,7 +270,24 @@ impl WebSocketGate {
         pending_requests: PendingRequestsMap,
         data_stream_registry: Arc<DataStreamRegistry>,
         mailbox: Arc<dyn Mailbox>,
+        hook_callback: Option<HookCallback>,
     ) {
+        // Fire `WebSocketConnected` for the peer once the connection is
+        // accepted. Decoding the peer `ActrId` may fail if the source-id
+        // header is malformed — in that case we skip hooks but still run
+        // the lane readers so that the connection can fail-fast on its
+        // own terms.
+        let peer_id = ActrId::decode(&source_id[..]).ok();
+        if let (Some(peer), Some(cb)) = (peer_id.clone(), hook_callback.clone()) {
+            let cb_for_connected = cb.clone();
+            tokio::spawn(async move {
+                cb_for_connected(HookEvent::WebSocketConnected { peer_id: peer }).await;
+            });
+        }
+
+        // Count active per-lane reader tasks. When the last one exits
+        // we fire `WebSocketDisconnected` exactly once.
+        let active_lanes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         // Spawn per-PayloadType receive tasks
         for pt in [
             PayloadType::RpcReliable,
@@ -271,6 +300,10 @@ impl WebSocketGate {
             let pending = pending_requests.clone();
             let registry = data_stream_registry.clone();
             let mb = mailbox.clone();
+            let active_lanes = active_lanes.clone();
+            let peer_id_for_lane = peer_id.clone();
+            let hook_cb_for_lane = hook_callback.clone();
+            active_lanes.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
             tokio::spawn(async move {
                 // get_lane lazily creates the mpsc channel and registers in router
@@ -354,6 +387,16 @@ impl WebSocketGate {
                 }
 
                 tracing::debug!("📡 WS lane reader exited for {:?}", pt);
+
+                // Last lane out fires the disconnected hook exactly once.
+                let remaining = active_lanes
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+                    .saturating_sub(1);
+                if remaining == 0 {
+                    if let (Some(peer), Some(cb)) = (peer_id_for_lane, hook_cb_for_lane) {
+                        cb(HookEvent::WebSocketDisconnected { peer_id: peer }).await;
+                    }
+                }
             });
         }
     }
@@ -371,6 +414,7 @@ impl WebSocketGate {
         let pending_requests = self.pending_requests.clone();
         let data_stream_registry = self.data_stream_registry.clone();
         let auth_ctx = self.auth_ctx.clone();
+        let hook_cb = self.hook_callback.get().cloned();
 
         tokio::spawn(async move {
             tracing::info!("🚀 WebSocketGate receive loop started");
@@ -382,6 +426,20 @@ impl WebSocketGate {
                     source_id.len(),
                     credential_opt.is_some()
                 );
+
+                // Fire `WebSocketConnectStart` as soon as we observe an
+                // inbound connection, before verification — this mirrors
+                // how the WebRTC path emits `WebRtcConnectStart` before
+                // the selected ICE candidate pair is known.
+                if let (Some(cb), Ok(peer)) = (hook_cb.clone(), ActrId::decode(&source_id[..])) {
+                    let peer_clone = peer.clone();
+                    tokio::spawn(async move {
+                        cb(HookEvent::WebSocketConnectStart {
+                            peer_id: peer_clone,
+                        })
+                        .await;
+                    });
+                }
 
                 // Credential verification (if auth_ctx is configured)
                 if let Some(ref ctx) = auth_ctx {
@@ -411,6 +469,7 @@ impl WebSocketGate {
                         pending_requests.clone(),
                         data_stream_registry.clone(),
                         mailbox.clone(),
+                        hook_cb.clone(),
                     );
                 } else {
                     tracing::error!(
@@ -428,7 +487,7 @@ impl WebSocketGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actr_protocol::{ActrIdExt, ActrType, IdentityClaims, Realm};
+    use actr_protocol::{ActrType, IdentityClaims, Realm};
     use actr_runtime_mailbox::{MailboxStats, MessageRecord, StorageResult};
     use async_trait::async_trait;
     use ed25519_dalek::{Signer, SigningKey};
@@ -497,10 +556,10 @@ mod tests {
 
     #[async_trait]
     impl crate::wire::SignalingClient for NullSignaling {
-        async fn connect(&self) -> crate::transport::error::NetworkResult<()> {
+        async fn connect(&self) -> crate::transport::NetworkResult<()> {
             Ok(())
         }
-        async fn disconnect(&self) -> crate::transport::error::NetworkResult<()> {
+        async fn disconnect(&self) -> crate::transport::NetworkResult<()> {
             Ok(())
         }
         fn is_connected(&self) -> bool {
@@ -520,7 +579,7 @@ mod tests {
         async fn send_register_request(
             &self,
             _: actr_protocol::RegisterRequest,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> {
+        ) -> crate::transport::NetworkResult<actr_protocol::RegisterResponse> {
             unimplemented!()
         }
         async fn send_unregister_request(
@@ -528,7 +587,7 @@ mod tests {
             _: ActrId,
             _: AIdCredential,
             _: Option<String>,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::UnregisterResponse> {
+        ) -> crate::transport::NetworkResult<actr_protocol::UnregisterResponse> {
             unimplemented!()
         }
         async fn send_heartbeat(
@@ -538,7 +597,7 @@ mod tests {
             _: actr_protocol::ServiceAvailabilityState,
             _: f32,
             _: f32,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::Pong> {
+        ) -> crate::transport::NetworkResult<actr_protocol::Pong> {
             unimplemented!()
         }
         async fn send_route_candidates_request(
@@ -546,27 +605,25 @@ mod tests {
             _: ActrId,
             _: AIdCredential,
             _: actr_protocol::RouteCandidatesRequest,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::RouteCandidatesResponse>
-        {
+        ) -> crate::transport::NetworkResult<actr_protocol::RouteCandidatesResponse> {
             unimplemented!()
         }
         async fn send_credential_update_request(
             &self,
             _: ActrId,
             _: AIdCredential,
-        ) -> crate::transport::error::NetworkResult<actr_protocol::RegisterResponse> {
+        ) -> crate::transport::NetworkResult<actr_protocol::RegisterResponse> {
             unimplemented!()
         }
         async fn send_envelope(
             &self,
             _: actr_protocol::SignalingEnvelope,
-        ) -> crate::transport::error::NetworkResult<()> {
+        ) -> crate::transport::NetworkResult<()> {
             unimplemented!()
         }
         async fn receive_envelope(
             &self,
-        ) -> crate::transport::error::NetworkResult<Option<actr_protocol::SignalingEnvelope>>
-        {
+        ) -> crate::transport::NetworkResult<Option<actr_protocol::SignalingEnvelope>> {
             unimplemented!()
         }
         async fn get_signing_key(
@@ -574,8 +631,8 @@ mod tests {
             _: ActrId,
             _: AIdCredential,
             _: u32,
-        ) -> crate::transport::error::NetworkResult<(u32, Vec<u8>)> {
-            Err(crate::transport::error::NetworkError::ConnectionError(
+        ) -> crate::transport::NetworkResult<(u32, Vec<u8>)> {
+            Err(crate::transport::NetworkError::ConnectionError(
                 "should not be called".into(),
             ))
         }

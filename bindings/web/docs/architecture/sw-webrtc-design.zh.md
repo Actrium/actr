@@ -91,8 +91,8 @@
 ```
 
 **代码位置**：
-- SW 请求: `crates/runtime-sw/src/transport/wire_builder.rs:58-94`
-- SW 创建连接: `crates/runtime-sw/src/transport/wire_builder.rs:116-132`
+- SW 请求: `crates/sw-host/src/transport/wire_builder.rs:58-94`
+- SW 创建连接: `crates/sw-host/src/transport/wire_builder.rs:116-132`
 
 ### 阶段 2️⃣：消息发送
 
@@ -131,9 +131,9 @@ DOM: RtcDataChannel.send(data)
 ```
 
 **代码位置**：
-- WirePool 管理: `crates/runtime-sw/src/transport/wire_pool.rs:20-29`
-- WebRtcConnection: `crates/runtime-sw/src/transport/wire_handle.rs:14-88`
-- get_lane TODO: `crates/runtime-sw/src/transport/wire_handle.rs` (✅ 已实现)
+- WirePool 管理: `crates/sw-host/src/transport/wire_pool.rs:20-29`
+- WebRtcConnection: `crates/sw-host/src/transport/wire_handle.rs:14-88`
+- get_lane TODO: `crates/sw-host/src/transport/wire_handle.rs` (✅ 已实现)
 
 ## 🔑 关键技术点
 
@@ -197,8 +197,8 @@ for &conn_type in &conn_types {
 ```
 
 **代码位置**：
-- 优先级: `crates/runtime-sw/src/transport/wire_handle.rs:135-140`
-- 选择逻辑: `crates/runtime-sw/src/transport/dest_transport.rs:1`
+- 优先级: `crates/sw-host/src/transport/wire_handle.rs:135-140`
+- 选择逻辑: `crates/sw-host/src/transport/dest_transport.rs:1`
 
 ## 📊 与 WebSocket 对比
 
@@ -237,10 +237,10 @@ for &conn_type in &conn_types {
 - **WebRtcRecoveryManager** DOM 通知重建回路未完全闭合
 
 **代码位置**：
-- get_lane 实现: `crates/runtime-sw/src/transport/wire_handle.rs`
-- Gate 路由: `crates/runtime-sw/src/system.rs:init_message_handler`
-- PeerGate: `crates/runtime-sw/src/outbound/peer_gate.rs`
-- Register port: `crates/runtime-sw/src/client_runtime.rs:register_datachannel_port`
+- get_lane 实现: `crates/sw-host/src/transport/wire_handle.rs`
+- Gate 路由: `crates/sw-host/src/system.rs:init_message_handler`
+- PeerGate: `crates/sw-host/src/outbound/peer_gate.rs`
+- Register port: `crates/sw-host/src/runtime.rs:register_datachannel_port`
 - DOM 桥接: `packages/actr-dom/src/webrtc-coordinator.ts:attachDataChannel`
 
 ## 🎯 设计优势

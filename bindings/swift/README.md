@@ -7,6 +7,20 @@ Swift Package for distributing the ACTR (Actor-RTC) framework via a prebuilt XCF
 - **ActrFFI.xcframework**: Precompiled iOS/macOS XCFramework published through GitHub Releases (remote `binaryTarget`).
 - **Actr**: Swift API that includes UniFFI-generated bindings and high-level helpers.
 
+## Relationship to the Rust Node Typestate
+
+The native host exposes a typestate chain
+`Node<Init> → Node<Attached> → Node<Registered> → ActrRef`
+(`from_config_file` → `attach_*` → `register` → `start`) so Rust-side
+system code can hook into each transition. The Swift API collapses the
+pipeline into a one-shot `ActrNode.from(packageConfig:packagePath:)`
+followed by `start()`: iOS/macOS app developers only see the node and
+the live `ActrRef`. The `Node<S>` typestate is intentionally Rust-layer
+power-user territory — bindings do not re-export it. If fine-grained
+control is required (custom `TrustProvider`, pre-built `Hyper`,
+attaching a Rust `Workload`, etc.), use the `actr_hyper::{Hyper, Node}`
+API directly from native Rust.
+
 ## Workspace Layout
 
 The Swift build scripts build `libactr` from the monorepo workspace root.

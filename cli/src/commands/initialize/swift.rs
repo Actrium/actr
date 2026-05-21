@@ -68,13 +68,13 @@ impl ProjectInitializer for SwiftInitializer {
             info!("  cd {}", context.project_dir.display());
         }
         if context.echo_role == Some(EchoRole::Service) {
-            info!("  actr install  # Create manifest.lock.toml for the local service project");
+            info!("  actr deps install  # Create manifest.lock.toml for the local service project");
             info!(
                 "  actr gen -l swift  # Generate Actor framework code into {}/Generated",
                 template_context.project_name_pascal
             );
         } else {
-            info!("  actr install  # Install project dependencies from manifest.toml");
+            info!("  actr deps install  # Install project dependencies from manifest.toml");
             info!(
                 "  actr gen -l swift  # Generate Actor framework code into {}/Generated",
                 template_context.project_name_pascal

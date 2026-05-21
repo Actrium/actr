@@ -3,7 +3,7 @@ mod stream_server_service;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 
-pub use actr_runtime_sw::*;
+pub use actr_sw_host::*;
 
 #[wasm_bindgen(start)]
 pub fn init() {
@@ -17,7 +17,7 @@ pub fn init() {
 pub fn register_stream_server_handler() {
     log::info!("[DataStreamServer] Registering stream server workload");
 
-    actr_runtime_sw::register_workload(actr_runtime_sw::WasmWorkload::new(Rc::new(
+    actr_sw_host::register_workload(actr_sw_host::WasmWorkload::new(Rc::new(
         |route_key, bytes, ctx| {
             let route_key = route_key.to_string();
             let bytes = bytes.to_vec();

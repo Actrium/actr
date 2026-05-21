@@ -285,13 +285,13 @@ sleep 2
 
 # Step 3.5: Install actr-a dependencies (resolve from actrix registry after actr-b registered)
 echo ""
-echo "📦 Installing actr-a dependencies (actr install)..."
+echo "📦 Installing actr-a dependencies (actr deps install)..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd "$WORKSPACE_ROOT/media-relay/actr-a"
 INSTALL_LOG="$LOG_DIR/actr-install-actr-a.log"
 $ACTR_GEN_CMD deps install > "$INSTALL_LOG" 2>&1 || {
-    echo -e "${YELLOW}⚠️  actr install returned non-zero, check log${NC}"
+    echo -e "${YELLOW}⚠️  actr deps install returned non-zero, check log${NC}"
 }
 echo -e "${GREEN}✅ actr-a dependencies resolved${NC}"
 
@@ -390,7 +390,7 @@ if grep -q "Received frame" "$LOG_DIR/actr-b.log"; then
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "✅ Validated:"
-    echo "   • Real ActrSystem lifecycle"
+    echo "   • Real ActrNode lifecycle"
     echo "   • Real WebRTC P2P connection establishment"
     echo "   • Real RPC message routing and dispatch"
     echo "   • Real protobuf encode/decode"

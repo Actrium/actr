@@ -65,7 +65,9 @@ pub use actr_protocol::{ActrError, ActrId};
 
 // Storage layer core interfaces
 pub use error::{StorageError, StorageResult};
-pub use mailbox::{Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus};
+pub use mailbox::{
+    Mailbox, MailboxDepthObserver, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
+};
 
 // DLQ core interfaces
 pub use dlq::{DeadLetterQueue, DlqQuery, DlqRecord, DlqStats};
@@ -81,7 +83,7 @@ pub mod prelude {
 
     pub use crate::error::{StorageError, StorageResult};
     pub use crate::mailbox::{
-        Mailbox, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
+        Mailbox, MailboxDepthObserver, MailboxStats, MessagePriority, MessageRecord, MessageStatus,
     };
     #[cfg(feature = "sqlite")]
     pub use crate::sqlite::{SqliteConfig, SqliteMailbox};

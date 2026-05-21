@@ -55,9 +55,9 @@ RELEASE_DIR="$SCRIPT_DIR/release"
 MFR_KEY_FILE="$RELEASE_DIR/dev-key.json"
 MFR_NAME="acme"
 
-# .actr packages
-SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-unknown-unknown.actr"
-CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-unknown-unknown.actr"
+# .actr packages (Phase 3 Component Model build — wasm32-wasip2)
+SERVER_ACTR_PACKAGE="$RELEASE_DIR/acme-EchoService-0.1.0-wasm32-wasip2.actr"
+CLIENT_ACTR_PACKAGE="$RELEASE_DIR/acme-echo-client-app-0.1.0-wasm32-wasip2.actr"
 
 # Config files
 SERVER_ACTR_TOML="$SCRIPT_DIR/server-actr.toml"

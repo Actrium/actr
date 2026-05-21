@@ -1,5 +1,7 @@
 # 零拷贝优化阶段 2 完成总结
 
+> **历史快照 / 非当前实现指南**：本文记录 2026-01-08 阶段 2 Transferable Objects 优化的完成摘要。当前实现请以 `bindings/web/crates/common/src/zero_copy.rs`、`sw-host/src/transport/lane.rs`、`dom-bridge/src/transport/lane.rs` 为准；本文中的测试数、文件清单和性能收益是当时记录，不代表当前覆盖率事实。
+
 ## 实施日期
 2026-01-08
 
@@ -37,7 +39,7 @@
 
 ### 2. 实现 DOM 端 Transferable Objects
 
-**文件**：`crates/runtime-dom/src/transport/lane.rs`
+**文件**：`crates/dom-bridge/src/transport/lane.rs`
 
 #### 新增方法
 1. **`send_with_transfer()`**：使用 Transferable Objects 发送
@@ -64,7 +66,7 @@ let result = js_sys::Reflect::apply(
 
 ### 3. 实现 Service Worker 端 Transferable Objects
 
-**文件**：`crates/runtime-sw/src/transport/lane.rs`
+**文件**：`crates/sw-host/src/transport/lane.rs`
 
 #### 新增方法
 与 DOM 端相同：
@@ -92,8 +94,8 @@ use wasm_bindgen::{JsCast, JsValue};
 ```
 修改：
   crates/common/src/zero_copy.rs                  (+65 行，新增 2 个函数 + 7 个测试)
-  crates/runtime-dom/src/transport/lane.rs        (+72 行，新增 2 个方法 + 修改导入)
-  crates/runtime-sw/src/transport/lane.rs         (+80 行，新增 2 个方法 + 修改导入)
+  crates/dom-bridge/src/transport/lane.rs        (+72 行，新增 2 个方法 + 修改导入)
+  crates/sw-host/src/transport/lane.rs         (+80 行，新增 2 个方法 + 修改导入)
 
 新增：
   docs/zero-copy-stage2-summary.zh.md             (this document)

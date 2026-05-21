@@ -112,21 +112,43 @@ pub fn pin_echo_service_dependency_version(project_dir: &Path, manufacturer: &st
     let actr_toml_path = project_dir.join("manifest.toml");
     let content = fs::read_to_string(&actr_toml_path)
         .with_context(|| format!("failed to read {}", actr_toml_path.display()))?;
-    let target = "echo-service = {}";
-    let replacement =
-        format!("echo-service = {{ actr_type = \"{manufacturer}:EchoService:1.0.0\" }}");
 
-    if !content.contains(target) {
-        bail!(
-            "failed to pin echo dependency version in {}: '{target}' not found",
-            actr_toml_path.display()
-        );
+    // Newer Rust echo template renders the dependency with manufacturer
+    // already inlined as `EchoService = { actr_type = "<mfr>:EchoService:1.0.0" }`.
+    // Detect that case and skip — no pinning needed.
+    let already_rendered = format!("EchoService = {{ actr_type = \"{manufacturer}:");
+    if content.contains(&already_rendered) {
+        return Ok(());
     }
 
-    let rewritten = content.replacen(target, &replacement, 1);
-    fs::write(&actr_toml_path, rewritten)
-        .with_context(|| format!("failed to write {}", actr_toml_path.display()))?;
-    Ok(())
+    // Two placeholder shapes appear across templates:
+    // - Rust legacy: `echo-service = {}`
+    // - TS / Swift current: `EchoService = {}`
+    let placeholders: &[(&str, String)] = &[
+        (
+            "EchoService = {}",
+            format!("EchoService = {{ actr_type = \"{manufacturer}:EchoService:1.0.0\" }}"),
+        ),
+        (
+            "echo-service = {}",
+            format!("echo-service = {{ actr_type = \"{manufacturer}:EchoService:1.0.0\" }}"),
+        ),
+    ];
+
+    for (placeholder, replacement) in placeholders {
+        if content.contains(placeholder) {
+            let rewritten = content.replacen(placeholder, replacement, 1);
+            fs::write(&actr_toml_path, rewritten)
+                .with_context(|| format!("failed to write {}", actr_toml_path.display()))?;
+            return Ok(());
+        }
+    }
+
+    bail!(
+        "failed to pin echo dependency version in {}: neither 'EchoService = {{}}' nor \
+         'echo-service = {{}}' placeholders nor a pre-rendered EchoService entry were found",
+        actr_toml_path.display()
+    );
 }
 
 pub fn align_rust_project_with_workspace(project_dir: &Path) -> Result<()> {
@@ -479,7 +501,7 @@ impl Drop for LoggedProcess {
 pub struct MockSignaling {
     pub signaling_ws_url: String,
     _runtime: tokio::runtime::Runtime,
-    _server: std::sync::Arc<tokio::sync::Mutex<actr_mock_signaling::MockSignalingServer>>,
+    _server: std::sync::Arc<tokio::sync::Mutex<actr_mock_actrix::MockActrixServer>>,
 }
 
 impl MockSignaling {
@@ -490,7 +512,7 @@ impl MockSignaling {
             .context("failed to build tokio runtime for mock signaling")?;
 
         let server = rt
-            .block_on(actr_mock_signaling::MockSignalingServer::start())
+            .block_on(actr_mock_actrix::MockActrixServer::start())
             .context("failed to start mock signaling server")?;
 
         let ws_url = server.url();
@@ -632,7 +654,7 @@ impl LocalRustEchoService {
         align_project_with_local_actrix(&service_dir)?;
         align_rust_project_with_workspace(&service_dir)?;
         let install_out = run_actr(&["install"], &service_dir);
-        ensure_success(&install_out, "actr install rust service")?;
+        ensure_success(&install_out, "actr deps install rust service")?;
         let gen_out = run_actr(&["gen", "-l", "rust"], &service_dir);
         ensure_success(&gen_out, "actr gen rust service")?;
         cargo_build(&service_dir);
@@ -659,9 +681,42 @@ impl LocalRustEchoService {
 }
 
 fn rewrite_project_realm_id(project_dir: &Path, realm_id: u32) -> Result<()> {
-    let actr_toml_path = project_dir.join("manifest.toml");
-    let content = fs::read_to_string(&actr_toml_path)
-        .with_context(|| format!("failed to read {}", actr_toml_path.display()))?;
+    // realm_id placement varies by template:
+    // - Rust echo (split layout): runtime config goes to `actr.toml`; the
+    //   service subproject has no deployment file at all (services are
+    //   realm-neutral packages) so we skip silently.
+    // - TS / Swift / Kotlin echo (single-file layout): realm_id still lives
+    //   inline in `manifest.toml`.
+    // Visit every candidate, rewrite where the line exists, no-op otherwise.
+    let candidates = ["actr.toml", "manifest.toml"];
+    let mut visited_any = false;
+    let mut rewrote_any = false;
+    for filename in candidates {
+        let path = project_dir.join(filename);
+        if !path.exists() {
+            continue;
+        }
+        visited_any = true;
+        if rewrite_realm_id_in_file(&path, realm_id)? {
+            rewrote_any = true;
+        }
+    }
+    if !visited_any {
+        bail!(
+            "no actr.toml or manifest.toml under {}",
+            project_dir.display()
+        );
+    }
+    let _ = rewrote_any;
+    Ok(())
+}
+
+/// Returns `true` when a `realm_id =` line was found and rewritten;
+/// `false` when the file simply has no realm_id (e.g. a service-only
+/// `manifest.toml` whose deployment lives elsewhere).
+fn rewrite_realm_id_in_file(path: &Path, realm_id: u32) -> Result<bool> {
+    let content =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
 
     let mut replaced = false;
     let mut rewritten = String::with_capacity(content.len() + 32);
@@ -680,19 +735,15 @@ fn rewrite_project_realm_id(project_dir: &Path, realm_id: u32) -> Result<()> {
     }
 
     if !replaced {
-        bail!(
-            "failed to rewrite realm_id in {}: realm_id line not found",
-            actr_toml_path.display()
-        );
+        return Ok(false);
     }
 
     if !content.ends_with('\n') {
         rewritten.pop();
     }
 
-    fs::write(&actr_toml_path, rewritten)
-        .with_context(|| format!("failed to write {}", actr_toml_path.display()))?;
-    Ok(())
+    fs::write(path, rewritten).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(true)
 }
 
 fn ensure_realm_exists(sqlite_dir: &Path, realm_id: u32) -> Result<()> {

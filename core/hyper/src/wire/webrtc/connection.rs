@@ -1,11 +1,11 @@
 //! WebRTC P2P Connection implementation
 
-use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
 use crate::transport::session::ConnectionSession;
 use crate::transport::{
     ConnType, DataLane, NetworkError, NetworkResult, WebRtcDataLane, WireHandle,
 };
-use crate::wire::webrtc::signaling::{HookCallback, HookEvent};
+use crate::transport::{ConnectionEvent, ConnectionState};
+use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
 use async_trait::async_trait;
@@ -27,7 +27,7 @@ type LaneCache<const N: usize> = Arc<RwLock<[Option<Arc<dyn DataLane>>; N]>>;
 
 /// WebRtcConnection - WebRTC P2P Connect
 #[derive(Clone)]
-pub struct WebRtcConnection {
+pub(crate) struct WebRtcConnection {
     /// Peer ID for event identification
     peer_id: ActrId,
 
@@ -105,18 +105,8 @@ impl WebRtcConnection {
         }
     }
 
-    /// Get peer ID
-    pub fn peer_id(&self) -> &ActrId {
-        &self.peer_id
-    }
-
-    /// Get session reference
-    pub fn session(&self) -> &ConnectionSession {
-        &self.session
-    }
-
     /// Get session ID
-    pub fn session_id(&self) -> u64 {
+    pub(crate) fn session_id(&self) -> u64 {
         self.session.session_id
     }
 
@@ -232,26 +222,11 @@ impl WebRtcConnection {
         }
     }
 
-    /// Install a state-change handler on the underlying RTCPeerConnection.
+    /// Mark the connection as connected.
     ///
-    /// This keeps `connected` in sync with the WebRTC connection state and
-    /// proactively closes the PeerConnection and clears internal caches when
-    /// entering a terminal state (Disconnected/Failed/Closed).
-    pub fn install_state_change_handler(&self) {
-        let this = self.clone();
-
-        self.peer_connection
-            .on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
-                let this = this.clone();
-
-                Box::pin(async move {
-                    this.handle_state_change(state).await;
-                })
-            }));
-    }
-
-    /// establish Connect（WebRTC Connect already alreadyvia signaling establish ， this in only is mark record ）
-    pub async fn connect(&self) -> NetworkResult<()> {
+    /// The underlying WebRTC connection has already been established via
+    /// signaling; this call only records the local "connected" flag.
+    pub(crate) async fn connect(&self) -> NetworkResult<()> {
         *self.connected.write().await = true;
         Ok(())
     }
@@ -269,17 +244,6 @@ impl WebRtcConnection {
             session_id: self.session.session_id,
             payload_type,
         });
-    }
-
-    /// Subscribe to connection events
-    pub fn subscribe_events(&self) -> broadcast::Receiver<ConnectionEvent> {
-        self.event_tx.subscribe()
-    }
-
-    /// Checkwhether already Connect
-    #[inline]
-    pub fn is_connected(&self) -> bool {
-        !self.session.is_closed()
     }
 
     /// Return a snapshot of the current DataChannel cache.
@@ -829,16 +793,6 @@ impl WebRtcConnection {
         ssrcs.get(track_id).copied()
     }
 
-    /// GetorCreate MediaTrack Lane（ carry Cache）
-    ///
-    /// # Arguments
-    /// - `_stream_id`: Media stream ID
-    ///
-    /// backwardaftercompatible hold Method：create_lane adjust usage get_lane
-    pub async fn create_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
-        self.get_lane(payload_type).await
-    }
-
     /// Register received DataChannel (for passive side)
     ///
     /// When receiving an Offer, the passive side should register DataChannels
@@ -1032,7 +986,7 @@ impl WireHandle for WebRtcConnection {
     }
 
     fn is_connected(&self) -> bool {
-        Self::is_connected(self)
+        !self.session.is_closed()
     }
 
     async fn close(&self) -> NetworkResult<()> {
@@ -1049,7 +1003,7 @@ impl WireHandle for WebRtcConnection {
 
     fn identity(&self) -> Option<crate::transport::WireIdentity> {
         Some(crate::transport::WireIdentity::WebRtc {
-            peer_id: self.peer_id().clone(),
+            peer_id: self.peer_id.clone(),
             session_id: self.session_id(),
         })
     }

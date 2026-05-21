@@ -1,76 +1,110 @@
-//! Native platform provider (filesystem + SQLite)
+//! Native platform provider (filesystem + SQLite).
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use actr_platform_traits::{CryptoProvider, KvStore, PlatformError, PlatformProvider};
 
 use crate::crypto::NativeCryptoProvider;
 
-/// Native platform provider backed by filesystem and SQLite.
+const INSTANCE_UID_FILE: &str = ".hyper-instance-uid";
+
+/// Native platform provider backed by a filesystem directory and SQLite.
+///
+/// All provider state lives under `data_dir`. The directory is created on
+/// first use; callers never have to set it up.
 pub struct NativePlatformProvider {
+    data_dir: PathBuf,
     crypto: Arc<NativeCryptoProvider>,
+    data_dir_ready: Mutex<bool>,
 }
 
 impl NativePlatformProvider {
-    pub fn new() -> Self {
+    /// Build a provider rooted at `data_dir`.
+    ///
+    /// The directory does not need to exist yet — it's created lazily on the
+    /// first method call that needs it.
+    pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
+            data_dir: data_dir.into(),
             crypto: Arc::new(NativeCryptoProvider),
+            data_dir_ready: Mutex::new(false),
         }
     }
-}
 
-impl Default for NativePlatformProvider {
-    fn default() -> Self {
-        Self::new()
+    async fn ensure_data_dir(&self) -> Result<(), PlatformError> {
+        let mut ready = self.data_dir_ready.lock().await;
+        if *ready {
+            return Ok(());
+        }
+        tokio::fs::create_dir_all(&self.data_dir)
+            .await
+            .map_err(|e| {
+                PlatformError::Io(format!(
+                    "failed to create data_dir `{}`: {e}",
+                    self.data_dir.display()
+                ))
+            })?;
+        *ready = true;
+        Ok(())
     }
 }
 
 #[async_trait]
 impl PlatformProvider for NativePlatformProvider {
-    async fn open_kv_store(&self, namespace: &str) -> Result<Arc<dyn KvStore>, PlatformError> {
-        let path = std::path::Path::new(namespace);
-        let store = actr_hyper::ActorStore::open(path)
-            .await
-            .map_err(|e| PlatformError::Storage(format!("failed to open ActorStore: {e}")))?;
-        debug!(namespace, "native KV store opened");
-        Ok(Arc::new(store))
-    }
+    async fn instance_uid(&self) -> Result<String, PlatformError> {
+        self.ensure_data_dir().await?;
+        let uid_file = self.data_dir.join(INSTANCE_UID_FILE);
 
-    async fn load_or_create_instance_id(&self, data_dir: &str) -> Result<String, PlatformError> {
-        let id_file = std::path::Path::new(data_dir).join(".hyper-instance-id");
-
-        match tokio::fs::read_to_string(&id_file).await {
+        match tokio::fs::read_to_string(&uid_file).await {
             Ok(raw) => {
                 let id = raw.trim();
                 if !id.is_empty() {
                     return Ok(id.to_string());
                 }
-                warn!("instance_id file is empty; generating a new one");
+                warn!("instance_uid file is empty; regenerating");
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => {
                 return Err(PlatformError::Io(format!(
-                    "failed to read instance_id: {e}"
+                    "failed to read instance_uid: {e}"
                 )));
             }
         }
 
         let new_id = uuid::Uuid::new_v4().to_string();
-        tokio::fs::write(&id_file, &new_id)
+        tokio::fs::write(&uid_file, &new_id)
             .await
-            .map_err(|e| PlatformError::Io(format!("failed to write instance_id: {e}")))?;
-        info!(instance_id = %new_id, "generated new instance_id");
+            .map_err(|e| PlatformError::Io(format!("failed to write instance_uid: {e}")))?;
+        info!(instance_uid = %new_id, "generated new instance_uid");
         Ok(new_id)
     }
 
-    async fn ensure_dir(&self, path: &str) -> Result<(), PlatformError> {
-        tokio::fs::create_dir_all(path)
+    async fn secret_store(&self, namespace: &str) -> Result<Arc<dyn KvStore>, PlatformError> {
+        self.ensure_data_dir().await?;
+        // `namespace` is resolved as a filesystem path — ActorStore expects a
+        // writable SQLite location. Callers compose absolute paths through
+        // Hyper's NamespaceResolver today, so we pass it through verbatim.
+        let path = Path::new(namespace);
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                PlatformError::Io(format!(
+                    "failed to create secret store parent `{}`: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let store = actr_hyper::ActorStore::open(path)
             .await
-            .map_err(|e| PlatformError::Io(format!("failed to create directory `{path}`: {e}")))?;
-        Ok(())
+            .map_err(|e| PlatformError::Storage(format!("failed to open ActorStore: {e}")))?;
+        debug!(namespace, "native secret store opened");
+        Ok(Arc::new(store))
     }
 
     fn crypto(&self) -> Arc<dyn CryptoProvider> {
@@ -84,34 +118,34 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn ensure_dir_creates_nested() {
+    async fn instance_uid_stable_across_calls() {
         let dir = TempDir::new().unwrap();
-        let nested = dir.path().join("a/b/c");
-        let provider = NativePlatformProvider::new();
+        let provider = NativePlatformProvider::new(dir.path());
 
-        provider.ensure_dir(nested.to_str().unwrap()).await.unwrap();
-        assert!(nested.exists());
-    }
-
-    #[tokio::test]
-    async fn instance_id_stable_across_calls() {
-        let dir = TempDir::new().unwrap();
-        let provider = NativePlatformProvider::new();
-        let dir_str = dir.path().to_str().unwrap();
-
-        let id1 = provider.load_or_create_instance_id(dir_str).await.unwrap();
-        let id2 = provider.load_or_create_instance_id(dir_str).await.unwrap();
+        let id1 = provider.instance_uid().await.unwrap();
+        let id2 = provider.instance_uid().await.unwrap();
         assert_eq!(id1, id2);
     }
 
     #[tokio::test]
-    async fn kv_store_roundtrip() {
+    async fn instance_uid_creates_data_dir_lazily() {
+        let parent = TempDir::new().unwrap();
+        let nested = parent.path().join("a/b/c");
+        assert!(!nested.exists());
+
+        let provider = NativePlatformProvider::new(&nested);
+        provider.instance_uid().await.unwrap();
+        assert!(nested.exists());
+    }
+
+    #[tokio::test]
+    async fn secret_store_roundtrip() {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let provider = NativePlatformProvider::new();
+        let provider = NativePlatformProvider::new(dir.path());
 
         let store = provider
-            .open_kv_store(db_path.to_str().unwrap())
+            .secret_store(db_path.to_str().unwrap())
             .await
             .unwrap();
 

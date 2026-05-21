@@ -9,18 +9,18 @@ use std::time::Duration;
 ///
 /// Applies only to transient failures. Non-transient errors are returned immediately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RetryPolicy {
+pub(crate) struct RetryPolicy {
     /// Maximum number of attempts (1 = no retry, 2 = one retry, etc.)
-    pub max_attempts: u32,
+    pub(crate) max_attempts: u32,
     /// Initial backoff delay between attempts.
-    pub initial_delay: Duration,
+    pub(crate) initial_delay: Duration,
     /// Maximum backoff delay cap.
-    pub max_delay: Duration,
+    pub(crate) max_delay: Duration,
 }
 
 /// DataChannel QoS configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DataChannelQoS {
+pub(crate) enum DataChannelQoS {
     /// Signaling: ordered, reliable
     Signal,
 
@@ -33,7 +33,7 @@ pub enum DataChannelQoS {
 
 /// DataLane type identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DataLaneType {
+pub(crate) enum DataLaneType {
     /// WebRTC DataChannel (with QoS)
     WebRtcDataChannel(DataChannelQoS),
 
@@ -42,7 +42,7 @@ pub enum DataLaneType {
 }
 
 /// PayloadType routing extension
-pub trait PayloadTypeExt {
+pub(crate) trait PayloadTypeExt {
     /// Get the list of supported DataLane types (ordered by priority)
     fn data_lane_types(self) -> &'static [DataLaneType];
 
@@ -119,14 +119,8 @@ impl PayloadTypeExt for PayloadType {
 impl DataLaneType {
     /// Determine if WebRTC connection is needed for this DataLane Type
     #[inline]
-    pub fn needs_webrtc(self) -> bool {
+    pub(crate) fn needs_webrtc(self) -> bool {
         matches!(self, DataLaneType::WebRtcDataChannel(_))
-    }
-
-    /// Check if this DataLane Type supports WebSocket
-    #[inline]
-    pub fn supports_websocket(self) -> bool {
-        matches!(self, DataLaneType::WebSocket)
     }
 }
 

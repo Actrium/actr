@@ -26,12 +26,6 @@ impl DummyContext {
         }
     }
 
-    /// Set caller id (useful for tests that verify propagation).
-    pub fn with_caller_id(mut self, caller_id: Option<ActrId>) -> Self {
-        self.caller_id = caller_id;
-        self
-    }
-
     /// Override request id for deterministic testing.
     pub fn with_request_id(mut self, request_id: impl Into<String>) -> Self {
         self.request_id = request_id.into();
@@ -43,7 +37,8 @@ impl DummyContext {
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl Context for DummyContext {
     fn self_id(&self) -> &ActrId {
         &self.self_id

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
 use actr_framework_protoc_codegen::{GeneratorRole, ModernGenerator, RemoteServiceInfo};
-use actr_protocol::{ActrType, ActrTypeExt, PackageName, ServiceName};
+use actr_protocol::{ActrType, PackageName, ServiceName};
 
 /// Proto source type enum — simplified design for compile-time routing
 #[derive(Debug, Clone, PartialEq)]

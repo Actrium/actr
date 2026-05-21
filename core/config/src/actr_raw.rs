@@ -91,6 +91,23 @@ pub struct RuntimeRawConfig {
     #[serde(default)]
     pub package: Option<RawPackagePathConfig>,
 
+    /// Trust anchors for verifying `.actr` package signatures. One entry =
+    /// a single provider; multiple entries = auto-chained (first match wins).
+    ///
+    /// Example:
+    /// ```toml
+    /// [[trust]]
+    /// kind = "static"
+    /// pubkey_file = "public-key.json"
+    ///
+    /// # or
+    /// [[trust]]
+    /// kind = "registry"
+    /// endpoint = "http://ais.example.com/ais"
+    /// ```
+    #[serde(default)]
+    pub trust: Vec<crate::config::TrustAnchor>,
+
     /// Web server configuration for `actr run --web`
     ///
     /// When specified, enables serving the actor as a web application.
@@ -105,8 +122,6 @@ pub struct RuntimeRawConfig {
     #[serde(default)]
     pub web: Option<RawWebConfig>,
 }
-
-pub type ActrRawConfig = RuntimeRawConfig;
 
 /// Workload package path configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -151,17 +166,11 @@ pub struct RawWebConfig {
     #[serde(default = "default_web_static_dir")]
     pub static_dir: String,
 
-    /// Whether this instance acts as a server (`true`) or client (`false`)
-    pub is_server: Option<bool>,
-
     /// URL path to the .actr package (served from static dir, e.g. "/packages/echo-server.actr")
     pub package_url: Option<String>,
 
-    /// URL path to the shared runtime WASM (e.g. "/packages/actr_runtime_sw_bg.wasm")
+    /// URL path to the shared runtime WASM (e.g. "/packages/actr_sw_host_bg.wasm")
     pub runtime_wasm_url: Option<String>,
-
-    /// MFR public key for package verification (Base64-encoded Ed25519 public key)
-    pub mfr_pubkey: Option<String>,
 }
 
 fn default_web_port() -> u16 {
@@ -307,7 +316,7 @@ test = "cargo test"
     #[test]
     fn test_parse_empty_actr_config() {
         let toml_content = "edition = 1\n";
-        let config = ActrRawConfig::from_str(toml_content).unwrap();
+        let config = RuntimeRawConfig::from_str(toml_content).unwrap();
         assert_eq!(config.edition, 1);
         assert!(config.signaling.url.is_none());
         assert!(config.capabilities.is_none());

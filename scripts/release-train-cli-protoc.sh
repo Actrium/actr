@@ -468,6 +468,9 @@ all_publishable_crates() {
 
 run_validation_suite() {
   log_info "Running formatter and compile checks"
+  log_info "Generating CLI web runtime assets"
+  bash bindings/web/scripts/sync-cli-assets.sh --build
+
   cargo fmt --all
   cargo check
 

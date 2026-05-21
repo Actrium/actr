@@ -85,7 +85,6 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     let actr_name = &req.actr_name;
     let signaling_url = &req.signaling_url;
     let realm_id = req.realm_id;
-    let is_server = req.is_server();
 
     let edition = req.edition();
     let exports = req.exports_list();
@@ -105,7 +104,9 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
         }
     }
 
-    let type_export_name = if is_server { "actorType" } else { "actrType" };
+    // Connection role is negotiated per-peer at runtime, so every actor
+    // exports the same symbol regardless of typical initiator/acceptor role.
+    let type_export_name = "actrType";
 
     let mut out = String::new();
     out.push_str(
@@ -261,35 +262,16 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     let acl_allow = req.get_acl_allow_types();
     let acl_allow_js: Vec<String> = acl_allow.iter().map(|t| format!("'{t}'")).collect();
 
-    // Compute register_fn for WASM entry point
-    let register_fn = if is_server {
-        // Server: no register_fn (guest bridge loads runtime + guest separately)
-        String::new()
-    } else {
-        // Client: monolithic WASM, call register_{handler}_handler
-        let hn = req
-            .local_services
-            .first()
-            .map(|s| to_snake_case(&s.name))
-            .unwrap_or_else(|| "handler".to_string());
-        format!("register_{hn}_handler")
-    };
+    // package_url: default `.actr` package path under public/packages/.
+    // The basename is always `req.package_name` — there is no longer a
+    // server-vs-client split on the filename, because the guest-bridge
+    // runtime is the only loader path.
+    let package_url = format!("/packages/{}.actr", req.package_name);
 
-    // package_url: default .actr package path served from public/packages/
-    let pkg_basename = if is_server {
-        format!("{}-server", req.package_name)
-    } else {
-        req.package_name.clone()
-    };
-    let package_url = format!("/packages/{pkg_basename}.actr");
-
-    // runtime_wasm_url: for server guest bridge mode, runtime WASM is loaded separately
+    // runtime_wasm_url always points at the shared SW runtime WASM. Every
+    // actor (initiator or acceptor) uses the guest-bridge runtime.
     let wasm_name = req.wasm_module_name();
-    let runtime_wasm_url = if is_server {
-        format!("/packages/{wasm_name}_bg.wasm")
-    } else {
-        String::new()
-    };
+    let runtime_wasm_url = format!("/packages/{wasm_name}_bg.wasm");
 
     out.push_str("// ── runtimeConfig (passed to Service Worker WASM registration) ──\n\n");
     out.push_str("/**\n * Service Worker runtime config\n * Passed from main thread to Service Worker via DOM_PORT_INIT\n */\n");
@@ -306,15 +288,15 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
         "  acl_allow_types: [{}],\n",
         acl_allow_js.join(", ")
     ));
-    out.push_str(&format!("  is_server: {},\n", is_server));
     out.push_str(&format!("  package_url: '{package_url}',\n"));
-    out.push_str(&format!("  register_fn: '{register_fn}',\n"));
     out.push_str(&format!("  runtime_wasm_url: '{runtime_wasm_url}',\n"));
-    out.push_str("  // MFR public key for package verification (injected by deploy tooling)\n");
-    out.push_str("  mfr_pubkey: '__MFR_PUBKEY_PLACEHOLDER__',\n");
+    out.push_str("  // Trust anchors — pubkey_b64 is substituted by deploy tooling.\n");
+    out.push_str("  trust: [{ kind: 'static', pubkey_b64: '__MFR_PUBKEY_PLACEHOLDER__' }],\n");
     out.push_str("};\n\n");
 
     // ActorClientConfig
+    // Every actor — whether it typically initiates or accepts — needs the
+    // same peer-side knobs. Role is negotiated per-peer at connect time.
     out.push_str("// ── ActorClientConfig (passed to createActor) ──\n\n");
     out.push_str(
         "/**\n * Actor client config\n * Extracted from system config in actr.toml\n */\n",
@@ -332,12 +314,9 @@ fn gen_actr_config(req: &WebCodegenRequest) -> Result<String, String> {
     out.push_str("  ],\n");
     let ice_transport = if req.force_relay { "relay" } else { "all" };
     out.push_str(&format!("  iceTransportPolicy: '{ice_transport}',\n"));
-    if !is_server {
-        // Client-side configs
-        out.push_str("  serviceWorkerPath: '/actor.sw.js',\n");
-        out.push_str("  autoReconnect: true,\n");
-        out.push_str("  debug: false,\n");
-    }
+    out.push_str("  serviceWorkerPath: '/actor.sw.js',\n");
+    out.push_str("  autoReconnect: true,\n");
+    out.push_str("  debug: false,\n");
     out.push_str("  runtimeConfig,\n");
     out.push_str("};\n");
 
@@ -461,15 +440,12 @@ fn gen_actor_ref(service: &ServiceInfo, req: &WebCodegenRequest) -> Result<Strin
 // ═══════════════════════════════════════════════════════════════════
 
 fn gen_index(req: &WebCodegenRequest) -> Result<String, String> {
-    let is_server = req.is_server();
-    let type_export_name = if is_server { "actorType" } else { "actrType" };
-
     let mut out = String::new();
     out.push_str("/**\n * Auto-generated Actr code entry point\n *\n * DO NOT EDIT this file manually\n */\n\n");
     out.push_str("export {\n");
     out.push_str("    actrConfig,\n");
     out.push_str("    runtimeConfig,\n");
-    out.push_str(&format!("    {type_export_name},\n"));
+    out.push_str("    actrType,\n");
     out.push_str("    edition,\n");
     out.push_str("    exports,\n");
     out.push_str("    packageInfo,\n");
@@ -491,39 +467,15 @@ fn gen_index(req: &WebCodegenRequest) -> Result<String, String> {
 // ═══════════════════════════════════════════════════════════════════
 
 fn gen_service_worker(req: &WebCodegenRequest) -> Result<String, String> {
-    let is_server = req.is_server();
     let wasm_name = req.wasm_module_name();
-
-    let register_fn = if is_server {
-        let sn = req
-            .local_services
-            .first()
-            .map(|s| to_snake_case(&s.name))
-            .unwrap_or_else(|| "service".to_string());
-        format!("register_{sn}")
-    } else {
-        let hn = req
-            .local_services
-            .first()
-            .map(|s| to_snake_case(&s.name))
-            .unwrap_or_else(|| "handler".to_string());
-        format!("register_{hn}_handler")
-    };
-
-    let comment_type = if is_server { "server" } else { "client" };
-    let comment_desc = if is_server {
-        "User Workload + SW Runtime"
-    } else {
-        "Local Handler + SW Runtime"
-    };
 
     let mut out = String::new();
 
-    // Header
-    out.push_str(&format!(
-        "/* Actor-RTC Service Worker entry for {comment_type}.\n"
-    ));
-    out.push_str(&format!(" *\n * WASM includes: {comment_desc}\n"));
+    // Header — the SW boots a guest-bridge runtime that serves both the
+    // initiator and acceptor roles; the concrete workload is attached by
+    // the guest WASM itself, so no role-specific register_fn is called here.
+    out.push_str("/* Actor-RTC Service Worker entry.\n");
+    out.push_str(" *\n * WASM includes: guest-bridge SW runtime\n");
     out.push_str(" *\n * This file is auto-generated by actr gen — DO NOT EDIT\n */\n\n");
     out.push_str("/* global wasm_bindgen */\n\n");
 
@@ -587,13 +539,6 @@ fn gen_service_worker(req: &WebCodegenRequest) -> Result<String, String> {
     out.push_str("    await wasm_bindgen({ module_or_path: wasmUrl });\n");
     out.push_str("    wasm_bindgen.init_global();\n\n");
 
-    // Register handler
-    out.push_str(&format!(
-        "    if (typeof wasm_bindgen.{register_fn} === 'function') {{\n"
-    ));
-    out.push_str(&format!("      wasm_bindgen.{register_fn}();\n"));
-    out.push_str("    }\n\n");
-
     out.push_str("    wasmReady = true;\n");
     out.push_str("    emitSwLog('info', 'wasm_ready', null);\n");
     out.push_str("  } catch (error) {\n");
@@ -618,7 +563,10 @@ fn gen_wasm_scaffold(req: &WebCodegenRequest) -> Result<Vec<PathBuf>, String> {
     let wasm_generated = wasm_src.join("generated");
 
     let mut files = Vec::new();
-    let is_server = req.is_server();
+    // Codegen topology: provider-only projects emit service handlers;
+    // importer projects emit forwarding stubs. Purely a file-scaffold
+    // concern — the runtime connection role is negotiated per-peer.
+    let provider_only = req.is_service_provider_only();
     let crate_name = req.wasm_module_name();
     let pkg_name = format!("{}-wasm", req.package_name);
 
@@ -665,7 +613,7 @@ fn gen_wasm_scaffold(req: &WebCodegenRequest) -> Result<Vec<PathBuf>, String> {
     files.push(mod_rs);
 
     // 4. Handler files + lib.rs
-    if is_server {
+    if provider_only {
         for svc in &req.local_services {
             let handler_name = to_snake_case(&svc.name);
             let handler_path = wasm_src.join(format!("{handler_name}.rs"));
@@ -716,7 +664,7 @@ rust-version = "1.88"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-actr-runtime-sw = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
+actr-sw-host = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
 actr-web-common = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
 
 wasm-bindgen = "0.2"
@@ -774,18 +722,41 @@ fn gen_proto_rs_types(file_info: &FileInfo) -> String {
         "//! Auto-generated protobuf types\n\nuse prost::Message;\nuse serde::{Deserialize, Serialize};\n\n",
     );
 
-    let proto_content = std::fs::read_to_string(&file_info.proto_file).unwrap_or_default();
+    // Compile the proto through protoc and walk the resulting descriptor for
+    // structured field information. Failure here degrades to an empty type
+    // body (matching the previous regex parser, which silently emitted no
+    // fields when the file could not be read) so the rest of the scaffold
+    // still writes.
+    let set = match crate::descriptor::compile_to_descriptor_set(
+        std::slice::from_ref(&file_info.proto_file),
+        &[],
+    ) {
+        Ok(set) => set,
+        Err(err) => {
+            tracing::warn!(
+                "{}: protoc descriptor compile failed ({}); emitting empty message bodies",
+                file_info.proto_file.display(),
+                err
+            );
+            prost_types::FileDescriptorSet::default()
+        }
+    };
+    let file_desc = crate::descriptor::find_file(&set, &file_info.proto_file);
+
+    // Fast lookup of service names so we can skip them in the message loop.
+    let service_names: std::collections::HashSet<&str> = file_desc
+        .map(|f| f.service.iter().map(|s| s.name()).collect())
+        .unwrap_or_default();
+
     for type_name in &file_info.declared_type_names {
-        // Skip service names
-        let is_service = file_info
-            .declared_type_names
-            .iter()
-            .any(|n| n == type_name && proto_content.contains(&format!("service {type_name}")));
-        if is_service && proto_content.contains(&format!("service {type_name}")) {
+        if service_names.contains(type_name.as_str()) {
             continue;
         }
 
-        let fields = extract_message_fields(&proto_content, type_name);
+        let fields = file_desc
+            .and_then(|f| crate::descriptor::message_fields_for_scaffold(f, type_name))
+            .unwrap_or_default();
+
         out.push_str("#[derive(Clone, PartialEq, Message, Serialize, Deserialize)]\n");
         out.push_str(&format!("pub struct {type_name} {{\n"));
         for (i, (field_name, field_type)) in fields.iter().enumerate() {
@@ -805,7 +776,7 @@ fn gen_server_handler(service: &ServiceInfo) -> String {
     let sn = &service.name;
     let mut out = String::new();
     out.push_str(&format!("//! {sn} implementation\n\n"));
-    out.push_str("use std::rc::Rc;\nuse actr_runtime_sw::RuntimeContext;\nuse prost::Message;\n\n");
+    out.push_str("use std::rc::Rc;\nuse actr_sw_host::RuntimeContext;\nuse prost::Message;\n\n");
 
     let pkg = to_snake_case(&service.package);
     for m in &service.methods {
@@ -874,14 +845,14 @@ fn gen_client_handler(service: &ServiceInfo, req: &WebCodegenRequest) -> String 
         "//! {sn} local handler — forwards requests to remote service\n\n"
     ));
     out.push_str("use std::rc::Rc;\nuse std::sync::OnceLock;\n");
-    out.push_str("use actr_runtime_sw::RuntimeContext;\nuse actr_runtime_sw::WebContext;\n\n");
+    out.push_str("use actr_sw_host::RuntimeContext;\nuse actr_sw_host::WebContext;\n\n");
 
     let remote_target = req.dependencies.first().and_then(|d| d.actr_type.as_ref());
 
     if let Some(target) = remote_target {
-        out.push_str("static TARGET_TYPE: OnceLock<actr_runtime_sw::actr_protocol::ActrType> = OnceLock::new();\n\n");
-        out.push_str("fn target_type() -> &'static actr_runtime_sw::actr_protocol::ActrType {\n");
-        out.push_str("    TARGET_TYPE.get_or_init(|| actr_runtime_sw::actr_protocol::ActrType {\n");
+        out.push_str("static TARGET_TYPE: OnceLock<actr_sw_host::actr_protocol::ActrType> = OnceLock::new();\n\n");
+        out.push_str("fn target_type() -> &'static actr_sw_host::actr_protocol::ActrType {\n");
+        out.push_str("    TARGET_TYPE.get_or_init(|| actr_sw_host::actr_protocol::ActrType {\n");
         out.push_str(&format!(
             "        manufacturer: \"{}\".to_string(),\n",
             target.manufacturer
@@ -944,9 +915,7 @@ fn gen_server_lib_rs(req: &WebCodegenRequest) -> String {
     for m in &handler_mods {
         out.push_str(&format!("mod {m};\n"));
     }
-    out.push_str(
-        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_runtime_sw::*;\n\n",
-    );
+    out.push_str("\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_sw_host::*;\n\n");
     out.push_str("#[wasm_bindgen(start)]\npub fn init() {\n    console_error_panic_hook::set_once();\n    wasm_logger::init(wasm_logger::Config::default());\n    log::info!(\"WASM initialized\");\n}\n\n");
 
     for (rf, hn, sm) in &register_calls {
@@ -954,7 +923,7 @@ fn gen_server_lib_rs(req: &WebCodegenRequest) -> String {
         out.push_str(&format!("pub fn {rf}() {{\n"));
         out.push_str(&format!("    log::info!(\"Registering {hn}...\");\n\n"));
         out.push_str(
-            "    actr_runtime_sw::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
+            "    actr_sw_host::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
         );
         out.push_str(
             "        let route_key = route_key.to_string();\n        let bytes = bytes.to_vec();\n",
@@ -1001,9 +970,7 @@ fn gen_client_lib_rs(req: &WebCodegenRequest) -> String {
     for m in &handler_mods {
         out.push_str(&format!("mod {m};\n"));
     }
-    out.push_str(
-        "\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_runtime_sw::*;\n\n",
-    );
+    out.push_str("\nuse std::rc::Rc;\nuse wasm_bindgen::prelude::*;\npub use actr_sw_host::*;\n\n");
     out.push_str("#[wasm_bindgen(start)]\npub fn init() {\n    console_error_panic_hook::set_once();\n    wasm_logger::init(wasm_logger::Config::default());\n    log::info!(\"WASM initialized\");\n}\n\n");
 
     for (rf, mn, sm) in &register_calls {
@@ -1011,7 +978,7 @@ fn gen_client_lib_rs(req: &WebCodegenRequest) -> String {
         out.push_str(&format!("pub fn {rf}() {{\n"));
         out.push_str("    log::info!(\"Registering handler...\");\n\n");
         out.push_str(
-            "    actr_runtime_sw::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
+            "    actr_sw_host::register_service_handler(Rc::new(|route_key, bytes, ctx| {\n",
         );
         out.push_str(
             "        let route_key = route_key.to_string();\n        let bytes = bytes.to_vec();\n",
@@ -1080,6 +1047,8 @@ fn make_executable(path: &Path) -> Result<(), String> {
         std::fs::set_permissions(path, perms)
             .map_err(|e| format!("Failed to set permissions: {e}"))?;
     }
+    #[cfg(not(unix))]
+    let _ = path;
     Ok(())
 }
 
@@ -1093,51 +1062,6 @@ fn to_snake_case(name: &str) -> String {
 
 fn to_camel_case(name: &str) -> String {
     name.to_lower_camel_case()
-}
-
-fn extract_message_fields(proto_content: &str, message_name: &str) -> Vec<(String, String)> {
-    let mut fields = Vec::new();
-    let mut in_message = false;
-    let mut brace_depth = 0;
-    for line in proto_content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with(&format!("message {message_name}")) && trimmed.contains('{') {
-            in_message = true;
-            brace_depth = 1;
-            continue;
-        }
-        if in_message {
-            brace_depth += trimmed.matches('{').count();
-            brace_depth -= trimmed.matches('}').count();
-            if brace_depth == 0 {
-                break;
-            }
-            if let Some((ft, fn_)) = parse_proto_field(trimmed) {
-                fields.push((fn_, ft));
-            }
-        }
-    }
-    fields
-}
-
-fn parse_proto_field(line: &str) -> Option<(String, String)> {
-    let line = line.trim();
-    if line.is_empty()
-        || line.starts_with("//")
-        || line.starts_with("reserved")
-        || line.starts_with("option")
-        || line.starts_with("oneof")
-        || line.starts_with("message")
-        || line.starts_with("enum")
-    {
-        return None;
-    }
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() >= 3 && parts.iter().any(|p| p.contains('=')) {
-        Some((parts[0].to_string(), parts[1].to_string()))
-    } else {
-        None
-    }
 }
 
 fn proto_type_to_rust(proto_type: &str) -> String {

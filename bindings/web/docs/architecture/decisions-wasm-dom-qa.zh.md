@@ -4,6 +4,8 @@
 **参与者**: 架构团队
 **类型**: 技术决策讨论
 
+> **历史讨论说明**：本文记录早期设计讨论。当前落地路径是 Option U / wasm-bindgen：WIT → `tools/wit-compile-web` / `actr-web-abi` → wasm-pack no-modules `.wbg` bundle → `actor.sw.js` guest bridge。本文中的延迟数字和 “下一步实现” 描述不作为当前事实；当前事实请以 [架构总览](./overview.zh.md) 和源码为准。
+
 ---
 
 ## 讨论背景
@@ -29,7 +31,7 @@
 
 3. **保持性能**
    - Fast Path 需要低延迟（目标 <15ms）
-   - State Path ~30-40ms 可接受
+   - State Path 的可接受性基于历史设计假设，当前需 benchmark 验证
 
 ### 核心矛盾
 
@@ -86,8 +88,8 @@
 
 | API | 方向 | 用途 | 延迟 |
 |-----|------|------|------|
-| `call()` | UI → WASM → UI | RPC 调用 | 30-40ms |
-| `subscribe()` | WASM → UI | 数据流订阅 | 6-13ms |
+| `call()` | UI → WASM → UI | RPC 调用 | 历史估算，需 benchmark 验证 |
+| `subscribe()` | WASM → UI | 数据流订阅 | 需实测 |
 | `on()` | WASM → UI | 系统事件 | <5ms |
 
 **使用示例**：
@@ -124,20 +126,20 @@ actorRef.on('connection-state-changed', (state) => {
 - 按需通知：只发送 UI 真正需要的内容
 - 批量/采样：如果必须发送，使用采样（每 10 帧发 1 帧）
 
-### Q4: 延迟从 1-3ms 增加到 6-13ms 可接受吗？
+### Q4: DOM 本地处理改为 DOM → SW 转发是否可接受？
 
 **回答**：视场景而定，但整体可接受
 
 **延迟对比**：
 ```
-原生 DOM 处理:     1-3ms   (未采纳)
-DOM → SW 转发:     6-13ms  (采纳方案) ✅
-State Path:       30-40ms (对比参考)
+原生 DOM 处理:     历史对比（未采纳）
+DOM → SW 转发:     当前方案，需以 benchmark 实测
+State Path:       历史设计估算，当前需 benchmark 验证
 ```
 
 **关键洞察**：
-- 6-13ms 仍然是 "Fast Path"（比 State Path 快 3-5 倍）
-- 大多数应用场景（视频通话、文件传输）可以接受
+- DOM → SW 转发仍然绕过 Mailbox/Scheduler
+- 大多数应用场景（视频通话、文件传输）需要用当前 benchmark 确认预算
 - 换取的是**用户代码 100% 统一**和**多语言支持**
 
 ### Q5: 如何支持多语言（Rust/Go/C++）？
@@ -192,7 +194,7 @@ TinyGo → WASM      rustc → WASM      Emscripten → WASM
 - ✅ DOM 侧用户无需写代码
 
 **付出**：
-- ⚠️ Fast Path 延迟增加 5-10ms（1-3ms → 6-13ms）
+- ⚠️ Fast Path 增加 DOM → SW 转发开销
 - ⚠️ PostMessage 序列化开销（通过 Transferable 缓解）
 
 **结论**：权衡合理，可接受
@@ -236,16 +238,16 @@ TinyGo → WASM      rustc → WASM      Emscripten → WASM
 ### 立即执行（本周）
 
 1. ✅ 编写架构设计文档（本文档）
-2. ⏳ 实现 DOM 侧固定 JS 层
+2. ✅ 实现 DOM 侧固定 JS 层
    - WebRTC Coordinator
    - Fast Path Forwarder
    - PostMessage Bridge
 
 ### 近期计划（本月）
 
-3. ⏳ 实现 Service Worker 侧 Fast Path Registry
-4. ⏳ 实现 `call/subscribe/on` 三个 API
-5. ⏳ 端到端测试（验证延迟和正确性）
+3. ✅ 实现 Service Worker 侧 `handle_dom_fast_path` 和 stream handler dispatch
+4. ⚠️ `call` baseline 已接入；`subscribe/on` 需按当前 SDK 能力继续校准
+5. ⚠️ 端到端测试需覆盖当前 FastPathForwarder → SW handler 路径
 
 ### 长期跟踪（3-6 个月）
 
@@ -265,8 +267,8 @@ TinyGo → WASM      rustc → WASM      Emscripten → WASM
 
 2. **性能要有具体指标**
    - 不是"越快越好"，而是"满足场景需求"
-   - 6-13ms vs 1-3ms 的差异，在大多数场景下不重要
-   - 但 6-13ms vs 30-40ms 的差异，对 Fast Path 至关重要
+   - DOM → SW 转发和 DOM 本地处理的差异，需要实测
+   - 但绕过 Mailbox/Scheduler 对 Fast Path 至关重要
 
 3. **心智模型很重要**
    - "WASM 是后端服务"的类比，让架构决策变得清晰
@@ -280,7 +282,7 @@ TinyGo → WASM      rustc → WASM      Emscripten → WASM
    - 多语言支持是核心诉求吗？（重要但非必须）
 
 2. **用数据说话**
-   - 延迟对比：1-3ms vs 6-13ms vs 30-40ms
+   - 延迟对比：DOM 本地历史方案 vs 当前 DOM → SW 转发 vs State Path
    - 代码复用率：方案 A 50% vs 方案 C 100%
    - 开发成本：方案 B 20 周 vs 方案 C 5 周
 

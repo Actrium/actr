@@ -7,7 +7,7 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
     let fixtures_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
     let python_fixtures = fixtures_root.join("python/echo");
 
-    // Note: proto files are no longer created during init, they will be pulled via actr install
+    // Note: proto files are no longer created during init, they will be pulled via actr deps install
     ProjectTemplate::load_file(
         &python_fixtures.join("Actr.server.toml.jinja2"),
         files,

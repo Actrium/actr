@@ -1,5 +1,7 @@
 # Actor-RTC Web 双层架构设计
 
+> 当前实现说明：本文描述的 State Path / Fast Path 概念仍然有效，但 Fast Path 的处理位置已从早期“DOM 本地 registry/callback”调整为“DOM 固定转发层 → SW runtime / stream handlers”。当前源码锚点：`packages/actr-dom/src/fast-path-forwarder.ts`、`packages/web-sdk/src/actor.sw.js`、`crates/sw-host/src/runtime.rs::handle_dom_fast_path`。
+
 ## 核心概念
 
 ### State Path vs Fast Path
@@ -18,7 +20,7 @@ Actor-RTC Web 采用**双层架构**，将消息处理分为两条路径：
 │         ↓                                                 │
 │  Actor 业务逻辑 (状态变更)                                 │
 │                                                           │
-│  特点：顺序保证、状态安全、延迟较高 (~30-40ms)              │
+│  特点：顺序保证、状态安全、延迟较高，需 benchmark 确认     │
 └─────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
@@ -26,13 +28,13 @@ Actor-RTC Web 采用**双层架构**，将消息处理分为两条路径：
 │                                                           │
 │  Stream Data (VideoChunk, AudioSample, FileChunk)        │
 │         ↓                                                 │
-│  Fast Path Registry (stream_id → callback)               │
+│  DOM FastPathForwarder → SW handle_dom_fast_path          │
 │         ↓                                                 │
-│  回调函数并发执行                                          │
+│  SW runtime.handle_fast_path / stream_handlers            │
 │         ↓                                                 │
 │  数据处理 + 可选的异步通知 State Path                       │
 │                                                           │
-│  特点：极低延迟 (~1-3ms)、高吞吐、无状态或最终一致性        │
+│  特点：绕过 Mailbox/Scheduler、高吞吐、无状态或最终一致性  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -46,13 +48,13 @@ Actor-RTC Web 采用**双层架构**，将消息处理分为两条路径：
 - **职责**: 状态管理、生命周期控制、流控制信令
 - **消息类型**: RPC 请求/响应、OpenStream、CloseStream
 - **处理方式**: 持久化 → 调度 → 串行执行
-- **延迟**: ~30-40ms
+- **延迟**: 需当前 benchmark 确认
 
 #### Fast Path（数据平面）
 - **职责**: 高吞吐数据传输（音视频、文件）
 - **消息类型**: DataStream、MediaFrame
-- **处理方式**: 直接回调、并发执行
-- **延迟**: ~1-3ms
+- **处理方式**: DOM 转发 `fast_path_data`，SW 派发 stream handlers
+- **延迟**: 不在本文声明固定数字；以当前 e2e/benchmark 为准
 
 ## 协作流程
 
@@ -60,27 +62,29 @@ Actor-RTC Web 采用**双层架构**，将消息处理分为两条路径：
 sequenceDiagram
     participant Client
     participant StatePath as State Path
-    participant FastPath as Fast Path Registry
+    participant DomForwarder as DOM FastPathForwarder
+    participant FastPath as SW Fast Path Handlers
 
     Client->>StatePath: 1. OpenStream RPC (走 Mailbox)
     note right of Client: 控制平面：请求开启流
 
     StatePath->>StatePath: 2. 生成 stream_id
-    StatePath->>StatePath: 3. 创建回调函数
-    StatePath->>FastPath: 4. register_callback(stream_id, callback)
+    StatePath->>StatePath: 3. 创建/持有 stream handler
+    StatePath->>FastPath: 4. register_stream_handler(stream_id, callback)
     note right of StatePath: 注册快车道
 
     StatePath-->>Client: 5. 返回 stream_id
 
     loop 数据传输（走快车道）
-        Client->>FastPath: 6. Stream Data + stream_id
-        note right of Client: 数据平面：直接派发
-        FastPath->>FastPath: 7. 查找并调用回调
+        Client->>DomForwarder: 6. Stream Data + stream_id
+        note right of Client: 数据平面：DOM 转发
+        DomForwarder->>FastPath: 7. fast_path_data
+        FastPath->>FastPath: 8. 查找并调用 stream handler
         FastPath-->>StatePath: 8. (可选) 异步通知状态变更
     end
 
     Client->>StatePath: 9. CloseStream RPC
-    StatePath->>FastPath: 10. unregister_callback(stream_id)
+    StatePath->>FastPath: 10. unregister_stream_handler(stream_id)
 ```
 
 ## Web 环境适配
@@ -108,13 +112,12 @@ sequenceDiagram
   - Mailbox + Scheduler (Actor)
 - **通信**: WebSocket（直接）, PostMessage（与 DOM）
 
-#### DOM 侧（辅助 + Fast Path）
-- **职责**: WebRTC 管理 + Fast Path
+#### DOM 侧（辅助 + WebRTC HAL）
+- **职责**: WebRTC 管理 + Fast Path 转发
 - **组件**:
   - WebRtcCoordinator (创建 P2P)
-  - WebRtcDataChannelReceiver (接收 Stream)
-  - StreamHandlerRegistry (Fast Path)
-  - MediaFrameHandlerRegistry (Fast Path)
+  - FastPathForwarder (`fast_path_data`)
+  - ServiceWorkerBridge (PostMessage + Transferable)
 - **通信**: WebRTC（P2P）, PostMessage（与 SW）
 
 ## 消息路由决策
@@ -123,8 +126,8 @@ sequenceDiagram
 
 | 接收源 | 路由 | 延迟 |
 |--------|------|------|
-| WebSocket (SW) | 直接 Mailbox ✅ | ~30-40ms |
-| WebRTC DC (DOM) | 转发 SW Mailbox | ~30-40ms |
+| WebSocket (SW) | 直接 Mailbox ✅ | 需当前 benchmark 确认 |
+| WebRTC DC (DOM) | 转发 SW Mailbox | 需当前 benchmark 确认 |
 
 **结论**: WebSocket (SW) 最优（无需转发）
 
@@ -132,18 +135,18 @@ sequenceDiagram
 
 | 接收源 | 路由 | 延迟 |
 |--------|------|------|
-| WebSocket (SW) | 转发 DOM Registry | ~3-4ms |
-| WebRTC DC (DOM) | 本地 Registry ✅ | ~1-2ms |
+| WebSocket (SW) | SW fast path / handlers | 需实测 |
+| WebRTC DC (DOM) | FastPathForwarder → SW handlers ✅ | 需实测 |
 
-**结论**: WebRTC (DOM) 最优（本地处理）
+**结论**: WebRTC 由 DOM 承载，但当前数据处理进入 SW handlers。
 
 ### MediaTrack
 
 | 接收源 | 路由 | 延迟 |
 |--------|------|------|
-| WebRTC Track (DOM) | 直接 MediaFrameRegistry ✅ | < 1ms |
+| WebRTC Track (DOM) | DOM/当前媒体路径 | 需实测 |
 
-**结论**: 唯一选择，最优性能
+**结论**: WebRTC Track 只能由 DOM API 承载，具体处理路径需随实现校准。
 
 ## 最佳实践
 
@@ -163,11 +166,11 @@ sequenceDiagram
 1. **RPC 优先使用 WebSocket (SW 侧)**
    - 避免 DOM → SW 转发开销
 
-2. **Stream 优先使用 WebRTC (DOM 侧)**
-   - 本地处理，延迟最低
+2. **Stream 优先使用 WebRTC (DOM 侧承载)**
+   - 绕过 Mailbox/Scheduler，进入 SW fast path handlers
 
 3. **Media 必须使用 WebRTC MediaTrack**
-   - 浏览器原生支持，零拷贝
+   - 浏览器原生 API 只在 DOM 可用，完整性能需实测
 
 4. **合理设置 Mailbox 优先级**
    - 控制信令（OpenStream）: 高优先级
@@ -179,7 +182,7 @@ sequenceDiagram
 | 组件 | 完成度 | 说明 |
 |------|--------|------|
 | State Path 基础设施 | 95% | Mailbox + Dispatcher 完整 |
-| Fast Path Registry | 70% | 框架完整，register 回调待完善 |
+| Fast Path DataStream baseline | 当前已接入 | DOM FastPathForwarder → SW handle_dom_fast_path → stream handlers |
 | WebRTC 集成 | 70% | 完整传输栈 + ICE restart + MessagePort 桥接 |
 | Scheduler | ✅ 100% | 串行调度 + 优先级 + 事件驱动 |
 

@@ -1,9 +1,9 @@
 //! Run command implementation - Execute .actr packages
 
-use crate::commands::Command;
 use crate::commands::runtime_state::{
     RuntimeRecord, RuntimeStateStore, absolutize_from_cwd, log_path_for_wid, resolve_hyper_dir,
 };
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use crate::error::{ActrCliError, Result};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -61,13 +61,26 @@ pub struct RunCommand {
 
 #[async_trait]
 impl Command for RunCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> anyhow::Result<CommandResult> {
         // The run command only supports packaged workloads via runtime config.
         if self.web {
-            self.execute_web_mode().await
+            self.execute_web_mode().await?;
         } else {
-            self.execute_package_mode().await
+            self.execute_package_mode().await?;
         }
+        Ok(CommandResult::Success(String::new()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "run"
+    }
+
+    fn description(&self) -> &str {
+        "Run a packaged workload"
     }
 }
 
@@ -122,14 +135,11 @@ impl RunCommand {
         let package_info = self.build_package_info(&manifest);
 
         // 4. Load runtime configuration
-        let config = actr_config::ConfigParser::from_runtime_file(
-            &config_path,
-            package_info.clone(),
-            vec![],
-        )?;
+        let config =
+            actr_config::ConfigParser::from_runtime_file(&config_path, package_info.clone())?;
 
         info!("📡 Signaling server: {}", config.signaling_url.as_str());
-        info!("🔐 Trust mode: {}", config.trust_mode);
+        info!("🔐 Trust anchors: {} configured", config.trust.len());
 
         // 6. Initialize observability
         let _obs_guard = init_observability(&config.observability).map_err(|e| {
@@ -140,22 +150,28 @@ impl RunCommand {
         let hyper = self.init_hyper(&config, &package_path, &hyper_dir).await?;
         info!("✅ Hyper initialized");
 
-        // 8. Attach package
-        let mut node = hyper
-            .attach_package(&package, config.clone())
+        // 8. Node typestate chain: from_hyper → attach → register → start
+        let ais_endpoint = config.ais_endpoint.clone();
+        let attached = actr_hyper::Node::from_hyper(hyper, config.clone())
+            .attach(&package)
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to attach package: {}", e)))?;
         info!("✅ Package attached");
 
-        // 9. Bootstrap credential via AIS
-        let register_ok = self
-            .bootstrap_credential(&hyper, &node, &config, &package_bytes, &manifest)
-            .await?;
-        node.inject_credential(register_ok);
+        let registered = attached.register(&ais_endpoint).await.map_err(|e| {
+            ActrCliError::command_error(format!(
+                "Failed to register with AIS at {}.\n\n\
+                 Possible causes:\n\
+                 - AIS server is not running\n\
+                 - Incorrect [ais_endpoint] url in the runtime config\n\
+                 - Network connectivity issues\n\n\
+                 Error: {}",
+                ais_endpoint, e
+            ))
+        })?;
         info!("✅ AIS registration successful");
 
-        // 10. Start ActrNode
-        let actr_ref = node
+        let actr_ref = registered
             .start()
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to start ActrNode: {}", e)))?;
@@ -241,58 +257,131 @@ impl RunCommand {
         package_path: &Path,
         hyper_dir: &Path,
     ) -> Result<actr_hyper::Hyper> {
-        use actr_hyper::{Hyper, HyperConfig, TrustMode};
-        use actr_platform_native::NativePlatformProvider;
+        use actr_hyper::{
+            ChainTrust, Hyper, HyperConfig, RegistryTrust, StaticTrust, TrustProvider,
+        };
+        use std::sync::Arc;
 
-        let trust_mode = match config.trust_mode.as_str() {
-            "development" => {
-                // Load public key from package directory
-                let public_key = self.load_public_key(package_path).await?;
-                TrustMode::Development {
-                    self_signed_pubkey: public_key,
+        if config.trust.is_empty() {
+            // Fallback: when no `[[trust]]` anchors are configured, auto-load
+            // the package's sidecar `public-key.json` as a StaticTrust anchor.
+            // Lets `actr init` scaffolds "just work" without boilerplate.
+            let public_key = self.load_public_key(package_path).await?;
+            let trust: Arc<dyn TrustProvider> =
+                Arc::new(StaticTrust::new(public_key).map_err(|e| {
+                    ActrCliError::command_error(format!("Invalid public key: {}", e))
+                })?);
+            return Hyper::new(HyperConfig::new(hyper_dir, trust))
+                .await
+                .map_err(|e| {
+                    ActrCliError::command_error(format!("Failed to initialize Hyper: {}", e))
+                });
+        }
+
+        let mut providers: Vec<Arc<dyn TrustProvider>> = Vec::with_capacity(config.trust.len());
+        for anchor in &config.trust {
+            let p: Arc<dyn TrustProvider> = match anchor {
+                actr_config::TrustAnchor::Static {
+                    pubkey_file,
+                    pubkey_b64,
+                } => {
+                    let key_bytes = self.load_static_pubkey(pubkey_file, pubkey_b64).await?;
+                    Arc::new(StaticTrust::new(key_bytes).map_err(|e| {
+                        ActrCliError::command_error(format!("Invalid static pubkey: {}", e))
+                    })?)
                 }
-            }
-            "production" => {
-                // Use AIS-based MFR certificate cache.
-                // TrustMode::Production expects the base endpoint without /ais suffix.
-                let base_endpoint = config.ais_endpoint.trim_end_matches("/ais").to_string();
-                TrustMode::Production {
-                    ais_endpoint: base_endpoint,
+                actr_config::TrustAnchor::Registry { endpoint } => {
+                    let base = endpoint.trim_end_matches("/ais").to_string();
+                    Arc::new(RegistryTrust::new(base))
                 }
-            }
-            other => {
-                return Err(ActrCliError::command_error(format!(
-                    "Invalid trust mode in runtime config: {}.\n\n\
-                     Set [deployment] trust_mode to \"development\" or \"production\".",
-                    other
-                )));
-            }
+            };
+            providers.push(p);
+        }
+
+        let trust: Arc<dyn TrustProvider> = if providers.len() == 1 {
+            providers.into_iter().next().unwrap()
+        } else {
+            Arc::new(ChainTrust::new(providers))
         };
 
-        let hyper_config = HyperConfig::new(hyper_dir).with_trust_mode(trust_mode);
-
-        let platform_provider = std::sync::Arc::new(NativePlatformProvider::new());
-
-        Hyper::init_with_platform(hyper_config, platform_provider)
+        Hyper::new(HyperConfig::new(hyper_dir, trust))
             .await
             .map_err(|e| ActrCliError::command_error(format!("Failed to initialize Hyper: {}", e)))
     }
 
+    async fn load_static_pubkey(
+        &self,
+        pubkey_file: &Option<PathBuf>,
+        pubkey_b64: &Option<String>,
+    ) -> Result<Vec<u8>> {
+        use base64::Engine;
+        if let Some(b64) = pubkey_b64 {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| {
+                    ActrCliError::command_error(format!("Invalid base64 pubkey: {}", e))
+                })?;
+            if bytes.len() != 32 {
+                return Err(ActrCliError::command_error(format!(
+                    "pubkey_b64 must decode to 32 bytes, got {}",
+                    bytes.len()
+                )));
+            }
+            return Ok(bytes);
+        }
+        let path = pubkey_file.as_deref().ok_or_else(|| {
+            ActrCliError::command_error(
+                "Static trust anchor requires either `pubkey_file` or `pubkey_b64`".to_string(),
+            )
+        })?;
+        parse_pubkey_json(path).await
+    }
+}
+
+async fn parse_pubkey_json(path: &Path) -> Result<Vec<u8>> {
+    if !path.exists() {
+        return Err(ActrCliError::command_error(format!(
+            "pubkey_file not found: {}",
+            path.display()
+        )));
+    }
+    let content = tokio::fs::read_to_string(path).await?;
+    let json: serde_json::Value = serde_json::from_str(&content)?;
+    let b64 = json["public_key"].as_str().ok_or_else(|| {
+        ActrCliError::command_error(format!("{}: missing `public_key` field", path.display()))
+    })?;
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| ActrCliError::command_error(format!("Invalid base64 pubkey: {}", e)))?;
+    if bytes.len() != 32 {
+        return Err(ActrCliError::command_error(format!(
+            "{}: public_key must decode to 32 bytes, got {}",
+            path.display(),
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
+impl RunCommand {
     async fn load_public_key(&self, package_path: &Path) -> Result<Vec<u8>> {
         let package_dir = package_path.parent().unwrap_or(Path::new("."));
         let key_path = package_dir.join("public-key.json");
 
         if !key_path.exists() {
             return Err(ActrCliError::command_error(format!(
-                "Public key not found for development trust mode.\n\n\
+                "Public key not found for static trust anchor.\n\n\
                  Expected location: {}\n\n\
-                 Update your runtime config or package directory:\n\
-                 1. Keep [deployment] trust_mode = \"development\" and place public-key.json next to the .actr package\n\
-                 2. Or switch to production mode in config:\n\
-                    [deployment]\n\
-                    trust_mode = \"production\"\n\
-                    [ais_endpoint]\n\
-                    url = \"http://localhost:8081/ais\"",
+                 Either place public-key.json next to the .actr package, or\n\
+                 configure explicit trust anchors in actr.toml:\n\n\
+                 [[trust]]\n\
+                 kind = \"static\"\n\
+                 pubkey_file = \"public-key.json\"\n\n\
+                 # or\n\
+                 [[trust]]\n\
+                 kind = \"registry\"\n\
+                 endpoint = \"http://localhost:8081/ais\"",
                 key_path.display()
             )));
         }
@@ -321,56 +410,6 @@ impl RunCommand {
         }
 
         Ok(key_bytes)
-    }
-
-    async fn bootstrap_credential(
-        &self,
-        hyper: &actr_hyper::Hyper,
-        node: &actr_hyper::ActrNode,
-        config: &actr_config::RuntimeConfig,
-        package_bytes: &[u8],
-        manifest: &actr_pack::PackageManifest,
-    ) -> Result<actr_protocol::register_response::RegisterOk> {
-        let ais_endpoint = &config.ais_endpoint;
-        let realm = &config.realm;
-
-        // Calculate ServiceSpec from package manifest and proto files
-        let service_spec = actr_pack::calculate_service_spec_from_package(package_bytes, manifest)
-            .map_err(|e| {
-                ActrCliError::command_error(format!(
-                    "Failed to calculate ServiceSpec from package: {}",
-                    e
-                ))
-            })?;
-
-        // Log ServiceSpec info if present
-        if let Some(ref spec) = service_spec {
-            info!(
-                "📋 ServiceSpec: name={}, fingerprint={}, {} proto files",
-                spec.name,
-                spec.fingerprint,
-                spec.protobufs.len()
-            );
-        } else {
-            info!("📋 No ServiceSpec (package contains no proto files)");
-        }
-
-        let acl = config.acl.clone();
-
-        hyper
-            .bootstrap_node_credential(node, ais_endpoint, realm.realm_id, service_spec, acl)
-            .await
-            .map_err(|e| {
-                ActrCliError::command_error(format!(
-                    "Failed to register with AIS at {}.\n\n\
-             Possible causes:\n\
-             - AIS server is not running\n\
-             - Incorrect [ais_endpoint] url in the runtime config\n\
-             - Network connectivity issues\n\n\
-             Error: {}",
-                    ais_endpoint, e
-                ))
-            })
     }
 
     #[cfg(unix)]
@@ -427,7 +466,7 @@ impl RunCommand {
         detached_runtime: &DetachedRuntimeContext,
         actr_ref: &actr_hyper::ActrRef,
     ) -> Result<()> {
-        let actr_id_str = actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id());
+        let actr_id_str = actr_protocol::ActrId::to_string_repr(actr_ref.actor_id());
 
         // Upsert: if a record already exists for this wid (start/restart scenario),
         // update pid/started_at and clear stopped_at while preserving wid and actr_id.
@@ -636,6 +675,28 @@ impl RunCommand {
             .map(|f| f.to_string_lossy().to_string())
             .unwrap_or_else(|| "package.actr".to_string());
 
+        // Option U / Phase 4: sibling `<stem>.wbg/` directory carrying the
+        // wasm-bindgen guest bundle (produced by `wasm-pack --target
+        // no-modules` from the unified guest crates, see Phase 6c). Mounted
+        // with the same `<package_url>.wbg/...` convention actor.sw.js
+        // expects.
+        let wbg_dir = package_path.as_ref().and_then(|pkg_path| {
+            let stem = pkg_path.file_stem().map(|s| s.to_os_string())?;
+            let mut wbg = pkg_path.with_file_name(stem);
+            wbg.as_mut_os_string().push(".wbg");
+            if wbg.is_dir() { Some(wbg) } else { None }
+        });
+        let wbg_route_prefix = if wbg_dir.is_some() {
+            let stem = package_path
+                .as_ref()
+                .and_then(|p| p.file_stem())
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "package".to_string());
+            Some(format!("/packages/{}.wbg", stem))
+        } else {
+            None
+        };
+
         // Build runtime config JSON — auto-inject embedded asset URLs
         let runtime_config_json =
             self.build_web_runtime_config(&raw_config, &config_path, &package_filename)?;
@@ -648,18 +709,32 @@ impl RunCommand {
 
         // Build router:
         // 1. /actr-runtime-config.json — generated runtime config
-        // 2. /actor.sw.js — embedded Service Worker
-        // 3. /packages/actr_runtime_sw_bg.wasm — embedded runtime WASM
-        // 4. /packages/actr_runtime_sw.js — embedded runtime JS glue
+        // 2. /actor.sw.js — embedded Service Worker (wasm-bindgen guest bridge)
+        // 3. /packages/actr_sw_host_bg.wasm — embedded SW host WASM
+        // 4. /packages/actr_sw_host.js — embedded SW host JS glue
         // 5. /packages/<name>.actr — the .actr package from [package].path
-        // 6. / — embedded host HTML (fallback: static_dir)
-        let app = Router::new()
+        // 6. /packages/<name>.wbg/* — wasm-bindgen guest bundle sibling of
+        //    the .actr (produced at build time by `wasm-pack --target
+        //    no-modules`). Only mounted when the directory exists.
+        // 7. / — embedded host HTML (fallback: static_dir)
+        let mut app = Router::new()
             .route("/actr-runtime-config.json", get(serve_runtime_config))
             .route("/actor.sw.js", get(serve_actor_sw_js))
-            .route("/packages/actr_runtime_sw_bg.wasm", get(serve_runtime_wasm))
-            .route("/packages/actr_runtime_sw.js", get(serve_runtime_js))
+            .route("/packages/actr_sw_host_bg.wasm", get(serve_runtime_wasm))
+            .route("/packages/actr_sw_host.js", get(serve_runtime_js))
             .route("/packages/{filename}", get(serve_actr_package))
-            .with_state(shared_state.clone())
+            .with_state(shared_state.clone());
+
+        if let (Some(wbg_dir), Some(prefix)) = (wbg_dir.as_ref(), wbg_route_prefix.as_ref()) {
+            info!(
+                "📦 Mounting wasm-bindgen guest bundle at {} -> {}",
+                prefix,
+                wbg_dir.display()
+            );
+            app = app.nest_service(prefix, ServeDir::new(wbg_dir));
+        }
+
+        let app = app
             .fallback_service(if static_dir.exists() {
                 ServeDir::new(&static_dir)
             } else {
@@ -724,11 +799,6 @@ impl RunCommand {
             .clone()
             .unwrap_or_else(|| "http://localhost:8081/ais".to_string());
         let realm_id = raw.deployment.realm_id.unwrap_or(0);
-        let trust_mode = raw
-            .deployment
-            .trust_mode
-            .clone()
-            .unwrap_or_else(|| "production".to_string());
         let visible = raw.discovery.visible.unwrap_or(true);
         let force_relay = raw.webrtc.force_relay;
         let stun_urls = &raw.webrtc.stun_urls;
@@ -796,7 +866,6 @@ impl RunCommand {
 
         // Extract web-specific fields
         let web = raw.web.as_ref();
-        let is_server = web.and_then(|w| w.is_server).unwrap_or(false);
         // Auto-generate package_url and runtime_wasm_url from embedded assets.
         // Config-level overrides are still respected if present (backward compat).
         let package_url = web
@@ -804,14 +873,27 @@ impl RunCommand {
             .unwrap_or_else(|| format!("/packages/{}", package_filename));
         let runtime_wasm_url = web
             .and_then(|w| w.runtime_wasm_url.clone())
-            .unwrap_or_else(|| "/packages/actr_runtime_sw_bg.wasm".to_string());
-        let mfr_pubkey = web.and_then(|w| w.mfr_pubkey.clone()).unwrap_or_default();
+            .unwrap_or_else(|| "/packages/actr_sw_host_bg.wasm".to_string());
+
+        // Serialise `[[trust]]` anchors to the web runtime in the same shape
+        // the Rust side uses (see `actr_config::TrustAnchor`). Browser-side
+        // code walks the array; today only `kind = "static"` is honoured for
+        // verification — a `kind = "registry"` anchor is surfaced but causes
+        // the SW to log a warning and skip verify until the web runtime learns
+        // to do async AIS key lookup.
+        let trust_json: Vec<serde_json::Value> = raw
+            .trust
+            .iter()
+            .map(serde_json::to_value)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| {
+                ActrCliError::command_error(format!("Failed to serialize [[trust]]: {}", e))
+            })?;
 
         let config_json = serde_json::json!({
             "signaling_url": signaling_url,
             "ais_endpoint": ais_endpoint,
             "realm_id": realm_id,
-            "trust_mode": trust_mode,
             "visible": visible,
             "force_relay": force_relay,
             "stun_urls": stun_urls,
@@ -824,10 +906,9 @@ impl RunCommand {
                 "full_type": full_type,
             },
             "acl_allow_types": acl_allow_types,
-            "is_server": is_server,
             "package_url": package_url,
             "runtime_wasm_url": runtime_wasm_url,
-            "mfr_pubkey": mfr_pubkey,
+            "trust": trust_json,
         });
 
         serde_json::to_string_pretty(&config_json).map_err(|e| {
@@ -861,7 +942,12 @@ async fn serve_host_html(
     )
 }
 
-/// Serve the embedded actor.sw.js Service Worker.
+/// Serve the embedded actor.sw.js Service Worker (wasm-bindgen guest bridge).
+///
+/// Phase 8 collapsed this to a single body — the previous Component Model
+/// path and its `ACTR_WEB_GUEST_MODE` selector were deleted along with
+/// `actor.sw.js` (CM variant). See `bindings/web/docs/option-u-wit-compile-web.zh.md`
+/// §11.
 async fn serve_actor_sw_js(
     axum::extract::State(_state): axum::extract::State<Arc<WebServerState>>,
 ) -> impl axum::response::IntoResponse {

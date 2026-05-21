@@ -1,5 +1,7 @@
 # 零拷贝优化阶段 1 完成总结
 
+> **历史快照 / 非当前实现指南**：本文记录 2026-01-08 阶段 1 优化落地时的变更摘要。当前实现请以 `bindings/web/crates/common/src/zero_copy.rs` 以及 `bindings/web/crates/{sw-host,dom-bridge}/src/transport/` 下实际调用为准；本文中的测试数、文件清单和预期收益不作为当前覆盖率或性能事实。
+
 ## 实施日期
 2026-01-08
 
@@ -32,12 +34,12 @@
 ### 2. 优化所有接收路径
 
 #### Service Worker 端
-- **PostMessage** (`runtime-sw/src/transport/postmessage.rs`): ✅ 优化完成
-- **WebSocket** (`runtime-sw/src/transport/websocket.rs`): ✅ 优化完成
+- **PostMessage** (`sw-host/src/transport/postmessage.rs`): ✅ 优化完成
+- **WebSocket** (`sw-host/src/transport/websocket.rs`): ✅ 优化完成
 
 #### DOM 端
-- **PostMessage** (`runtime-dom/src/transport/postmessage.rs`): ✅ 优化完成
-- **WebRTC DataChannel** (`runtime-dom/src/transport/webrtc_datachannel.rs`): ✅ 优化完成
+- **PostMessage** (`dom-bridge/src/transport/postmessage.rs`): ✅ 优化完成
+- **WebRTC DataChannel** (`dom-bridge/src/transport/webrtc_datachannel.rs`): ✅ 优化完成
 
 **优化效果**：
 - 旧实现：`to_vec()` + `copy_from_slice()` = 2 次拷贝
@@ -47,12 +49,12 @@
 ### 3. 优化所有发送路径
 
 #### Service Worker 端
-- **PostMessage** (`runtime-sw/src/transport/lane.rs`): ✅ 优化完成
-- **WebSocket** (`runtime-sw/src/transport/lane.rs`): ✅ 优化完成
+- **PostMessage** (`sw-host/src/transport/lane.rs`): ✅ 优化完成
+- **WebSocket** (`sw-host/src/transport/lane.rs`): ✅ 优化完成
 
 #### DOM 端
-- **PostMessage** (`runtime-dom/src/transport/lane.rs`): ✅ 优化完成
-- **WebRTC DataChannel** (`runtime-dom/src/transport/lane.rs`): ✅ 优化完成
+- **PostMessage** (`dom-bridge/src/transport/lane.rs`): ✅ 优化完成
+- **WebRTC DataChannel** (`dom-bridge/src/transport/lane.rs`): ✅ 优化完成
 
 **优化效果**：
 - 旧实现：`extend_from_slice()` + `Uint8Array::from()` = 2 次拷贝（PostMessage 还有可能的结构化克隆）
@@ -74,13 +76,13 @@
   crates/common/src/lib.rs                  (+1 行，添加模块)
   crates/common/Cargo.toml                  (+1 行，添加 wasm-bindgen 依赖)
 
-  crates/runtime-sw/src/transport/postmessage.rs      (~40 行变更)
-  crates/runtime-sw/src/transport/websocket.rs        (~30 行变更)
-  crates/runtime-sw/src/transport/lane.rs             (~50 行变更)
+  crates/sw-host/src/transport/postmessage.rs      (~40 行变更)
+  crates/sw-host/src/transport/websocket.rs        (~30 行变更)
+  crates/sw-host/src/transport/lane.rs             (~50 行变更)
 
-  crates/runtime-dom/src/transport/postmessage.rs     (~40 行变更)
-  crates/runtime-dom/src/transport/webrtc_datachannel.rs  (~30 行变更)
-  crates/runtime-dom/src/transport/lane.rs            (~50 行变更)
+  crates/dom-bridge/src/transport/postmessage.rs     (~40 行变更)
+  crates/dom-bridge/src/transport/webrtc_datachannel.rs  (~30 行变更)
+  crates/dom-bridge/src/transport/lane.rs            (~50 行变更)
 ```
 
 ### 代码行数变化

@@ -38,7 +38,7 @@ targets:
       #
       # Note: An empty lock file is generated during `actr init` to satisfy
       # xcodegen's requirement that all referenced files must exist.
-      # The file is populated with actual dependencies by `actr install`.
+      # The file is populated with actual dependencies by `actr deps install`.
       - path: manifest.lock.toml
         type: file
         buildPhase: resources

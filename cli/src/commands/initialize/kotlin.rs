@@ -26,7 +26,7 @@ impl ProjectInitializer for KotlinInitializer {
         if !context.is_current_dir {
             info!("  cd {}", context.project_dir.display());
         }
-        info!("  actr install  # Install remote protobuf dependencies from manifest.toml");
+        info!("  actr deps install  # Install remote protobuf dependencies from manifest.toml");
 
         match context.template {
             ProjectTemplateName::Echo => {
@@ -55,7 +55,7 @@ impl ProjectInitializer for KotlinInitializer {
 
 impl KotlinInitializer {
     async fn generate_echo_project(&self, context: &InitContext) -> Result<()> {
-        // Note: proto files are no longer created during init, they will be pulled via actr install
+        // Note: proto files are no longer created during init, they will be pulled via actr deps install
 
         let project_name_pascal = to_pascal_case(&context.project_name);
         let package_name = to_package_name(&context.project_name);

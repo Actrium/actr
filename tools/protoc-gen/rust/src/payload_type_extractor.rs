@@ -4,9 +4,15 @@
 
 use prost_types::MethodDescriptorProto;
 
-/// PayloadType enum values matching proto definition
+/// PayloadType enum values matching proto definition.
+///
+/// The variants that `extract_payload_type_or_default` does not currently
+/// return are still modelled so that `as_rust_variant` can emit the correct
+/// `PayloadType::...` token into generated code when option-extraction is
+/// eventually wired up.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PayloadType {
+pub(crate) enum PayloadType {
     #[default]
     RpcReliable = 0,
     RpcSignal = 1,
@@ -17,7 +23,8 @@ pub enum PayloadType {
 
 impl PayloadType {
     /// Convert from i32 proto enum value
-    pub fn from_i32(value: i32) -> Option<Self> {
+    #[cfg(test)]
+    pub(crate) fn from_i32(value: i32) -> Option<Self> {
         match value {
             0 => Some(PayloadType::RpcReliable),
             1 => Some(PayloadType::RpcSignal),
@@ -29,7 +36,7 @@ impl PayloadType {
     }
 
     /// Get Rust enum variant name for code generation
-    pub fn as_rust_variant(&self) -> &'static str {
+    pub(crate) fn as_rust_variant(&self) -> &'static str {
         match self {
             PayloadType::RpcReliable => "PayloadType::RpcReliable",
             PayloadType::RpcSignal => "PayloadType::RpcSignal",
@@ -63,7 +70,7 @@ impl PayloadType {
 ///
 /// - `Some(PayloadType)`: Option was explicitly set
 /// - `None`: Option not set, should use default
-pub fn extract_payload_type(method: &MethodDescriptorProto) -> Option<PayloadType> {
+fn extract_payload_type(method: &MethodDescriptorProto) -> Option<PayloadType> {
     // The extension field number we defined: 50001
     const _PAYLOAD_TYPE_FIELD_NUMBER: i32 = 50001;
 
@@ -111,7 +118,7 @@ fn is_streaming(method: &MethodDescriptorProto) -> bool {
 /// // Unary RPC: PayloadType::RpcReliable
 /// // Streaming RPC: PayloadType::StreamReliable
 /// ```
-pub fn extract_payload_type_or_default(method: &MethodDescriptorProto) -> PayloadType {
+pub(crate) fn extract_payload_type_or_default(method: &MethodDescriptorProto) -> PayloadType {
     // 1. Check if explicitly set via option
     if let Some(payload_type) = extract_payload_type(method) {
         return payload_type;

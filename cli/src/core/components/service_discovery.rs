@@ -9,7 +9,6 @@ use actr_protocol::{
     discovery_response, get_service_spec_response, register_response, signaling_envelope,
     signaling_to_actr,
 };
-use actr_protocol::{ActrIdExt, ActrTypeExt};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -431,7 +430,7 @@ impl ServiceDiscovery for NetworkServiceDiscovery {
 
         // Try to get ServiceSpec with proto files
         // Use actr_type.name (e.g., "EchoService") as the lookup key,
-        // matching server-side ServiceSpec.name = package.name
+        // matching package ServiceSpec.name = package.name
         let spec_lookup_name = &entry.actr_type.name;
         let proto_files = match self.get_service_proto(spec_lookup_name).await {
             Ok(proto_files) => proto_files,

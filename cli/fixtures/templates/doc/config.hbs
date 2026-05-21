@@ -27,10 +27,10 @@ actr discovery --filter "my-service-*"</code></pre>
             <h3>2. Install Dependencies</h3>
             <p>Download and lock proto files for dependencies listed in <code>manifest.toml</code>:</p>
             <pre><code class="language-bash"># Install all dependencies
-actr install
+actr deps install
 
 # Add and install a specific dependency
-actr install user-service</code></pre>
+actr deps install user-service</code></pre>
 
             <h3>3. Generate Code</h3>
             <p>Generate type-safe bindings from installed proto files:</p>

@@ -34,6 +34,20 @@ ACTR Kotlin provides seamless integration between the ACTR framework and Android
 - Use type-safe Kotlin APIs with automatic code generation
 - Integrate with existing Android applications
 
+## Relationship to the Rust Node Typestate
+
+The native host exposes a typestate chain
+`Node<Init> → Node<Attached> → Node<Registered> → ActrRef`
+(`from_config_file` → `attach_*` → `register` → `start`) so Rust-side
+system code can hook into each transition. The Kotlin API collapses the
+pipeline into a one-shot `ActrNode.fromPackageFile(...)` followed by
+`start()`: Android/Kotlin app developers only see the node and the live
+`ActrRef`. The `Node<S>` typestate is intentionally Rust-layer
+power-user territory — bindings do not re-export it. When fine-grained
+control is required (custom `TrustProvider`, pre-built `Hyper`,
+attaching a Rust `Workload`, etc.), use the `actr_hyper::{Hyper, Node}`
+API directly from native Rust.
+
 ## 🏗️ Architecture
 
 ```
@@ -126,7 +140,7 @@ import io.actorrtc.actr.*
 // 1. Create configuration
 val config = ActrConfig(
     signalingUrl = "ws://10.0.2.2:8081/signaling/ws", // For Android emulator
-    actorType = ActrType("acme", "my.android.app"),
+    actrType = ActrType("acme", "my.android.app"),
     realmId = 2281844430u
 )
 
@@ -143,11 +157,11 @@ val localActorId = client.connect()
 ### Package-backed Runtime Example
 
 ```kotlin
-import io.actor_rtc.actr.dsl.createActrSystem
+import io.actor_rtc.actr.dsl.createActrNode
 import local_file.File.*
 
-val system = createActrSystem("actr.toml", "dist/app.actr")
-val actorRef = system.start()
+val node = createActrNode("actr.toml", "dist/app.actr")
+val actorRef = node.start()
 
 val request = SendFileRequest.newBuilder()
     .setFilename("example.txt")
@@ -264,7 +278,7 @@ Unique actor identifier.
 
 ```kotlin
 data class ActrId(
-    val actorType: ActrType,
+    val actrType: ActrType,
     val serialNumber: Long,
     val realmId: UInt
 ) {

@@ -2,89 +2,101 @@
 
 ## Document Status
 
-- Version: `v0.1.0-draft`
+- Version: `v0.2.0-draft`
 - Created: `2025-01-10`
-- Last updated: `2025-01-10`
-- Status: draft requirements
+- Last updated: `2026-05-21`
+- Status: current user-facing requirements draft
 
 ## Overview
 
-Actor-RTC Web adapts the Actor-RTC runtime to browser environments. The goal is to reuse as much of the Rust runtime as practical while exposing a JavaScript and TypeScript-friendly surface for browser applications.
+Actor-RTC Web adapts the Actrium runtime to browser environments. The current browser path is Option U / wasm-bindgen: a signed `.actr` package is served with a sibling `.wbg/` guest bundle, and `actor.sw.js` loads that guest through `register_guest_workload`.
+
+Component Model and jco remain useful historical context, but they are not the current browser runtime consumption path.
 
 ## Goals
 
 - Bring core Actor-RTC capabilities to web browsers through WebAssembly.
-- Reuse the existing Rust implementation where possible.
-- Provide a type-safe API for JavaScript and TypeScript consumers.
-- Preserve the same mental model across native and browser runtimes.
+- Reuse existing Rust runtime logic where practical.
+- Provide JavaScript and TypeScript-friendly SDK surfaces.
+- Preserve the same actor mental model across native and browser runtimes.
+- Support browser-hosted actor workloads where the current examples and runtime path allow it.
 
 ## Non-Goals
 
-- Perfect parity with every native capability in the first release
-- Full browser-side service hosting on day one
-- Background refresh or retry loops that diverge from the native design principles
+- Perfect parity with every native capability in the first browser release.
+- Reintroducing periodic credential refresh loops or background retry loops that diverge from current repository policy.
+- Treating historical Component Model / jco browser bridge documents as current user setup instructions.
 
 ## High-Level Architecture
 
-The browser runtime is split into two cooperating execution domains:
+The browser runtime is split into cooperating execution domains:
 
-- DOM-side runtime for browser API interaction, UI adjacency, and user-facing coordination
-- Service Worker-side runtime for transport management, mailbox persistence, and serialized actor execution
-
-Shared logic is compiled to WASM and wrapped by a thin JavaScript bridge layer.
+- DOM-side application and bridge code for browser APIs, UI adjacency, WebRTC coordination, and user-facing events.
+- Service Worker-side runtime for shared worker execution, package loading, transport coordination, mailbox-backed processing, and guest dispatch.
+- wasm-bindgen guest workload bundle loaded from `<package-stem>.wbg/guest.js` and `<package-stem>.wbg/guest_bg.wasm`.
 
 ## Primary Usage Modes
 
 ### Client Mode
 
-The browser acts as a client that discovers and calls remote actors. This is the main target for early delivery and should cover most product use cases.
+The browser discovers and calls remote actors. This remains the simplest starting point for application developers.
 
-### Runtime Mode
+### Browser-Hosted Workload Mode
 
-The browser hosts more of the actor runtime locally, including mailbox-backed inbound processing and richer transport coordination. This mode is more advanced and should evolve incrementally.
+The browser can host actor workload behavior through the current wasm-bindgen guest path. The data-stream peer concurrent example exercises browser-hosted service behavior.
+
+### Runtime/Contributor Mode
+
+Framework contributors may work directly with `crates/sw-host`, `packages/web-sdk/src/actor.sw.js`, `packages/actr-dom`, and the CLI asset sync path.
 
 ## Functional Requirements
 
-- Remote actor discovery from the browser
-- Request-response RPC calls
-- Stream subscription support
-- Typed code generation for browser clients
-- WebRTC-based peer connectivity
-- Signaling integration over WebSocket
-- IndexedDB-backed mailbox support where persistence is required
-- Separation between State Path and Fast Path processing
+- Remote actor discovery from the browser.
+- Request-response RPC calls.
+- Stream subscription support.
+- Typed code generation for browser clients where generated bindings exist.
+- WebRTC-based peer connectivity.
+- Signaling and AIS integration through local or remote actrix-compatible services.
+- IndexedDB-backed mailbox support where persistence is required.
+- Separation between State Path and Fast Path processing.
+- Service Worker based guest loading through `actor.sw.js`.
+- wasm-bindgen browser guest dispatch through `register_guest_workload`.
 
 ## Developer Experience Requirements
 
-- A straightforward SDK entry point such as `createActor`
-- Generated TypeScript types and ActorRef wrappers from proto definitions
-- Vite-friendly setup for WASM-based projects
-- React integration support where relevant
-- Documentation for client mode, runtime mode, and debugging
+- Workspace dependency installation through `pnpm install`.
+- Current web runtime asset builds through `bash crates/sw-host/build.sh`.
+- CLI asset refresh through `bash scripts/sync-cli-assets.sh --build`.
+- Example smoke paths through `bash examples/echo/start-mock.sh` and `bash examples/data-stream-peer-concurrent/start.sh`.
+- React integration through the currently exported hooks: `useActorClient`, `useServiceCall`, and `useSubscription`.
+- Documentation that clearly separates current setup steps from historical architecture notes.
 
 ## Runtime and Platform Constraints
 
-- Browser security policies apply, including worker and cross-origin restrictions
-- IndexedDB behavior varies across browsers and browsing modes
-- WebRTC setup depends on signaling and ICE infrastructure
-- WASM size and startup time must remain practical for interactive apps
+- Browser security policies apply, including Service Worker scope, origin, and HTTPS restrictions.
+- IndexedDB behavior varies across browsers and browsing modes.
+- WebRTC setup depends on signaling, ICE infrastructure, and browser policy.
+- WASM size and startup time must remain practical for interactive apps.
+- `.actr` packages and `.wbg/` sibling bundles must be served from paths that `actor.sw.js` can resolve consistently.
 
 ## Quality Targets
 
-- High code reuse from the native Rust runtime
-- Predictable type safety across Rust and TypeScript boundaries
-- Practical runtime performance suitable for interactive real-time features
-- A debug path that makes transport and lifecycle failures diagnosable
+- High code reuse from the native Rust runtime where it fits the browser execution model.
+- Predictable type safety across Rust and TypeScript boundaries.
+- Practical runtime performance suitable for interactive real-time features.
+- A debug path that makes Service Worker, guest loading, transport, and lifecycle failures diagnosable.
 
 ## Delivery Priorities
 
-1. Stable client mode with generated type-safe APIs
-2. Reliable signaling and WebRTC transport integration
-3. Browser storage and mailbox support where required
-4. Runtime mode hardening and deeper native parity
+1. Keep the Option U / wasm-bindgen browser path stable and documented.
+2. Keep echo and data-stream peer examples runnable through current scripts.
+3. Keep CLI-embedded web assets synchronized with canonical web sources.
+4. Continue improving generated TypeScript and React integration without documenting unsupported public APIs.
 
 ## Related Reading
 
 - [getting-started.md](./getting-started.md)
 - [troubleshooting.md](./troubleshooting.md)
-- [architecture/overview.zh.md](./architecture/overview.zh.md)
+- [error-handling.md](./error-handling.md)
+- [docs/README.md](./README.md)
+- [architecture/README.zh.md](./architecture/README.zh.md)

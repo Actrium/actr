@@ -1,8 +1,10 @@
 # 零拷贝通信分析报告
 
+> **历史快照 / 非当前实现指南**（2026-01-08）：本文记录的是零拷贝优化前的 baseline 分析。当前实现已经有 `bindings/web/crates/common/src/zero_copy.rs`，并且 `sw-host` / `dom-bridge` 的 lane/postmessage 路径已接入 `receive_zero_copy`、`extract_payload_zero_copy`、`send_zero_copy`、`send_with_transfer` 等 helper。本文后续的“当前实现”“立即建议”均应按当时 baseline 理解，不代表当前仓库状态。
+
 ## 执行概要
 
-**结论：当前实现 NOT 零拷贝，所有通信路径都存在多次数据拷贝。**
+**历史结论（pre-optimization baseline）：当时实现还未接入零拷贝 helper，通信路径存在多次数据拷贝。**
 
 - **接收路径**：每条消息 2 次拷贝（JS Uint8Array → Rust Vec → Bytes）
 - **发送路径**：每条消息 2-3 次拷贝（Bytes → Vec → JS Uint8Array → 底层传输）
@@ -16,7 +18,7 @@
 ### 1.1 接收路径（两端相同）
 
 #### Service Worker 端
-**位置**：`crates/runtime-sw/src/transport/postmessage.rs:62-94`
+**位置**：`crates/sw-host/src/transport/postmessage.rs:62-94`
 
 ```rust
 let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
@@ -43,14 +45,14 @@ let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
 - **拷贝 2**：`Bytes::copy_from_slice()` 再次复制到 Bytes 内部缓冲区
 
 #### DOM 端
-**位置**：`crates/runtime-dom/src/transport/postmessage.rs:50-69`
+**位置**：`crates/dom-bridge/src/transport/postmessage.rs:50-69`
 
 完全相同的实现，相同的拷贝问题。
 
 ### 1.2 发送路径
 
 #### DOM 端
-**位置**：`crates/runtime-dom/src/transport/lane.rs:52-72`
+**位置**：`crates/dom-bridge/src/transport/lane.rs:52-72`
 
 ```rust
 pub async fn send(&self, data: Bytes) -> LaneResult<()> {
@@ -78,7 +80,7 @@ pub async fn send(&self, data: Bytes) -> LaneResult<()> {
 - **拷贝 3**（可能）：`post_message` 内部的结构化克隆（取决于浏览器）
 
 #### Service Worker 端
-**位置**：`crates/runtime-sw/src/transport/lane.rs:97-132`
+**位置**：`crates/sw-host/src/transport/lane.rs:97-132`
 
 完全相同的实现，相同的拷贝问题。
 
@@ -88,7 +90,7 @@ pub async fn send(&self, data: Bytes) -> LaneResult<()> {
 
 ### 2.1 接收路径
 
-**位置**：`crates/runtime-dom/src/transport/webrtc_datachannel.rs:74-95`
+**位置**：`crates/dom-bridge/src/transport/webrtc_datachannel.rs:74-95`
 
 ```rust
 let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
@@ -115,7 +117,7 @@ let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
 
 ### 2.2 发送路径
 
-**位置**：`crates/runtime-dom/src/transport/lane.rs:75-103`
+**位置**：`crates/dom-bridge/src/transport/lane.rs:75-103`
 
 ```rust
 DataLane::WebRtcDataChannel { data_channel, payload_type, .. } => {
@@ -138,7 +140,7 @@ DataLane::WebRtcDataChannel { data_channel, payload_type, .. } => {
 
 ### 3.1 接收路径
 
-**位置**：`crates/runtime-sw/src/transport/websocket.rs:72-92`
+**位置**：`crates/sw-host/src/transport/websocket.rs:72-92`
 
 ```rust
 let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
@@ -165,7 +167,7 @@ let onmessage_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
 
 ### 3.2 发送路径
 
-**位置**：`crates/runtime-sw/src/transport/lane.rs:76-94`
+**位置**：`crates/sw-host/src/transport/lane.rs:76-94`
 
 ```rust
 DataLane::WebSocket { ws, payload_type, .. } => {
@@ -188,7 +190,7 @@ DataLane::WebSocket { ws, payload_type, .. } => {
 
 ### 4.1 MediaTrack Processor
 
-**位置**：`crates/runtime-dom/src/transport/webrtc_mediatrack.rs:168-183`
+**位置**：`crates/dom-bridge/src/transport/webrtc_mediatrack.rs:168-183`
 
 ```rust
 pub fn process_frame(&self, frame_data: Bytes) -> LaneResult<()> {
@@ -358,16 +360,16 @@ pub async fn send(&self, data: Bytes) -> LaneResult<()> {
 
 1. **接收路径**：使用 `Bytes::from()` 替代 `Bytes::copy_from_slice()`
    - 影响文件：
-     - `runtime-sw/src/transport/postmessage.rs`
-     - `runtime-dom/src/transport/postmessage.rs`
-     - `runtime-dom/src/transport/webrtc_datachannel.rs`
-     - `runtime-sw/src/transport/websocket.rs`
+     - `sw-host/src/transport/postmessage.rs`
+     - `dom-bridge/src/transport/postmessage.rs`
+     - `dom-bridge/src/transport/webrtc_datachannel.rs`
+     - `sw-host/src/transport/websocket.rs`
    - 预期收益：减少 1 次拷贝（30% 性能提升）
 
 2. **发送路径**：使用 `Uint8Array::view()` 创建零拷贝视图
    - 影响文件：
-     - `runtime-dom/src/transport/lane.rs`
-     - `runtime-sw/src/transport/lane.rs`
+     - `dom-bridge/src/transport/lane.rs`
+     - `sw-host/src/transport/lane.rs`
    - 预期收益：减少 1 次拷贝（20% 性能提升）
 
 ### Phase 2：中等成本优化（3-5 天）
@@ -445,7 +447,7 @@ pub async fn send(&self, data: Bytes) -> LaneResult<()> {
 
 ## 10. 总结
 
-**当前状态**：❌ 所有通信路径都存在 2-4 次数据拷贝，**不是零拷贝**
+**历史状态（pre-optimization baseline）**：当时所有通信路径都存在 2-4 次数据拷贝，尚未接入后续的零拷贝 helper。
 
 **优化潜力**：
 - **短期**（Phase 1）：50% 性能提升，1-2 天实施
@@ -453,7 +455,7 @@ pub async fn send(&self, data: Bytes) -> LaneResult<()> {
 - **长期**（Phase 3）：90% 性能提升，2 周实施
 
 **建议**：
-1. 立即实施 **Phase 1 优化**（低成本，高收益）
+1. 当时建议优先实施 **Phase 1 优化**（低成本，高收益）；当前仓库已完成对应 helper 与传输路径接入。
 2. 根据实际性能需求决定是否继续 Phase 2/3
 3. 对于非性能敏感的 RPC 路径，当前实现可接受
 4. 对于媒体流和大数据传输，强烈建议实施完整的零拷贝优化

@@ -50,6 +50,10 @@ jobs:
         working-directory: bindings/typescript
         run: npm run build
 
+      - name: Run unit tests
+        working-directory: bindings/typescript
+        run: npm test
+
       - name: Cargo check
         working-directory: bindings/typescript
         run: cargo check --locked --manifest-path Cargo.toml

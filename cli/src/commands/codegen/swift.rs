@@ -5,7 +5,6 @@ use crate::error::{ActrCliError, Result};
 use crate::plugin_config::{compare_versions, load_protoc_plugin_config, version_is_at_least};
 use crate::utils::{command_exists, to_pascal_case};
 use actr_config::LockFile;
-use actr_protocol::ActrTypeExt;
 use async_trait::async_trait;
 use handlebars::Handlebars;
 use serde::Serialize;

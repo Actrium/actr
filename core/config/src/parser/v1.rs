@@ -4,12 +4,12 @@ use crate::config::ObservabilityConfig;
 use crate::config::{
     BinaryConfig, BuildArtifact, BuildConfig, BuildProfile, BuildTool, Dependency, IceServer,
     IceTransportPolicy, ManifestConfig, PackageInfo, ProtoFile, RuntimeConfig, ServiceRef,
-    WebRtcAdvancedConfig, WebRtcConfig,
+    TrustAnchor, WebRtcAdvancedConfig, WebRtcConfig,
 };
 
 use crate::actr_raw::RuntimeRawConfig;
 use crate::error::{ConfigError, Result};
-use crate::{RawBuildConfig, RawConfig, RawDependency, RawPackageConfig, WebConfig};
+use crate::{ManifestRawConfig, RawBuildConfig, RawDependency, RawPackageConfig, WebConfig};
 use actr_protocol::{Acl, ActrType, Name, Realm};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,7 +32,7 @@ impl ParserV1 {
         Self { base_dir }
     }
 
-    pub fn parse_manifest(&self, mut raw: RawConfig) -> Result<ManifestConfig> {
+    pub fn parse_manifest(&self, mut raw: ManifestRawConfig) -> Result<ManifestConfig> {
         // 1. Process inheritance
         let raw = if let Some(parent_path) = raw.inherit.take() {
             self.merge_inheritance(raw, parent_path)?
@@ -110,7 +110,6 @@ impl ParserV1 {
         &self,
         raw: RuntimeRawConfig,
         package: PackageInfo,
-        tags: Vec<String>,
     ) -> Result<RuntimeConfig> {
         // Validate required runtime fields
         let signaling_url_str = raw
@@ -172,26 +171,24 @@ impl ParserV1 {
             visible_in_discovery: raw.discovery.visible.unwrap_or(true),
             acl,
             mailbox_path: None,
-            tags,
             scripts: raw.scripts,
             webrtc: self.parse_webrtc(&raw.webrtc)?,
             websocket_listen_port: raw.websocket.listen_port,
             websocket_advertised_host: raw.websocket.advertised_host,
             observability,
             config_dir: self.base_dir.clone(),
-            trust_mode: raw
-                .deployment
-                .trust_mode
-                .unwrap_or_else(|| "development".to_string()),
+            trust: raw
+                .trust
+                .into_iter()
+                .map(|anchor| resolve_trust_paths(anchor, &self.base_dir))
+                .collect(),
             package_path,
             web: raw.web.map(|w| WebConfig {
                 port: w.port,
                 host: w.host,
                 static_dir: self.base_dir.join(&w.static_dir),
-                is_server: w.is_server,
                 package_url: w.package_url,
                 runtime_wasm_url: w.runtime_wasm_url,
-                mfr_pubkey: w.mfr_pubkey,
             }),
         })
     }
@@ -534,9 +531,13 @@ impl ParserV1 {
         })
     }
 
-    fn merge_inheritance(&self, child: RawConfig, parent_path: PathBuf) -> Result<RawConfig> {
+    fn merge_inheritance(
+        &self,
+        child: ManifestRawConfig,
+        parent_path: PathBuf,
+    ) -> Result<ManifestRawConfig> {
         let parent_full_path = self.base_dir.join(&parent_path);
-        let mut parent = RawConfig::from_file(&parent_full_path)?;
+        let mut parent = ManifestRawConfig::from_file(&parent_full_path)?;
 
         // Check edition consistency
         if parent.edition != child.edition {
@@ -554,7 +555,7 @@ impl ParserV1 {
         };
 
         // Merge logic — system config is no longer part of manifest.toml
-        Ok(RawConfig {
+        Ok(ManifestRawConfig {
             edition: child.edition, // Verified consistent
             inherit: None,
             config_dir: child.config_dir,
@@ -583,10 +584,24 @@ impl ParserV1 {
 
 // (ActrMode removed) previous execution mode parsing no longer needed.
 
+/// Resolve a trust anchor's relative paths against the config dir.
+fn resolve_trust_paths(anchor: TrustAnchor, base_dir: &Path) -> TrustAnchor {
+    match anchor {
+        TrustAnchor::Static {
+            pubkey_file,
+            pubkey_b64,
+        } => TrustAnchor::Static {
+            pubkey_file: pubkey_file.map(|p| if p.is_absolute() { p } else { base_dir.join(p) }),
+            pubkey_b64,
+        },
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RawConfig;
+    use crate::ManifestRawConfig;
     use std::fs;
     use tempfile::TempDir;
 
@@ -619,7 +634,7 @@ run = "cargo run"
         fs::write(&config_path, toml_content).unwrap();
 
         // Parse
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
@@ -647,7 +662,7 @@ shared = { actr_type = "acme:logging-service:1.0.0", service = "LoggingService:a
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
@@ -676,7 +691,7 @@ manufacturer = "acme"
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
@@ -700,7 +715,7 @@ manufacturer = "1acme"
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let result = parser.parse_manifest(raw);
         assert!(result.is_err());
@@ -725,7 +740,7 @@ manufacturer = "acme"
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let result = parser.parse_manifest(raw);
         assert!(result.is_err());
@@ -747,14 +762,14 @@ version = "1.0.0"
 
 [binary]
 path = "dist/test.wasm"
-target = "wasm32-unknown-unknown"
+target = "wasm32-wasip2"
 
 [build]
 tool = "cargo"
 manifest_path = "Cargo.toml"
 artifact = "lib"
 profile = "release"
-target = "wasm32-unknown-unknown"
+target = "wasm32-wasip2"
 features = ["feature-a", "feature-b"]
 no_default_features = true
 post_build = ["echo build"]
@@ -764,13 +779,13 @@ post_build = ["echo build"]
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let config = parser.parse_manifest(raw).unwrap();
 
         let binary = config.binary.expect("binary config should exist");
         assert_eq!(binary.path, tmpdir.path().join("dist/test.wasm"));
-        assert_eq!(binary.target.as_deref(), Some("wasm32-unknown-unknown"));
+        assert_eq!(binary.target.as_deref(), Some("wasm32-wasip2"));
 
         let build = config.build.expect("build config should exist");
         assert_eq!(build.manifest_path, tmpdir.path().join("Cargo.toml"));
@@ -798,7 +813,7 @@ tool = "cargo"
         let config_path = tmpdir.path().join("manifest.toml");
         fs::write(&config_path, toml_content).unwrap();
 
-        let raw = RawConfig::from_file(&config_path).unwrap();
+        let raw = ManifestRawConfig::from_file(&config_path).unwrap();
         let parser = ParserV1::new(&config_path);
         let result = parser.parse_manifest(raw);
 
@@ -822,7 +837,7 @@ manufacturer = "acme"
         fs::write(&path, toml_content).unwrap();
 
         let config = ParserV1::new(&path)
-            .parse_manifest(RawConfig::from_file(&path).unwrap())
+            .parse_manifest(ManifestRawConfig::from_file(&path).unwrap())
             .unwrap();
         // ManifestConfig fields are present; no execution_mode field exists on ManifestConfig
         assert_eq!(config.package.name, "test");

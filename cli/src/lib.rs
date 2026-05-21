@@ -3,6 +3,7 @@
 //! Provides core functionality modules for the Actor-RTC CLI tool
 
 pub mod assets;
+pub mod cli;
 pub mod commands;
 pub mod config;
 pub mod core;

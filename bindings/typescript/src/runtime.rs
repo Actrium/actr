@@ -2,68 +2,93 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
 use crate::types::{ActrId, ActrType, PayloadType};
-use actr_config::{ConfigParser, RuntimeConfig};
-use actr_framework::Dest;
-use actr_hyper::{
-    ActrNode as RuntimeActrNode, ActrRef as RuntimeActrRef, Hyper, HyperConfig, TrustMode,
-};
+use actr_config::ConfigParser;
+use actr_framework::{Context as RtContext, Dest, MessageDispatcher, Workload as RtWorkload};
+use actr_hyper::{ActrRef as RuntimeActrRef, Node, Registered};
+use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
+use async_trait::async_trait;
 
-fn load_runtime_config(manifest_path: &str) -> std::result::Result<RuntimeConfig, actr_config::ConfigError> {
-    let manifest = ConfigParser::from_manifest_file(manifest_path)?;
-    let runtime_path = manifest.config_dir.join("actr.toml");
+struct TypeScriptBindingWorkload;
 
-    ConfigParser::from_runtime_file(runtime_path, manifest.package, manifest.tags)
+#[async_trait]
+impl RtWorkload for TypeScriptBindingWorkload {
+    type Dispatcher = TypeScriptBindingDispatcher;
+}
+
+struct TypeScriptBindingDispatcher;
+
+#[async_trait]
+impl MessageDispatcher for TypeScriptBindingDispatcher {
+    type Workload = TypeScriptBindingWorkload;
+
+    async fn dispatch<C: RtContext>(
+        _workload: &Self::Workload,
+        _envelope: RpcEnvelope,
+        _ctx: &C,
+    ) -> ActorResult<bytes::Bytes> {
+        Err(ActrError::NotImplemented(
+            "typescript bindings do not expose inbound local RPC dispatch".to_string(),
+        ))
+    }
 }
 
 #[napi]
 pub struct ActrNode {
-    inner: Option<RuntimeActrNode>,
+    inner: Option<Node<Registered>>,
 }
 
 #[napi]
 impl ActrNode {
-    /// Create a client-only ActrNode from manifest.toml and the sibling actr.toml.
+    /// Create an ActrNode wrapper from manifest.toml and the sibling actr.toml.
     #[napi(factory)]
     pub async fn from_file(config_path: String) -> Result<ActrNode> {
-        let config = load_runtime_config(&config_path).map_err(crate::error::config_error_to_napi)?;
+        // Accept the manifest.toml path, resolve its sibling actr.toml,
+        // and let Node::from_config_file own config + trust + Hyper
+        // construction. TypeScript bindings link a minimal static-lib
+        // workload here; this surface exposes discovery and outbound
+        // calls, not TypeScript-defined service hosting.
+        let manifest = ConfigParser::from_manifest_file(&config_path)
+            .map_err(crate::error::config_error_to_napi)?;
+        let runtime_path = manifest.config_dir.join("actr.toml");
 
-        crate::logger::init_observability(config.observability.clone());
-
-        let hyper_data_dir =
-            actr_config::user_config::resolve_hyper_data_dir().map_err(crate::error::config_error_to_napi)?;
-        let hyper = Hyper::init(HyperConfig::new(&hyper_data_dir).with_trust_mode(
-            TrustMode::Development {
-                self_signed_pubkey: vec![0u8; 32],
-            },
-        ))
+        let init = Node::from_config_file(&runtime_path)
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
-        let node = hyper
-            .attach_package(
-                &actr_hyper::WorkloadPackage::new(vec![]),
-                config,
-            )
+        crate::logger::init_observability(init.runtime_config().observability.clone());
+        let attached = init
+            .link(TypeScriptBindingWorkload)
+            .await
+            .map_err(crate::error::hyper_error_to_napi)?;
+        let ais_endpoint = attached.ais_endpoint().to_string();
+        let registered = attached
+            .register(&ais_endpoint)
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
 
         Ok(ActrNode {
-            inner: Some(node),
+            inner: Some(registered),
         })
     }
     /// Start the node and return ActrRef.
     ///
+    /// One-shot: consumes the internal Hyper handle. A second call resolves
+    /// with `Node already started`.
+    ///
     /// # Safety
     ///
-    /// This function is unsafe because it takes ownership of the internal node and
-    /// starts the actor runtime. It must only be called once.
+    /// The `unsafe` marker is imposed by napi-rs for async methods that take
+    /// `&mut self`; it is a plumbing requirement of the FFI layer and is not
+    /// surfaced to JavaScript callers, who always invoke this method through
+    /// the generated wrapper. There is no memory-safety contract for Rust
+    /// callers to uphold beyond the usual `&mut self` aliasing rules.
     #[napi]
     pub async unsafe fn start(&mut self) -> Result<ActrRef> {
-        let node = self
+        let hyper = self
             .inner
             .take()
             .ok_or_else(|| Error::from_reason("Node already started"))?;
 
-        let actr_ref = node
+        let actr_ref = hyper
             .start()
             .await
             .map_err(crate::error::protocol_error_to_napi)?;
@@ -143,8 +168,8 @@ impl ActrRef {
             proto_payload_type,
             bytes::Bytes::from(message_payload.to_vec()),
         )
-            .await
-            .map_err(crate::error::protocol_error_to_napi)?;
+        .await
+        .map_err(crate::error::protocol_error_to_napi)?;
 
         Ok(())
     }

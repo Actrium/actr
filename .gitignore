@@ -11,6 +11,7 @@ logs/
 .vscode/
 .idea/
 .serena/
+.claude/
 *.swp
 *.swo
 *~
@@ -48,6 +49,11 @@ examples/rust/wasm-echo/guest/built/
 examples/rust/dynclib-echo/guest/target/
 core/hyper/tests/wasm_actor_fixture/built/
 
+# Generated CLI web runtime assets. Release/CI builds regenerate these before
+# building actr-cli; they are included in release packages but not tracked.
+cli/assets/web-runtime/actr_sw_host.js
+cli/assets/web-runtime/actr_sw_host_bg.wasm
+
 # echo-actr built artifacts
 examples/rust/echo-actr/dist/
 
@@ -65,3 +71,6 @@ release/reports/
 
 # Git worktrees
 .worktrees/
+
+# Standalone smoke / codegen-test crates ([workspace] of their own — lockfile not tracked)
+bindings/web/crates/framework-web-entry-smoke/Cargo.lock

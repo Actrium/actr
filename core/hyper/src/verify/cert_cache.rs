@@ -5,7 +5,7 @@
 //!
 //! Uses `std::sync::RwLock` (not tokio) internally because:
 //! - Cache reads/writes are extremely short memory operations that won't block the tokio executor
-//! - Provides a synchronous read path for `PackageVerifier::resolve_mfr_pubkey` to call directly
+//! - Provides a synchronous read path for `RegistryTrust::verify_package` to call directly
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -33,6 +33,15 @@ pub struct MfrCertCache {
     cache: RwLock<HashMap<String, CacheEntry>>,
 }
 
+impl std::fmt::Debug for MfrCertCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MfrCertCache")
+            .field("ais_endpoint", &self.ais_endpoint)
+            .field("ttl", &self.ttl)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MfrCertCache {
     pub fn new(ais_endpoint: impl Into<String>) -> Arc<Self> {
         Arc::new(Self {
@@ -43,7 +52,7 @@ impl MfrCertCache {
         })
     }
 
-    /// Used in `PackageVerifier::resolve_mfr_pubkey` synchronous path;
+    /// Used in `RegistryTrust::verify_package` synchronous path;
     /// caller must ensure the cache has been warmed via `get_or_fetch` beforehand.
     pub fn get_from_cache(&self, manufacturer: &str, key_id: Option<&str>) -> Option<VerifyingKey> {
         let cache_key = match key_id {

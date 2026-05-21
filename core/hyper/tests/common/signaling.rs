@@ -1,31 +1,31 @@
 //! WebSocket-based test signaling server
 //!
-//! Thin wrapper around `actr_mock_signaling::MockSignalingServer` with
+//! Thin wrapper around `actr_mock_actrix::MockActrixServer` with
 //! backward-compatible API for existing integration tests.
 
-pub use actr_mock_signaling::MockSignalingServer;
+pub use actr_mock_actrix::MockActrixServer;
 
 /// Controllable test signaling server with real WebSocket.
 ///
-/// This is a compatibility wrapper around [`MockSignalingServer`] that
+/// This is a compatibility wrapper around [`MockActrixServer`] that
 /// preserves the original `TestSignalingServer` API used by hyper integration
 /// tests.
 pub struct TestSignalingServer {
-    inner: MockSignalingServer,
+    inner: MockActrixServer,
 }
 
 impl TestSignalingServer {
     /// Start the test server on a random available port.
     pub async fn start() -> anyhow::Result<Self> {
         Ok(Self {
-            inner: MockSignalingServer::start().await?,
+            inner: MockActrixServer::start().await?,
         })
     }
 
     /// Start the test server on the specified port.
     pub async fn start_on_port(port: u16) -> anyhow::Result<Self> {
         Ok(Self {
-            inner: MockSignalingServer::start_on_port(port).await?,
+            inner: MockActrixServer::start_on_port(port).await?,
         })
     }
 

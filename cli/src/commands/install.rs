@@ -8,8 +8,11 @@ use crate::core::{
 };
 use crate::utils::command_exists;
 use actr_config::LockFile;
-use actr_protocol::{ActrType, ActrTypeExt};
-use actr_service_compat::{CompatibilityLevel, Fingerprint, ProtoFile, ServiceCompatibility};
+use actr_protocol::ActrType;
+use actr_service_compat::{
+    CompatibilityLevel, Fingerprint, ProtoFile, ServiceCompatibility, ServiceSpecInput,
+    build_service_spec,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use clap::Args;
@@ -20,7 +23,7 @@ use std::process::Command as StdCommand;
 #[derive(Args, Debug)]
 #[command(
     about = "Install service dependencies",
-    long_about = "Install service dependencies. You can install specific service packages, or install all dependencies configured in manifest.toml.\n\nExamples:\n  actr install                          # Install all dependencies from manifest.toml\n  actr install user-service             # Install a service by name\n  actr install my-alias --actr-type acme:EchoService  # Install with alias and explicit actr_type"
+    long_about = "Install service dependencies. You can install specific service packages, or install all dependencies configured in manifest.toml.\n\nExamples:\n  actr deps install                          # Install all dependencies from manifest.toml\n  actr deps install user-service             # Install a service by name\n  actr deps install my-alias --actr-type acme:EchoService  # Install with alias and explicit actr_type"
 )]
 pub struct InstallCommand {
     /// Package name or alias (when used with --actr-type, this becomes the alias)
@@ -58,7 +61,7 @@ pub enum InstallMode {
     /// - Update manifest.lock.toml
     AddNewPackage { packages: Vec<String> },
 
-    /// Mode 1b: Add dependency with explicit alias and actr_type (actr install <alias> --actr-type <type>)
+    /// Mode 1b: Add dependency with explicit alias and actr_type (actr deps install <alias> --actr-type <type>)
     /// - Discover service by actr_type
     /// - Use first argument as alias
     /// - Modify manifest.toml (add dependency with alias)
@@ -116,7 +119,7 @@ impl Command for InstallCommand {
             if self.fingerprint.is_some() {
                 return Err(ActrCliError::InvalidArgument {
                     message: "Using --fingerprint requires specifying --actr-type explicitly.
-Use: actr install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
+Use: actr deps install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
                         .to_string(),
                 }
                 .into());
@@ -129,7 +132,7 @@ Use: actr install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
             if self.fingerprint.is_some() {
                 return Err(ActrCliError::InvalidArgument {
                     message: "Using --fingerprint requires specifying an alias and --actr-type.
-Use: actr install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
+Use: actr deps install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
                         .to_string(),
                 }
                 .into());
@@ -225,7 +228,7 @@ impl InstallCommand {
             .unwrap_or_else(|| spec.name.clone())
     }
 
-    /// Execute Mode 1: Add new package (actr install <package>)
+    /// Execute Mode 1: Add new package (actr deps install <package>)
     /// - Pull remote proto to protos/ folder
     /// - Modify manifest.toml (add dependency)
     /// - Update manifest.lock.toml
@@ -234,7 +237,7 @@ impl InstallCommand {
         context: &CommandContext,
         packages: &[String],
     ) -> Result<CommandResult> {
-        println!("actr install {}", packages.join(" "));
+        println!("actr deps install {}", packages.join(" "));
 
         let install_pipeline = {
             let mut container = context.container.lock().unwrap();
@@ -279,7 +282,7 @@ impl InstallCommand {
                             "💡 Tip: If you want to specify a fingerprint, use the full command:"
                         );
                         println!(
-                            "      actr install {} --actr-type <TYPE> --fingerprint <FINGERPRINT>",
+                            "      actr deps install {} --actr-type <TYPE> --fingerprint <FINGERPRINT>",
                             package
                         );
                         println!();
@@ -395,10 +398,8 @@ impl InstallCommand {
         actr_type: &ActrType,
         fingerprint: Option<&str>,
     ) -> Result<CommandResult> {
-        use actr_protocol::ActrTypeExt;
-
         println!(
-            "actr install {} --actr-type {}",
+            "actr deps install {} --actr-type {}",
             alias,
             actr_type.to_string_repr()
         );
@@ -442,7 +443,7 @@ impl InstallCommand {
         println!("  ├─ 🔍 Service discovered: {}", service_name);
 
         // Get full service details (proto files etc.)
-        // Use actr_type.name for ServiceSpec lookup (matching server-side spec.name = package.name)
+        // Use actr_type.name for ServiceSpec lookup (matching package spec.name = package.name)
         let service_details = service_discovery.get_service_details(&service_name).await?;
 
         println!(
@@ -514,7 +515,7 @@ impl InstallCommand {
         }
     }
 
-    /// Execute Mode 2: Install from config (actr install)
+    /// Execute Mode 2: Install from config (actr deps install)
     /// - Do NOT modify manifest.toml
     /// - Use lock file versions if available
     /// - Check for compatibility conflicts when lock file exists
@@ -1006,7 +1007,13 @@ impl InstallCommand {
 
             if current_semantic_fp != locked_semantic {
                 // Semantic fingerprints differ - this indicates breaking changes
-                // Build ServiceSpec structures for detailed comparison
+                // Build ServiceSpec structures for detailed comparison.
+                //
+                // The "locked" side cannot go through `build_service_spec`:
+                // the lock file stores per-file fingerprints but not proto
+                // contents, so we preserve the recorded fingerprints and
+                // leave `content: String::new()`. Deep compatibility analysis
+                // relies on the current side for actual proto content.
                 let locked_spec = ServiceSpec {
                     name: spec.name.clone(),
                     description: locked_dep.description.clone(),
@@ -1024,20 +1031,32 @@ impl InstallCommand {
                     tags: locked_dep.tags.clone(),
                 };
 
-                let current_spec = ServiceSpec {
-                    name: spec.name.clone(),
+                // "Current" side: we do have proto contents, so use the
+                // shared builder — it computes both the service-level and
+                // per-file semantic fingerprints consistently with hyper's
+                // package-based derivation.
+                let current_spec = match build_service_spec(ServiceSpecInput {
+                    name: &spec.name,
                     description: Some(current_service.info.description.clone().unwrap_or_default()),
-                    fingerprint: format!("service_semantic:{}", current_semantic_fp),
-                    protobufs: current_proto_files
-                        .iter()
-                        .map(|pf| actr_protocol::service_spec::Protobuf {
-                            package: pf.name.clone(),
-                            content: pf.content.clone(),
-                            fingerprint: String::new(),
-                        })
-                        .collect(),
-                    published_at: current_service.info.published_at,
                     tags: current_service.info.tags.clone(),
+                    proto_files: current_proto_files.clone(),
+                }) {
+                    Ok(mut built) => {
+                        built.published_at = current_service.info.published_at;
+                        built
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to build current ServiceSpec for '{}': {}",
+                            spec.name,
+                            e
+                        );
+                        conflicts.push(format!(
+                            "{}: Service definition changed (locked: {}, current: {})",
+                            spec.name, locked_fingerprint, current_fingerprint
+                        ));
+                        continue;
+                    }
                 };
 
                 // Attempt to analyze compatibility

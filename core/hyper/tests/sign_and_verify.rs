@@ -7,10 +7,12 @@
 //! 4. Unsigned bytes → InvalidManifest (unrecognized format)
 
 #[cfg(feature = "wasm-engine")]
-use actr_hyper::PackageExecutionBackend;
-use actr_hyper::{Hyper, HyperConfig, HyperError, TrustMode, WorkloadPackage};
+use actr_hyper::BinaryKind;
+use actr_hyper::test_support::inspect_workload_package;
+use actr_hyper::{Hyper, HyperConfig, HyperError, StaticTrust, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 // ─── Utility functions ───────────────────────────────────────────────────────
@@ -20,46 +22,25 @@ fn minimal_wasm() -> Vec<u8> {
 }
 
 #[cfg(feature = "wasm-engine")]
+mod wasm_actor_fixture;
+
+/// Returns the Phase-1 Component Model fixture bytes embedded in
+/// `wasm_actor_fixture.rs`. Previously this was a hand-rolled core wasm
+/// module exposing `actr_alloc` / `actr_handle` — obsolete since
+/// Commit 2 switched the host to `Component::from_binary`. The fresh
+/// Component exposes the `actr:workload/workload@0.1.0` world and loads
+/// cleanly through `WasmHost::compile`.
+#[cfg(feature = "wasm-engine")]
 fn echo_guest_wasm() -> Vec<u8> {
-    wat::parse_str(
-        r#"
-(module
-  (memory (export "memory") 2)
-  (global $heap (mut i32) (i32.const 4096))
-  (func $bump (param $n i32) (result i32)
-    (local $p i32)
-    (local.set $p (global.get $heap))
-    (global.set $heap (i32.add (global.get $heap) (local.get $n)))
-    (local.get $p))
-  (func (export "actr_alloc") (param $n i32) (result i32)
-    (call $bump (local.get $n)))
-  (func (export "actr_free") (param $p i32) (param $n i32))
-  (func (export "asyncify_start_unwind") (param i32))
-  (func (export "asyncify_stop_unwind"))
-  (func (export "asyncify_start_rewind") (param i32))
-  (func (export "asyncify_stop_rewind"))
-  (func (export "actr_init") (param $p i32) (param $n i32) (result i32)
-    (i32.const 0))
-  (func (export "actr_handle")
-    (param $req_ptr i32) (param $req_len i32)
-    (param $resp_ptr_out i32) (param $resp_len_out i32)
-    (result i32)
-    (local $resp_ptr i32)
-    (local.set $resp_ptr (call $bump (local.get $req_len)))
-    (memory.copy
-      (local.get $resp_ptr)
-      (local.get $req_ptr)
-      (local.get $req_len))
-    (i32.store (local.get $resp_ptr_out) (local.get $resp_ptr))
-    (i32.store (local.get $resp_len_out) (local.get $req_len))
-    (i32.const 0))
-)
-"#,
-    )
-    .expect("WAT parse failed")
+    wasm_actor_fixture::WASM_ACTOR_FIXTURE.to_vec()
 }
 
-/// Build an .actr ZIP package
+/// Build an .actr ZIP package.
+///
+/// Defaults to a legacy `wasm32-wasip1` target string so the simpler
+/// signing/verification tests keep their pre-Component manifests. Callers
+/// that want a Component-capable manifest (loading through the actual
+/// wasm backend) go through [`build_actr_package_with_target`].
 fn build_actr_package(
     binary: &[u8],
     manufacturer: &str,
@@ -67,15 +48,42 @@ fn build_actr_package(
     version: &str,
     signing_key: &SigningKey,
 ) -> Vec<u8> {
+    build_actr_package_with_target(
+        binary,
+        manufacturer,
+        name,
+        version,
+        "wasm32-wasip1",
+        signing_key,
+    )
+}
+
+fn build_actr_package_with_target(
+    binary: &[u8],
+    manufacturer: &str,
+    name: &str,
+    version: &str,
+    target: &str,
+    signing_key: &SigningKey,
+) -> Vec<u8> {
+    // Tests that care about the kind opt in through the target triple:
+    // `wasm32-wasip2` implies a Component binary, everything else leaves
+    // the field unset so the resolver falls back to the legacy default.
+    let kind = if target == "wasm32-wasip2" {
+        Some(actr_pack::BinaryKind::Component)
+    } else {
+        None
+    };
     let manifest = actr_pack::PackageManifest {
         manufacturer: manufacturer.to_string(),
         name: name.to_string(),
         version: version.to_string(),
         binary: actr_pack::BinaryEntry {
             path: "bin/actor.wasm".to_string(),
-            target: "wasm32-wasip1".to_string(),
+            target: target.to_string(),
             hash: String::new(),
             size: None,
+            kind,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: None,
@@ -96,9 +104,10 @@ fn build_actr_package(
 }
 
 fn dev_config_with_key(dir: &TempDir, verifying_key: &ed25519_dalek::VerifyingKey) -> HyperConfig {
-    HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Development {
-        self_signed_pubkey: verifying_key.to_bytes().to_vec(),
-    })
+    HyperConfig::new(
+        dir.path(),
+        Arc::new(StaticTrust::new(verifying_key.to_bytes()).unwrap()),
+    )
 }
 
 // ─── .actr package tests ─────────────────────────────────────────────────────
@@ -112,17 +121,17 @@ async fn actr_package_roundtrip() {
     let package = build_actr_package(&wasm, "test-mfr", "MyActor", "1.2.3", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
-    let manifest = hyper
+    let verified = hyper
         .verify_package(&WorkloadPackage::new(package))
         .await
         .unwrap();
-    assert_eq!(manifest.manufacturer, "test-mfr");
-    assert_eq!(manifest.actr_name, "MyActor");
-    assert_eq!(manifest.version, "1.2.3");
+    assert_eq!(verified.manifest.manufacturer, "test-mfr");
+    assert_eq!(verified.manifest.name, "MyActor");
+    assert_eq!(verified.manifest.version, "1.2.3");
 }
 
 #[tokio::test]
@@ -139,7 +148,7 @@ async fn actr_package_tampered_binary() {
     }
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
     let result = hyper.verify_package(&WorkloadPackage::new(tampered)).await;
@@ -158,7 +167,7 @@ async fn actr_package_wrong_key() {
     let package = build_actr_package(b"wasm", "mfr", "A", "1.0", &signing_key);
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &wrong_verifying))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &wrong_verifying))
         .await
         .unwrap();
     let result = hyper.verify_package(&WorkloadPackage::new(package)).await;
@@ -172,7 +181,7 @@ async fn actr_package_wrong_key() {
 async fn verify_rejects_unknown_format() {
     let dir = TempDir::new().unwrap();
     let signing_key = SigningKey::generate(&mut OsRng);
-    let hyper = Hyper::init(dev_config_with_key(&dir, &signing_key.verifying_key()))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &signing_key.verifying_key()))
         .await
         .unwrap();
 
@@ -187,58 +196,70 @@ async fn verify_rejects_unknown_format() {
 async fn load_workload_package_selects_wasm_backend() {
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
-    let package = build_actr_package(
+    // The fixture is a real Component Model binary targeting
+    // `wasm32-wasip2` — the target actr settled on in Phase 1.
+    let package = build_actr_package_with_target(
         &echo_guest_wasm(),
         "test-mfr",
         "Echo",
         "1.0.0",
+        "wasm32-wasip2",
         &signing_key,
     );
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
-    let loaded = hyper
-        .load_workload_package(&WorkloadPackage::new(package))
+    let loaded = inspect_workload_package(&hyper, &WorkloadPackage::new(package))
         .await
         .unwrap();
 
-    assert_eq!(loaded.backend, PackageExecutionBackend::Wasm);
-    assert_eq!(loaded.manifest.binary_target, "wasm32-wasip1");
+    assert_eq!(loaded.binary_kind, BinaryKind::Wasm);
+    assert_eq!(loaded.manifest().binary.target, "wasm32-wasip2");
 }
 
 #[cfg(feature = "wasm-engine")]
 #[tokio::test]
-async fn load_workload_package_rejects_second_load_for_same_hyper() {
+async fn load_workload_package_rejects_legacy_core_module() {
+    // A pre-Phase-1 .actr package identifies itself by having a wasm
+    // target (wasm32-*) and either no `binary.kind` field (legacy
+    // default) or an explicit `core-module` marker. The loader should
+    // refuse with a migration-pointing error long before wasmtime's
+    // `Component::from_binary` gets its hands on the bytes.
     let signing_key = SigningKey::generate(&mut OsRng);
     let verifying_key = signing_key.verifying_key();
+
+    // Build a legacy-style package: wasm target, no kind marker.
     let package = build_actr_package(
-        &echo_guest_wasm(),
-        "test-mfr",
-        "Echo",
-        "1.0.0",
+        &minimal_wasm(),
+        "legacy-mfr",
+        "LegacyEcho",
+        "0.1.0",
         &signing_key,
     );
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
-    hyper
-        .load_workload_package(&WorkloadPackage::new(package.clone()))
-        .await
-        .unwrap();
-
-    let result = hyper
-        .load_workload_package(&WorkloadPackage::new(package))
-        .await;
-    assert!(
-        matches!(result, Err(HyperError::Runtime(ref msg)) if msg.contains("already loaded a workload")),
-        "second load should be rejected by Hyper one-shot workload contract"
-    );
+    let result = inspect_workload_package(&hyper, &WorkloadPackage::new(package)).await;
+    let err = result.expect_err("legacy core-module package must be refused");
+    match err {
+        HyperError::InvalidManifest(msg) => {
+            assert!(
+                msg.contains("legacy core wasm module format"),
+                "error message must mention the format migration: {msg}"
+            );
+            assert!(
+                msg.contains("wasm32-wasip2"),
+                "error message must point at the new target: {msg}"
+            );
+        }
+        other => panic!("expected InvalidManifest, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -255,6 +276,7 @@ async fn load_workload_package_rejects_invalid_target() {
             target: "invalid-target".to_string(),
             hash: String::new(),
             size: None,
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: None,
@@ -274,13 +296,11 @@ async fn load_workload_package_rejects_invalid_target() {
     .unwrap();
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
-    let result = hyper
-        .load_workload_package(&WorkloadPackage::new(package))
-        .await;
+    let result = inspect_workload_package(&hyper, &WorkloadPackage::new(package)).await;
     assert!(
         matches!(result, Err(HyperError::InvalidManifest(ref msg)) if msg.contains("unsupported binary target")),
         "invalid target should be rejected, got: {result:?}"

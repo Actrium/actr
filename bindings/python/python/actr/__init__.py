@@ -29,7 +29,25 @@ from .actr_raw import (
     Dest as RustDest,
     PayloadType as RustPayloadType,
     DataStream as RustDataStream,
+    # Exception hierarchy — mirrors actr_protocol::ActrError 1:1
+    ActrBaseError,
     ActrRuntimeError,
+    ActrTransientError,
+    ActrClientError,
+    ActrCorruptError,
+    ActrInternalError,
+    ActrUnavailableError,
+    ActrTimedOutError,
+    ActrNotFoundError,
+    ActrPermissionDeniedError,
+    ActrInvalidArgumentError,
+    ActrUnknownRouteError,
+    ActrDependencyNotFoundError,
+    ActrDecodeFailureError,
+    ActrNotImplementedError,
+    ActrInternalFrameworkError,
+    ActrGateNotInitializedError,
+    # Legacy 0.2.x aliases (kept so existing except-clauses keep working)
     ActrTransportError,
     ActrDecodeError,
     ActrUnknownRoute,
@@ -52,7 +70,7 @@ class ActrNode:
     @staticmethod
     async def from_toml(path: str):
         """
-        Create a client-only ActrNode from `manifest.toml`.
+        Create an ActrNode wrapper from `manifest.toml`.
         The sibling `actr.toml` in the same directory is loaded automatically.
 
         Args:
@@ -75,19 +93,6 @@ class ActrNode:
             ActrRuntimeError: If node start fails
         """
         rust_ref = await self._rust.start()
-        return ActrRef(rust_ref)
-    
-    async def try_start(self):
-        """
-        Try to start the node
-        
-        Returns:
-            ActrRef instance
-        
-        Raises:
-            ActrRuntimeError: If node start fails
-        """
-        rust_ref = await self._rust.try_start()
         return ActrRef(rust_ref)
 
 
@@ -380,8 +385,25 @@ __all__ = [
     "Dest",
     "PayloadType",
     "DataStream",
-    # Exceptions
+    # Exception hierarchy
+    "ActrBaseError",
     "ActrRuntimeError",
+    "ActrTransientError",
+    "ActrClientError",
+    "ActrCorruptError",
+    "ActrInternalError",
+    "ActrUnavailableError",
+    "ActrTimedOutError",
+    "ActrNotFoundError",
+    "ActrPermissionDeniedError",
+    "ActrInvalidArgumentError",
+    "ActrUnknownRouteError",
+    "ActrDependencyNotFoundError",
+    "ActrDecodeFailureError",
+    "ActrNotImplementedError",
+    "ActrInternalFrameworkError",
+    "ActrGateNotInitializedError",
+    # Legacy 0.2.x aliases
     "ActrTransportError",
     "ActrDecodeError",
     "ActrUnknownRoute",

@@ -1,5 +1,7 @@
 # 消息流可视化全景图
 
+> **历史/已被取代的可视化快照**：本文保留早期双层架构图的表达方式，不再作为当前源码事实入口。当前 Fast Path 不是 DOM 本地 registry/callback；真实路径是 DOM WebRTC coordinator → `packages/actr-dom/src/fast-path-forwarder.ts` → `actor.sw.js` `fast_path_data` → `sw-host::handle_dom_fast_path` → SW runtime / stream handlers。当前事实请优先读 [架构总览](./overview.zh.md) 和 [消息 I/O 详解](./message-io-entry-exit.zh.md)。
+
 ## 一图看懂：所有消息如何在 SW 和 DOM 间穿梭
 
 ```
@@ -29,7 +31,7 @@
     ↓                              ↓      │      │
 ┌─────────────────────┐    ┌──────────────┼──────┼───────┐
 │ 📬 State Path       │    │  PostMessage │      │       │
-│  (慢车道 30-40ms)   │    │      ↓       │      │       │
+│  (慢车道，需实测)   │    │      ↓       │      │       │
 │                     │    └──────────────┼──────┼───────┘
 │ InboundDispatcher   │                   │      │
 │        ↓            │                   │      │
@@ -64,7 +66,7 @@
              ↓      ↓
     ┌────────────────────────────────┐
     │ ⚡ Fast Path                   │
-    │   (快车道 1-3ms)               │
+    │   (历史图：DOM 本地回调模型)     │
     │                                │
     │  DomSystem                     │
     │    ├─ StreamHandlerRegistry    │
@@ -112,11 +114,11 @@ SW │ WebSocket.send() (RPC_RESPONSE)
    ↓
 🌍 远程节点
 
-延迟: ~30-40ms
+延迟: 需当前 benchmark 确认
 特点: ✅ 持久化 ✅ 有序 ✅ 可靠
 
 
-流程 B: Stream 消息 via WebRTC（Fast Path - 极速）
+流程 B: Stream 消息 via WebRTC（Fast Path - 当前路径）
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🌍 远程节点
@@ -124,16 +126,20 @@ SW │ WebSocket.send() (RPC_RESPONSE)
    ↓
 DOM│ WebRtcReceiver
    ↓
-DOM│ DomSystem.dispatch_stream(stream_id, data)
+DOM│ FastPathForwarder.forward(stream_id, data)
    ↓
-DOM│ StreamHandlerRegistry.dispatch()
+DOM│ ServiceWorkerBridge.sendToSW(type="fast_path_data")
    ↓
-DOM│ callback(data) ⚡ 直接回调
+SW │ actor.sw.js → wasm_bindgen.handle_dom_fast_path(client_id, payload)
+   ↓
+SW │ runtime.handle_fast_path()
+   ↓
+SW │ stream handler callback(data)
    ↓
 👤 用户代码处理
 
-延迟: ~1-2ms
-特点: ⚡ 极快 ⚡ 高吞吐 ⚠️ 无持久化
+延迟: 本文不再声明固定数字，需以当前 e2e/benchmark 为准
+特点: ⚡ 绕过 Mailbox/Scheduler ⚡ 使用 Transferable 转发 ⚠️ 不再是 DOM 本地处理
 
 
 流程 C: Stream 消息 via WebSocket（跨域转发）

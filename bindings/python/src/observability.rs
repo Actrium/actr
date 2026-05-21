@@ -4,9 +4,9 @@ use actr_config::ObservabilityConfig;
 use actr_hyper::init_observability;
 
 // Global guard to keep observability initialized
-pub static OBSERVABILITY_GUARD: OnceLock<actr_hyper::ObservabilityGuard> = OnceLock::new();
+static OBSERVABILITY_GUARD: OnceLock<actr_hyper::ObservabilityGuard> = OnceLock::new();
 
-pub fn ensure_observability_initialized(config: Option<ObservabilityConfig>) {
+pub(crate) fn ensure_observability_initialized(config: Option<ObservabilityConfig>) {
     OBSERVABILITY_GUARD.get_or_init(|| {
         let config = config.unwrap_or_else(|| {
             let filter_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());

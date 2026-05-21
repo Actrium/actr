@@ -1,7 +1,9 @@
 # Actor-RTC Web 架构总览
 
 **版本**: 2025-11-11 (更新: 2026-01-08)
-**状态**: 已实现（Transport + Message 处理）
+**状态**: 当前实现总览（Option U / wasm-bindgen guest path）
+
+> 当前源码事实：浏览器 guest 只走 Option U。`actor.sw.js` 加载 sw-host WASM 和 `.wbg` guest bundle，DOM 侧只负责 WebRTC 与固定转发；Fast Path 不是 DOM 本地 registry/callback，而是 DOM WebRTC coordinator → `FastPathForwarder` → SW `handle_dom_fast_path` → SW runtime / stream handlers。
 
 ## 架构全览图
 
@@ -23,7 +25,7 @@ graph TB
     subgraph SW["Service Worker - 总控制器"]
         direction LR
 
-        subgraph SW_IN["📥 INBOUND 入口<br/>(State Path ~30-40ms)"]
+        subgraph SW_IN["📥 INBOUND 入口<br/>(State Path / benchmark required)"]
             direction TB
             IN1["InboundDispatcher<br/>类型判断"]
             IN2["Mailbox<br/>(IndexedDB)"]
@@ -50,7 +52,7 @@ graph TB
         IN5 -.->|"ctx.call()<br/>ctx.tell()"| OUT1
     end
 
-    subgraph DOM["DOM/Window - WebRTC 专用 & Fast Path"]
+    subgraph DOM["DOM/Window - WebRTC HAL"]
         direction LR
 
         subgraph DOM_RTC["📡 WebRTC 管理"]
@@ -62,23 +64,22 @@ graph TB
             RTC1 --> RTC2 --> RTC3
         end
 
-        subgraph DOM_FAST["⚡ Fast Path<br/>(~1-3ms)"]
+        subgraph DOM_FAST["⚡ Fast Path 转发入口"]
             direction TB
-            FAST1["DomSystem<br/>分发器"]
-            FAST2["StreamRegistry<br/>stream_id → callback"]
-            FAST3["MediaRegistry<br/>track_id → callback"]
+            FAST1["FastPathForwarder<br/>type=fast_path_data"]
+            FAST2["ServiceWorkerBridge<br/>PostMessage + Transferable"]
+            FAST3["SW handle_dom_fast_path<br/>runtime.handle_fast_path"]
 
-            FAST1 --> FAST2
-            FAST1 --> FAST3
+            FAST1 --> FAST2 --> FAST3
         end
     end
 
     %% 跨域连接
     WS_Server -->|"① WebSocket 入"| IN1
     RTC_Peer -->|"② WebRTC DC 入"| FAST1
-    RTC_Peer -->|"③ WebRTC Track 入"| FAST3
-    FAST1 -.->|"④ RPC 消息<br/>PostMessage 转发"| IN1
-    FAST2 -.->|"⑤ Stream 本地处理<br/>直接回调"| FAST1
+    RTC_Peer -->|"③ WebRTC Track 入"| RTC1
+    FAST1 -.->|"④ fast_path_data<br/>PostMessage 转发"| IN1
+    FAST2 -.->|"⑤ Stream 分发<br/>进入 SW handlers"| IN1
     RTC1 -.->|"⑥ P2P Ready<br/>连接就绪通知"| OUT3
     OUT4B -.->|"⑦ 发送请求<br/>PostMessage 转发"| RTC1
     OUT4A -->|"⑧ WebSocket 出"| WS_Server
@@ -111,8 +112,8 @@ graph TB
 - ① WebSocket 入：远程 → SW InboundDispatcher
 - ② WebRTC DC 入：远程 → DOM Fast Path（DataChannel）
 - ③ WebRTC Track 入：远程 → DOM Fast Path（MediaTrack）
-- ④ RPC 转发：DOM → SW（PostMessage 转发 RPC 消息）
-- ⑤ Stream 本地处理：DOM Fast Path 内部（直接回调，超低延迟）
+- ④ Fast Path 转发：DOM → SW（`fast_path_data`，Transferable ArrayBuffer）
+- ⑤ Stream 分发：SW `handle_dom_fast_path` → `handle_fast_path` → stream handlers
 - ⑥ P2P Ready 通知：DOM → SW（连接建立完成信号）
 - ⑦ 发送转发：SW → DOM（通过 MessagePort 发送 WebRTC 数据）
 - ⑧ WebSocket 出：SW → 远程（直接发送）
@@ -122,13 +123,13 @@ graph TB
 - 🔵 **蓝色实线**：WebSocket 路径（①⑧）- SW 可直接使用
 - 🟣 **紫色实线**：WebRTC 路径（②③⑨）- 必须通过 DOM
 - 🟠 **橙色虚线**：PostMessage 转发（④⑦）- SW ↔ DOM 跨域通信
-- 🟢 **绿色虚线**：控制与优化（⑤⑥）- 本地处理和状态通知
+- 🟢 **绿色虚线**：控制与优化（⑤⑥）- SW stream handler 分发和状态通知
 
 **关键要点**：
 1. **总控在 SW**：所有入口（InboundDispatcher）、出口（Gate）、路由决策都在 Service Worker
 2. **WebRTC 转发**：SW 无法直接访问 WebRTC API，通过 MessagePort 桥接到 DOM
 3. **优先级管理**：WirePool 自动选择，WebRTC (P2P) 优先级高于 WebSocket (C/S)
-4. **Fast Path**：Stream 和 Media 在 DOM 本地处理，绕过 SW Mailbox，延迟 < 3ms
+4. **Fast Path**：Stream/DataChannel 数据绕过 Mailbox，但当前处理点在 SW；DOM 只做 WebRTC 与 `fast_path_data` 转发
 
 ---
 
@@ -156,7 +157,7 @@ graph TB
 └─────────────────┬──────────────────────────────────┘
                   │ PostMessage
 ┌─────────────────┴──────────────────────────────────┐
-│                 DOM (辅助 + Fast Path)             │
+│                 DOM (辅助 + WebRTC HAL)             │
 │                                                    │
 │  ┌─────────── WebRTC 管理 ──────────┐             │
 │  │  WebRtcCoordinator                │             │
@@ -164,10 +165,10 @@ graph TB
 │  │    → 通知 SW P2P 就绪             │             │
 │  └───────────────────────────────────┘             │
 │                                                    │
-│  ┌─────────── 接收 (Fast Path) ──────┐            │
-│  │  WebRtcDataChannelReceiver         │            │
-│  │    → StreamHandlerRegistry         │            │
-│  │    → MediaFrameHandlerRegistry     │            │
+│  ┌─────────── Fast Path 转发 ────────┐            │
+│  │  WebRtcCoordinator                 │            │
+│  │    → FastPathForwarder             │            │
+│  │    → ServiceWorkerBridge           │            │
 │  └───────────────────────────────────┘             │
 │                                                    │
 └────────────────────────────────────────────────────┘
@@ -202,20 +203,28 @@ MailboxProcessor (dequeue 循环)
 Scheduler → Actor
 ```
 
-**延迟**: ~30-40ms（持久化 + 调度）
+**延迟**: 受持久化、调度和浏览器运行状态影响，具体数值需以当前 benchmark 为准。
 
 #### Fast Path (Stream 消息)
 
 ```
-接收 → Registry.dispatch(stream_id, data)
+DOM WebRTC DataChannel
   ↓
-callback(data)  ⭐ 直接回调，绕过 Mailbox
+FastPathForwarder.forward(stream_id, data)
+  ↓
+ServiceWorkerBridge.sendToSW({ type: "fast_path_data" }, [buffer])
+  ↓
+SW actor.sw.js → wasm_bindgen.handle_dom_fast_path(client_id, payload)
+  ↓
+Runtime.handle_fast_path()
+  ↓
+stream_handlers[logical_stream_id](data)
 ```
 
-**延迟**:
-- WebSocket→DOM: ~3-4ms
-- WebRTC (DOM 本地): ~1-2ms ⭐
-- WebRTC Track: < 1ms
+**特性**:
+- 绕过 Mailbox 和 Scheduler，不走 State Path
+- 使用 Transferable ArrayBuffer 减少 DOM → SW 转发拷贝
+- 当前文档不声明固定毫秒级数字；需要以 e2e benchmark 结果为准
 
 ## 关键设计模式
 
@@ -239,8 +248,8 @@ loop {
 
 - **DOM (辅助)**:
   - WebRtcCoordinator (创建 P2P)
-  - WebRtcDataChannelReceiver (接收 Stream)
-  - 快车道 Registry (Fast Path)
+  - FastPathForwarder (转发 `fast_path_data`)
+  - ServiceWorkerBridge (PostMessage + Transferable)
 
 ### 双路径
 
@@ -248,38 +257,39 @@ loop {
   - 持久化 Mailbox
   - 可靠处理（dequeue-ack）
   - 优先级队列
-  - 延迟 ~30-40ms
+  - 延迟需以当前 benchmark 为准
 
 - **Fast Path (Stream/Media)**:
   - 零持久化
-  - 直接回调
+  - DOM 转发，SW stream handlers 处理
   - 绕过 Mailbox 和 Scheduler
-  - 延迟 < 5ms
+  - 延迟需以当前 benchmark 为准
 
 ## 与 actr 对比
 
 | 组件 | actr | actr-web | 一致性 |
 |------|------|----------|--------|
-| PeerTransport | ✓ | ✓ | 100% |
-| DestTransport | ✓ | ✓ | 100% |
-| WirePool | ✓ | ✓ | 95% |
-| InboundPacketDispatcher | ✓ | ✓ | 100% |
-| Mailbox | SQLite | IndexedDB | 95% |
-| DataStreamRegistry | ✓ | ✓ | 100% |
+| PeerTransport | ✓ | ✓ | 当前接口已对齐 |
+| DestTransport | ✓ | ✓ | 当前接口已对齐 |
+| WirePool | ✓ | ✓ | 当前核心路径已对齐，浏览器边界不同 |
+| InboundPacketDispatcher | ✓ | ✓ | 当前接口已对齐 |
+| Mailbox | SQLite | IndexedDB | 当前语义已对齐，存储后端不同 |
+| DataStream Fast Path | ✓ | ✓ | 当前 baseline 已进 SW handlers |
 
-**总体一致性**: 95%+
+**总体一致性**: 当前核心路径和接口 baseline 已对齐；精确覆盖率需要基于当前测试和 benchmark 重新评估。
 
-差异仅在存储和并发模型（WASM 限制），功能完全等价。
+差异主要在存储、浏览器 WebRTC API 边界、Service Worker 生命周期和 wasm-bindgen guest bridge。
 
 ## 性能指标
 
-| 指标 | 值 |
+以下为当前架构事实；具体数值需要重新运行当前 benchmark 后记录。
+
+| 指标 | 当前说明 |
 |------|-----|
-| 首次发送 | 50ms (WebSocket 立即) |
-| State Path | ~30-40ms |
-| Fast Path (WebSocket) | ~3-4ms |
-| Fast Path (WebRTC 本地) | ~1-2ms |
-| MediaTrack | < 1ms |
+| 首次发送 | 依赖连接状态、Service Worker 生命周期和传输路径 |
+| State Path | 持久化 Mailbox + 可靠处理路径，延迟需以当前 benchmark 为准 |
+| Fast Path | 需以当前 benchmark 为准 |
+| MediaTrack | 需以当前实现和 benchmark 为准 |
 
 ## 后续工作
 

@@ -49,8 +49,6 @@ pub struct ManifestRawConfig {
     pub build: Option<RawBuildConfig>,
 }
 
-pub type RawConfig = ManifestRawConfig;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RawPackageConfig {
     /// Package name (also used as the actor type name)
@@ -161,7 +159,7 @@ pub enum RawDependency {
         realm: Option<u32>,
     },
 
-    /// Empty dependency declaration: {} (populated by actr install)
+    /// Empty dependency declaration: {} (populated by actr deps install)
     Empty {},
 }
 
@@ -242,11 +240,6 @@ pub struct RawDeploymentConfig {
     /// AIS (Actor Identity Service) HTTP endpoint, e.g. `"http://ais.example.com:8080"`.
     #[serde(default)]
     pub ais_endpoint: Option<String>,
-
-    /// Trust mode: "development" (default) | "production"
-    /// Used for determining security level and certificate cache logic
-    #[serde(default)]
-    pub trust_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

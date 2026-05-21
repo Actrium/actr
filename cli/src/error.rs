@@ -110,7 +110,9 @@ impl ActrCliError {
             Self::InvalidProject(_) => Some("💡 Use 'actr init' to initialize a new project"),
             Self::ProjectExists(_) => Some("💡 Use --force to overwrite existing project"),
             Self::Configuration(_) => Some("💡 Check your manifest.toml configuration file"),
-            Self::Dependency(_) => Some("💡 Try 'actr install --force' to refresh dependencies"),
+            Self::Dependency(_) => {
+                Some("💡 Try 'actr deps install --force' to refresh dependencies")
+            }
             Self::Build(_) => Some("💡 Check proto files and dependencies"),
             Self::Network(_) => Some("💡 Check your network connection and proxy settings"),
             Self::Unsupported(_) => Some("💡 This feature is not implemented yet"),

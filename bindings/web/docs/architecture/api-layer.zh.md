@@ -1,7 +1,9 @@
 # Actor-RTC Web API Layer 设计
 
 **版本**：2025-11-11
-**状态**：已实现
+**状态**：已实现，已按当前 Option U 路径校准
+
+> 当前源码事实：API 层位于 Service Worker runtime；DOM 侧 `@actr/dom` 不承载用户 Fast Path callback，只通过 `FastPathForwarder` 把 `fast_path_data` 送入 SW。浏览器 guest 通过 `actor.sw.js` 加载 `.actr` + `.wbg` bundle，并由 `actr-web-abi` / wasm-bindgen host imports 接入 `RuntimeContext`。
 
 ## 1. 总览
 
@@ -48,7 +50,7 @@ pub enum Gate {
 - 通过 request_id 映射实现请求-响应模式
 - 单线程环境，使用 futures::channel::oneshot
 
-**实现位置**：`actr-web/crates/runtime-sw/src/outbound/host_gate.rs`
+**实现位置**：`actr-web/crates/sw-host/src/outbound/host_gate.rs`
 
 ```rust
 pub struct HostGate {
@@ -74,7 +76,7 @@ pub struct HostGate {
 - 提供 ActrId → Dest 映射
 - 实现请求-响应模式
 
-**实现位置**：`actr-web/crates/runtime-sw/src/outbound/peer_gate.rs`
+**实现位置**：`actr-web/crates/sw-host/src/outbound/peer_gate.rs`
 
 ```rust
 pub struct PeerGate {
@@ -101,7 +103,7 @@ pub struct PeerGate {
 
 Context 是 Actor 内部的执行上下文，实现 `actr_framework::Context` trait。
 
-**实现位置**：`actr-web/crates/runtime-sw/src/context.rs`
+**实现位置**：`actr-web/crates/sw-host/src/context.rs`
 
 ```rust
 pub struct RuntimeContext {
@@ -134,18 +136,18 @@ pub struct RuntimeContext {
 - `call<R>(&self, target: &Dest, request: R)`: 类型安全的 RPC 调用
 - `tell<R>(&self, target: &Dest, message: R)`: 单向消息发送
 
-**Fast Path（部分实现）**：
-- `register_stream()` - ⚠️ TODO stub
-- `register_media_track()` - ⚠️ TODO stub
-- `send_data_stream()` - ✅ 已实现
-- `send_media_sample()` - ⚠️ 待实现
+**Fast Path（当前路径）**：
+- `send_data_stream()` - ✅ 已实现，出站经 PeerGate / WebRTC MessagePort
+- `handle_dom_fast_path()` - ✅ 已实现，DOM `fast_path_data` 入站后进入 SW runtime
+- stream handler 注册/注销 - ✅ SW runtime 内有 handler map 和 register/unregister 能力
+- MediaTrack 高级 API - ⚠️ 仍需按当前媒体路径继续补齐和验证
 
 ### 4.3 与 actr 的差异
 
 | 特性 | actr | actr-web | 说明 |
 |------|------|----------|------|
 | **RPC call/tell** | ✅ | ✅ | 完全等价 |
-| **Fast Path** | ✅ | ⚠️ 部分实现 | handle_fast_path 已实现，register 回调待完善 |
+| **Fast Path** | ✅ | ⚠️ DataStream baseline 已进 SW handlers，MediaTrack 需继续补齐 | 不再是 DOM 本地 callback |
 | **Dest 支持** | Shell/Local/Actor | Actor only | Web 版本只支持 Dest::Actor |
 | **ID 生成** | uuid | js_sys::Math::random() | Web 环境简化 |
 
@@ -155,7 +157,7 @@ pub struct RuntimeContext {
 
 ActrRef 是对运行中 Actor 的轻量级引用，提供从 DOM 侧调用 SW 侧 Actor 的能力。
 
-**实现位置**：`actr-web/crates/runtime-sw/src/actr_ref.rs`
+**实现位置**：`actr-web/crates/sw-host/src/actr_ref.rs`
 
 ```rust
 pub struct ActrRef<W: Workload> {
@@ -288,14 +290,15 @@ SW 侧
 
 | 路径 | 延迟 | 特点 |
 |------|------|------|
-| **DOM → SW (ActrRef)** | ~30-40ms | 包含 Mailbox 持久化 + Scheduler |
-| **SW → SW (Host)** | ~5-10ms | 零序列化，直接传递 |
-| **SW → Remote (Peer)** | ~50-100ms+ | 包含网络传输 |
+| **DOM → SW (ActrRef)** | 需当前 benchmark 确认 | 包含 Mailbox 持久化 + Scheduler |
+| **SW → SW (Host)** | 需当前 benchmark 确认 | 零序列化，直接传递 |
+| **SW → Remote (Peer)** | 取决于网络，需实测 | 包含网络传输 |
 
 ## 8. 后续工作
 
 - [x] 实现 HostGate 的 MessageHandler 自动注册（通过 System.init_message_handler）
-- [ ] 实现 Context 的 Fast Path 方法（register_stream, send_data_stream 等）
+- [x] 实现 DataStream Fast Path baseline（`send_data_stream`、`handle_dom_fast_path`、SW stream handlers）
+- [ ] 补齐 MediaTrack 高级 API 和更多端到端覆盖
 - [ ] 添加 ActrRef 的事件订阅功能（events()）
 - [ ] 完善错误处理和超时机制
 - [ ] 添加更多单元测试
@@ -303,5 +306,5 @@ SW 侧
 ---
 
 **实现时间**：2025-11-11
-**代码位置**：`/mnt/sdb1/actor-rtc/actr-web/crates/runtime-sw/src/`
+**代码位置**：`bindings/web/crates/sw-host/src/`、`bindings/web/packages/web-sdk/src/actor.sw.js`
 **编译状态**：✅ 通过

@@ -1,7 +1,8 @@
-use crate::commands::Command;
 use crate::commands::process::{kill_process, terminate_process, wait_for_exit};
 use crate::commands::runtime_state::{RuntimeStateStore, RuntimeStatus, resolve_hyper_dir};
-use crate::error::{ActrCliError, Result};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use crate::error::ActrCliError;
+use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 use clap::Args;
@@ -33,7 +34,7 @@ pub struct StopCommand {
 
 #[async_trait]
 impl Command for StopCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> Result<CommandResult> {
         let hyper_dir = resolve_hyper_dir(self.config.as_deref(), self.hyper_dir.as_deref())?;
         let store = RuntimeStateStore::new(hyper_dir);
         let entry = store.resolve_wid_prefix(&self.wid).await?;
@@ -48,37 +49,53 @@ impl Command for StopCommand {
             async move {
                 store.mark_stopped_by_wid(&wid, Utc::now()).await?;
                 println!("{msg}");
-                Result::Ok(())
+                crate::error::Result::Ok(())
             }
         };
 
         if entry.status != RuntimeStatus::Running {
-            return finish(format!("Runtime already stopped: {wid_short}")).await;
+            finish(format!("Runtime already stopped: {wid_short}")).await?;
+            return Ok(CommandResult::Success(String::new()));
         }
 
         if !terminate_process(pid)? {
-            return finish(format!("Runtime already stopped: {wid_short}")).await;
+            finish(format!("Runtime already stopped: {wid_short}")).await?;
+            return Ok(CommandResult::Success(String::new()));
         }
         if wait_for_exit(pid, Duration::from_secs(self.timeout)).await {
-            return finish(format!("Stopped runtime: {wid_short}")).await;
+            finish(format!("Stopped runtime: {wid_short}")).await?;
+            return Ok(CommandResult::Success(String::new()));
         }
 
         if !self.force {
             return Err(ActrCliError::command_error(format!(
                 "Timed out after {}s while stopping {}. Retry with --force.",
                 self.timeout, wid_short
-            )));
+            ))
+            .into());
         }
 
         if !kill_process(pid)? {
-            return finish(format!("Runtime already stopped: {wid_short}")).await;
+            finish(format!("Runtime already stopped: {wid_short}")).await?;
+            return Ok(CommandResult::Success(String::new()));
         }
         if wait_for_exit(pid, Duration::from_secs(1)).await {
-            return finish(format!("Force stopped runtime: {wid_short}")).await;
+            finish(format!("Force stopped runtime: {wid_short}")).await?;
+            return Ok(CommandResult::Success(String::new()));
         }
 
-        Err(ActrCliError::command_error(format!(
-            "Process {pid} did not exit after SIGKILL"
-        )))
+        Err(ActrCliError::command_error(format!("Process {pid} did not exit after SIGKILL")).into())
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "stop"
+    }
+
+    fn description(&self) -> &str {
+        "Stop a detached runtime instance"
     }
 }

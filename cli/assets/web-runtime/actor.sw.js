@@ -1,25 +1,20 @@
-/* Actor-RTC Generic Service Worker entry.
+/* Actor-RTC Service Worker entry — wasm-bindgen guest path.
  *
- * This SW loads a WASM package from a signed .actr ZIP package.
- * The .actr package is fetched from the URL specified in runtimeConfig.package_url.
+ * Loads a wasm-bindgen guest bundle (produced by `tools/wit-compile-web` →
+ * `actr-web-abi` + `wasm-pack --target no-modules`) and bridges it into the
+ * sw-host runtime. This is the only browser dispatch path post Option U
+ * Phase 8 (the previous Component Model + jco variant was deleted; see
+ * `bindings/web/docs/option-u-wit-compile-web.zh.md` §11).
  *
- * Package loading fields in runtimeConfig:
- *   package_url    - URL of the .actr package (e.g. "/packages/echo-server.actr")
- *   register_fn    - name of the wasm_bindgen function to call after init
- *                    (e.g. "register_echo_service")
+ * Required `runtimeConfig` fields:
+ *   package_url       - URL of the `.actr` workload package
+ *   runtime_wasm_url  - URL of the SW runtime WASM (sw-host wasm-pack output)
+ *   trust             - array of `TrustAnchor` entries
  *
- * Legacy fallback (when package_url is not set):
- *   package_js     - filename of the wasm-bindgen JS glue (e.g. "echo_server.js")
- *   package_wasm   - filename of the WASM binary (e.g. "echo_server_bg.wasm")
- *
- * .actr ZIP format (all entries use STORE / no compression):
- *   manifest.toml                  - package manifest
- *   manifest.sig                   - Ed25519 signature (64 bytes)
- *   bin/actor.wasm             - WASM binary
- *   resources/glue.js          - wasm-bindgen JS glue
- *
- * This is the Web equivalent of Rust Hyper's load_package_executor:
- * it loads a WASM workload package into the SW runtime on demand.
+ * Companion artefact convention:
+ *   `<package_url>.wbg/guest.js` and `<package_url>.wbg/guest_bg.wasm` must
+ *   be served alongside the .actr; the CLI mounts them when the companion
+ *   directory exists.
  */
 
 /* global wasm_bindgen */
@@ -27,6 +22,9 @@
 let SW_BROADCAST = null;
 
 // ── Console interception: forward WASM logs to main page ──
+//
+// Identical to actor.sw.js; the WBG path still emits Rust `log::info!` from
+// sw-host, so this broadcaster stays the same.
 (function () {
     const _origInfo = console.info;
     const _origWarn = console.warn;
@@ -53,8 +51,6 @@ let SW_BROADCAST = null;
     console.info = function (...args) {
         _origInfo.apply(console, args);
         const msg = extractMessage(args);
-
-        // Echo service events (detect log markers from WASM)
         if (msg.includes('📨') && msg.includes('Echo request')) {
             const m = msg.match(/message='([^']*)'/);
             broadcast({ type: 'echo_event', event: 'request', detail: m ? m[1] : '', ts: Date.now() });
@@ -62,8 +58,7 @@ let SW_BROADCAST = null;
             const m = msg.match(/reply='([^']*)'/);
             broadcast({ type: 'echo_event', event: 'response', detail: m ? m[1] : '', ts: Date.now() });
         }
-
-        if (msg.includes('[SW]') || msg.includes('EchoService') || msg.includes('Echo')
+        if (msg.includes('[SW]') || msg.includes('[WBG]') || msg.includes('EchoService') || msg.includes('Echo')
             || msg.includes('Registering') || msg.includes('SendEcho')
             || msg.includes('Scheduler') || msg.includes('Dispatcher')
             || msg.includes('HostGate') || msg.includes('PeerGate')) {
@@ -91,7 +86,7 @@ let SW_BROADCAST = null;
     console.log = function (...args) {
         _origLog.apply(console, args);
         const msg = extractMessage(args);
-        if (msg.includes('[EchoService]') || msg.includes('[SW]') || msg.includes('[SendEcho]')
+        if (msg.includes('[EchoService]') || msg.includes('[SW]') || msg.includes('[WBG]') || msg.includes('[SendEcho]')
             || msg.includes('[WebRTC]')) {
             broadcast({ type: 'sw_log', level: 'info', message: msg, ts: Date.now() });
         }
@@ -106,6 +101,7 @@ let wsProbeDone = false;
 
 const clientPorts = new Map();
 const browserToSwClient = new Map();
+let staleCleanupTimer = null;
 
 async function cleanupStaleClients() {
     if (!wasmReady) return;
@@ -129,6 +125,16 @@ async function cleanupStaleClients() {
     }
 }
 
+function scheduleStaleClientCleanup(delayMs = 0) {
+    if (staleCleanupTimer) {
+        clearTimeout(staleCleanupTimer);
+    }
+    staleCleanupTimer = setTimeout(() => {
+        staleCleanupTimer = null;
+        cleanupStaleClients();
+    }, delayMs);
+}
+
 function emitSwLog(level, message, detail) {
     for (const port of clientPorts.values()) {
         try {
@@ -143,309 +149,188 @@ function emitSwLog(level, message, detail) {
     }
 }
 
-// ── .actr ZIP parser (STORE-only, no compression) ──
+// ─────────────────────────────────────────────────────────────────────────
+// Schema adapters between sw-host (camelCase) and actr-web-abi guest
+// (kebab-case, from serde with `#[serde(rename = "...")]`).
+//
+// sw-host's `actr_id_to_js` emits `{ realm: { realmId }, serialNumber,
+// type: { manufacturer, name, version } }` (camelCase, the WBG guest's
+// `serde-wasm-bindgen` shape).
+// actr-web-abi `ActrId` deserialises from `{ realm: { "realm-id" },
+// "serial-number", type: {...} }`.
+// ─────────────────────────────────────────────────────────────────────────
 
-/**
- * Parse a ZIP file that uses STORE method (no compression).
- * .actr packages always use CompressionMethod::Stored.
- *
- * Iterates Local File Headers sequentially. Each header:
- *   4 bytes  signature  (0x04034b50 = PK\x03\x04)
- *   2 bytes  version needed
- *   2 bytes  flags
- *   2 bytes  compression method (0 = STORE)
- *   2 bytes  mod time
- *   2 bytes  mod date
- *   4 bytes  CRC-32
- *   4 bytes  compressed size
- *   4 bytes  uncompressed size
- *   2 bytes  filename length
- *   2 bytes  extra field length
- *   N bytes  filename
- *   M bytes  extra field
- *   S bytes  data (compressed size == uncompressed size for STORE)
- *
- * @param {ArrayBuffer} buffer - The ZIP file bytes
- * @returns {Map<string, Uint8Array>} filename → file contents
- */
-function parseActrZip(buffer) {
-    const view = new DataView(buffer);
-    const bytes = new Uint8Array(buffer);
-    const entries = new Map();
-    let offset = 0;
-
-    while (offset + 30 <= buffer.byteLength) {
-        const sig = view.getUint32(offset, true);
-        // Local File Header signature
-        if (sig !== 0x04034b50) break;
-
-        const compressedSize = view.getUint32(offset + 18, true);
-        const uncompressedSize = view.getUint32(offset + 22, true);
-        const filenameLen = view.getUint16(offset + 26, true);
-        const extraLen = view.getUint16(offset + 28, true);
-
-        const filenameBytes = bytes.subarray(offset + 30, offset + 30 + filenameLen);
-        const filename = new TextDecoder().decode(filenameBytes);
-
-        const dataStart = offset + 30 + filenameLen + extraLen;
-        const dataEnd = dataStart + compressedSize;
-
-        if (dataEnd > buffer.byteLength) {
-            console.warn('[SW] ZIP entry truncated:', filename);
-            break;
-        }
-
-        // Store a copy of the data (not a view, so the buffer can be GC'd)
-        entries.set(filename, bytes.slice(dataStart, dataEnd));
-
-        offset = dataEnd;
-    }
-
-    return entries;
+function actrIdCamelToKebab(id) {
+    if (id == null) return id;
+    return {
+        realm: { 'realm-id': id.realm && id.realm.realmId },
+        'serial-number': id.serialNumber,
+        // `type` is a WIT-reserved-ish name; both sides keep the key as `type`.
+        type: id.type,
+    };
 }
 
-/**
- * Verify an .actr package signature and binary hash.
- *
- * This is the Web equivalent of Rust Hyper's verify_package:
- *   1. Read manifest.sig (64 bytes Ed25519 signature)
- *   2. Read manifest.toml (signed manifest)
- *   3. Verify Ed25519 signature: crypto.subtle.verify('Ed25519', pubkey, sig, manifest)
- *   4. Read binary, compute SHA-256, compare with manifest binary.hash
- *
- * @param {Map<string, Uint8Array>} entries - ZIP entries from parseActrZip
- * @param {string} mfrPubkeyB64 - Base64-encoded Ed25519 MFR public key (32 bytes)
- * @returns {Promise<void>} Resolves if verification passes, throws on failure
- */
-async function verifyActrPackage(entries, mfrPubkeyB64) {
-    // 1. Read manifest.sig
-    const sigBytes = entries.get('manifest.sig');
-    if (!sigBytes || sigBytes.byteLength !== 64) {
-        throw new Error('[SW] Package verification failed: manifest.sig missing or invalid (expected 64 bytes)');
-    }
-
-    // 2. Read manifest.toml
-    const manifestBytes = entries.get('manifest.toml');
-    if (!manifestBytes) {
-        throw new Error('[SW] Package verification failed: manifest.toml missing');
-    }
-
-    // 3. Import MFR public key and verify Ed25519 signature
-    const pubkeyRaw = Uint8Array.from(atob(mfrPubkeyB64), c => c.charCodeAt(0));
-    if (pubkeyRaw.byteLength !== 32) {
-        throw new Error('[SW] Package verification failed: MFR public key must be 32 bytes');
-    }
-
-    const cryptoKey = await crypto.subtle.importKey(
-        'raw',
-        pubkeyRaw,
-        { name: 'Ed25519' },
-        false,
-        ['verify']
-    );
-
-    const sigValid = await crypto.subtle.verify(
-        { name: 'Ed25519' },
-        cryptoKey,
-        sigBytes,
-        manifestBytes
-    );
-
-    if (!sigValid) {
-        throw new Error('[SW] Package verification failed: Ed25519 signature invalid');
-    }
-
-    // 4. Parse manifest to get binary hash
-    const manifestText = new TextDecoder().decode(manifestBytes);
-    const hashMatch = manifestText.match(/hash\s*=\s*"([0-9a-fA-F]+)"/);
-    if (!hashMatch) {
-        throw new Error('[SW] Package verification failed: binary hash not found in manifest');
-    }
-    const expectedHash = hashMatch[1].toLowerCase();
-
-    // 5. Find binary and compute SHA-256
-    let binaryBytes = null;
-    for (const [name, data] of entries) {
-        if (name.startsWith('bin/') && name.endsWith('.wasm')) {
-            binaryBytes = data;
-            break;
-        }
-    }
-    if (!binaryBytes) {
-        throw new Error('[SW] Package verification failed: no WASM binary in package');
-    }
-
-    const hashBuffer = await crypto.subtle.digest('SHA-256', binaryBytes);
-    const hashArray = new Uint8Array(hashBuffer);
-    const actualHash = Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
-
-    if (actualHash !== expectedHash) {
-        throw new Error(
-            '[SW] Package verification failed: binary hash mismatch\n' +
-            '  expected: ' + expectedHash + '\n' +
-            '  actual:   ' + actualHash
-        );
-    }
+function actrIdKebabToCamel(id) {
+    if (id == null) return id;
+    return {
+        realm: { realmId: id.realm && id.realm['realm-id'] },
+        serialNumber: id['serial-number'],
+        type: id.type,
+    };
 }
 
-/**
- * Load WASM package from a .actr ZIP package.
- *
- * 1. Fetch the .actr package from package_url
- * 2. Parse the ZIP (STORE entries)
- * 3. Verify package signature and binary hash (if mfr_pubkey provided)
- * 4. Find bin/*.wasm and resources/*.js (glue, not actor.sw.js)
- * 5. Eval the JS glue to register wasm_bindgen in global scope
- * 6. Initialize WASM with the binary bytes
- * 7. Call the register function
- */
-async function loadFromActrPackage(packageUrl, registerFn) {
-    emitSwLog('info', 'actr_package_fetch', packageUrl);
+// ─────────────────────────────────────────────────────────────────────────
+// Install the 8 `actrHost*` globals the wasm-bindgen guest imports.
+//
+// The guest's `.wasm` imports these by bare global name (wasm-pack
+// `--target no-modules` resolves them from the enclosing global scope —
+// see `echo_*_guest_wbg.js` `__wbg_actrHostCallRaw_*` entries).
+//
+// Each one is a thin proxy onto `wasm_bindgen.host_*_async` etc. from
+// `actr_sw_host.js`, with argument/result reshaping to bridge the
+// serde-wasm-bindgen (kebab) <-> hand-written Reflect (camel) gap.
+// ─────────────────────────────────────────────────────────────────────────
 
-    const resp = await fetch(packageUrl, { cache: 'no-store' });
-    if (!resp.ok) {
-        throw new Error('[SW] Failed to fetch .actr package: ' + resp.status + ' ' + resp.statusText);
-    }
+function installActrHostGlobals() {
+    // γ-unified (Option U Phase 6 §3.4/§3.6): every `actrHost*` global now
+    // accepts `requestId` as the first argument, threading it into the
+    // sw-host `host_*_async` wasm-bindgen imports so the `DISPATCH_CTXS`
+    // HashMap can look up the per-dispatch `RuntimeContext` keyed on that
+    // id. This lets multiple concurrent dispatches share the single-threaded
+    // JS bridge without clobbering each other's runtime context (TD-003).
 
-    const buffer = await resp.arrayBuffer();
-    emitSwLog('info', 'actr_package_size', buffer.byteLength);
-
-    const entries = parseActrZip(buffer);
-    emitSwLog('info', 'actr_zip_entries', Array.from(entries.keys()));
-
-    // ── Package verification (Web verify_package) ──
-    // If mfr_pubkey is provided in RUNTIME_CONFIG, verify the .actr package
-    // signature and binary hash before loading — equivalent to Rust Hyper's verify_package.
-    const mfrPubkey = RUNTIME_CONFIG && RUNTIME_CONFIG.mfr_pubkey;
-    if (mfrPubkey) {
-        emitSwLog('info', 'actr_verify_start', 'verifying package signature and binary hash');
+    self.actrHostCall = async function (requestId, target, routeKey, payload) {
+        // actr-web-abi `call` passes `Dest` variant as `{ actor: {...} }` or
+        // `"shell"`/`"local"`; sw-host's `host_call_async` reads `{ tag, val }`.
+        // The WBG path is only exercised by the echo client which uses
+        // `call_raw`, but keep the shape future-proof.
+        let destCamel;
+        if (target === 'shell' || target === 'local') {
+            destCamel = { tag: target };
+        } else if (target && target.actor) {
+            destCamel = { tag: 'actor', val: actrIdKebabToCamel(target.actor) };
+        } else {
+            throw new Error('[WBG] actrHostCall: unknown dest shape ' + JSON.stringify(target));
+        }
+        const u8 = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
         try {
-            await verifyActrPackage(entries, mfrPubkey);
-            emitSwLog('info', 'actr_verify_ok', 'package signature and binary hash verified');
-        } catch (verifyError) {
-            emitSwLog('error', 'actr_verify_failed', String(verifyError));
-            throw verifyError;
+            const reply = await wasm_bindgen.host_call_async(requestId, destCamel, routeKey, u8);
+            return { ok: Array.from(reply) };
+        } catch (e) {
+            // Host rejects with Error carrying `actrErrorTag`; fold into the
+            // guest-expected `Result::Err(ActrError)` shape.
+            return { err: mapHostErrorToActr(e) };
         }
-    } else {
-        emitSwLog('info', 'actr_verify_skip', 'no mfr_pubkey in config, skipping verification');
-    }
+    };
 
-    // Find the WASM binary (bin/*.wasm or bin/actor.wasm)
-    let wasmBytes = null;
-    let wasmName = null;
-    for (const [name, data] of entries) {
-        if (name.startsWith('bin/') && name.endsWith('.wasm')) {
-            wasmBytes = data;
-            wasmName = name;
-            break;
+    self.actrHostCallRaw = async function (requestId, target, routeKey, payload) {
+        // `target` is an `ActrId` (kebab) from the guest.
+        const targetCamel = actrIdKebabToCamel(target);
+        const u8 = payload instanceof Uint8Array
+            ? payload
+            : new Uint8Array(payload);
+        try {
+            const reply = await wasm_bindgen.host_call_raw_async(requestId, targetCamel, routeKey, u8);
+            // `reply` is a `Uint8Array` from Rust; guest expects Vec<u8> —
+            // serde-wasm-bindgen deserialises Array / Uint8Array / numbers
+            // buffer — Uint8Array works directly, but the outer Result
+            // needs the `Ok` tag matching `#[serde(rename = "ok")]`?
+            // Actually generated `ActrError` variants use kebab tags but
+            // `Result<T, E>` is serde's default which emits `{ Ok: ... }`
+            // (capitalized). Keep capitalization exact.
+            return { Ok: reply };
+        } catch (e) {
+            return { Err: mapHostErrorToActr(e) };
         }
-    }
-    if (!wasmBytes) {
-        throw new Error('[SW] No WASM binary found in .actr package');
-    }
-    emitSwLog('info', 'actr_wasm_found', { name: wasmName, size: wasmBytes.byteLength });
+    };
 
-    // Find the JS glue (resources/*.js but NOT actor.sw.js)
-    let glueText = null;
-    let glueName = null;
-    for (const [name, data] of entries) {
-        if (name.startsWith('resources/') && name.endsWith('.js') && !name.endsWith('actor.sw.js')) {
-            glueText = new TextDecoder().decode(data);
-            glueName = name;
-            break;
+    self.actrHostDiscover = async function (requestId, targetType) {
+        // `targetType` is `ActrType { manufacturer, name, version }` —
+        // identical shape on both sides.
+        try {
+            const id = await wasm_bindgen.host_discover_async(requestId, targetType);
+            return { Ok: actrIdCamelToKebab(id) };
+        } catch (e) {
+            return { Err: mapHostErrorToActr(e) };
         }
-    }
-    if (!glueText) {
-        throw new Error('[SW] No JS glue found in .actr package');
-    }
-    emitSwLog('info', 'actr_glue_found', { name: glueName, size: glueText.length });
+    };
 
-    // Eval the JS glue — patch 'let wasm_bindgen =' to 'self.wasm_bindgen ='
-    try {
-        const patchedText = glueText.replace('let wasm_bindgen =', 'self.wasm_bindgen =');
-        (0, eval)(patchedText);
-        emitSwLog('info', 'actr_eval_loaded', patchedText.length);
-    } catch (error) {
-        emitSwLog('error', 'actr_eval_failed', String(error));
-        throw error;
-    }
+    self.actrHostGetCallerId = async function (requestId) {
+        try {
+            const id = wasm_bindgen.host_get_caller_id(requestId);
+            if (id == null || id === undefined) return null;
+            return actrIdCamelToKebab(id);
+        } catch (e) {
+            console.warn('[WBG] host_get_caller_id threw:', e);
+            return null;
+        }
+    };
 
-    // Initialize WASM from raw bytes
-    // wasm_bindgen accepts { module_or_path: ArrayBuffer|Uint8Array }
-    emitSwLog('info', 'actr_wasm_init', wasmBytes.byteLength);
-    await wasm_bindgen({ module_or_path: wasmBytes });
-    emitSwLog('info', 'actr_wasm_ready', null);
+    self.actrHostGetRequestId = async function (requestId) {
+        try {
+            return wasm_bindgen.host_get_request_id(requestId);
+        } catch (e) {
+            console.warn('[WBG] host_get_request_id threw:', e);
+            return '';
+        }
+    };
 
-    wasm_bindgen.init_global();
+    self.actrHostGetSelfId = async function (requestId) {
+        const id = wasm_bindgen.host_get_self_id(requestId);
+        return actrIdCamelToKebab(id);
+    };
 
-    // Call the workload registration function
-    if (registerFn && typeof wasm_bindgen[registerFn] === 'function') {
-        wasm_bindgen[registerFn]();
-        emitSwLog('info', 'workload_registered', registerFn);
-    } else if (registerFn) {
-        console.warn('[SW] register function not found:', registerFn);
-    }
+    self.actrHostLogMessage = async function (requestId, level, message) {
+        wasm_bindgen.host_log_message(requestId, level, message);
+    };
+
+    self.actrHostTell = async function (requestId, target, routeKey, payload) {
+        let destCamel;
+        if (target === 'shell' || target === 'local') {
+            destCamel = { tag: target };
+        } else if (target && target.actor) {
+            destCamel = { tag: 'actor', val: actrIdKebabToCamel(target.actor) };
+        } else {
+            throw new Error('[WBG] actrHostTell: unknown dest shape ' + JSON.stringify(target));
+        }
+        const u8 = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
+        try {
+            await wasm_bindgen.host_tell_async(requestId, destCamel, routeKey, u8);
+            return { Ok: null };
+        } catch (e) {
+            return { Err: mapHostErrorToActr(e) };
+        }
+    };
+
+    console.log('[SW][WBG] actrHost* globals installed (γ-unified, request_id-threaded)');
 }
 
-/**
- * Legacy: Load WASM from direct JS/WASM URLs (development fallback).
- */
-async function loadFromDirectUrls(jsFile, wasmFile, registerFn) {
-    const runtimeUrl = new URL(jsFile, self.location).toString();
-    const wasmUrl = new URL(wasmFile, self.location).toString();
-
-    emitSwLog('info', 'legacy_runtime_url', runtimeUrl);
-
-    const runtimeRes = await fetch(runtimeUrl, { cache: 'no-store' });
-    emitSwLog('info', 'legacy_runtime_fetch', {
-        url: runtimeUrl,
-        status: runtimeRes.status,
-    });
-
-    const wasmRes = await fetch(wasmUrl, { cache: 'no-store' });
-    emitSwLog('info', 'legacy_wasm_fetch', {
-        url: wasmUrl,
-        status: wasmRes.status,
-    });
-
-    const runtimeText = await runtimeRes.text();
-    const patchedText = runtimeText.replace('let wasm_bindgen =', 'self.wasm_bindgen =');
-    (0, eval)(patchedText);
-
-    await wasm_bindgen({ module_or_path: wasmUrl });
-    wasm_bindgen.init_global();
-
-    if (registerFn && typeof wasm_bindgen[registerFn] === 'function') {
-        wasm_bindgen[registerFn]();
-        emitSwLog('info', 'workload_registered', registerFn);
-    } else if (registerFn) {
-        console.warn('[SW] register function not found:', registerFn);
+function mapHostErrorToActr(e) {
+    // sw-host's `actr_error_to_js` attaches `actrErrorTag` + message.
+    // actr-web-abi `ActrError` variant serde tags are kebab-case; we
+    // return the matching `{ "kebab-tag": string }` shape.
+    const tag = (e && e.actrErrorTag) || 'internal';
+    const msg = (e && e.message) || String(e);
+    // `timed-out` is a unit variant; serde emits it as a bare string.
+    if (tag === 'timed-out') return 'timed-out';
+    // `dependency-not-found` carries a record payload; we don't have the
+    // fields cleanly separated here, so fall back to `internal` to keep
+    // the result deserialisable.
+    if (tag === 'dependency-not-found') {
+        return { internal: msg };
     }
+    return { [tag]: msg };
 }
 
-/**
- * Guest Bridge Mode: load runtime WASM and guest WASM separately.
- *
- * When `runtime_wasm_url` is set in RUNTIME_CONFIG, the .actr package
- * contains only the standard guest WASM (built with entry! macro FFI),
- * and the runtime WASM + JS glue are loaded from separate URLs.
- *
- * Protocol:
- *   1. Load runtime WASM + JS glue from runtime_wasm_url
- *   2. Parse .actr package, verify signature, extract guest WASM binary
- *   3. Instantiate guest WASM with host import stubs
- *   4. Call actr_init on the guest
- *   5. Register a JS dispatch callback that bridges AbiFrame → actr_handle → AbiReply
- *   6. Call register_guest_workload(callback) on the runtime
- */
+// ─────────────────────────────────────────────────────────────────────────
+// Main bootstrap: load sw-host, load WBG guest, bridge them.
+// ─────────────────────────────────────────────────────────────────────────
+
 async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
     emitSwLog('info', 'guest_bridge_start', { packageUrl, runtimeWasmUrl });
 
-    // ── 1. Load runtime WASM + JS glue ──
-    // Derive JS glue URL from WASM URL: "foo_bg.wasm" → "foo.js"
+    // ── 1. Load sw-host WASM + JS glue (unchanged from CM path) ──
     const jsUrl = runtimeWasmUrl.replace(/_bg\.wasm$/, '.js');
-    emitSwLog('info', 'guest_bridge_runtime_js', jsUrl);
-
     const jsResp = await fetch(jsUrl, { cache: 'no-store' });
     if (!jsResp.ok) {
         throw new Error('[SW] Failed to fetch runtime JS glue: ' + jsResp.status);
@@ -455,322 +340,111 @@ async function loadWithGuestBridge(packageUrl, runtimeWasmUrl) {
     (0, eval)(patchedText);
     emitSwLog('info', 'guest_bridge_runtime_js_loaded', jsText.length);
 
-    // Init runtime WASM
     await wasm_bindgen({ module_or_path: runtimeWasmUrl });
     wasm_bindgen.init_global();
     emitSwLog('info', 'guest_bridge_runtime_ready', null);
 
-    // ── 2. Load guest WASM from .actr package ──
+    // ── 2. Install actrHost* globals BEFORE guest instantiation ──
+    // The guest wasm resolves imports at instantiate time; globals must
+    // exist up-front.
+    installActrHostGlobals();
+
+    // ── 3. Verify + extract .actr (keeps the mandatory-verify contract) ──
     const resp = await fetch(packageUrl, { cache: 'no-store' });
     if (!resp.ok) {
         throw new Error('[SW] Failed to fetch .actr package: ' + resp.status);
     }
     const buffer = await resp.arrayBuffer();
-    const entries = parseActrZip(buffer);
-    emitSwLog('info', 'guest_bridge_actr_entries', Array.from(entries.keys()));
+    emitSwLog('info', 'guest_bridge_actr_size', buffer.byteLength);
 
-    // Verify package signature
-    const mfrPubkey = RUNTIME_CONFIG && RUNTIME_CONFIG.mfr_pubkey;
-    if (mfrPubkey && mfrPubkey !== '__MFR_PUBKEY_PLACEHOLDER__') {
-        await verifyActrPackage(entries, mfrPubkey);
+    const trustJson = JSON.stringify(
+        (RUNTIME_CONFIG && Array.isArray(RUNTIME_CONFIG.trust)) ? RUNTIME_CONFIG.trust : []
+    );
+    try {
+        // Phase 4c: the `.actr` package for the WBG variant wraps the
+        // wasm-bindgen core wasm; we still call verify_and_extract to honour
+        // signing, but we intentionally ignore `extracted.binary` because the
+        // actual module we load is the companion `guest_bg.wasm` shipped in
+        // the `.wbg/` sibling directory (see §5 below). The core wasm inside
+        // the .actr is identical; we just need the JS glue from the sibling
+        // bundle to drive it with wasm-bindgen conventions.
+        wasm_bindgen.verify_and_extract_actr_package(
+            new Uint8Array(buffer),
+            trustJson,
+        );
         emitSwLog('info', 'guest_bridge_verify_ok', null);
-    } else {
-        emitSwLog('warn', 'guest_bridge_verify_skip', 'No valid MFR pubkey');
+    } catch (verifyError) {
+        emitSwLog('error', 'guest_bridge_verify_failed', String(verifyError));
+        throw verifyError;
     }
 
-    // Extract guest WASM binary
-    let guestWasmBytes = null;
-    for (const [name, data] of entries) {
-        if (name.startsWith('bin/') && name.endsWith('.wasm')) {
-            guestWasmBytes = data;
-            break;
-        }
+    // ── 4. Resolve wbg bundle URL ──
+    const wbgJsUrl =
+        (RUNTIME_CONFIG && RUNTIME_CONFIG.wbg_module_url) ||
+        (packageUrl.replace(/\.actr$/, '') + '.wbg/guest.js');
+    emitSwLog('info', 'guest_bridge_guest_js_url', wbgJsUrl);
+
+    // ── 5. Fetch guest JS glue, rewrite top-level `let wasm_bindgen` to
+    // write to a dedicated global (avoid clobbering sw-host's).
+    const wbgResp = await fetch(wbgJsUrl, { cache: 'no-store' });
+    if (!wbgResp.ok) {
+        throw new Error('[SW] Failed to fetch WBG guest JS: ' + wbgResp.status);
     }
-    if (!guestWasmBytes) {
-        throw new Error('[SW] No guest WASM binary found in .actr package');
+    const wbgSrc = await wbgResp.text();
+    // wasm-pack `--target no-modules` emits `let wasm_bindgen = (function(exports) {...})({});`.
+    // Rewrite to `self.actrGuestBindgen = ...` so the glue coexists with
+    // sw-host (also keyed to `self.wasm_bindgen`).
+    const patchedGuestSrc = wbgSrc.replace(
+        /^\s*let\s+wasm_bindgen\s*=/m,
+        'self.actrGuestBindgen =',
+    );
+    if (patchedGuestSrc === wbgSrc) {
+        throw new Error('[SW] WBG guest JS does not match expected `let wasm_bindgen =` preamble; refusing to eval');
     }
-    emitSwLog('info', 'guest_bridge_guest_wasm', guestWasmBytes.byteLength);
+    (0, eval)(patchedGuestSrc);
+    if (typeof self.actrGuestBindgen !== 'function') {
+        throw new Error('[SW] actrGuestBindgen init not installed after eval');
+    }
 
-    // ── 3. Detect JSPI support ──
-    // JSPI (JavaScript Promise Integration) allows WASM imports to suspend
-    // execution when they return a Promise, without needing asyncify.
-    // Available in Chrome 129+ (Sep 2024).
-    const hasJSPI = typeof WebAssembly.Suspending === 'function'
-        && typeof WebAssembly.promising === 'function';
-    emitSwLog('info', 'guest_bridge_jspi', hasJSPI);
+    // ── 6. Instantiate guest wasm ──
+    const wbgWasmUrl = wbgJsUrl.replace(/\.js$/, '_bg.wasm');
+    emitSwLog('info', 'guest_bridge_guest_wasm_url', wbgWasmUrl);
+    await self.actrGuestBindgen({ module_or_path: wbgWasmUrl });
+    emitSwLog('info', 'guest_bridge_guest_instantiated', Object.keys(self.actrGuestBindgen));
 
-    // ── 4. Instantiate guest WASM with host imports ──
-    let guest;
-    let promisingActrHandle = null;  // JSPI-wrapped actr_handle (returns Promise)
-
-    if (hasJSPI) {
-        // ── JSPI path: async actr_host_invoke, promising actr_handle ──
-        // The guest's actr_host_invoke import is wrapped with WebAssembly.Suspending
-        // so the WASM execution suspends while the host performs async operations
-        // (discover, call_raw). No wasm-opt --asyncify needed.
-        const asyncHostInvoke = async function (frame_ptr, frame_len, reply_ptr, reply_cap, reply_len_out) {
-            try {
-                // Read ABI frame from guest memory
-                const mem = new Uint8Array(guest.memory.buffer);
-                const frameData = mem.slice(frame_ptr, frame_ptr + frame_len);
-
-                // Call runtime's guest_host_invoke_async (returns a Promise)
-                const replyBytes = await wasm_bindgen.guest_host_invoke_async(frameData);
-
-                if (replyBytes.length > reply_cap) {
-                    // BUFFER_TOO_SMALL: write needed size and return error
-                    const view = new DataView(guest.memory.buffer);
-                    view.setInt32(reply_len_out, replyBytes.length, true);
-                    return -6; // BUFFER_TOO_SMALL
-                }
-
-                // Write reply into guest memory
-                const writeMem = new Uint8Array(guest.memory.buffer);
-                writeMem.set(replyBytes, reply_ptr);
-                const writeView = new DataView(guest.memory.buffer);
-                writeView.setInt32(reply_len_out, replyBytes.length, true);
-
-                return 0; // SUCCESS
-            } catch (e) {
-                emitSwLog('error', 'guest_host_invoke_error', String(e));
-                return -1; // GENERIC_ERROR
-            }
+    // ── 7. Build dispatchFn that adapts sw-host envelope (camelCase) to
+    // the actr-web-abi guest (kebab-case + Vec<u8>).
+    const dispatchFn = async (envelope) => {
+        // sw-host builds `{ requestId, routeKey, payload: Uint8Array }`.
+        // actr-web-abi `RpcEnvelope` uses `request-id`, `route-key`, `payload`.
+        const kebabEnv = {
+            'request-id': envelope.requestId,
+            'route-key': envelope.routeKey,
+            // serde-wasm-bindgen reads Vec<u8> from Uint8Array fine, but
+            // also accepts plain arrays. Uint8Array is the natural form.
+            payload: envelope.payload,
         };
-
-        const guestImports = {
-            env: {
-                actr_host_invoke: new WebAssembly.Suspending(asyncHostInvoke),
-                actr_host_self_id: (_buf_ptr, _buf_cap) => -7,
-                actr_host_caller_id: (_buf_ptr, _buf_cap) => -7,
-                actr_host_request_id: (_buf_ptr, _buf_cap) => -7,
-            },
-        };
-
-        let guestModule;
-        try {
-            guestModule = await WebAssembly.instantiate(guestWasmBytes, guestImports);
-        } catch (firstErr) {
-            try {
-                guestModule = await WebAssembly.instantiate(guestWasmBytes, {});
-            } catch (secondErr) {
-                throw new Error('[SW] Guest WASM instantiation failed (JSPI): ' + firstErr.message);
-            }
+        const result = await self.actrGuestBindgen.dispatch(kebabEnv);
+        // actr-web-abi `dispatch` returns `Result<Vec<u8>, ActrError>` —
+        // serde-wasm-bindgen encodes `Ok(bytes)` as `{ Ok: [...] }`.
+        if (result && Object.prototype.hasOwnProperty.call(result, 'Ok')) {
+            const ok = result.Ok;
+            if (ok instanceof Uint8Array) return ok;
+            if (Array.isArray(ok)) return new Uint8Array(ok);
+            throw new Error('[WBG] dispatch Ok was not bytes-like: ' + typeof ok);
         }
-        guest = guestModule.instance.exports;
-
-        // Wrap actr_handle as promising (returns Promise instead of i32)
-        promisingActrHandle = WebAssembly.promising(guest.actr_handle);
-        emitSwLog('info', 'guest_bridge_guest_instantiated_jspi', Object.keys(guest));
-    } else {
-        // ── Sync-only path: stubs for actr_host_invoke ──
-        // Guest WASMs that don't make outbound calls (e.g. echo server) work fine.
-        // Guest WASMs requiring outbound calls will fail with UNSUPPORTED_OP.
-        const guestImports = {
-            env: {
-                actr_host_invoke: (_frame_ptr, _frame_len, _reply_ptr, _reply_cap, _reply_len_out) => {
-                    console.error('[SW Guest] actr_host_invoke called but JSPI not available');
-                    return -7; // UNSUPPORTED_OP
-                },
-                actr_host_self_id: (_buf_ptr, _buf_cap) => -7,
-                actr_host_caller_id: (_buf_ptr, _buf_cap) => -7,
-                actr_host_request_id: (_buf_ptr, _buf_cap) => -7,
-            },
-        };
-
-        let guestModule;
-        try {
-            guestModule = await WebAssembly.instantiate(guestWasmBytes, guestImports);
-        } catch (firstErr) {
-            try {
-                guestModule = await WebAssembly.instantiate(guestWasmBytes, {});
-            } catch (secondErr) {
-                throw new Error('[SW] Guest WASM instantiation failed: ' + firstErr.message);
-            }
+        if (result && Object.prototype.hasOwnProperty.call(result, 'Err')) {
+            throw new Error('[WBG] guest dispatch returned Err: ' + JSON.stringify(result.Err));
         }
-        guest = guestModule.instance.exports;
-        emitSwLog('info', 'guest_bridge_guest_instantiated', Object.keys(guest));
-    }
+        // Older serde shapes or direct Uint8Array — accept as last resort.
+        if (result instanceof Uint8Array) return result;
+        throw new Error('[WBG] guest dispatch returned unexpected shape: ' + JSON.stringify(result));
+    };
 
-    // ── 5. Initialize guest (actr_init) ──
-    const actrType = RUNTIME_CONFIG.client_actr_type || '';
-    const realmId = RUNTIME_CONFIG.realm_id || 0;
-    const initPayload = wasm_bindgen.encode_guest_init_payload(actrType, realmId);
-
-    const initPtr = guest.actr_alloc(initPayload.length);
-    if (initPtr === 0) {
-        throw new Error('[SW] Guest actr_alloc failed for init payload');
-    }
-    let guestMem = new Uint8Array(guest.memory.buffer);
-    guestMem.set(new Uint8Array(initPayload), initPtr);
-
-    const initResult = guest.actr_init(initPtr, initPayload.length);
-    guest.actr_free(initPtr, initPayload.length);
-
-    if (initResult !== 0) {
-        throw new Error('[SW] Guest actr_init failed with code: ' + initResult);
-    }
-    emitSwLog('info', 'guest_bridge_init_ok', null);
-
-    // ── 6. Create dispatch callback ──
-    // When JSPI is available, actr_handle may suspend (returns Promise).
-    // When JSPI is not available, actr_handle is synchronous.
-    const actrHandleFn = promisingActrHandle || guest.actr_handle;
-    const isAsync = !!promisingActrHandle;
-
-    async function guestDispatchAsync(abiFrameBytes) {
-        try {
-            const frameData = new Uint8Array(abiFrameBytes);
-            emitSwLog('info', 'guest_dispatch_called', frameData.length);
-
-            // Allocate memory in guest for the request frame
-            const reqPtr = guest.actr_alloc(frameData.length);
-            if (reqPtr === 0) throw new Error('[SW Guest] actr_alloc failed for request');
-
-            let mem = new Uint8Array(guest.memory.buffer);
-            mem.set(frameData, reqPtr);
-
-            // Allocate memory for output pointers (2 × i32 = 8 bytes)
-            const outBuf = guest.actr_alloc(8);
-            if (outBuf === 0) throw new Error('[SW Guest] actr_alloc failed for output buffer');
-
-            // Call actr_handle (may return Promise with JSPI, or i32 without)
-            const result = isAsync
-                ? await actrHandleFn(reqPtr, frameData.length, outBuf, outBuf + 4)
-                : actrHandleFn(reqPtr, frameData.length, outBuf, outBuf + 4);
-            emitSwLog('info', 'guest_dispatch_actr_handle_result', result);
-
-            // Re-get memory view (buffer may have grown during actr_handle)
-            mem = new Uint8Array(guest.memory.buffer);
-            const view = new DataView(guest.memory.buffer);
-
-            // Read response pointer and length
-            const respPtr = view.getInt32(outBuf, true);
-            const respLen = view.getInt32(outBuf + 4, true);
-            emitSwLog('info', 'guest_dispatch_resp_ptr_len', { respPtr, respLen });
-
-            // Copy response bytes before freeing
-            let response = null;
-            if (result === 0 && respPtr !== 0 && respLen > 0) {
-                response = new Uint8Array(guest.memory.buffer.slice(respPtr, respPtr + respLen));
-            }
-
-            // Free all guest memory
-            guest.actr_free(reqPtr, frameData.length);
-            guest.actr_free(outBuf, 8);
-            if (respPtr !== 0 && respLen > 0) {
-                guest.actr_free(respPtr, respLen);
-            }
-
-            if (result !== 0) {
-                const err = new Error('[SW Guest] actr_handle failed with code: ' + result);
-                emitSwLog('error', 'guest_dispatch_error', err.message);
-                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
-                throw err;
-            }
-            if (!response) {
-                const err = new Error('[SW Guest] actr_handle returned empty response');
-                emitSwLog('error', 'guest_dispatch_error', err.message);
-                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
-                throw err;
-            }
-
-            emitSwLog('info', 'guest_dispatch_ok', response.length);
-            if (SW_BROADCAST) {
-                SW_BROADCAST({ type: 'echo_event', event: 'request', detail: 'Received via guest_bridge', ts: Date.now() });
-                SW_BROADCAST({ type: 'echo_event', event: 'response', detail: 'Sent via guest_bridge', ts: Date.now() });
-            }
-            return response;
-        } catch (e) {
-            emitSwLog('error', 'guest_dispatch_exception', String(e));
-            if (SW_BROADCAST) {
-                SW_BROADCAST({ type: 'echo_event', event: 'error', detail: String(e), ts: Date.now() });
-            }
-            throw e;
-        }
-    }
-
-    // Sync wrapper for backward compatibility when JSPI is not available
-    function guestDispatchSync(abiFrameBytes) {
-        try {
-            const frameData = new Uint8Array(abiFrameBytes);
-            emitSwLog('info', 'guest_dispatch_called', frameData.length);
-
-            const reqPtr = guest.actr_alloc(frameData.length);
-            if (reqPtr === 0) throw new Error('[SW Guest] actr_alloc failed for request');
-
-            let mem = new Uint8Array(guest.memory.buffer);
-            mem.set(frameData, reqPtr);
-
-            const outBuf = guest.actr_alloc(8);
-            if (outBuf === 0) throw new Error('[SW Guest] actr_alloc failed for output buffer');
-
-            const result = guest.actr_handle(reqPtr, frameData.length, outBuf, outBuf + 4);
-            emitSwLog('info', 'guest_dispatch_actr_handle_result', result);
-
-            mem = new Uint8Array(guest.memory.buffer);
-            const view = new DataView(guest.memory.buffer);
-
-            const respPtr = view.getInt32(outBuf, true);
-            const respLen = view.getInt32(outBuf + 4, true);
-            emitSwLog('info', 'guest_dispatch_resp_ptr_len', { respPtr, respLen });
-
-            let response = null;
-            if (result === 0 && respPtr !== 0 && respLen > 0) {
-                response = new Uint8Array(guest.memory.buffer.slice(respPtr, respPtr + respLen));
-            }
-
-            guest.actr_free(reqPtr, frameData.length);
-            guest.actr_free(outBuf, 8);
-            if (respPtr !== 0 && respLen > 0) {
-                guest.actr_free(respPtr, respLen);
-            }
-
-            if (result !== 0) {
-                const err = new Error('[SW Guest] actr_handle failed with code: ' + result);
-                emitSwLog('error', 'guest_dispatch_error', err.message);
-                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
-                throw err;
-            }
-            if (!response) {
-                const err = new Error('[SW Guest] actr_handle returned empty response');
-                emitSwLog('error', 'guest_dispatch_error', err.message);
-                if (SW_BROADCAST) SW_BROADCAST({ type: 'echo_event', event: 'error', detail: err.message, ts: Date.now() });
-                throw err;
-            }
-
-            emitSwLog('info', 'guest_dispatch_ok', response.length);
-            if (SW_BROADCAST) {
-                SW_BROADCAST({ type: 'echo_event', event: 'request', detail: 'Received via guest_bridge', ts: Date.now() });
-                SW_BROADCAST({ type: 'echo_event', event: 'response', detail: 'Sent via guest_bridge', ts: Date.now() });
-            }
-            return response;
-        } catch (e) {
-            emitSwLog('error', 'guest_dispatch_exception', String(e));
-            if (SW_BROADCAST) {
-                SW_BROADCAST({ type: 'echo_event', event: 'error', detail: String(e), ts: Date.now() });
-            }
-            throw e;
-        }
-    }
-
-    // ── 7. Register guest workload with runtime ──
-    // Use async dispatch when JSPI is available (returns Promise → Rust awaits it).
-    // Use sync dispatch when JSPI is not available (returns Uint8Array directly).
-    const dispatchFn = isAsync ? guestDispatchAsync : guestDispatchSync;
     wasm_bindgen.register_guest_workload(dispatchFn);
-    emitSwLog('info', 'guest_bridge_ready', 'Guest workload registered via JS bridge (JSPI=' + hasJSPI + ')');
+    emitSwLog('info', 'guest_bridge_ready', 'WBG workload registered');
 }
 
-/**
- * Load the WASM package into the Service Worker.
- *
- * This is the Web equivalent of Rust Hyper's load_package_executor:
- *   - Guest bridge: Runtime WASM loaded separately, guest WASM from .actr package
- *   - Primary: Fetch a .actr package (signed ZIP), extract and load WASM + JS glue
- *   - Legacy fallback: Fetch separate JS glue + WASM files
- *
- * The package info comes from RUNTIME_CONFIG (set via DOM_PORT_INIT).
- */
 async function ensureWasmReady() {
     if (wasmReady) return;
 
@@ -779,29 +453,20 @@ async function ensureWasmReady() {
     }
 
     const packageUrl = RUNTIME_CONFIG.package_url;
-    const registerFn = RUNTIME_CONFIG.register_fn;
     const runtimeWasmUrl = RUNTIME_CONFIG.runtime_wasm_url;
 
     try {
-        // WebSocket probe (once)
         if (!wsProbeDone) {
             wsProbeDone = true;
             try {
                 emitSwLog('info', 'ws_probe_start', RUNTIME_CONFIG.signaling_url);
                 const probe = new WebSocket(RUNTIME_CONFIG.signaling_url);
                 probe.binaryType = 'arraybuffer';
-                probe.onopen = () => {
-                    emitSwLog('info', 'ws_probe_open', null);
-                    probe.close();
-                };
-                probe.onerror = () => {
-                    emitSwLog('error', 'ws_probe_error', null);
-                };
+                probe.onopen = () => { emitSwLog('info', 'ws_probe_open', null); probe.close(); };
+                probe.onerror = () => { emitSwLog('error', 'ws_probe_error', null); };
                 probe.onclose = (event) => {
                     emitSwLog('info', 'ws_probe_close', {
-                        code: event.code,
-                        reason: event.reason,
-                        wasClean: event.wasClean,
+                        code: event.code, reason: event.reason, wasClean: event.wasClean,
                     });
                 };
             } catch (error) {
@@ -809,21 +474,12 @@ async function ensureWasmReady() {
             }
         }
 
-        if (runtimeWasmUrl && packageUrl) {
-            // Guest bridge mode: load runtime separately, guest from .actr package
-            await loadWithGuestBridge(packageUrl, runtimeWasmUrl);
-        } else if (packageUrl) {
-            // Primary path: load from .actr package (monolithic WASM + JS glue)
-            await loadFromActrPackage(packageUrl, registerFn);
-        } else {
-            // Legacy fallback: load from separate URLs
-            const jsFile = RUNTIME_CONFIG.package_js;
-            const wasmFile = RUNTIME_CONFIG.package_wasm;
-            if (!jsFile || !wasmFile) {
-                throw new Error('[SW] Missing package_url (or package_js/package_wasm) in runtimeConfig');
-            }
-            await loadFromDirectUrls(jsFile, wasmFile, registerFn);
+        if (!runtimeWasmUrl || !packageUrl) {
+            throw new Error(
+                '[SW] RUNTIME_CONFIG requires both `runtime_wasm_url` and `package_url`'
+            );
         }
+        await loadWithGuestBridge(packageUrl, runtimeWasmUrl);
 
         wasmReady = true;
         emitSwLog('info', 'wasm_ready', null);
@@ -842,20 +498,39 @@ async function ensureWasmReady() {
 }
 
 self.addEventListener('install', (event) => {
-    console.log('[SW] installing...');
+    console.log('[SW] installing (WBG variant)...');
     event.waitUntil(self.skipWaiting());
 });
 
 self.addEventListener('activate', (event) => {
-    console.log('[SW] activated');
+    console.log('[SW] activated (WBG variant)');
     event.waitUntil(self.clients.claim());
 });
 
-self.addEventListener('message', (event) => {
+self.addEventListener('message', async (event) => {
     if (event.data && event.data.type === 'PING') {
         if (event.source && event.source.postMessage) {
             event.source.postMessage({ type: 'PONG' });
         }
+        return;
+    }
+
+    if (event.data && event.data.type === 'CLIENT_UNREGISTER') {
+        const clientId = event.data.clientId;
+        if (!clientId) return;
+        try {
+            await ensureWasmReady();
+            await wasm_bindgen.unregister_client(clientId);
+        } catch (e) {
+            console.warn('[SW] top-level unregister_client error for', clientId, ':', e);
+        }
+        clientPorts.delete(clientId);
+        for (const [browserId, swClientId] of browserToSwClient.entries()) {
+            if (swClientId === clientId) {
+                browserToSwClient.delete(browserId);
+            }
+        }
+        emitSwLog('info', 'client_unregistered', { clientId, variant: 'wbg', source: 'top-level' });
         return;
     }
 
@@ -871,15 +546,34 @@ self.addEventListener('message', (event) => {
         RUNTIME_CONFIG = event.data.runtimeConfig;
     }
 
-    clientPorts.set(clientId, port);
     const browserId = event.source && event.source.id;
+    if (browserId) {
+        const previousClientId = browserToSwClient.get(browserId);
+        if (previousClientId && previousClientId !== clientId) {
+            console.log('[SW] browser client remapped, unregistering previous client:', previousClientId, 'browser:', browserId);
+            const previousPort = clientPorts.get(previousClientId);
+            if (previousPort) {
+                try { previousPort.close(); } catch (_) { /* ignore */ }
+                clientPorts.delete(previousClientId);
+            }
+            try {
+                await ensureWasmReady();
+                await wasm_bindgen.unregister_client(previousClientId);
+            } catch (e) {
+                console.warn('[SW] remap unregister_client error for', previousClientId, ':', e);
+            }
+        }
+    }
+
+    clientPorts.set(clientId, port);
     if (browserId) {
         browserToSwClient.set(browserId, clientId);
     }
 
     cleanupStaleClients();
+    scheduleStaleClientCleanup(1500);
 
-    console.log('[SW] port initialized for client:', clientId, 'total:', clientPorts.size);
+    console.log('[SW] port initialized (WBG) for client:', clientId, 'total:', clientPorts.size);
 
     if (event.source && event.source.postMessage) {
         event.source.postMessage({ type: 'sw_ack', message: 'port_ready' });
@@ -887,13 +581,14 @@ self.addEventListener('message', (event) => {
 
     emitSwLog('info', 'sw_env', {
         clientId,
-        hasWindow: typeof window !== 'undefined',
-        hasSetTimeout: typeof setTimeout,
+        variant: 'wbg',
         location: self.location ? self.location.href : null,
         totalClients: clientPorts.size,
     });
 
-    port.onmessage = async (portEvent) => {
+    let portMessageChain = Promise.resolve();
+
+    async function processPortMessage(message) {
         try {
             await ensureWasmReady();
         } catch (error) {
@@ -901,7 +596,6 @@ self.addEventListener('message', (event) => {
             return;
         }
 
-        const message = portEvent.data;
         if (!message || !message.type) return;
 
         switch (message.type) {
@@ -947,10 +641,36 @@ self.addEventListener('message', (event) => {
                 }
                 break;
 
+            case 'unregister_client':
+                try {
+                    await wasm_bindgen.unregister_client(clientId);
+                    clientPorts.delete(clientId);
+                    for (const [browserId, swClientId] of browserToSwClient.entries()) {
+                        if (swClientId === clientId) {
+                            browserToSwClient.delete(browserId);
+                        }
+                    }
+                    emitSwLog('info', 'client_unregistered', { clientId, variant: 'wbg' });
+                } catch (error) {
+                    console.error('[SW] unregister_client failed:', error);
+                    emitSwLog('error', 'unregister_client_failed', { clientId, error: String(error) });
+                }
+                break;
+
             default:
                 console.log('[SW] unknown message type:', message.type);
                 break;
         }
+    }
+
+    port.onmessage = (portEvent) => {
+        const message = portEvent.data;
+        portMessageChain = portMessageChain
+            .then(() => processPortMessage(message))
+            .catch((error) => {
+                console.error('[SW] port message pipeline failed:', error);
+                emitSwLog('error', 'port_message_pipeline_failed', String(error));
+            });
     };
 
     port.start();
@@ -962,8 +682,8 @@ self.addEventListener('message', (event) => {
                 return;
             }
             await wasm_bindgen.register_client(clientId, RUNTIME_CONFIG, port);
-            console.log('[SW] Client registered:', clientId);
-            emitSwLog('info', 'client_registered', { clientId });
+            console.log('[SW] Client registered (WBG):', clientId);
+            emitSwLog('info', 'client_registered', { clientId, variant: 'wbg' });
         } catch (error) {
             console.error('[SW] register_client failed:', error);
             emitSwLog('error', 'register_client_failed', { clientId, error: String(error) });

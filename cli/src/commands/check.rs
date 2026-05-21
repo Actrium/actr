@@ -26,8 +26,8 @@ pub struct CheckCommand {
     pub packages: Vec<String>,
 
     /// Manifest file to load services from (defaults to manifest.toml)
-    #[arg(short = 'f', long = "file")]
-    pub config_file: Option<String>,
+    #[arg(short = 'm', long = "manifest-path")]
+    pub manifest_path: Option<String>,
 
     /// Show detailed connection information
     #[arg(short, long)]
@@ -45,7 +45,7 @@ pub struct CheckCommand {
 #[async_trait]
 impl Command for CheckCommand {
     async fn execute(&self, context: &CommandContext) -> Result<CommandResult> {
-        let config_path = self.config_file.as_deref().unwrap_or("manifest.toml");
+        let config_path = self.manifest_path.as_deref().unwrap_or("manifest.toml");
 
         let pipeline = {
             let mut container = context.container.lock().unwrap();

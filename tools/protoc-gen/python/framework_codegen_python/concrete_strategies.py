@@ -74,7 +74,7 @@ class RemoteServiceStrategy(GenerationStrategy):
     - Have service definitions
     
     Generates:
-    - RPC request extensions only (client-side interfaces)
+    - RPC request extensions only (caller-side interfaces)
     """
     
     @property

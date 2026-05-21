@@ -20,7 +20,7 @@ use tokio::sync::watch;
 /// - Event-driven wait for connection status
 /// - Cache Lanes within WireHandle
 /// - WirePool handles priority selection
-pub struct DestTransport {
+pub(crate) struct DestTransport {
     /// Connection manager
     conn_mgr: Arc<WirePool>,
 }
@@ -31,7 +31,10 @@ impl DestTransport {
     /// # Arguments
     /// - `dest`: destination
     /// - `connections`: list of pre-built connections (WebSocket/WebRTC)
-    pub async fn new(dest: Dest, connections: Vec<Arc<dyn WireHandle>>) -> NetworkResult<Self> {
+    pub(crate) async fn new(
+        dest: Dest,
+        connections: Vec<Arc<dyn WireHandle>>,
+    ) -> NetworkResult<Self> {
         let conn_mgr = Arc::new(WirePool::new(RetryConfig::default()));
 
         // Start connection tasks in background (concurrently)
@@ -57,7 +60,7 @@ impl DestTransport {
         feature = "opentelemetry",
         tracing::instrument(skip_all, name = "DestTransport.send")
     )]
-    pub async fn send(&self, payload_type: PayloadType, data: &[u8]) -> NetworkResult<()> {
+    pub(crate) async fn send(&self, payload_type: PayloadType, data: &[u8]) -> NetworkResult<()> {
         tracing::debug!(
             "📤 Sending message: type={:?}, size={}",
             payload_type,
@@ -201,7 +204,8 @@ impl DestTransport {
     /// # Arguments
     /// - `dest`: destination (used by WireBuilder)
     /// - `wire_builder`: factory to create new WireHandles
-    pub async fn retry_failed_connections(
+    #[cfg(feature = "test-utils")]
+    pub(crate) async fn retry_failed_connections(
         &self,
         dest: &Dest,
         wire_builder: &dyn super::WireBuilder,
@@ -228,7 +232,7 @@ impl DestTransport {
     }
 
     /// Close DestTransport and release all connection resources
-    pub async fn close(&self) -> NetworkResult<()> {
+    pub(crate) async fn close(&self) -> NetworkResult<()> {
         tracing::info!("🔌 Closing DestTransport");
 
         // 1. Get all connections and close them one by one
@@ -259,7 +263,8 @@ impl DestTransport {
     /// # Returns
     /// - `true`: at least one connection is healthy (connected)
     /// - `false`: all connections are unhealthy or no connections exist
-    pub async fn has_healthy_connection(&self) -> bool {
+    #[cfg(feature = "test-utils")]
+    pub(crate) async fn has_healthy_connection(&self) -> bool {
         for conn_type in [ConnType::WebRTC, ConnType::WebSocket] {
             if let Some(conn) = self.conn_mgr.get_connection(conn_type).await {
                 if conn.is_connected() {
@@ -271,7 +276,7 @@ impl DestTransport {
     }
 
     /// Subscribe to ready-set changes (used for manager-side cleanup).
-    pub fn watch_ready(&self) -> watch::Receiver<ReadySet> {
+    pub(crate) fn watch_ready(&self) -> watch::Receiver<ReadySet> {
         self.conn_mgr.watch_ready()
     }
 
@@ -279,7 +284,7 @@ impl DestTransport {
     ///
     /// Used by PeerTransport (session-guarded cleanup) to decide whether a
     /// `ConnectionClosed` event is stale or matches the current wire.
-    pub async fn matches_webrtc_session(
+    pub(crate) async fn matches_webrtc_session(
         &self,
         peer_id: &actr_protocol::ActrId,
         session_id: u64,

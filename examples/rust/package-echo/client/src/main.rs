@@ -15,8 +15,11 @@ pub mod echo {
 use std::env;
 use std::path::PathBuf;
 
-use actr_hyper::{Hyper, HyperConfig, TrustMode, WorkloadPackage, init_observability};
-use actr_platform_native::NativePlatformProvider;
+use actr_hyper::{
+    Hyper, HyperConfig, RegistryTrust, StaticTrust, TrustProvider, WorkloadPackage,
+    init_observability,
+};
+use std::sync::Arc;
 use actr_protocol::RpcRequest;
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
@@ -112,7 +115,7 @@ async fn main() -> Result<()> {
     // 2. Load runtime configuration
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     let config_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("actr.toml");
-    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info, vec![])?;
+    let config = actr_config::ConfigParser::from_runtime_file(&config_path, package_info)?;
 
     let _obs_guard = init_observability(&config.observability)?;
 
@@ -121,35 +124,25 @@ async fn main() -> Result<()> {
 
     let hyper_data_dir = actr_config::user_config::resolve_hyper_data_dir()?;
 
-    let trust_mode = if env::var("TRUST_MODE")
+    let trust: Arc<dyn TrustProvider> = if env::var("TRUST_MODE")
         .map(|v| v == "production")
         .unwrap_or(false)
     {
         let ais_endpoint =
             env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
         let base_endpoint = ais_endpoint.trim_end_matches("/ais").to_string();
-        info!(
-            "🔐 Using Production trust mode (base endpoint: {})",
-            base_endpoint
-        );
-        TrustMode::Production {
-            ais_endpoint: base_endpoint,
-        }
+        info!("🔐 Using RegistryTrust (base endpoint: {})", base_endpoint);
+        Arc::new(RegistryTrust::new(base_endpoint))
     } else {
-        info!("🔐 Using Development trust mode (local public key)");
-        TrustMode::Development {
-            self_signed_pubkey: load_package_public_key()?,
-        }
+        info!("🔐 Using StaticTrust (local public key)");
+        Arc::new(StaticTrust::new(load_package_public_key()?).context("invalid pubkey")?)
     };
 
-    let hyper = Hyper::init_with_platform(
-        HyperConfig::new(&hyper_data_dir).with_trust_mode(trust_mode),
-        std::sync::Arc::new(NativePlatformProvider::new()),
-    )
-    .await
-    .inspect_err(|e| {
-        error!("❌ Hyper initialization failed: {:?}", e);
-    })?;
+    let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir, trust))
+        .await
+        .inspect_err(|e| {
+            error!("❌ Hyper initialization failed: {:?}", e);
+        })?;
     info!(
         "✅ Hyper initialized, data_dir={}",
         hyper_data_dir.display()
@@ -159,13 +152,10 @@ async fn main() -> Result<()> {
     // 3. Attach package workload
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("📦 Attaching client-guest package workload...");
-    let realm_id = config.realm.realm_id;
-    let service_spec = None; // RuntimeConfig doesn't have exports, so no ServiceSpec
-    let acl = config.acl.clone();
-    let mut node = hyper
-        .attach_package(&package, config)
+    let attached = actr_hyper::Node::from_hyper(hyper, config)
+        .attach(&package)
         .await
-        .inspect_err(|e| error!("❌ hyper.attach_package failed: {:?}", e))?;
+        .inspect_err(|e| error!("❌ Node attach failed: {:?}", e))?;
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 4. Register with AIS
@@ -174,27 +164,22 @@ async fn main() -> Result<()> {
         env::var("AIS_ENDPOINT").unwrap_or_else(|_| "http://localhost:8081/ais".to_string());
     info!("🔐 Registering with AIS at {}", ais_endpoint);
 
-    let register_ok = hyper
-        .bootstrap_node_credential(&node, &ais_endpoint, realm_id, service_spec, acl)
+    let registered = attached
+        .register(&ais_endpoint)
         .await
         .inspect_err(|e| error!("❌ AIS registration failed: {:?}", e))?;
-    info!(
-        "✅ AIS registration successful, ActrId: {}",
-        actr_protocol::ActrIdExt::to_string_repr(&register_ok.actr_id)
-    );
-
-    node.inject_credential(register_ok);
+    info!("✅ AIS registration successful");
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 5. Start ActrNode
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     info!("🚀 Starting ActrNode...");
-    let actr_ref = node.start().await.inspect_err(|e| {
+    let actr_ref = registered.start().await.inspect_err(|e| {
         error!("❌ ActrNode start failed: {:?}", e);
     })?;
     info!(
         "✅ ActrNode started with ID: {}",
-        actr_protocol::ActrIdExt::to_string_repr(actr_ref.actor_id())
+        actr_protocol::ActrId::to_string_repr(actr_ref.actor_id())
     );
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

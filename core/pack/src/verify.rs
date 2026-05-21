@@ -10,7 +10,7 @@ use crate::util::{read_zip_entry, sha256_hex};
 ///
 /// Contains the parsed manifest along with the raw bytes needed for
 /// transparent forwarding to AIS for signature verification.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VerifiedPackage {
     /// Parsed package manifest.
     pub manifest: PackageManifest,
@@ -166,6 +166,7 @@ mod tests {
                 target: "wasm32-wasip1".to_string(),
                 hash: String::new(),
                 size: None,
+                kind: None,
             },
             signature_algorithm: "ed25519".to_string(),
             signing_key_id: None,

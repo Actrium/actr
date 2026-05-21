@@ -1,7 +1,7 @@
 # Web 环境生命周期恢复机制设计
 
 **日期**: 2026-01-08
-**状态**: 部分实现（DomLifecycleManager 已实现 DOM 侧生命周期管理）
+**状态**: 已实现 baseline，仍有恢复闭环缺口
 **优先级**: P0（阻塞生产使用）
 
 ---
@@ -15,7 +15,12 @@ Web 环境的特殊性：
 - **WebRTC 连接会断开**（DOM 重启时）
 - **Registry 会清空**（DOM 进程销毁时）
 
-**当前状态**：DOM 侧已部分实现（~40%）。`DomLifecycleManager`（`crates/runtime-dom/src/lifecycle.rs`，277 行）已实现 DOM_READY 事件、beforeunload 监听、visibility change 监听和 SW 健康检查。SW 侧恢复机制（SW 唤醒后重建连接、Registry 恢复等）尚未实现。
+**当前状态**：生命周期 baseline 已落地。
+
+- DOM 侧 `bindings/web/crates/dom-bridge/src/lifecycle.rs` 已实现 session id、`DOM_READY`、`DOM_UNLOADING`、`DOM_PING`、load/beforeunload/visibilitychange listener。
+- SW 侧 `bindings/web/crates/sw-host/src/lifecycle.rs` 已实现 message listener、active session tracking、DOM_READY/DOM_UNLOADING/DOM_PING 处理、错误报告转发，以及可选 `WirePool` stale WebRTC cleanup。
+- SW 全局初始化路径 `bindings/web/crates/sw-host/src/runtime.rs::init_global` 已创建并初始化 `SwLifecycleManager`。
+- 剩余缺口：`WirePool` 绑定到 lifecycle manager 的完整接线、DOM 无 controller 时的 re-registration、DOM 重启后的 WebRTC/MessagePort 重建闭环、stream/media handler 重新注册策略。
 
 ---
 
@@ -32,13 +37,17 @@ Web 环境的特殊性：
    - 所有 WebRTC 连接断开
    - MessagePort 对象失效
 
-2. 当前问题：
-   - SW 不知道 DOM 已重启
-   - WirePool 仍保留失效的 WebRTC 连接
-   - 尝试发送消息时 postMessage() 报错
-   - Registry 清空，Stream/Media 处理器丢失
+2. 当前 baseline：
+   - DOM 初始化时发送 `DOM_READY`
+   - DOM 卸载时 best-effort 发送 `DOM_UNLOADING`
+   - SW 记录 active session，并可在拿到 WirePool 时标记 stale WebRTC 连接失败
 
-3. 期望行为：
+3. 剩余问题：
+   - WirePool 接线和细粒度 session cleanup 仍需补齐
+   - DOM 无 SW controller 时仅记录 warning，尚未自动 re-register
+   - Stream/Media handler 的重注册策略仍需由上层覆盖
+
+4. 期望行为：
    - DOM 重启后主动通知 SW："我回来了"
    - SW 清理旧的 WebRTC 连接状态
    - DOM 重新建立 WebRTC 连接
@@ -55,10 +64,14 @@ Web 环境的特殊性：
    - SW 可能继续运行（后台活跃）
    - 重新打开时，DOM 是全新的进程
 
-2. 当前问题：
-   - 同场景 1
+2. 当前 baseline：
+   - 新 DOM session 会重新发送 `DOM_READY`
+   - SW 可移除 `DOM_UNLOADING` 对应 session
 
-3. 期望行为：
+3. 剩余问题：
+   - 同场景 1 的连接/handler 恢复闭环
+
+4. 期望行为：
    - 同场景 1
 ```
 
@@ -77,7 +90,11 @@ SW 长时间空闲，被浏览器终止
    - 但 WirePool、连接状态等都在内存中 ❌
    - 需要重新建立所有连接
 
-3. 期望行为：
+3. 当前 baseline：
+   - DOM 可在 visibilitychange 时发送 `DOM_PING`
+   - SW 收到 `DOM_PING` 后只记录日志；浏览器会因消息投递唤醒/保持 SW
+
+4. 期望行为：
    - SW 重启后，从 IndexedDB 恢复关键状态
    - DOM 检测到 SW 重启，重新建立通信
 ```
@@ -92,7 +109,7 @@ SW 长时间空闲，被浏览器终止
 
 ```rust
 // ========== DOM 侧 ==========
-// crates/runtime-dom/src/lifecycle.rs (新建)
+// bindings/web/crates/dom-bridge/src/lifecycle.rs (已实现 baseline)
 
 use web_sys::{window, MessageEvent, Navigator};
 use wasm_bindgen::prelude::*;
@@ -231,7 +248,7 @@ fn check_sw_alive() {
 }
 
 // ========== SW 侧 ==========
-// crates/runtime-sw/src/lifecycle.rs (新建)
+// bindings/web/crates/sw-host/src/lifecycle.rs (已实现 baseline)
 
 use wasm_bindgen::prelude::*;
 use web_sys::ExtendableMessageEvent;
@@ -330,7 +347,7 @@ impl SwLifecycleManager {
 #### 方案：发送时捕获错误 + 心跳检测
 
 ```rust
-// crates/runtime-sw/src/transport/lane.rs
+// crates/sw-host/src/transport/lane.rs
 
 impl DataLane {
     /// 发送消息（增强版，带失效检测）
@@ -389,7 +406,7 @@ impl PortFailureNotifier {
 #### 新增方法：移除失效连接
 
 ```rust
-// crates/runtime-sw/src/transport/wire_pool.rs
+// crates/sw-host/src/transport/wire_pool.rs
 
 impl WirePool {
     /// 标记连接为失效
@@ -487,7 +504,7 @@ impl WirePool {
 #### 代码实现
 
 ```rust
-// crates/runtime-sw/src/webrtc_recovery.rs (新建)
+// crates/sw-host/src/webrtc_recovery.rs (新建)
 
 pub struct WebRtcRecoveryManager {
     wire_pool: Arc<WirePool>,
@@ -539,7 +556,7 @@ impl WebRtcRecoveryManager {
 #### 方案：用户手动重注册 + 可选持久化
 
 ```rust
-// crates/runtime-dom/src/fastpath.rs
+// crates/dom-bridge/src/fastpath.rs
 
 // 增强 Registry，支持状态通知
 pub struct StreamHandlerRegistry {
@@ -586,7 +603,7 @@ impl StreamHandlerRegistry {
 // 用户代码示例
 // examples/stream/src/main.rs
 
-use actr_runtime_dom::{DomSystem, StreamCallback};
+use actr_dom_bridge::{DomSystem, StreamCallback};
 
 #[wasm_bindgen(start)]
 pub async fn start() {
@@ -635,11 +652,11 @@ fn setup_lifecycle_listener(system: &DomSystem) {
 
 ## 四、实现计划
 
-### Phase 1: 基础生命周期（P0）
+### Phase 1: 基础生命周期（P0，已实现 baseline）
 
 **文件**：
-- `crates/runtime-dom/src/lifecycle.rs` (新建)
-- `crates/runtime-sw/src/lifecycle.rs` (新建)
+- `bindings/web/crates/dom-bridge/src/lifecycle.rs`
+- `bindings/web/crates/sw-host/src/lifecycle.rs`
 
 **功能**：
 - ✅ DOM 加载时发送 "DOM_READY"
@@ -647,15 +664,15 @@ fn setup_lifecycle_listener(system: &DomSystem) {
 - ✅ SW 监听这些事件
 - ✅ 页面刷新后能检测到 DOM 重启
 
-**工作量**：~200 行代码，2-3 天
+**当前缺口**：DOM 无 SW controller 时的自动 re-registration 尚未实现。
 
 ---
 
 ### Phase 2: MessagePort 失效检测（P0）
 
 **文件**：
-- `crates/runtime-sw/src/transport/lane.rs` (修改)
-- `crates/runtime-sw/src/transport/wire_pool.rs` (扩展)
+- `crates/sw-host/src/transport/lane.rs` (修改)
+- `crates/sw-host/src/transport/wire_pool.rs` (扩展)
 
 **功能**：
 - ✅ `port.post_message()` 失败时通知 WirePool
@@ -669,9 +686,9 @@ fn setup_lifecycle_listener(system: &DomSystem) {
 ### Phase 3: WebRTC 重建流程（P0）
 
 **文件**：
-- `crates/runtime-sw/src/webrtc_recovery.rs` (新建)
-- `crates/runtime-sw/src/transport/wire_pool.rs` (扩展)
-- `crates/runtime-dom/src/webrtc/coordinator.rs` (修改)
+- `crates/sw-host/src/webrtc_recovery.rs` (新建)
+- `crates/sw-host/src/transport/wire_pool.rs` (扩展)
+- `crates/dom-bridge/src/webrtc/coordinator.rs` (修改)
 
 **功能**：
 - ✅ DOM 重启后，清理旧 WebRTC 连接
@@ -686,7 +703,7 @@ fn setup_lifecycle_listener(system: &DomSystem) {
 ### Phase 4: Registry 重建提示（P1）
 
 **文件**：
-- `crates/runtime-dom/src/fastpath.rs` (修改)
+- `crates/dom-bridge/src/fastpath.rs` (修改)
 
 **功能**：
 - ✅ Registry 提供清空回调
@@ -700,7 +717,7 @@ fn setup_lifecycle_listener(system: &DomSystem) {
 ### Phase 5: 健康检查（P1）
 
 **文件**：
-- `crates/runtime-sw/src/transport/wire_pool.rs` (扩展)
+- `crates/sw-host/src/transport/wire_pool.rs` (扩展)
 
 **功能**：
 - ✅ 定期检查连接存活
@@ -877,5 +894,5 @@ pub async fn restore_registry_state(&self) -> WebResult<Vec<String>> {
 - **测试和文档**: 2-3 天
 - **总计**: 2 周左右
 
-**当前状态**: 设计完成 ✅
-**下一步**: 创建 TODO 并开始实现
+**当前状态**: baseline 已实现；本文剩余部分作为恢复闭环设计和 backlog。
+**下一步**: 补齐 WirePool 接线、WebRTC/MessagePort 重建、stream/media handler 重新注册策略，并用刷新/重开 tab 的 e2e 场景验证。

@@ -8,6 +8,10 @@ const SERVER_URL = process.env.SERVER_URL || 'http://127.0.0.1:4176';
 const CLIENT_COUNT = CLIENT_URLS.length;
 const MESSAGE_COUNT = Number(process.env.MESSAGE_COUNT || 3);
 const DEFAULT_MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const ERROR_PATTERNS = [
+    'Unknown service: __fast_path_data_stream__',
+    'Tell handler error',
+];
 
 function getExecutablePath() {
     if (process.env.PUPPETEER_EXECUTABLE_PATH) {
@@ -36,18 +40,31 @@ async function main() {
     const browser = await puppeteer.launch({
         headless: 'new',
         ignoreHTTPSErrors: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors'],
+        // Headless Chrome hides local IPs behind mDNS by default, which breaks
+        // this local peer-to-peer example when no external STUN/TURN server is used.
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--ignore-certificate-errors',
+            '--disable-features=WebRtcHideLocalIpsWithMdns',
+        ],
         executablePath: getExecutablePath(),
     });
 
     const pages = [];
     let serverPage = null;
     const clientPages = [];
+    const consoleLogs = {
+        server: [],
+        clients: Array.from({ length: CLIENT_COUNT }, () => []),
+    };
 
     try {
         serverPage = await browser.newPage();
         pages.push(serverPage);
-        serverPage.on('console', (msg) => console.log('[server]', msg.text()));
+        serverPage.on('console', (msg) => {
+            consoleLogs.server.push(msg.text());
+        });
         await serverPage.goto(SERVER_URL, { waitUntil: 'networkidle2' });
         await waitForText(serverPage, '#status', 'Server running');
 
@@ -55,7 +72,9 @@ async function main() {
             const page = await browser.newPage();
             pages.push(page);
             clientPages.push(page);
-            page.on('console', (msg) => console.log(`[client-${i}]`, msg.text()));
+            page.on('console', (msg) => {
+                consoleLogs.clients[i - 1].push(msg.text());
+            });
             const clientUrl = CLIENT_URLS[i - 1];
             const url = `${clientUrl}?autoStart=1&clientId=client-${i}&messageCount=${MESSAGE_COUNT}`;
             await page.goto(url, { waitUntil: 'networkidle2' });
@@ -63,6 +82,14 @@ async function main() {
         }
 
         await new Promise((resolve) => setTimeout(resolve, 25000));
+
+        const serverLogText = await serverPage.$eval('#log', (el) => el.textContent || '');
+        for (let i = 1; i <= CLIENT_COUNT; i += 1) {
+            const expected = `server: stream client-${i}-stream received ${MESSAGE_COUNT}/${MESSAGE_COUNT}`;
+            if (!serverLogText.includes(expected)) {
+                throw new Error(`server missing receive completion log for client-${i}`);
+            }
+        }
 
         for (let i = 1; i <= CLIENT_COUNT; i += 1) {
             const page = clientPages[i - 1];
@@ -75,12 +102,25 @@ async function main() {
             }
         }
 
+        const allLogs = [
+            serverLogText,
+            ...consoleLogs.server,
+            ...(await Promise.all(clientPages.map((page) => page.$eval('#log', (el) => el.textContent || '')))),
+            ...consoleLogs.clients.flat(),
+        ].join('\n');
+        for (const pattern of ERROR_PATTERNS) {
+            if (allLogs.includes(pattern)) {
+                throw new Error(`unexpected error log found: ${pattern}`);
+            }
+        }
+
         console.log('✅ data-stream peer concurrent test passed');
     } catch (error) {
         if (serverPage) {
             try {
                 console.error('[debug] server status:', await serverPage.$eval('#status', (el) => el.textContent));
                 console.error('[debug] server log:\n' + await serverPage.$eval('#log', (el) => el.textContent));
+                console.error('[debug] server console:\n' + consoleLogs.server.join('\n'));
             } catch { }
         }
 
@@ -89,6 +129,7 @@ async function main() {
             try {
                 console.error(`[debug] client-${i + 1} status:`, await page.$eval('#status', (el) => el.textContent));
                 console.error(`[debug] client-${i + 1} log:\n${await page.$eval('#log', (el) => el.textContent)}`);
+                console.error(`[debug] client-${i + 1} console:\n${consoleLogs.clients[i].join('\n')}`);
             } catch { }
         }
 

@@ -204,7 +204,7 @@ impl RuntimeStateStore {
             });
         }
 
-        entries.sort_by(|left, right| right.record.started_at.cmp(&left.record.started_at));
+        entries.sort_by_key(|right| std::cmp::Reverse(right.record.started_at));
         Ok(entries)
     }
 

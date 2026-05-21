@@ -57,12 +57,12 @@ impl ProjectInitializer for RustInitializer {
         }
         if context.echo_role == Some(EchoRole::Service) {
             println!(
-                "  actr install      # Create manifest.lock.toml (no remote deps, generates empty lock)"
+                "  actr deps install      # Create manifest.lock.toml (no remote deps, generates empty lock)"
             );
             println!("  actr gen -l rust  # Regenerate src/generated from local proto");
             println!("  actr build        # Compile and package the workload into a .actr archive");
         } else {
-            println!("  actr install      # Download remote proto dependencies from registry");
+            println!("  actr deps install      # Download remote proto dependencies from registry");
             println!("  actr gen -l rust  # Generate Actor framework code");
             println!("  cargo run         # Run the echo app");
         }

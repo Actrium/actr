@@ -1,5 +1,7 @@
 # Actor-RTC Web 完整消息流图
 
+> **历史/已被取代的详细图**：本文早期把 Fast Path 描述为 DOM 本地 `DomSystem` / Registry callback。当前源码已经走 Option U + wasm-bindgen：DOM 侧通过 `FastPathForwarder` 发送 `fast_path_data`，SW 侧 `handle_dom_fast_path` 调用 runtime fast path 并派发 stream handlers。若本文下方细节与 [架构总览](./overview.zh.md) 冲突，以架构总览和源码为准。
+
 ## 全览图：消息在 SW 和 DOM 间的完整流转
 
 ```
@@ -17,7 +19,7 @@
               ↓                ↓                ↓
 ┌─────────────────────────────────────────────────────────────┐
 │                    Service Worker (SW)                       │
-│                     runtime-sw crate                         │
+│                     sw-host crate                         │
 │                                                              │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │           📥 INBOUND (接收流程)                        │ │
@@ -70,7 +72,7 @@
 │         │  │   - WebContext      │              │           │
 │         │  └─────────────────────┘              │           │
 │         │                                        │           │
-│         │  延迟: ~30-40ms (State Path)          │           │
+│         │  延迟: 需 benchmark 确认 (State Path) │           │
 │         │                                        │           │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │           📤 OUTBOUND (发送流程)                       │ │
@@ -84,8 +86,8 @@
 │                │                                             │
 │                ↓                                             │
 │         ┌─────────────────────┐                             │
-│         │ OutprocTransport    │                             │
-│         │   Manager           │                             │
+│         │ PeerTransport       │                             │
+│         │ / TransportManager  │                             │
 │         └──────┬──────────────┘                             │
 │                │                                             │
 │                ↓                                             │
@@ -112,7 +114,7 @@
 ═══════════════════════════════════════════════════════════════
 ┌────────────────┴─────────────────┬───────────────────────────┐
 │                  DOM/Window                                   │
-│                  runtime-dom crate                            │
+│                  dom-bridge crate                            │
 │                                                               │
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │           📥 INBOUND (快速接收)                        │  │
@@ -132,27 +134,27 @@
 │         │       │ (转发 SW)  │  │            │               │
 │         │       │            ↓  │            ↓               │
 │         │       │      ┌──────────────────────────┐         │
-│         │       │      │ DomSystem                │         │
+│         │       │      │ FastPathForwarder        │         │
 │         │       │      │  ┌────────────────────┐  │         │
-│         │       │      │  │ StreamHandler      │  │         │
-│         │       │      │  │   Registry         │  │         │
-│         │       │      │  │  stream_id → cb    │  │         │
+│         │       │      │  │ ServiceWorker      │  │         │
+│         │       │      │  │   Bridge           │  │         │
+│         │       │      │  │  fast_path_data    │  │         │
 │         │       │      │  └─────┬──────────────┘  │         │
 │         │       │      │        │                 │         │
 │         │       │      │  ┌─────▼──────────────┐  │         │
-│         │       │      │  │ MediaFrame         │  │         │
-│         │       │      │  │   Registry         │  │         │
-│         │       │      │  │  track_id → cb     │  │         │
+│         │       │      │  │ SW handle_dom      │  │         │
+│         │       │      │  │   _fast_path       │  │         │
+│         │       │      │  │  stream handlers   │  │         │
 │         │       │      │  └─────┬──────────────┘  │         │
 │         │       │      └────────┼─────────────────┘         │
 │         │       │               │                            │
 │         │       │               ↓                            │
-│         │       │         callback(data)                     │
-│         │       │         并发执行，直接处理                 │
+│         │       │         转发给 SW runtime                  │
+│         │       │         绕过 Mailbox/Scheduler            │
 │         │       │                                            │
 │         │       │         延迟:                              │
-│         │       │         - DataChannel: ~1-2ms             │
-│         │       │         - MediaTrack: < 1ms               │
+│         │       │         - DataChannel: 当前需实测         │
+│         │       │         - MediaTrack: 当前需实测          │
 │         │       │                                            │
 │         │       └────────────────┐                          │
 │         │                        │                           │
@@ -236,7 +238,7 @@ SW: WebSocket Lane
    ↓
 远程节点
 
-延迟: ~30-40ms
+延迟: 需当前 benchmark 确认
 特点: 可靠、有序、持久化
 ```
 
@@ -249,19 +251,21 @@ SW: WebSocket Lane
 DOM: WebRtcDataChannelReceiver
    │ (判断类型 = STREAM_RELIABLE)
    ↓
-DOM: DomSystem.dispatch_stream()
+DOM: FastPathForwarder.forward(stream_id, data)
    │
    ↓
-DOM: StreamHandlerRegistry.dispatch()
-   │ (查找 stream_id → callback)
+DOM: ServiceWorkerBridge.sendToSW({ type: "fast_path_data" }, [buffer])
    ↓
-DOM: callback(data)
-   │ (用户回调，并发执行)
+SW: actor.sw.js → wasm_bindgen.handle_dom_fast_path(client_id, payload)
+   ↓
+SW: runtime.handle_fast_path()
+   ↓
+SW: stream handler callback(data)
    ↓
 用户代码处理
 
-延迟: ~1-2ms
-特点: 低延迟、高吞吐、无持久化
+延迟: 当前不声明固定数字，需以 e2e/benchmark 为准
+特点: 绕过 Mailbox/Scheduler、Transferable 转发、处理点在 SW
 ```
 
 ### 流程 3️⃣：MediaTrack 接收（超快速路径）
@@ -273,18 +277,17 @@ DOM: callback(data)
 DOM: ontrack event
    │
    ↓
-DOM: DomSystem.dispatch_media_frame()
+DOM: WebRTC coordinator / media handling
    │
    ↓
-DOM: MediaFrameHandlerRegistry.dispatch()
-   │ (查找 track_id → callback)
+DOM/SW: 按当前实现路径转发或处理
    ↓
 DOM: callback(rtp_packet)
    │ (零拷贝，直接播放)
    ↓
 <video> / <audio> 元素
 
-延迟: < 1ms
+延迟: 当前需实测
 特点: 浏览器原生优化，零拷贝
 ```
 
@@ -298,18 +301,18 @@ SW: WebSocket Lane
    │ (判断类型 = STREAM_RELIABLE)
    │ (SW 无法处理 Stream，需转发 DOM)
    ↓
-SW → DOM: PostMessage
-   │ { type: "STREAM_DATA", stream_id, data }
+SW/DOM: 按当前 fast_path_data / handler 路径处理
+   │ { type: "fast_path_data", payload }
    ↓
 DOM: onmessage handler
    │
    ↓
-DOM: DomSystem.dispatch_stream()
+DOM: FastPathForwarder.forward()
    │
    ↓
 DOM: callback(data)
 
-延迟: ~3-4ms (多了 PostMessage 开销)
+延迟: 当前需实测（包含 PostMessage/MessagePort 开销）
 ```
 
 ### 流程 5️⃣：发送消息（Actor → 远程）
@@ -352,11 +355,11 @@ SW: WireHandle::send()
 
 | 消息类型 | 路径 | 延迟 | 用途 |
 |---------|------|------|------|
-| RPC_REQUEST | WebSocket → SW → Mailbox → Actor | ~30-40ms | 业务逻辑、状态变更 |
-| RPC_RESPONSE | 同上 | ~30-40ms | RPC 响应 |
-| STREAM_RELIABLE (WebSocket) | WebSocket → SW → PostMessage → DOM → Callback | ~3-4ms | 文件传输、可靠流 |
-| STREAM_RELIABLE (WebRTC) | WebRTC DC → DOM → Callback | ~1-2ms | 低延迟流 |
-| MEDIA_RTP | WebRTC Track → DOM → Callback | < 1ms | 音视频实时流 |
+| RPC_REQUEST | WebSocket → SW → Mailbox → Actor | 需当前 benchmark 确认 | 业务逻辑、状态变更 |
+| RPC_RESPONSE | 同上 | 需当前 benchmark 确认 | RPC 响应 |
+| STREAM_RELIABLE (WebSocket) | WebSocket → SW fast path / handlers | 需实测 | 文件传输、可靠流 |
+| STREAM_RELIABLE (WebRTC) | WebRTC DC → DOM FastPathForwarder → SW handlers | 需实测 | 低延迟流 |
+| MEDIA_RTP | WebRTC Track → DOM/当前媒体路径 | 需实测 | 音视频实时流 |
 
 ## 设计亮点
 

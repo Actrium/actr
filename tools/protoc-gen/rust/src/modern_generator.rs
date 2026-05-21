@@ -5,7 +5,7 @@
 //! - Workload trait: business workload, associates Dispatcher type
 //! - {Service}Handler trait: user-implemented business logic interface
 
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use anyhow::{Result, anyhow};
 use heck::ToSnakeCase;
 use prost_types::MethodDescriptorProto;
@@ -25,9 +25,9 @@ pub struct RemoteServiceInfo {
 /// Code generator role
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GeneratorRole {
-    /// Generate server-side code for exports
+    /// Generate export-side code for exports
     ServerSide,
-    /// Generate client-side code for dependencies
+    /// Generate dependency-side code for dependencies
     ClientSide,
 }
 
@@ -55,7 +55,7 @@ impl ModernGenerator {
         }
     }
 
-    /// Generate server-side code with remote forwarding
+    /// Generate export-side code with remote forwarding
     pub fn generate_with_remotes(
         &self,
         methods: &[MethodDescriptorProto],
@@ -67,7 +67,7 @@ impl ModernGenerator {
         }
     }
 
-    /// Generate server-side code (exports)
+    /// Generate export-side code (exports)
     fn generate_server_code(
         &self,
         methods: &[MethodDescriptorProto],
@@ -91,7 +91,7 @@ impl ModernGenerator {
         Ok(sections.join("\n\n"))
     }
 
-    /// Generate client-side code (dependencies)
+    /// Generate dependency-side code (dependencies)
     fn generate_client_code(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let sections = [
             // 1. Generate imports
@@ -134,7 +134,7 @@ use super::{proto_module}::*;
     ///
     /// Generates RpcRequest trait impls for each RPC method's Request type,
     /// associating it with the corresponding Response type. This enables
-    /// type-safe API calls on the client side:
+    /// type-safe API calls on the calling side:
     ///
     /// ```rust,ignore
     /// let response: EchoResponse = ctx.call(&target, request).await?;
@@ -212,6 +212,15 @@ impl RpcRequest for {input_type} {{
             });
         }
 
+        // Per Option U γ-unified §4.5 / Phase 6b the handler trait keeps
+        // its minimal bound (`MaybeSendSync + 'static`) so user structs do
+        // not need an extra `Sized` clause; the `Workload` association is
+        // exposed through a separate `ServiceHandler` impl emitted for the
+        // generated `{Service}Workload` wrapper (see
+        // `generate_workload_blanket_impl`). Rust's orphan rules forbid a
+        // blanket `impl ServiceHandler for T where T: {Service}Handler` on
+        // the handler type itself — the wrapper shape avoids that by
+        // putting the impl on a local type.
         let handler_trait_without_attr = quote! {
             /// Service handler trait - users must implement this trait
             ///
@@ -228,13 +237,22 @@ impl RpcRequest for {input_type} {{
             ///     }
             /// }
             /// ```
-            pub trait #handler_trait_ident: Send + Sync + 'static {
+            pub trait #handler_trait_ident: actr_framework::MaybeSendSync + 'static {
                 #(#method_sigs)*
             }
         };
 
-        // Manually add #[async_trait] attribute to avoid quote! inserting spaces
-        Ok(format!("#[async_trait]\n{handler_trait_without_attr}"))
+        // Manually add #[async_trait] attribute to avoid quote! inserting spaces.
+        //
+        // `?Send` on wasm32 so the generated impl matches `Context`'s
+        // per-target auto-trait contract (γ-unified §3.1). Native keeps the
+        // default Send-future form so handler futures compose with tokio
+        // multi-threaded executors.
+        Ok(format!(
+            "#[cfg_attr(not(target_arch = \"wasm32\"), async_trait)]\n\
+             #[cfg_attr(target_arch = \"wasm32\", async_trait(?Send))]\n\
+             {handler_trait_without_attr}"
+        ))
     }
 
     /// Generate Dispatcher and Workload wrapper types
@@ -388,8 +406,16 @@ impl RpcRequest for {input_type} {{
             }
         };
 
-        // Manually add #[async_trait] attribute to avoid quote! inserting spaces
-        let router_impl = format!("#[async_trait]\n{router_impl_without_attr}");
+        // Manually add #[async_trait] attribute to avoid quote! inserting spaces.
+        // Same `?Send` on wasm32 rationale as the Handler trait above — the
+        // `MessageDispatcher` trait is declared `async_trait(?Send)` on
+        // wasm32 in `core/framework/src/dispatcher.rs`, so the impl has to
+        // match or the async future's auto-trait bound will disagree.
+        let router_impl = format!(
+            "#[cfg_attr(not(target_arch = \"wasm32\"), async_trait)]\n\
+             #[cfg_attr(target_arch = \"wasm32\", async_trait(?Send))]\n\
+             {router_impl_without_attr}"
+        );
 
         Ok(format!("{workload_struct}\n{router_struct}\n{router_impl}"))
     }
@@ -403,6 +429,17 @@ impl RpcRequest for {input_type} {{
         let handler_trait = format!("{}Handler", self.service_name);
         let handler_trait_ident = format_ident!("{}", handler_trait);
 
+        // `ServiceHandler` impl goes on the generated `{Service}Workload`
+        // wrapper (a local type) rather than on the user's handler type
+        // — the latter would need a blanket `impl<T> ForeignTrait for T
+        // where T: LocalTrait` that Rust's orphan rule rejects. Putting
+        // the impl on the local wrapper keeps coherence happy and still
+        // lets downstream code recover the concrete `Workload` type by
+        // projecting `<{Service}Workload<T> as ServiceHandler>::Workload`.
+        //
+        // `type Workload = Self` because the wrapper *is* the workload
+        // (it already carries `impl Workload for {Service}Workload<T>`);
+        // the association is purely reflexive.
         Ok(quote! {
             /// Workload trait implementation
             ///
@@ -410,6 +447,18 @@ impl RpcRequest for {input_type} {{
             /// and dispatched by ActorSystem
             impl<T: #handler_trait_ident> Workload for #workload_ident<T> {
                 type Dispatcher = #router_ident<T>;
+            }
+
+            /// `ServiceHandler` witness: expose the workload type via
+            /// associated-type projection.
+            ///
+            /// Emitted on the generated wrapper (a local type) rather than
+            /// on the user's handler to stay within Rust's orphan rules.
+            /// `entry!` and other meta-macros consult
+            /// `<{Service}Workload<T> as actr_framework::ServiceHandler>::Workload`
+            /// to recover the concrete workload type.
+            impl<T: #handler_trait_ident> actr_framework::ServiceHandler for #workload_ident<T> {
+                type Workload = Self;
             }
         }
         .to_string())
@@ -459,7 +508,7 @@ impl RpcRequest for {input_type} {{
 
             /// Context extension trait
             ///
-            /// Adds convenient client methods to Context
+            /// Adds convenient caller methods to Context
             pub trait ContextExt {
                 fn #extension_method_ident(&self) -> #client_ident<'_, Self> where Self: Sized + Context;
             }
@@ -473,7 +522,7 @@ impl RpcRequest for {input_type} {{
         .to_string())
     }
 
-    /// Generate server-side usage docs
+    /// Generate export-side usage docs
     fn generate_usage_docs(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let handler_trait = format!("{}Handler", self.service_name);
         let first_method = methods.first();
@@ -533,7 +582,7 @@ Users only need to implement {handler_trait}; the framework auto-provides routin
         ))
     }
 
-    /// Generate client-side usage docs
+    /// Generate dependency-side usage docs
     fn generate_client_usage_docs(&self, methods: &[MethodDescriptorProto]) -> Result<String> {
         let service_name_snake = self.service_name.to_snake_case();
         let method_name_snake = methods
@@ -543,7 +592,7 @@ Users only need to implement {handler_trait}; the framework auto-provides routin
 
         Ok(format!(
             r#"/*
-## Client Usage Example
+## Dependency Usage Example
 
 ```rust
 use actr_framework::Context;

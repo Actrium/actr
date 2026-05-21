@@ -161,8 +161,8 @@
 
 | # | 测试项 | 操作步骤 | 预期结果 | 通过 |
 |---|--------|---------|---------|------|
-| 11-1 | WASM 文件缺失 | 删除/重命名 `actr_runtime_sw_bg.wasm` | SW 日志显示 `wasm_init_failed`，页面显示连接失败错误 | ☐ |
-| 11-2 | JS glue 文件缺失 | 删除/重命名 `actr_runtime_sw.js` | SW 日志显示 fetch 失败，页面显示错误 | ☐ |
+| 11-1 | WASM 文件缺失 | 删除/重命名 `actr_sw_host_bg.wasm` | SW 日志显示 `wasm_init_failed`，页面显示连接失败错误 | ☐ |
+| 11-2 | JS glue 文件缺失 | 删除/重命名 `actr_sw_host.js` | SW 日志显示 fetch 失败，页面显示错误 | ☐ |
 | 11-3 | WASM 文件损坏 | 替换 wasm 文件为空文件 | `wasm_bindgen()` 失败，页面显示初始化错误 | ☐ |
 | 11-4 | WASM MIME type 不正确 | 服务器返回 wasm 文件但 MIME 不是 `application/wasm` | 部分浏览器可能拒绝编译，检查 `fetch` 使用 `no-store` 缓存策略 | ☐ |
 | 11-5 | 慢网络加载 WASM | Slow 3G 下加载 | WASM 文件较大时加载时间长，页面应显示"连接中..."状态 | ☐ |

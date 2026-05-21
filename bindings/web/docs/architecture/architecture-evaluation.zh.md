@@ -4,6 +4,8 @@
 **评估版本**: v0.1 (MVP 阶段)
 **评估者**: 架构审查
 
+> **历史评估说明**：本文主体保留 2026-01-08 的架构审查快照，不作为当前源码事实入口。当前浏览器路径已经切到 Option U / wasm-bindgen：`.actr` + `.wbg` sibling 由 `actor.sw.js` 加载；Fast Path 当前为 DOM `FastPathForwarder` → SW `handle_dom_fast_path` → runtime / stream handlers，不是 DOM 本地 Registry callback。下方性能数字如未标明实测，均应视为历史估算。
+
 ---
 
 ## 🎯 总体评价：8.3/10 (2026-01-08 更新)
@@ -28,7 +30,7 @@ SW (Service Worker)：总控制器
 
 DOM：WebRTC 专用层
 ├─ PeerConnection 管理
-├─ Fast Path 低延迟处理
+├─ Fast Path 固定转发
 └─ 媒体流原生支持
 ```
 
@@ -47,14 +49,14 @@ WireHandle::WebRTC(port) // Transferable，零拷贝
 
 | 路径 | 延迟 | 特性 | 适用场景 |
 |------|------|------|----------|
-| State Path | ~30-40ms | 持久化、可靠 | RPC、状态变更 |
-| Fast Path | ~1-3ms | 低延迟、高吞吐 | 流数据、媒体 |
+| State Path | 历史估算为数十毫秒，当前需 benchmark 验证 | 持久化、可靠 | RPC、状态变更 |
+| Fast Path | 需实测 | DOM 转发到 SW handlers，绕过 Mailbox/Scheduler | 流数据、媒体 |
 
 **评价**：职责明确，**技术选型正确**。
 
 ### 4. **与 actr 的一致性** (9/10)
 
-- 95%+ API 一致性
+- 以高 API 一致性为目标，具体覆盖率需以当前实现审计为准
 - 相同的概念模型
 - 可共享业务逻辑
 
@@ -64,18 +66,18 @@ WireHandle::WebRTC(port) // Transferable，零拷贝
 
 **实际架构**（代码验证）：
 ```rust
-// ✅ 只在 DOM 侧有 Registry
-DOM: StreamHandlerRegistry + MediaFrameHandlerRegistry
+// 当前实现：DOM 侧只做固定转发
+DOM: FastPathForwarder + ServiceWorkerBridge
   ↑
-  └─ SW 只转发，不持有状态
+  └─ SW handle_dom_fast_path → stream handlers
 
-// ✅ 单一数据源，无同步问题
+// ✅ 处理状态集中在 SW runtime
 ```
 
 **优点**：
-- ✅ **职责清晰**：SW 转发，DOM 处理
-- ✅ **无状态同步**：单一数据源，避免一致性问题
-- ✅ **性能最优**：Fast Path 在 DOM 本地直接回调
+- ✅ **职责清晰**：DOM 转发，SW 处理
+- ✅ **状态集中**：处理状态在 SW runtime / handlers
+- ✅ **性能可验证**：绕过 Mailbox/Scheduler，具体收益需要当前 benchmark
 - ✅ **代码简洁**：使用 DashMap，线程安全且高效
 - ✅ **消息协议合理**：简单长度前缀格式，框架内部使用，足够高效
 
@@ -101,11 +103,11 @@ DOM: StreamHandlerRegistry + MediaFrameHandlerRegistry
 从文档数据（**理论估算，需实测验证**）：
 
 ```
-RPC via WebSocket:  ~30-40ms  (SW 本地)
+RPC via WebSocket:  历史估算为数十毫秒，当前需 benchmark 验证 (SW 本地)
 RPC via WebRTC:     ~35ms     (需要 DOM 转发，无明显优势)
 
 Stream via WebSocket: ~3-4ms  (SW → DOM 转发)
-Stream via WebRTC:    ~1-2ms  (DOM 本地) ✅ 明显优势
+Stream via WebRTC:    需实测  (DOM 转发到 SW handlers)
 ```
 
 **问题**：
@@ -152,7 +154,7 @@ ctx.send_via(dest, msg, Transport::WebSocket);
 
 ### 3. **State Path 延迟瓶颈** (6/10)
 
-30-40ms 延迟的来源：
+历史设计估算中的 State Path 延迟来源（当前需 benchmark 验证）：
 ```
 WebSocket 接收 (~1ms)
   ↓
@@ -168,13 +170,13 @@ Actor 处理 (~5ms)
 ```
 
 **问题**：
-- 对于**不需要持久化**的 RPC，30-40ms 是浪费
+- 对于**不需要持久化**的 RPC，持久化路径的额外开销需要通过当前 benchmark 评估
 - 许多场景下，重启后丢失消息是可接受的
 
 **建议**：
 ```rust
 enum MailboxMode {
-    Persistent,    // 当前实现，~30-40ms
+    Persistent,    // Current implementation; latency requires benchmark validation
     InMemory,      // 新增，~5-10ms
     Hybrid,        // 重要消息持久化，普通消息内存
 }
@@ -182,9 +184,9 @@ enum MailboxMode {
 
 ### 4. **页面刷新恢复机制缺失** (5/10)
 
-**✅ 澄清**：Registry 设计是正确的
-- Registry **只在 DOM 侧**，不存在双注册表
-- SW 只负责转发，无需同步状态
+**✅ 当前澄清**：Fast Path 处理状态集中在 SW
+- DOM 侧负责 WebRTC 和 `fast_path_data` 固定转发
+- SW `handle_dom_fast_path` 负责进入 runtime fast path / stream handlers
 - 设计清晰，职责分离
 
 **⚠️ 实际问题**：DOM 重启时的恢复机制未实现
@@ -192,7 +194,7 @@ enum MailboxMode {
 ```
 场景：用户刷新页面
 1. DOM 重启，WebRTC 连接断开
-2. DOM 侧的 Registry 清空
+2. DOM 侧 MessagePort / WebRTC 状态失效
 3. SW 仍认为连接存在（WirePool 中保留）
 4. 发送消息时发现 MessagePort 失效
 5. 系统无法自动恢复，用户代码无感知 ❌
@@ -203,7 +205,7 @@ enum MailboxMode {
 - ✅ **自动降级**：失效后自动回退到 WebSocket
 - ✅ **重新建立 WebRTC**：DOM 重启后重新创建 PeerConnection
 - ✅ **生命周期钩子**：通知用户代码 DOM 重启事件
-- ✅ **Registry 重建**：用户重新注册 Stream/Media 处理器
+- ⚠️ **Handler/连接重建**：覆盖 DOM 重启后的 stream/media handler 和 WebRTC 连接恢复
 
 **当前状态**：⚠️ 部分实现 (40%)
 - ✅ **SwLifecycleManager** 已实现 (597 行)：包含 DOM 重启检测、生命周期钩子
@@ -344,9 +346,9 @@ impl Actor {
 ### 目标 4：保持性能 (Fast Path <15ms) ⚠️
 
 **实际数据**：
-- WebRTC Fast Path: ~1-2ms ✅ **超越目标**
-- WebSocket Fast Path: ~3-4ms ✅ **达标**
-- State Path: ~30-40ms ⚠️ **超出预期**（但这是设计选择）
+- WebRTC Fast Path: 当前需实测
+- WebSocket Fast Path: 当前需实测
+- State Path: 历史估算为数十毫秒，当前需 benchmark 验证 ⚠️ **可能超出预期**（但这是设计选择）
 
 ---
 
@@ -408,7 +410,7 @@ ActorSystem::full_mode();
 
 #### 6. **完成工程实现**
 
-- 当前整体完成度：78%
+- 当前完成度：本文不再给出百分比；以源码、CI 和 e2e 覆盖为准
 - ~~优先完成 WebRTC 连接逻辑（30% → 80%）~~ ✅ 已完成 (70%+)
 - ~~实现 RouteTable（0% → 70%）~~ ✅ 已完成 (~300 行)
 - 剩余重点：Fast Path 集成、MediaTrack、清理遗留代码
@@ -475,20 +477,20 @@ ActorSystem::full_mode();
 - [消息流全览图](./message-flow-visual.zh.md)
 - [SW WebRTC 设计](./sw-webrtc-design.zh.md)
 - **代码实现**：
-  - `crates/runtime-dom/src/fastpath.rs` - Registry 实现
-  - `crates/runtime-sw/src/inbound/dispatcher.rs` - SW 转发逻辑
-  - `crates/runtime-dom/src/inbound/dispatcher.rs` - DOM 派发逻辑
+  - `packages/actr-dom/src/fast-path-forwarder.ts` - DOM fast_path_data 转发
+  - `crates/sw-host/src/runtime.rs` - `handle_dom_fast_path` / `handle_fast_path`
+  - `packages/web-sdk/src/actor.sw.js` - Option U WBG guest bridge
 
 **评估方法**：
 - 基于现有文档分析
-- **代码实现验证**（确认 Registry 架构）
+- **代码实现验证**（确认当前转发与 SW handler 架构）
 - 参考代码实现完成度
 - 对比 actr (Native) 架构
 - 结合 Web 平台特性评估
 
 ### B. Fast Path 内部消息协议
 
-**实现**（`crates/runtime-dom/src/inbound/dispatcher.rs`）：
+**实现**（当前路径：DOM `FastPathForwarder` → SW `handle_dom_fast_path`）：
 
 ```rust
 // 格式：[stream_id_len(4 bytes) | stream_id(N bytes) | chunk_data(M bytes)]

@@ -1,8 +1,9 @@
 //! Project initialization command
 
+use crate::commands::SupportedLanguage;
 use crate::commands::initialize::{self, InitContext};
-use crate::commands::{Command, SupportedLanguage};
 use crate::config::resolver::resolve_effective_cli_config;
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use crate::error::{ActrCliError, Result};
 use crate::template::{DEFAULT_MANUFACTURER, EchoRole, ProjectTemplateName};
 use async_trait::async_trait;
@@ -45,7 +46,26 @@ pub struct InitCommand {
 
 #[async_trait]
 impl Command for InitCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> anyhow::Result<CommandResult> {
+        self.execute_inner().await.map_err(anyhow::Error::from)?;
+        Ok(CommandResult::Success("Project initialized".to_string()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "init"
+    }
+
+    fn description(&self) -> &str {
+        "Initialize a new Actor project"
+    }
+}
+
+impl InitCommand {
+    async fn execute_inner(&self) -> Result<()> {
         // Resolve effective CLI config to use as defaults
         let cli_config = resolve_effective_cli_config().unwrap_or_default();
 

@@ -1,5 +1,4 @@
 use actr_config::ManifestConfig;
-use actr_protocol::ActrTypeExt;
 use anyhow::Result;
 use async_trait::async_trait;
 

@@ -1,3 +1,2 @@
-pub mod db;
-pub use actr_platform_traits::KvOp;
+mod db;
 pub use db::ActorStore;

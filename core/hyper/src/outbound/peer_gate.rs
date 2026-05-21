@@ -6,8 +6,7 @@
 //! - Maintain pending_requests (Request/Response matching)
 //! - Block new requests to peers being cleaned up (closing_peers)
 
-use crate::transport::connection_event::{ConnectionEvent, ConnectionState};
-use crate::transport::{Dest, PayloadTypeExt, PeerTransport};
+use crate::transport::{ConnectionEvent, ConnectionState, Dest, PayloadTypeExt, PeerTransport};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, Classify, PayloadType, RpcEnvelope};
@@ -242,6 +241,7 @@ impl PeerGate {
     /// # Returns
     /// - `Ok(true)`: Successfully woke up waiting request
     /// - `Ok(false)`: No corresponding pending request found
+    #[cfg(feature = "test-utils")]
     pub async fn handle_response(
         &self,
         request_id: &str,
@@ -261,6 +261,7 @@ impl PeerGate {
     }
 
     /// Get pending requests count (for monitoring)
+    #[cfg(feature = "test-utils")]
     pub async fn pending_count(&self) -> usize {
         self.pending_requests.read().await.len()
     }
@@ -409,12 +410,14 @@ impl PeerGate {
     }
 
     /// Send request and wait for response (bidirectional communication)
+    #[cfg(feature = "test-utils")]
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         self.send_request_with_type(target, PayloadType::RpcReliable, envelope)
             .await
     }
 
     /// Send one-way message (no response expected)
+    #[cfg(feature = "test-utils")]
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         self.send_message_with_type(target, PayloadType::RpcReliable, envelope)
             .await

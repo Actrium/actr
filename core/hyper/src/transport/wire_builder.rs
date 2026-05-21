@@ -2,7 +2,7 @@
 //!
 //! Provides default Wire component builder implementation, supporting:
 //! - WebRTC P2P connections (through WebRtcCoordinator)
-//! - WebSocket C/S connections
+//! - WebSocket transport connections
 //! - CancellationToken for terminating in-progress connection creation
 
 use super::Dest; // Re-exported from actr-framework

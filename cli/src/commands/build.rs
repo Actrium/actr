@@ -1,10 +1,11 @@
 //! `actr build` - build source artifacts and package signed `.actr` workloads.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command as StdCommand, Stdio};
 
 use actr_config::{BuildArtifact, BuildConfig, BuildProfile, ConfigParser, ManifestConfig};
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use cargo_metadata::MetadataCommand;
 use clap::Args;
 
@@ -13,6 +14,7 @@ use crate::commands::package_build::{
     PackageBuildInput, build_package, default_dist_output_path, print_build_summary,
     resolve_key_path,
 };
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use crate::project_language::DetectedProjectLanguage;
 
 #[derive(Args, Debug)]
@@ -23,12 +25,12 @@ use crate::project_language::DetectedProjectLanguage;
 pub struct BuildCommand {
     /// manifest.toml path
     #[arg(
-        long,
-        short = 'f',
+        long = "manifest-path",
+        short = 'm',
         default_value = "manifest.toml",
         value_name = "FILE"
     )]
-    pub file: PathBuf,
+    pub manifest_path: PathBuf,
 
     /// Override target triple
     #[arg(long, short = 't', value_name = "TARGET")]
@@ -47,8 +49,28 @@ pub struct BuildCommand {
     pub no_compile: bool,
 }
 
-pub async fn execute(args: BuildCommand) -> Result<()> {
-    let manifest_path = resolve_manifest_path(&args.file)?;
+#[async_trait]
+impl Command for BuildCommand {
+    async fn execute(&self, _ctx: &CommandContext) -> Result<CommandResult> {
+        execute_build(self).await?;
+        Ok(CommandResult::Success(String::new()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "build"
+    }
+
+    fn description(&self) -> &str {
+        "Build source artifact and package a signed .actr workload"
+    }
+}
+
+async fn execute_build(args: &BuildCommand) -> Result<()> {
+    let manifest_path = resolve_manifest_path(&args.manifest_path)?;
     let config = ConfigParser::from_manifest_file(&manifest_path).with_context(|| {
         format!(
             "Failed to load manifest configuration from {}",
@@ -62,7 +84,7 @@ pub async fn execute(args: BuildCommand) -> Result<()> {
         )
     })?;
 
-    let effective_target = resolve_effective_target(&args, &config)?;
+    let effective_target = resolve_effective_target(args, &config)?;
     let output_path = resolve_output_path(&manifest_path, &effective_target, args.output.as_ref())?;
 
     if !args.no_compile {
@@ -136,7 +158,7 @@ fn resolve_manifest_path(path: &Path) -> Result<PathBuf> {
 
     if !candidate.exists() {
         anyhow::bail!(
-            "manifest.toml not found: {}\nBy default `actr build` looks for ./manifest.toml. Use `-f, --file` to specify a different path.",
+            "manifest.toml not found: {}\nBy default `actr build` looks for ./manifest.toml. Use `-m, --manifest-path` to specify a different path.",
             candidate.display()
         );
     }
@@ -195,6 +217,8 @@ fn compile_project(
         );
     }
 
+    let cargo_target_dir = resolve_cargo_target_dir(&build.manifest_path)?;
+
     ensure_target_installed(effective_target)?;
     run_cargo_build(build, effective_target)?;
     run_post_build_steps(
@@ -202,6 +226,7 @@ fn compile_project(
         output_path,
         binary_path,
         effective_target,
+        &cargo_target_dir,
         build,
     )?;
 
@@ -221,7 +246,7 @@ fn ensure_target_installed(target: &str) -> Result<()> {
         return Ok(());
     }
 
-    let status = Command::new("rustup")
+    let status = StdCommand::new("rustup")
         .arg("target")
         .arg("add")
         .arg(target)
@@ -239,7 +264,7 @@ fn ensure_target_installed(target: &str) -> Result<()> {
 }
 
 fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
-    let mut command = Command::new("cargo");
+    let mut command = StdCommand::new("cargo");
     command.arg("build");
     command.arg("--manifest-path").arg(&build.manifest_path);
 
@@ -268,6 +293,17 @@ fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
         command.arg("--no-default-features");
     }
 
+    // Component Model guests (`wasm32-wasip2`) must be linked by
+    // `wasm-component-ld` so the emitted artifact is a Component rather
+    // than a core module. Rust 1.91 ships `wasm-component-ld 0.5.17`,
+    // which rejects the async custom sections wit-bindgen 0.57 emits.
+    // Use Cargo's target-specific linker variable so host build scripts
+    // still link with the native linker.
+    if effective_target == "wasm32-wasip2" {
+        let linker = resolve_wasm_component_linker()?;
+        command.env("CARGO_TARGET_WASM32_WASIP2_LINKER", linker);
+    }
+
     let status = command
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -287,11 +323,151 @@ fn run_cargo_build(build: &BuildConfig, effective_target: &str) -> Result<()> {
     Ok(())
 }
 
+/// Locate a `wasm-component-ld` binary suitable for linking Component
+/// Model guests and validate its version.
+///
+/// Lookup order:
+/// 1. `WASM_COMPONENT_LD` environment variable (explicit override)
+/// 2. `wasm-component-ld` on `PATH`
+/// 3. `~/.cargo/bin/wasm-component-ld`
+///
+/// Returns an actionable `cargo install` hint when none are found.
+fn resolve_wasm_component_linker() -> Result<PathBuf> {
+    const REQUIRED: &str = "0.5.22";
+
+    let candidate = if let Some(p) = std::env::var_os("WASM_COMPONENT_LD") {
+        PathBuf::from(p)
+    } else if let Some(p) = find_on_path("wasm-component-ld") {
+        p
+    } else if let Some(home) = std::env::var_os("HOME") {
+        let p = PathBuf::from(home).join(".cargo/bin/wasm-component-ld");
+        if p.is_file() {
+            p
+        } else {
+            anyhow::bail!(
+                "`wasm-component-ld` (>= {REQUIRED}) is required to link wasm32-wasip2 Components.\n\
+                 Install it with: cargo install wasm-component-ld --version {REQUIRED}\n\
+                 Or set WASM_COMPONENT_LD to an existing binary."
+            );
+        }
+    } else {
+        anyhow::bail!(
+            "`wasm-component-ld` (>= {REQUIRED}) is required to link wasm32-wasip2 Components.\n\
+             Install it with: cargo install wasm-component-ld --version {REQUIRED}\n\
+             Or set WASM_COMPONENT_LD to an existing binary."
+        );
+    };
+
+    if !candidate.is_file() {
+        anyhow::bail!(
+            "wasm-component-ld path `{}` is not a file.\n\
+             Install it with: cargo install wasm-component-ld --version {REQUIRED}",
+            candidate.display()
+        );
+    }
+
+    validate_wasm_component_linker_version(&candidate, REQUIRED)?;
+
+    Ok(candidate)
+}
+
+fn validate_wasm_component_linker_version(linker: &Path, required: &str) -> Result<()> {
+    let output = StdCommand::new(linker)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| {
+            format!(
+                "Failed to run `{}` --version for wasm-component-ld validation",
+                linker.display()
+            )
+        })?;
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "`{}` --version failed with status {}.\n\
+             Install it with: cargo install wasm-component-ld --version {required}",
+            linker.display(),
+            output.status
+        );
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let version_text = if stdout.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+
+    let actual = extract_semver(version_text).with_context(|| {
+        format!(
+            "Failed to parse wasm-component-ld version from `{version_text}`.\n\
+             Install it with: cargo install wasm-component-ld --version {required}"
+        )
+    })?;
+    let required = parse_semver(required).expect("REQUIRED wasm-component-ld version is valid");
+
+    if actual < required {
+        anyhow::bail!(
+            "`{}` reports version {}, but wasm32-wasip2 Component linking requires >= {}.\n\
+             Install it with: cargo install wasm-component-ld --version {}",
+            linker.display(),
+            format_semver(actual),
+            format_semver(required),
+            format_semver(required)
+        );
+    }
+
+    Ok(())
+}
+
+fn extract_semver(text: &str) -> Option<(u64, u64, u64)> {
+    text.split_whitespace().find_map(parse_semver)
+}
+
+fn parse_semver(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch_text = parts.next()?;
+    let patch_len = patch_text
+        .bytes()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if patch_len == 0 {
+        return None;
+    }
+    let patch = patch_text[..patch_len].parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn format_semver(version: (u64, u64, u64)) -> String {
+    format!("{}.{}.{}", version.0, version.1, version.2)
+}
+
+/// Walk `PATH` looking for `binary`. Returns the first hit that exists
+/// as a file. Mirrors the shell `which` semantics closely enough for
+/// the CLI's purposes — no PATHEXT handling because `wasm-component-ld`
+/// is the only target today and Windows builds are not on the Phase 1
+/// migration path.
+fn find_on_path(binary: &str) -> Option<PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn run_post_build_steps(
     manifest_path: &Path,
     output_path: &Path,
     binary_path: &Path,
     effective_target: &str,
+    cargo_target_dir: &Path,
     build: &BuildConfig,
 ) -> Result<()> {
     if build.post_build.is_empty() {
@@ -304,7 +480,7 @@ fn run_post_build_steps(
         .to_path_buf();
 
     for command_text in &build.post_build {
-        let output = Command::new("sh")
+        let output = StdCommand::new("sh")
             .arg("-c")
             .arg(command_text)
             .current_dir(&manifest_dir)
@@ -314,6 +490,8 @@ fn run_post_build_steps(
             .env("ACTR_BUILD_TARGET", effective_target)
             .env("ACTR_BUILD_PROFILE", build.profile.as_str())
             .env("ACTR_BUILD_OUTPUT_PATH", output_path)
+            .env("ACTR_BUILD_CARGO_TARGET_DIR", cargo_target_dir)
+            .env("CARGO_TARGET_DIR", cargo_target_dir)
             .output()
             .with_context(|| format!("Failed to run post_build command: {command_text}"))?;
 
@@ -373,8 +551,23 @@ fn resolve_cargo_bin_name(manifest_path: &Path) -> Result<String> {
     Ok(package.name.clone())
 }
 
+fn resolve_cargo_target_dir(manifest_path: &Path) -> Result<PathBuf> {
+    let metadata = MetadataCommand::new()
+        .manifest_path(manifest_path)
+        .no_deps()
+        .exec()
+        .with_context(|| {
+            format!(
+                "Failed to read Cargo metadata from {}",
+                manifest_path.display()
+            )
+        })?;
+
+    Ok(metadata.target_directory.into_std_path_buf())
+}
+
 fn resolve_host_target() -> Result<String> {
-    let output = Command::new("rustc")
+    let output = StdCommand::new("rustc")
         .arg("-vV")
         .output()
         .context("Failed to run `rustc -vV` to resolve host target")?;

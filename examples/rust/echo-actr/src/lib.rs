@@ -33,7 +33,8 @@ use generated::{EchoServiceHandler, EchoServiceWorkload};
 /// [`EchoServiceHandler`] to provide the actual RPC logic.
 pub struct EchoService;
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl EchoServiceHandler for EchoService {
     async fn echo<C: Context>(&self, req: EchoRequest, _ctx: &C) -> ActorResult<EchoResponse> {
         Ok(EchoResponse {

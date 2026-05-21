@@ -124,19 +124,7 @@ async fn test_real_disconnect_stream_send_recovers_and_stale_close_is_ignored() 
     harness.simulate_reconnect();
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    let reused_transport = source_peer
-        .transport_manager
-        .get_or_create_transport(&dest)
-        .await
-        .expect("expected transport lookup after reconnect");
-    let ready_snapshot = reused_transport.watch_ready().borrow().clone();
-    tracing::info!(
-        "♻️ Transport lookup for peer {} after reconnect returned ready snapshot {:?}",
-        TARGET_SERIAL,
-        ready_snapshot
-    );
-
-    tracing::info!("📤 Step 4: Probe StreamReliable on the reused transport");
+    tracing::info!("📤 Step 4: Probe StreamReliable through the public gate path");
     let stream = DataStream {
         stream_id: "stale-transport-stream".to_string(),
         sequence: 1,

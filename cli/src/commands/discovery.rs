@@ -718,7 +718,7 @@ impl DiscoveryCommand {
             }
         } else {
             println!("✅ Dependency added to configuration file");
-            println!("💡 Tip: Run 'actr install' to install dependencies");
+            println!("💡 Tip: Run 'actr deps install' to install dependencies");
             Ok(CommandResult::Success(
                 "Dependency added to configuration".to_string(),
             ))

@@ -8,6 +8,7 @@
 - **入口**：分布在 SW 和 DOM
 - **出口控制**：在 SW（Gate）
 - **出口执行**：分布在 SW 和 DOM
+- **当前 Fast Path**：DOM 接收 WebRTC 后通过 `FastPathForwarder` 转发 `fast_path_data`，SW `handle_dom_fast_path` 再派发 runtime / stream handlers
 
 ## 📥 消息入口（INBOUND）
 
@@ -43,7 +44,7 @@ SW: 消息类型判断
    ├─ RPC_* → InboundDispatcher → Mailbox
    └─ STREAM_* → PostMessage转发 → DOM
 
-位置: crates/runtime-sw/src/transport/lane.rs:20-25
+位置: crates/sw-host/src/transport/lane.rs:20-25
 ```
 
 **特点**：
@@ -60,19 +61,19 @@ SW: 消息类型判断
 DOM: RtcDataChannel (web_sys::RtcDataChannel)
    │ onmessage event
    ↓
-DOM: WebRtcDataChannelReceiver
+DOM: WebRtcCoordinator / DataChannel handler
    │
    ↓
-DOM: 消息类型判断
-   ├─ RPC_* → PostMessage转发 → SW Mailbox
-   └─ STREAM_* → DomSystem.dispatch_stream() → 本地callback
+DOM: 消息类型判断 / 固定转发
+   ├─ RPC_* → PostMessage 转发 → SW Mailbox
+   └─ STREAM_* → FastPathForwarder → fast_path_data → SW handle_dom_fast_path
 
-位置: crates/runtime-dom/src/inbound/webrtc_receiver.rs:1
+位置: packages/actr-dom/src/webrtc-coordinator.ts + packages/actr-dom/src/fast-path-forwarder.ts
 ```
 
 **特点**：
 - ❌ SW 无法访问 WebRTC API
-- ✅ Stream 消息本地处理（最快）
+- ✅ Stream 消息绕过 Mailbox/Scheduler，经 SW Fast Path handlers 处理
 - ⚠️ RPC 消息需要转发到 SW
 
 ### 入口 3️⃣：WebRTC MediaTrack → DOM
@@ -84,19 +85,19 @@ DOM: 消息类型判断
 DOM: PeerConnection.ontrack
    │ MediaStreamTrack
    ↓
-DOM: DomSystem.dispatch_media_frame()
+DOM: WebRTC coordinator / media handling
    │
    ↓
-DOM: MediaFrameHandlerRegistry.dispatch()
+DOM/SW: 按当前媒体路径转发或处理
    │
    ↓
 用户 callback(rtp_packet)
 
-位置: crates/runtime-dom/src/transport/webrtc_mediatrack.rs:1
+位置: packages/actr-dom/src/webrtc-coordinator.ts（媒体完整路径需随实现继续校准）
 ```
 
 **特点**：
-- 🚀 最快路径（< 1ms）
+- 🚀 媒体路径需用当前实现实测
 - 🎯 零拷贝
 - ❌ 只能在 DOM 接收
 
@@ -107,7 +108,7 @@ SW ←──→ DOM
    PostMessage
 
 用途：
-- SW → DOM: 转发 STREAM_* 消息
+- DOM → SW: 转发 `fast_path_data`
 - DOM → SW: 转发 RPC_* 消息
 - DOM → SW: WebRTC 控制信令
 ```
@@ -144,9 +145,9 @@ SW: Gate.send_request()
 ```
 
 **位置**：
-- `crates/runtime-sw/src/outbound/mod.rs:1` - Gate
-- `crates/runtime-sw/src/transport/outproc_transport_manager.rs:1`
-- `crates/runtime-sw/src/transport/dest_transport.rs:1`
+- `crates/sw-host/src/outbound/mod.rs:1` - Gate
+- `crates/sw-host/src/transport/peer_transport.rs:1`
+- `crates/sw-host/src/transport/dest_transport.rs:1`
 
 ### 出口执行层：分布在 SW 和 DOM
 
@@ -170,7 +171,7 @@ SW: DataLane::WebSocket.send()
    ↓
 远程节点
 
-位置: crates/runtime-sw/src/transport/lane.rs:45-60
+位置: crates/sw-host/src/transport/lane.rs:45-60
 ```
 
 **特点**：
@@ -213,7 +214,7 @@ DOM: RtcDataChannel.send()
 - ✅ SW 通过 MessagePort 间接使用 WebRTC
 - ✅ MessagePort 是 Transferable（零拷贝）
 - ⚠️ 需要 DOM 先创建 PeerConnection
-- ⚠️ 核心逻辑待实现（TODO）
+- ✅ 核心桥接已实现；剩余重点是恢复闭环和更多场景验证
 
 **关键设计**：
 1. DOM 创建 PeerConnection + DataChannel
@@ -226,9 +227,9 @@ DOM: RtcDataChannel.send()
 
 | 传输方式 | 入口位置 | 出口位置 | RPC 延迟 | Stream 延迟 |
 |---------|---------|---------|----------|------------|
-| **WebSocket** | SW | SW | 最佳 (~30ms) | 较慢 (~4ms，需转发DOM) |
-| **WebRTC DC** | DOM | DOM | 较慢 (~35ms，需转发SW) | 最佳 (~1-2ms) |
-| **WebRTC Track** | DOM | DOM | N/A | 最快 (< 1ms) |
+| **WebSocket** | SW | SW | State Path | 需实测 |
+| **WebRTC DC** | DOM → SW fast path | SW → DOM DC | 需转发 SW | 需实测 |
+| **WebRTC Track** | DOM | DOM/当前媒体路径 | N/A | 需实测 |
 
 ## 🎯 最佳实践
 
@@ -249,16 +250,16 @@ DOM: RtcDataChannel.send()
 
 ### 场景 2：Stream 消息
 
-**最佳方案**：WebRTC DataChannel（DOM → DOM）
+**当前方案**：WebRTC DataChannel（DOM 收包，SW fast path 处理）
 
 ```
-发送: DOM → WebRTC DC → 远程
-接收: 远程 → WebRTC DC → DOM Fast Path
+发送: SW MessagePort → DOM WebRTC DC → 远程
+接收: 远程 → WebRTC DC → DOM FastPathForwarder → SW handlers
 ```
 
 **优势**：
-- ✅ 本地处理，延迟最低
-- ✅ 无需跨进程转发
+- ✅ 绕过 Mailbox/Scheduler
+- ✅ 使用 Transferable 转发数据
 
 **避免**：WebSocket（需要 SW → DOM 转发）
 
@@ -268,7 +269,7 @@ DOM: RtcDataChannel.send()
 
 ```
 发送: DOM → MediaStreamTrack → 远程
-接收: 远程 → MediaStreamTrack → DOM Fast Path
+接收: 远程 → MediaStreamTrack → DOM/当前媒体路径
 ```
 
 **优势**：
@@ -286,7 +287,7 @@ DOM: RtcDataChannel.send()
 
 2. **WebRTC**：只有 DOM 可访问
    - Service Worker **无法创建** PeerConnection
-   - 最适合 Stream/Media（数据平面）
+   - 最适合承载 Stream/Media 的浏览器 API，数据处理仍按当前 SW fast path 分发
 
 ### 为什么出口控制在 SW？
 
@@ -334,8 +335,8 @@ DOM: RtcDataChannel.send()
 
 4. **最优路径**
    - RPC：WebSocket（SW → SW）
-   - Stream：WebRTC DC（SW → MessagePort → DOM → DC）
-   - Media：WebRTC Track（DOM → DOM）
+   - Stream：WebRTC DC（SW → MessagePort → DOM → DC；入站 DOM → SW handlers）
+   - Media：WebRTC Track（DOM/当前媒体路径）
 
 5. **跨进程开销**
    - MessagePort Transferable：零拷贝 ✅

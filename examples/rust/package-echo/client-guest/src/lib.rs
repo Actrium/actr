@@ -56,7 +56,8 @@ unsafe impl Sync for ClientGuestWorkload {}
 
 pub struct ClientGuestDispatcher;
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl MessageDispatcher for ClientGuestDispatcher {
     type Workload = ClientGuestWorkload;
 

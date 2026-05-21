@@ -3,9 +3,9 @@
 //! Shared CLI entry point for `actr gen`. Language-specific logic lives in
 //! `src/commands/codegen/{rust,swift,typescript,...}.rs`.
 
-use crate::commands::Command;
 use crate::commands::SupportedLanguage;
 use crate::commands::codegen::{GenContext, ProtoModel, execute_codegen};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
 use crate::error::{ActrCliError, Result};
 use crate::project_language::DetectedProjectLanguage;
 use crate::utils::to_pascal_case;
@@ -68,7 +68,26 @@ pub struct GenCommand {
 
 #[async_trait]
 impl Command for GenCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> anyhow::Result<CommandResult> {
+        self.execute_inner().await.map_err(anyhow::Error::from)?;
+        Ok(CommandResult::Success("Generation completed".to_string()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "gen"
+    }
+
+    fn description(&self) -> &str {
+        "Generate code from proto files"
+    }
+}
+
+impl GenCommand {
+    async fn execute_inner(&self) -> Result<()> {
         self.check_lock_file()?;
         self.validate_project_language_compatibility()?;
 
@@ -155,7 +174,7 @@ impl GenCommand {
             return Err(ActrCliError::config_error(
                 "manifest.lock.toml not found\n\n\
                 The lock file is required for code generation. Please run:\n\n\
-                \x20\x20\x20\x20actr install\n\n\
+                \x20\x20\x20\x20actr deps install\n\n\
                 This will generate manifest.lock.toml based on your manifest.toml configuration.",
             ));
         }

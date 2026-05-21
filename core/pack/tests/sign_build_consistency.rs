@@ -1,4 +1,4 @@
-//! Integration test: `actr pkg sign` and `actr pkg build` signature consistency.
+//! Integration test: `actr pkg sign` and `actr build` signature consistency.
 //!
 //! Verifies that the offline `sign` workflow produces output that is
 //! byte-level identical and verification-compatible with the `build` workflow.
@@ -58,6 +58,7 @@ fn simulate_sign(
             target: target.to_string(),
             hash: binary_hash,
             size: Some(binary_bytes.len() as u64),
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: Some(key_id),
@@ -77,7 +78,7 @@ fn simulate_sign(
     (manifest_toml, sig_bytes, manifest)
 }
 
-/// Simulate the `actr pkg build` workflow using actr_pack::pack.
+/// Simulate the `actr build` workflow using actr_pack::pack.
 /// Returns the .actr package bytes.
 fn simulate_build(
     manufacturer: &str,
@@ -100,6 +101,7 @@ fn simulate_build(
             target: target.to_string(),
             hash: String::new(), // pack() computes this
             size: None,          // pack() computes this
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: Some(key_id),

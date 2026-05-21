@@ -32,12 +32,43 @@ default = []
 cdylib = []
 # `test-utils`: enable testing helpers such as `DummyContext` (includes UUID v4 generation and is not compatible with `wasm32`)
 test-utils = ["uuid/v4"]
+# `web`: opt-in `WebContext` implementation targeting
+# `wasm32-unknown-unknown` via wasm-bindgen (Option U γ-unified).
+# The feature only pulls in the wasm-bindgen toolchain crates; native
+# builds (`default = []`) never see them.
+web = [
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:serde-wasm-bindgen",
+    "dep:actr-web-abi",
+]
 geoip = [
     "maxminddb",
     "reqwest",
     "flate2",
     "tar",
 ] # GeoIP with auto-download support
+
+# wit-bindgen is only needed when compiling the guest for wasm32-wasip2.
+# The generated code is gated by `#[cfg(target_arch = "wasm32")]`, so hosts
+# never pull it in.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen = "=0.57.1"
+
+# Optional wasm-bindgen stack — only compiled in when `web` feature is
+# enabled (which itself requires a `wasm32-unknown-unknown` target).
+wasm-bindgen = { version = "0.2.108", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+serde-wasm-bindgen = { version = "0.6", optional = true }
+# `actr-web-abi` is the WIT-lowered browser ABI crate that lives in the
+# separately-gated `bindings/web` workspace. `WebContext` routes every
+# outbound call through its `guest::*_with_request_id` wrappers (Option U
+# γ-unified §3.3/§3.4). Kept optional + path-only so native builds never
+# pull it (or its wasm-bindgen tail) and so the cross-workspace path is
+# explicit.
+actr-web-abi = { path = "../../bindings/web/crates/actr-web-abi", optional = true }
 
 [dev-dependencies]
 tokio.workspace = true

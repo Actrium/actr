@@ -2,7 +2,7 @@ use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
 use crate::utils::to_snake_case;
 use actr_config::LockFile;
-use actr_protocol::{ActrType, ActrTypeExt};
+use actr_protocol::ActrType;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -342,7 +342,7 @@ impl KotlinGenerator {
         if !lock_file_path.exists() {
             return Err(ActrCliError::config_error(format!(
                 "manifest.lock.toml not found at {:?}.\n\
-                 Please run 'actr install' first to generate the lock file.",
+                 Please run 'actr deps install' first to generate the lock file.",
                 lock_file_path
             )));
         }
@@ -350,7 +350,7 @@ impl KotlinGenerator {
         let lock_file = LockFile::from_file(&lock_file_path).map_err(|e| {
             ActrCliError::config_error(format!(
                 "Failed to parse manifest.lock.toml: {}\n\
-                 Please run 'actr install' to regenerate the lock file.",
+                 Please run 'actr deps install' to regenerate the lock file.",
                 e
             ))
         })?;
@@ -619,12 +619,12 @@ object RemoteServiceRegistry {
             // Check if this is a remote service call
             RemoteServiceRegistry.isRemoteRoute(routeKey) -> {
                 // Get target actor type and discover it
-                val actorType = RemoteServiceRegistry.getActorType(routeKey)
+                val actrType = RemoteServiceRegistry.getActorType(routeKey)
                     ?: throw IllegalArgumentException("Unknown remote route: $routeKey")
 
                 // Discover remote actor
-                val targetId = discoveredActors[actorType]
-                    ?: throw IllegalStateException("Remote actor not discovered: ${actorType.name}. Call discoverRemoteServices() first.")
+                val targetId = discoveredActors[actrType]
+                    ?: throw IllegalStateException("Remote actor not discovered: ${actrType.name}. Call discoverRemoteServices() first.")
 
                 // Forward to remote actor
                 ctx.callRaw(
@@ -651,10 +651,10 @@ object RemoteServiceRegistry {
      * Call this in your Workload's onStart method to pre-discover remote actors.
      */
     suspend fun discoverRemoteServices(ctx: ContextBridge) {
-        for ((_, actorType) in RemoteServiceRegistry.remoteRoutes) {
-            if (!discoveredActors.containsKey(actorType)) {
-                val actorId = ctx.discover(actorType)
-                discoveredActors[actorType] = actorId
+        for ((_, actrType) in RemoteServiceRegistry.remoteRoutes) {
+            if (!discoveredActors.containsKey(actrType)) {
+                val actorId = ctx.discover(actrType)
+                discoveredActors[actrType] = actorId
             }
         }
     }
@@ -986,8 +986,8 @@ import io.actor_rtc.actr.WorkloadBridge
  * ```kotlin
  * val handler = MyUnifiedHandler()
  * val workload = UnifiedWorkload(handler)
- * val system = createActrSystem(configPath, packagePath)
- * val actrRef = system.start()
+ * val node = createActrNode(configPath, packagePath)
+ * val actrRef = node.start()
  *
  * // Wait for remote service discovery
  * delay(2000)

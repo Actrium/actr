@@ -3,6 +3,14 @@
 **评估日期**: 2025-11-11（最后更新: 2026-02-28）
 **评估范围**: `/mnt/sdb1/actor-rtc/actr/` vs `/mnt/sdb1/actor-rtc/actr-web/`
 
+> **历史快照说明**：本文主体保留早期完成度评估，不作为当前事实入口。当前源码事实以 `bindings/web/packages/web-sdk/src/actor.sw.js`、`bindings/web/packages/actr-dom/src/fast-path-forwarder.ts`、`bindings/web/crates/sw-host/src/runtime.rs`、`cli/src/web_assets.rs`、`cli/src/commands/run.rs` 为准。
+>
+> 当前修正摘要：
+> - 浏览器 guest 路径已经是 Option U / wasm-bindgen 唯一路径；`actor.sw.js` 加载 `.actr` 以及同名 `.wbg/guest.js`、`.wbg/guest_bg.wasm`。
+> - `actr run --web` 已有嵌入式 host assets，并会在 sibling `.wbg` 目录存在时挂载 `/packages/<name>.wbg/*`；不要再把 CLI Web 平台支持描述为“未实现”。
+> - DOM Fast Path 不再是 DOM 本地 registry/callback；当前路径是 DOM `FastPathForwarder` → SW `handle_dom_fast_path` → SW runtime / stream handlers。
+> - 下方百分比矩阵是历史估算，只能用于理解当时判断，不能用于当前 roadmap 或验收。
+
 ---
 
 ## 📊 总体完成度概览
@@ -11,10 +19,10 @@
 |------|--------|------|
 | **核心架构层** | 85% | ✅ 主要实现 |
 | **持久化与调度** | 95% | ✅ 已完成 |
-| **Fast Path 支持** | 50% | ⚠️ 框架完成，集成待完善 |
-| **代码生成支持** | 25% | ❌ 未实现 |
+| **Fast Path 支持** | 历史估算 | ⚠️ 当前以源码和 e2e 覆盖为准 |
+| **代码生成支持** | 历史估算 | ✅ Option U `wit-compile-web` / `actr-web-abi` 已接入 |
 | **示例和测试** | 55% | ⚠️ 部分实现 |
-| **整体完成度** | **78%** | ⚠️ 接近 MVP |
+| **整体完成度** | **历史估算** | ⚠️ 不作为当前状态 |
 
 ---
 
@@ -62,8 +70,8 @@
 **关键差异**:
 - **actr**: Inproc 使用 Tokio mpsc (零拷贝)
 - **actr-web**:
-  - `runtime-sw`: PostMessage (DOM ↔ Service Worker)
-  - `runtime-dom`: 浏览器 API 通信
+  - `sw-host`: PostMessage (DOM ↔ Service Worker)
+  - `dom-bridge`: 浏览器 API 通信
 - **已实现**: RouteTable (路由表, ~300 行, 90%)；缺失: 完整的连接池管理
 
 **代码量对比**:
@@ -102,8 +110,8 @@
 **关键差异**:
 - **actr**: 完整的 Fast Path 回调机制
 - **actr-web**:
-  - `runtime-dom`: Registry 框架存在，回调集成待完善
-  - `runtime-sw`: RPC + Fast Path (handle_fast_path) 均已实现
+  - `dom-bridge`: Registry 框架存在，回调集成待完善
+  - `sw-host`: RPC + Fast Path (handle_fast_path) 均已实现
 
 **已实现核心功能**:
 - ✅ InboundPacketDispatcher 完整分发逻辑
@@ -138,7 +146,7 @@
 
 | 组件 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
-| **ActrSystem** | ✅ 完整 (~300 行) | ⚠️ System (~233 行, MessageHandler + Gate) | **50%** |
+| **Hyper** (pre-runtime) | ✅ 完整 (~300 行) | ⚠️ System (~233 行, MessageHandler + Gate) | **50%** |
 | - new() | ✅ | ✅ | 90% |
 | - attach() | ✅ | ❌ | 0% |
 | **ActrNode** | ✅ 完整 (~400 行) | ❌ 未实现 | **0%** |
@@ -147,7 +155,7 @@
 | **ActrRef 生命周期** | ✅ | ✅ 完整实现 (shutdown/wait_for_shutdown) | **85%** |
 
 **关键差异**:
-- **actr**: 三阶段生命周期 (ActrSystem → ActrNode → Running)
+- **actr**: 三阶段生命周期 (Hyper → ActrNode → ActrRef)
 - **actr-web**:
   - **客户端模式**: 使用 `register_client` 创建独立运行时
   - **Service Worker**: System 作为消息中枢已实现 (MessageHandler + Gate 路由)
@@ -240,7 +248,7 @@
 
 | 特性 | actr | actr-web | 完成度 |
 |------|------|----------|--------|
-| **actr-cli 工具** | ✅ | ❌ 未实现 | **0%** |
+| **actr-cli 工具** | ✅ | ✅ `actr run --web` 嵌入 web assets 并挂载 `.wbg` sibling | 当前已接入 |
 | **protoc 插件** | ✅ `protoc-gen-actrframework` | ❌ | **0%** |
 | **MessageDispatcher 生成** | ✅ | ❌ | 0% |
 | **Service Actor 生成** | ✅ | ❌ | 0% |
@@ -253,7 +261,7 @@
 |------|------|----------|------|
 | **TS 类型生成** | N/A | ⚠️ 手动 protoc-gen-ts | **50%** |
 | **gRPC-Web 客户端** | N/A | ⚠️ 手动 protoc-gen-grpc-web | **60%** |
-| **actr-cli 集成** | N/A | ❌ 未实现 | **0%** |
+| **actr-cli 集成** | N/A | ✅ `run --web` 路由 `.actr` + `.wbg` companion | 当前已接入 |
 | **类型安全保证** | N/A | ⚠️ 部分 (protobuf) | **40%** |
 
 ---
@@ -320,7 +328,7 @@
 | **DataStream** | ✅ | ⚠️ 框架 | **40%** | 🟡 中 |
 | **MediaTrack** | ✅ | ⚠️ 框架 | **35%** | 🟢 低 |
 | **Actor 生命周期** | ✅ | ❌ | **10%** | 🟡 中 |
-| **代码生成** | ✅ actr-cli | ❌ | **0%** | 🟡 中 |
+| **代码生成** | ✅ actr-cli | ✅ Option U WIT codegen + `.wbg` guest bundle | 当前已接入 | 🟡 中 |
 | **Service Worker** | N/A | ⚠️ 架构支持 | **20%** | 🟢 低 |
 
 ### Web 特有功能
@@ -357,10 +365,10 @@
    - MediaFrameRegistry: WebRTC RTP 集成缺失
    - 影响: 流式数据和媒体支持不完整
 
-4. **代码生成工具** (0% → 需要 80%)
-   - actr-cli Web 平台支持
-   - Protobuf → TypeScript 自动生成
-   - 影响: 手动代码生成，开发效率低
+4. **代码生成工具**
+   - 当前已有 `tools/wit-compile-web` → `actr-web-abi`
+   - 当前已有 CLI `.wbg` companion route
+   - 后续重点是补齐更多 guest/API 生成场景，而不是从零实现 Web 平台支持
 
 5. **WebRtcRecoveryManager 完善** (40% → 需要 80%)
    - DOM 侧连接重建循环未关闭
@@ -390,8 +398,8 @@
 │ Inbound (85%)           █████████████████████████░░░       │
 │ Outbound (88%)          ██████████████████████████░░       │
 │ Lifecycle (75%)         █████████████████████░░░░░░░       │
-│ Fast Path (50%)         ██████████████░░░░░░░░░░░░░░       │
-│ Codegen (0%)            ░░░░░░░░░░░░░░░░░░░░░░░░░░░░       │
+│ Fast Path (历史估算)     ██████████████░░░░░░░░░░░░░░       │
+│ Codegen (已有 baseline)  ████████████░░░░░░░░░░░░░░░       │
 │ TypeScript SDK (80%)    ████████████████████████░░░░       │
 │ Examples (55%)          ████████████████░░░░░░░░░░░░       │
 │ Tests (30%)             █████████░░░░░░░░░░░░░░░░░░░       │
@@ -419,7 +427,7 @@
 
 | 额外任务 | 工作量 | 优先级 |
 |----------|--------|--------|
-| actr-cli Web 支持 | 5-7 天 | 🟡 中 |
+| actr-cli Web 支持 | 当前已有 baseline | 🟡 中 |
 | Service Worker 完整集成 | 4-6 天 | 🟡 中 |
 | 完善 Fast Path (MediaTrack) | 4-6 天 | 🟢 低 |
 | DeadLetterQueue 移植 | 2-3 天 | 🟢 低 |
@@ -477,13 +485,13 @@
 
 **⚠️ 部分实现需完善** (40-75%):
 - WebRTC Wire 层 (70%)
-- Fast Path 支持 (50%)
+- Fast Path 支持（历史估算）
 - Service Worker 集成 (75%)
 - Runtime 核心 (75%)
-- ActrSystem 生命周期 (50%)
+- Hyper 生命周期 (50%)
 
 **❌ 关键缺失功能** (0-30%):
-- 代码生成工具 (0%)
+- 代码生成工具（当前已有 Option U baseline）
 - ActrNode 完整启动 (0%)
 - MediaTrack 完整集成 (25%)
 - 完整测试 (30%)
@@ -513,12 +521,12 @@
 | 维度 | 完成度 | 评级 |
 |------|--------|------|
 | **架构设计** | 90% | ⭐⭐⭐⭐⭐ |
-| **核心实现** | 78% | ⭐⭐⭐⭐☆ |
+| **核心实现** | 历史估算 | ⭐⭐⭐⭐☆ |
 | **功能完整性** | 65% | ⭐⭐⭐☆☆ |
 | **生产就绪** | 50% | ⭐⭐⭐☆☆ |
 | **开发体验** | 75% | ⭐⭐⭐⭐☆ |
 
-**总体完成度**: **78%** (相对 actr 的功能对等性)
+**总体完成度**: 历史估算（相对 actr 的功能对等性）
 
 **适用场景**:
 - ✅ **概念验证**: 可展示架构和设计

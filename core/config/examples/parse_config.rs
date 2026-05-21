@@ -1,7 +1,6 @@
 //! Example showing how to parse a manifest.toml workload file
 
 use actr_config::ConfigParser;
-use actr_protocol::ActrTypeExt;
 use std::env;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

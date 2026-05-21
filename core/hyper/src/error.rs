@@ -46,4 +46,4 @@ pub enum HyperError {
     Other(#[from] anyhow::Error),
 }
 
-pub type HyperResult<T> = Result<T, HyperError>;
+pub(crate) type HyperResult<T> = Result<T, HyperError>;

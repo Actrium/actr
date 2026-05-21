@@ -4,11 +4,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use actr_hyper::{
-    Hyper, HyperConfig, HyperError, PackageExecutionBackend, TrustMode, WorkloadPackage,
-};
+use actr_hyper::test_support::inspect_workload_package;
+use actr_hyper::{BinaryKind, Hyper, HyperConfig, StaticTrust, WorkloadPackage};
 use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 fn fixture_so_path() -> PathBuf {
@@ -66,6 +66,7 @@ fn build_dynclib_package(binary: &[u8], signing_key: &SigningKey) -> Vec<u8> {
             target: current_native_target(),
             hash: String::new(),
             size: None,
+            kind: None,
         },
         signature_algorithm: "ed25519".to_string(),
         signing_key_id: None,
@@ -87,9 +88,10 @@ fn build_dynclib_package(binary: &[u8], signing_key: &SigningKey) -> Vec<u8> {
 }
 
 fn dev_config_with_key(dir: &TempDir, verifying_key: &ed25519_dalek::VerifyingKey) -> HyperConfig {
-    HyperConfig::new(dir.path()).with_trust_mode(TrustMode::Development {
-        self_signed_pubkey: verifying_key.to_bytes().to_vec(),
-    })
+    HyperConfig::new(
+        dir.path(),
+        Arc::new(StaticTrust::new(verifying_key.to_bytes()).unwrap()),
+    )
 }
 
 fn cache_path(data_dir: &Path, binary_hash: &[u8; 32]) -> PathBuf {
@@ -106,36 +108,15 @@ async fn dynclib_cache_is_created_on_first_load() {
     let package = WorkloadPackage::new(build_dynclib_package(&dylib_bytes, &signing_key));
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
 
-    let first = hyper.load_workload_package(&package).await.unwrap();
-    assert_eq!(first.backend, PackageExecutionBackend::Cdylib);
-    let cache_file = cache_path(dir.path(), &first.manifest.binary_hash);
+    let first = inspect_workload_package(&hyper, &package).await.unwrap();
+    assert_eq!(first.binary_kind, BinaryKind::DynClib);
+    let binary_hash = first.manifest().binary.hash_bytes().unwrap();
+    let cache_file = cache_path(dir.path(), &binary_hash);
     assert_eq!(fs::read(&cache_file).unwrap(), dylib_bytes);
-}
-
-#[tokio::test]
-async fn dynclib_second_load_is_rejected_for_same_hyper() {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let verifying_key = signing_key.verifying_key();
-    let dylib_bytes = fs::read(fixture_so_path()).unwrap();
-    let package = WorkloadPackage::new(build_dynclib_package(&dylib_bytes, &signing_key));
-
-    let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
-        .await
-        .unwrap();
-
-    let first = hyper.load_workload_package(&package).await.unwrap();
-    assert_eq!(first.backend, PackageExecutionBackend::Cdylib);
-
-    let second = hyper.load_workload_package(&package).await;
-    assert!(
-        matches!(second, Err(HyperError::Runtime(ref msg)) if msg.contains("already loaded a workload")),
-        "second load should be rejected by Hyper one-shot workload contract"
-    );
 }
 
 #[tokio::test]
@@ -146,15 +127,16 @@ async fn dynclib_cache_rebuilds_after_corruption() {
     let package = WorkloadPackage::new(build_dynclib_package(&dylib_bytes, &signing_key));
 
     let dir = TempDir::new().unwrap();
-    let hyper = Hyper::init(dev_config_with_key(&dir, &verifying_key))
+    let hyper = Hyper::new(dev_config_with_key(&dir, &verifying_key))
         .await
         .unwrap();
-    let manifest = hyper.verify_package(&package).await.unwrap();
-    let cache_file = cache_path(dir.path(), &manifest.binary_hash);
+    let verified = hyper.verify_package(&package).await.unwrap();
+    let binary_hash = verified.manifest.binary.hash_bytes().unwrap();
+    let cache_file = cache_path(dir.path(), &binary_hash);
     fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
     fs::write(&cache_file, b"corrupted dynclib bytes").unwrap();
 
-    let loaded = hyper.load_workload_package(&package).await.unwrap();
-    assert_eq!(loaded.backend, PackageExecutionBackend::Cdylib);
+    let loaded = inspect_workload_package(&hyper, &package).await.unwrap();
+    assert_eq!(loaded.binary_kind, BinaryKind::DynClib);
     assert_eq!(fs::read(&cache_file).unwrap(), dylib_bytes);
 }

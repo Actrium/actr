@@ -33,10 +33,9 @@ impl ConfigParser {
         raw: RuntimeRawConfig,
         actr_path: impl AsRef<Path>,
         package: PackageInfo,
-        tags: Vec<String>,
     ) -> Result<RuntimeConfig> {
         match raw.edition {
-            1 => v1::ParserV1::new(actr_path).parse_runtime(raw, package, tags),
+            1 => v1::ParserV1::new(actr_path).parse_runtime(raw, package),
             edition => Err(ConfigError::UnsupportedEdition(edition)),
         }
     }
@@ -45,9 +44,8 @@ impl ConfigParser {
     pub fn from_runtime_file(
         path: impl AsRef<Path>,
         package: PackageInfo,
-        tags: Vec<String>,
     ) -> Result<RuntimeConfig> {
         let raw = RuntimeRawConfig::from_file(path.as_ref())?;
-        Self::parse_runtime(raw, path, package, tags)
+        Self::parse_runtime(raw, path, package)
     }
 }

@@ -1,4 +1,10 @@
 //! Resource management
+//!
+//! Reserved scaffolding for future quota enforcement. The module is
+//! compiled but no runtime consumer currently invokes it; items are
+//! crate-private and tagged `allow(dead_code)`.
+
+#![allow(dead_code)]
 
 use actr_protocol::{ActorResult, ActrError};
 use serde::{Deserialize, Serialize};

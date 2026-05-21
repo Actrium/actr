@@ -1,6 +1,7 @@
-use crate::commands::Command;
 use crate::commands::runtime_state::{RuntimeStateStore, absolutize_from_cwd, resolve_hyper_dir};
-use crate::error::{ActrCliError, Result};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use crate::error::ActrCliError;
+use anyhow::Result;
 use async_trait::async_trait;
 use clap::Args;
 use std::io::Write;
@@ -29,7 +30,7 @@ pub struct LogsCommand {
 
 #[async_trait]
 impl Command for LogsCommand {
-    async fn execute(&self) -> Result<()> {
+    async fn execute(&self, _ctx: &CommandContext) -> Result<CommandResult> {
         let hyper_dir = resolve_hyper_dir(self.config.as_deref(), self.hyper_dir.as_deref())?;
         let store = RuntimeStateStore::new(hyper_dir);
         let entry = store.resolve_wid_prefix(&self.wid).await?;
@@ -39,14 +40,28 @@ impl Command for LogsCommand {
             return Err(ActrCliError::command_error(format!(
                 "Log file not found: {}",
                 log_path.display()
-            )));
+            ))
+            .into());
         }
 
-        stream_log_file(&log_path, self.follow).await
+        stream_log_file(&log_path, self.follow).await?;
+        Ok(CommandResult::Success(String::new()))
+    }
+
+    fn required_components(&self) -> Vec<ComponentType> {
+        vec![]
+    }
+
+    fn name(&self) -> &str {
+        "logs"
+    }
+
+    fn description(&self) -> &str {
+        "Show logs for a detached runtime instance"
     }
 }
 
-fn absolutize_log_path(path: &Path) -> Result<PathBuf> {
+fn absolutize_log_path(path: &Path) -> crate::error::Result<PathBuf> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
     } else {
@@ -54,7 +69,7 @@ fn absolutize_log_path(path: &Path) -> Result<PathBuf> {
     }
 }
 
-async fn stream_log_file(path: &Path, follow: bool) -> Result<()> {
+async fn stream_log_file(path: &Path, follow: bool) -> crate::error::Result<()> {
     let mut file = tokio::fs::File::open(path).await.map_err(|error| {
         ActrCliError::command_error(format!(
             "Failed to open log file {}: {}",
@@ -87,26 +102,28 @@ async fn stream_log_file(path: &Path, follow: bool) -> Result<()> {
                 ))
             })?;
 
-        let mut buf = [0u8; 8192];
-        let read = file.read(&mut buf).await.map_err(|error| {
-            ActrCliError::command_error(format!(
-                "Failed to read log file {}: {}",
-                path.display(),
-                error
-            ))
-        })?;
-
-        if read == 0 {
-            if !follow {
-                return Ok(());
+        let mut buffer = [0u8; 8192];
+        loop {
+            match file.read(&mut buffer).await {
+                Ok(0) => break,
+                Ok(n) => {
+                    stdout.write_all(&buffer[..n]).map_err(ActrCliError::Io)?;
+                    stdout.flush().map_err(ActrCliError::Io)?;
+                    offset += n as u64;
+                }
+                Err(error) => {
+                    return Err(ActrCliError::command_error(format!(
+                        "Failed to read log file {}: {}",
+                        path.display(),
+                        error
+                    )));
+                }
             }
-
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            continue;
         }
 
-        offset += read as u64;
-        stdout.write_all(&buf[..read])?;
-        stdout.flush()?;
+        if !follow {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }

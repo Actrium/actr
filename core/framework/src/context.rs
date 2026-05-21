@@ -4,36 +4,67 @@ use actr_protocol::{ActorResult, ActrId, ActrType, DataStream, PayloadType};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
-/// Context - Actor execution context interface
+// ── MaybeSendSync marker ────────────────────────────────────────────────
+//
+// Auto-trait-style marker that is `Send + Sync` on native targets and empty
+// on `wasm32`. Per Option U γ-unified §3.1 the user-facing `Context` bound
+// is `Clone + 'static`, but native runtime layers (tokio multi-thread,
+// `WorkloadHookObserver`) must produce `Send` futures; pinning `Send + Sync`
+// behind this marker lets the framework trait carry a single `?Send`
+// definition while silently re-asserting the native auto traits through a
+// cfg-gated blanket impl.
+
+/// Auto-trait-style marker — `Send + Sync` on native, empty on `wasm32`.
 ///
-/// Defines the complete interface for Actor interaction with the system, including:
-/// - Context data access (self_id, request_id, etc.)
-/// - Communication capabilities (call, tell)
+/// Used as a supertrait on `Context`, `Workload`, and `MessageDispatcher`
+/// so `async_trait` default bodies compile in both modes without adding
+/// explicit `Send` / `Sync` bounds to the user-visible trait definition.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendSync: Send + Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync + ?Sized> MaybeSendSync for T {}
+
+/// Auto-trait-style marker — `Send + Sync` on native, empty on `wasm32`.
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendSync {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSendSync for T {}
+
+/// Actor execution context interface.
 ///
-/// # Design Principles
+/// Defines the complete interface for an actor to interact with the runtime:
+/// - Context data access (`self_id`, `request_id`, …)
+/// - Communication primitives (`call`, `tell`)
 ///
-/// - **Interface only**: Framework does not provide implementation, runtime implements
-/// - **Generic parameter**: User code uses `<C: Context>` instead of `&dyn Context`
-/// - **Zero virtual calls**: Static dispatch via generic monomorphization
+/// # Design principles
 ///
-/// # Implementation Requirements
+/// - **Interface only**: the framework provides no implementation; the runtime
+///   does.
+/// - **Generic parameter**: user code accepts `<C: Context>` rather than
+///   `&dyn Context`, so dispatch monomorphises and avoids vtables.
 ///
-/// Runtime must implement this trait and use enum dispatch or other
-/// zero-overhead mechanisms internally (avoiding virtual function calls).
+/// # cfg dispatch
+///
+/// The trait is `?Send` on `wasm32` (browser single-threaded, futures can
+/// legitimately not be `Send`) and `#[async_trait]` (Send mode) on native
+/// targets so tokio-multi-thread spawners downstream keep working. The
+/// `MaybeSendSync` supertrait adds `Send + Sync` on native only — per
+/// Option U γ-unified §3.1 the user-visible bound stays `Clone + 'static`
+/// while `Workload` default method bodies (which need `Send` futures under
+/// the native `async_trait`) compile without any extra constraint on the
+/// generic `C`.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// async fn my_handler<C: Context>(ctx: &C) {
-///     // Access data
 ///     let id = ctx.self_id();
-///
-///     // Type-safe call
 ///     let response = ctx.call(&target, request).await?;
 /// }
 /// ```
-#[async_trait]
-pub trait Context: Send + Sync + Clone + 'static {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+pub trait Context: Clone + MaybeSendSync + 'static {
     // ========== Data Access Methods ==========
 
     /// Get the current Actor's ID
@@ -298,6 +329,47 @@ pub trait Context: Send + Sync + Clone + 'static {
     /// and triggers SDP renegotiation so repeated start/stop cycles do not keep
     /// stale tracks alive on the connection.
     async fn remove_media_track(&self, target: &crate::Dest, track_id: &str) -> ActorResult<()>;
+
+    // ========== Observation ==========
+
+    /// Emit a log record from the workload side, routed through whichever
+    /// observability pipeline the runtime installs.
+    ///
+    /// The default implementation forwards to `tracing` using the configured
+    /// `target = "actr_framework::workload"`. Runtimes that embed workloads
+    /// in environments without `tracing` (e.g. `wasm32-unknown-unknown`
+    /// running in a browser Service Worker) override this to surface records
+    /// through whatever host hook is available (`console.log`, host import, ...).
+    fn log(&self, level: LogLevel, msg: &str) {
+        match level {
+            LogLevel::Trace => tracing::trace!(target: "actr_framework::workload", "{msg}"),
+            LogLevel::Debug => tracing::debug!(target: "actr_framework::workload", "{msg}"),
+            LogLevel::Info => tracing::info!(target: "actr_framework::workload", "{msg}"),
+            LogLevel::Warn => tracing::warn!(target: "actr_framework::workload", "{msg}"),
+            LogLevel::Error => tracing::error!(target: "actr_framework::workload", "{msg}"),
+        }
+    }
+}
+
+/// Severity level for [`Context::log`].
+///
+/// Mirrors the five standard levels exposed by `tracing` / `log` so runtimes
+/// can map to whatever sink is available on the target (native `tracing`
+/// subscriber, browser `console.*`, host-import log channel, ...).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    /// Very fine-grained diagnostic information, typically disabled in
+    /// production.
+    Trace,
+    /// Fine-grained information useful while debugging.
+    Debug,
+    /// Informational messages that mark normal operation.
+    Info,
+    /// Conditions that are unexpected but do not prevent continued
+    /// operation.
+    Warn,
+    /// Failures that likely require operator attention.
+    Error,
 }
 
 /// Media sample data from WebRTC native track

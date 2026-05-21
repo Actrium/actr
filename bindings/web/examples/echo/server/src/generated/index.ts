@@ -11,7 +11,7 @@ export {
     buildActrConfig,
     buildRuntimeConfig,
     runtimeConfig,
-    actorType,
+    actrType,
     system,
     acl,
 } from './actr-config';

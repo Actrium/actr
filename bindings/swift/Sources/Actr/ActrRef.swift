@@ -9,18 +9,17 @@ import Foundation
 import SwiftProtobuf
 
 // Re-export core wrapper types used by the high-level API
-public typealias ActrSystemWrapper = ActrBindings.ActrSystemWrapper
 public typealias ActrRefWrapper = ActrBindings.ActrRefWrapper
 public typealias NetworkEventHandleWrapper = ActrBindings.NetworkEventHandleWrapper
 
-// Observability is automatically initialized when creating ActrSystem from a config file.
+// Observability is automatically initialized when creating ActrNode from a config file.
 
 // Re-export error types
 public typealias ActrError = ActrBindings.ActrError
 
 // Re-export protocol types used by the bridge
 public typealias ContextBridge = ActrBindings.ContextBridge
-public typealias WorkloadBridge = ActrBindings.WorkloadBridge
+public typealias WorkloadLifecycleBridge = ActrBindings.WorkloadLifecycleBridge
 public typealias RpcEnvelopeBridge = ActrBindings.RpcEnvelopeBridge
 
 // Re-export data types

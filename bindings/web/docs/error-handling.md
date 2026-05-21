@@ -1,13 +1,6 @@
 # Error Handling
 
-Actor-RTC Web should treat errors as structured runtime signals rather than ad hoc console noise.
-
-## Principles
-
-- Preserve actionable context close to the failure site.
-- Distinguish transport failures, protocol failures, and application failures.
-- Surface browser constraints clearly, especially around workers, WebRTC, and IndexedDB.
-- Avoid retry loops that hide root causes or diverge from the rest of the repository.
+Actor-RTC Web treats errors as structured runtime signals rather than ad hoc console noise. This guidance applies to the current Option U / wasm-bindgen browser path.
 
 ## Main Error Categories
 
@@ -15,53 +8,70 @@ Actor-RTC Web should treat errors as structured runtime signals rather than ad h
 
 Examples:
 
-- Invalid signaling URL
-- Missing realm or actor identifiers
-- Unsupported browser feature flags
+- invalid signaling or AIS URL
+- missing realm, package, or actor identifiers
+- incorrect Service Worker path
+- missing `.actr` package or `.wbg/` sibling bundle
 
 These should fail fast during initialization whenever possible.
+
+### Guest Loading Errors
+
+Examples:
+
+- `actor.sw.js` cannot load `guest.js`
+- `guest_bg.wasm` is missing or served with the wrong URL
+- `register_guest_workload` is not exported or throws
+- signed package metadata does not match the served guest bundle
+
+These are build or packaging errors. They should include the package URL, `.wbg/` URL, and original JavaScript or wasm-bindgen error.
 
 ### Connectivity Errors
 
 Examples:
 
 - WebSocket signaling failures
+- AIS registration or discovery failures
 - ICE negotiation failures
 - WebRTC channel closure or setup timeouts
 
-These should include enough transport context to explain whether the failure happened during signaling, candidate exchange, or data-path setup.
+These should include enough transport context to show whether the failure happened during discovery, signaling, candidate exchange, or data-path setup.
 
-### Persistence Errors
+### Browser Platform Errors
 
 Examples:
 
-- IndexedDB open failures
-- Store creation failures
-- Quota or transaction failures
+- Service Worker registration failure
+- MessagePort failure between DOM and Service Worker
+- IndexedDB open, quota, or transaction failure
+- browser security restrictions around origin, HTTPS, or storage mode
 
-These should not be silently swallowed because they affect durability and ordering guarantees.
+These should point to the browser feature or policy that blocked the runtime.
 
 ### Protocol Errors
 
 Examples:
 
-- Malformed payloads
-- Route-key mismatches
-- Decode and encode failures
+- malformed payloads
+- route-key mismatches
+- request/response correlation failures
+- decode and encode failures
 
 These should be treated as correctness bugs or wire-compatibility problems, not transient transport issues.
 
 ## Reporting Guidance
 
-- Use structured error types in Rust where possible.
+- Use structured Rust error types where possible.
 - Use clear English log messages for browser-visible errors.
-- Include enough identifiers to correlate the failing actor, route, or peer.
+- Include actor, route, request, peer, client, or package identifiers when available.
 - Prefer one high-signal error report over cascades of duplicate warnings.
+- Keep DOM-side logs and Service Worker logs correlated through request or client identifiers.
 
 ## Recovery Guidance
 
 - Retry only when the owning layer has a clear policy for doing so.
 - Reconnect flows should be explicit and observable.
+- Package or `.wbg/` layout errors should not be retried silently.
 - Persistent storage corruption or schema mismatch should trigger an intentional reset path rather than undefined behavior.
 
 ## Documentation Expectations

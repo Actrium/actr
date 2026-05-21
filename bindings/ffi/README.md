@@ -6,6 +6,21 @@ This is the Rust FFI layer for the actr project, providing bindings for the Acto
 
 This crate provides the native implementation that gets compiled to a dynamic library (`libactr.dylib` on macOS, `libactr.so` on Linux, etc.) and exposes a C-compatible API that UniFFI uses to generate type-safe bindings.
 
+## Relationship to the Rust Node Typestate
+
+The native host exposes a typestate chain
+`Node<Init> → Node<Attached> → Node<Registered> → ActrRef`
+(`from_config_file` → `attach_*` → `register` → `start`), letting
+system-level Rust code observe and customize each transition. The UniFFI
+surface in this crate deliberately collapses that pipeline into a single
+`ActrNode.newFromPackageFile(...).start()` shape so downstream Swift /
+Kotlin SDKs only see the two states app developers actually care about.
+The `Node<S>` typestate is Rust-layer power-user territory; bindings
+should not try to re-export it. When deeper control is required
+(custom `TrustProvider`, pre-built `Hyper`, attaching a generic Rust
+`Workload`, etc.), use the `actr_hyper::{Hyper, Node}` API directly
+from native Rust.
+
 ## Architecture
 
 - **Core Types**: `types.rs` - Core ACTR types (ActrId, ActrType, ActrConfig, etc.)

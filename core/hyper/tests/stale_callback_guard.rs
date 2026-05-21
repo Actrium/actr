@@ -188,7 +188,7 @@ async fn test_session_id_filtering_ignores_stale_events() {
     // Inject a STALE ConnectionClosed event with session_id=0 (definitely not current)
     // This simulates what happens when an old connection's close event fires late
     tracing::info!("🧪 Injecting stale ConnectionClosed event (session_id=0)...");
-    let stale_event = actr_hyper::transport::connection_event::ConnectionEvent::ConnectionClosed {
+    let stale_event = actr_hyper::transport::ConnectionEvent::ConnectionClosed {
         peer_id: make_actor_id(200),
         session_id: 0, // Stale session_id — won't match current PeerState.session_id
     };
