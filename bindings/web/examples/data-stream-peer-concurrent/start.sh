@@ -1,16 +1,19 @@
 #!/bin/bash
 # Actor-RTC Web Data-Stream Peer Concurrent Example Launcher
-# Based on the working echo example start.sh
+# Uses the in-repo mock-actrix so the example does not depend on an external
+# actrix checkout, sqlite schema, or pre-seeded manufacturer state.
 
 set -e  # Exit on error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ACTR_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
-ACTRIX_DIR="$(cd "$ACTR_ROOT/../actrix" && pwd)"
 
 CLIENT_DIR="$SCRIPT_DIR/client"
 SERVER_DIR="$SCRIPT_DIR/server"
+MOCK_PORT="${1:-8081}"
+ACTRIX_HTTP_URL="http://127.0.0.1:$MOCK_PORT"
+ACTRIX_SIGNALING_URL="ws://127.0.0.1:$MOCK_PORT/signaling/ws"
 
 # Color codes
 RED='\033[0;31m'
@@ -52,10 +55,10 @@ cleanup() {
         rm -f "$SCRIPT_DIR/.server.pid"
     fi
 
-    if [ -f "$SCRIPT_DIR/.actrix.pid" ]; then
-        PID=$(cat "$SCRIPT_DIR/.actrix.pid")
+    if [ -f "$SCRIPT_DIR/.mock-actrix.pid" ]; then
+        PID=$(cat "$SCRIPT_DIR/.mock-actrix.pid")
         kill -0 $PID 2>/dev/null && kill $PID 2>/dev/null || true
-        rm -f "$SCRIPT_DIR/.actrix.pid"
+        rm -f "$SCRIPT_DIR/.mock-actrix.pid"
     fi
 
     wait 2>/dev/null || true
@@ -86,134 +89,74 @@ check_dependencies() {
     echo ""
 }
 
-# ── Actrix (signaling server) ──
+# ── mock-actrix (signaling + AIS server) ──
 
-build_or_find_actrix() {
-    log_step "Checking actrix (signaling server)..."
-    ACTRIX_CMD=""
+build_or_find_mock_actrix() {
+    log_step "Checking mock-actrix (signaling + AIS server)..."
+    MOCK_ACTRIX_CMD=""
 
-    if [ -f "$ACTRIX_DIR/target/release/actrix" ]; then
-        ACTRIX_CMD="$ACTRIX_DIR/target/release/actrix"
-        log_success "Using local actrix (release): $ACTRIX_CMD"
+    if [ -x "$ACTR_ROOT/target/debug/mock-actrix" ]; then
+        MOCK_ACTRIX_CMD="$ACTR_ROOT/target/debug/mock-actrix"
+        log_success "Using local mock-actrix: $MOCK_ACTRIX_CMD"
         return 0
     fi
-    if [ -f "$ACTRIX_DIR/target/debug/actrix" ]; then
-        ACTRIX_CMD="$ACTRIX_DIR/target/debug/actrix"
-        log_success "Using local actrix (debug): $ACTRIX_CMD"
-        return 0
-    fi
-    if command_exists actrix; then
-        ACTRIX_CMD="actrix"
-        log_warning "Using installed actrix: $(which actrix)"
+    if [ -x "$ACTR_ROOT/target/release/mock-actrix" ]; then
+        MOCK_ACTRIX_CMD="$ACTR_ROOT/target/release/mock-actrix"
+        log_success "Using local mock-actrix: $MOCK_ACTRIX_CMD"
         return 0
     fi
 
-    log_error "actrix not found"
-    log_info "Build: cd $ACTRIX_DIR && cargo build"
+    log_info "Building mock-actrix..."
+    (cd "$ACTR_ROOT" && cargo build -p actr-mock-actrix --bin mock-actrix 2>&1 | tail -5)
+    if [ -x "$ACTR_ROOT/target/debug/mock-actrix" ]; then
+        MOCK_ACTRIX_CMD="$ACTR_ROOT/target/debug/mock-actrix"
+        log_success "Built mock-actrix: $MOCK_ACTRIX_CMD"
+        return 0
+    fi
+
+    log_error "mock-actrix not found"
     return 1
 }
 
-start_actrix() {
-    log_step "Starting actrix (signaling server)..."
+start_mock_actrix() {
+    log_step "Starting mock-actrix on port $MOCK_PORT..."
 
-    if ! build_or_find_actrix; then
+    if ! build_or_find_mock_actrix; then
         exit 1
     fi
 
-    cat > "$SCRIPT_DIR/actrix-dev.toml" <<'EOF'
-# Auto-generated dev config for data-stream-peer-concurrent example
-enable = 31
-name = "actrix-data-stream-dev"
-env = "dev"
-sqlite_path = "actrix-dev-db"
-location_tag = "local,dev,default"
-actrix_shared_key = "data-stream-dev-secret-key-9876543210abcdef"
-
-[recording]
-service_name = "actrix-data-stream-dev"
-
-[recording.observability]
-filter = "digest"
-
-[recording.audit]
-filter = "mutations"
-
-[recording.security]
-filter = "all"
-
-[recording.operations]
-filter = "lifecycle"
-
-[bind.http]
-domain_name = "localhost"
-advertised_ip = "127.0.0.1"
-ip = "127.0.0.1"
-port = 8081
-
-[bind.ice]
-domain_name = "localhost"
-advertised_ip = "127.0.0.1"
-ip = "127.0.0.1"
-port = 3478
-advertised_port = 3478
-
-[turn]
-advertised_ip = "127.0.0.1"
-advertised_port = 3478
-relay_port_range = "49152-49252"
-realm = "localhost"
-
-[services.signer]
-
-[services.signer.storage]
-backend = "sqlite"
-key_ttl_seconds = 3600
-
-[services.signer.storage.sqlite]
-path = "actrix-dev-ks.db"
-
-[services.ais]
-
-[services.ais.server]
-
-[services.signaling]
-
-[services.signaling.server]
-ws_path = "/signaling"
-
-[control]
-head = "admin_ui"
-
-[control.admin_ui]
-password = "devpassword123"
-session_expiry_secs = 86400
-
-[control.grpc_api]
-node_id = "actrix-data-stream-dev"
-node_name = "actrix-data-stream-dev"
-shared_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-max_clock_skew_secs = 300
-
-[acl]
-enabled = true
-default_policy = "allow"
-EOF
-
-    $ACTRIX_CMD --config "$SCRIPT_DIR/actrix-dev.toml" > "$SCRIPT_DIR/actrix.log" 2>&1 &
-    ACTRIX_PID=$!
-    echo $ACTRIX_PID > "$SCRIPT_DIR/.actrix.pid"
-
-    log_success "Actrix started (PID: $ACTRIX_PID)"
-    log_info "Waiting for actrix to be ready..."
-    sleep 3
-
-    if ! kill -0 $ACTRIX_PID 2>/dev/null; then
-        log_error "Actrix failed to start"
-        cat "$SCRIPT_DIR/actrix.log"
+    if lsof -ti:"$MOCK_PORT" >/dev/null 2>&1; then
+        log_error "Port $MOCK_PORT is already in use. Stop that process before running the example."
         exit 1
     fi
 
-    log_success "Actrix is running at http://localhost:8081"
+    "$MOCK_ACTRIX_CMD" --port "$MOCK_PORT" > "$SCRIPT_DIR/mock-actrix.log" 2>&1 &
+    MOCK_ACTRIX_PID=$!
+    echo $MOCK_ACTRIX_PID > "$SCRIPT_DIR/.mock-actrix.pid"
+
+    log_success "mock-actrix started (PID: $MOCK_ACTRIX_PID)"
+    log_info "Waiting for mock-actrix to be ready..."
+
+    local ready=0
+    for _ in $(seq 1 100); do
+        if ! kill -0 "$MOCK_ACTRIX_PID" 2>/dev/null; then
+            log_error "mock-actrix failed to start"
+            cat "$SCRIPT_DIR/mock-actrix.log"
+            exit 1
+        fi
+        if curl -fsS "$ACTRIX_HTTP_URL/health" >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        sleep 0.1
+    done
+    if [ "$ready" -ne 1 ]; then
+        log_error "mock-actrix did not become healthy"
+        cat "$SCRIPT_DIR/mock-actrix.log"
+        exit 1
+    fi
+
+    log_success "mock-actrix is running at $ACTRIX_HTTP_URL"
     echo ""
 }
 
@@ -221,20 +164,14 @@ EOF
 
 setup_realm() {
     log_step "Setting up realm (AIS identity)..."
-    sleep 2
 
     # realm_id is hardcoded in config.ts files
     local REALM_ID=2368266035
-    local ACTRIX_DB="$SCRIPT_DIR/actrix-dev-db/actrix.db"
-
-    if [ ! -f "$ACTRIX_DB" ]; then
-        log_error "Actrix database not found at $ACTRIX_DB"
-        exit 1
-    fi
 
     log_info "Creating realm $REALM_ID..."
-    sqlite3 "$ACTRIX_DB" \
-        "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'data-stream-realm', 'Active', 1, strftime('%s','now'), '');"
+    curl -fsS -X POST "$ACTRIX_HTTP_URL/admin/realms" \
+        -H 'content-type: application/json' \
+        --data "{\"id\": $REALM_ID, \"name\": \"data-stream-realm\"}" >/dev/null
 
     log_success "Realm setup complete (realm_id=$REALM_ID)"
     echo ""
@@ -282,7 +219,9 @@ install_deps() {
 start_server() {
     log_step "Starting Data-Stream Server..."
     cd "$SERVER_DIR"
-    pnpm dev > "$SCRIPT_DIR/server.log" 2>&1 &
+    VITE_ACTRIX_HTTP_URL="$ACTRIX_HTTP_URL" \
+    VITE_ACTRIX_SIGNALING_URL="$ACTRIX_SIGNALING_URL" \
+    pnpm dev --host 127.0.0.1 --port 4176 > "$SCRIPT_DIR/server.log" 2>&1 &
     SERVER_PID=$!
     echo $SERVER_PID > "$SCRIPT_DIR/.server.pid"
     log_success "Server dev started (PID: $SERVER_PID)"
@@ -307,13 +246,17 @@ start_client() {
     cd "$CLIENT_DIR"
 
     # Client-1 on port 4175
-    pnpm dev --port 4175 > "$SCRIPT_DIR/client.log" 2>&1 &
+    VITE_ACTRIX_HTTP_URL="$ACTRIX_HTTP_URL" \
+    VITE_ACTRIX_SIGNALING_URL="$ACTRIX_SIGNALING_URL" \
+    pnpm dev --host 127.0.0.1 --port 4175 > "$SCRIPT_DIR/client.log" 2>&1 &
     CLIENT_PID=$!
     echo $CLIENT_PID > "$SCRIPT_DIR/.client.pid"
     log_success "Client-1 dev started (PID: $CLIENT_PID, port 4175)"
 
     # Client-2 on port 4177
-    pnpm dev --port 4177 > "$SCRIPT_DIR/client2.log" 2>&1 &
+    VITE_ACTRIX_HTTP_URL="$ACTRIX_HTTP_URL" \
+    VITE_ACTRIX_SIGNALING_URL="$ACTRIX_SIGNALING_URL" \
+    pnpm dev --host 127.0.0.1 --port 4177 > "$SCRIPT_DIR/client2.log" 2>&1 &
     CLIENT2_PID=$!
     echo $CLIENT2_PID > "$SCRIPT_DIR/.client2.pid"
     log_success "Client-2 dev started (PID: $CLIENT2_PID, port 4177)"
@@ -398,7 +341,7 @@ run_test() {
     else
         log_error "Tests FAILED (exit code: $TEST_EXIT_CODE)"
         log_info "Service logs:"
-        echo "  tail -f $SCRIPT_DIR/actrix.log"
+        echo "  tail -f $SCRIPT_DIR/mock-actrix.log"
         echo "  tail -f $SCRIPT_DIR/server.log"
         echo "  tail -f $SCRIPT_DIR/client.log"
         echo "  tail -f $SCRIPT_DIR/client2.log"
@@ -417,7 +360,7 @@ main() {
     echo ""
 
     check_dependencies
-    start_actrix
+    start_mock_actrix
     setup_realm
     build_wasm
     install_deps
@@ -427,7 +370,7 @@ main() {
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║         ✅ Data-Stream Example Running                   ║"
     echo "╠═══════════════════════════════════════════════════════════╣"
-    echo "║  Actrix:     Signaling at http://localhost:8081         ║"
+    printf "║  mock-actrix: %-43s ║\n" "$ACTRIX_HTTP_URL"
     echo "║  Server:     Data-stream at http://localhost:4176       ║"
     echo "║  Client-1:   Web UI at http://localhost:4175            ║"
     echo "║  Client-2:   Web UI at http://localhost:4177            ║"
@@ -443,6 +386,7 @@ main() {
     else
         log_error "❌ Verification failed"
         log_info "Services still running for debugging."
+        log_info "  mock-actrix: $ACTRIX_HTTP_URL"
         log_info "  Server:   http://localhost:4176"
         log_info "  Client-1: http://localhost:4175"
         log_info "  Client-2: http://localhost:4177"

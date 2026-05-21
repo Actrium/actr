@@ -39,7 +39,7 @@ fn server_type() -> &'static ActrType {
     SERVER_TYPE.get_or_init(|| ActrType {
         manufacturer: "acme".to_string(),
         name: "DataStreamPeerConcurrentServer".to_string(),
-        version: "1.0.0".to_string(),
+        version: "0.1.0".to_string(),
     })
 }
 
@@ -97,10 +97,7 @@ async fn start_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<V
         .await
         .map_err(|e| format!("discover failed: {}", e))?;
 
-    log::info!(
-        "[DataStreamClient] discovered server: {}",
-        server_id
-    );
+    log::info!("[DataStreamClient] discovered server: {}", server_id);
 
     let prepare_req = serde_json::to_vec(&PrepareServerStreamRequest {
         stream_id: req.stream_id.clone(),

@@ -3146,9 +3146,11 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             let rt = runtime.lock().await;
             rt.actor_id.clone().unwrap_or_default()
         };
-        // Use Host Gate so call_raw goes through:
-        // HostGate → MessageHandler → Gate::Peer → WebRTC
-        let outgate = Gate::host(Arc::clone(system.host_gate()));
+        // Use the peer gate directly for handler-initiated outbound traffic.
+        // `call_raw()` still registers pending RPCs through the bridge, while
+        // `send_data_stream()` must bypass HostGate so it uses the stream lane
+        // instead of being wrapped as an RPC envelope.
+        let outgate = Gate::peer(Arc::clone(&ctx.peer_gate));
         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {
             runtime: Rc::clone(runtime),
             peer_gate: Arc::clone(&ctx.peer_gate),
