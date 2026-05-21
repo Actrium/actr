@@ -474,15 +474,11 @@ impl DefaultNetworkEventProcessor {
 
         if let Some(coordinator) = coordinator {
             if recovery_targets.is_empty() {
-                tracing::info!(
-                    "♻️ Skipping ICE restart trigger; peers are already in network recovery"
-                );
+                tracing::info!("♻️ Resuming ICE restart for peers already in network recovery");
             } else {
                 tracing::info!("♻️ Triggering ICE restart for recovering connections...");
-                coordinator
-                    .restart_network_recovery_connections_for(&recovery_targets)
-                    .await;
             }
+            coordinator.restart_network_recovery_connections().await;
         }
 
         Ok(())

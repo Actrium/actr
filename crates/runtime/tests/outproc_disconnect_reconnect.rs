@@ -601,6 +601,67 @@ async fn test_duplicate_network_recovery_same_session_is_coalesced() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_signaling_restore_wakes_existing_restart_without_duplicate_offer() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establish connection with peer 100 as offerer");
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    let offerer = harness.peer(100);
+
+    tracing::info!("Step 2: Start network recovery while offerer signaling is disconnected");
+    offerer
+        .signaling_client
+        .disconnect()
+        .await
+        .expect("test should disconnect offerer signaling");
+    offerer
+        .coordinator
+        .begin_network_recovery("NetworkLost")
+        .await;
+    offerer
+        .coordinator
+        .restart_network_recovery_connections()
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        0,
+        "ICE restart must not send an offer while signaling is disconnected"
+    );
+
+    tracing::info!("Step 3: Reconnect signaling and issue repeated recovery resumes");
+    offerer
+        .signaling_client
+        .connect_once()
+        .await
+        .expect("test should reconnect offerer signaling");
+    for _ in 0..5 {
+        offerer
+            .coordinator
+            .restart_network_recovery_connections()
+            .await;
+    }
+
+    harness
+        .wait_for_ice_restart_count(1, Duration::from_secs(3))
+        .await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    assert_eq!(
+        harness.ice_restart_count(),
+        1,
+        "repeated recovery resumes should wake the existing restart task, not send duplicate offers"
+    );
+}
+
 #[tokio::test]
 async fn test_network_recovery_guard_times_out_after_6s_and_closes_transport() {
     init_tracing();
