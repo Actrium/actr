@@ -1,7 +1,7 @@
 # Option U：WIT → wasm-bindgen 编译器设计
 
-**状态**：Phase 0-6 + TD-003/004/006 全部落地（2026-04-25）；Phase 5 收尾已合入；剩余 Phase 7/8 在 [§11](#11-phase-5--phase-6-todo下阶段执行清单) 列出。
-**上下文文档**：[T18 分析（已绕开）](./t18-jco-async-lift-hang.zh.md)；[TD-006 multi-client RPC 分析（已修）](./td-006-multi-client-rpc-analysis.zh.md)；**[Phase 6 γ-unified 详细设计](./option-u-phase6-gamma-unified.zh.md)**
+**状态**：Option U 主线已完成（2026-04-25）：Phase 0-6、TD-003/004/006 均已落地；Phase 7 复盘后跳过；Phase 8 已完成并删除浏览器侧 CM/jco 路径。
+**上下文文档**：[T18 分析（历史 incident，已绕开）](./t18-jco-async-lift-hang.zh.md)；[TD-006 multi-client RPC 分析（已修）](./td-006-multi-client-rpc-analysis.zh.md)；[Phase 6 γ-unified 详细设计（历史设计，已由当前实现取代）](./option-u-phase6-gamma-unified.zh.md)
 
 ## 进度快照
 
@@ -25,7 +25,7 @@
 
 **最终 MultiTab 结果**：**`SUITES='BasicFunction MultiTab' bash start-mock.sh` 12/12 全过**。`1-0 Basic Echo Connectivity` / `6-2 Concurrent Multi-Client` / `6-3 Close One Client` / `6-4 Refresh One Client` / `6-5 Multiple Server Instances` 全部包含在内。
 
-Option U 核心路径已跑通 —— jco / Component Model / JSPI 全部绕开，echo 单 client + 多 client 都过。下一里程碑是 Phase 7（data-stream 迁 WBG）解锁 Phase 8（CM 路径整体删除）。
+Option U 核心路径已跑通 —— jco / Component Model / JSPI 在浏览器主路径中全部绕开，echo 单 client + 多 client 都过。Phase 7 已复盘跳过，Phase 8 已完成；当前浏览器路径是 `.wbg/` 伴生产物 + 单一 `actor.sw.js` + `register_guest_workload`。
 
 ---
 
@@ -262,14 +262,10 @@ async fn handle_echo(msg: &[u8]) -> Result<Vec<u8>, ActorError> {
 
 **兼容性**：
 - native 路径零影响
-- 浏览器侧新方案和现有 CM 方案可以**并行共存**一段时间：
-  - 保留 `bindings/web/scripts/transpile-component.sh` 作为历史路径
-  - `actr-web-abi` 作为新路径
-  - echo example 选其中一条跑
+- 浏览器侧 CM/jco 与 Option U 并行共存只是早期设计阶段的过渡设想；当前仓库已完成 Phase 8 删除，浏览器主路径不再保留 `transpile-component.sh`、CM `.jco/` 路由或 `ACTR_WEB_GUEST_MODE` 切换。
 
 **回滚**：
-- 新路径有问题时，把 `actr-web-abi` crate 全删，echo example 的 Cargo.toml 换回 `wasm32-wasip2`
-- Commit 粒度细，每 Phase 独立，任何一段失败都可以停住
+- 本节原本描述的是实施期回滚思路。Phase 8 后 CM/jco 浏览器路径已经删除，当前回滚不再是简单恢复 `transpile-component.sh`；需要重新评估浏览器构建与 SW 入口。
 
 ---
 
@@ -281,11 +277,11 @@ async fn handle_echo(msg: &[u8]) -> Result<Vec<u8>, ActorError> {
 | `core/framework/src/guest/` Rust guest 适配层 | native 侧保留，浏览器侧改用 `actr-web-abi` |
 | `bindings/web/crates/sw-host/` | 保留，但 `guest_bridge.rs` 里 jco bridge 相关代码可以大幅削减 |
 | `bindings/web/crates/dom-bridge/` | 不变 |
-| `bindings/web/scripts/transpile-component.sh` | Option U 落地后可 deprecate |
+| `bindings/web/scripts/transpile-component.sh` | 已随 Phase 8 删除；不属于当前路径 |
 | `cli/assets/web-runtime/actr_sw_host*` | 继续用（只是内容变简单） |
 | TD-001（5 个 zero-call setter） | 可能刚好有理由**真正用上** Rust 侧 DataLane |
 | TD-002（cli/assets sync） | 仍然存在，但 jco 产物不再进这条路径 |
-| jco fork + #1361 patch | 作为留档，不再主动维护 |
+| jco fork + #1361 patch | 仅作为 T18 历史 incident 留档，不属于当前浏览器路径 |
 
 ---
 
@@ -339,7 +335,7 @@ Option U 核心路径已落地（Phase 0-4 完成，BasicFunction 6/6 PASS）。
 
 | # | 项目 | 成本 | 产物 |
 |---|------|------|------|
-| 6.1 | `guest_bridge.rs::register_component_workload` 的 handler 外面包一个 `tokio::sync::Mutex<()>` 或 `futures::lock::Mutex` | 0.5 h | commit `fix(sw-host): serialize guest dispatches to prevent ctx overlap` |
+| 6.1 | 历史备选：旧 `register_component_workload` handler 外加 async mutex | 0.5 h | 后续未采用；当前实现走 request_id HashMap + `register_guest_workload` |
 | 6.2 | sync cli/assets（TD-002 流程）+ rebuild actr binary | 5 min | 同一 commit 或紧邻的 `chore(cli/assets): sync` |
 | 6.3 | 跑 MultiTab 期待 6-1/6-2/6-3/6-4 PASS | 10 min | evidence log |
 | 6.4 | 6-5 "Multiple Server Instances" 独立议：改 `set_workload` 为 `HashMap<ActrType, Box<dyn Workload>>` **或**把 6-5 分类成"非 SW 架构支持的测试" | 0.5 h | commit 或 test-auto.js 分类调整 |

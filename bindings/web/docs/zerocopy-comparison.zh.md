@@ -1,6 +1,8 @@
 # 零拷贝方案对比示例
 
-演示三种零拷贝策略的性能和使用场景。
+> **概念对比 / 非可运行示例**：原 `examples/zerocopy-comparison/` 只有 README 型材料，已移入 docs。本文保留为策略对比，不代表仓库里存在可直接访问的 demo URL，也不代表 SharedArrayBuffer 路线已经实现。当前零拷贝 helper 以 `bindings/web/crates/common/src/zero_copy.rs` 为准，当前 Fast Path 消息名为 `fast_path_data`。
+
+对比几种零拷贝/近零拷贝策略的适用场景。
 
 ---
 
@@ -14,10 +16,12 @@
 // DOM 端
 const data = new Uint8Array([1, 2, 3, 4]);
 port.postMessage({
-  type: 'fastpath_data',
-  stream_id: 'test:small',
-  data: data.buffer,
-  timestamp: Date.now()
+  type: 'fast_path_data',
+  payload: {
+    streamId: 'test:small',
+    data,
+    timestamp: Date.now()
+  }
 }, [data.buffer]); // Transferable
 
 // Service Worker (WASM)
@@ -33,7 +37,7 @@ actorSystem.dispatch_fastpath(chunk);
 
 ---
 
-### 方案 1：SharedArrayBuffer（完全零拷贝）
+### 方案 1：SharedArrayBuffer（概念方案，当前未实现为主路径）
 
 **适用场景**: 大数据高频 (>=1MB, >=30fps)
 
@@ -46,7 +50,7 @@ const view = new Uint8Array(sab);
 canvas.getContext('2d').getImageData(0, 0, 1920, 1080);
 view.set(imageData.data, 0);
 
-// 发送（SharedArrayBuffer 直接传递，非 Transferable）
+// 概念方案：当前主路径没有 fast_path_zerocopy handler
 port.postMessage({
   type: 'fastpath_zerocopy',
   stream_id: 'peer:video',
@@ -177,12 +181,15 @@ class FastPathAdapter {
 
   sendDirect(streamId, data) {
     // 小数据：Transferable
+    const view = new Uint8Array(data);
     port.postMessage({
-      type: 'fastpath_data',
-      stream_id: streamId,
-      data: data,
-      timestamp: Date.now()
-    }, [data]);
+      type: 'fast_path_data',
+      payload: {
+        streamId,
+        data: view,
+        timestamp: Date.now()
+      }
+    }, [view.buffer]);
   }
 
   sendShared(streamId, data) {
@@ -190,6 +197,7 @@ class FastPathAdapter {
     const sab = this.sabPool.get(data.byteLength);
     new Uint8Array(sab).set(new Uint8Array(data));
 
+    // 概念方案：当前主路径没有 fast_path_zerocopy handler
     port.postMessage({
       type: 'fastpath_zerocopy',
       stream_id: streamId,
@@ -408,25 +416,14 @@ class FastPathAdapter {
 
 ## 运行示例
 
-1. **启动服务器**（支持 COOP/COEP）
-   ```bash
-   node dev-server.js
-   ```
-
-2. **访问示例**
-   ```
-   http://localhost:8000/examples/zerocopy-comparison/
-   ```
-
-3. **运行性能测试**
-   - 打开浏览器控制台
-   - 执行 `benchmarkLatency()`
-   - 执行 `benchmarkThroughput()`
+1. **当前验证入口**
+   本仓库没有 `examples/zerocopy-comparison/` 可运行目录。需要验证当前路径时，请检查 `zero_copy.rs` helper 及 `sw-host` / `dom-bridge` 的 lane/postmessage 调用链。
 
 ---
 
 ## 相关文档
 
-- [零拷贝优化方案](../../docs/architecture/zerocopy-optimization.md)
-- [Fast Path 实现总结](../../docs/P1_FASTPATH_ROUTETABLE_COMPLETION.md)
+- 当前 helper：`bindings/web/crates/common/src/zero_copy.rs`
+- 当前 Fast Path：`bindings/web/packages/actr-dom/src/fast-path-forwarder.ts`
+- 当前 SW handler：`bindings/web/packages/web-sdk/src/actor.sw.js`
 - [SharedArrayBuffer MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer)

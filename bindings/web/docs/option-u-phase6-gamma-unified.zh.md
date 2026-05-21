@@ -1,7 +1,9 @@
 # Option U Phase 6：γ-unified 详细设计
 
-**状态**：设计阶段（2026-04-24）
-**上下文**：[Option U 总览](./option-u-wit-compile-web.zh.md) §11 / [TD-003 并发 dispatch context bug](./tech-debt.zh.md#td-003)
+> **历史设计快照 / 已被当前实现取代**：本文是 2026-04-24 Phase 6 γ-unified 的实施前设计，不是当前开发计划。当前 canonical 摘要见 [Option U 总览](./option-u-wit-compile-web.zh.md)；当前 framework web 入口见 `core/framework/src/guest/mod.rs`、`core/framework/src/web/context.rs`，echo `server-guest` / `client-guest` 已是一份化示例。
+
+**状态**：历史设计（Phase 6 已完成；Phase 7 跳过；Phase 8 已删除 CM/jco 浏览器路径）
+**上下文**：[Option U 总览](./option-u-wit-compile-web.zh.md) / [TD-003 并发 dispatch context bug](./tech-debt.zh.md#td-003)
 **决策**：Phase 6 = γ-unified（用户 workload 代码写一份，编译 / runtime 机制自动跨 target；并发隔离作为副产品一起解决）
 
 ---
@@ -259,7 +261,7 @@ fn ctx_remove(request_id: &str) {
 }
 ```
 
-`register_component_workload` 的 handler：
+当时旧名 `register_component_workload` 的 handler（当前导出名已是 `register_guest_workload`）：
 ```rust
 async move {
     let request_id = ctx.request_id().to_string();
@@ -312,7 +314,7 @@ pub async fn host_call_raw_async(
 
 - [S1] `DISPATCH_CTXS` HashMap 替换 `GUEST_CTX`
 - [S2] `ctx_insert` / `ctx_get` / `ctx_remove` 函数
-- [S3] `register_component_workload` 的 handler 改用 insert/remove 包装 dispatch
+- [S3] 旧 `register_component_workload` handler 改用 insert/remove 包装 dispatch（当前实现已重命名为 `register_guest_workload`）
 - [S4] 所有 8 个 `host_*_async` 加 `request_id: String` 第一参数 + 内部改用 `ctx_get`
 - [S5] cli/assets sync（TD-002 流程）
 - [S6] `cargo check -p actr-sw-host --target wasm32-unknown-unknown` 通过
@@ -372,7 +374,7 @@ pub async fn host_call_raw_async(
 - [c4] 更新 `option-u-wit-compile-web.zh.md` 标 Phase 6 完成
 
 **前置依赖**：P6b
-**下游依赖**：Phase 7（data-stream 迁移）/ Phase 8（CM 删除）
+**下游依赖（历史）**：当时预计接 Phase 7 / Phase 8；实际结果是 Phase 7 跳过，Phase 8 已完成。
 
 ---
 
@@ -431,4 +433,4 @@ t4: Phase 6 完成
 
 ## 9. 与下阶段的衔接
 
-Phase 6 完成 → 排 Phase 7（data-stream-peer-concurrent 迁 WBG 统一 API）→ 排 Phase 8（CM 路径整体删除）。详见 [Option U 总览](./option-u-wit-compile-web.zh.md) §11。
+历史计划曾是 Phase 6 完成后继续 Phase 7 / Phase 8。当前结果是 Phase 7 复盘后跳过，Phase 8 已删除 CM 路径；后续工作请以 [Option U 总览](./option-u-wit-compile-web.zh.md) 和当前源码为准。

@@ -597,7 +597,7 @@ SUITES='BasicFunction MultiTab' ./start-mock.sh   # 全套 12/12
 
 ### 9.2 后续工作（非本批次）
 
-- **WebContext 5 个 NotImplemented**（`register_stream` / `send_data_stream` / `register_media_track` / `send_media_sample` / `add_media_track` / `remove_media_track`）：浏览器侧 stream / media fast path 是设计上的 permanent NotImplemented；如果未来要支持，需要扩 WIT 契约 + actr-web-abi 重生成
+- **WebContext 8 个 NotImplemented**（`register_stream` / `unregister_stream` / `send_data_stream` / `register_media_track` / `unregister_media_track` / `send_media_sample` / `add_media_track` / `remove_media_track`）：浏览器侧 stream / media fast path 是设计上的 permanent NotImplemented；如果未来要支持，需要扩 WIT 契约 + actr-web-abi 重生成
 - **sw-host 几个保留 TODO**：lifecycle PONG / error_handler 自动恢复 / system local actor (Phase 2) ── 都已改为说明性注释，描述真实的未来架构工作
 - **dom-bridge crate**：浏览器实际用 TS @actr/dom，dom-bridge 是 Rust 影子 crate 没有运行时消费者。删除是更彻底的清理（本批次未做）
 - **Mobile 静态链接路径**（Linked variant）：当前完全靠 hand-written C ABI；`wit-lint` 是漂移守护，但仍是手工维护

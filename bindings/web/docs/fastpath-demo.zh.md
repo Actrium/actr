@@ -1,6 +1,8 @@
 # Fast Path Demo - 高性能数据流示例
 
-演示 Actor-RTC Web 的 Fast Path 零拷贝数据流处理。
+> **概念说明 / 非可运行示例**：原 `examples/fastpath-demo/` 只有 README 型材料，已移入 docs。本文保留为 Fast Path 数据流概念说明，不代表仓库里存在可直接访问的 demo URL。当前代码锚点是 `bindings/web/packages/actr-dom/src/fast-path-forwarder.ts` 的 `FastPathForwarder`、`bindings/web/packages/web-sdk/src/actor.sw.js` 的 `fast_path_data` handler，以及 `sw-host` / `dom-bridge` 的 lane 实现。
+
+说明 Actor-RTC Web 的 Fast Path 数据流处理模型。
 
 ## 功能特性
 
@@ -67,10 +69,12 @@ for (let i = 0; i < videoFrame.length; i++) {
 // 2. 发送到 Service Worker（Transferable 零拷贝）
 serviceWorkerPort.postMessage(
   {
-    type: 'fastpath_data',
-    stream_id: 'peer:123:video',
-    data: videoFrame.buffer,  // 发送 ArrayBuffer
-    timestamp: Date.now()
+    type: 'fast_path_data',
+    payload: {
+      streamId: 'peer:123:video',
+      data: videoFrame,
+      timestamp: Date.now()
+    }
   },
   [videoFrame.buffer]  // Transferable！所有权转移，零拷贝
 );
@@ -84,20 +88,12 @@ console.log(videoFrame.byteLength); // 0
 ```rust
 // worker.js - 接收消息
 self.addEventListener('message', async (event) => {
-  if (event.data.type === 'fastpath_data') {
-    const { stream_id, data, timestamp } = event.data;
+  if (event.data.type === 'fast_path_data') {
+    const { streamId, data, timestamp } = event.data.payload;
 
-    // 创建 FastPathData（零拷贝包装）
-    const uint8Array = new Uint8Array(data);
-    const fastpathData = new FastPathData(
-      stream_id,
-      uint8Array,
-      timestamp
-    );
-
-    // 转换为 StreamChunk 并分发
-    const chunk = fastpathData.to_chunk();
-    actorSystem.dispatch_fastpath(chunk);
+    // 当前 SW 入口按 fast_path_data 消息分支处理 payload；
+    // Rust 侧仍会在 JS heap -> WASM linear memory 边界发生必要拷贝。
+    wasm_bindgen.handle_fast_path(streamId, data, timestamp);
   }
 });
 
@@ -183,12 +179,15 @@ let handler = handlers.get(stream_id); // 无锁！性能接近 HashMap
 ```javascript
 // DOM 端发送
 const start = performance.now();
+const latencyPayload = new Uint8Array([1, 2, 3]);
 serviceWorkerPort.postMessage({
-  type: 'fastpath_data',
-  stream_id: 'test:latency',
-  data: new Uint8Array([1, 2, 3]).buffer,
-  timestamp: start
-}, [data]);
+  type: 'fast_path_data',
+  payload: {
+    streamId: 'test:latency',
+    data: latencyPayload,
+    timestamp: start
+  }
+}, [latencyPayload.buffer]);
 
 // WASM 端接收并回应
 fn latency_handler(chunk: StreamChunk) {
@@ -210,10 +209,12 @@ const interval = 1000 / fps;
 setInterval(() => {
   const frame = new Uint8Array(1920 * 1080 * 3);
   serviceWorkerPort.postMessage({
-    type: 'fastpath_data',
-    stream_id: 'test:throughput',
-    data: frame.buffer,
-    timestamp: Date.now()
+    type: 'fast_path_data',
+    payload: {
+      streamId: 'test:throughput',
+      data: frame,
+      timestamp: Date.now()
+    }
   }, [frame.buffer]);
 
   frameCount++;
@@ -235,24 +236,11 @@ setInterval(() => {
 
 ## 运行步骤
 
-1. **构建 WASM**
-   ```bash
-   cd crates/runtime-web
-   wasm-pack build --target web
-   ```
-
-2. **启动服务器**
-   ```bash
-   python3 -m http.server 8000
-   ```
-
-3. **访问示例**
-   ```
-   http://localhost:8000/examples/fastpath-demo/
-   ```
+1. **运行当前仓库示例**
+   当前没有 `examples/fastpath-demo/` 可运行目录。需要验证 Fast Path 行为时，请从现有 Web 示例和 `FastPathForwarder.forward()` / `forwardBatch()` 的调用链入手。
 
 ## 相关文档
 
-- [Fast Path 架构文档](../../docs/architecture/fastpath.md)
-- [RouteTable 设计文档](../../docs/architecture/routetable.md)
-- [性能优化指南](../../docs/performance.md)
+- 当前实现：`bindings/web/packages/actr-dom/src/fast-path-forwarder.ts`
+- SW 入口：`bindings/web/packages/web-sdk/src/actor.sw.js`
+- Rust lane：`bindings/web/crates/sw-host/src/transport/lane.rs`、`bindings/web/crates/dom-bridge/src/transport/lane.rs`

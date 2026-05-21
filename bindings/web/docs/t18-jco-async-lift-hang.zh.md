@@ -196,7 +196,7 @@ crates/js-component-bindgen/src/intrinsics/p3/async_task.rs
 - H_Y 说明 **guest 连 host import 都没调到**，#1361 路径根本触发不到
 - 换句话说：patch 可能仍然正确（值得给上游 PR），但它不是我们的 blocker
 
-**留痕**：patched jco 可以从 GitHub clone + checkout `jco-v1.18.1` + apply 上述两行 patch + `cargo xtask build debug` 快速重建。`transpile-component.sh` 已支持 `JCO_LOCAL=<path>` override (`10e830da`)。
+**历史留痕（不要用于当前浏览器路径）**：patched jco 当时可以从 GitHub clone + checkout `jco-v1.18.1` + apply 上述两行 patch + `cargo xtask build debug` 快速重建；`transpile-component.sh` 当时也支持过 `JCO_LOCAL=<path>` override (`10e830da`)。Phase 8 后这些只用于 incident 考古或上游复盘，不应作为当前工作恢复路径。
 
 ---
 
@@ -315,7 +315,7 @@ crates/js-component-bindgen/src/intrinsics/p3/async_task.rs
 | `b6b90f33` | TD-001 登记（SW↔DOM DataLane 5 个 zero-call setter） |
 | （本次）| TD-002 登记（sw-host wasm 未自动同步到 cli/assets） + 本文档 |
 
-**未入库但可复活**：
+**未入库历史诊断材料（仅用于考古，不建议复活为当前路径）**：
 
 | 位置 | 内容 | 复活方式 |
 |------|------|---------|
@@ -327,15 +327,14 @@ crates/js-component-bindgen/src/intrinsics/p3/async_task.rs
 
 ---
 
-## 9. 下一位接手时的最小起步清单
+## 9. 历史接手清单（已过期）
 
-1. 读本文档第 4 章（H_Y 判定）和第 7 章（选项）
-2. 确定要走 P / Q / R 哪条
-3. 启动前：
-   - 如果要跑 e2e：记得 sw-host 改完后 `cp bindings/web/dist/sw/actr_sw_host_bg.wasm cli/assets/web-runtime/` + `cargo build -p actr-cli --bin actr`（TD-002）
-   - 如果要抓 SW 日志：`CAPTURE_SW_CONSOLE=1 node test-auto.js ...`
-   - 如果要用 patched jco：`export JCO_LOCAL=/path/to/jco/packages/jco/src/jco.js`
-4. 重新做诊断之前读 memory `feedback_puppeteer_sw_console.md`，避免第三次踩 SW console 盲区
+这份清单是 T18 修复前的交接材料，保留用于理解当时如何诊断 CM/jco 路径。当前浏览器主路径已经切到 Option U，不再通过 `JCO_LOCAL` 或 `transpile-component.sh` 继续推进。
+
+1. 历史上需要读本文档第 4 章（H_Y 判定）和第 7 章（选项）
+2. 历史上需要在 P / Q / R 之间选路线；当前已选择并完成 Option U
+3. 当前若要跑 e2e，请走现有 `actor.sw.js` + `.wbg/` 路径和 `sync-cli-assets.sh` / `cargo build -p actr-cli --bin actr` 流程
+4. 如果要复盘旧诊断，`CAPTURE_SW_CONSOLE=1` 仍是理解 SW 日志的关键
 
 ---
 

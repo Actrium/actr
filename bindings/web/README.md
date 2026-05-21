@@ -1,347 +1,105 @@
 # Actor-RTC Web
 
-> Port of Actor-RTC distributed real-time communication framework to Web environments
+Actor-RTC Web is the browser runtime and SDK surface for Actrium. The current browser path is the Option U / wasm-bindgen guest path:
 
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-MVP%20Stage-yellow.svg)]()
+- browser workloads are loaded through a signed `.actr` package plus a sibling `<package-stem>.wbg/` directory
+- the sibling directory contains `guest.js` and `guest_bg.wasm`
+- the Service Worker entry is `actor.sw.js`
+- the Service Worker loads the wasm-bindgen guest bundle and calls `register_guest_workload`
 
-**Actor-RTC Web** is the browser implementation of the Actor-RTC framework, providing an Actor model programming experience consistent with the native version through WebAssembly technology.
+Component Model and jco material are historical context for the old browser bridge. The current browser runtime does not consume jco-transpiled bundles.
 
-[Chinese Documentation](./README.zh.md)
+[中文说明](./README.zh.md)
 
----
+## Quick Start
 
-## 🎯 Project Status
-
-**Current Version**: v0.1.0-alpha
-**Development Stage**: MVP (Minimum Viable Product)
-**Overall Completion**: 78% (relative to actr Native)
-
-### Core Features Completed (P0 - MVP)
-
-- ✅ ActorSystem lifecycle management (start/shutdown/error handling)
-- ✅ WebRTC P2P connections (4 negotiated DataChannels)
-- ✅ RPC request-response mechanism (request/pending_requests/timeout)
-- ✅ DOM-side fixed forwarding layer (@actr/dom, PostMessage + WebRTC)
-- ✅ UI interaction API (call/subscribe/on)
-- ✅ End-to-end RPC testing (simple-rpc example)
-- ✅ IndexedDB Mailbox (persistent message queue)
-- ✅ TypeScript SDK (type-safe API)
-- ✅ React Hooks (useActorClient, useServiceCall, useSubscription)
-
-### Performance Optimizations (P1 - Completed)
-
-- ✅ Fast Path data flow (zero-copy transmission, 30x performance boost)
-  - Transferable ArrayBuffer (3ms latency)
-  - SharedArrayBuffer (0.1ms latency)
-  - WasmMemoryPool (pre-allocation reuse)
-- ✅ RouteTable routing (static routing + dynamic LRU cache)
-- ✅ Enum static dispatch (avoid dyn Trait virtual function overhead)
-- ✅ DashMap lock-free concurrency (FastPathRegistry)
-- ✅ AtomicU64 zero-lock monitoring (performance metrics collection)
-
-### In Progress (P1/P2)
-
-- ⏳ actr-cli Web support (0%)
-- ⏳ Test coverage improvement (current 30%, target 70%)
-- ⏳ Service Worker integration
-- ⏳ More examples (react-echo, todo-app, chat-app)
-
-See: [Completion Status](./docs/architecture/completion-status.zh.md)
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Rust 1.88+ and wasm-pack
-- `wasm32-wasip2` target (`rustup target add wasm32-wasip2`)
-- `wasm-component-ld 0.5.22+` (`cargo install wasm-component-ld --version 0.5.22`);
-  Rust 1.91's bundled 0.5.17 cannot parse the async-aware component
-  custom sections wit-bindgen emits
-- Node.js 20+ and npm 10+ (required by `@bytecodealliance/jco`)
-- Modern browser with WebRTC support and dynamic ES module `import()`
-  inside Service Workers
-
-### Run Echo Example
-
-```bash
-# Enter example directory
-cd examples/echo
-
-# Auto-build and start (signaling server + echo server + web client)
-./start.sh
-
-# Browser opens automatically at http://localhost:3001
-```
-
-### From Scratch
-
-```bash
-# 1. Clone repository
-git clone https://github.com/actor-rtc/actr-web.git
-cd actr-web
-
-# 2. Install dependencies
-npm install
-
-# 3. Build WASM
-./scripts/build-wasm.sh
-
-# 4. Run tests
-node test-wasm.js
-```
-
----
-
-## 📖 Documentation
-
-### User Documentation
-
-For developers building applications with Actor-RTC Web:
-
-- [Getting Started Guide](./docs/getting-started.md) ⭐ Recommended first read
-- [Troubleshooting Guide](./docs/troubleshooting.md)
-
-### Requirements & Planning
-
-Project requirements, goals and planning:
-
-- [Web Adaptation Requirements](./docs/requirements.md) - Complete feature requirements and architecture design
-
-### Architecture Documentation
-
-For framework contributors and developers seeking deep understanding:
-
-- [Architecture Documentation Index](./docs/architecture/README.zh.md)
-- [Architecture Overview](./docs/architecture/overview.zh.md) - Dual-process model and core components
-- [Technical Decision Records](./docs/architecture/decisions.zh.md) - 9 TDRs
-- [Completion Assessment](./docs/architecture/completion-status.zh.md) - Completion relative to actr Native (78%)
-
----
-
-## 📦 Build Pipeline (Component Model)
-
-The browser runtime consumes user guests as **Component Model** binaries,
-not handwritten-ABI core-wasm modules. The toolchain mirrors the native
-path (`core/hyper`) and adds a browser-specific transpile step.
-
-```
-User's Rust workload source
-    │
-    ▼  cargo build --target wasm32-wasip2 + wasm-component-ld
-Component .wasm (actr:workload/actr-workload-guest world)
-    │
-    ▼  scripts/transpile-component.sh <component.wasm> <out-dir>
-ES module + core .wasm + JS glue (jco transpile --instantiation async)
-    │
-    ▼  served alongside the .actr package; SW fetches both
-Browser: Service Worker `loadWithComponentBridge`
-    ├─ verifies .actr and extracts the Component binary
-    ├─ dynamically imports the jco-generated ES module
-    ├─ binds WIT `actr:workload/host` imports to sw-host wasm-bindgen
-    │  exports (`host_call_raw_async`, `host_discover_async`, ...)
-    └─ registers `workload.dispatch` via `register_component_workload`
-```
-
-The jco-transpiled bundle **must** be produced at build time — jco is a
-Node-only tool that cannot run in a browser. Package the transpile output
-alongside the `.actr` (convention: `<package_url>.jco/guest.js`, overridable
-via `RUNTIME_CONFIG.jco_module_url`).
-
-Smoke-test the pipeline against the async spike component:
+Install the web workspace dependencies:
 
 ```bash
 cd bindings/web
-npm install
-./scripts/transpile-component.sh \
-    ../../experiments/component-spike-async/guest/target/wasm32-wasip2/release/spike_guest_async.wasm \
-    /tmp/actr-jco-smoketest
+pnpm install
 ```
 
----
-
-## 🏗️ Architecture Overview
-
-```
-┌─────────── Browser Environment ───────────┐
-│                                            │
-│  TypeScript Application                    │
-│       ↓                                    │
-│  @actr/web SDK                             │
-│       ↓                                    │
-│  WASM Runtime (Rust)                       │
-│    ├─ ActorSystem                          │
-│    ├─ Mailbox (IndexedDB)                  │
-│    ├─ WebRTC Coordinator                   │
-│    └─ Signaling Client                     │
-│       ↓                                    │
-│  Browser APIs                              │
-│   (WebRTC, IndexedDB, WebSocket)           │
-└────────────────────────────────────────────┘
-```
-
-**Core Features**:
-
-- **High Code Reuse**: 85-90% of core logic directly reused from actr Native
-- **Type Safety**: Rust + TypeScript dual-type guarantees
-- **Performance Advantage**: WASM near-native performance
-- **Browser First**: Full utilization of native browser WebRTC and IndexedDB
-
----
-
-## 📊 Performance Metrics
-
-| Metric | Current Value | Notes |
-|--------|---------------|-------|
-| WASM Bundle Size | 99.6 KB (~35 KB gzipped) | Kept lean |
-| WASM Initialization Time | <100ms | Fast startup |
-| State Path Latency | 30-40ms | RPC request-response |
-| Fast Path Latency (Baseline) | ~3ms | Transferable ArrayBuffer |
-| Fast Path Latency (Optimized) | ~0.1ms | SharedArrayBuffer, 30x boost |
-| Video Stream Processing (60fps) | <0.1ms/frame | High frame rate support |
-| IndexedDB Latency | <50ms | Persistent storage |
-| Memory Usage | ~48 MB | Typical application |
-
----
-
-## 🛠️ Tech Stack
-
-### Rust / WebAssembly
-
-- **wasm-bindgen**: Rust ↔ JavaScript interop
-- **web-sys**: Browser Web API bindings
-- **tokio**: Async runtime (minimal feature set)
-- **rexie**: IndexedDB high-level API
-- **prost**: Protobuf codec
-
-### JavaScript / TypeScript
-
-- **React 18**: UI framework
-- **Vite**: Dev server and build tool
-- **TypeScript 5**: Type system
-- **grpc-web**: gRPC browser client
-
-### Protocols & Standards
-
-- **WebRTC**: P2P real-time communication
-- **WebSocket**: Signaling channel
-- **Protobuf**: Message serialization
-- **IndexedDB**: Browser persistent storage
-
----
-
-## 📦 Project Structure
-
-```
-actr-web/
-├── crates/              # Rust crates (WASM core)
-│   ├── sw-host/         # Service Worker host (Component Model bridge + runtime)
-│   ├── dom-bridge/      # DOM-side bridge to the SW host
-│   └── mailbox-web/     # IndexedDB Mailbox
-│
-├── packages/            # JavaScript/TypeScript packages
-│   ├── actr-dom/        # DOM-side WASM bindings
-│   ├── web-sdk/         # High-level TypeScript SDK (@actr/web)
-│   └── web-react/       # React Hooks (@actr/web-react)
-│
-├── examples/            # Example projects
-│   ├── echo/            # Echo example (complete implementation)
-│   ├── hello-world/     # Minimal hello-world example
-│   └── codegen-test/    # Code generation test
-│       ├── proto/       # Protobuf definitions
-│       ├── server/      # gRPC server (Tonic)
-│       ├── client/      # Web client (React)
-│       └── start.sh     # One-click startup script
-│
-├── docs/                # Documentation
-│   ├── getting-started.md
-│   ├── requirements.md
-│   └── architecture/
-│
-└── scripts/             # Build scripts
-    ├── build-wasm.sh
-    └── test-e2e.sh
-```
-
----
-
-## 🧪 Development & Testing
-
-### Build WASM
+Run the browser echo example against the in-repo mock actrix service:
 
 ```bash
-./scripts/build-wasm.sh
+cd bindings/web/examples/echo
+bash start-mock.sh
 ```
 
-### Run Tests
+Run the browser-hosted data-stream peer example:
 
 ```bash
-# WASM unit tests
-node test-wasm.js
-
-# E2E tests (requires starting example first)
-cd examples/echo
-./start.sh
-# In another terminal
-npm run test:e2e
+cd bindings/web/examples/data-stream-peer-concurrent
+bash start.sh
 ```
 
-### Watch Mode Development
+Rebuild and sync the web runtime assets embedded by `actr-cli`:
 
 ```bash
-# Watch WASM changes and auto-rebuild
-npm run dev:wasm
-
-# Watch TypeScript changes
-npm run dev:packages
+cd bindings/web
+bash crates/sw-host/build.sh
+bash scripts/sync-cli-assets.sh --build
 ```
 
----
+`crates/sw-host/build.sh` builds the Service Worker host wasm-bindgen output. `scripts/sync-cli-assets.sh --build` rebuilds and copies the canonical web assets into `cli/assets/web-runtime/` so `actr run --web` serves the current runtime.
 
-## 🤝 Contributing
+## Current Runtime Shape
 
-Contributions welcome! Please follow these steps:
+```
+Browser tab
+  DOM application
+  @actr/web SDK
+  @actr/dom bridge
+      |
+      | MessagePort / postMessage
+      v
+Shared Service Worker: actor.sw.js
+  sw-host wasm-bindgen runtime
+  register_guest_workload(dispatchFn)
+      |
+      v
+<package-stem>.wbg/
+  guest.js
+  guest_bg.wasm
+```
 
-1. Fork this repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Submit Pull Request
+Each browser tab owns its own DOM-side client identity. The Service Worker is shared by the origin and keeps per-client runtime state.
 
-Please follow the steps above to submit your contributions.
+## Packages
 
----
+- `packages/web-sdk`: browser SDK and `actor.sw.js` source.
+- `packages/actr-dom`: DOM-side bridge for Service Worker, WebRTC, and browser APIs.
+- `packages/web-react`: React hooks. The public exports are `useActorClient`, `useServiceCall`, and `useSubscription`.
+- `crates/sw-host`: Service Worker runtime compiled with wasm-bindgen.
+- `crates/dom-bridge`: Rust-side DOM bridge support.
+- `crates/mailbox-web`: IndexedDB-backed mailbox support.
 
-## 📝 License
+## Documentation
 
-This project is licensed under Apache License 2.0. See [LICENSE](LICENSE) file for details.
+Start with the current user-facing docs:
 
----
+- [Documentation index](./docs/README.md)
+- [Getting started](./docs/getting-started.md)
+- [Troubleshooting](./docs/troubleshooting.md)
+- [Error handling](./docs/error-handling.md)
+- [Requirements](./docs/requirements.md)
 
-## 🔗 Related Resources
+Historical deep dives are useful for understanding how the current path was reached, but they should not be read as current setup instructions:
 
-- **Main Project**: [Actor-RTC](https://github.com/actor-rtc/actor-rtc)
-- **Documentation Site**: [actor-rtc.github.io](https://actor-rtc.github.io)
-- **Native Implementation**: `/d/actor-rtc/actr/`
-- **Issue Tracking**: [GitHub Issues](https://github.com/actor-rtc/actr-web/issues)
+- [Option U WIT compile web notes](./docs/option-u-wit-compile-web.zh.md)
+- [2026-04 architecture change notes](./docs/architecture-changes-2026-04.zh.md)
+- [Historical jco async-lift investigation](./docs/t18-jco-async-lift-hang.zh.md)
+- [Architecture notes](./docs/architecture/README.zh.md)
 
-### Learning Resources
+## Development Notes
 
-- [Rust WASM Book](https://rustwasm.github.io/docs/book/)
-- [wasm-bindgen Guide](https://rustwasm.github.io/wasm-bindgen/)
-- [WebRTC API (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API)
-- [IndexedDB API (MDN)](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API)
+- Use `pnpm install` in `bindings/web` for workspace package dependencies.
+- Use `bash crates/sw-host/build.sh` when editing `crates/sw-host`.
+- Use `bash scripts/sync-cli-assets.sh --build` when the CLI-embedded web runtime assets must be refreshed.
+- Use `bash examples/echo/start-mock.sh` for the primary echo smoke path.
+- Use `bash examples/data-stream-peer-concurrent/start.sh` for browser-hosted peer/service checks.
 
----
+## License
 
-## 📧 Contact
-
-- **Maintainer**: kookyleo <kookyleo@gmail.com>
-- **GitHub**: [@kookyleo](https://github.com/kookyleo)
-
----
-
-**Last Updated**: 2025-11-18
-**Documentation Version**: v1.1.0
+This project is licensed under Apache License 2.0. See [LICENSE](LICENSE) for details.

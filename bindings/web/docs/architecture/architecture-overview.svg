@@ -60,7 +60,7 @@
   <text x="170" y="425" text-anchor="middle" class="label-text">Actor Logic</text>
 
   <text x="170" y="455" text-anchor="middle" class="small-text">State Path</text>
-  <text x="170" y="468" text-anchor="middle" class="small-text">延迟 ~30-40ms</text>
+  <text x="170" y="468" text-anchor="middle" class="small-text">延迟需基准确认</text>
 
   <!-- Outbound in SW -->
   <rect x="530" y="250" width="200" height="230" rx="3" class="component"/>
@@ -94,7 +94,7 @@
 
   <!-- DOM Layer -->
   <rect x="800" y="200" width="350" height="300" rx="5" class="dom-box"/>
-  <text x="975" y="225" text-anchor="middle" class="title-text" font-size="16">DOM/Window - WebRTC 专用</text>
+  <text x="975" y="225" text-anchor="middle" class="title-text" font-size="16">DOM/Window - WebRTC HAL</text>
 
   <!-- DOM Inbound -->
   <rect x="820" y="250" width="150" height="110" rx="3" class="component"/>
@@ -106,16 +106,16 @@
   <rect x="830" y="320" width="130" height="25" rx="3" fill="#e1bee7" stroke="#9c27b0"/>
   <text x="895" y="337" text-anchor="middle" class="label-text" font-size="11">MediaTrack</text>
 
-  <!-- DOM Fast Path -->
+  <!-- DOM Fast Path forwarding -->
   <rect x="820" y="375" width="150" height="105" rx="3" class="component"/>
-  <text x="895" y="395" text-anchor="middle" class="title-text" font-size="13">⚡ Fast Path</text>
+  <text x="895" y="395" text-anchor="middle" class="title-text" font-size="13">⚡ Fast Path 转发</text>
 
   <rect x="830" y="405" width="130" height="25" rx="3" fill="#c8e6c9" stroke="#4caf50"/>
-  <text x="895" y="422" text-anchor="middle" class="label-text" font-size="11">DomSystem</text>
+  <text x="895" y="422" text-anchor="middle" class="label-text" font-size="11">FastPathForwarder</text>
 
   <rect x="830" y="440" width="130" height="30" rx="3" fill="#fff9c4" stroke="#fbc02d"/>
-  <text x="895" y="455" text-anchor="middle" class="label-text" font-size="10">StreamRegistry</text>
-  <text x="895" y="467" text-anchor="middle" class="label-text" font-size="10">MediaRegistry</text>
+  <text x="895" y="455" text-anchor="middle" class="label-text" font-size="10">ServiceWorkerBridge</text>
+  <text x="895" y="467" text-anchor="middle" class="label-text" font-size="10">fast_path_data</text>
 
   <!-- DOM Outbound -->
   <rect x="990" y="250" width="150" height="110" rx="3" class="component"/>
@@ -149,9 +149,11 @@
   <path d="M 820 295 L 780 295 L 780 380 L 270 380" class="forward-arrow"/>
   <text x="520" y="375" class="small-text" fill="#ff9800">转发 RPC 到 SW</text>
 
-  <!-- Arrows: DOM Fast Path (Stream local) -->
+  <!-- Arrows: DOM Fast Path forwarding to SW -->
   <path d="M 895 345 L 895 405" class="webrtc-arrow"/>
-  <text x="905" y="375" class="small-text" fill="#9c27b0">Stream 本地</text>
+  <path d="M 830 455 L 760 455 L 760 455 L 270 455" class="forward-arrow"/>
+  <text x="905" y="375" class="small-text" fill="#9c27b0">Stream 转发</text>
+  <text x="520" y="450" class="small-text" fill="#ff9800">fast_path_data → SW handlers</text>
 
   <!-- Arrows: Actor to Outbound -->
   <path d="M 500 380 L 530 380" class="websocket-arrow"/>
@@ -197,17 +199,17 @@
     <text x="0" y="20" class="label-text">1️⃣ 总控制在 SW：所有入口、出口、路由决策都在 Service Worker</text>
     <text x="0" y="40" class="label-text">2️⃣ WebRTC 必转发 DOM：SW 无法直接访问 WebRTC API，通过 MessagePort 桥接</text>
     <text x="0" y="60" class="label-text">3️⃣ 优先级自动切换：WebRTC (P2P) 优先级高于 WebSocket (C/S)</text>
-    <text x="0" y="80" class="label-text">4️⃣ Fast Path 在 DOM：Stream 和 Media 数据绕过 SW Mailbox，延迟 &lt; 3ms</text>
+    <text x="0" y="80" class="label-text">4️⃣ Fast Path 进 SW：DOM 只转发，SW handle_dom_fast_path 分发 stream handlers</text>
   </g>
 
   <!-- Performance notes -->
   <g transform="translate(650, 650)">
-    <text x="0" y="0" class="title-text" fill="#1976d2">性能对比：</text>
-    <text x="0" y="20" class="small-text">• RPC via WebSocket: ~30-40ms (SW → SW)</text>
-    <text x="0" y="35" class="small-text">• RPC via WebRTC: ~35ms (DOM → SW → DOM)</text>
-    <text x="0" y="50" class="small-text">• Stream via WebSocket: ~4ms (SW → DOM)</text>
-    <text x="0" y="65" class="small-text">• Stream via WebRTC: ~1-2ms (DOM → DOM) ⚡</text>
-    <text x="0" y="80" class="small-text">• MediaTrack: &lt;1ms (DOM → DOM) 🚀</text>
+    <text x="0" y="0" class="title-text" fill="#1976d2">当前事实：</text>
+    <text x="0" y="20" class="small-text">• RPC via WebSocket: current latency requires benchmarks</text>
+    <text x="0" y="35" class="small-text">• WebRTC send: SW MessagePort → DOM DataChannel</text>
+    <text x="0" y="50" class="small-text">• Stream inbound: DOM FastPathForwarder → SW handler</text>
+    <text x="0" y="65" class="small-text">• Guest bridge: .actr + .wbg sibling bundle</text>
+    <text x="0" y="80" class="small-text">• Latency figures require current benchmark evidence</text>
   </g>
 
 </svg>
