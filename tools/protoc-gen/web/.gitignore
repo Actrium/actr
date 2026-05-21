@@ -1,2 +1,6 @@
 /target
 Cargo.lock
+
+# Local generated outputs for manual codegen inspection.
+/tests/generated-rust/
+/tests/generated-ts/
