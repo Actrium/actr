@@ -3,7 +3,7 @@
 //! This module provides unified initialization for logging (via `tracing`) and
 //! optional distributed tracing (via OpenTelemetry). It supports injecting
 //! custom platform-specific layers (e.g., Android Logcat, iOS os_log) while
-//! providing a sensible default (stdout fmt layer) when none is provided.
+//! providing a sensible default (stderr fmt layer) when none is provided.
 
 use crate::error::RuntimeResult;
 use actr_config::ObservabilityConfig;
@@ -45,7 +45,7 @@ impl Drop for ObservabilityGuard {
 
 /// Initialize logging + (optional) tracing subscriber with default fmt layer.
 ///
-/// This is the original API for backward compatibility. It uses a stdout-based
+/// This is the original API for backward compatibility. It uses a stderr-based
 /// fmt layer for local logging output.
 ///
 /// - `RUST_LOG` wins over configured level; fallback to `info` if unset.
@@ -67,7 +67,7 @@ pub fn init_observability(
 ///
 /// * `cfg` - Observability configuration (filter level, OTel settings)
 /// * `platform_layer` - Optional custom layer for platform-specific logging.
-///   If `None`, a default `fmt::layer()` outputting to stdout will be used.
+///   If `None`, a default `fmt::layer()` outputting to stderr will be used.
 ///
 /// # Example
 ///
@@ -177,7 +177,7 @@ where
     Ok(ObservabilityGuard { tracer_provider })
 }
 
-/// Create the default fmt layer for stdout output.
+/// Create the default fmt layer for stderr output.
 fn create_default_fmt_layer<S>() -> impl Layer<S>
 where
     S: tracing::Subscriber + for<'a> LookupSpan<'a>,
@@ -191,6 +191,7 @@ where
     ));
 
     fmt::layer()
+        .with_writer(std::io::stderr)
         .with_target(true)
         .with_level(true)
         .with_line_number(true)

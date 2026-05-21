@@ -16,6 +16,15 @@ use tokio_util::sync::CancellationToken;
 /// A typical_capacity of 1000 means 100 messages = 10% backlog
 const TYPICAL_CAPACITY: f32 = 1000.0;
 
+/// Log the first heartbeat failure immediately, then sample long failure runs.
+/// With the typical 5s-30s heartbeat interval this keeps offline periods visible
+/// without flooding client logs.
+const HEARTBEAT_FAILURE_LOG_EVERY: u64 = 12;
+
+fn should_log_heartbeat_failure(consecutive_failures: u64) -> bool {
+    consecutive_failures == 1 || consecutive_failures % HEARTBEAT_FAILURE_LOG_EVERY == 0
+}
+
 /// Get power reserve, mailbox backlog and calculate service availability
 ///
 /// This function fetches the power reserve from pwrzv and mailbox backlog,
@@ -88,6 +97,7 @@ async fn send_heartbeat_and_handle_response(
     mailbox: &Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
     register_request: &RegisterRequest,
+    consecutive_failures: &mut u64,
 ) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -132,16 +142,50 @@ async fn send_heartbeat_and_handle_response(
             return None;
         }
         Ok(Err(e)) => {
-            tracing::warn!("⚠️ Failed to send heartbeat or receive Pong: {}", e);
+            *consecutive_failures += 1;
+            if should_log_heartbeat_failure(*consecutive_failures) {
+                tracing::warn!(
+                    consecutive_failures = *consecutive_failures,
+                    "⚠️ Failed to send heartbeat or receive Pong: {}",
+                    e
+                );
+            } else {
+                tracing::debug!(
+                    consecutive_failures = *consecutive_failures,
+                    "Suppressed repeated heartbeat failure: {}",
+                    e
+                );
+            }
             return None;
         }
         Err(_) => {
-            tracing::warn!("⚠️ Heartbeat timeout after {}s", ping_timeout_secs);
+            *consecutive_failures += 1;
+            if should_log_heartbeat_failure(*consecutive_failures) {
+                tracing::warn!(
+                    consecutive_failures = *consecutive_failures,
+                    "⚠️ Heartbeat timeout after {}s",
+                    ping_timeout_secs
+                );
+            } else {
+                tracing::debug!(
+                    consecutive_failures = *consecutive_failures,
+                    "Suppressed repeated heartbeat timeout after {}s",
+                    ping_timeout_secs
+                );
+            }
             return None;
         }
     };
 
-    tracing::debug!(
+    if *consecutive_failures > 0 {
+        tracing::info!(
+            consecutive_failures = *consecutive_failures,
+            "✅ Heartbeat recovered after consecutive failures"
+        );
+        *consecutive_failures = 0;
+    }
+
+    tracing::trace!(
         "💓 Heartbeat sent and Pong received for Actor {} (power_reserve={:.2}, mailbox_backlog={:.2}, availability={:?})",
         actor_id,
         power_reserve,
@@ -192,6 +236,7 @@ pub async fn heartbeat_task(
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
     let mut actor_id = actor_id;
+    let mut consecutive_failures = 0;
 
     loop {
         tokio::select! {
@@ -207,6 +252,7 @@ pub async fn heartbeat_task(
                     &mailbox,
                     heartbeat_interval,
                     &register_request,
+                    &mut consecutive_failures,
                 )
                 .await {
                     tracing::info!(
