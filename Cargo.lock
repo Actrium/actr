@@ -104,7 +104,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "actr-config",
  "actr-framework",
