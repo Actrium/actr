@@ -1,9 +1,9 @@
 {
-  "name": "@actr/dom",
+  "name": "@actrium/actr-dom",
   "version": "0.1.0",
-  "description": "Actor-RTC DOM-side fixed forwarding layer (HAL)",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "description": "Actrium browser DOM-side fixed forwarding layer",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",
@@ -17,10 +17,25 @@
   ],
   "author": "Actor-RTC Team",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Actrium/actr.git",
+    "directory": "bindings/web/packages/actr-dom"
+  },
   "devDependencies": {
     "typescript": "^5.3.0"
   },
   "files": [
     "dist"
-  ]
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

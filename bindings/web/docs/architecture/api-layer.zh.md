@@ -3,7 +3,7 @@
 **版本**：2025-11-11
 **状态**：已实现，已按当前 Option U 路径校准
 
-> 当前源码事实：API 层位于 Service Worker runtime；DOM 侧 `@actr/dom` 不承载用户 Fast Path callback，只通过 `FastPathForwarder` 把 `fast_path_data` 送入 SW。浏览器 guest 通过 `actor.sw.js` 加载 `.actr` + `.wbg` bundle，并由 `actr-web-abi` / wasm-bindgen host imports 接入 `RuntimeContext`。
+> 当前源码事实：API 层位于 Service Worker runtime；DOM 侧 `@actrium/actr-dom` 不承载用户 Fast Path callback，只通过 `FastPathForwarder` 把 `fast_path_data` 送入 SW。浏览器 guest 通过 `actor.sw.js` 加载 `.actr` + `.wbg` bundle，并由 `actr-web-abi` / wasm-bindgen host imports 接入 `RuntimeContext`。
 
 ## 1. 总览
 

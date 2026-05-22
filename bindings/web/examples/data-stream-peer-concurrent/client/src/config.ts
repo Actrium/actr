@@ -1,4 +1,4 @@
-import type { ActorConfig, SwRuntimeConfig } from '@actr/web';
+import type { ActorConfig, SwRuntimeConfig } from '@actrium/actr-web';
 
 const actrixHttpUrl = (
     import.meta.env.VITE_ACTRIX_HTTP_URL || 'http://localhost:8081'

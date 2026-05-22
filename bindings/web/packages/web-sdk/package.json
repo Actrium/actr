@@ -1,7 +1,7 @@
 {
-  "name": "@actr/web",
+  "name": "@actrium/actr-web",
   "version": "0.1.0",
-  "description": "High-level TypeScript SDK for Actor-RTC Web",
+  "description": "High-level browser SDK for Actrium",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,19 +9,20 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    }
+    },
+    "./actor.sw.js": "./dist/actor.sw.js"
   },
   "files": [
     "dist/"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp src/actor.sw.js dist/actor.sw.js",
     "dev": "tsc --watch",
     "clean": "rm -rf dist/",
     "test": "vitest"
   },
   "dependencies": {
-    "@actr/dom": "workspace:*",
+    "@actrium/actr-dom": "workspace:*",
     "protobufjs": "^7.2.0"
   },
   "devDependencies": {
@@ -39,7 +40,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/actor-rtc/actr",
-    "directory": "actr-web/packages/web-sdk"
+    "url": "git+https://github.com/Actrium/actr.git",
+    "directory": "bindings/web/packages/web-sdk"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

@@ -10,7 +10,7 @@
   "scripts": {
     "build": "npm run build:wasm && npm run build:packages",
     "build:wasm": "./scripts/build-wasm.sh",
-    "build:packages": "npm run build --workspaces --if-present",
+    "build:packages": "pnpm --filter @actrium/actr-dom run build && pnpm --filter @actrium/actr-web run build && pnpm --filter @actrium/actr-web-react run build",
     "dev:wasm": "./scripts/build-wasm.sh --watch",
     "dev:packages": "npm run dev --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
@@ -21,7 +21,8 @@
     "format": "prettier --write \"packages/**/*.{ts,tsx,js,jsx,json}\"",
     "format:check": "prettier --check \"packages/**/*.{ts,tsx,js,jsx,json}\"",
     "lint": "eslint \"packages/**/*.{ts,tsx}\"",
-    "lint:fix": "eslint \"packages/**/*.{ts,tsx}\" --fix"
+    "lint:fix": "eslint \"packages/**/*.{ts,tsx}\" --fix",
+    "publish:dry-run": "./scripts/publish.sh --dry-run"
   },
   "devDependencies": {
     "@typescript-eslint/eslint-plugin": "^6.15.0",

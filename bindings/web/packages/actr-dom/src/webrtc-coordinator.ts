@@ -1,7 +1,7 @@
 /**
  * WebRTC Coordinator - WebRTC （DOM ）
  *
- *  RTCPeerConnection， WebRTC 
+ *  RTCPeerConnection， WebRTC
  */
 
 import { ServiceWorkerBridge, WebRtcCommandPayload, WebRtcEventPayload } from './sw-bridge';
@@ -57,7 +57,7 @@ export class WebRtcCoordinator {
       iceTransportPolicy: config.iceTransportPolicy,
     };
 
-    //  SW  WebRTC 
+    //  SW  WebRTC
     this.swBridge.onMessage((message) => {
       if (message.type === 'webrtc_command') {
         this.handleWebRtcCommand(message.payload);
@@ -132,9 +132,7 @@ export class WebRtcCoordinator {
     // Build ICE server list with TURN credentials injected
     const iceServers = (this.config.iceServers || []).map((server) => {
       const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
-      const isTurn = urls.some(
-        (url) => url.startsWith('turn:') || url.startsWith('turns:')
-      );
+      const isTurn = urls.some((url) => url.startsWith('turn:') || url.startsWith('turns:'));
       if (isTurn && this.turnCredential) {
         return {
           urls: server.urls,
@@ -180,7 +178,7 @@ export class WebRtcCoordinator {
       }
     };
 
-    // 
+    //
     connection.onconnectionstatechange = () => {
       console.log(`[WebRTC] Connection state changed: ${connection.connectionState}`);
       this.notifySW('connection_state_changed', {
@@ -195,7 +193,7 @@ export class WebRtcCoordinator {
 
       if (connection.connectionState === 'connected') {
         const rpcChannel = dataChannels.get(0);
-        if (this.canBindRpcPort(this.peers.get(peerId), rpcChannel)) {
+        if (rpcChannel && this.canBindRpcPort(this.peers.get(peerId), rpcChannel)) {
           this.bindRpcPort(peerId, rpcChannel);
         }
       } else if (
@@ -208,12 +206,12 @@ export class WebRtcCoordinator {
       }
     };
 
-    //  ICE 
+    //  ICE
     connection.oniceconnectionstatechange = () => {
       console.log(`[WebRTC] ICE connection state: ${connection.iceConnectionState}`);
     };
 
-    //  peer 
+    //  peer
     this.peers.set(peerId, {
       peerId,
       connection,
@@ -225,7 +223,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   *  DataChannel 
+   *  DataChannel
    *
    * The first byte of the DataChannel payload is the PayloadType indicator
    * (preserved from the transport header on the send side). We extract it
@@ -286,12 +284,12 @@ export class WebRtcCoordinator {
     //  stream ID
     const streamId = `${peerId}:${channelId}`;
 
-    //  Fast Path Forwarder 
+    //  Fast Path Forwarder
     this.forwarder.forward(streamId, data);
   }
 
   /**
-   *  SW  WebRTC 
+   *  SW  WebRTC
    */
   private async handleWebRtcCommand(command: WebRtcCommandPayload): Promise<void> {
     const { action, peerId } = command;
@@ -604,7 +602,9 @@ export class WebRtcCoordinator {
 
     this.pendingPortFrames.delete(peerId);
     for (const frame of queue) {
-      channel.send(frame);
+      const payload = new ArrayBuffer(frame.byteLength);
+      new Uint8Array(payload).set(frame);
+      channel.send(payload);
     }
   }
 
@@ -728,7 +728,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   *  Peer 
+   *  Peer
    */
   getPeerInfo(peerId: string): PeerConnectionInfo | undefined {
     return this.peers.get(peerId);
@@ -742,7 +742,7 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * 
+   *
    */
   dispose(): void {
     for (const peerId of this.peers.keys()) {

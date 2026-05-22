@@ -3,11 +3,11 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { ActorClient, ActorClientConfig, ConnectionState } from '@actr/web';
+import { Actor, ActorConfig, ConnectionState } from '@actrium/actr-web';
 
 export interface UseActorClientResult {
   /** Actor client instance */
-  client: ActorClient | null;
+  client: Actor | null;
 
   /** Connection state */
   connectionState: ConnectionState;
@@ -43,8 +43,8 @@ export interface UseActorClientResult {
  * }
  * ```
  */
-export function useActorClient(config: ActorClientConfig): UseActorClientResult {
-  const [client, setClient] = useState<ActorClient | null>(null);
+export function useActorClient(config: ActorConfig): UseActorClientResult {
+  const [client, setClient] = useState<Actor | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>(
     'disconnected' as ConnectionState
   );
@@ -54,14 +54,14 @@ export function useActorClient(config: ActorClientConfig): UseActorClientResult 
   // Initialize client
   useEffect(() => {
     let mounted = true;
-    let currentClient: ActorClient | null = null;
+    let currentClient: Actor | null = null;
 
     async function initClient() {
       try {
         setLoading(true);
         setError(null);
 
-        const newClient = await ActorClient.create(config);
+        const newClient = await Actor.create(config);
 
         if (mounted) {
           currentClient = newClient;
@@ -69,11 +69,11 @@ export function useActorClient(config: ActorClientConfig): UseActorClientResult 
           setConnectionState(newClient.getConnectionState());
 
           // Listen to state changes
-          newClient.on('stateChange', (state: ConnectionState) => {
+          newClient.on('stateChange', ((state: ConnectionState) => {
             if (mounted) {
               setConnectionState(state);
             }
-          });
+          }) as (...args: unknown[]) => void);
         }
       } catch (err) {
         if (mounted) {
@@ -107,7 +107,7 @@ export function useActorClient(config: ActorClientConfig): UseActorClientResult 
     setError(null);
 
     try {
-      const newClient = await ActorClient.create(config);
+      const newClient = await Actor.create(config);
       setClient(newClient);
       setConnectionState(newClient.getConnectionState());
     } catch (err) {

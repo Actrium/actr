@@ -1,4 +1,4 @@
-import { createActor, type Actor } from '@actr/web';
+import { createActor, type Actor } from '@actrium/actr-web';
 import { actrConfig } from './config';
 import { StreamClientActorRef } from './actorref';
 

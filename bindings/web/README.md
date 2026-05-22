@@ -49,8 +49,8 @@ bash scripts/sync-cli-assets.sh --build
 ```
 Browser tab
   DOM application
-  @actr/web SDK
-  @actr/dom bridge
+  @actrium/actr-web SDK
+  @actrium/actr-dom bridge
       |
       | MessagePort / postMessage
       v
@@ -68,12 +68,26 @@ Each browser tab owns its own DOM-side client identity. The Service Worker is sh
 
 ## Packages
 
-- `packages/web-sdk`: browser SDK and `actor.sw.js` source.
-- `packages/actr-dom`: DOM-side bridge for Service Worker, WebRTC, and browser APIs.
-- `packages/web-react`: React hooks. The public exports are `useActorClient`, `useServiceCall`, and `useSubscription`.
+- `packages/actr-dom`: `@actrium/actr-dom`, the DOM-side bridge for Service Worker, WebRTC, and browser APIs.
+- `packages/web-sdk`: `@actrium/actr-web`, the browser SDK and `actor.sw.js` source.
+- `packages/web-react`: `@actrium/actr-web-react`, React hooks. The public exports are `useActorClient`, `useServiceCall`, and `useSubscription`.
 - `crates/sw-host`: Service Worker runtime compiled with wasm-bindgen.
 - `crates/dom-bridge`: Rust-side DOM bridge support.
 - `crates/mailbox-web`: IndexedDB-backed mailbox support.
+
+## Publishing
+
+The web npm packages are published through the `Publish Web Packages` GitHub
+Actions workflow. The local equivalent is:
+
+```bash
+cd bindings/web
+pnpm install --frozen-lockfile
+bash scripts/publish.sh --dry-run --expected-version 0.1.0
+```
+
+The script publishes in dependency order: `@actrium/actr-dom`,
+`@actrium/actr-web`, then `@actrium/actr-web-react`.
 
 ## Documentation
 

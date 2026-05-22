@@ -3,7 +3,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { ActorClient, MessageMetadata } from '@actr/web';
+import { Actor } from '@actrium/actr-web';
 
 export interface UseSubscriptionResult<T> {
   /** Array of received data */
@@ -55,7 +55,7 @@ export interface UseSubscriptionResult<T> {
  * ```
  */
 export function useSubscription<T>(
-  client: ActorClient | null,
+  client: Actor | null,
   service: string,
   topic: string,
   enabled: boolean = true
@@ -69,20 +69,17 @@ export function useSubscription<T>(
       return;
     }
 
+    const currentClient = client;
     let unsubscribe: (() => void) | null = null;
 
     async function subscribe() {
       try {
         setError(null);
 
-        unsubscribe = await client.subscribe<T>(
-          service,
-          topic,
-          (newData: T, _metadata: MessageMetadata) => {
-            setLatest(newData);
-            setData((prev) => [...prev, newData]);
-          }
-        );
+        unsubscribe = await currentClient.subscribe<T>(`${service}.${topic}`, (newData: T) => {
+          setLatest(newData);
+          setData((prev) => [...prev, newData]);
+        });
       } catch (err) {
         setError(err as Error);
       }

@@ -16,10 +16,10 @@
     "rootDir": ".",
     "baseUrl": ".",
     "paths": {
-      "@actr/dom": ["packages/actr-dom/src/index.ts"],
-      "@actr/dom/*": ["packages/actr-dom/src/*"],
-      "@actr/web": ["packages/web-sdk/src/index.ts"],
-      "@actr/web/*": ["packages/web-sdk/src/*"]
+      "@actrium/actr-dom": ["packages/actr-dom/src/index.ts"],
+      "@actrium/actr-dom/*": ["packages/actr-dom/src/*"],
+      "@actrium/actr-web": ["packages/web-sdk/src/index.ts"],
+      "@actrium/actr-web/*": ["packages/web-sdk/src/*"]
     },
     "composite": true,
     "incremental": true

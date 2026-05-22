@@ -1,0 +1,156 @@
+name: Publish Web Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_version:
+        description: Version already committed in the web package.json files
+        required: true
+        type: string
+      dry_run:
+        description: Validate and package without publishing to npm
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish-web:
+    name: Publish bindings/web
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Install latest npm for Trusted Publishing
+        run: npm install -g npm@latest
+
+      - name: Show Node.js and pnpm versions
+        run: |
+          node -v
+          npm -v
+          pnpm -v
+
+      - name: Check npm Trusted Publishing toolchain
+        run: |
+          node <<'EOF'
+          const { execFileSync } = require('node:child_process');
+
+          const requiredNode = [22, 14, 0];
+          const requiredNpm = [11, 5, 1];
+
+          function parse(version) {
+            return version.replace(/^v/, '').split('.').map((part) => Number.parseInt(part, 10));
+          }
+
+          function compare(actual, required) {
+            for (let index = 0; index < required.length; index += 1) {
+              const actualPart = actual[index] ?? 0;
+              const requiredPart = required[index] ?? 0;
+              if (actualPart > requiredPart) {
+                return 1;
+              }
+              if (actualPart < requiredPart) {
+                return -1;
+              }
+            }
+            return 0;
+          }
+
+          const nodeVersion = parse(process.version);
+          const npmVersionText = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim();
+          const npmVersion = parse(npmVersionText);
+
+          if (compare(nodeVersion, requiredNode) < 0) {
+            throw new Error(`Trusted Publishing requires Node.js >= ${requiredNode.join('.')}; got ${process.version}`);
+          }
+
+          if (compare(npmVersion, requiredNpm) < 0) {
+            throw new Error(`Trusted Publishing requires npm >= ${requiredNpm.join('.')}; got ${npmVersionText}`);
+          }
+          EOF
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+
+      - name: Validate web package metadata
+        run: |
+          node <<'EOF'
+          const fs = require('node:fs');
+
+          const expectedVersion = process.env.EXPECTED_VERSION;
+          const packages = [
+            ['packages/actr-dom/package.json', '@actrium/actr-dom'],
+            ['packages/web-sdk/package.json', '@actrium/actr-web'],
+            ['packages/web-react/package.json', '@actrium/actr-web-react'],
+          ];
+
+          for (const [path, expectedName] of packages) {
+            const packageJson = JSON.parse(fs.readFileSync(path, 'utf8'));
+            if (packageJson.name !== expectedName) {
+              throw new Error(`${path}: expected ${expectedName}, got ${packageJson.name}`);
+            }
+            if (packageJson.version !== expectedVersion) {
+              throw new Error(`${path}: expected version ${expectedVersion}, got ${packageJson.version}`);
+            }
+            if (packageJson.publishConfig?.access !== 'public') {
+              throw new Error(`${path}: publishConfig.access must be public`);
+            }
+            if (packageJson.repository?.url !== 'git+https://github.com/Actrium/actr.git') {
+              throw new Error(`${path}: repository.url must be git+https://github.com/Actrium/actr.git`);
+            }
+            if (!packageJson.repository?.directory?.startsWith('bindings/web/packages/')) {
+              throw new Error(`${path}: repository.directory must point at the package directory`);
+            }
+          }
+          EOF
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+
+      - name: Build web packages
+        run: pnpm run build:packages
+
+      - name: Dry run web package publish
+        if: ${{ inputs.dry_run }}
+        run: bash scripts/publish.sh --dry-run --skip-build --expected-version "${{ inputs.expected_version }}"
+
+      - name: Publish web packages to npm
+        if: ${{ !inputs.dry_run }}
+        run: |
+          rm -f "${NPM_CONFIG_USERCONFIG:-}"
+          unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
+          npm config set registry https://registry.npmjs.org/
+          bash scripts/publish.sh --skip-build --expected-version "${{ inputs.expected_version }}"
+
+      - name: Verify npm package versions
+        if: ${{ !inputs.dry_run }}
+        run: |
+          expected_version="${{ inputs.expected_version }}"
+          for package in @actrium/actr-dom @actrium/actr-web @actrium/actr-web-react; do
+            published_version="$(npm view "$package" version)"
+            if [ "$published_version" != "$expected_version" ]; then
+              echo "Expected $package@$expected_version, got $published_version"
+              exit 1
+            fi
+          done

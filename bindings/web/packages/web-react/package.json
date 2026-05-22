@@ -1,7 +1,7 @@
 {
-  "name": "@actr/web-react",
+  "name": "@actrium/actr-web-react",
   "version": "0.1.0",
-  "description": "React Hooks for Actor-RTC Web",
+  "description": "React hooks for Actrium Web",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,7 +21,7 @@
     "test": "vitest"
   },
   "dependencies": {
-    "@actr/web": "workspace:*"
+    "@actrium/actr-web": "workspace:*"
   },
   "peerDependencies": {
     "react": "^18.0.0"
@@ -42,7 +42,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/actor-rtc/actr",
-    "directory": "actr-web/packages/web-react"
+    "url": "git+https://github.com/Actrium/actr.git",
+    "directory": "bindings/web/packages/web-react"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

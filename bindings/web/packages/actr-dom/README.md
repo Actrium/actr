@@ -1,4 +1,4 @@
-# @actr/dom
+# @actrium/actr-dom
 
 **Actor-RTC DOM-side Fixed Forwarding Layer**
 
@@ -19,7 +19,7 @@ All user business logic lives in the Service Worker runtime, typically in WASM. 
 ## Installation
 
 ```bash
-npm install @actr/dom
+npm install @actrium/actr-dom
 ```
 
 ## Usage
@@ -27,7 +27,7 @@ npm install @actr/dom
 ### Basic Usage
 
 ```typescript
-import { initActrDom } from '@actr/dom';
+import { initActrDom } from '@actrium/actr-dom';
 
 // Initialize the DOM runtime
 const runtime = await initActrDom({
@@ -59,7 +59,7 @@ console.log('Actor-RTC DOM runtime initialized');
 
   <!-- Load the DOM runtime -->
   <script type="module">
-    import { initActrDom } from 'https://cdn.example.com/@actr/dom/dist/index.js';
+    import { initActrDom } from 'https://cdn.example.com/@actrium/actr-dom/dist/index.js';
 
     const runtime = await initActrDom({
       serviceWorkerUrl: '/worker.js',

@@ -55,7 +55,7 @@ export interface RpcOptions {
 /**
  * Subscription callback
  *
- * ，metadata  WASM ，UI 
+ * ，metadata  WASM ，UI
  */
 export type SubscriptionCallback<T> = (data: T) => void;
 
