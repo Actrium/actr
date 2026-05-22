@@ -135,22 +135,37 @@ jobs:
         if: ${{ inputs.dry_run }}
         run: bash scripts/publish.sh --dry-run --skip-build --expected-version "${{ inputs.expected_version }}"
 
-      - name: Publish web packages to npm
+      - name: Stage publish web packages to npm
         if: ${{ !inputs.dry_run }}
         run: |
+          set -euo pipefail
           rm -f "${NPM_CONFIG_USERCONFIG:-}"
           unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
           npm config set registry https://registry.npmjs.org/
-          bash scripts/publish.sh --skip-build --expected-version "${{ inputs.expected_version }}"
 
-      - name: Verify npm package versions
-        if: ${{ !inputs.dry_run }}
-        run: |
-          expected_version="${{ inputs.expected_version }}"
-          for package in @actrium/actr-dom @actrium/actr-web @actrium/actr-web-react; do
-            published_version="$(npm view "$package" version)"
-            if [ "$published_version" != "$expected_version" ]; then
-              echo "Expected $package@$expected_version, got $published_version"
-              exit 1
-            fi
+          pack_dir="$(mktemp -d)"
+          trap 'rm -rf "$pack_dir"' EXIT
+
+          packages=(
+            "packages/web-react:@actrium/actr-web-react"
+          )
+
+          for package in "${packages[@]}"; do
+            path="${package%%:*}"
+            name="${package##*:}"
+            echo "Packing $name from $path"
+            pack_output="$(cd "$path" && pnpm pack --pack-destination "$pack_dir" --json)"
+            tarball="$(node -e '
+              const fs = require("node:fs");
+              const input = fs.readFileSync(0, "utf8");
+              const data = JSON.parse(input);
+              const entry = Array.isArray(data) ? data[0] : data;
+              if (!entry?.filename) {
+                throw new Error(`pnpm pack did not return a tarball filename: ${input}`);
+              }
+              process.stdout.write(entry.filename);
+            ' <<<"$pack_output")"
+
+            echo "Stage publishing $name from $tarball"
+            npm stage publish "$tarball" --access public --tag trusted-publisher-test
           done
