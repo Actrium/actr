@@ -1,7 +1,7 @@
 /**
  * Echo Server - Actor-RTC Web browser-hosted server sample
  *
- * Demonstrates how to host a browser-side Echo service with the @actr/web API:
+ * Demonstrates how to host a browser-side Echo service with the @actrium/actr-web API:
  * 1. Use createActor to build the Actor (initializes the SW bridge + WebRTC)
  * 2. The EchoService workload inside the WASM Service Worker handles the RPC surface
  * 3. The SW broadcasts console events back to the page through clients.postMessage
@@ -16,7 +16,7 @@
  * └───────────────────────────────────────────────┘
  */
 
-import { createActor, type Actor } from '@actr/web';
+import { createActor, type Actor } from '@actrium/actr-web';
 import { initConfig, actrType, system, buildActrConfig } from './generated';
 
 // ── DOM Elements ──

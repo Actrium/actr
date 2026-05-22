@@ -1,6 +1,6 @@
 # Echo Server
 
-Actor-RTC 浏览器端服务器示例，演示如何使用 `@actr/web` 统一 Actor API 创建运行在浏览器中的服务。
+Actor-RTC 浏览器端服务器示例，演示如何使用 `@actrium/actr-web` 统一 Actor API 创建运行在浏览器中的服务。
 
 ## 架构
 
@@ -10,7 +10,7 @@ Actor-RTC 浏览器端服务器示例，演示如何使用 `@actr/web` 统一 Ac
 │  ┌──────────────────────────────────────────────────────────┐  │
 │  │                         DOM                                │  │
 │  │  ┌──────────────────┐   ┌──────────────────────────────┐ │  │
-│  │  │  main.ts         │   │  @actr/dom                   │ │  │
+│  │  │  main.ts         │   │  @actrium/actr-dom                   │ │  │
 │  │  │  - createActor   │   │  - WebRTC 管理               │ │  │
 │  │  │  - UI 更新       │   │  - DataChannel               │ │  │
 │  │  └──────────────────┘   └──────────────────────────────┘ │  │
@@ -61,7 +61,7 @@ pnpm build
 ## Actor 创建方式
 
 ```typescript
-import { createActor } from '@actr/web';
+import { createActor } from '@actrium/actr-web';
 
 const actor = await createActor({
   signalingUrl: 'wss://signal.example.com',

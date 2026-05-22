@@ -7,8 +7,8 @@ export default defineConfig({
     plugins: [wasm(), topLevelAwait()],
     resolve: {
         alias: {
-            '@actr/web': path.resolve(__dirname, '../../../packages/web-sdk/src'),
-            '@actr/dom': path.resolve(__dirname, '../../../packages/actr-dom/src'),
+            '@actrium/actr-web': path.resolve(__dirname, '../../../packages/web-sdk/src'),
+            '@actrium/actr-dom': path.resolve(__dirname, '../../../packages/actr-dom/src'),
         },
     },
     server: {
@@ -20,6 +20,6 @@ export default defineConfig({
         },
     },
     optimizeDeps: {
-        exclude: ['@actr/web'],
+        exclude: ['@actrium/actr-web'],
     },
 });

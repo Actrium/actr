@@ -45,7 +45,7 @@ importers:
 
   examples/data-stream-peer-concurrent/client:
     dependencies:
-      '@actr/web':
+      '@actrium/actr-web':
         specifier: workspace:*
         version: link:../../../packages/web-sdk
     devDependencies:
@@ -61,7 +61,7 @@ importers:
 
   examples/data-stream-peer-concurrent/server:
     dependencies:
-      '@actr/web':
+      '@actrium/actr-web':
         specifier: workspace:*
         version: link:../../../packages/web-sdk
     devDependencies:
@@ -77,7 +77,7 @@ importers:
 
   examples/echo/client:
     dependencies:
-      '@actr/web':
+      '@actrium/actr-web':
         specifier: workspace:*
         version: link:../../../packages/web-sdk
     devDependencies:
@@ -93,7 +93,7 @@ importers:
 
   examples/echo/server:
     dependencies:
-      '@actr/web':
+      '@actrium/actr-web':
         specifier: workspace:*
         version: link:../../../packages/web-sdk
     devDependencies:
@@ -118,7 +118,7 @@ importers:
 
   packages/web-react:
     dependencies:
-      '@actr/web':
+      '@actrium/actr-web':
         specifier: workspace:*
         version: link:../web-sdk
     devDependencies:
@@ -137,7 +137,7 @@ importers:
 
   packages/web-sdk:
     dependencies:
-      '@actr/dom':
+      '@actrium/actr-dom':
         specifier: workspace:*
         version: link:../actr-dom
       protobufjs:

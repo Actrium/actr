@@ -126,6 +126,12 @@ TypeScript package releases use the separate manual workflow
 The package must be published manually once before enabling the trusted
 publisher for `.github/workflows/publish-typescript.yml`.
 
+Web package releases use the separate manual workflow `Publish Web Packages`.
+It publishes the browser packages from `bindings/web` in dependency order:
+`@actrium/actr-dom`, `@actrium/actr-web`, then `@actrium/actr-web-react`.
+Run the workflow with `dry_run=true` first to validate the package metadata and
+tarball contents before publishing.
+
 ## 📄 License
 
 This project is released under the MIT License.

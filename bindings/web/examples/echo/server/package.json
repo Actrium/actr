@@ -9,7 +9,7 @@
         "preview": "vite preview"
     },
     "dependencies": {
-        "@actr/web": "workspace:*"
+        "@actrium/actr-web": "workspace:*"
     },
     "devDependencies": {
         "typescript": "^5.3.0",

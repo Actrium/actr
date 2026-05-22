@@ -39,7 +39,7 @@ guest 侧 `wit-bindgen` 用 `async: true`，生成的 core wasm 里出现 `conte
 │ Browser tab (DOM context)                                       │
 │                                                                 │
 │   ┌───────────────┐        ┌─────────────────────────────┐    │
-│   │ app script    │  uses  │ @actr/web-sdk               │    │
+│   │ app script    │  uses  │ @actrium/actr-web                   │    │
 │   │ (user code)   │───────▶│   actor.callRaw(…)          │    │
 │   └───────────────┘        └─────────────┬───────────────┘    │
 │                                          │ postMessage         │

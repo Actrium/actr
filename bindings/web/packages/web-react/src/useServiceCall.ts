@@ -3,7 +3,7 @@
  */
 
 import { useState, useCallback } from 'react';
-import { ActorClient, RpcOptions } from '@actr/web';
+import { Actor, RpcOptions } from '@actrium/actr-web';
 
 export interface UseServiceCallResult<TRequest, TResponse> {
   /** Call the service method */
@@ -57,7 +57,7 @@ export interface UseServiceCallResult<TRequest, TResponse> {
  * ```
  */
 export function useServiceCall<TRequest, TResponse>(
-  client: ActorClient | null,
+  client: Actor | null,
   service: string,
   method: string
 ): UseServiceCallResult<TRequest, TResponse> {

@@ -68,7 +68,7 @@ The sync script copies canonical web runtime assets into `cli/assets/web-runtime
 
 ## React Integration
 
-`@actr/web-react` currently re-exports the hooks defined in `bindings/web/packages/web-react/src/index.ts`:
+`@actrium/actr-web-react` currently re-exports the hooks defined in `bindings/web/packages/web-react/src/index.ts`:
 
 - `useActorClient`
 - `useServiceCall`

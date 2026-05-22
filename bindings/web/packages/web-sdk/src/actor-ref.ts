@@ -1,7 +1,7 @@
 /**
- * ActorRef - Actor 
+ * ActorRef - Actor
  *
- * ： @actr/dom  Service Worker WASM 
+ * ： @actrium/actr-dom  Service Worker WASM
  */
 
 import {
@@ -9,11 +9,11 @@ import {
   RpcResponsePayload,
   SubscriptionDataPayload,
   WebRtcEventPayload,
-} from '@actr/dom';
+} from '@actrium/actr-dom';
 import type { SubscriptionCallback, UnsubscribeFn } from './types';
 
 /**
- * RPC 
+ * RPC
  */
 export interface RpcRequest<T = unknown> {
   service: string;
@@ -23,7 +23,7 @@ export interface RpcRequest<T = unknown> {
 }
 
 /**
- * Actor 
+ * Actor
  *
  *  API：
  * - call(): -（State Path，30-40ms）
@@ -56,7 +56,7 @@ export class ActorRef {
   }
 
   /**
-   *  Service Worker 
+   *  Service Worker
    */
   private setupMessageHandlers(): void {
     const bridge = this.domRuntime.getSWBridge();
@@ -86,7 +86,7 @@ export class ActorRef {
   }
 
   /**
-   *  RPC 
+   *  RPC
    */
   private handleRpcResponse(payload: RpcResponsePayload): void {
     const { request_id, data, error } = payload;
@@ -108,7 +108,7 @@ export class ActorRef {
   }
 
   /**
-   * 
+   *
    */
   private handleSubscriptionData(payload: SubscriptionDataPayload): void {
     const { topic, data } = payload;
@@ -128,7 +128,7 @@ export class ActorRef {
   }
 
   /**
-   *  WebRTC 
+   *  WebRTC
    */
   private handleWebRtcEvent(payload: WebRtcEventPayload): void {
     const { eventType, data } = payload;
@@ -142,9 +142,7 @@ export class ActorRef {
         });
         // Fail-fast: reject all pending RPCs when connection is irrecoverable
         if (data.state === 'failed' || data.state === 'closed') {
-          this.rejectAllPending(
-            `WebRTC connection ${data.state} (peer: ${data.peerId})`
-          );
+          this.rejectAllPending(`WebRTC connection ${data.state} (peer: ${data.peerId})`);
         }
         break;
 
@@ -164,9 +162,9 @@ export class ActorRef {
   /**
    * call() - -（State Path）
    *
-   * @param service - 
-   * @param method - 
-   * @param params - 
+   * @param service -
+   * @param method -
+   * @param params -
    * @param timeout - （）， 30000ms
    */
   async call<TReq = unknown, TRes = unknown>(
@@ -253,8 +251,8 @@ export class ActorRef {
   /**
    * subscribe() - （Fast Path）
    *
-   * @param topic - 
-   * @param callback - 
+   * @param topic -
+   * @param callback -
    */
   async subscribe<T = unknown>(
     topic: string,
@@ -297,10 +295,10 @@ export class ActorRef {
   }
 
   /**
-   * on() - 
+   * on() -
    *
-   * @param event - 
-   * @param callback - 
+   * @param event -
+   * @param callback -
    */
   on(event: string, callback: (...args: unknown[]) => void): UnsubscribeFn {
     let callbacks = this.eventListeners.get(event);
@@ -349,9 +347,7 @@ export class ActorRef {
    */
   private rejectAllPending(reason: string): void {
     if (this.pendingRequests.size === 0) return;
-    console.warn(
-      `[ActorRef] Rejecting ${this.pendingRequests.size} pending RPCs: ${reason}`
-    );
+    console.warn(`[ActorRef] Rejecting ${this.pendingRequests.size} pending RPCs: ${reason}`);
     for (const [requestId, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(new Error(reason));
@@ -360,7 +356,7 @@ export class ActorRef {
   }
 
   /**
-   * 
+   *
    */
   dispose(): void {
     for (const [_requestId, pending] of this.pendingRequests) {

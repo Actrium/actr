@@ -1,14 +1,14 @@
 /**
  * Echo Client - Actor-RTC Web browser client sample
  *
- * Demonstrates how to use the @actr/web unified Actor API + Local Handler to call a remote Echo service:
+ * Demonstrates how to use the @actrium/actr-web unified Actor API + Local Handler to call a remote Echo service:
  * 1. Create an Actor (shared P2P instance with the Local Handler WASM automatically loaded)
  * 2. The DOM sends requests via callRaw('echo.EchoService.Echo', payload)
  * 3. The Local Handler (WASM) discovers the remote Echo Server using ctx.discover()
  * 4. The Local Handler forwards requests via ctx.call_raw() to the remote peer and returns responses
  */
 
-import { createActor, Actor } from '@actr/web';
+import { createActor, Actor } from '@actrium/actr-web';
 import { initConfig, buildActrConfig } from './generated';
 
 // ── Minimal protobuf helpers for EchoRequest / EchoResponse ──

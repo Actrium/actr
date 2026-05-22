@@ -19,10 +19,10 @@
         "noUnusedParameters": false,
         "noFallthroughCasesInSwitch": true,
         "paths": {
-            "@actr/web": [
+            "@actrium/actr-web": [
                 "../../../packages/web-sdk/src"
             ],
-            "@actr/dom": [
+            "@actrium/actr-dom": [
                 "../../../packages/actr-dom/src"
             ]
         }

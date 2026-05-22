@@ -1,5 +1,5 @@
 /**
- * Fast Path Forwarder - 
+ * Fast Path Forwarder -
  *
  *  WebRTC DataChannel  Service Worker WASM
  */
@@ -13,13 +13,13 @@ export interface FastPathData {
 }
 
 /**
- * Fast Path 
+ * Fast Path
  */
 export class FastPathForwarder {
   private swBridge: ServiceWorkerBridge;
   private batchQueue: FastPathData[] = [];
   private batchTimer: number | null = null;
-  private batchSize = 10; // 
+  private batchSize = 10; //
   private batchTimeoutMs = 5; // （）
 
   constructor(swBridge: ServiceWorkerBridge) {
@@ -29,7 +29,7 @@ export class FastPathForwarder {
   /**
    *  Fast Path  Service Worker
    *
-   *  Transferable ArrayBuffer 
+   *  Transferable ArrayBuffer
    */
   forward(streamId: string, data: ArrayBuffer): void {
     const fastPathData: FastPathData = {
@@ -43,9 +43,9 @@ export class FastPathForwarder {
   }
 
   /**
-   *  Fast Path 
+   *  Fast Path
    *
-   * ， PostMessage 
+   * ， PostMessage
    */
   forwardBatch(streamId: string, data: ArrayBuffer): void {
     this.batchQueue.push({
@@ -58,7 +58,7 @@ export class FastPathForwarder {
     if (this.batchQueue.length >= this.batchSize) {
       this.flushBatch();
     } else if (this.batchTimer === null) {
-      // 
+      //
       this.batchTimer = window.setTimeout(() => {
         this.flushBatch();
       }, this.batchTimeoutMs);
@@ -66,7 +66,7 @@ export class FastPathForwarder {
   }
 
   /**
-   * 
+   *
    */
   private forwardImmediate(fastPathData: FastPathData): void {
     const view = new Uint8Array(fastPathData.data);
@@ -79,19 +79,19 @@ export class FastPathForwarder {
           timestamp: fastPathData.timestamp,
         },
       },
-      [view.buffer as ArrayBuffer] // Transferable - 
+      [view.buffer as ArrayBuffer] // Transferable -
     );
   }
 
   /**
-   * 
+   *
    */
   private flushBatch(): void {
     if (this.batchQueue.length === 0) {
       return;
     }
 
-    // 
+    //
     if (this.batchTimer !== null) {
       window.clearTimeout(this.batchTimer);
       this.batchTimer = null;
@@ -107,7 +107,7 @@ export class FastPathForwarder {
       (item) => item.data.buffer as ArrayBuffer
     );
 
-    // 
+    //
     this.swBridge.sendToSW(
       {
         type: 'fast_path_data',
@@ -118,12 +118,12 @@ export class FastPathForwarder {
       transferables
     );
 
-    // 
+    //
     this.batchQueue = [];
   }
 
   /**
-   * 
+   *
    */
   setBatchParams(size: number, timeoutMs: number): void {
     this.batchSize = size;
@@ -131,7 +131,7 @@ export class FastPathForwarder {
   }
 
   /**
-   * 
+   *
    */
   getMetrics(): {
     queueLength: number;
@@ -144,7 +144,7 @@ export class FastPathForwarder {
   }
 
   /**
-   * 
+   *
    */
   dispose(): void {
     if (this.batchTimer !== null) {

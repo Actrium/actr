@@ -47,8 +47,8 @@ bash scripts/sync-cli-assets.sh --build
 ```
 Browser tab
   DOM application
-  @actr/web SDK
-  @actr/dom bridge
+  @actrium/actr-web SDK
+  @actrium/actr-dom bridge
       |
       | MessagePort / postMessage
       v
@@ -66,12 +66,24 @@ Shared Service Worker: actor.sw.js
 
 ## 包结构
 
-- `packages/web-sdk`：浏览器 SDK 和 `actor.sw.js` 源文件。
-- `packages/actr-dom`：DOM 侧桥接层，负责 Service Worker、WebRTC 和浏览器 API 协调。
-- `packages/web-react`：React hooks。当前公开导出是 `useActorClient`、`useServiceCall`、`useSubscription`。
+- `packages/actr-dom`：`@actrium/actr-dom`，DOM 侧桥接层，负责 Service Worker、WebRTC 和浏览器 API 协调。
+- `packages/web-sdk`：`@actrium/actr-web`，浏览器 SDK 和 `actor.sw.js` 源文件。
+- `packages/web-react`：`@actrium/actr-web-react`，React hooks。当前公开导出是 `useActorClient`、`useServiceCall`、`useSubscription`。
 - `crates/sw-host`：通过 wasm-bindgen 构建的 Service Worker runtime。
 - `crates/dom-bridge`：Rust 侧 DOM bridge 支持。
 - `crates/mailbox-web`：IndexedDB mailbox 支持。
+
+## 发布
+
+Web npm 包通过 GitHub Actions 的 `Publish Web Packages` 手动 workflow 发布。本地等价验证命令是：
+
+```bash
+cd bindings/web
+pnpm install --frozen-lockfile
+bash scripts/publish.sh --dry-run --expected-version 0.1.0
+```
+
+脚本按依赖顺序发布：`@actrium/actr-dom`、`@actrium/actr-web`、`@actrium/actr-web-react`。
 
 ## 文档导航
 

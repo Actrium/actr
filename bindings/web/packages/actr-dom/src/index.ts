@@ -1,12 +1,12 @@
 /**
- * @actr/dom - Actor-RTC DOM-side Fixed Forwarding Layer
+ * @actrium/actr-dom - Actor-RTC DOM-side Fixed Forwarding Layer
  *
  *  JS （Hardware Abstraction Layer），。
  *
  * ：
  * 1.  WebRTC （DOM  WebRTC API）
  * 2.  WebRTC  Service Worker WASM
- * 3.  Service Worker  PostMessage 
+ * 3.  Service Worker  PostMessage
  *
  * ：docs/architecture/wasm-dom-integration.md
  */
@@ -32,7 +32,7 @@ export { WebRtcCoordinator } from './webrtc-coordinator';
 export type { WebRtcConfig, PeerConnectionInfo } from './webrtc-coordinator';
 
 /**
- * Actor-RTC DOM 
+ * Actor-RTC DOM
  */
 export interface ActrDomConfig {
   serviceWorkerUrl: string;
@@ -45,9 +45,9 @@ export interface ActrDomConfig {
 }
 
 /**
- * Actor-RTC DOM 
+ * Actor-RTC DOM
  *
- * 
+ *
  */
 export class ActrDomRuntime {
   private swBridge: ServiceWorkerBridge;
@@ -65,28 +65,28 @@ export class ActrDomRuntime {
   }
 
   /**
-   *  Service Worker 
+   *  Service Worker
    */
   getSWBridge(): ServiceWorkerBridge {
     return this.swBridge;
   }
 
   /**
-   *  Fast Path 
+   *  Fast Path
    */
   getForwarder(): FastPathForwarder {
     return this.forwarder;
   }
 
   /**
-   *  WebRTC 
+   *  WebRTC
    */
   getCoordinator(): WebRtcCoordinator {
     return this.coordinator;
   }
 
   /**
-   * 
+   *
    */
   dispose(): void {
     this.coordinator.dispose();
@@ -96,12 +96,12 @@ export class ActrDomRuntime {
 }
 
 /**
- *  Actor-RTC DOM 
+ *  Actor-RTC DOM
  *
  * @example
  * ```typescript
- * //  HTML 
- * import { initActrDom } from '@actr/dom';
+ * //  HTML
+ * import { initActrDom } from '@actrium/actr-dom';
  *
  * const runtime = await initActrDom({
  *   serviceWorkerUrl: '/my-actor.sw.js',
@@ -116,14 +116,14 @@ export class ActrDomRuntime {
 export async function initActrDom(config: ActrDomConfig): Promise<ActrDomRuntime> {
   console.log('[actr-dom] Initializing...');
 
-  // 1.  Service Worker 
+  // 1.  Service Worker
   const swBridge = new ServiceWorkerBridge();
   await swBridge.initialize(config.serviceWorkerUrl, config.runtimeConfig);
 
-  // 2.  Fast Path 
+  // 2.  Fast Path
   const forwarder = new FastPathForwarder(swBridge);
 
-  // 3.  WebRTC 
+  // 3.  WebRTC
   const coordinator = new WebRtcCoordinator(swBridge, forwarder, config.webrtcConfig || {});
 
   console.log('[actr-dom] Initialized successfully');
@@ -132,7 +132,7 @@ export async function initActrDom(config: ActrDomConfig): Promise<ActrDomRuntime
 }
 
 /**
- * 
+ *
  */
 export default {
   initActrDom,

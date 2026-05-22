@@ -375,14 +375,14 @@ const serverActor = await createActor({
 
 **核心层**: 框架无关的 TypeScript SDK
 ```typescript
-@actr/web - 纯 TS，无框架依赖
+@actrium/actr-web - 纯 TS，无框架依赖
 ```
 
 **集成层**: 框架专用封装
 ```typescript
-@actr/web-react   - React Hooks (Phase 1)
-@actr/web-vue     - Vue Composables (Phase 2)
-@actr/web-svelte  - Svelte Stores (Phase 3)
+@actrium/actr-web-react   - React Hooks (Phase 1)
+@actrium/actr-web-vue     - Vue Composables (Phase 2)
+@actrium/actr-web-svelte  - Svelte Stores (Phase 3)
 ```
 
 ### 理由

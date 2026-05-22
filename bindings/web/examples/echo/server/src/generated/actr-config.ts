@@ -8,7 +8,7 @@
  * Config now comes from the runtime config endpoint instead of build-time generation.
  */
 
-import type { ActorClientConfig, SwRuntimeConfig, TrustAnchor } from '@actr/web';
+import type { ActorClientConfig, SwRuntimeConfig, TrustAnchor } from '@actrium/actr-web';
 
 // ── Runtime Config JSON shape ──
 

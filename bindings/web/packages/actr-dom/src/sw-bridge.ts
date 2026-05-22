@@ -1,16 +1,16 @@
 /**
- * Service Worker Bridge - PostMessage 
+ * Service Worker Bridge - PostMessage
  *
- *  DOM  Service Worker 
+ *  DOM  Service Worker
  */
 
 export type MessageToSW =
   | {
-    type: 'fast_path_data';
-    payload:
-    | { streamId: string; data: Uint8Array; timestamp: number }
-    | { batch: { streamId: string; data: Uint8Array; timestamp: number }[] };
-  }
+      type: 'fast_path_data';
+      payload:
+        | { streamId: string; data: Uint8Array; timestamp: number }
+        | { batch: { streamId: string; data: Uint8Array; timestamp: number }[] };
+    }
   | { type: 'webrtc_event'; payload: WebRtcEventPayload }
   | { type: 'control'; payload: ControlCommandPayload }
   | { type: 'unregister_client' }
@@ -22,10 +22,10 @@ export type MessageToSW =
  */
 export type ControlCommandPayload =
   | {
-    action: 'rpc_call';
-    request_id: string;
-    request: Uint8Array | { route_key: string; payload: Uint8Array; timeout?: number } | any;
-  }
+      action: 'rpc_call';
+      request_id: string;
+      request: Uint8Array | { route_key: string; payload: Uint8Array; timeout?: number } | any;
+    }
   | { action: 'subscribe'; topic: string }
   | { action: 'unsubscribe'; topic: string };
 
@@ -36,10 +36,10 @@ export type ControlCommandPayload =
 export type WebRtcCommandPayload =
   | { action: 'create_peer'; peerId: string; payload?: never }
   | {
-    action: 'set_remote_description';
-    peerId: string;
-    payload: { sdp: RTCSessionDescriptionInit };
-  }
+      action: 'set_remote_description';
+      peerId: string;
+      payload: { sdp: RTCSessionDescriptionInit };
+    }
   | { action: 'set_local_description'; peerId: string; payload: { sdp: RTCSessionDescriptionInit } }
   | { action: 'add_ice_candidate'; peerId: string; payload: { candidate: RTCIceCandidateInit } }
   | { action: 'create_offer'; peerId: string; payload?: never }
@@ -75,16 +75,16 @@ export interface SubscriptionDataPayload {
  */
 export type WebRtcEventPayload =
   | {
-    eventType: 'connection_state_changed';
-    data: { peerId: string; state: RTCPeerConnectionState };
-  }
+      eventType: 'connection_state_changed';
+      data: { peerId: string; state: RTCPeerConnectionState };
+    }
   | { eventType: 'datachannel_open'; data: { peerId: string; channelId: number; label: string } }
   | { eventType: 'datachannel_close'; data: { peerId: string; channelId: number } }
   | { eventType: 'local_description'; data: { peerId: string; sdp: RTCSessionDescriptionInit } }
   | {
-    eventType: 'ice_restart_local_description';
-    data: { peerId: string; sdp: RTCSessionDescriptionInit };
-  }
+      eventType: 'ice_restart_local_description';
+      data: { peerId: string; sdp: RTCSessionDescriptionInit };
+    }
   | { eventType: 'ice_candidate'; data: { peerId: string; candidate: RTCIceCandidateInit } }
   | { eventType: 'command_error'; data: { peerId: string; action: string; error: string } }
   | { eventType: 'sw_log'; data: unknown };
@@ -99,7 +99,7 @@ export type MessageFromSW =
 export type MessageHandler = (message: MessageFromSW) => void;
 
 /**
- * Service Worker 
+ * Service Worker
  */
 export class ServiceWorkerBridge {
   private swPort: MessagePort | null = null;
@@ -118,9 +118,12 @@ export class ServiceWorkerBridge {
   }
 
   /**
-   *  Service Worker 
+   *  Service Worker
    */
-  async initialize(serviceWorkerUrl: string, runtimeConfig?: Record<string, unknown>): Promise<void> {
+  async initialize(
+    serviceWorkerUrl: string,
+    runtimeConfig?: Record<string, unknown>
+  ): Promise<void> {
     //  Service Worker
     if ('serviceWorker' in navigator) {
       const registration = await navigator.serviceWorker.register(serviceWorkerUrl, {
@@ -128,7 +131,7 @@ export class ServiceWorkerBridge {
       });
       await registration.update();
 
-      //  Service Worker 
+      //  Service Worker
       await navigator.serviceWorker.ready;
 
       // Wait for the controller to be set (may not be immediate after fresh registration).
@@ -159,7 +162,7 @@ export class ServiceWorkerBridge {
       const channel = new MessageChannel();
       this.swPort = channel.port1;
 
-      //  SW 
+      //  SW
       this.swPort.onmessage = (event) => {
         this.handleMessageFromSW(event.data);
       };
@@ -184,7 +187,7 @@ export class ServiceWorkerBridge {
   }
 
   /**
-   * 
+   *
    */
   async waitReady(): Promise<void> {
     return this.readyPromise;
@@ -201,7 +204,7 @@ export class ServiceWorkerBridge {
 
     console.log('[SW Bridge] -> SW', message); // [DEBUG] Keep for now
     if (transferables && transferables.length > 0) {
-      //  Transferable 
+      //  Transferable
       this.swPort.postMessage(message, transferables);
     } else {
       this.swPort.postMessage(message);
@@ -220,26 +223,23 @@ export class ServiceWorkerBridge {
    *  DataLane::PostMessage(port2) 。
    */
   sendDataChannelPort(peerId: string, port: MessagePort): void {
-    this.sendToSW(
-      { type: 'register_datachannel_port', payload: { peerId, port } },
-      [port]
-    );
+    this.sendToSW({ type: 'register_datachannel_port', payload: { peerId, port } }, [port]);
   }
 
   /**
-   * 
+   *
    */
   onMessage(handler: MessageHandler): () => void {
     this.messageHandlers.add(handler);
 
-    // 
+    //
     return () => {
       this.messageHandlers.delete(handler);
     };
   }
 
   /**
-   *  SW 
+   *  SW
    */
   private handleMessageFromSW(message: MessageFromSW): void {
     console.log('[SW Bridge] <- SW', message); // [DEBUG] Keep for now
@@ -253,14 +253,14 @@ export class ServiceWorkerBridge {
   }
 
   /**
-   * 
+   *
    */
   getClientId(): string {
     return this.clientId;
   }
 
   /**
-   * 
+   *
    */
   close(): void {
     if (this.swTarget) {

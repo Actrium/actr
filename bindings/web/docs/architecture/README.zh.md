@@ -133,7 +133,7 @@ actr-web/
 │   └── platform-web/        # Web platform glue
 ├── packages/
 │   ├── actr-dom/            # DOM 侧固定转发层（HAL）
-│   ├── web-sdk/             # TypeScript SDK (@actr/web)
+│   ├── web-sdk/             # TypeScript SDK (@actrium/actr-web)
 │   └── web-react/           # React Hooks（如启用）
 └── docs/
     ├── getting-started.md   # 用户文档
