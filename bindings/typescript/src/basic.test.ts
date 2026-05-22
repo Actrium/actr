@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import * as actr from '../typescript';
 
 // Basic sanity test to ensure the module loads
 describe('ACTR Module Loading', () => {
   it('should import the module successfully', () => {
-    const actr = require('../index.js');
     expect(actr).toBeDefined();
     expect(actr.ActrNode).toBeDefined();
     expect(actr.ActrRef).toBeDefined();
@@ -11,7 +11,7 @@ describe('ACTR Module Loading', () => {
   });
 
   it('should have correct PayloadType enum values', () => {
-    const { PayloadType } = require('../index.js');
+    const { PayloadType } = actr;
     expect(PayloadType.RpcReliable).toBe(0);
     expect(PayloadType.RpcSignal).toBe(1);
     expect(PayloadType.StreamReliable).toBe(2);

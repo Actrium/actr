@@ -23,7 +23,7 @@ Issues = "https://github.com/actor-rtc/actr-python/issues"
 Source = "https://github.com/actor-rtc/actr-python"
 
 [project.optional-dependencies]
-test = ["pytest>=7.0"]
+test = ["pytest>=7.0", "pytest-cov>=4.0"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

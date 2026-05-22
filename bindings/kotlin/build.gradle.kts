@@ -2,5 +2,6 @@ plugins {
     id("com.android.application") version "8.12.2" apply false
     id("com.android.library") version "8.12.2" apply false
     id("org.jetbrains.kotlin.android") version "1.9.22" apply false
+    id("org.jetbrains.kotlinx.kover") version "0.9.1" apply false
     id("com.google.protobuf") version "0.9.4" apply false
 }

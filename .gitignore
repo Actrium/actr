@@ -74,3 +74,9 @@ release/reports/
 
 # Standalone smoke / codegen-test crates ([workspace] of their own — lockfile not tracked)
 bindings/web/crates/framework-web-entry-smoke/Cargo.lock
+
+# Coverage output
+lcov.info
+coverage/
+coverage-html/
+coverage.lcov
