@@ -369,7 +369,12 @@
                 this.pendingSends = new Map();
                 this.pendingPortFrames = new Map();
                 this.rpcPorts = new Map();
+                this.fragmentCounters = new Map();
+                this.reassembly = new Map();
                 this.turnCred = null;
+                this.FRAGMENT_HEADER_SIZE = 8;
+                this.DC_MAX_MESSAGE_SIZE = 65535;
+                this.DC_MAX_PAYLOAD_SIZE = this.DC_MAX_MESSAGE_SIZE - this.FRAGMENT_HEADER_SIZE;
                 this.iceServers = config.iceServers || [{ urls: 'stun:stun.l.google.com:19302' }];
                 this.icePolicy = config.iceTransportPolicy;
                 this.lanes = [
@@ -477,10 +482,7 @@
                 const ch = p.dataChannels.get(cid);
                 if (!ch) { this._queuePendingSend(pid, cid, data); return; }
                 if (ch.readyState === 'open') {
-                    const out = new Uint8Array(1 + data.byteLength);
-                    out[0] = cid;
-                    out.set(data, 1);
-                    ch.send(out);
+                    this._sendFramed(pid, cid, ch, data);
                     return;
                 }
                 if (ch.readyState === 'connecting') {
@@ -512,12 +514,15 @@
                 for (const payload of queue) this._send(pid, cid, payload);
             }
             _queuePendingPortFrame(pid, frame) {
+                this._queuePendingPortFrameForChannel(pid, 0, frame);
+            }
+            _queuePendingPortFrameForChannel(pid, cid, payload) {
                 let queue = this.pendingPortFrames.get(pid);
                 if (!queue) {
                     queue = [];
                     this.pendingPortFrames.set(pid, queue);
                 }
-                queue.push(new Uint8Array(frame));
+                queue.push({ channelId: cid, payload: new Uint8Array(payload) });
             }
             _dropPendingPeerFrames(pid) {
                 this.pendingSends.delete(pid);
@@ -536,15 +541,19 @@
                 console.log(`[HostPage] bindRpcPort peer=${pid} reason=${reason}`);
                 const mc = new MessageChannel();
                 mc.port1.onmessage = e => {
-                    const src = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : e.data;
-                    const out = new Uint8Array(1 + (src.length - 5));
-                    out[0] = src[0];
-                    out.set(src.subarray(5), 1);
-                    if (ch.readyState === 'open') ch.send(out);
-                    else if (ch.readyState === 'connecting') this._queuePendingPortFrame(pid, out);
+                    const src = this._toU8(e.data);
+                    if (src.byteLength < 5) {
+                        console.warn(`[HostPage] drop short SW transport frame len=${src.byteLength}`);
+                        return;
+                    }
+                    const cid = src[0];
+                    const payload = src.subarray(5);
+                    const target = peer && peer.dataChannels.get(cid);
+                    if (target && target.readyState === 'open') this._sendFramed(pid, cid, target, payload);
+                    else if (target && target.readyState === 'connecting') this._queuePendingPortFrameForChannel(pid, cid, payload);
                     else {
                         this._dropPendingPeerFrames(pid);
-                        this._notify('command_error', { peerId: pid, action: 'send_port_frame', error: `datachannel_not_open:${ch.readyState}` });
+                        this._notify('command_error', { peerId: pid, action: 'send_port_frame', error: `datachannel_not_open:${target ? target.readyState : 'missing'}` });
                     }
                 };
                 this.rpcPorts.set(pid, mc.port1);
@@ -566,17 +575,95 @@
                 if (!queue || queue.length === 0) return;
                 if (ch.readyState !== 'open') return;
                 this.pendingPortFrames.delete(pid);
-                for (const frame of queue) ch.send(frame);
+                for (const frame of queue) {
+                    const target = this.peers.get(pid) && this.peers.get(pid).dataChannels.get(frame.channelId);
+                    if (!target || target.readyState !== 'open') {
+                        this._queuePendingPortFrameForChannel(pid, frame.channelId, frame.payload);
+                        continue;
+                    }
+                    this._sendFramed(pid, frame.channelId, target, frame.payload);
+                }
+            }
+            _toU8(data) {
+                if (data instanceof ArrayBuffer) return new Uint8Array(data);
+                if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+                return new Uint8Array(data);
+            }
+            _sendFramed(pid, cid, ch, payload) {
+                for (const frame of this._createFrames(pid, cid, this._toU8(payload))) ch.send(frame);
+            }
+            _createFrames(pid, cid, payload) {
+                const total = Math.max(1, Math.ceil(payload.byteLength / this.DC_MAX_PAYLOAD_SIZE));
+                if (total > 0xffff) throw new Error(`DataChannel payload too large: ${payload.byteLength} bytes`);
+                const key = `${pid}:${cid}`;
+                const msgId = this.fragmentCounters.get(key) || 0;
+                this.fragmentCounters.set(key, (msgId + 1) >>> 0);
+                const frames = [];
+                for (let i = 0; i < total; i++) {
+                    const start = i * this.DC_MAX_PAYLOAD_SIZE;
+                    const end = Math.min(start + this.DC_MAX_PAYLOAD_SIZE, payload.byteLength);
+                    const chunk = payload.subarray(start, end);
+                    const frame = new Uint8Array(this.FRAGMENT_HEADER_SIZE + chunk.byteLength);
+                    const view = new DataView(frame.buffer);
+                    view.setUint32(0, msgId, false);
+                    view.setUint16(4, i, false);
+                    view.setUint16(6, total, false);
+                    frame.set(chunk, this.FRAGMENT_HEADER_SIZE);
+                    frames.push(frame);
+                }
+                return frames;
+            }
+            _decodeFrame(pid, cid, frame) {
+                const src = this._toU8(frame);
+                if (src.byteLength < this.FRAGMENT_HEADER_SIZE) {
+                    console.warn(`[HostPage] drop short DataChannel frame len=${src.byteLength}`);
+                    return null;
+                }
+                const view = new DataView(src.buffer, src.byteOffset, src.byteLength);
+                const msgId = view.getUint32(0, false);
+                const index = view.getUint16(4, false);
+                const total = view.getUint16(6, false);
+                const payload = src.subarray(this.FRAGMENT_HEADER_SIZE);
+                if (total === 0 || index >= total) {
+                    console.warn(`[HostPage] drop invalid DataChannel fragment msg=${msgId} index=${index} total=${total}`);
+                    return null;
+                }
+                if (total === 1) return payload;
+                const key = `${pid}:${cid}:${msgId}`;
+                let entry = this.reassembly.get(key);
+                if (!entry) {
+                    entry = { totalFrags: total, receivedBytes: 0, fragments: new Map() };
+                    this.reassembly.set(key, entry);
+                }
+                if (!entry.fragments.has(index)) {
+                    const copy = new Uint8Array(payload);
+                    entry.fragments.set(index, copy);
+                    entry.receivedBytes += copy.byteLength;
+                }
+                if (entry.fragments.size !== entry.totalFrags) return null;
+                const complete = new Uint8Array(entry.receivedBytes);
+                let offset = 0;
+                for (let i = 0; i < entry.totalFrags; i++) {
+                    const frag = entry.fragments.get(i);
+                    if (!frag) return null;
+                    complete.set(frag, offset);
+                    offset += frag.byteLength;
+                }
+                this.reassembly.delete(key);
+                return complete;
             }
             _attach(pid, lid, ch) {
                 ch.binaryType = 'arraybuffer';
                 ch.onmessage = e => {
                     const buf = e.data instanceof Blob ? null : e.data;
-                    if (buf instanceof ArrayBuffer && buf.byteLength >= 1) {
-                        const v = new Uint8Array(buf); const vcid = v[0];
-                        this.forwarder.forward(pid + ':' + vcid, buf.slice(1));
+                    if (buf instanceof ArrayBuffer) {
+                        const payload = this._decodeFrame(pid, lid, buf);
+                        if (payload) this.forwarder.forward(pid + ':' + lid, payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength));
                     } else if (e.data instanceof Blob) {
-                        e.data.arrayBuffer().then(ab => { if (ab.byteLength < 1) return; const v = new Uint8Array(ab); this.forwarder.forward(pid + ':' + v[0], ab.slice(1)); });
+                        e.data.arrayBuffer().then(ab => {
+                            const payload = this._decodeFrame(pid, lid, ab);
+                            if (payload) this.forwarder.forward(pid + ':' + lid, payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength));
+                        });
                     }
                 };
                 ch.onopen = () => {

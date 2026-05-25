@@ -1,7 +1,2 @@
-# SPDX-License-Identifier: Apache-2.0
-#
-# Build-time dependency for the Python echo workload example.
-#
-# The actr-workload build extra pins componentize-py==0.23.0 and provides the
-# `actr-workload` CLI used by build.sh.
 -e ../../../bindings/python/actr-workload[build]
+protobuf>=6.33.3

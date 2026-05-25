@@ -1,20 +1,29 @@
 # SPDX-License-Identifier: Apache-2.0
-#
-# Python implementation of an actr workload, compiled to a wasm32-wasip2
-# Component via actr-workload and componentize-py.
+
+from __future__ import annotations
+
+import time
 
 from actr_workload import Workload as WorkloadProtocol
 
+from generated.echo_workload import EchoServiceDispatcher
+from generated.local import echo_pb2 as pb2
 
-_ECHO_PREFIX = b"echo: "
+
+class EchoServiceHandler:
+    def echo(self, req: pb2.EchoRequest) -> pb2.EchoResponse:
+        return pb2.EchoResponse(
+            reply=f"echo from python: {req.message}",
+            timestamp=int(time.time()),
+        )
 
 
 class Workload(WorkloadProtocol):
-    """Echo workload implementation for the actr-workload-guest world."""
+    def __init__(self) -> None:
+        self._dispatcher = EchoServiceDispatcher(EchoServiceHandler())
 
     def dispatch(self, envelope) -> bytes:
-        payload = envelope.payload if envelope.payload is not None else b""
-        return _ECHO_PREFIX + bytes(payload)
+        return self._dispatcher.dispatch(envelope)
 
     def on_start(self) -> None:
         return None

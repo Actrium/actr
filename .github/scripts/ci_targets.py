@@ -15,6 +15,7 @@ TARGETS = (
     "ts_workload",
     "python_codegen",
     "python_workload",
+    "python_web_e2e",
     "swift_binding",
     "kotlin_binding",
     "web_binding",
@@ -76,10 +77,17 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             targets["ts_binding"] = True
             targets["swift_binding"] = True
             targets["web_binding"] = True
+            targets["python_web_e2e"] = True
             if path == "core/framework/wit/actr-workload.wit":
                 targets["python_workload"] = True
                 targets["ts_workload"] = True
             reasons.append(f"core_dependency:{path}")
+            continue
+
+        if path == "cli/tests/e2e_python_web_echo.rs":
+            targets["rust_core"] = True
+            targets["python_web_e2e"] = True
+            reasons.append(f"python_web_e2e:{path}")
             continue
 
         if path.startswith(("src/", "cli/", "bindings/ffi/")):
@@ -110,7 +118,9 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
 
         if path.startswith("bindings/python/actr-workload/"):
             targets["python_workload"] = True
+            targets["python_web_e2e"] = True
             reasons.append(f"python_workload:{path}")
+            reasons.append(f"python_web_e2e:{path}")
             continue
 
         if path.startswith("tools/protoc-gen/python/"):
@@ -120,7 +130,9 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
 
         if path.startswith("examples/python/echo-workload/"):
             targets["python_workload"] = True
+            targets["python_web_e2e"] = True
             reasons.append(f"python_workload:{path}")
+            reasons.append(f"python_web_e2e:{path}")
             continue
 
         if path.startswith("examples/typescript/echo-workload/"):
@@ -138,9 +150,23 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             reasons.append(f"kotlin:{path}")
             continue
 
+        if path.startswith(
+            (
+                "bindings/web/examples/echo/start-python-mock.sh",
+                "bindings/web/examples/echo/test-python-workload.js",
+            )
+        ):
+            targets["web_binding"] = True
+            targets["python_web_e2e"] = True
+            reasons.append(f"web_binding:{path}")
+            reasons.append(f"python_web_e2e:{path}")
+            continue
+
         if path.startswith("bindings/web/"):
             targets["web_binding"] = True
+            targets["python_web_e2e"] = True
             reasons.append(f"web_binding:{path}")
+            reasons.append(f"python_web_e2e:{path}")
             continue
 
     if any(targets.values()):
