@@ -9,30 +9,12 @@ type PluginParams = {
   localFiles: Set<string>;
   remoteFiles: Set<string>;
   remoteFileMapping: Map<string, string>;
-  distImport: string;
-  emitLocalActor: boolean;
-};
-
-type RemoteDispatchEntry = {
-  requestCompanionName: string;
-  clientImportPath: string;
-  targetType: {
-    manufacturer: string;
-    name: string;
-  };
 };
 
 type AnalyzedMethod = {
   service: DescService;
   method: DescMethod;
-  helperSuffix: string;
   requestCompanionName: string;
-};
-
-type LocalMethodEntry = {
-  requestCompanionName: string;
-  handlerName: string;
-  method: DescMethod;
 };
 
 type MethodMetadata = {
@@ -41,16 +23,6 @@ type MethodMetadata = {
   input_type: string;
   output_type: string;
   route_key: string;
-};
-
-type LocalServiceMetadata = {
-  name: string;
-  package: string;
-  proto_file: string;
-  handler_interface: string;
-  workload_type: string;
-  dispatcher_type: string;
-  methods: MethodMetadata[];
 };
 
 type RemoteServiceMetadata = {
@@ -76,15 +48,11 @@ const plugin = createEcmaScriptPlugin<PluginParams>({
 runNodeJs(plugin);
 
 function generateTypeScript(schema: Schema<PluginParams>): void {
-  const remoteDispatchEntries: RemoteDispatchEntry[] = [];
-  const localMethods: LocalMethodEntry[] = [];
-  const localServiceMetadata: LocalServiceMetadata[] = [];
   const remoteServiceMetadata: RemoteServiceMetadata[] = [];
   const fallbackTargetType = buildFallbackTargetType(
     schema.options.remoteFileMapping,
   );
   const requestOwners = new Map<string, string>();
-  const localCompanionNames = new Set<string>();
 
   for (const file of schema.files) {
     if (file.services.length === 0) {
@@ -96,20 +64,10 @@ function generateTypeScript(schema: Schema<PluginParams>): void {
     validateUniqueRequestBindings(requestOwners, analyzedMethods);
 
     if (role !== "remote") {
-      localServiceMetadata.push(
-        ...buildLocalServiceMetadata(file, analyzedMethods),
+      throw new Error(
+        `${file.name}: TypeScript local-service generation is no longer supported by protoc-gen-actrframework-typescript. ` +
+          "Use @actrium/actr-workload to author a package-first workload and build it with actr-workload-ts.",
       );
-      for (const entry of analyzedMethods) {
-        if (localCompanionNames.has(entry.requestCompanionName)) {
-          throw new Error(
-            `Local request companion '${entry.requestCompanionName}' is duplicated. ` +
-              "Each local RPC request type name must be unique.",
-          );
-        }
-        localCompanionNames.add(entry.requestCompanionName);
-      }
-      localMethods.push(...buildLocalMethodEntries(analyzedMethods));
-      continue;
     }
 
     generateClientFile(schema, file, analyzedMethods);
@@ -129,17 +87,6 @@ function generateTypeScript(schema: Schema<PluginParams>): void {
     remoteServiceMetadata.push(
       ...buildRemoteServiceMetadata(file, analyzedMethods, targetType),
     );
-
-    remoteDispatchEntries.push(
-      ...buildRemoteDispatchEntries(file, targetType, analyzedMethods),
-    );
-  }
-
-  if (
-    schema.options.emitLocalActor &&
-    (localMethods.length > 0 || remoteDispatchEntries.length > 0)
-  ) {
-    generateLocalActorFile(schema, localMethods, remoteDispatchEntries);
   }
 
   const metadataFile = schema.generateFile("actr-gen-meta.json");
@@ -148,7 +95,7 @@ function generateTypeScript(schema: Schema<PluginParams>): void {
       {
         plugin_version: VERSION,
         language: "typescript",
-        local_services: localServiceMetadata,
+        local_services: [],
         remote_services: remoteServiceMetadata,
       },
       null,
@@ -257,256 +204,6 @@ function generateClientFile(
   }
 }
 
-function generateLocalActorFile(
-  schema: Schema<PluginParams>,
-  localMethods: LocalMethodEntry[],
-  remoteDispatchEntries: RemoteDispatchEntry[],
-): void {
-  const generated = schema.generateFile("local_actor.ts");
-  const bufferSymbol = generated.import("Buffer", "node:buffer");
-
-  const contextType = generated.import(
-    "Context",
-    schema.options.distImport,
-    true,
-  );
-  const envelopeType = generated.import(
-    "RpcEnvelope",
-    schema.options.distImport,
-    true,
-  );
-  const payloadType = generated.import(
-    "PayloadType",
-    schema.options.distImport,
-    true,
-  );
-
-  generated.print("const RPC_TIMEOUT_MS = 15000;");
-  generated.print("const RPC_PAYLOAD_TYPE: ", payloadType, " = 0;");
-  generated.print("");
-
-  if (localMethods.length > 0) {
-    const toBinary = generated.import("toBinary", "@bufbuild/protobuf");
-    const fromBinary = generated.import("fromBinary", "@bufbuild/protobuf");
-    const create = generated.import("create", "@bufbuild/protobuf");
-    const messageInitShape = generated.import(
-      "MessageInitShape",
-      "@bufbuild/protobuf",
-      true,
-    );
-
-    for (const entry of localMethods) {
-      const requestType = generated.importShape(entry.method.input);
-      const requestSchema = generated.importSchema(entry.method.input);
-      const responseType = generated.importShape(entry.method.output);
-      const responseSchema = generated.importSchema(entry.method.output);
-
-      generated.print(
-        generated.export("const", entry.requestCompanionName),
-        " = {",
-      );
-      generated.print(
-        "  routeKey: ",
-        generated.string(routeKeyForMethod(entry.method)),
-        ",",
-      );
-      generated.print(
-        "  encode(message: ",
-        messageInitShape,
-        "<typeof ",
-        requestSchema,
-        ">): ",
-        bufferSymbol,
-        " {",
-      );
-      generated.print(
-        "    return ",
-        bufferSymbol,
-        ".from(",
-        toBinary,
-        "(",
-        requestSchema,
-        ", ",
-        create,
-        "(",
-        requestSchema,
-        ", message)));",
-      );
-      generated.print("  },");
-      generated.print("  decode(bytes: Uint8Array): ", requestType, " {");
-      generated.print(
-        "    return ",
-        fromBinary,
-        "(",
-        requestSchema,
-        ", bytes);",
-      );
-      generated.print("  },");
-      generated.print("  response: {");
-      generated.print(
-        "    encode(message: ",
-        messageInitShape,
-        "<typeof ",
-        responseSchema,
-        ">): ",
-        bufferSymbol,
-        " {",
-      );
-      generated.print(
-        "      return ",
-        bufferSymbol,
-        ".from(",
-        toBinary,
-        "(",
-        responseSchema,
-        ", ",
-        create,
-        "(",
-        responseSchema,
-        ", message)));",
-      );
-      generated.print("    },");
-      generated.print("    decode(bytes: Uint8Array): ", responseType, " {");
-      generated.print(
-        "      return ",
-        fromBinary,
-        "(",
-        responseSchema,
-        ", bytes);",
-      );
-      generated.print("    },");
-      generated.print("  },");
-      generated.print("} as const;");
-      generated.print("");
-    }
-
-    generated.print(generated.export("type", "LocalHandlers"), " = {");
-    for (const entry of localMethods) {
-      const requestType = generated.importShape(entry.method.input);
-      const responseSchema = generated.importSchema(entry.method.output);
-      generated.print(
-        "  ",
-        entry.handlerName,
-        ": (request: ",
-        requestType,
-        ", ctx: ",
-        contextType,
-        ") => ",
-        messageInitShape,
-        "<typeof ",
-        responseSchema,
-        "> | Promise<",
-        messageInitShape,
-        "<typeof ",
-        responseSchema,
-        ">>;",
-      );
-    }
-    generated.print("};");
-  } else {
-    generated.print(generated.export("type", "LocalHandlers"), " = {};");
-  }
-  generated.print("");
-
-  generated.print(
-    generated.export("async function", "dispatchLocalActor"),
-    "(ctx: ",
-    contextType,
-    ", envelope: ",
-    envelopeType,
-    ", handlers?: LocalHandlers",
-    "): Promise<",
-    bufferSymbol,
-    "> {",
-  );
-  if (localMethods.length > 0) {
-    generated.print("  switch (envelope.routeKey) {");
-    for (const entry of localMethods) {
-      generated.print("    case ", entry.requestCompanionName, ".routeKey: {");
-      generated.print(
-        "      const handler = handlers?.",
-        entry.handlerName,
-        ";",
-      );
-      generated.print("      if (!handler) {");
-      generated.print(
-        "        throw new Error(`Local handler ",
-        entry.handlerName,
-        " is not configured for route ${envelope.routeKey}`);",
-      );
-      generated.print("      }");
-      generated.print(
-        "      const request = ",
-        entry.requestCompanionName,
-        ".decode(envelope.payload);",
-      );
-      generated.print("      const response = await handler(request, ctx);");
-      generated.print(
-        "      return ",
-        entry.requestCompanionName,
-        ".response.encode(response);",
-      );
-      generated.print("    }");
-    }
-  } else {
-    generated.print("  switch (envelope.routeKey) {");
-  }
-
-  for (const entry of remoteDispatchEntries) {
-    const routeSymbol = generated.import(
-      entry.requestCompanionName,
-      `./${entry.clientImportPath}`,
-    );
-    generated.print("    case ", routeSymbol, ".routeKey: {");
-    generated.print(
-      "      const targetId = await ctx.discover({ manufacturer: ",
-      generated.string(entry.targetType.manufacturer),
-      ", name: ",
-      generated.string(entry.targetType.name),
-      " });",
-    );
-    generated.print("      return await ctx.callRaw(");
-    generated.print("        targetId,");
-    generated.print("        envelope.routeKey,");
-    generated.print("        RPC_PAYLOAD_TYPE,");
-    generated.print("        envelope.payload,");
-    generated.print("        RPC_TIMEOUT_MS");
-    generated.print("      );");
-    generated.print("    }");
-  }
-  generated.print("    default:");
-  generated.print(
-    "      throw new Error(`Unknown route: ${envelope.routeKey}`);",
-  );
-  generated.print("  }");
-  generated.print("}");
-}
-
-function buildRemoteDispatchEntries(
-  file: DescFile,
-  targetType: {
-    manufacturer: string;
-    name: string;
-  },
-  analyzedMethods: AnalyzedMethod[],
-): RemoteDispatchEntry[] {
-  return analyzedMethods.map((entry) => ({
-    requestCompanionName: entry.requestCompanionName,
-    clientImportPath: `${normalizeProtoFileKey(file.name)}_client`,
-    targetType,
-  }));
-}
-
-function buildLocalMethodEntries(
-  analyzedMethods: AnalyzedMethod[],
-): LocalMethodEntry[] {
-  return analyzedMethods.map((entry) => ({
-    requestCompanionName: entry.requestCompanionName,
-    handlerName: `handle${entry.helperSuffix}`,
-    method: entry.method,
-  }));
-}
-
 function buildFallbackTargetType(
   remoteFileMapping: Map<string, string>,
 ): { manufacturer: string; name: string } | null {
@@ -525,8 +222,6 @@ function parseOptions(
   const localFiles = new Set<string>();
   const remoteFiles = new Set<string>();
   const remoteFileMapping = new Map<string, string>();
-  let distImport = "@actrium/actr";
-  let emitLocalActor = true;
 
   for (const { key, value } of rawOptions) {
     switch (key) {
@@ -538,15 +233,6 @@ function parseOptions(
         break;
       case "RemoteFileMapping":
         appendRemoteMapping(remoteFileMapping, value);
-        break;
-      case "DistImport":
-        if (!value) {
-          throw new Error("DistImport cannot be empty.");
-        }
-        distImport = value;
-        break;
-      case "EmitLocalActor":
-        emitLocalActor = parseBooleanOption("EmitLocalActor", value);
         break;
       default:
         throw new Error(`Unknown option '${key}'.`);
@@ -565,8 +251,6 @@ function parseOptions(
     localFiles,
     remoteFiles,
     remoteFileMapping,
-    distImport,
-    emitLocalActor,
   };
 }
 
@@ -598,20 +282,6 @@ function appendRemoteMapping(
   }
 }
 
-function parseBooleanOption(name: string, value: string): boolean {
-  switch (value) {
-    case "":
-    case "true":
-    case "1":
-      return true;
-    case "false":
-    case "0":
-      return false;
-    default:
-      throw new Error(`${name} must be true/false or 1/0.`);
-  }
-}
-
 function inferRole(file: DescFile, params: PluginParams): "local" | "remote" {
   const normalized = normalizeProtoFileKey(file.name);
   if (params.remoteFiles.has(normalized)) {
@@ -624,10 +294,6 @@ function inferRole(file: DescFile, params: PluginParams): "local" | "remote" {
 }
 
 function analyzeFileMethods(file: DescFile): AnalyzedMethod[] {
-  const methodNames = file.services.flatMap((service) =>
-    service.methods.map((method) => method.name),
-  );
-  const hasDuplicateMethod = methodNames.length !== new Set(methodNames).size;
   const analyzedMethods: AnalyzedMethod[] = [];
   const companionNames = new Set<string>();
 
@@ -651,30 +317,12 @@ function analyzeFileMethods(file: DescFile): AnalyzedMethod[] {
       analyzedMethods.push({
         service,
         method,
-        helperSuffix: helperSuffix(service, method, hasDuplicateMethod),
         requestCompanionName,
       });
     }
   }
 
   return analyzedMethods;
-}
-
-function buildLocalServiceMetadata(
-  file: DescFile,
-  analyzedMethods: AnalyzedMethod[],
-): LocalServiceMetadata[] {
-  return groupAnalyzedMethodsByService(analyzedMethods).map(
-    ([service, methods]) => ({
-      name: service.name,
-      package: packageNameForService(service),
-      proto_file: normalizePath(file.name),
-      handler_interface: "LocalHandlers",
-      workload_type: "Workload",
-      dispatcher_type: "dispatchLocalActor",
-      methods: methods.map((entry) => buildMethodMetadata(entry.method)),
-    }),
-  );
 }
 
 function buildRemoteServiceMetadata(
@@ -749,17 +397,6 @@ function requestCompanionNameForMethod(method: DescMethod): string {
   return method.input.name;
 }
 
-function helperSuffix(
-  service: DescService,
-  method: DescMethod,
-  hasDuplicateMethod: boolean,
-): string {
-  const base = hasDuplicateMethod
-    ? `${service.name}_${method.name}`
-    : method.name;
-  return toPascalCase(base);
-}
-
 function routeKeyForMethod(method: DescMethod): string {
   return `${method.parent.typeName}.${method.name}`;
 }
@@ -790,14 +427,6 @@ function normalizeProtoFileKey(value: string): string {
   return normalized.endsWith(".proto")
     ? normalized.slice(0, -".proto".length)
     : normalized;
-}
-
-function toPascalCase(value: string): string {
-  return value
-    .split(/[^a-zA-Z0-9]+/g)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join("");
 }
 
 function toSnakeCase(value: string): string {

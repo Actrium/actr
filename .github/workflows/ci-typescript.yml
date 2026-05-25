@@ -57,3 +57,35 @@ jobs:
       - name: Cargo check
         working-directory: bindings/typescript
         run: cargo check --locked --manifest-path Cargo.toml
+
+  workload:
+    name: TypeScript Workload Authoring Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            bindings/typescript/actr-workload/package-lock.json
+            examples/typescript/echo-workload/package-lock.json
+
+      - name: Verify TypeScript workload WIT drift
+        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+
+      - name: Build TypeScript workload package
+        working-directory: bindings/typescript/actr-workload
+        run: |
+          npm ci
+          npm run build
+          node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
+
+      - name: Build TypeScript echo workload
+        working-directory: examples/typescript/echo-workload
+        run: |
+          npm ci
+          npm run build
+          npm run componentize

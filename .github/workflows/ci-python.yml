@@ -43,8 +43,8 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
 
-      - name: Verify single tracked WIT
-        run: test "$(git ls-files '*actr-workload.wit')" = "core/framework/wit/actr-workload.wit"
+      - name: Verify TypeScript workload WIT drift
+        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
 
       - name: Build actr-workload package
         run: |

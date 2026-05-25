@@ -1,11 +1,15 @@
 # framework-codegen-typescript
 
-TypeScript ACTR protoc plugin for Actor-RTC.
+TypeScript ACTR protoc plugin for Actor-RTC client stubs.
 
-This plugin now focuses on generating the ACTR layer only. Generate protobuf
-message code with `protoc-gen-es`, then run this plugin to generate remote
-`*_client.ts` files plus a unified `local_actor.ts` dispatcher for local
-services and remote forwarding.
+This plugin generates outbound RPC client helpers only. Generate protobuf
+message code with `protoc-gen-es`, then run this plugin for remote service
+client stubs such as `*_client.ts`.
+
+TypeScript workloads are package-first. Author workload code with
+`@actrium/actr-workload` and build components with `actr-workload-ts`. This
+plugin does not generate TypeScript local service dispatchers or workload
+runtime entrypoints.
 
 ## Build
 
@@ -22,11 +26,11 @@ protoc \
   --plugin=protoc-gen-es=./node_modules/.bin/protoc-gen-es \
   --es_out=generated \
   --es_opt=target=ts \
-  local.proto remote/echo.proto
+  remote/echo.proto
 
 protoc \
   --plugin=protoc-gen-actrframework-typescript=./scripts/protoc-gen-actrframework-typescript \
   --actrframework-typescript_out=generated \
-  --actrframework-typescript_opt=target=ts,LocalFiles=local.proto,RemoteFiles=remote/echo.proto,RemoteFileMapping=remote/echo.proto=acme:EchoService \
-  local.proto remote/echo.proto
+  --actrframework-typescript_opt=target=ts,RemoteFiles=remote/echo.proto,RemoteFileMapping=remote/echo.proto=acme:EchoService \
+  remote/echo.proto
 ```

@@ -12,6 +12,7 @@ from fnmatch import fnmatch
 TARGETS = (
     "rust_core",
     "ts_binding",
+    "ts_workload",
     "python_codegen",
     "python_workload",
     "swift_binding",
@@ -77,6 +78,7 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             targets["web_binding"] = True
             if path == "core/framework/wit/actr-workload.wit":
                 targets["python_workload"] = True
+                targets["ts_workload"] = True
             reasons.append(f"core_dependency:{path}")
             continue
 
@@ -94,6 +96,11 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             targets["rust_core"] = True
             targets["web_binding"] = True
             reasons.append(f"web_codegen:{path}")
+            continue
+
+        if path.startswith("bindings/typescript/actr-workload/"):
+            targets["ts_workload"] = True
+            reasons.append(f"typescript_workload:{path}")
             continue
 
         if path.startswith(("bindings/typescript/", "tools/protoc-gen/typescript/")):
@@ -114,6 +121,11 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
         if path.startswith("examples/python/echo-workload/"):
             targets["python_workload"] = True
             reasons.append(f"python_workload:{path}")
+            continue
+
+        if path.startswith("examples/typescript/echo-workload/"):
+            targets["ts_workload"] = True
+            reasons.append(f"typescript_workload:{path}")
             continue
 
         if path.startswith(("bindings/swift/", "tools/protoc-gen/swift/")):

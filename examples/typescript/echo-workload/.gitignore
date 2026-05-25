@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+*.wasm
+*.actr
+
+# Editor / local
+.DS_Store
+*.swp
