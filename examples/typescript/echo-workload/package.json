@@ -1,0 +1,17 @@
+{
+  "name": "@actrium/example-echo-workload-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "componentize": "actr-workload-ts componentize dist/workload.js -o dist/echo-typescript-0.1.0-wasm32-wasip2.wasm --wit ../../../core/framework/wit/actr-workload.wit",
+    "package": "actr build --manifest manifest.toml --no-compile"
+  },
+  "dependencies": {
+    "@actrium/actr-workload": "file:../../../bindings/typescript/actr-workload"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

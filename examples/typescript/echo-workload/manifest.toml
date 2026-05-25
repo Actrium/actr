@@ -1,0 +1,8 @@
+[package]
+manufacturer = "acme"
+name = "EchoWorkloadTypeScript"
+version = "0.1.0"
+
+[binary]
+path = "dist/echo-typescript-0.1.0-wasm32-wasip2.wasm"
+target = "wasm32-wasip2"

@@ -19,7 +19,7 @@ componentize-py --version  # componentize-py 0.23.0
 
 ## WIT Resolution
 
-The repo tracks exactly one workload WIT source:
+The canonical workload WIT source is:
 
 ```text
 core/framework/wit/actr-workload.wit
@@ -32,8 +32,11 @@ core/framework/wit/actr-workload.wit
 3. The nearest checked-out repo WIT at `core/framework/wit/actr-workload.wit`.
 4. A packaged resource copied from that repo WIT when building a wheel or sdist.
 
-The packaged resource is only an artifact fallback for `pip install`
-ergonomics. It is not a second tracked source copy.
+Package-specific WIT copies, such as the TypeScript workload package
+fallback, must stay byte-for-byte identical to this source and are
+guarded by CI drift checks. The Python packaged resource is copied from
+the canonical WIT when building a wheel or sdist, so it remains only an
+artifact fallback for `pip install` ergonomics.
 
 ## Generate Bindings
 

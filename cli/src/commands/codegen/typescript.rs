@@ -7,7 +7,7 @@ use crate::utils::command_exists;
 use actr_config::LockFile;
 use actr_protocol::ActrType;
 use async_trait::async_trait;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
@@ -61,7 +61,6 @@ struct BoundMethodInfo {
     generated_client_import: String,
     service_name: String,
     method_name: String,
-    handler_name: String,
     input_type: String,
     output_type: String,
     input_type_short: String,
@@ -144,9 +143,6 @@ impl LanguageGenerator for TypeScriptGenerator {
 
         let mut options = Vec::new();
         options.push("target=ts".to_string());
-        if !local_files.is_empty() {
-            options.push(format!("LocalFiles={}", local_files.join(":")));
-        }
         if !remote_files.is_empty() {
             options.push(format!("RemoteFiles={}", remote_files.join(":")));
         }
@@ -158,37 +154,38 @@ impl LanguageGenerator for TypeScriptGenerator {
             sorted_mapping.sort();
             options.push(format!("RemoteFileMapping={}", sorted_mapping.join(";")));
         }
-        options.push("DistImport=@actrium/actr".to_string());
         let option_str = options.join(",");
 
-        let mut cmd = StdCommand::new(PROTOC);
-        cmd.arg(format!("--proto_path={}", proto_root.display()))
-            .arg(format!(
-                "--plugin=protoc-gen-actrframework-typescript={}",
-                plugin_path.display()
-            ))
-            .arg(format!("--actrframework-typescript_opt={option_str}"))
-            .arg(format!(
-                "--actrframework-typescript_out={}",
-                context.output.display()
-            ));
+        if !remote_files.is_empty() {
+            let mut cmd = StdCommand::new(PROTOC);
+            cmd.arg(format!("--proto_path={}", proto_root.display()))
+                .arg(format!(
+                    "--plugin=protoc-gen-actrframework-typescript={}",
+                    plugin_path.display()
+                ))
+                .arg(format!("--actrframework-typescript_opt={option_str}"))
+                .arg(format!(
+                    "--actrframework-typescript_out={}",
+                    context.output.display()
+                ));
 
-        for proto_input in &proto_inputs {
-            cmd.arg(proto_input);
-        }
+            for proto_input in &remote_files {
+                cmd.arg(proto_input);
+            }
 
-        debug!("Executing protoc (actrframework-typescript): {:?}", cmd);
-        let output = cmd.output().map_err(|e| {
-            ActrCliError::command_error(format!(
-                "Failed to execute protoc (actrframework-typescript): {e}"
-            ))
-        })?;
+            debug!("Executing protoc (actrframework-typescript): {:?}", cmd);
+            let output = cmd.output().map_err(|e| {
+                ActrCliError::command_error(format!(
+                    "Failed to execute protoc (actrframework-typescript): {e}"
+                ))
+            })?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(ActrCliError::command_error(format!(
-                "protoc (actrframework-typescript) execution failed: {stderr}"
-            )));
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(ActrCliError::command_error(format!(
+                    "protoc (actrframework-typescript) execution failed: {stderr}"
+                )));
+            }
         }
 
         debug!(
@@ -508,8 +505,8 @@ impl TypeScriptGenerator {
     ) -> (PathBuf, String) {
         if is_local {
             return (
-                output.join("local_actor.ts"),
-                "./generated/local_actor".to_string(),
+                output.join(format!("{proto_stem}_client.ts")),
+                format!("./generated/{proto_stem}_client"),
             );
         }
 
@@ -565,7 +562,9 @@ impl TypeScriptGenerator {
         let mut bound_methods = Vec::new();
 
         for module in modules {
-            let api = if module.generated_client_path.exists() {
+            let api = if module.is_local {
+                GeneratedClientApi::default()
+            } else if module.generated_client_path.exists() {
                 self.inspect_generated_client_api(&module.generated_client_path)?
             } else {
                 warn!(
@@ -576,20 +575,14 @@ impl TypeScriptGenerator {
                 GeneratedClientApi::default()
             };
 
-            let has_duplicate_method = self.module_has_duplicate_method_names(&module.services);
-
             for service in &module.services {
                 for method in &service.methods {
-                    let helper_suffix =
-                        self.helper_suffix(&service.name, &method.name, has_duplicate_method);
-                    let handler_name = format!("handle{helper_suffix}");
                     let request_companion_name = method.input_type_short.clone();
 
                     bound_methods.push(BoundMethodInfo {
                         generated_client_import: module.generated_client_import.clone(),
                         service_name: service.name.clone(),
                         method_name: method.name.clone(),
-                        handler_name,
                         input_type: method.input_type.clone(),
                         output_type: method.output_type.clone(),
                         input_type_short: method.input_type_short.clone(),
@@ -607,50 +600,6 @@ impl TypeScriptGenerator {
         Ok(bound_methods)
     }
 
-    fn module_has_duplicate_method_names(&self, services: &[ProtoServiceInfo]) -> bool {
-        let mut names = HashSet::new();
-        for service in services {
-            for method in &service.methods {
-                if !names.insert(method.name.as_str()) {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    fn helper_suffix(
-        &self,
-        service_name: &str,
-        method_name: &str,
-        has_duplicate_method: bool,
-    ) -> String {
-        let base = if has_duplicate_method {
-            format!("{service_name}_{method_name}")
-        } else {
-            method_name.to_string()
-        };
-        self.to_pascal_case(&base)
-    }
-
-    fn to_pascal_case(&self, value: &str) -> String {
-        value
-            .split(|ch: char| !ch.is_ascii_alphanumeric())
-            .filter(|part| !part.is_empty())
-            .map(|part| {
-                let mut chars = part.chars();
-                let mut output = String::new();
-                if let Some(first) = chars.next() {
-                    output.push(first.to_ascii_uppercase());
-                    for ch in chars {
-                        output.push(ch);
-                    }
-                }
-                output
-            })
-            .collect()
-    }
-
     fn generate_scaffold_content(&self, bound_methods: &[BoundMethodInfo]) -> String {
         let local_methods = bound_methods
             .iter()
@@ -660,105 +609,20 @@ impl TypeScriptGenerator {
             .iter()
             .filter(|method| !method.is_local)
             .collect::<Vec<_>>();
-        let has_dispatcher = !bound_methods.is_empty();
 
         let mut output = String::new();
         output.push_str(UNIMPLEMENTED_MARKER);
         output.push('\n');
         output.push_str(SCAFFOLD_HINT);
-        output.push_str(
-            "\n\nimport {\n  ActrNode,\n  type Context,\n  type RpcEnvelope,\n  type Workload,\n} from '@actrium/actr';\n",
-        );
+        output.push_str("\n\nimport { defineWorkload } from '@actrium/actr-workload';\n");
 
-        if has_dispatcher {
-            let mut local_imports = BTreeSet::from([
-                "dispatchLocalActor".to_string(),
-                "type LocalHandlers".to_string(),
-            ]);
-            for method in &local_methods {
-                if let Some(request_companion) = &method.request_companion {
-                    local_imports.insert(request_companion.clone());
-                }
-            }
-
-            output.push_str("import {\n");
-            for name in &local_imports {
-                output.push_str("  ");
-                output.push_str(name);
-                output.push_str(",\n");
-            }
-            output.push_str("} from './generated/local_actor';\n");
-        }
-
-        if has_dispatcher {
-            output.push_str("\n\nconst handlers: LocalHandlers = ");
-            if local_methods.is_empty() {
-                output.push_str("{};\n");
-            } else {
-                output.push_str("{\n");
-                for method in &local_methods {
-                    output.push_str("  async ");
-                    output.push_str(&method.handler_name);
-                    output.push_str("(request, _ctx) {\n");
-                    output.push_str("    console.log('TODO: handle ");
-                    output.push_str(&method.service_name);
-                    output.push('.');
-                    output.push_str(&method.method_name);
-                    output.push_str("', request);\n");
-                    output.push_str("    return {\n");
-                    output.push_str("      // TODO: fill ");
-                    output.push_str(&method.output_type_short);
-                    output.push_str(" fields\n");
-                    output.push_str("    };\n");
-                    output.push_str("  },\n");
-                }
-                output.push_str("};\n");
-            }
-        }
-
+        output.push_str("\nexport default defineWorkload({\n  async onStart(): Promise<void> {\n    console.log('ACTR TypeScript workload started');\n");
         if !local_methods.is_empty() {
-            let debug_methods = local_methods
-                .iter()
-                .filter(|method| method.request_companion.is_some())
-                .collect::<Vec<_>>();
-            output.push_str("\nconst localDebugDecoders = {\n");
-            for method in debug_methods {
-                let request_companion = method.request_companion.as_deref().unwrap_or_default();
-                output.push_str("  [");
-                output.push_str(request_companion);
-                output.push_str(".routeKey]: ");
-                output.push_str(request_companion);
-                output.push_str(".decode,\n");
-            }
-            output.push_str("} as const;\n");
+            output.push_str("    console.log('Local RPC methods:', ");
+            output.push_str(&local_methods.len().to_string());
+            output.push_str(");\n");
         }
-
-        output.push_str(
-            "\nclass QuickStartWorkload implements Workload {\n  async onStart(_ctx: Context): Promise<void> {\n    console.log('QuickStartWorkload started');\n",
-        );
-        if !local_methods.is_empty() {
-            output.push_str(
-                "    console.log('Local decoder helpers:', Object.keys(localDebugDecoders));\n",
-            );
-        }
-        output.push_str(
-            "  }\n\n  async onStop(_ctx: Context): Promise<void> {\n    console.log('QuickStartWorkload stopped');\n  }\n\n  async dispatch(ctx: Context, envelope: RpcEnvelope): Promise<Buffer> {\n",
-        );
-
-        if has_dispatcher {
-            output.push_str("    return dispatchLocalActor(ctx, envelope, handlers);\n");
-        } else {
-            output.push_str(
-                "    throw new Error('No RPC handlers were inferred. Add your own dispatch logic.');\n",
-            );
-        }
-        output.push_str("  }\n}\n");
-
-        output.push_str(
-            "\nasync function main(): Promise<void> {\n  const node = await ActrNode.fromConfig('./manifest.toml', new QuickStartWorkload());\n  const actorRef = await node.start();\n\n  console.log('Quick-start scaffold is running.');\n  console.log('Local RPC methods:', ",
-        );
-        output.push_str(&local_methods.len().to_string());
-        output.push_str(");\n  console.log('Remote RPC methods:', ");
+        output.push_str("    console.log('Remote RPC methods:', ");
         output.push_str(&remote_methods.len().to_string());
         output.push_str(");\n");
         if !remote_methods.is_empty() {
@@ -766,11 +630,33 @@ impl TypeScriptGenerator {
                 "  console.log('Remote call examples are listed below. Uncomment and adapt them when you are ready.');\n",
             );
         }
-        output.push_str("  await actorRef.waitForShutdown();\n}\n");
+        output.push_str("  },\n\n  async onStop(): Promise<void> {\n    console.log('ACTR TypeScript workload stopped');\n  },\n\n  async dispatch(envelope): Promise<Uint8Array> {\n");
+        if !local_methods.is_empty() {
+            output.push_str("    console.log('Received workload RPC:', envelope.method);\n");
+            output.push_str(
+                "    throw new Error('Implement this workload with @actrium/actr-workload and build it with actr-workload-ts.');\n",
+            );
+        } else {
+            output.push_str(
+                "    throw new Error('No local RPC methods were inferred for this workload.');\n",
+            );
+        }
+        output.push_str("  },\n});\n");
 
-        output.push_str(
-            "\nmain().catch((error) => {\n  console.error(error);\n  process.exit(1);\n});\n",
-        );
+        if !local_methods.is_empty() {
+            output.push_str("\n// Local RPC methods to implement in dispatch:\n");
+            for method in &local_methods {
+                output.push_str("// - ");
+                output.push_str(&method.service_name);
+                output.push('.');
+                output.push_str(&method.method_name);
+                output.push_str(" (");
+                output.push_str(&method.input_type);
+                output.push_str(" -> ");
+                output.push_str(&method.output_type);
+                output.push_str(")\n");
+            }
+        }
 
         if !remote_methods.is_empty() {
             output.push_str("\n// Remote RPC quick-start examples:\n");
@@ -846,11 +732,7 @@ impl TypeScriptGenerator {
             return Ok(false);
         }
 
-        let has_quick_start_workload =
-            content.contains("class QuickStartWorkload implements Workload");
-        let has_quick_start_banner = content.contains("Quick-start scaffold is running.");
-
-        Ok(has_quick_start_workload && has_quick_start_banner)
+        Ok(content.contains(SCAFFOLD_HINT))
     }
 
     fn ensure_required_tools(&self) -> Result<()> {
@@ -1509,7 +1391,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "{IMPLEMENTED_MARKER}\n{UNIMPLEMENTED_MARKER}\nclass QuickStartWorkload implements Workload {{}}\nconsole.log('Quick-start scaffold is running.');\n"
+                "{IMPLEMENTED_MARKER}\n{UNIMPLEMENTED_MARKER}\nexport default defineWorkload({{ dispatch() {{ throw new Error('custom'); }} }});\n"
             ),
         )
         .unwrap();
@@ -1524,7 +1406,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "{UNIMPLEMENTED_MARKER}\n{SCAFFOLD_HINT}\nclass QuickStartWorkload implements Workload {{}}\nconsole.log('Quick-start scaffold is running.');\n"
+                "{UNIMPLEMENTED_MARKER}\n{SCAFFOLD_HINT}\nexport default defineWorkload({{ dispatch() {{ throw new Error('TODO'); }} }});\n"
             ),
         )
         .unwrap();
@@ -1532,7 +1414,7 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_marker_without_minimal_scaffold_is_preserved() {
+    fn unimplemented_marker_with_scaffold_hint_is_overwritten() {
         let generator = TypeScriptGenerator;
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("actr_service.ts");
@@ -1543,7 +1425,7 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(!generator.should_overwrite_scaffold(&path).unwrap());
+        assert!(generator.should_overwrite_scaffold(&path).unwrap());
 
         std::fs::write(&path, "console.log('user code');\n").unwrap();
         assert!(!generator.should_overwrite_scaffold(&path).unwrap());
@@ -1558,7 +1440,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "{IMPLEMENTED_MARKER}\nclass EchoServiceWorkload implements Workload {{}}\nconsole.log('template');\n"
+                "{IMPLEMENTED_MARKER}\nexport default defineWorkload({{ dispatch() {{ throw new Error('template'); }} }});\n"
             ),
         )
         .unwrap();
@@ -1567,7 +1449,7 @@ mod tests {
         std::fs::write(
             &path,
             format!(
-                "{IMPLEMENTED_MARKER}\nclass EchoClientWorkload implements Workload {{}}\nconsole.log('template');\n"
+                "{IMPLEMENTED_MARKER}\nimport {{ ActrNode }} from '@actrium/actr';\nconsole.log('template');\n"
             ),
         )
         .unwrap();
@@ -1579,10 +1461,9 @@ mod tests {
         let generator = TypeScriptGenerator;
         let scaffold = generator.generate_scaffold_content(&[
             BoundMethodInfo {
-                generated_client_import: "./generated/local_actor".to_string(),
+                generated_client_import: "./generated/echo_client".to_string(),
                 service_name: "EchoService".to_string(),
                 method_name: "Echo".to_string(),
-                handler_name: "handleEcho".to_string(),
                 input_type: "EchoRequest".to_string(),
                 output_type: "EchoResponse".to_string(),
                 input_type_short: "EchoRequest".to_string(),
@@ -1594,7 +1475,6 @@ mod tests {
                 generated_client_import: "./generated/demo/remote_client".to_string(),
                 service_name: "RemoteService".to_string(),
                 method_name: "Ping".to_string(),
-                handler_name: "handlePing".to_string(),
                 input_type: "PingRequest".to_string(),
                 output_type: "PingResponse".to_string(),
                 input_type_short: "PingRequest".to_string(),
@@ -1604,15 +1484,14 @@ mod tests {
             },
         ]);
 
-        assert!(scaffold.contains("dispatchLocalActor(ctx, envelope, handlers)"));
-        assert!(scaffold.contains("const handlers: LocalHandlers = {"));
-        assert!(scaffold.contains("async handleEcho(request, _ctx)"));
+        assert!(scaffold.contains("import { defineWorkload } from '@actrium/actr-workload';"));
+        assert!(scaffold.contains("export default defineWorkload({"));
+        assert!(scaffold.contains("Implement this workload with @actrium/actr-workload"));
+        assert!(scaffold.contains("// - EchoService.Echo (EchoRequest -> EchoResponse)"));
         assert!(scaffold.contains("Remote RPC quick-start examples"));
         assert!(scaffold.contains("PingRequest.encode"));
         assert!(scaffold.contains("PingRequest.routeKey"));
         assert!(scaffold.contains("PingRequest.response.decode"));
-        assert!(scaffold.contains("[EchoRequest.routeKey]: EchoRequest.decode"));
-        assert!(scaffold.contains("from './generated/local_actor'"));
         assert!(scaffold.contains(UNIMPLEMENTED_MARKER));
     }
 }

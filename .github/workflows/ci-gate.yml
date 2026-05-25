@@ -29,6 +29,7 @@ jobs:
       reasons_json: ${{ steps.targets.outputs.reasons_json }}
       rust_core: ${{ steps.targets.outputs.rust_core }}
       ts_binding: ${{ steps.targets.outputs.ts_binding }}
+      ts_workload: ${{ steps.targets.outputs.ts_workload }}
       python_codegen: ${{ steps.targets.outputs.python_codegen }}
       python_workload: ${{ steps.targets.outputs.python_workload }}
       swift_binding: ${{ steps.targets.outputs.swift_binding }}
@@ -151,6 +152,38 @@ jobs:
         working-directory: bindings/typescript
         run: cargo check --locked --manifest-path Cargo.toml
 
+  typescript_workload:
+    name: TypeScript Workload
+    needs: determine
+    if: needs.determine.outputs.ts_workload == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: |
+            bindings/typescript/actr-workload/package-lock.json
+            examples/typescript/echo-workload/package-lock.json
+      - name: Verify TypeScript workload WIT drift
+        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+      - name: Build TypeScript workload package
+        working-directory: bindings/typescript/actr-workload
+        run: |
+          npm ci
+          npm run build
+          node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
+      - name: Build TypeScript echo workload
+        working-directory: examples/typescript/echo-workload
+        run: |
+          npm ci
+          npm run build
+          npm run componentize
+
   python_codegen:
     name: Python Codegen
     needs: determine
@@ -204,8 +237,8 @@ jobs:
         run: cargo install wasm-tools --version 1.247.0 --locked
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
-      - name: Verify single tracked WIT
-        run: test "$(git ls-files '*actr-workload.wit')" = "core/framework/wit/actr-workload.wit"
+      - name: Verify TypeScript workload WIT drift
+        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
       - name: Build actr-workload package
         run: |
           python -m pip install -U build
@@ -395,6 +428,7 @@ jobs:
       - determine
       - rust
       - typescript
+      - typescript_workload
       - python_codegen
       - python_workload
       - swift
@@ -407,6 +441,7 @@ jobs:
       REASONS_JSON: ${{ needs.determine.outputs.reasons_json }}
       RUST_RESULT: ${{ needs.rust.result }}
       TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
+      TYPESCRIPT_WORKLOAD_RESULT: ${{ needs.typescript_workload.result }}
       PYTHON_CODEGEN_RESULT: ${{ needs.python_codegen.result }}
       PYTHON_WORKLOAD_RESULT: ${{ needs.python_workload.result }}
       SWIFT_RESULT: ${{ needs.swift.result }}
@@ -424,6 +459,7 @@ jobs:
           results = {
               "rust": os.environ["RUST_RESULT"],
               "typescript": os.environ["TYPESCRIPT_RESULT"],
+              "typescript_workload": os.environ["TYPESCRIPT_WORKLOAD_RESULT"],
               "python_codegen": os.environ["PYTHON_CODEGEN_RESULT"],
               "python_workload": os.environ["PYTHON_WORKLOAD_RESULT"],
               "swift": os.environ["SWIFT_RESULT"],

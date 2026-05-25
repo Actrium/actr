@@ -1,13 +1,14 @@
-async function main(): Promise<void> {
-  throw new Error(
-    [
-      'TypeScript source-defined service workloads were removed.',
-      'Build a verified .actr package and host it with Rust Hyper.attach(...).',
-    ].join(' '),
-  );
-}
+import { defineWorkload } from '@actrium/actr-workload';
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
+export default defineWorkload({
+  async onStart(): Promise<void> {
+    console.log('TypeScript Echo workload started');
+  },
+
+  async dispatch(envelope): Promise<Uint8Array> {
+    console.log('Received workload RPC:', envelope.method);
+    throw new Error(
+      'Implement EchoService with @actrium/actr-workload and build it with actr-workload-ts.',
+    );
+  },
 });

@@ -371,14 +371,11 @@ fn test_local_service_only() {
     let gen_dir = root.join("src/generated");
     assert!(gen_dir.join("greeter_pb.ts").exists());
     assert!(!gen_dir.join("greeter_client.ts").exists());
-
-    // Local services are unified into local_actor.ts
     assert!(
-        gen_dir.join("local_actor.ts").exists(),
-        "local_actor.ts should exist for local-only projects"
+        !gen_dir.join("local_actor.ts").exists(),
+        "TypeScript local_actor.ts dispatcher should not be generated"
     );
 
-    // Verify directory flattening
     assert!(
         !gen_dir.join("local").exists(),
         "local/ directory should have been flattened"
@@ -388,21 +385,17 @@ fn test_local_service_only() {
         "remote/ directory should not exist"
     );
 
-    let actor_content = fs::read_to_string(gen_dir.join("local_actor.ts")).unwrap();
-    assert!(actor_content.contains("export const HelloRequest = {"));
-    assert!(actor_content.contains("case HelloRequest.routeKey"));
-    assert!(actor_content.contains("HelloRequest.routeKey"));
-    assert!(actor_content.contains("HelloRequest.decode(envelope.payload)"));
-    assert!(actor_content.contains("export type LocalHandlers"));
-    assert!(actor_content.contains("default:"));
-    assert!(actor_content.contains("Unknown route"));
-    assert!(!actor_content.contains("export const ROUTES"));
-    assert!(!actor_content.contains("ROUTES.find("));
-
     let actr_service_content = fs::read_to_string(root.join("src/actr_service.ts")).unwrap();
-    assert!(actr_service_content.contains("from './generated/local_actor'"));
-    assert!(actr_service_content.contains("dispatchLocalActor(ctx, envelope, handlers)"));
-    assert!(actr_service_content.contains("[HelloRequest.routeKey]: HelloRequest.decode"));
+    assert!(
+        actr_service_content.contains("import { defineWorkload } from '@actrium/actr-workload';")
+    );
+    assert!(actr_service_content.contains("export default defineWorkload({"));
+    assert!(actr_service_content.contains("Local RPC methods:', 1"));
+    assert!(actr_service_content.contains("Remote RPC methods:', 0"));
+    assert!(actr_service_content.contains("Received workload RPC:', envelope.method"));
+    assert!(actr_service_content.contains("// - Greeter.SayHello (HelloRequest -> HelloResponse)"));
+    assert!(!actr_service_content.contains("from './generated/local_actor'"));
+    assert!(!actr_service_content.contains("dispatchLocalActor"));
 }
 
 #[test]
@@ -422,9 +415,10 @@ fn test_remote_service_only() {
     // Remote files are lifted: remote/echo-service/echo.proto -> src/generated/echo-service/echo_pb.ts
     assert!(gen_dir.join("echo-service/echo_pb.ts").exists());
     assert!(gen_dir.join("echo-service/echo_client.ts").exists());
-
-    // When remote services exist, local_actor.ts MUST be generated
-    assert!(gen_dir.join("local_actor.ts").exists());
+    assert!(
+        !gen_dir.join("local_actor.ts").exists(),
+        "TypeScript remote-only generation should emit client stubs only"
+    );
 
     // Verify directory lifting
     assert!(
@@ -432,23 +426,17 @@ fn test_remote_service_only() {
         "remote/ directory should have been lifted"
     );
 
-    let actor_content = fs::read_to_string(gen_dir.join("local_actor.ts")).unwrap();
-    assert!(actor_content.contains("switch (envelope.routeKey)"));
-    assert!(actor_content.contains("case EchoRequest.routeKey"));
-    assert!(actor_content.contains("EchoRequest.routeKey"));
-    assert!(actor_content.contains("dispatchLocalActor"));
-    assert!(
-        actor_content.contains("ctx.discover({ manufacturer: \"acme\", name: \"EchoService\" })")
-    );
-    assert!(actor_content.contains("export type LocalHandlers = {}"));
-    assert!(actor_content.contains("default:"));
-    assert!(actor_content.contains("Unknown route"));
-    assert!(!actor_content.contains("export const ROUTES"));
-    assert!(!actor_content.contains("ROUTES.find("));
-    assert!(!actor_content.contains("HelloRequest.routeKey"));
+    let client_content = fs::read_to_string(gen_dir.join("echo-service/echo_client.ts")).unwrap();
+    assert!(client_content.contains("export const EchoRequest = {"));
+    assert!(client_content.contains("routeKey: \"echo.EchoService.Echo\""));
+    assert!(client_content.contains("response: {"));
 
     let actr_service_content = fs::read_to_string(root.join("src/actr_service.ts")).unwrap();
-    assert!(actr_service_content.contains("const handlers: LocalHandlers = {};"));
+    assert!(
+        actr_service_content.contains("import { defineWorkload } from '@actrium/actr-workload';")
+    );
+    assert!(actr_service_content.contains("Remote RPC methods:', 1"));
+    assert!(actr_service_content.contains("Remote RPC quick-start examples"));
     assert!(actr_service_content.contains("EchoRequest.routeKey"));
     assert!(actr_service_content.contains("EchoRequest.encode"));
     assert!(actr_service_content.contains("EchoRequest.response.decode"));
@@ -479,38 +467,26 @@ fn test_local_and_remote_services() {
     assert!(gen_dir.join("echo-service/echo_pb.ts").exists());
     assert!(gen_dir.join("echo-service/echo_client.ts").exists());
 
-    // local_actor.ts
-    assert!(gen_dir.join("local_actor.ts").exists());
-
-    let actor_content = fs::read_to_string(gen_dir.join("local_actor.ts")).unwrap();
-
-    // Should contain both local and remote service routes
-    assert!(actor_content.contains("case HelloRequest.routeKey"));
-    assert!(actor_content.contains("case EchoRequest.routeKey"));
-    assert!(actor_content.contains("HelloRequest.routeKey"));
-    assert!(actor_content.contains("EchoRequest.routeKey"));
     assert!(
-        actor_content.contains("ctx.discover({ manufacturer: \"acme\", name: \"EchoService\" })")
+        !gen_dir.join("local_actor.ts").exists(),
+        "TypeScript generation should not emit a local dispatcher"
     );
-    assert!(actor_content.contains("default:"));
-    assert!(actor_content.contains("Unknown route"));
-    assert!(!actor_content.contains("export const ROUTES"));
-    assert!(!actor_content.contains("ROUTES.find("));
 
-    // Check import path for lifted remote file (should not contain "remote/")
-    assert!(actor_content.contains("./echo-service/echo_client"));
-    assert!(!actor_content.contains("./remote/"));
+    let client_content = fs::read_to_string(gen_dir.join("echo-service/echo_client.ts")).unwrap();
+    assert!(client_content.contains("export const EchoRequest = {"));
+    assert!(client_content.contains("routeKey: \"echo.EchoService.Echo\""));
 
     let actr_service_content = fs::read_to_string(root.join("src/actr_service.ts")).unwrap();
-    assert!(actr_service_content.contains("from './generated/local_actor'"));
-    assert!(actr_service_content.contains("async handleSayHello(request, _ctx)"));
+    assert!(actr_service_content.contains("export default defineWorkload({"));
+    assert!(actr_service_content.contains("Local RPC methods:', 1"));
+    assert!(actr_service_content.contains("// - Greeter.SayHello (HelloRequest -> HelloResponse)"));
     assert!(actr_service_content.contains("from './generated/echo-service/echo_client';"));
-    assert!(actr_service_content.contains("[HelloRequest.routeKey]: HelloRequest.decode"));
     assert!(actr_service_content.contains("EchoRequest.routeKey"));
+    assert!(!actr_service_content.contains("from './generated/local_actor'"));
 }
 
 #[test]
-fn test_remote_dispatch_uses_switch_cases_instead_of_routes_table() {
+fn test_remote_clients_are_generated_without_local_dispatcher() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
 
@@ -525,20 +501,19 @@ fn test_remote_dispatch_uses_switch_cases_instead_of_routes_table() {
     assert_success(&out, "actr gen -l typescript (local + two remotes)");
 
     let gen_dir = root.join("src/generated");
-    let actor_content = fs::read_to_string(gen_dir.join("local_actor.ts")).unwrap();
+    assert!(
+        !gen_dir.join("local_actor.ts").exists(),
+        "TypeScript remote client generation should not emit local_actor.ts"
+    );
 
-    assert!(actor_content.contains("case HelloRequest.routeKey"));
-    assert!(actor_content.contains("case EchoRequest.routeKey"));
-    assert!(actor_content.contains("case GetProfileRequest.routeKey"));
-    assert!(
-        actor_content.contains("ctx.discover({ manufacturer: \"acme\", name: \"EchoService\" })")
-    );
-    assert!(
-        actor_content
-            .contains("ctx.discover({ manufacturer: \"acme\", name: \"ProfileService\" })")
-    );
-    assert!(actor_content.contains("default:"));
-    assert!(actor_content.contains("Unknown route"));
-    assert!(!actor_content.contains("export const ROUTES"));
-    assert!(!actor_content.contains("ROUTES.find("));
+    let echo_client = fs::read_to_string(gen_dir.join("echo-service/echo_client.ts")).unwrap();
+    let profile_client =
+        fs::read_to_string(gen_dir.join("profile-service/profile_client.ts")).unwrap();
+    assert!(echo_client.contains("routeKey: \"echo.EchoService.Echo\""));
+    assert!(profile_client.contains("routeKey: \"profile.ProfileService.GetProfile\""));
+
+    let actr_service_content = fs::read_to_string(root.join("src/actr_service.ts")).unwrap();
+    assert!(actr_service_content.contains("Remote RPC methods:', 2"));
+    assert!(actr_service_content.contains("EchoRequest.routeKey"));
+    assert!(actr_service_content.contains("GetProfileRequest.routeKey"));
 }
