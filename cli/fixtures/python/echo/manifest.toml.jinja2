@@ -1,0 +1,17 @@
+edition = 1
+exports = ["protos/local/{{PROJECT_NAME_SNAKE}}.proto"]
+
+[package]
+name = "{{PROJECT_NAME_PASCAL}}"
+manufacturer = "{{MANUFACTURER}}"
+version = "0.1.0"
+description = "Python workload component"
+authors = []
+license = "Apache-2.0"
+tags = ["dev", "python-guest", "component-model"]
+
+[binary]
+path = "dist/{{PROJECT_NAME_SNAKE}}-0.1.0-wasm32-wasip2.wasm"
+target = "wasm32-wasip2"
+
+[dependencies]

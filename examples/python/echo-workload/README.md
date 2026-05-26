@@ -2,41 +2,25 @@
 
 # echo-workload (Python)
 
-Minimal actr workload authored in Python, compiled to a `wasm32-wasip2`
-Component Model module, and packaged as a signed `.actr`.
+Generated Python EchoService workload built with `actr gen -l python`,
+compiled to a `wasm32-wasip2` Component Model module, and packaged as a
+signed `.actr`.
 
-This example uses the local `actr-workload` authoring package. Its
-`build` extra pins `componentize-py==0.23.0` and wraps the
-componentize-py commands used for bindings generation and
-componentization. The WIT contract comes from the repo-wide source of
-truth at `core/framework/wit/actr-workload.wit`.
+This example is the canonical Python workload example. It covers both the
+typed Python codegen path and the `actr-workload` componentization path.
+The generated dispatcher lives under `generated/`; `workload.py`
+implements the business logic by returning an `EchoResponse` with
+`reply="echo from python: " + req.message`.
 
-The generated bindings module is `actr_workload_bindings`; the user
-source imports the authoring package as `actr_workload`, so generated
-code does not shadow the package used by workload authors.
+## Regenerate
 
-## What It Does
-
-- Implements `dispatch(envelope) -> result<list<u8>, actr-error>` by
-  echoing the inbound payload prefixed with `"echo: "`.
-- Implements `on-start`, `on-ready`, `on-stop`, and `on-error` as
-  fallible no-ops returning `Ok(())`.
-- Implements the twelve observation hooks for signaling, transport,
-  credential, and mailbox events as infallible no-ops.
-
-## Toolchain Requirements
-
-| Tool              | Version | Purpose                                      |
-|-------------------|---------|----------------------------------------------|
-| `python3`         | >= 3.11 | host interpreter that runs componentize-py    |
-| `pip`             | >= 23   | install `actr-workload[build]`               |
-| `componentize-py` | 0.23.0  | WIT bindings and Component bundling          |
-| `wasm-tools`      | >= 1.219| Component metadata verification              |
-| `actr` CLI        | current | package the generated component              |
-| `wasm-pack`       | 0.13.1  | regenerate CLI web runtime assets if missing |
-
-`componentize-py` downloads a prebuilt CPython WASM interpreter on first
-use. First-run builds require network access.
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+actr deps install
+actr gen -l python --input protos --output generated
+```
 
 ## Build
 
@@ -59,7 +43,7 @@ The script:
 The output component is:
 
 ```text
-dist/echo-python-0.1.0-wasm32-wasip2.wasm
+dist/generated-echo-python-0.1.0-wasm32-wasip2.wasm
 ```
 
 ## Packaging
@@ -68,33 +52,18 @@ dist/echo-python-0.1.0-wasm32-wasip2.wasm
 ./build.sh package
 ```
 
-The package step runs:
+The package output is:
 
-```bash
-cargo run --manifest-path "${ACTR_ROOT}/Cargo.toml" -p actr-cli -- \
-  build --no-compile -m manifest.toml --key "${SIGNING_KEY}"
-```
-
-`manifest.toml` declares the generated wasm component as
-`wasm32-wasip2`. Compilation is handled by componentize-py, so actr
-packaging uses `--no-compile`.
-
-If `ACTR_SIGNING_KEY` is set, the script uses that key. Otherwise it
-generates a local development key at `dist/dev-key.json` before
-packaging.
-
-If the generated CLI web runtime assets are missing, `build.sh package`
-regenerates them with:
-
-```bash
-bash bindings/web/scripts/sync-cli-assets.sh --build
+```text
+dist/acme-EchoService-0.1.0-wasm32-wasip2.actr
 ```
 
 ## Files
 
-- `workload.py` — the workload class.
-- `requirements.txt` — local editable install of `actr-workload[build]`.
-- `build.sh` — venv, bindings, componentize, verify, and package flow.
+- `protos/local/echo.proto` — EchoService schema.
+- `workload.py` — generated dispatcher-backed handler implementation.
+- `requirements.txt` — local editable install of `actr-workload[build]` and protobuf.
+- `build.sh` — regenerate, componentize, verify, and package flow.
 - `manifest.toml` — actr packaging metadata.
 
 ## License

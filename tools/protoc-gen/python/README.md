@@ -1,16 +1,30 @@
 # protoc-gen-python
 
-Python code generation is now aligned with the repository's `package-first` direction.
+Python code generation targets `actr-workload` Component Model workloads.
 
 ## Current Status
 
-- Client-side protobuf helpers remain valid.
-- Source-defined Python service workloads were removed.
-- If you need to host a service, build a verified `.actr` package and run it with Rust `Hyper.attach(...)`.
+- Generates protobuf `*_pb2.py` modules via `protoc --python_out`.
+- Generates typed workload dispatchers for local protobuf services.
+- Does not generate clients, remote proxies, or code that imports the removed
+  legacy `actr` Python runtime package.
 
-## Recommended Flow
+## Generated Shape
 
-1. Generate Python protobuf/client helpers.
-2. Start `ActrNode` with `ActrNode.from_toml("manifest.toml")`.
-3. Discover the remote actor with `ActrRef.discover(...)`.
-4. Call it explicitly with `ActrRef.call(Dest.actor(target), route_key, request)`.
+For a local service method such as:
+
+```proto
+service EchoService {
+  rpc Echo(EchoRequest) returns (EchoResponse);
+}
+```
+
+the plugin generates a dispatcher that:
+
+1. reads `envelope.route_key`,
+2. decodes `envelope.payload` into `EchoRequest`,
+3. calls the user handler method,
+4. serializes the returned `EchoResponse`.
+
+User code imports `actr_workload.Workload` and implements the generated handler
+methods in `workload.py`.

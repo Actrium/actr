@@ -7,26 +7,21 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
     let fixtures_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
     let python_fixtures = fixtures_root.join("python/echo");
 
-    // Note: proto files are no longer created during init, they will be pulled via actr deps install
     ProjectTemplate::load_file(
-        &python_fixtures.join("Actr.server.toml.jinja2"),
+        &python_fixtures.join("manifest.toml.jinja2"),
         files,
-        "server/manifest.toml",
+        "manifest.toml",
     )?;
     ProjectTemplate::load_file(
-        &python_fixtures.join("Actr.client.toml.jinja2"),
+        &python_fixtures.join("workload.py.jinja2"),
         files,
-        "client/manifest.toml",
+        "workload.py",
     )?;
+    ProjectTemplate::load_file(&python_fixtures.join("build.sh.jinja2"), files, "build.sh")?;
     ProjectTemplate::load_file(
-        &python_fixtures.join("server.py.jinja2"),
+        &python_fixtures.join("requirements.txt.jinja2"),
         files,
-        "server/server.py",
-    )?;
-    ProjectTemplate::load_file(
-        &python_fixtures.join("client.py.jinja2"),
-        files,
-        "client/client.py",
+        "requirements.txt",
     )?;
     ProjectTemplate::load_file(
         &python_fixtures.join("README.md.jinja2"),
@@ -39,22 +34,12 @@ pub fn load(files: &mut HashMap<String, String>) -> Result<()> {
         ".gitignore",
     )?;
 
-    // Load proto templates
     let proto_fixtures = fixtures_root.join("protos");
 
-    // Server: echo service definition
-    // Note: Use PROJECT_NAME_SNAKE in filename so protoc generates matching pb2 filename
     ProjectTemplate::load_file(
         &proto_fixtures.join("echo_service.hbs"),
         files,
-        "server/protos/local/{{PROJECT_NAME_SNAKE}}.proto",
-    )?;
-
-    // Client: empty local.proto
-    ProjectTemplate::load_file(
-        &proto_fixtures.join("local.echo.hbs"),
-        files,
-        "client/protos/local/local.proto",
+        "protos/local/{{PROJECT_NAME_SNAKE}}.proto",
     )?;
 
     Ok(())

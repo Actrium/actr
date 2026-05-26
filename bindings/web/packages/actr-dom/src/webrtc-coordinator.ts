@@ -19,16 +19,34 @@ export interface PeerConnectionInfo {
   state: RTCPeerConnectionState;
 }
 
+interface PendingPortFrame {
+  channelId: number;
+  payload: Uint8Array;
+}
+
+interface FragmentEntry {
+  totalFrags: number;
+  receivedBytes: number;
+  fragments: Map<number, Uint8Array>;
+}
+
 /**
  * WebRTC （DOM ）
  */
 export class WebRtcCoordinator {
+  private static readonly FRAGMENT_HEADER_SIZE = 8;
+  private static readonly DC_MAX_MESSAGE_SIZE = 65535;
+  private static readonly DC_MAX_PAYLOAD_SIZE =
+    WebRtcCoordinator.DC_MAX_MESSAGE_SIZE - WebRtcCoordinator.FRAGMENT_HEADER_SIZE;
+
   private swBridge: ServiceWorkerBridge;
   private forwarder: FastPathForwarder;
   private peers: Map<string, PeerConnectionInfo> = new Map();
   private pendingSends: Map<string, Map<number, Uint8Array[]>> = new Map();
-  private pendingPortFrames: Map<string, Uint8Array[]> = new Map();
+  private pendingPortFrames: Map<string, PendingPortFrame[]> = new Map();
   private rpcPorts: Map<string, MessagePort> = new Map();
+  private fragmentCounters: Map<string, number> = new Map();
+  private reassembly: Map<string, FragmentEntry> = new Map();
   private config: WebRtcConfig;
   /** Dynamic TURN credentials received from SW (AIS registration) */
   private turnCredential: { username: string; credential: string } | null = null;
@@ -224,11 +242,6 @@ export class WebRtcCoordinator {
 
   /**
    *  DataChannel
-   *
-   * The first byte of the DataChannel payload is the PayloadType indicator
-   * (preserved from the transport header on the send side). We extract it
-   * and use it as the virtual channel_id so the SW can route:
-   *   channel 0/1 → RPC,  channel 2/3 → data_stream.
    */
   private handleDataChannelMessage(
     peerId: string,
@@ -242,7 +255,7 @@ export class WebRtcCoordinator {
         `[WebRTC] DataChannel message received: peer=${peerId} channel=${channelId} bytes=${data.size}`
       );
       data.arrayBuffer().then((buffer) => {
-        this.extractPayloadTypeAndForward(peerId, buffer);
+        this.extractFragmentAndForward(peerId, channelId, new Uint8Array(buffer));
       });
       return;
     }
@@ -252,7 +265,7 @@ export class WebRtcCoordinator {
       console.log(
         `[WebRTC] DataChannel message received: peer=${peerId} channel=${channelId} bytes=${data.byteLength}`
       );
-      this.extractPayloadTypeAndForward(peerId, data);
+      this.extractFragmentAndForward(peerId, channelId, new Uint8Array(data));
       return;
     }
 
@@ -263,18 +276,77 @@ export class WebRtcCoordinator {
   }
 
   /**
-   * Extract the PayloadType prefix byte and forward the actual data to the SW.
-   *
-   * Wire format: [PayloadType(1) | Data(N)]
-   * PayloadType values map to virtual channel IDs:
-   *   0 = RPC_RELIABLE, 1 = RPC_SIGNAL, 2 = STREAM_RELIABLE, 3 = STREAM_LATENCY_FIRST
+   * Decode the native WebRtcDataLane frame and forward the reassembled payload to the SW.
+   * Wire format: [msg_id(4) | frag_index(2) | total_frags(2) | Data(N)].
    */
-  private extractPayloadTypeAndForward(peerId: string, data: ArrayBuffer): void {
-    if (data.byteLength < 1) return;
-    const view = new Uint8Array(data);
-    const virtualChannelId = view[0]; // PayloadType byte = virtual channel_id
-    const actualData = data.slice(1); // Strip the PayloadType prefix
-    this.forwardDataChannelMessage(peerId, virtualChannelId, actualData);
+  private extractFragmentAndForward(peerId: string, channelId: number, frame: Uint8Array): void {
+    const payload = this.reassembleFrame(peerId, channelId, frame);
+    if (!payload) return;
+
+    const buffer = new ArrayBuffer(payload.byteLength);
+    new Uint8Array(buffer).set(payload);
+    this.forwardDataChannelMessage(peerId, channelId, buffer);
+  }
+
+  private reassembleFrame(
+    peerId: string,
+    channelId: number,
+    frame: Uint8Array
+  ): Uint8Array | null {
+    if (frame.byteLength < WebRtcCoordinator.FRAGMENT_HEADER_SIZE) {
+      console.warn(`[WebRTC] Dropping short DataChannel frame: ${frame.byteLength} bytes`);
+      return null;
+    }
+
+    const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+    const msgId = view.getUint32(0, false);
+    const fragIndex = view.getUint16(4, false);
+    const totalFrags = view.getUint16(6, false);
+    const payload = frame.subarray(WebRtcCoordinator.FRAGMENT_HEADER_SIZE);
+
+    if (totalFrags === 0 || fragIndex >= totalFrags) {
+      console.warn(
+        `[WebRTC] Dropping invalid DataChannel fragment: msg=${msgId} index=${fragIndex} total=${totalFrags}`
+      );
+      return null;
+    }
+
+    if (totalFrags === 1) {
+      return payload;
+    }
+
+    const key = `${peerId}:${channelId}:${msgId}`;
+    let entry = this.reassembly.get(key);
+    if (!entry) {
+      entry = {
+        totalFrags,
+        receivedBytes: 0,
+        fragments: new Map(),
+      };
+      this.reassembly.set(key, entry);
+    }
+
+    if (!entry.fragments.has(fragIndex)) {
+      const copy = new Uint8Array(payload);
+      entry.fragments.set(fragIndex, copy);
+      entry.receivedBytes += copy.byteLength;
+    }
+
+    if (entry.fragments.size !== entry.totalFrags) {
+      return null;
+    }
+
+    const complete = new Uint8Array(entry.receivedBytes);
+    let offset = 0;
+    for (let i = 0; i < entry.totalFrags; i++) {
+      const fragment = entry.fragments.get(i);
+      if (!fragment) return null;
+      complete.set(fragment, offset);
+      offset += fragment.byteLength;
+    }
+
+    this.reassembly.delete(key);
+    return complete;
   }
 
   /**
@@ -483,18 +555,7 @@ export class WebRtcCoordinator {
     }
 
     if (channel.readyState === 'open') {
-      // Prepend the channelId as a PayloadType byte so the receive path
-      // (extractPayloadTypeAndForward) can route it correctly.
-      // Both send paths (TransportLane and send_channel_data) must use
-      // the same [PayloadType(1)|Data(N)] wire format.
-      const out = new Uint8Array(1 + data.byteLength);
-      out[0] = channelId;
-      out.set(data, 1);
-      // Use 'as any' because RTCDataChannel.send in TS definitions doesn't yet support
-      // SharedArrayBuffer-backed buffers, even though modern browsers do.
-      // This avoids unnecessary memory copying.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      channel.send(out as any);
+      this.sendFramedData(peerId, channelId, channel, data);
     } else if (channel.readyState === 'connecting') {
       this.queuePendingSend(peerId, channelId, data);
     } else {
@@ -522,9 +583,13 @@ export class WebRtcCoordinator {
     queue.push(new Uint8Array(data));
   }
 
-  private queuePendingPortFrame(peerId: string, frame: Uint8Array): void {
+  private queuePendingPortFrameForChannel(
+    peerId: string,
+    channelId: number,
+    payload: Uint8Array
+  ): void {
     const queue = this.pendingPortFrames.get(peerId) ?? [];
-    queue.push(new Uint8Array(frame));
+    queue.push({ channelId, payload: new Uint8Array(payload) });
     this.pendingPortFrames.set(peerId, queue);
   }
 
@@ -553,21 +618,26 @@ export class WebRtcCoordinator {
 
     const mc = new MessageChannel();
     mc.port1.onmessage = (e: MessageEvent) => {
-      const src = e.data instanceof ArrayBuffer ? new Uint8Array(e.data) : (e.data as Uint8Array);
-      const out = new Uint8Array(1 + (src.length - 5));
-      out[0] = src[0]; // PayloadType byte
-      out.set(src.subarray(5), 1); // Data after header
+      const src = this.toUint8Array(e.data);
+      if (src.byteLength < 5) {
+        console.warn(`[WebRTC] Dropping short SW transport frame: ${src.byteLength} bytes`);
+        return;
+      }
 
-      if (channel.readyState === 'open') {
-        channel.send(out);
-      } else if (channel.readyState === 'connecting') {
-        this.queuePendingPortFrame(peerId, out);
+      const payloadType = src[0];
+      const payload = src.subarray(5); // Strip SW transport header [PayloadType(1)|Length(4)].
+      const targetChannel = peer?.dataChannels.get(payloadType);
+
+      if (targetChannel?.readyState === 'open') {
+        this.sendFramedData(peerId, payloadType, targetChannel, payload);
+      } else if (targetChannel?.readyState === 'connecting') {
+        this.queuePendingPortFrameForChannel(peerId, payloadType, payload);
       } else {
         this.dropPendingPeerFrames(peerId);
         this.notifySW('command_error', {
           peerId,
           action: 'send_port_frame',
-          error: `datachannel_not_open:${channel.readyState}`,
+          error: `datachannel_not_open:${targetChannel?.readyState ?? 'missing'}`,
         });
       }
     };
@@ -602,10 +672,62 @@ export class WebRtcCoordinator {
 
     this.pendingPortFrames.delete(peerId);
     for (const frame of queue) {
-      const payload = new ArrayBuffer(frame.byteLength);
-      new Uint8Array(payload).set(frame);
-      channel.send(payload);
+      const targetChannel = this.peers.get(peerId)?.dataChannels.get(frame.channelId);
+      if (!targetChannel || targetChannel.readyState !== 'open') {
+        this.queuePendingPortFrameForChannel(peerId, frame.channelId, frame.payload);
+        continue;
+      }
+      this.sendFramedData(peerId, frame.channelId, targetChannel, frame.payload);
     }
+  }
+
+  private toUint8Array(data: ArrayBuffer | ArrayBufferView): Uint8Array {
+    if (data instanceof ArrayBuffer) {
+      return new Uint8Array(data);
+    }
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+
+  private sendFramedData(
+    peerId: string,
+    channelId: number,
+    channel: RTCDataChannel,
+    payload: Uint8Array
+  ): void {
+    for (const frame of this.createFrames(peerId, channelId, payload)) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      channel.send(frame as any);
+    }
+  }
+
+  private createFrames(peerId: string, channelId: number, payload: Uint8Array): Uint8Array[] {
+    const totalFrags = Math.max(
+      1,
+      Math.ceil(payload.byteLength / WebRtcCoordinator.DC_MAX_PAYLOAD_SIZE)
+    );
+    if (totalFrags > 0xffff) {
+      throw new Error(`DataChannel payload too large: ${payload.byteLength} bytes`);
+    }
+
+    const counterKey = `${peerId}:${channelId}`;
+    const msgId = this.fragmentCounters.get(counterKey) ?? 0;
+    this.fragmentCounters.set(counterKey, (msgId + 1) >>> 0);
+
+    const frames: Uint8Array[] = [];
+    for (let fragIndex = 0; fragIndex < totalFrags; fragIndex++) {
+      const start = fragIndex * WebRtcCoordinator.DC_MAX_PAYLOAD_SIZE;
+      const end = Math.min(start + WebRtcCoordinator.DC_MAX_PAYLOAD_SIZE, payload.byteLength);
+      const chunk = payload.subarray(start, end);
+      const frame = new Uint8Array(WebRtcCoordinator.FRAGMENT_HEADER_SIZE + chunk.byteLength);
+      const view = new DataView(frame.buffer);
+      view.setUint32(0, msgId, false);
+      view.setUint16(4, fragIndex, false);
+      view.setUint16(6, totalFrags, false);
+      frame.set(chunk, WebRtcCoordinator.FRAGMENT_HEADER_SIZE);
+      frames.push(frame);
+    }
+
+    return frames;
   }
 
   private attachDataChannel(peerId: string, laneId: number, channel: RTCDataChannel): void {
@@ -626,19 +748,13 @@ export class WebRtcCoordinator {
       //  MessagePort ：SW → port2 → port1 → DataChannel → Remote
       //  port ，
       //
-      // NOTE: Only register the RPC_RELIABLE (lane 0) port with the SW.
-      // The SW's WirePool has a single WebRTC slot, so each register_datachannel_port
-      // call replaces the previous connection. By only registering lane 0, we ensure
-      // all outgoing data is funnelled through a single DataChannel.
+      // NOTE: Only the RPC_RELIABLE lane registers a MessagePort with the SW.
+      // The SW transport header still carries PayloadType, and the DOM bridge
+      // uses it to select the actual RTCDataChannel before wrapping bytes in
+      // the native WebRtcDataLane fragment frame.
       //
-      // To preserve PayloadType routing information (needed by handle_fast_path to
-      // distinguish RPC vs data_stream), we keep the 1-byte PayloadType prefix and
-      // strip only the 4-byte Length field from the 5-byte transport header
-      // [PayloadType(1)|Length(4)].
-      //
-      // On the receive side, handleDataChannelMessage extracts this PayloadType byte
-      // and uses it as the virtual channel_id for stream_id construction, so the SW
-      // can correctly route channel 0/1 → RPC and channel 2/3 → data_stream.
+      // Receive-side routing uses the RTCDataChannel lane id after decoding the
+      // fragment frame, matching the native runtime's wire format.
       if (laneId === 0) {
         this.bindRpcPort(peerId, channel);
       }

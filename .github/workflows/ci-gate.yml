@@ -32,6 +32,7 @@ jobs:
       ts_workload: ${{ steps.targets.outputs.ts_workload }}
       python_codegen: ${{ steps.targets.outputs.python_codegen }}
       python_workload: ${{ steps.targets.outputs.python_workload }}
+      python_web_e2e: ${{ steps.targets.outputs.python_web_e2e }}
       swift_binding: ${{ steps.targets.outputs.swift_binding }}
       kotlin_binding: ${{ steps.targets.outputs.kotlin_binding }}
       web_binding: ${{ steps.targets.outputs.web_binding }}
@@ -45,6 +46,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Test target detection
+        run: python .github/scripts/ci_targets_test.py
 
       - id: targets
         name: Compute targets
@@ -204,6 +207,51 @@ jobs:
           cache-dependency-path: tools/protoc-gen/python/pyproject.toml
       - name: Install package
         run: pip install -e .
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Smoke generate typed workload
+        run: |
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/protos/local" "$tmp/generated"
+          cat > "$tmp/protos/local/echo.proto" <<'PROTO'
+          syntax = "proto3";
+          package echo;
+
+          message EchoRequest {
+            string message = 1;
+          }
+
+          message EchoResponse {
+            string reply = 1;
+          }
+
+          service EchoService {
+            rpc Echo(EchoRequest) returns (EchoResponse);
+          }
+          PROTO
+
+          protoc \
+            --proto_path="$tmp/protos" \
+            --python_out="$tmp/generated" \
+            --plugin="protoc-gen-actrpython=$(command -v framework_codegen_python)" \
+            --actrpython_opt="LocalFiles=local/echo.proto" \
+            --actrpython_out="$tmp/generated" \
+            "$tmp/protos/local/echo.proto"
+
+          python -m compileall "$tmp/generated"
+          PYTHONPATH="$tmp" python - <<'PY'
+          import generated.echo_workload
+          import generated.local.echo_pb2
+
+          assert hasattr(generated.echo_workload, "EchoServiceDispatcher")
+          PY
+
+          if grep -R -E "from actr import|import actr" "$tmp/generated"; then
+            echo "legacy actr runtime import leaked into generated Python" >&2
+            exit 1
+          fi
       - name: Build package
         run: |
           python -m pip install -U build
@@ -420,6 +468,65 @@ jobs:
           SUITES: BasicFunction
         run: bash start-mock.sh
 
+  python_web_e2e:
+    name: Python Web E2E
+    needs: determine
+    if: needs.determine.outputs.python_web_e2e == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2,wasm32-unknown-unknown
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install wasm Component Model toolchain
+        run: |
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.247.0 --locked
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux test deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lsof netcat-openbsd
+          google-chrome --version || google-chrome-stable --version || true
+      - name: Install web binding root deps (puppeteer)
+        working-directory: bindings/web
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+          pnpm install --frozen-lockfile
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Pre-build actr CLI (release)
+        run: cargo build --release -p actr-cli --bin actr
+      - name: Run generated Python echo browser e2e
+        working-directory: bindings/web/examples/echo
+        env:
+          ACTR_CMD: ${{ github.workspace }}/target/release/actr
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+          PYTHON_SERVER_READY_ATTEMPTS: "1200"
+          PYTHON_ECHO_MESSAGE: hello-from-actr-web
+        run: bash start-python-mock.sh
+
   gate:
     name: Gate
     runs-on: ubuntu-latest
@@ -435,6 +542,7 @@ jobs:
       - kotlin
       - web
       - web_browser_e2e
+      - python_web_e2e
     env:
       MODE: ${{ needs.determine.outputs.mode }}
       CHANGED_FILES_JSON: ${{ needs.determine.outputs.changed_files_json }}
@@ -448,6 +556,7 @@ jobs:
       KOTLIN_RESULT: ${{ needs.kotlin.result }}
       WEB_RESULT: ${{ needs.web.result }}
       WEB_BROWSER_E2E_RESULT: ${{ needs.web_browser_e2e.result }}
+      PYTHON_WEB_E2E_RESULT: ${{ needs.python_web_e2e.result }}
     steps:
       - name: Summarize gate
         run: |
@@ -466,6 +575,7 @@ jobs:
               "kotlin": os.environ["KOTLIN_RESULT"],
               "web": os.environ["WEB_RESULT"],
               "web_browser_e2e": os.environ["WEB_BROWSER_E2E_RESULT"],
+              "python_web_e2e": os.environ["PYTHON_WEB_E2E_RESULT"],
           }
 
           changed_files = json.loads(os.environ["CHANGED_FILES_JSON"])

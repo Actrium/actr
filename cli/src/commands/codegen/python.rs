@@ -12,7 +12,7 @@ use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
-// Template for Python service scaffold
+// Template for Python workload scaffold
 const ACTR_SERVICE_TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/python/ActrService.py.hbs"
@@ -26,6 +26,9 @@ const REQUIRED_TOOLS: &[(&str, &str)] = &[(PROTOC, "Protocol Buffers compiler")]
 struct ProtoService {
     name: String,
     package: String,
+    proto_module: String,
+    pb2_package: String,
+    generated_module: String,
     methods: Vec<ProtoMethod>,
 }
 
@@ -35,6 +38,7 @@ struct ProtoMethod {
     snake_name: String,
     input_type: String,
     output_type: String,
+    route_key: String,
 }
 
 pub struct PythonGenerator;
@@ -46,6 +50,15 @@ impl LanguageGenerator for PythonGenerator {
         let mut generated_files = Vec::new();
 
         self.ensure_required_tools()?;
+
+        if context.proto_model.local_services.is_empty() {
+            return Err(ActrCliError::config_error(
+                "Python workload codegen requires at least one local protobuf service. \
+                 Client/proxy-only Python codegen is no longer supported because the \
+                 legacy Python runtime package was removed."
+                    .to_string(),
+            ));
+        }
 
         let plugin_path = ensure_python_plugin()?;
 
@@ -311,15 +324,10 @@ impl LanguageGenerator for PythonGenerator {
         let service_name = if let Some(service) = services.first() {
             service.name.clone()
         } else if let Some(dep) = context.config.dependencies.first() {
-            let type_name = dep
-                .actr_type
-                .as_ref()
-                .map(|t| t.name.clone())
-                .or_else(|| dep.service.as_ref().map(|service| service.name.clone()))
-                .unwrap_or_else(|| dep.alias.clone());
-
-            debug!("Using service name from dependencies: {}", type_name);
-            type_name
+            return Err(ActrCliError::config_error(format!(
+                "Python workload scaffold requires a local protobuf service; found only dependency '{}'.",
+                dep.alias
+            )));
         } else {
             // Fallback to the first proto file name
             let guessed_name = context
@@ -335,20 +343,8 @@ impl LanguageGenerator for PythonGenerator {
             guessed_name
         };
 
-        let workload_name = if let Some(service) = services.first() {
-            format!("{}Workload", service.name)
-        } else {
-            format!("{}Workload", to_pascal_case(&context.config.package.name))
-        };
-
-        // Determine filename based on service type
-        let filename = if services.is_empty() {
-            // No local services - this is a client
-            "client.py".to_string()
-        } else {
-            // Has local services - use service name
-            format!("{}.py", to_snake_case(&service_name))
-        };
+        let workload_name = "Workload".to_string();
+        let filename = "workload.py".to_string();
 
         let user_file_path = context
             .output
@@ -513,13 +509,9 @@ impl LanguageGenerator for PythonGenerator {
         println!("\n🎉 Python code generation completed!");
         println!("\n📋 Next steps:");
         println!("1. 📖 View generated code: {:?}", context.output);
-        println!("2. 📦 Add the output directory to PYTHONPATH:");
-        println!(
-            "   export PYTHONPATH=$PYTHONPATH:{}",
-            context.output.display()
-        );
-        println!("3. 🐍 Import and use the generated modules in your Python code");
-        println!("\n💡 Tip: Consider using a virtual environment for your Python project");
+        println!("2. 🐍 Edit workload.py and implement the generated handler methods");
+        println!("3. 📦 Run ./build.sh package to componentize and package the workload");
+        println!("\n💡 Tip: Use a virtual environment for componentize-py dependencies");
     }
 }
 
@@ -567,8 +559,11 @@ impl PythonGenerator {
             .local_services
             .into_iter()
             .map(|service| ProtoService {
-                name: service.name,
-                package: service.package,
+                name: service.name.clone(),
+                package: service.package.clone(),
+                proto_module: proto_module_from_path(&service.proto_file),
+                pb2_package: pb2_package_from_path(&service.proto_file),
+                generated_module: generated_workload_module(&service.package, &service.name),
                 methods: service
                     .methods
                     .into_iter()
@@ -577,6 +572,7 @@ impl PythonGenerator {
                         snake_name: method.snake_name,
                         input_type: method.input_type,
                         output_type: method.output_type,
+                        route_key: method.route_key,
                     })
                     .collect(),
             })
@@ -585,7 +581,7 @@ impl PythonGenerator {
 
     fn generate_scaffold_content(
         &self,
-        context: &GenContext,
+        _context: &GenContext,
         service_name: &str,
         workload_name: &str,
         services: &[ProtoService],
@@ -600,6 +596,8 @@ impl PythonGenerator {
             dispatcher_name: String,
             #[serde(rename = "PROTO_MODULE")]
             proto_module: String,
+            #[serde(rename = "PB2_MODULE")]
+            pb2_module: String,
             #[serde(rename = "ACTOR_MODULE")]
             actor_module: String,
             #[serde(rename = "SERVICES")]
@@ -608,24 +606,15 @@ impl PythonGenerator {
             has_services: bool,
         }
 
-        // Derive proto_module from the first proto file name (without .proto extension)
-        let proto_module = context
-            .proto_files
-            .first()
-            .and_then(|f| f.file_stem())
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "proto".to_string());
+        let first_service = services.first().ok_or_else(|| {
+            ActrCliError::config_error(
+                "Python workload scaffold requires at least one local service".to_string(),
+            )
+        })?;
 
-        let actor_module = if let Some(_service) = services.first() {
-            // Use package name (proto_module) instead of service name to match
-            // the actual generated filename from framework-codegen-python
-            // e.g., "add_service" -> "add_service_service_actor"
-            format!("{}_service_actor", proto_module)
-        } else {
-            // For client workloads, use proto_module + "_workload"
-            format!("{}_workload", proto_module)
-        };
+        let proto_module = first_service.proto_module.clone();
+        let pb2_module = first_service.pb2_package.clone();
+        let actor_module = first_service.generated_module.clone();
 
         let dispatcher_name = services
             .first()
@@ -637,6 +626,7 @@ impl PythonGenerator {
             workload_name: workload_name.to_string(),
             dispatcher_name,
             proto_module,
+            pb2_module,
             actor_module,
             services: services.to_vec(),
             has_services: !services.is_empty(),
@@ -646,6 +636,37 @@ impl PythonGenerator {
         handlebars.register_escape_fn(handlebars::no_escape);
         Ok(handlebars.render_template(ACTR_SERVICE_TEMPLATE, &context)?)
     }
+}
+
+fn proto_module_from_path(path: &Path) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("proto")
+        .to_string()
+}
+
+fn pb2_package_from_path(path: &Path) -> String {
+    let mut parts = vec!["generated".to_string()];
+    if let Some(parent) = path.parent() {
+        for component in parent.components() {
+            if let Some(value) = component.as_os_str().to_str()
+                && !value.is_empty()
+                && value != "."
+            {
+                parts.push(value.replace('-', "_"));
+            }
+        }
+    }
+    parts.join(".")
+}
+
+fn generated_workload_module(package: &str, service_name: &str) -> String {
+    let base = if package.is_empty() {
+        to_snake_case(service_name)
+    } else {
+        package.replace(['.', '-'], "_").to_ascii_lowercase()
+    };
+    format!("{base}_workload")
 }
 
 // Helper function to convert CamelCase to snake_case
@@ -666,19 +687,16 @@ fn ensure_python_plugin() -> Result<PathBuf> {
         return Ok(path);
     }
 
-    info!("📦 framework_codegen_python not found, installing...");
-    install_python_plugin("framework_codegen_python", None).or_else(|_| {
-        install_python_plugin(
-            "framework_codegen_python",
-            Some("https://test.pypi.org/simple/"),
-        )
-    })?;
+    if let Some(path) = create_workspace_python_plugin_shim()? {
+        info!("✅ Using workspace framework_codegen_python");
+        return Ok(path);
+    }
 
-    find_python_plugin()?.ok_or_else(|| {
-        ActrCliError::command_error(
-            "framework_codegen_python not found in PATH after install".to_string(),
-        )
-    })
+    Err(ActrCliError::command_error(
+        "framework_codegen_python not found. Install it in your active environment, \
+         for example: python -m pip install framework_codegen_python"
+            .to_string(),
+    ))
 }
 
 fn find_python_plugin() -> Result<Option<PathBuf>> {
@@ -699,41 +717,53 @@ fn find_python_plugin() -> Result<Option<PathBuf>> {
     }
 }
 
-fn install_python_plugin(package_name: &str, index_url: Option<&str>) -> Result<()> {
-    let mut cmd = StdCommand::new("python3");
-    cmd.arg("-m").arg("pip").arg("install").arg("-U");
-    if let Some(index_url) = index_url {
-        cmd.arg("-i").arg(index_url);
+fn create_workspace_python_plugin_shim() -> Result<Option<PathBuf>> {
+    let cli_manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let Some(workspace_root) = cli_manifest_dir.parent() else {
+        return Ok(None);
+    };
+    let package_dir = workspace_root.join("tools/protoc-gen/python");
+    if !package_dir.join("framework_codegen_python").is_dir() {
+        return Ok(None);
     }
-    cmd.arg(package_name);
 
-    debug!("Running: {:?}", cmd);
-    let output = cmd.output();
-
-    let output = match output {
-        Ok(output) => output,
-        Err(_) => {
-            let mut fallback = StdCommand::new("python");
-            fallback.arg("-m").arg("pip").arg("install").arg("-U");
-            if let Some(index_url) = index_url {
-                fallback.arg("-i").arg(index_url);
-            }
-            fallback.arg(package_name);
-            debug!("Running: {:?}", fallback);
-            fallback.output().map_err(|e| {
-                ActrCliError::command_error(format!("Failed to run pip install: {e}"))
-            })?
-        }
+    let python = if command_exists("python3") {
+        "python3"
+    } else if command_exists("python") {
+        "python"
+    } else {
+        return Ok(None);
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ActrCliError::command_error(format!(
-            "Failed to install plugin:\n{stderr}"
-        )));
+    let shim_dir = std::env::temp_dir().join("actr-python-codegen");
+    std::fs::create_dir_all(&shim_dir).map_err(|error| {
+        ActrCliError::command_error(format!(
+            "Failed to create Python plugin shim directory {}: {error}",
+            shim_dir.display()
+        ))
+    })?;
+    let shim_path = shim_dir.join("framework_codegen_python");
+    let content = format!(
+        "#!/usr/bin/env sh\nPYTHONPATH='{}' exec {} -m framework_codegen_python \"$@\"\n",
+        package_dir.display(),
+        python
+    );
+    std::fs::write(&shim_path, content).map_err(|error| {
+        ActrCliError::command_error(format!(
+            "Failed to write Python plugin shim {}: {error}",
+            shim_path.display()
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&shim_path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&shim_path, permissions)?;
     }
 
-    Ok(())
+    Ok(Some(shim_path))
 }
 
 /// Check if the installed protobuf version meets the minimum requirement (>= 6.33.3)

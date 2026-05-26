@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORLD="actr-workload-guest"
+WORLD_MODULE="actr_workload_bindings"
+BINDINGS_DIR="${HERE}/bindings"
+DIST_DIR="${HERE}/dist"
+OUT_WASM="${DIST_DIR}/{{PROJECT_NAME_SNAKE}}-0.1.0-wasm32-wasip2.wasm"
+VENV_DIR="${HERE}/.venv"
+
+if [[ ! -d "${VENV_DIR}" ]]; then
+    python3 -m venv "${VENV_DIR}"
+fi
+
+# shellcheck disable=SC1091
+source "${VENV_DIR}/bin/activate"
+python -m pip install --upgrade pip >/dev/null
+
+if [[ -n "${ACTR_WORKLOAD_PACKAGE:-}" ]]; then
+    python -m pip install "${ACTR_WORKLOAD_PACKAGE}"
+else
+    python -m pip install -r "${HERE}/requirements.txt"
+fi
+
+rm -rf "${BINDINGS_DIR}"
+actr-workload bindings "${BINDINGS_DIR}" \
+    --world "${WORLD}" \
+    --world-module "${WORLD_MODULE}"
+
+mkdir -p "${DIST_DIR}"
+actr-workload componentize workload \
+    -o "${OUT_WASM}" \
+    --project-dir "${HERE}" \
+    --bindings-dir "${BINDINGS_DIR}" \
+    --world "${WORLD}" \
+    --world-module "${WORLD_MODULE}"
+
+if command -v wasm-tools >/dev/null 2>&1; then
+    wasm-tools component wit "${OUT_WASM}" > "${DIST_DIR}/{{PROJECT_NAME_SNAKE}}.wit.txt"
+    grep -q "actr:workload" "${DIST_DIR}/{{PROJECT_NAME_SNAKE}}.wit.txt"
+fi
+
+if [[ "${1:-}" == "package" ]]; then
+    SIGNING_KEY="${ACTR_SIGNING_KEY:-${DIST_DIR}/dev-key.json}"
+    if [[ ! -f "${SIGNING_KEY}" ]]; then
+        actr pkg keygen --output "${SIGNING_KEY}" --force >/dev/null
+    fi
+    actr build --no-compile -m "${HERE}/manifest.toml" --key "${SIGNING_KEY}"
+fi
+
+echo "Component at: ${OUT_WASM}"

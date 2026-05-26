@@ -1,33 +1,12 @@
-# DO NOT EDIT - Generated scaffold
-
 from __future__ import annotations
 
 from actr_workload import Workload as WorkloadProtocol
 
-from generated.{{ACTOR_MODULE}} import {{DISPATCHER_NAME}}
-from {{PB2_MODULE}} import {{PROTO_MODULE}}_pb2 as pb2
 
-
-class {{SERVICE_NAME}}Handler:
-{{#if HAS_SERVICES}}
-{{#each SERVICES}}
-{{#each methods}}
-    def {{snake_name}}(self, req: pb2.{{input_type}}) -> pb2.{{output_type}}:
-        return pb2.{{output_type}}()
-
-{{/each}}
-{{/each}}
-{{else}}
-    pass
-{{/if}}
-
-
-class {{WORKLOAD_NAME}}(WorkloadProtocol):
-    def __init__(self) -> None:
-        self._dispatcher = {{DISPATCHER_NAME}}({{SERVICE_NAME}}Handler())
-
+class Workload(WorkloadProtocol):
     def dispatch(self, envelope) -> bytes:
-        return self._dispatcher.dispatch(envelope)
+        payload = envelope.payload if envelope.payload is not None else b""
+        return bytes(payload)
 
     def on_start(self) -> None:
         return None
