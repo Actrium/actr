@@ -115,8 +115,16 @@ impl WebRtcConnection {
     /// This keeps `connected` in sync with the WebRTC connection state and
     /// broadcasts state change events for upper layers to handle.
     pub(crate) async fn handle_state_change(&self, state: RTCPeerConnectionState) {
-        // Guard: if session is cancelled, skip all side effects
         if self.session.is_cancelled() {
+            // Preserve the terminal state event for session-guarded cleanup
+            // observers, but skip hooks and recursive close side effects.
+            if matches!(state, RTCPeerConnectionState::Closed) {
+                let _ = self.event_tx.send(ConnectionEvent::StateChanged {
+                    peer_id: self.peer_id.clone(),
+                    session_id: self.session.session_id,
+                    state: ConnectionState::Closed,
+                });
+            }
             tracing::debug!(
                 "🚫 handle_state_change session {} cancelled, ignoring {:?}",
                 self.session.session_id,

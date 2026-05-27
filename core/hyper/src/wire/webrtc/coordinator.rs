@@ -228,6 +228,65 @@ impl WebRtcCoordinator {
         self.negotiator.set_vnet(vnet);
     }
 
+    /// Close a cached WebRTC DataChannel for integration tests.
+    ///
+    /// This keeps production APIs from exposing WebRTC internals while allowing
+    /// regression tests to trigger the real `RTCDataChannel::on_close` path.
+    #[cfg(feature = "test-utils")]
+    pub async fn close_data_channel_for_test(
+        &self,
+        peer_id: &ActrId,
+        payload_type: PayloadType,
+    ) -> ActorResult<u64> {
+        let idx = payload_type as usize;
+        if idx >= 4 {
+            return Err(ActrError::Internal(format!(
+                "PayloadType does not use a WebRTC DataChannel: {payload_type:?}"
+            )));
+        }
+
+        let (session_id, webrtc_conn) = {
+            let peers = self.peers.read().await;
+            let state = peers.get(peer_id).ok_or_else(|| {
+                ActrError::Internal(format!(
+                    "Peer connection not found for test close: {peer_id}"
+                ))
+            })?;
+            (state.session_id, state.webrtc_conn.clone())
+        };
+
+        let channels = webrtc_conn.data_channels().await;
+        let channel = channels
+            .get(idx)
+            .and_then(Clone::clone)
+            .ok_or_else(|| {
+                ActrError::Internal(format!(
+                    "DataChannel not found for test close: peer={peer_id}, payload_type={payload_type:?}"
+                ))
+            })?;
+
+        channel
+            .close()
+            .await
+            .map_err(|e| ActrError::Internal(format!("Failed to close DataChannel: {e}")))?;
+
+        Ok(session_id)
+    }
+
+    /// Check whether the current WebRTC connection to a peer still has an open DataChannel.
+    #[cfg(feature = "test-utils")]
+    pub async fn has_open_data_channel_for_test(&self, peer_id: &ActrId) -> ActorResult<bool> {
+        let webrtc_conn = {
+            let peers = self.peers.read().await;
+            peers.get(peer_id).map(|state| state.webrtc_conn.clone())
+        };
+        let Some(webrtc_conn) = webrtc_conn else {
+            return Ok(false);
+        };
+
+        Ok(webrtc_conn.has_open_data_channel().await)
+    }
+
     /// Get the event sender for sharing with WebRtcConnection instances
     pub fn event_sender(&self) -> tokio::sync::broadcast::Sender<ConnectionEvent> {
         self.event_broadcaster.sender()
