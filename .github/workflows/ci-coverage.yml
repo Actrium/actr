@@ -60,7 +60,7 @@ jobs:
           retention-days: 7
 
   coverage-web-rust:
-    name: Web Rust Host Coverage
+    name: Web Rust Host Unit Coverage
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -118,6 +118,75 @@ jobs:
         with:
           name: coverage-web-rust-html
           path: bindings/web/target/llvm-cov/html/
+          retention-days: 7
+
+  coverage-web-wasm:
+    name: Web Rust Wasm Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: bindings/web
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install wasm-capable clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm
+          echo "CC_wasm32_unknown_unknown=$(command -v clang)" >> "$GITHUB_ENV"
+          echo "TARGET_CC=$(command -v clang)" >> "$GITHUB_ENV"
+          echo "CC=$(command -v clang)" >> "$GITHUB_ENV"
+          clang --target=wasm32-unknown-unknown -x c -c /dev/null -o /tmp/clang-wasm-test.o
+      - name: Install wasm test tools
+        run: |
+          wasm_bindgen_version="$(
+            awk '
+              $0 == "name = \"wasm-bindgen\"" { in_pkg = 1; next }
+              in_pkg && /^version = / { gsub(/"/, "", $3); print $3; exit }
+              /^\[\[package\]\]/ { in_pkg = 0 }
+            ' Cargo.lock
+          )"
+          test -n "$wasm_bindgen_version"
+          cargo install wasm-bindgen-cli --version "$wasm_bindgen_version" --locked
+          wasm-bindgen-test-runner --version
+      - name: Setup Chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: Setup ChromeDriver
+        uses: nanasess/setup-chromedriver@v2
+      - name: Configure ChromeDriver
+        run: |
+          echo "CHROMEDRIVER=$(command -v chromedriver)" >> "$GITHUB_ENV"
+          google-chrome --version || chrome --version
+          chromedriver --version
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/web -> target
+      - name: Run wasm coverage
+        env:
+          WASM_BINDGEN_USE_BROWSER: "1"
+        run: bash scripts/wasm-coverage.sh
+      - name: Upload lcov
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-web-wasm-lcov
+          path: bindings/web/web-wasm-lcov.info
+          retention-days: 7
+      - name: Upload HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-web-wasm-html
+          path: bindings/web/target/wasm-coverage-html/
           retention-days: 7
 
   coverage-typescript:
@@ -199,6 +268,7 @@ jobs:
     needs:
       - coverage-rust
       - coverage-web-rust
+      - coverage-web-wasm
       - coverage-typescript
       - coverage-kotlin
     permissions:
@@ -215,6 +285,11 @@ jobs:
         with:
           name: coverage-web-rust-lcov
           path: coverage-artifacts/web-rust
+      - name: Download Web Rust wasm lcov
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-web-wasm-lcov
+          path: coverage-artifacts/web-wasm
       - name: Download TypeScript lcov
         uses: actions/download-artifact@v4
         with:
@@ -230,6 +305,7 @@ jobs:
           python3 .github/scripts/coverage_summary.py \
             --rust-lcov coverage-artifacts/rust/lcov.info \
             --web-rust-lcov coverage-artifacts/web-rust/web-rust-lcov.info \
+            --web-wasm-lcov coverage-artifacts/web-wasm/web-wasm-lcov.info \
             --typescript-lcov coverage-artifacts/typescript/lcov.info \
             --kotlin-xml coverage-artifacts/kotlin/report.xml \
             --output-dir coverage-summary
@@ -247,6 +323,7 @@ jobs:
     needs:
       - coverage-rust
       - coverage-web-rust
+      - coverage-web-wasm
       - coverage-typescript
       - coverage-kotlin
       - coverage-summary
@@ -277,10 +354,12 @@ jobs:
           mkdir -p \
             pages-site/coverage/rust \
             pages-site/coverage/web-rust \
+            pages-site/coverage/web-wasm \
             pages-site/coverage/typescript \
             pages-site/coverage/kotlin
           cp -R pages-artifacts/coverage-rust-html/. pages-site/coverage/rust/
           cp -R pages-artifacts/coverage-web-rust-html/. pages-site/coverage/web-rust/
+          cp -R pages-artifacts/coverage-web-wasm-html/. pages-site/coverage/web-wasm/
           cp -R pages-artifacts/coverage-typescript-html/. pages-site/coverage/typescript/
           cp -R pages-artifacts/coverage-kotlin-html/html/. pages-site/coverage/kotlin/
           python3 - <<'PY'
@@ -326,12 +405,15 @@ jobs:
             <h2>Reports</h2>
             <ul>
               <li><a href="rust/">Rust</a></li>
-              <li><a href="web-rust/">Web Rust (host)</a></li>
+              <li><a href="web-rust/">Web Rust (host unit)</a></li>
+              <li><a href="web-wasm/">Web Rust (wasm)</a></li>
               <li><a href="typescript/">TypeScript</a></li>
               <li><a href="kotlin/">Kotlin</a></li>
             </ul>
-            <p>Web Rust (host) covers the host-compatible bindings/web crates;
-            wasm/browser-only crates require a separate browser coverage path.</p>
+            <p>Web Rust (host unit) covers only the host-compatible bindings/web crates
+            that can run under the native test harness. Web Rust (wasm) covers browser
+            tests executed through wasm-bindgen-test. Puppeteer E2E remains functional
+            validation unless a separate profiler export path is added.</p>
             <p><a href="coverage-summary.json">coverage-summary.json</a> |
             <a href="coverage-badge.json">coverage-badge.json</a></p>
           </body>
@@ -349,6 +431,7 @@ jobs:
           test -s pages-site/coverage/coverage-badge.json
           test -s pages-site/coverage/rust/index.html
           test -s pages-site/coverage/web-rust/index.html
+          test -s pages-site/coverage/web-wasm/index.html
           test -s pages-site/coverage/typescript/index.html
           test -s pages-site/coverage/kotlin/index.html
       - name: Configure Pages

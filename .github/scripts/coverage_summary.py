@@ -207,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rust-lcov", type=existing_path)
     parser.add_argument("--web-rust-lcov", type=existing_path)
+    parser.add_argument("--web-wasm-lcov", type=existing_path)
     parser.add_argument("--typescript-lcov", type=existing_path)
     parser.add_argument("--python-lcov", type=existing_path)
     parser.add_argument("--kotlin-xml", type=existing_path)
@@ -220,7 +221,9 @@ def reports_from_args(args: argparse.Namespace) -> list[CoverageReport]:
     if args.rust_lcov:
         reports.append(parse_lcov("Rust", args.rust_lcov))
     if args.web_rust_lcov:
-        reports.append(parse_lcov("Web Rust (host)", args.web_rust_lcov))
+        reports.append(parse_lcov("Web Rust (host unit)", args.web_rust_lcov))
+    if args.web_wasm_lcov:
+        reports.append(parse_lcov("Web Rust (wasm)", args.web_wasm_lcov))
     if args.typescript_lcov:
         reports.append(parse_lcov("TypeScript", args.typescript_lcov))
     if args.python_lcov:

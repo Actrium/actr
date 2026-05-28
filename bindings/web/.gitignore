@@ -33,6 +33,7 @@ target
 logs/
 *.log
 *.pid
+web-wasm-lcov.info
 
 # Node.js
 node_modules/
