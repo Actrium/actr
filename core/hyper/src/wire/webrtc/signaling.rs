@@ -582,9 +582,24 @@ impl WebSocketSignalingClient {
 
     /// Reset inbound channel for a fresh session (useful after disconnects).
     async fn reset_inbound_channel(&self) {
+        self.drop_pending_replies("inbound channel reset").await;
+
         let (tx, rx) = mpsc::unbounded_channel();
         *self.inbound_tx.lock().await = tx;
         *self.inbound_rx.lock().await = rx;
+    }
+
+    async fn drop_pending_replies(&self, reason: &'static str) {
+        let dropped = {
+            let mut pending = self.pending_replies.lock().await;
+            let dropped = pending.len();
+            pending.clear();
+            dropped
+        };
+
+        if dropped > 0 {
+            tracing::debug!(reason, dropped, "Dropping pending signaling reply waiters");
+        }
     }
 
     /// Build signaling URL with actor identity and Ed25519 credential params for authentication.
@@ -1167,6 +1182,7 @@ impl SignalingClient for WebSocketSignalingClient {
     }
 
     async fn disconnect(&self) -> NetworkResult<()> {
+        self.drop_pending_replies("signaling disconnect").await;
         self.connected.store(false, Ordering::Release);
 
         // Stop background tasks before taking the WebSocket sink/stream locks.
