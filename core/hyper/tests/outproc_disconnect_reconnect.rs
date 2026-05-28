@@ -522,7 +522,96 @@ async fn test_stale_answerer_recovery_closes_old_session_on_network_restore() {
 }
 
 #[tokio::test]
-async fn test_network_recovery_guard_times_out_after_15s_and_closes_transport() {
+async fn test_duplicate_network_recovery_same_session_is_coalesced() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    harness.connect(100, 200).await;
+
+    let peer_100 = harness.peer(100);
+    let target_id = harness.peer(200).id.clone();
+    let mut event_rx = peer_100.subscribe_events();
+
+    let first_targets = peer_100
+        .coordinator
+        .begin_network_recovery("first network event")
+        .await;
+    assert_eq!(
+        first_targets,
+        vec![target_id.clone()],
+        "first network event should mark the active peer for recovery"
+    );
+
+    let first_session_id = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            match event_rx.recv().await {
+                Ok(ConnectionEvent::IceRestartStarted {
+                    peer_id,
+                    session_id,
+                }) if peer_id == target_id => return session_id,
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("connection event channel closed")
+                }
+            }
+        }
+    })
+    .await
+    .expect("first recovery event should emit IceRestartStarted");
+
+    let aged_started_at = Instant::now() - Duration::from_secs(3);
+    assert!(
+        peer_100
+            .coordinator
+            .force_peer_recovery_started_at_for_test(&target_id, aged_started_at)
+            .await,
+        "test should be able to age the recovery guard"
+    );
+
+    let second_targets = peer_100
+        .coordinator
+        .begin_network_recovery("second network event")
+        .await;
+    assert!(
+        second_targets.is_empty(),
+        "duplicate network event for the same session should be coalesced"
+    );
+
+    let status = peer_100
+        .coordinator
+        .peer_recovery_status(&target_id)
+        .await
+        .expect("recovery guard should remain active");
+    assert_eq!(status.session_id, first_session_id);
+    assert_eq!(status.reason, "first network event");
+    assert!(
+        status.elapsed() >= Duration::from_secs(3),
+        "duplicate recovery should not refresh the guard timer"
+    );
+
+    let duplicate = tokio::time::timeout(Duration::from_millis(150), async {
+        loop {
+            match event_rx.recv().await {
+                Ok(ConnectionEvent::IceRestartStarted { .. }) => return,
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    })
+    .await;
+    assert!(
+        duplicate.is_err(),
+        "duplicate network event should not emit another IceRestartStarted"
+    );
+}
+
+#[tokio::test]
+async fn test_network_recovery_guard_times_out_after_6s_and_closes_transport() {
     init_tracing();
 
     let mut harness = TestHarness::new().await;
@@ -563,14 +652,14 @@ async fn test_network_recovery_guard_times_out_after_15s_and_closes_transport() 
         "fresh network recovery guard should not be timed out"
     );
 
-    tracing::info!("Step 3: Sends inside the 15s recovery window fail fast");
+    tracing::info!("Step 3: Sends inside the 6s recovery window fail fast");
     let early = harness
         .peer(100)
         .spawn_request(200, "recovery-window-fast-fail", 30_000);
     expect_connection_recovering(early, "request inside recovery window").await;
 
-    tracing::info!("Step 4: Age the guard beyond 15s and verify timeout cleanup");
-    let expired_started_at = Instant::now() - Duration::from_secs(16);
+    tracing::info!("Step 4: Age the guard beyond 6s and verify timeout cleanup");
+    let expired_started_at = Instant::now() - Duration::from_secs(7);
     assert!(
         harness
             .peer(100)
@@ -591,8 +680,8 @@ async fn test_network_recovery_guard_times_out_after_15s_and_closes_transport() 
                 "expected recovery timeout error, got: {msg}"
             );
             assert!(
-                msg.contains("timeout_ms=15000"),
-                "timeout error should report the 15s recovery budget: {msg}"
+                msg.contains("timeout_ms=6000"),
+                "timeout error should report the 6s recovery budget: {msg}"
             );
         }
         Ok(Ok(Ok(response))) => panic!(

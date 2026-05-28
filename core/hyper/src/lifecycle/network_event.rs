@@ -76,6 +76,7 @@ use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
 use tokio_util::sync::CancellationToken;
 
 const NETWORK_EVENT_SETTLE_WINDOW: Duration = Duration::from_millis(400);
+const SIGNALING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Network event type
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -395,49 +396,94 @@ impl DefaultNetworkEventProcessor {
         Ok(())
     }
 
-    async fn rebuild_signaling_once(&self, reason: &str) -> Result<(), String> {
+    async fn ensure_signaling_healthy_once(&self, reason: &str) -> Result<(), String> {
         let _guard = self.recovery_state.connect_lock.lock().await;
 
-        if self.signaling_client.is_connected() {
-            tracing::info!(
-                reason = reason,
-                "🔌 Rebuilding signaling: disconnecting existing WebSocket"
-            );
-            if let Err(e) = self.signaling_client.disconnect().await {
-                tracing::warn!(
-                    reason = reason,
-                    "⚠️ Failed to disconnect existing signaling before rebuild: {}",
-                    e
-                );
-            }
+        if !self.signaling_client.is_connected() {
+            tracing::info!(reason = reason, "🔄 Connecting signaling");
+            self.signaling_client.connect_once().await.map_err(|e| {
+                let err_msg = format!("WebSocket connect failed: {}", e);
+                tracing::error!("❌ {}", err_msg);
+                err_msg
+            })?;
+
+            *self.recovery_state.last_successful_connect.lock().await = Some(Instant::now());
+            tracing::info!(reason = reason, "✅ Signaling connected");
+            return Ok(());
         }
 
-        tracing::info!(reason = reason, "🔄 Rebuilding signaling: connecting");
-        self.signaling_client.connect_once().await.map_err(|e| {
-            let err_msg = format!("WebSocket rebuild failed: {}", e);
-            tracing::error!("❌ {}", err_msg);
-            err_msg
-        })?;
+        tracing::debug!(
+            reason = reason,
+            timeout_ms = SIGNALING_PROBE_TIMEOUT.as_millis() as u64,
+            "🔎 Probing existing signaling WebSocket"
+        );
 
-        *self.recovery_state.last_successful_connect.lock().await = Some(Instant::now());
-        tracing::info!(reason = reason, "✅ Signaling rebuilt");
-        Ok(())
+        match self
+            .signaling_client
+            .probe_alive(SIGNALING_PROBE_TIMEOUT)
+            .await
+        {
+            Ok(()) => {
+                tracing::debug!(
+                    reason = reason,
+                    "✅ Signaling probe succeeded; keeping existing WebSocket"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    reason = reason,
+                    "⚠️ Signaling probe failed; rebuilding WebSocket: {}",
+                    e
+                );
+
+                if let Err(disconnect_err) = self.signaling_client.disconnect().await {
+                    tracing::warn!(
+                        reason = reason,
+                        "⚠️ Failed to disconnect unhealthy signaling before rebuild: {}",
+                        disconnect_err
+                    );
+                }
+
+                tracing::info!(reason = reason, "🔄 Rebuilding signaling: connecting");
+                self.signaling_client
+                    .connect_once()
+                    .await
+                    .map_err(|connect_err| {
+                        let err_msg = format!("WebSocket rebuild failed: {}", connect_err);
+                        tracing::error!("❌ {}", err_msg);
+                        err_msg
+                    })?;
+
+                *self.recovery_state.last_successful_connect.lock().await = Some(Instant::now());
+                tracing::info!(reason = reason, "✅ Signaling rebuilt");
+                Ok(())
+            }
+        }
     }
 
     async fn restore_signaling_and_webrtc(&self, reason: &str) -> Result<(), String> {
-        if let Some(coordinator) = self.webrtc_coordinator.clone() {
-            coordinator.begin_network_recovery(reason).await;
-        }
+        let recovery_targets = if let Some(coordinator) = self.webrtc_coordinator.clone() {
+            coordinator.begin_network_recovery(reason).await
+        } else {
+            Vec::new()
+        };
 
-        self.rebuild_signaling_once(reason).await?;
+        self.ensure_signaling_healthy_once(reason).await?;
 
         let coordinator = self.webrtc_coordinator.clone();
 
         if let Some(coordinator) = coordinator {
-            tracing::info!("🧹 Clearing stale ICE restart attempts before recovery...");
-            coordinator.clear_pending_restarts().await;
-            tracing::info!("♻️ Triggering ICE restart for recovering connections...");
-            coordinator.restart_network_recovery_connections().await;
+            if recovery_targets.is_empty() {
+                tracing::info!(
+                    "♻️ Skipping ICE restart trigger; peers are already in network recovery"
+                );
+            } else {
+                tracing::info!("♻️ Triggering ICE restart for recovering connections...");
+                coordinator
+                    .restart_network_recovery_connections_for(&recovery_targets)
+                    .await;
+            }
         }
 
         Ok(())
