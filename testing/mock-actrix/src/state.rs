@@ -101,6 +101,7 @@ pub struct MockState {
     // --- Test observability -----------------------------------------------
     pub message_count: Arc<AtomicU32>,
     pub ice_restart_offer_count: Arc<AtomicU32>,
+    pub ice_restart_request_count: Arc<AtomicU32>,
     pub pause_forwarding: Arc<AtomicBool>,
     pub connection_count: Arc<AtomicU32>,
     pub disconnection_count: Arc<AtomicU32>,
@@ -129,6 +130,7 @@ impl MockState {
             nonces: NonceStore::default(),
             message_count: Arc::new(AtomicU32::new(0)),
             ice_restart_offer_count: Arc::new(AtomicU32::new(0)),
+            ice_restart_request_count: Arc::new(AtomicU32::new(0)),
             pause_forwarding: Arc::new(AtomicBool::new(false)),
             connection_count: Arc::new(AtomicU32::new(0)),
             disconnection_count: Arc::new(AtomicU32::new(0)),

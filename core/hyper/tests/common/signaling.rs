@@ -57,6 +57,10 @@ impl TestSignalingServer {
         self.inner.ice_restart_count()
     }
 
+    pub fn get_ice_restart_request_count(&self) -> u32 {
+        self.inner.ice_restart_request_count()
+    }
+
     pub fn get_connection_count(&self) -> u32 {
         self.inner.connection_count()
     }

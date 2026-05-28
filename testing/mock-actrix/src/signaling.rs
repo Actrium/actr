@@ -549,6 +549,12 @@ async fn handle_actr_relay(
         }
     }
 
+    if let Some(actr_relay::Payload::IceRestartRequest(_)) = relay.payload.as_ref() {
+        state
+            .ice_restart_request_count
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
     if state.pause_forwarding.load(Ordering::Acquire) {
         return;
     }

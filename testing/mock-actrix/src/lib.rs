@@ -44,6 +44,7 @@ pub struct MockActrixServer {
     is_running: Arc<AtomicBool>,
     message_count: Arc<AtomicU32>,
     ice_restart_offer_count: Arc<AtomicU32>,
+    ice_restart_request_count: Arc<AtomicU32>,
     pause_forwarding: Arc<AtomicBool>,
     connection_count: Arc<AtomicU32>,
     disconnection_count: Arc<AtomicU32>,
@@ -81,6 +82,7 @@ impl MockActrixServer {
 
         let message_count = state.message_count.clone();
         let ice_restart_offer_count = state.ice_restart_offer_count.clone();
+        let ice_restart_request_count = state.ice_restart_request_count.clone();
         let pause_forwarding = state.pause_forwarding.clone();
         let connection_count = state.connection_count.clone();
         let disconnection_count = state.disconnection_count.clone();
@@ -118,6 +120,7 @@ impl MockActrixServer {
             is_running,
             message_count,
             ice_restart_offer_count,
+            ice_restart_request_count,
             pause_forwarding,
             connection_count,
             disconnection_count,
@@ -217,6 +220,10 @@ impl MockActrixServer {
         self.ice_restart_offer_count.load(Ordering::SeqCst)
     }
 
+    pub fn ice_restart_request_count(&self) -> u32 {
+        self.ice_restart_request_count.load(Ordering::SeqCst)
+    }
+
     pub fn connection_count(&self) -> u32 {
         self.connection_count.load(Ordering::SeqCst)
     }
@@ -228,6 +235,7 @@ impl MockActrixServer {
     pub fn reset_counters(&self) {
         self.message_count.store(0, Ordering::Relaxed);
         self.ice_restart_offer_count.store(0, Ordering::SeqCst);
+        self.ice_restart_request_count.store(0, Ordering::SeqCst);
         self.connection_count.store(0, Ordering::SeqCst);
         self.disconnection_count.store(0, Ordering::SeqCst);
     }

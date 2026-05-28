@@ -344,16 +344,7 @@ impl WebRtcCoordinator {
             let peers = self.peers.read().await;
             peers
                 .iter()
-                .filter_map(|(peer_id, state)| {
-                    let should_guard = state.is_offerer
-                        || matches!(
-                            state.current_state,
-                            RTCPeerConnectionState::Disconnected
-                                | RTCPeerConnectionState::Failed
-                                | RTCPeerConnectionState::Closed
-                        );
-                    should_guard.then(|| (peer_id.clone(), state.session_id))
-                })
+                .map(|(peer_id, state)| (peer_id.clone(), state.session_id))
                 .collect()
         };
 
@@ -572,7 +563,7 @@ impl WebRtcCoordinator {
                 .filter_map(|(peer_id, recovery_status)| {
                     let state = peers.get(peer_id)?;
                     let session_matches = state.session_id == recovery_status.session_id;
-                    if session_matches && state.is_offerer && !state.ice_restart_inflight {
+                    if session_matches && !state.ice_restart_inflight {
                         Some(peer_id.clone())
                     } else {
                         None
@@ -3331,8 +3322,9 @@ impl WebRtcCoordinator {
                 target
             );
             if state.ice_restart_inflight {
+                state.restart_wake.notify_one();
                 tracing::warn!(
-                    "🚫 ICE restart already in-flight for serial={}, skipping (ice_restart_inflight=true)",
+                    "🚫 ICE restart already in-flight for serial={}, waking up backoff (ice_restart_inflight=true)",
                     target
                 );
                 return Ok(());
@@ -4027,12 +4019,16 @@ impl WebRtcCoordinator {
         offer_sdp: String,
     ) -> ActorResult<()> {
         // Locate peer state and ensure we are not the offerer
-        let (peer_connection, is_offerer) = {
+        let (peer_connection, is_offerer, session_id) = {
             let peers = self.peers.read().await;
             let state = peers.get(from).ok_or_else(|| {
                 ActrError::Internal("ICE restart offer received for unknown peer".to_string())
             })?;
-            (state.peer_connection.clone(), state.is_offerer)
+            (
+                state.peer_connection.clone(),
+                state.is_offerer,
+                state.session_id,
+            )
         };
 
         if is_offerer {
@@ -4060,6 +4056,13 @@ impl WebRtcCoordinator {
         // Flush any buffered ICE candidates collected before remote description was set
         self.flush_pending_candidates(from, &peer_connection)
             .await?;
+
+        self.event_broadcaster
+            .send(ConnectionEvent::IceRestartCompleted {
+                peer_id: from.clone(),
+                session_id,
+                success: true,
+            });
 
         tracing::info!("✅ Completed ICE restart answer to serial={}", from);
 
