@@ -161,6 +161,45 @@ async fn wait_for_data_channel_close_chain(
     );
 }
 
+async fn wait_for_connection_closed(
+    event_rx: &mut tokio::sync::broadcast::Receiver<ConnectionEvent>,
+    peer_id: &ActrId,
+    session_id: u64,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for ConnectionClosed for peer {:?}, session_id={}",
+            peer_id,
+            session_id
+        );
+
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Ok(ConnectionEvent::ConnectionClosed {
+                peer_id: event_peer,
+                session_id: event_session_id,
+            })) if &event_peer == peer_id && event_session_id == session_id => return,
+            Ok(Ok(_)) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                tracing::warn!("Connection event receiver lagged by {} events", n);
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("connection event channel closed while waiting for ConnectionClosed");
+            }
+            Err(_) => {
+                panic!(
+                    "timed out waiting for ConnectionClosed for peer {:?}, session_id={}",
+                    peer_id, session_id
+                );
+            }
+        }
+    }
+}
+
 async fn wait_for_peer_state(
     event_rx: &mut tokio::sync::broadcast::Receiver<ConnectionEvent>,
     peer_id: &ActrId,
@@ -353,6 +392,76 @@ async fn test_answerer_network_change_requests_offerer_ice_restart() {
     tracing::info!(
         "Connection remained usable after answerer-requested ICE restart: {} bytes",
         response.len()
+    );
+}
+
+#[tokio::test]
+async fn test_stale_answerer_recovery_closes_old_session_on_network_restore() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establishing connection with 100 as offerer and 200 as answerer");
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    let offerer_id = harness.peer(100).id.clone();
+    let answerer = harness.peer(200);
+    let mut answerer_events = answerer.subscribe_events();
+
+    tracing::info!("Step 2: Mark answerer peer 200 as recovering for a long outage");
+    answerer
+        .coordinator
+        .begin_network_recovery("test long answerer recovery")
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let status = answerer
+        .coordinator
+        .peer_recovery_status(&offerer_id)
+        .await
+        .expect("answerer should guard the existing offerer session");
+    let session_id = status.session_id;
+    assert!(
+        answerer
+            .coordinator
+            .force_peer_recovery_started_at_for_test(
+                &offerer_id,
+                Instant::now() - Duration::from_secs(61),
+            )
+            .await,
+        "test should be able to age the answerer recovery guard"
+    );
+
+    tracing::info!("Step 3: Network restore should close stale answerer session, not request ICE");
+    answerer
+        .coordinator
+        .restart_network_recovery_connections()
+        .await;
+
+    wait_for_connection_closed(
+        &mut answerer_events,
+        &offerer_id,
+        session_id,
+        Duration::from_secs(3),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(
+        answerer
+            .coordinator
+            .peer_recovery_status(&offerer_id)
+            .await
+            .is_none(),
+        "stale answerer recovery should clear the coordinator guard"
+    );
+    assert_eq!(
+        harness.server.get_ice_restart_request_count(),
+        0,
+        "stale answerer recovery should close locally instead of asking offerer to restart ICE"
     );
 }
 
