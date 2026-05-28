@@ -519,6 +519,11 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     /// - No debounce check (proactive calls always execute)
     /// - Intended for app lifecycle management, not network event response
     async fn cleanup_connections(&self) -> Result<(), String> {
+        let _cleanup_guard = self
+            .webrtc_coordinator
+            .as_ref()
+            .map(|coordinator| coordinator.cleanup_guard());
+
         tracing::info!("🧹 Manually cleaning up all connections...");
 
         // Step 1: Clear pending ICE restart attempts

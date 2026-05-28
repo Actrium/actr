@@ -522,15 +522,17 @@ impl PeerGate {
     }
 
     async fn preflight_send(&self, target: &ActrId, dest: &Dest) -> ActorResult<()> {
-        if let Some(coordinator) = &self.webrtc_coordinator
-            && let Some(status) = coordinator.peer_recovery_status(target).await
-        {
-            if status.is_timed_out() {
-                return Err(self
-                    .handle_recovery_timeout(target, dest, &status, "coordinator")
-                    .await);
+        if let Some(coordinator) = &self.webrtc_coordinator {
+            coordinator.wait_cleanup_complete().await;
+
+            if let Some(status) = coordinator.peer_recovery_status(target).await {
+                if status.is_timed_out() {
+                    return Err(self
+                        .handle_recovery_timeout(target, dest, &status, "coordinator")
+                        .await);
+                }
+                return Err(Self::recovering_error(target, &status));
             }
-            return Err(Self::recovering_error(target, &status));
         }
 
         let local_recovery = {

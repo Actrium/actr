@@ -26,7 +26,7 @@ type MediaTracks = Arc<RwLock<HashMap<String, (Arc<TrackLocalStaticRTP>, Arc<RTC
 /// Type alias for lane cache array (PayloadType index → cached DataLane)
 type LaneCache<const N: usize> = Arc<RwLock<[Option<Arc<dyn DataLane>>; N]>>;
 
-const PEER_CONNECTION_CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+const PEER_CONNECTION_CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// WebRtcConnection - WebRTC P2P Connect
 #[derive(Clone)]

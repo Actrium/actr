@@ -49,6 +49,14 @@ impl TestSignalingServer {
         self.inner.resume_forwarding();
     }
 
+    pub fn drop_next_ice_candidates(&self, count: u32) {
+        self.inner.drop_next_ice_candidates(count);
+    }
+
+    pub fn drop_next_ice_candidates_for(&self, count: u32, duration: std::time::Duration) {
+        self.inner.drop_next_ice_candidates_for(count, duration);
+    }
+
     pub fn message_count(&self) -> u32 {
         self.inner.message_count()
     }

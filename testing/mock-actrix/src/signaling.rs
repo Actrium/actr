@@ -559,6 +559,18 @@ async fn handle_actr_relay(
         return;
     }
 
+    if let Some(actr_relay::Payload::IceCandidate(_)) = relay.payload.as_ref()
+        && state
+            .ice_candidate_drop_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                if count > 0 { Some(count - 1) } else { None }
+            })
+            .is_ok()
+    {
+        tracing::warn!("🧪 Dropping test ICE candidate relay");
+        return;
+    }
+
     // Role negotiation: server decides offerer/answerer by serial ordering.
     if let Some(actr_relay::Payload::RoleNegotiation(role_neg)) = relay.payload.as_ref() {
         let from_is_offerer = role_neg.from.serial_number < role_neg.to.serial_number;

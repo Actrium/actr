@@ -1237,3 +1237,123 @@ async fn repro_network_event_returns_before_webrtc_ready_causing_early_rpc_timeo
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
+
+// ==================== Regression: foreground cleanup overlaps a new send ====================
+
+/// Exercises the slow-send relative timeline from the mobile log:
+///
+/// - T+0ms: app returns foreground.
+/// - T+403ms: cleanup starts and closes the old client-side WebRTC peers.
+/// - T+1972ms: user sends a new RPC.
+/// - T+2405ms: cleanup disconnects/rebuilds the signaling WebSocket.
+///
+/// Before the cleanup barrier, the fresh WebRTC negotiation could be
+/// interrupted after SDP exchange but before usable ICE candidate exchange,
+/// then wait for the 10s connection-establishment timeout plus the 5s factory
+/// retry backoff. With the fix, the send waits for cleanup and avoids that slow
+/// retry path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "log-timeline foreground cleanup/request-overlap regression"]
+async fn regression_log_timeline_foreground_cleanup_waits_before_new_send() {
+    init_tracing();
+
+    const SERVER: u64 = 100;
+    const CLIENT: u64 = 200;
+    const CLEANUP_START_MS: u64 = 403;
+    const USER_SEND_MS: u64 = 1_972;
+    const CLEANUP_SIGNALING_DISCONNECT_MS: u64 = 2_405;
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(SERVER).await;
+    harness.add_peer(CLIENT).await;
+
+    tracing::info!("Step 1: Establish the pre-background client -> server path");
+    harness
+        .connect_with_timeout(CLIENT, SERVER, Duration::from_secs(30))
+        .await;
+    harness.reset_counters();
+
+    tracing::info!("Step 2: Start the foreground cleanup timeline");
+    assert!(
+        harness.peer(CLIENT).signaling_client.is_connected(),
+        "client signaling should be connected before foreground cleanup"
+    );
+
+    let foreground_started = tokio::time::Instant::now();
+    let cleanup_coordinator = harness.peer(CLIENT).coordinator.clone();
+    let cleanup_signaling = harness.peer(CLIENT).signaling_client.clone();
+    let cleanup_task = tokio::spawn(async move {
+        tokio::time::sleep_until(foreground_started + Duration::from_millis(CLEANUP_START_MS))
+            .await;
+        let _cleanup_guard = cleanup_coordinator.cleanup_guard();
+
+        cleanup_coordinator.clear_pending_restarts().await;
+        cleanup_coordinator
+            .close_all_peers()
+            .await
+            .map_err(|err| err.to_string())?;
+
+        tokio::time::sleep_until(
+            foreground_started + Duration::from_millis(CLEANUP_SIGNALING_DISCONNECT_MS),
+        )
+        .await;
+        if cleanup_signaling.is_connected() {
+            cleanup_signaling
+                .disconnect()
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+        cleanup_signaling
+            .connect_once()
+            .await
+            .map_err(|err| err.to_string())?;
+
+        Ok::<(), String>(())
+    });
+
+    tokio::time::sleep_until(foreground_started + Duration::from_millis(USER_SEND_MS)).await;
+
+    tracing::info!("Step 3: User sends according to the log timeline");
+    harness.server.drop_next_ice_candidates_for(
+        2,
+        Duration::from_millis(CLEANUP_SIGNALING_DISCONNECT_MS - USER_SEND_MS),
+    );
+    let send_started = Instant::now();
+    let request =
+        harness
+            .peer(CLIENT)
+            .spawn_request(SERVER, "log-timeline-foreground-overlap-send", 30_000);
+
+    tokio::time::sleep_until(
+        foreground_started + Duration::from_millis(CLEANUP_SIGNALING_DISCONNECT_MS),
+    )
+    .await;
+
+    let response = match tokio::time::timeout(Duration::from_secs(35), request).await {
+        Ok(Ok(Ok(response))) => response,
+        Ok(Ok(Err(err))) => panic!("overlapped foreground send failed: {err}"),
+        Ok(Err(err)) => panic!("overlapped foreground send task panicked: {err}"),
+        Err(_) => panic!("overlapped foreground send did not complete within 35s"),
+    };
+    let send_elapsed = send_started.elapsed();
+
+    let cleanup_result = cleanup_task.await.expect("cleanup task panicked");
+    assert!(
+        cleanup_result.is_ok(),
+        "foreground cleanup should complete: {:?}",
+        cleanup_result
+    );
+
+    tracing::info!(
+        "Log-timeline foreground-overlap send completed in {:?} with {} response bytes",
+        send_elapsed,
+        response.len()
+    );
+
+    assert_eq!(&response[..], b"pong");
+    assert!(
+        send_elapsed < Duration::from_secs(8),
+        "send should wait for cleanup instead of hitting the 10s timeout + 5s retry path, got {:?}",
+        send_elapsed
+    );
+}

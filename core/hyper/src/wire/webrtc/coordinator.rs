@@ -38,7 +38,10 @@ use actr_protocol::{
 };
 use std::collections::{HashMap, hash_map::Entry};
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
@@ -64,6 +67,7 @@ const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(10);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const DATA_CHANNEL_READY_TIMEOUT: Duration = INITIAL_CONNECTION_TIMEOUT;
 pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const ANSWERER_RECOVERY_STALE_TIMEOUT: Duration = ICE_RESTART_MAX_TOTAL_DURATION;
 
 // Health check constants
@@ -216,9 +220,25 @@ pub struct WebRtcCoordinator {
     /// Hook callback for synchronous lifecycle notification (set once, shared with connections)
     hook_callback: std::sync::OnceLock<crate::wire::webrtc::HookCallback>,
 
+    /// Active foreground/manual cleanup depth. Outbound sends wait for this to
+    /// reach zero before starting a fresh WebRTC negotiation.
+    cleanup_depth: Arc<AtomicUsize>,
+    cleanup_notify: Arc<tokio::sync::Notify>,
+
     /// Root tracing contexts for connection initiation (ActrId → Context)
     #[cfg(feature = "opentelemetry")]
     root_context_map: Arc<RwLock<HashMap<ActrId, opentelemetry::Context>>>,
+}
+
+/// RAII guard that keeps outbound sends behind the cleanup barrier until drop.
+pub struct CleanupGuard {
+    coordinator: Arc<WebRtcCoordinator>,
+}
+
+impl Drop for CleanupGuard {
+    fn drop(&mut self) {
+        self.coordinator.finish_cleanup();
+    }
 }
 
 impl WebRtcCoordinator {
@@ -247,8 +267,64 @@ impl WebRtcCoordinator {
             event_broadcaster: ConnectionEventBroadcaster::new(),
             network_recovering_peers: Arc::new(RwLock::new(HashMap::new())),
             hook_callback: std::sync::OnceLock::new(),
+            cleanup_depth: Arc::new(AtomicUsize::new(0)),
+            cleanup_notify: Arc::new(tokio::sync::Notify::new()),
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Enter a cleanup window. While any guard is alive, outbound sends wait
+    /// before starting new WebRTC negotiation.
+    pub fn cleanup_guard(self: &Arc<Self>) -> CleanupGuard {
+        let depth = self.cleanup_depth.fetch_add(1, Ordering::AcqRel) + 1;
+        tracing::debug!("🚧 WebRTC cleanup barrier entered, depth={}", depth);
+        CleanupGuard {
+            coordinator: Arc::clone(self),
+        }
+    }
+
+    /// Wait for any active cleanup window to finish. This is intentionally
+    /// best-effort so a leaked or misused guard cannot permanently block sends.
+    pub async fn wait_cleanup_complete(&self) {
+        let wait = async {
+            loop {
+                let notified = self.cleanup_notify.notified();
+                if self.cleanup_depth.load(Ordering::Acquire) == 0 {
+                    return;
+                }
+                notified.await;
+            }
+        };
+
+        if tokio::time::timeout(CLEANUP_BARRIER_WAIT_TIMEOUT, wait)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "⏱️ WebRTC cleanup barrier wait timed out after {:?}; continuing outbound send",
+                CLEANUP_BARRIER_WAIT_TIMEOUT
+            );
+        }
+    }
+
+    fn finish_cleanup(&self) {
+        match self
+            .cleanup_depth
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |depth| {
+                (depth > 0).then_some(depth - 1)
+            }) {
+            Ok(1) => {
+                tracing::debug!("✅ WebRTC cleanup barrier released");
+                self.cleanup_notify.notify_waiters();
+            }
+            Ok(depth) => {
+                tracing::debug!("↘️ WebRTC cleanup barrier depth decreased to {}", depth - 1);
+            }
+            Err(_) => {
+                tracing::warn!("⚠️ WebRTC cleanup barrier release requested at depth=0");
+                self.cleanup_notify.notify_waiters();
+            }
         }
     }
 
