@@ -73,6 +73,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
+use tokio_util::sync::CancellationToken;
+
+const NETWORK_EVENT_SETTLE_WINDOW: Duration = Duration::from_millis(400);
 
 /// Network event type
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -93,6 +96,15 @@ pub enum NetworkEvent {
     /// - User actively logging out
     /// - App about to exit
     CleanupConnections,
+}
+
+/// Final action selected from a settled batch of network events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkRecoveryAction {
+    Noop,
+    Offline,
+    Restore,
+    CleanupConnectionsCompat,
 }
 
 /// Network event processing result
@@ -184,6 +196,22 @@ pub trait NetworkEventProcessor: Send + Sync {
     /// - `Ok(())`: cleanup succeeded
     /// - `Err(String)`: cleanup failed, contains error message
     async fn cleanup_connections(&self) -> Result<(), String>;
+
+    /// Process the final action selected from a settled event batch.
+    ///
+    /// Custom processors can rely on the default mapping. The default runtime
+    /// processor overrides this to bypass per-event debounce after reconciliation.
+    async fn process_network_recovery_action(
+        &self,
+        action: NetworkRecoveryAction,
+    ) -> Result<(), String> {
+        match action {
+            NetworkRecoveryAction::Noop => Ok(()),
+            NetworkRecoveryAction::Offline => self.process_network_lost().await,
+            NetworkRecoveryAction::Restore => self.process_network_available().await,
+            NetworkRecoveryAction::CleanupConnectionsCompat => self.cleanup_connections().await,
+        }
+    }
 }
 
 /// Debounce configuration
@@ -220,12 +248,28 @@ impl DebounceState {
     }
 }
 
+#[derive(Debug)]
+struct SignalingRecoveryState {
+    connect_lock: tokio::sync::Mutex<()>,
+    last_successful_connect: tokio::sync::Mutex<Option<Instant>>,
+}
+
+impl SignalingRecoveryState {
+    fn new() -> Self {
+        Self {
+            connect_lock: tokio::sync::Mutex::new(()),
+            last_successful_connect: tokio::sync::Mutex::new(None),
+        }
+    }
+}
+
 /// Default network event processor implementation
 pub struct DefaultNetworkEventProcessor {
     signaling_client: Arc<dyn SignalingClient>,
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     debounce_config: DebounceConfig,
     debounce_state: Arc<DebounceState>,
+    recovery_state: Arc<SignalingRecoveryState>,
 }
 
 impl DefaultNetworkEventProcessor {
@@ -250,6 +294,7 @@ impl DefaultNetworkEventProcessor {
             webrtc_coordinator,
             debounce_config,
             debounce_state: Arc::new(DebounceState::new()),
+            recovery_state: Arc::new(SignalingRecoveryState::new()),
         }
     }
 
@@ -314,43 +359,68 @@ impl DefaultNetworkEventProcessor {
         }
     }
 
-    /// Internal reconnect method (no debounce check)
-    ///
-    /// Used in scenarios like `process_network_type_changed()` that must ensure reconnection.
-    /// Differs from `process_network_available()`:
-    /// - No debounce check (internal calls always execute)
-    /// - Suitable for compound operations that have already passed debounce checks
-    async fn reconnect_internal(&self) -> Result<(), String> {
-        tracing::info!("🔄 Internal reconnect (bypassing debounce)");
+    async fn ensure_signaling_connected_once(&self, reason: &str) -> Result<(), String> {
+        let _guard = self.recovery_state.connect_lock.lock().await;
 
-        // Step 1: Force disconnect existing connections (avoid "zombie connections")
         if self.signaling_client.is_connected() {
-            tracing::info!("🔌 Disconnecting existing connection to ensure fresh state...");
-            let _ = self.signaling_client.disconnect().await;
+            tracing::debug!(
+                reason = reason,
+                "Signaling already connected, skipping connect"
+            );
+            return Ok(());
         }
 
-        // Step 2: Wait briefly for network stabilization
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Step 3: Establish new WebSocket connection
-        tracing::info!("🔄 Reconnecting WebSocket...");
-        match self.signaling_client.connect().await {
-            Ok(_) => {
-                tracing::info!("✅ WebSocket reconnected successfully");
-            }
-            Err(e) => {
-                let err_msg = format!("WebSocket reconnect failed: {}", e);
-                tracing::error!("❌ {}", err_msg);
-                return Err(err_msg);
-            }
+        let recently_connected = {
+            let last = self.recovery_state.last_successful_connect.lock().await;
+            last.map(|instant| instant.elapsed() < Duration::from_millis(1500))
+                .unwrap_or(false)
+        };
+        if recently_connected && self.signaling_client.is_connected() {
+            tracing::debug!(
+                reason = reason,
+                "Signaling recently connected, reusing connection"
+            );
+            return Ok(());
         }
 
-        // Step 4: Trigger ICE restart (if WebRTC is initialized)
+        tracing::info!(reason = reason, "🔄 Connecting signaling");
+        self.signaling_client.connect_once().await.map_err(|e| {
+            let err_msg = format!("WebSocket connect failed: {}", e);
+            tracing::error!("❌ {}", err_msg);
+            err_msg
+        })?;
+
+        *self.recovery_state.last_successful_connect.lock().await = Some(Instant::now());
+        tracing::info!(reason = reason, "✅ Signaling connected");
+        Ok(())
+    }
+
+    async fn restore_signaling_and_webrtc(&self, reason: &str) -> Result<(), String> {
+        self.ensure_signaling_connected_once(reason).await?;
+
         let coordinator = self.webrtc_coordinator.clone();
 
         if let Some(coordinator) = coordinator {
+            tracing::info!("🧹 Clearing stale ICE restart attempts before recovery...");
+            coordinator.clear_pending_restarts().await;
             tracing::info!("♻️ Triggering ICE restart for failed connections...");
             coordinator.retry_failed_connections().await;
+        }
+
+        Ok(())
+    }
+
+    async fn process_offline(&self) -> Result<(), String> {
+        tracing::info!("📱 Processing: Network offline");
+
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("🧹 Clearing pending ICE restart attempts...");
+            coordinator.clear_pending_restarts().await;
+        }
+
+        if self.signaling_client.is_connected() {
+            tracing::info!("🔌 Disconnecting WebSocket...");
+            let _ = self.signaling_client.disconnect().await;
         }
 
         Ok(())
@@ -362,44 +432,14 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     /// Process network available event
     async fn process_network_available(&self) -> Result<(), String> {
         // Debounce check
-        if !self.should_process_event(&NetworkEvent::Available).await {
+        let should_process = self.should_process_event(&NetworkEvent::Available).await;
+        if !should_process && self.signaling_client.is_connected() {
             return Ok(());
         }
 
         tracing::info!("📱 Processing: Network available");
 
-        // Step 1: Force disconnect existing connections (avoid "zombie connections")
-        if self.signaling_client.is_connected() {
-            tracing::info!("🔌 Disconnecting existing connection to ensure fresh state...");
-            let _ = self.signaling_client.disconnect().await;
-        }
-
-        // Step 2: Wait briefly for network stabilization
-        // Note: this delay must be shorter than the debounce window, otherwise debounce becomes ineffective
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // Step 3: Establish new WebSocket connection
-        tracing::info!("🔄 Reconnecting WebSocket...");
-        match self.signaling_client.connect().await {
-            Ok(_) => {
-                tracing::info!("✅ WebSocket reconnected successfully");
-            }
-            Err(e) => {
-                let err_msg = format!("WebSocket reconnect failed: {}", e);
-                tracing::error!("❌ {}", err_msg);
-                return Err(err_msg);
-            }
-        }
-
-        // Step 4: Trigger ICE restart (if WebRTC is initialized)
-        let coordinator = self.webrtc_coordinator.clone();
-
-        if let Some(coordinator) = coordinator {
-            tracing::info!("♻️ Triggering ICE restart for failed connections...");
-            coordinator.retry_failed_connections().await;
-        }
-
-        Ok(())
+        self.restore_signaling_and_webrtc("NetworkAvailable").await
     }
 
     /// Process network lost event
@@ -409,21 +449,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             return Ok(());
         }
 
-        tracing::info!("📱 Processing: Network lost");
-
-        // Step 1: Clear pending ICE restart attempts
-        if let Some(ref coordinator) = self.webrtc_coordinator {
-            tracing::info!("🧹 Clearing pending ICE restart attempts...");
-            coordinator.clear_pending_restarts().await;
-        }
-
-        // Step 2: Proactively disconnect WebSocket
-        if self.signaling_client.is_connected() {
-            tracing::info!("🔌 Disconnecting WebSocket...");
-            let _ = self.signaling_client.disconnect().await;
-        }
-
-        Ok(())
+        self.process_offline().await
     }
 
     /// Process network type changed event
@@ -433,13 +459,13 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         is_cellular: bool,
     ) -> Result<(), String> {
         // Debounce check
-        if !self
+        let should_process = self
             .should_process_event(&NetworkEvent::TypeChanged {
                 is_wifi,
                 is_cellular,
             })
-            .await
-        {
+            .await;
+        if !should_process && self.signaling_client.is_connected() {
             return Ok(());
         }
 
@@ -449,27 +475,8 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             is_cellular
         );
 
-        // Network type change usually implies IP address change
-        // Treat as disconnect + recovery sequence
-
-        // Step 1: Clean up existing connections
-        if let Some(ref coordinator) = self.webrtc_coordinator {
-            tracing::info!("🧹 Clearing pending ICE restart attempts...");
-            coordinator.clear_pending_restarts().await;
-        }
-
-        if self.signaling_client.is_connected() {
-            tracing::info!("🔌 Disconnecting WebSocket...");
-            let _ = self.signaling_client.disconnect().await;
-        }
-
-        // Step 2: Wait for network stabilization
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
-        // Step 3: Use internal reconnect method (bypassing debounce check)
-        self.reconnect_internal().await?;
-
-        Ok(())
+        self.restore_signaling_and_webrtc("NetworkTypeChanged")
+            .await
     }
 
     /// Proactively clean up all connections
@@ -516,19 +523,131 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         // Step 4: Re-establish signaling immediately.
         // This keeps the app usable as soon as it returns to the foreground.
         tracing::info!("🔌 Re-establishing signaling connection...");
-        match self.signaling_client.connect().await {
-            Ok(_) => {
-                tracing::info!("✅ Signaling reconnected successfully after cleanup");
-            }
-            Err(e) => {
-                let err_msg = format!("Failed to reconnect signaling after cleanup: {}", e);
-                tracing::error!("❌ {}", err_msg);
-                return Err(err_msg);
-            }
-        }
+        self.ensure_signaling_connected_once("CompatCleanupConnections")
+            .await?;
 
         tracing::info!("✅ Connection cleanup and reconnect completed");
         Ok(())
+    }
+
+    async fn process_network_recovery_action(
+        &self,
+        action: NetworkRecoveryAction,
+    ) -> Result<(), String> {
+        match action {
+            NetworkRecoveryAction::Noop => Ok(()),
+            NetworkRecoveryAction::Offline => self.process_offline().await,
+            NetworkRecoveryAction::Restore => {
+                self.restore_signaling_and_webrtc("NetworkEventBatch").await
+            }
+            NetworkRecoveryAction::CleanupConnectionsCompat => self.cleanup_connections().await,
+        }
+    }
+}
+
+pub fn select_network_recovery_action(events: &[NetworkEvent]) -> NetworkRecoveryAction {
+    let mut saw_cleanup_connections = false;
+    let mut latest_state_action = NetworkRecoveryAction::Noop;
+
+    for event in events {
+        match event {
+            NetworkEvent::CleanupConnections => saw_cleanup_connections = true,
+            NetworkEvent::Available | NetworkEvent::TypeChanged { .. } => {
+                latest_state_action = NetworkRecoveryAction::Restore
+            }
+            NetworkEvent::Lost => latest_state_action = NetworkRecoveryAction::Offline,
+        }
+    }
+
+    if saw_cleanup_connections {
+        NetworkRecoveryAction::CleanupConnectionsCompat
+    } else {
+        latest_state_action
+    }
+}
+
+pub async fn process_network_event_batch(
+    events: Vec<NetworkEvent>,
+    processor: Arc<dyn NetworkEventProcessor>,
+) -> Vec<NetworkEventResult> {
+    if events.is_empty() {
+        return Vec::new();
+    }
+
+    let action = select_network_recovery_action(&events);
+    let start = Instant::now();
+
+    let result = processor.process_network_recovery_action(action).await;
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+    events
+        .into_iter()
+        .map(|event| match &result {
+            Ok(()) => NetworkEventResult::success(event, duration_ms),
+            Err(e) => NetworkEventResult::failure(event, e.clone(), duration_ms),
+        })
+        .collect()
+}
+
+pub async fn run_network_event_reconciler(
+    mut event_rx: tokio::sync::mpsc::Receiver<NetworkEvent>,
+    result_tx: tokio::sync::mpsc::Sender<NetworkEventResult>,
+    processor: Arc<dyn NetworkEventProcessor>,
+    shutdown_token: CancellationToken,
+) {
+    tracing::info!("🔄 Network event reconciler started");
+
+    loop {
+        tokio::select! {
+            Some(first_event) = event_rx.recv() => {
+                let mut events = vec![first_event];
+                let settle = tokio::time::sleep(NETWORK_EVENT_SETTLE_WINDOW);
+                tokio::pin!(settle);
+
+                loop {
+                    tokio::select! {
+                        Some(next_event) = event_rx.recv() => {
+                            events.push(next_event);
+                        }
+                        _ = &mut settle => {
+                            break;
+                        }
+                        _ = shutdown_token.cancelled() => {
+                            tracing::info!("🛑 Network event reconciler shutting down");
+                            return;
+                        }
+                        else => {
+                            break;
+                        }
+                    }
+                }
+
+                while let Ok(next_event) = event_rx.try_recv() {
+                    events.push(next_event);
+                }
+
+                let action = select_network_recovery_action(&events);
+                tracing::info!(
+                    event_count = events.len(),
+                    action = ?action,
+                    settle_window_ms = NETWORK_EVENT_SETTLE_WINDOW.as_millis() as u64,
+                    "📱 Processing settled network event batch"
+                );
+
+                let results = process_network_event_batch(events, processor.clone()).await;
+
+                for result in results {
+                    if let Err(e) = result_tx.send(result).await {
+                        tracing::warn!("Failed to send event result: {}", e);
+                    }
+                }
+            }
+            _ = shutdown_token.cancelled() => {
+                tracing::info!("🛑 Network event reconciler shutting down");
+                break;
+            }
+            else => break,
+        }
     }
 }
 
@@ -634,155 +753,5 @@ impl Clone for NetworkEventHandle {
             event_tx: self.event_tx.clone(),
             result_rx: self.result_rx.clone(),
         }
-    }
-}
-
-/// Deduplicate network events by type while keeping the newest event of each type
-/// and preserving original ordering.
-///
-/// # Algorithm
-///
-/// 1. Walk all events and group them by type.
-/// 2. Keep only the last occurrence for each type.
-/// 3. Sort by original index to preserve event ordering.
-///
-/// # Why deduplicate?
-///
-/// During foreground recovery or frequent network changes, the queue can fill up
-/// with stale events. For a given network event type, only the newest state matters.
-/// Different event types still represent distinct transitions and must be kept.
-///
-/// - `[Available, Lost, Available]` -> keeping only the last `Available` would lose the `Lost`
-/// - `[Lost, Available, Lost]` -> keeping only the last `Lost` would lose the `Available`
-///
-/// Deduplicating by type ensures each kind of state transition is still processed.
-pub fn deduplicate_network_events(events: Vec<NetworkEvent>) -> Vec<NetworkEvent> {
-    use std::collections::HashMap;
-    use std::mem::discriminant;
-
-    if events.is_empty() {
-        return vec![];
-    }
-
-    // Group by event type and keep the newest event for each discriminant.
-    let mut latest_by_type: HashMap<std::mem::Discriminant<NetworkEvent>, (usize, NetworkEvent)> =
-        HashMap::new();
-
-    for (index, event) in events.into_iter().enumerate() {
-        let event_discriminant = discriminant(&event);
-        latest_by_type
-            .entry(event_discriminant)
-            .and_modify(|(idx, e)| {
-                // Replace with the newer event.
-                *idx = index;
-                *e = event.clone();
-            })
-            .or_insert((index, event));
-    }
-
-    // Sort by original index to preserve temporal ordering.
-    let mut deduplicated: Vec<_> = latest_by_type.into_values().collect();
-    deduplicated.sort_by_key(|(index, _)| *index);
-
-    // Extract the event payloads.
-    deduplicated.into_iter().map(|(_, event)| event).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_deduplicate_empty() {
-        let events = vec![];
-        let result = deduplicate_network_events(events);
-        assert_eq!(result.len(), 0);
-    }
-
-    #[test]
-    fn test_deduplicate_single_event() {
-        let events = vec![NetworkEvent::Available];
-        let result = deduplicate_network_events(events);
-        assert_eq!(result.len(), 1);
-        assert!(matches!(result[0], NetworkEvent::Available));
-    }
-
-    #[test]
-    fn test_deduplicate_same_type_events() {
-        let events = vec![
-            NetworkEvent::Available,
-            NetworkEvent::Available,
-            NetworkEvent::Available,
-        ];
-        let result = deduplicate_network_events(events);
-
-        assert_eq!(result.len(), 1);
-        assert!(matches!(result[0], NetworkEvent::Available));
-    }
-
-    #[test]
-    fn test_deduplicate_different_type_events() {
-        let events = vec![
-            NetworkEvent::Available,
-            NetworkEvent::Lost,
-            NetworkEvent::TypeChanged {
-                is_wifi: true,
-                is_cellular: false,
-            },
-        ];
-        let result = deduplicate_network_events(events);
-
-        assert_eq!(result.len(), 3);
-        assert!(matches!(result[0], NetworkEvent::Available));
-        assert!(matches!(result[1], NetworkEvent::Lost));
-        assert!(matches!(result[2], NetworkEvent::TypeChanged { .. }));
-    }
-
-    #[test]
-    fn test_deduplicate_mixed_events() {
-        let events = vec![
-            NetworkEvent::Available, // #0
-            NetworkEvent::Lost,      // #1
-            NetworkEvent::Available, // #2 (replaces #0)
-            NetworkEvent::TypeChanged {
-                // #3
-                is_wifi: true,
-                is_cellular: false,
-            },
-            NetworkEvent::Lost,      // #4 (replaces #1)
-            NetworkEvent::Available, // #5 (replaces #2)
-        ];
-        let result = deduplicate_network_events(events);
-
-        // Expected result: TypeChanged (#3), Lost (#4), Available (#5).
-        assert_eq!(result.len(), 3);
-
-        // Verify order by original index.
-        assert!(matches!(result[0], NetworkEvent::TypeChanged { .. }));
-        assert!(matches!(result[1], NetworkEvent::Lost));
-        assert!(matches!(result[2], NetworkEvent::Available));
-    }
-
-    #[test]
-    fn test_deduplicate_preserves_order() {
-        let events = vec![
-            NetworkEvent::Lost, // #0
-            NetworkEvent::TypeChanged {
-                // #1
-                is_wifi: true,
-                is_cellular: false,
-            },
-            NetworkEvent::Available, // #2
-            NetworkEvent::Lost,      // #3 (replaces #0)
-        ];
-        let result = deduplicate_network_events(events);
-
-        // Expected result: TypeChanged (#1), Available (#2), Lost (#3).
-        assert_eq!(result.len(), 3);
-
-        // Verify order.
-        assert!(matches!(result[0], NetworkEvent::TypeChanged { .. }));
-        assert!(matches!(result[1], NetworkEvent::Available));
-        assert!(matches!(result[2], NetworkEvent::Lost));
     }
 }

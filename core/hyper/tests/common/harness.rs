@@ -31,9 +31,10 @@ use super::utils::{
     spawn_response_receiver,
 };
 use super::vnet::VNetPair;
+use crate::lifecycle::DefaultNetworkEventProcessor;
 use crate::outbound::PeerGate;
 use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig, PeerTransport};
-use crate::wire::webrtc::WebRtcCoordinator;
+use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
 use actr_protocol::{ActrId, RpcEnvelope};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -45,6 +46,8 @@ pub struct TestPeer {
     pub id: ActrId,
     /// WebRTC coordinator (connection management, ICE restart, signaling)
     pub coordinator: Arc<WebRtcCoordinator>,
+    /// Signaling client used by the coordinator.
+    pub signaling_client: Arc<dyn SignalingClient>,
     /// PeerGate (message sending, pending request management)
     pub gate: Arc<PeerGate>,
     /// Transport manager (wire pool, dest transport management)
@@ -76,6 +79,14 @@ impl TestPeer {
     /// Retry failed connections
     pub async fn retry_failed(&self) {
         self.coordinator.retry_failed_connections().await;
+    }
+
+    /// Create a network event processor for this peer.
+    pub fn network_processor(&self) -> Arc<DefaultNetworkEventProcessor> {
+        Arc::new(DefaultNetworkEventProcessor::new(
+            self.signaling_client.clone(),
+            Some(self.coordinator.clone()),
+        ))
     }
 
     /// Send a test RPC request to a target peer (fire-and-forget, returns handle)
@@ -181,23 +192,21 @@ impl TestHarness {
         let id = make_actor_id(serial);
         let server_url = self.server.url();
 
-        let coordinator = if let Some(ref vnet) = self.vnet {
+        let (coordinator, signaling_client) = if let Some(ref vnet) = self.vnet {
             // With VNet: assign first peer to offerer net, rest to answerer net
             let net = if self.peers.is_empty() {
                 vnet.net_offerer.clone()
             } else {
                 vnet.net_answerer.clone()
             };
-            let (coord, _client) = create_peer_with_vnet(id.clone(), &server_url, net)
+            create_peer_with_vnet(id.clone(), &server_url, net)
                 .await
-                .expect("Failed to create peer with vnet");
-            coord
+                .expect("Failed to create peer with vnet")
         } else {
             // Without VNet: standard WebSocket connection
-            let (coord, _client) = create_peer_with_websocket(id.clone(), &server_url)
+            create_peer_with_websocket(id.clone(), &server_url)
                 .await
-                .expect("Failed to create peer");
-            coord
+                .expect("Failed to create peer")
         };
 
         // Build PeerGate with full transport stack
@@ -217,6 +226,7 @@ impl TestHarness {
             TestPeer {
                 id,
                 coordinator,
+                signaling_client,
                 gate,
                 transport_manager,
             },

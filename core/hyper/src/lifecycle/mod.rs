@@ -12,6 +12,7 @@ pub(crate) mod node;
 
 pub use network_event::{
     DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle,
-    NetworkEventProcessor, NetworkEventResult,
+    NetworkEventProcessor, NetworkEventResult, NetworkRecoveryAction, process_network_event_batch,
+    run_network_event_reconciler, select_network_recovery_action,
 };
 pub use node::CredentialState;

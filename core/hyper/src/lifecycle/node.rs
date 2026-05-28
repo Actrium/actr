@@ -366,95 +366,18 @@ impl Inner {
     /// - Delegate to NetworkEventProcessor for handling
     /// - Record processing time and send results
     async fn network_event_loop(
-        mut event_rx: tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
+        event_rx: tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
         result_tx: tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
         event_processor: Arc<dyn crate::lifecycle::network_event::NetworkEventProcessor>,
         shutdown_token: CancellationToken,
     ) {
-        use crate::lifecycle::network_event::{
-            NetworkEvent, NetworkEventResult, deduplicate_network_events,
-        };
-
-        tracing::info!("🔄 Network event loop started");
-
-        loop {
-            tokio::select! {
-                // Receive network events
-                Some(event) = event_rx.recv() => {
-                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                    // Queue cleanup: deduplicate by type, keeping the latest event of each type
-                    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-                    // Collect all events from the queue
-                    let mut all_events = vec![event];
-                    while let Ok(next_event) = event_rx.try_recv() {
-                        all_events.push(next_event);
-                    }
-
-                    let total_events = all_events.len();
-
-                    // Deduplicate by type
-                    let events_to_process = deduplicate_network_events(all_events);
-
-                    let processed_count = events_to_process.len();
-                    let discarded_count = total_events - processed_count;
-
-                    if discarded_count > 0 {
-                        tracing::info!(
-                            total_events = total_events,
-                            processed_count = processed_count,
-                            discarded_count = discarded_count,
-                            "🗑️ Deduplicated {} stale events (by type), processing {} unique events",
-                            discarded_count,
-                            processed_count
-                        );
-                    }
-
-                    // Process deduplicated events
-                    for latest_event in events_to_process {
-                        let start = std::time::Instant::now();
-
-                        let result = match &latest_event {
-                            NetworkEvent::Available => {
-                                event_processor.process_network_available().await
-                            }
-                            NetworkEvent::Lost => {
-                                event_processor.process_network_lost().await
-                            }
-                            NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
-                                event_processor
-                                    .process_network_type_changed(*is_wifi, *is_cellular)
-                                    .await
-                            }
-                            NetworkEvent::CleanupConnections => {
-                                event_processor.cleanup_connections().await
-                            }
-                        };
-
-                        let duration_ms = start.elapsed().as_millis() as u64;
-
-                        // Construct processing result
-                        let event_result = match result {
-                            Ok(_) => NetworkEventResult::success(latest_event.clone(), duration_ms),
-                            Err(e) => {
-                                NetworkEventResult::failure(latest_event.clone(), e, duration_ms)
-                            }
-                        };
-
-                        // Send result (ignore send failures to avoid blocking)
-                        if let Err(e) = result_tx.send(event_result).await {
-                            tracing::warn!("Failed to send event result: {}", e);
-                        }
-                    }
-                }
-
-                // Listen for shutdown signal
-                _ = shutdown_token.cancelled() => {
-                    tracing::info!("🛑 Network event loop shutting down");
-                    break;
-                }
-            }
-        }
+        crate::lifecycle::network_event::run_network_event_reconciler(
+            event_rx,
+            result_tx,
+            event_processor,
+            shutdown_token,
+        )
+        .await;
     }
 
     /// - Single-hop calls: effectively identical
