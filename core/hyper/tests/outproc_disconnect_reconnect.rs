@@ -396,6 +396,62 @@ async fn test_answerer_network_change_requests_offerer_ice_restart() {
 }
 
 #[tokio::test]
+async fn test_answerer_ice_restart_answer_does_not_unblock_before_connected() {
+    init_tracing();
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establishing connection with 100 as offerer and 200 as answerer");
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    let offerer_id = harness.peer(100).id.clone();
+    let answerer = harness.peer(200);
+    let mut answerer_events = answerer.subscribe_events();
+
+    tracing::info!("Step 2: Keep signaling alive but block UDP before answerer recovery");
+    harness
+        .vnet
+        .as_ref()
+        .expect("test requires VNet")
+        .block_network();
+
+    tracing::info!("Step 3: Trigger answerer network recovery and wait until it answers restart");
+    answerer
+        .network_processor()
+        .process_network_type_changed(true, false)
+        .await
+        .expect("answerer network change should process successfully");
+
+    harness
+        .wait_for_ice_restart_request_count(1, Duration::from_secs(5))
+        .await;
+    harness
+        .wait_for_ice_restart_count(1, Duration::from_secs(10))
+        .await;
+
+    let (_session_id, state) = wait_for_peer_state(
+        &mut answerer_events,
+        &offerer_id,
+        &[ConnectionState::Connecting],
+        Duration::from_secs(5),
+    )
+    .await;
+    tracing::info!(
+        "Answerer observed restart negotiation state {:?} while UDP is still blocked",
+        state
+    );
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    tracing::info!("Step 4: Sends must still fail fast until ICE reaches Connected");
+    let early = answerer.spawn_request(100, "answerer-answer-before-connected", 500);
+    expect_connection_recovering(early, "answerer send before ICE Connected").await;
+}
+
+#[tokio::test]
 async fn test_stale_answerer_recovery_closes_old_session_on_network_restore() {
     init_tracing();
 

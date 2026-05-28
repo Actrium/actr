@@ -4087,14 +4087,11 @@ impl WebRtcCoordinator {
         self.flush_pending_candidates(from, &peer_connection)
             .await?;
 
-        self.event_broadcaster
-            .send(ConnectionEvent::IceRestartCompleted {
-                peer_id: from.clone(),
-                session_id,
-                success: true,
-            });
-
-        tracing::info!("✅ Completed ICE restart answer to serial={}", from);
+        tracing::info!(
+            "✅ Completed ICE restart answer to serial={}, session_id={}; waiting for ICE Connected before marking sendable",
+            from,
+            session_id
+        );
 
         Ok(())
     }
