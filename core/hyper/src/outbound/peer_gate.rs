@@ -7,11 +7,14 @@
 //! - Block new requests to peers being cleaned up (closing_peers)
 
 use crate::transport::{ConnectionEvent, ConnectionState, Dest, PayloadTypeExt, PeerTransport};
+use crate::wire::webrtc::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus, WebRtcCoordinator};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError, ActrId, Classify, PayloadType, RpcEnvelope};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::Arc;
+#[cfg(feature = "test-utils")]
+use std::time::Instant;
 use tokio::sync::{RwLock, broadcast, oneshot};
 
 /// Pending requests map type: request_id -> (target_actor_id, oneshot response sender)
@@ -35,18 +38,65 @@ pub struct PeerGate {
     pending_requests: PendingRequestsMap,
 
     /// WebRTC coordinator (optional, for MediaTrack support)
-    webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
+    webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
 
     #[allow(unused)]
     /// todo: Peers currently being cleaned up (block new requests) ,closed requests will be cleaned up in event listener
     closing_peers: Arc<RwLock<HashSet<ActrId>>>,
 
-    /// Peers in the network/WebRTC recovery window. Requests should fail fast
-    /// instead of entering pending_requests and timing out later.
-    recovering_peers: Arc<RwLock<HashSet<ActrId>>>,
+    /// Peers in the network/WebRTC recovery window. The stored session id keeps
+    /// late events from older sessions from unblocking a newer recovery.
+    recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
 }
 
 impl PeerGate {
+    fn remember_recovering_peer(
+        recovering: &mut HashMap<ActrId, NetworkRecoveryStatus>,
+        peer_id: &ActrId,
+        session_id: u64,
+        reason: &str,
+    ) {
+        match recovering.entry(peer_id.clone()) {
+            Entry::Occupied(entry) if entry.get().session_id == session_id => {
+                tracing::debug!(
+                    peer_id = ?peer_id,
+                    session_id,
+                    elapsed_ms = entry.get().elapsed_ms(),
+                    recovery_reason = entry.get().reason.as_str(),
+                    "Peer already blocked for recovery",
+                );
+            }
+            Entry::Occupied(mut entry) => {
+                entry.insert(NetworkRecoveryStatus::new(session_id, reason));
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(NetworkRecoveryStatus::new(session_id, reason));
+            }
+        }
+    }
+
+    fn recovering_error(target: &ActrId, status: &NetworkRecoveryStatus) -> ActrError {
+        ActrError::Unavailable(format!(
+            "Connection recovering: peer={:?}, session_id={}, reason={}, elapsed_ms={}, timeout_ms={}",
+            target,
+            status.session_id,
+            status.reason.as_str(),
+            status.elapsed_ms(),
+            NETWORK_RECOVERY_TIMEOUT.as_millis()
+        ))
+    }
+
+    fn recovery_timeout_error(target: &ActrId, status: &NetworkRecoveryStatus) -> ActrError {
+        ActrError::Unavailable(format!(
+            "Connection recovery timeout: peer={:?}, session_id={}, reason={}, elapsed_ms={}, timeout_ms={}",
+            target,
+            status.session_id,
+            status.reason.as_str(),
+            status.elapsed_ms(),
+            NETWORK_RECOVERY_TIMEOUT.as_millis()
+        ))
+    }
+
     /// Create new PeerGate
     ///
     /// # Arguments
@@ -54,10 +104,10 @@ impl PeerGate {
     /// - `webrtc_coordinator`: Optional WebRTC coordinator for MediaTrack support
     pub fn new(
         transport_manager: Arc<PeerTransport>,
-        webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
+        webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     ) -> Self {
         let closing_peers = Arc::new(RwLock::new(HashSet::new()));
-        let recovering_peers = Arc::new(RwLock::new(HashSet::new()));
+        let recovering_peers = Arc::new(RwLock::new(HashMap::new()));
         let pending_requests = Arc::new(RwLock::new(HashMap::new()));
 
         // Start event listener if coordinator is available
@@ -65,6 +115,7 @@ impl PeerGate {
         if let Some(ref coordinator) = webrtc_coordinator {
             Self::spawn_event_listener(
                 coordinator.subscribe_events(),
+                Arc::clone(coordinator),
                 Arc::clone(&pending_requests),
                 Arc::clone(&closing_peers),
                 Arc::clone(&recovering_peers),
@@ -87,9 +138,10 @@ impl PeerGate {
     /// It triggers top-down cleanup by calling transport_manager.close_transport().
     fn spawn_event_listener(
         mut event_rx: broadcast::Receiver<ConnectionEvent>,
+        webrtc_coordinator: Arc<WebRtcCoordinator>,
         pending_requests: PendingRequestsMap,
         closing_peers: Arc<RwLock<HashSet<ActrId>>>,
-        recovering_peers: Arc<RwLock<HashSet<ActrId>>>,
+        recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
         transport_manager: Arc<PeerTransport>,
     ) {
         tokio::spawn(async move {
@@ -113,10 +165,31 @@ impl PeerGate {
                     // Block new requests when connection enters Disconnected/Failed state
                     ConnectionEvent::StateChanged {
                         peer_id,
+                        session_id,
                         state: ConnectionState::Disconnected | ConnectionState::Failed,
                         ..
                     } => {
-                        recovering_peers.write().await.insert(peer_id.clone());
+                        if !webrtc_coordinator
+                            .is_active_session(peer_id, *session_id)
+                            .await
+                        {
+                            tracing::debug!(
+                                peer_id = ?peer_id,
+                                event_session_id = session_id,
+                                "Ignoring stale recovery state event",
+                            );
+                            continue;
+                        }
+
+                        {
+                            let mut recovering = recovering_peers.write().await;
+                            Self::remember_recovering_peer(
+                                &mut recovering,
+                                peer_id,
+                                *session_id,
+                                "peer state Disconnected/Failed",
+                            );
+                        }
                         closing_peers.write().await.insert(peer_id.clone());
                         tracing::debug!(
                             "Blocking new requests to peer {} (state: {:?})",
@@ -125,38 +198,85 @@ impl PeerGate {
                         );
                     }
 
-                    ConnectionEvent::IceRestartStarted { peer_id, .. } => {
-                        recovering_peers.write().await.insert(peer_id.clone());
+                    ConnectionEvent::IceRestartStarted {
+                        peer_id,
+                        session_id,
+                    } => {
+                        {
+                            let mut recovering = recovering_peers.write().await;
+                            Self::remember_recovering_peer(
+                                &mut recovering,
+                                peer_id,
+                                *session_id,
+                                "ice/network recovery started",
+                            );
+                        }
                         tracing::debug!("Peer {} entered ICE/network recovery", peer_id);
                     }
 
                     ConnectionEvent::StateChanged {
                         peer_id,
+                        session_id,
                         state: ConnectionState::Connected,
                         ..
                     }
                     | ConnectionEvent::DataChannelOpened {
                         peer_id,
+                        session_id,
                         payload_type: PayloadType::RpcReliable,
                         ..
                     }
                     | ConnectionEvent::IceRestartCompleted {
                         peer_id,
+                        session_id,
                         success: true,
                         ..
                     } => {
-                        recovering_peers.write().await.remove(peer_id);
-                        closing_peers.write().await.remove(peer_id);
-                        tracing::debug!("Peer {} is sendable again", peer_id);
+                        let should_clear = {
+                            let recovering = recovering_peers.read().await;
+                            recovering
+                                .get(peer_id)
+                                .map(|status| status.session_id == *session_id)
+                                .unwrap_or(true)
+                        };
+
+                        if should_clear {
+                            recovering_peers.write().await.remove(peer_id);
+                            closing_peers.write().await.remove(peer_id);
+                            tracing::debug!("Peer {} is sendable again", peer_id);
+                        } else {
+                            tracing::debug!(
+                                peer_id = ?peer_id,
+                                event_session_id = session_id,
+                                "Ignoring sendable event for stale session",
+                            );
+                        }
                     }
 
                     ConnectionEvent::IceRestartCompleted {
                         peer_id,
+                        session_id,
                         success: false,
                         ..
                     } => {
-                        recovering_peers.write().await.remove(peer_id);
-                        closing_peers.write().await.insert(peer_id.clone());
+                        let should_update = {
+                            let recovering = recovering_peers.read().await;
+                            recovering
+                                .get(peer_id)
+                                .map(|status| status.session_id == *session_id)
+                                .unwrap_or(true)
+                        };
+
+                        if should_update {
+                            let mut recovering = recovering_peers.write().await;
+                            Self::remember_recovering_peer(
+                                &mut recovering,
+                                peer_id,
+                                *session_id,
+                                "ice restart failed",
+                            );
+                            closing_peers.write().await.insert(peer_id.clone());
+                        }
                         tracing::debug!(
                             "Peer {} ICE restart failed; keeping sends blocked",
                             peer_id
@@ -175,6 +295,25 @@ impl PeerGate {
                         session_id: event_session_id,
                     } => {
                         let dest = Dest::actor(peer_id.clone());
+
+                        {
+                            let mut recovering = recovering_peers.write().await;
+                            let should_remove = recovering
+                                .get(peer_id)
+                                .map(|status| status.session_id == *event_session_id)
+                                .unwrap_or(false);
+                            if should_remove {
+                                recovering.remove(peer_id);
+                                tracing::debug!(
+                                    peer_id = ?peer_id,
+                                    session_id = event_session_id,
+                                    "Cleared recovery guard for closed peer",
+                                );
+                            }
+                        }
+                        webrtc_coordinator
+                            .expire_peer_recovery(peer_id, *event_session_id, "connection closed")
+                            .await;
 
                         // A close event may belong to a failed intermediate WebRTC attempt while
                         // the factory is still retrying. In that case the original RPC should keep
@@ -259,8 +398,6 @@ impl PeerGate {
                         }
                         drop(pending); // Release lock before calling downstream
 
-                        // Unblock after cleanup completes
-                        recovering_peers.write().await.remove(peer_id);
                         closing_peers.write().await.remove(peer_id);
                     }
 
@@ -319,30 +456,103 @@ impl PeerGate {
         envelope.encode_to_vec()
     }
 
+    async fn clear_local_recovery_guard(&self, target: &ActrId, session_id: u64) {
+        let mut recovering = self.recovering_peers.write().await;
+        let should_remove = recovering
+            .get(target)
+            .map(|status| status.session_id == session_id)
+            .unwrap_or(false);
+        if should_remove {
+            recovering.remove(target);
+        }
+        drop(recovering);
+        self.closing_peers.write().await.remove(target);
+    }
+
+    async fn handle_recovery_timeout(
+        &self,
+        target: &ActrId,
+        dest: &Dest,
+        status: &NetworkRecoveryStatus,
+        source: &str,
+    ) -> ActrError {
+        tracing::warn!(
+            peer = ?target,
+            session_id = status.session_id,
+            elapsed_ms = status.elapsed_ms(),
+            recovery_reason = status.reason.as_str(),
+            source,
+            "Connection recovery timed out; closing stale transport",
+        );
+
+        self.clear_local_recovery_guard(target, status.session_id)
+            .await;
+
+        if let Some(coordinator) = &self.webrtc_coordinator {
+            coordinator
+                .close_recovering_peer(target, status.session_id, "send preflight recovery timeout")
+                .await;
+        }
+
+        if let Err(e) = self.transport_manager.close_transport(dest).await {
+            tracing::warn!(
+                peer = ?target,
+                session_id = status.session_id,
+                "Failed to close transport after recovery timeout: {}",
+                e,
+            );
+        }
+
+        Self::recovery_timeout_error(target, status)
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub async fn force_recovery_started_at_for_test(
+        &self,
+        target: &ActrId,
+        started_at: Instant,
+    ) -> bool {
+        let mut recovering = self.recovering_peers.write().await;
+        if let Some(status) = recovering.get_mut(target) {
+            status.started_at = started_at;
+            true
+        } else {
+            false
+        }
+    }
+
     async fn preflight_send(&self, target: &ActrId, dest: &Dest) -> ActorResult<()> {
-        if self.recovering_peers.read().await.contains(target) {
-            return Err(ActrError::Unavailable(format!(
-                "Connection recovering: {:?}",
-                target
-            )));
+        if let Some(coordinator) = &self.webrtc_coordinator
+            && let Some(status) = coordinator.peer_recovery_status(target).await
+        {
+            if status.is_timed_out() {
+                return Err(self
+                    .handle_recovery_timeout(target, dest, &status, "coordinator")
+                    .await);
+            }
+            return Err(Self::recovering_error(target, &status));
+        }
+
+        let local_recovery = {
+            let recovering = self.recovering_peers.read().await;
+            recovering.get(target).cloned()
+        };
+        if let Some(status) = local_recovery {
+            if status.is_timed_out() {
+                return Err(self
+                    .handle_recovery_timeout(target, dest, &status, "peer gate")
+                    .await);
+            }
+            return Err(Self::recovering_error(target, &status));
         }
 
         if self.closing_peers.read().await.contains(target)
             || self.transport_manager.is_closing(dest).await
         {
             return Err(ActrError::Unavailable(format!(
-                "Connection recovering: {:?}",
-                target
+                "Connection recovering: peer={:?}, reason=transport closing",
+                target,
             )));
-        }
-
-        if let Some(coordinator) = &self.webrtc_coordinator {
-            if coordinator.is_peer_recovering(target).await {
-                return Err(ActrError::Unavailable(format!(
-                    "Connection recovering: {:?}",
-                    target
-                )));
-            }
         }
 
         Ok(())

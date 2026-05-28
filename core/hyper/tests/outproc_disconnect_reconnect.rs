@@ -23,7 +23,7 @@ use actr_hyper::lifecycle::{
 use actr_hyper::test_support::TestHarness;
 use actr_hyper::transport::{ConnectionEvent, ConnectionState, Dest};
 use actr_protocol::{ActrId, PayloadType};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Initialize tracing for test output
 fn init_tracing() {
@@ -304,6 +304,144 @@ async fn wait_for_signaling_reconnect(
 }
 
 // ==================== DataChannel close cleanup ====================
+
+#[tokio::test]
+async fn test_network_recovery_guard_times_out_after_15s_and_closes_transport() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establishing WebRTC connection 100 -> 200");
+    harness.connect(100, 200).await;
+
+    let target_id = harness.peer(200).id.clone();
+    let dest = Dest::actor(target_id.clone());
+
+    assert!(
+        harness.peer(100).transport_manager.has_dest(&dest).await,
+        "initial DestTransport should be cached before recovery guard timeout"
+    );
+
+    tracing::info!("Step 2: Mark the offerer peer as recovering via NetworkEvent guard");
+    harness
+        .peer(100)
+        .coordinator
+        .begin_network_recovery("test recovery timeout")
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let status = harness
+        .peer(100)
+        .coordinator
+        .peer_recovery_status(&target_id)
+        .await
+        .expect("target should be guarded by network recovery");
+    assert!(
+        status.session_id > 0,
+        "recovery guard should record the active WebRTC session id"
+    );
+    assert!(
+        !status.is_timed_out(),
+        "fresh network recovery guard should not be timed out"
+    );
+
+    tracing::info!("Step 3: Sends inside the 15s recovery window fail fast");
+    let early = harness
+        .peer(100)
+        .spawn_request(200, "recovery-window-fast-fail", 30_000);
+    expect_connection_recovering(early, "request inside recovery window").await;
+
+    tracing::info!("Step 4: Age the guard beyond 15s and verify timeout cleanup");
+    let expired_started_at = Instant::now() - Duration::from_secs(16);
+    assert!(
+        harness
+            .peer(100)
+            .coordinator
+            .force_peer_recovery_started_at_for_test(&target_id, expired_started_at)
+            .await,
+        "test should be able to age the coordinator recovery guard"
+    );
+
+    let timed_out = harness
+        .peer(100)
+        .spawn_request(200, "recovery-window-timeout", 30_000);
+    match tokio::time::timeout(Duration::from_secs(3), timed_out).await {
+        Ok(Ok(Err(err))) => {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Connection recovery timeout"),
+                "expected recovery timeout error, got: {msg}"
+            );
+            assert!(
+                msg.contains("timeout_ms=15000"),
+                "timeout error should report the 15s recovery budget: {msg}"
+            );
+        }
+        Ok(Ok(Ok(response))) => panic!(
+            "timed-out recovery request unexpectedly succeeded with {} bytes",
+            response.len()
+        ),
+        Ok(Err(err)) => panic!("timed-out recovery request task panicked: {err}"),
+        Err(_) => panic!("timed-out recovery request did not fail fast"),
+    }
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !harness.peer(100).transport_manager.has_dest(&dest).await,
+        "recovery timeout should close and remove the stale DestTransport"
+    );
+    assert!(
+        harness
+            .peer(100)
+            .coordinator
+            .peer_recovery_status(&target_id)
+            .await
+            .is_none(),
+        "recovery timeout should clear the coordinator guard"
+    );
+}
+
+#[tokio::test]
+async fn test_connection_closed_clears_recovery_guard_when_transport_already_removed() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    let target_id = harness.peer(200).id.clone();
+    let synthetic_session_id = 77;
+
+    tracing::info!("Step 1: Simulate a recovery guard for a session with no cached transport");
+    harness
+        .peer(100)
+        .send_event(ConnectionEvent::IceRestartStarted {
+            peer_id: target_id.clone(),
+            session_id: synthetic_session_id,
+        });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let blocked = harness
+        .peer(100)
+        .spawn_request(200, "synthetic-recovery-blocks-send", 5_000);
+    expect_connection_recovering(blocked, "request before close event").await;
+
+    tracing::info!("Step 2: Close the same session after the transport was already removed");
+    harness
+        .peer(100)
+        .send_event(ConnectionEvent::ConnectionClosed {
+            peer_id: target_id,
+            session_id: synthetic_session_id,
+        });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    tracing::info!("Step 3: A later send should create a fresh transport instead of waiting 15s");
+    harness
+        .connect_with_timeout(100, 200, Duration::from_secs(5))
+        .await;
+}
 
 #[tokio::test]
 async fn test_data_channel_on_close_cleans_webrtc_transport() {

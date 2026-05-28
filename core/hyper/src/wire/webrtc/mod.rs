@@ -18,6 +18,7 @@ pub(crate) mod trace;
 pub use coordinator::WebRtcCoordinator;
 #[cfg(not(feature = "test-utils"))]
 pub(crate) use coordinator::WebRtcCoordinator;
+pub(crate) use coordinator::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus};
 pub use negotiator::WebRtcConfig;
 #[cfg(feature = "test-utils")]
 pub use signaling::WebSocketSignalingClient;
