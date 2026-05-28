@@ -40,6 +40,10 @@ pub struct PeerGate {
     #[allow(unused)]
     /// todo: Peers currently being cleaned up (block new requests) ,closed requests will be cleaned up in event listener
     closing_peers: Arc<RwLock<HashSet<ActrId>>>,
+
+    /// Peers in the network/WebRTC recovery window. Requests should fail fast
+    /// instead of entering pending_requests and timing out later.
+    recovering_peers: Arc<RwLock<HashSet<ActrId>>>,
 }
 
 impl PeerGate {
@@ -53,6 +57,7 @@ impl PeerGate {
         webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
     ) -> Self {
         let closing_peers = Arc::new(RwLock::new(HashSet::new()));
+        let recovering_peers = Arc::new(RwLock::new(HashSet::new()));
         let pending_requests = Arc::new(RwLock::new(HashMap::new()));
 
         // Start event listener if coordinator is available
@@ -62,6 +67,7 @@ impl PeerGate {
                 coordinator.subscribe_events(),
                 Arc::clone(&pending_requests),
                 Arc::clone(&closing_peers),
+                Arc::clone(&recovering_peers),
                 Arc::clone(&transport_manager),
             );
         }
@@ -71,6 +77,7 @@ impl PeerGate {
             pending_requests,
             webrtc_coordinator,
             closing_peers,
+            recovering_peers,
         }
     }
 
@@ -82,6 +89,7 @@ impl PeerGate {
         mut event_rx: broadcast::Receiver<ConnectionEvent>,
         pending_requests: PendingRequestsMap,
         closing_peers: Arc<RwLock<HashSet<ActrId>>>,
+        recovering_peers: Arc<RwLock<HashSet<ActrId>>>,
         transport_manager: Arc<PeerTransport>,
     ) {
         tokio::spawn(async move {
@@ -108,11 +116,50 @@ impl PeerGate {
                         state: ConnectionState::Disconnected | ConnectionState::Failed,
                         ..
                     } => {
+                        recovering_peers.write().await.insert(peer_id.clone());
                         closing_peers.write().await.insert(peer_id.clone());
                         tracing::debug!(
                             "Blocking new requests to peer {} (state: {:?})",
                             peer_id,
                             event
+                        );
+                    }
+
+                    ConnectionEvent::IceRestartStarted { peer_id, .. } => {
+                        recovering_peers.write().await.insert(peer_id.clone());
+                        tracing::debug!("Peer {} entered ICE/network recovery", peer_id);
+                    }
+
+                    ConnectionEvent::StateChanged {
+                        peer_id,
+                        state: ConnectionState::Connected,
+                        ..
+                    }
+                    | ConnectionEvent::DataChannelOpened {
+                        peer_id,
+                        payload_type: PayloadType::RpcReliable,
+                        ..
+                    }
+                    | ConnectionEvent::IceRestartCompleted {
+                        peer_id,
+                        success: true,
+                        ..
+                    } => {
+                        recovering_peers.write().await.remove(peer_id);
+                        closing_peers.write().await.remove(peer_id);
+                        tracing::debug!("Peer {} is sendable again", peer_id);
+                    }
+
+                    ConnectionEvent::IceRestartCompleted {
+                        peer_id,
+                        success: false,
+                        ..
+                    } => {
+                        recovering_peers.write().await.remove(peer_id);
+                        closing_peers.write().await.insert(peer_id.clone());
+                        tracing::debug!(
+                            "Peer {} ICE restart failed; keeping sends blocked",
+                            peer_id
                         );
                     }
 
@@ -213,17 +260,8 @@ impl PeerGate {
                         drop(pending); // Release lock before calling downstream
 
                         // Unblock after cleanup completes
+                        recovering_peers.write().await.remove(peer_id);
                         closing_peers.write().await.remove(peer_id);
-                    }
-
-                    // Unblock peer when ICE restart succeeds
-                    ConnectionEvent::IceRestartCompleted {
-                        peer_id,
-                        success: true,
-                        ..
-                    } => {
-                        closing_peers.write().await.remove(peer_id);
-                        tracing::debug!("Unblocked peer {} after successful ICE restart", peer_id);
                     }
 
                     _ => {} // Ignore other events
@@ -279,6 +317,35 @@ impl PeerGate {
     /// Serialize RpcEnvelope to bytes
     fn serialize_envelope(envelope: &RpcEnvelope) -> Vec<u8> {
         envelope.encode_to_vec()
+    }
+
+    async fn preflight_send(&self, target: &ActrId, dest: &Dest) -> ActorResult<()> {
+        if self.recovering_peers.read().await.contains(target) {
+            return Err(ActrError::Unavailable(format!(
+                "Connection recovering: {:?}",
+                target
+            )));
+        }
+
+        if self.closing_peers.read().await.contains(target)
+            || self.transport_manager.is_closing(dest).await
+        {
+            return Err(ActrError::Unavailable(format!(
+                "Connection recovering: {:?}",
+                target
+            )));
+        }
+
+        if let Some(coordinator) = &self.webrtc_coordinator {
+            if coordinator.is_peer_recovering(target).await {
+                return Err(ActrError::Unavailable(format!(
+                    "Connection recovering: {:?}",
+                    target
+                )));
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -353,20 +420,22 @@ impl PeerGate {
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<Bytes> {
-        // 1. Create oneshot channel for receiving response
+        // 1. Convert ActrId to Dest and fail fast during recovery before
+        // registering pending_requests.
+        let dest = Self::actr_id_to_dest(target);
+        self.preflight_send(target, &dest).await?;
+
+        // 2. Create oneshot channel for receiving response
         let (response_tx, response_rx) = oneshot::channel();
 
-        // 2. Register pending request with target ActorId
+        // 3. Register pending request with target ActorId
         {
             let mut pending = self.pending_requests.write().await;
             pending.insert(envelope.request_id.clone(), (target.clone(), response_tx));
         }
 
-        // 3. Serialize RpcEnvelope
+        // 4. Serialize RpcEnvelope
         let data = Self::serialize_envelope(&envelope);
-
-        // 4. Convert ActrId to Dest
-        let dest = Self::actr_id_to_dest(target);
 
         // 5. Unified timeout: covers both retry + wait-for-response
         //    so the user-perceived latency never exceeds envelope.timeout_ms.
@@ -443,6 +512,7 @@ impl PeerGate {
     ) -> ActorResult<()> {
         let data = Self::serialize_envelope(&envelope);
         let dest = Self::actr_id_to_dest(target);
+        self.preflight_send(target, &dest).await?;
         self.send_with_retry(&dest, payload_type, &data).await
     }
 
@@ -557,6 +627,7 @@ impl PeerGate {
 
         // Convert ActrId to Dest
         let dest = Self::actr_id_to_dest(target);
+        self.preflight_send(target, &dest).await?;
 
         // Send via transport manager
 

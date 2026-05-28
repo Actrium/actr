@@ -28,7 +28,7 @@ use super::{SignalingClient, WebRtcConfig};
 use crate::INITIAL_CONNECTION_TIMEOUT;
 use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::CredentialState;
-use crate::transport::{ConnectionEvent, ConnectionEventBroadcaster};
+use crate::transport::{ConnectionEvent, ConnectionEventBroadcaster, ConnectionState};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError};
@@ -36,7 +36,7 @@ use actr_protocol::{
     ActrId, ActrRelay, IceRestartRequest, PayloadType, RoleAssignment, RoleNegotiation,
     SignalingEnvelope, actr_relay, session_description::Type as SdpType, signaling_envelope,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -164,6 +164,9 @@ pub struct WebRtcCoordinator {
     /// Connection event broadcaster for notifying all layers
     event_broadcaster: ConnectionEventBroadcaster,
 
+    /// Peers that have entered network recovery before WebRTC reports a final state.
+    network_recovering_peers: Arc<RwLock<HashSet<ActrId>>>,
+
     /// Hook callback for synchronous lifecycle notification (set once, shared with connections)
     hook_callback: std::sync::OnceLock<crate::wire::webrtc::HookCallback>,
 
@@ -196,6 +199,7 @@ impl WebRtcCoordinator {
             media_frame_registry,
             peer_negotiation: Arc::new(Mutex::new(HashMap::new())),
             event_broadcaster: ConnectionEventBroadcaster::new(),
+            network_recovering_peers: Arc::new(RwLock::new(HashSet::new())),
             hook_callback: std::sync::OnceLock::new(),
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
@@ -298,6 +302,66 @@ impl WebRtcCoordinator {
         peers.get(peer_id).map(|state| state.session_id)
     }
 
+    /// Mark all active peers as recovering as soon as the platform reports a
+    /// network restore/change. This is intentionally earlier than WebRTC state
+    /// callbacks, which may lag behind the real network switch.
+    pub async fn begin_network_recovery(&self) {
+        let peers: Vec<(ActrId, u64)> = {
+            let peers = self.peers.read().await;
+            peers
+                .iter()
+                .map(|(peer_id, state)| (peer_id.clone(), state.session_id))
+                .collect()
+        };
+
+        if peers.is_empty() {
+            return;
+        }
+
+        {
+            let mut recovering = self.network_recovering_peers.write().await;
+            for (peer_id, _) in &peers {
+                recovering.insert(peer_id.clone());
+            }
+        }
+
+        for (peer_id, session_id) in peers {
+            tracing::debug!(
+                "🚧 Marking peer {} as network recovering, session_id={}",
+                peer_id,
+                session_id
+            );
+            self.event_broadcaster
+                .send(ConnectionEvent::IceRestartStarted {
+                    peer_id,
+                    session_id,
+                });
+        }
+    }
+
+    /// Check whether a peer is in the recovery window.
+    pub async fn is_peer_recovering(&self, peer_id: &ActrId) -> bool {
+        self.network_recovering_peers.read().await.contains(peer_id)
+    }
+
+    async fn mark_peer_recovering(&self, peer_id: &ActrId, session_id: u64) {
+        self.network_recovering_peers
+            .write()
+            .await
+            .insert(peer_id.clone());
+        self.event_broadcaster
+            .send(ConnectionEvent::IceRestartStarted {
+                peer_id: peer_id.clone(),
+                session_id,
+            });
+    }
+
+    async fn clear_peer_recovering(&self, peer_id: &ActrId, reason: &str) {
+        if self.network_recovering_peers.write().await.remove(peer_id) {
+            tracing::debug!(peer_id = %peer_id, reason = reason, "✅ Peer left network recovery");
+        }
+    }
+
     /// Trigger ICE restart for all connections in Failed/Disconnected state
     pub async fn retry_failed_connections(self: &Arc<Self>) {
         let peers = self.peers.read().await;
@@ -367,6 +431,50 @@ impl WebRtcCoordinator {
                 match event_rx.recv().await {
                     Ok(event) => {
                         if let Some(coord) = coordinator.upgrade() {
+                            match &event {
+                                ConnectionEvent::StateChanged {
+                                    peer_id,
+                                    state: ConnectionState::Connected,
+                                    ..
+                                } => {
+                                    coord
+                                        .clear_peer_recovering(peer_id, "peer connection connected")
+                                        .await;
+                                }
+                                ConnectionEvent::DataChannelOpened {
+                                    peer_id,
+                                    payload_type: PayloadType::RpcReliable,
+                                    ..
+                                } => {
+                                    coord
+                                        .clear_peer_recovering(
+                                            peer_id,
+                                            "reliable data channel opened",
+                                        )
+                                        .await;
+                                }
+                                ConnectionEvent::IceRestartCompleted {
+                                    peer_id,
+                                    success: true,
+                                    ..
+                                } => {
+                                    coord
+                                        .clear_peer_recovering(peer_id, "ice restart completed")
+                                        .await;
+                                }
+                                ConnectionEvent::ConnectionClosed { peer_id, .. }
+                                | ConnectionEvent::StateChanged {
+                                    peer_id,
+                                    state: ConnectionState::Closed,
+                                    ..
+                                } => {
+                                    coord
+                                        .clear_peer_recovering(peer_id, "connection closed")
+                                        .await;
+                                }
+                                _ => {}
+                            }
+
                             // Extract peer_id and check if cleanup is needed
                             // Key: compare event.session_id with current PeerState.session_id
                             // to avoid stale events from old connections triggering cleanup on new ones
@@ -1953,13 +2061,25 @@ impl WebRtcCoordinator {
                 tracing::info!("✅ DataChannel verified open, connection fully ready");
 
                 // Mark ICE restart attempt complete
+                let mut completed_restart = false;
                 let mut peers_guard = peers.write().await;
                 if let Some(s) = peers_guard.get_mut(&from_id) {
                     if s.session_id == wait_session_id {
+                        completed_restart = s.ice_restart_inflight;
                         s.ice_restart_inflight = false;
                         s.ice_restart_attempts = 0;
                     }
                 }
+                drop(peers_guard);
+
+                if completed_restart {
+                    event_broadcaster.send(ConnectionEvent::IceRestartCompleted {
+                        peer_id: from_id.clone(),
+                        session_id: wait_session_id,
+                        success: true,
+                    });
+                }
+
                 if let Some(tx) = ready_tx {
                     let _ = tx.send(());
                 }
@@ -3003,6 +3123,8 @@ impl WebRtcCoordinator {
                 restart_session_id
             );
 
+            self.mark_peer_recovering(target, restart_session_id).await;
+
             // 5. Spawn restart task (STILL WITHIN THE LOCK - this is the fix!)
             let handle = tokio::spawn(async move {
                 let restart_result = Self::do_ice_restart_inner(
@@ -3035,6 +3157,13 @@ impl WebRtcCoordinator {
                         );
 
                         if let Some(coord) = coordinator_weak.upgrade() {
+                            coord
+                                .event_broadcaster
+                                .send(ConnectionEvent::IceRestartCompleted {
+                                    peer_id: target_clone.clone(),
+                                    session_id: restart_session_id,
+                                    success: false,
+                                });
                             // First, clean up the old connection resources
                             tracing::info!(
                                 "🧹 Cleaning up old connection after ICE restart failure for serial={}, session_id={}",
@@ -3061,6 +3190,13 @@ impl WebRtcCoordinator {
 
                         // Clean up resources on error
                         if let Some(coord) = coordinator_weak.upgrade() {
+                            coord
+                                .event_broadcaster
+                                .send(ConnectionEvent::IceRestartCompleted {
+                                    peer_id: target_clone.clone(),
+                                    session_id: restart_session_id,
+                                    success: false,
+                                });
                             tracing::info!(
                                 "🧹 Cleaning up connection after ICE restart error for serial={}, session_id={}",
                                 target_clone,

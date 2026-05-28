@@ -56,6 +56,7 @@ const RESPONSE_TIMEOUT_SECS: u64 = 15;
 // WebSocket-level keepalive to detect silent half-open connections
 const PING_INTERVAL_SECS: u64 = 5;
 const PONG_TIMEOUT_SECS: u64 = 10;
+const DISCONNECT_CLOSE_TIMEOUT_SECS: u64 = 1;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // configurationType
@@ -1154,7 +1155,22 @@ impl SignalingClient for WebSocketSignalingClient {
 
         // Close sink
         if let Some(mut sink) = sink_guard.take() {
-            let _ = sink.close().await;
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(DISCONNECT_CLOSE_TIMEOUT_SECS),
+                sink.close(),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!("Signaling WebSocket close failed during disconnect: {}", e);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "Signaling WebSocket close timed out during disconnect; continuing cleanup"
+                    );
+                }
+            }
         }
 
         // clear blank stream

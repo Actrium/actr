@@ -305,21 +305,45 @@ fn materialize_events(specs: &[EventSpec]) -> Vec<NetworkEvent> {
 }
 
 async fn expect_request_ok(harness: &TestHarness, request_id: &str, timeout: Duration) {
-    let handle = harness
-        .peer(100)
-        .spawn_request(200, request_id, timeout.as_millis() as u32);
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut attempt = 0;
 
-    match tokio::time::timeout(timeout, handle).await {
-        Ok(Ok(Ok(response))) => {
-            assert!(
-                !response.is_empty(),
-                "{} should receive a non-empty response",
-                request_id
+    loop {
+        attempt += 1;
+        let attempt_id = format!("{request_id}_{attempt}");
+        let handle = harness.peer(100).spawn_request(200, &attempt_id, 2_000);
+
+        let last_error = match tokio::time::timeout(Duration::from_secs(3), handle).await {
+            Ok(Ok(Ok(response))) => {
+                assert!(
+                    !response.is_empty(),
+                    "{} should receive a non-empty response",
+                    request_id
+                );
+                return;
+            }
+            Ok(Ok(Err(err))) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("Connection recovering")
+                        || msg.contains("Request timeout")
+                        || msg.contains("Connection"),
+                    "unexpected retry error while waiting for recovery: {msg}"
+                );
+                msg
+            }
+            Ok(Err(err)) => panic!("{} request task panicked: {}", request_id, err),
+            Err(_) => format!("{request_id} attempt {attempt} timed out"),
+        };
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "{} request failed to recover within {:?}; last error: {}",
+                request_id, timeout, last_error
             );
         }
-        Ok(Ok(Err(e))) => panic!("{} request failed: {}", request_id, e),
-        Ok(Err(e)) => panic!("{} request task panicked: {}", request_id, e),
-        Err(_) => panic!("{} request timed out after {:?}", request_id, timeout),
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
 

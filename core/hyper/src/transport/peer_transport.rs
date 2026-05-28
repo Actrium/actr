@@ -163,12 +163,12 @@ impl PeerTransport {
         dest: &Dest,
     ) -> NetworkResult<Arc<DestTransport>> {
         // 0. Check if dest is being closed - fast fail
-        // if self.closing_peers.read().await.contains(dest) {
-        //     return Err(NetworkError::ConnectionClosed(format!(
-        //         "Destination {:?} is being closed.",
-        //         dest
-        //     )));
-        // }
+        if self.closing_peers.read().await.contains(dest) {
+            return Err(NetworkError::ConnectionClosed(format!(
+                "Destination {:?} is being closed.",
+                dest
+            )));
+        }
 
         loop {
             // 1. Fast path: check current state
@@ -188,12 +188,12 @@ impl PeerTransport {
                     tracing::debug!("Waiting for ongoing connection: {:?}", dest);
                     notify.notified().await;
                     // Check if cancelled during wait
-                    // if self.closing_peers.read().await.contains(dest) {
-                    //     return Err(NetworkError::ConnectionClosed(format!(
-                    //         "Destination {:?} was closed while waiting",
-                    //         dest
-                    //     )));
-                    // }
+                    if self.closing_peers.read().await.contains(dest) {
+                        return Err(NetworkError::ConnectionClosed(format!(
+                            "Destination {:?} was closed while waiting",
+                            dest
+                        )));
+                    }
                     // Retry after notification
                     continue;
                 }
@@ -218,12 +218,12 @@ impl PeerTransport {
                     }
                     None => {
                         // Check closing again before creating
-                        // if self.closing_peers.read().await.contains(dest) {
-                        //     return Err(NetworkError::ConnectionClosed(format!(
-                        //         "Destination {:?} is being closed",
-                        //         dest
-                        //     )));
-                        // }
+                        if self.closing_peers.read().await.contains(dest) {
+                            return Err(NetworkError::ConnectionClosed(format!(
+                                "Destination {:?} is being closed",
+                                dest
+                            )));
+                        }
                         // We are the creator, insert Connecting state
                         let notify = Arc::new(Notify::new());
                         transports.insert(dest.clone(), Either::Left(Arc::clone(&notify)));

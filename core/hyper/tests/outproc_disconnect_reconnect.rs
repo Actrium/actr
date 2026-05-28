@@ -17,8 +17,8 @@
 //!   → sends IceRestartRequest → Offerer receives → wakes backoff → immediate retry
 
 use actr_hyper::lifecycle::{
-    NetworkEvent, NetworkRecoveryAction, process_network_event_batch,
-    select_network_recovery_action,
+    DefaultNetworkEventProcessor, NetworkEvent, NetworkEventProcessor, NetworkRecoveryAction,
+    process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
 use actr_hyper::transport::{ConnectionEvent, ConnectionState, Dest};
@@ -159,6 +159,148 @@ async fn wait_for_data_channel_close_chain(
         saw_peer_connection_closed,
         saw_connection_closed
     );
+}
+
+async fn wait_for_peer_state(
+    event_rx: &mut tokio::sync::broadcast::Receiver<ConnectionEvent>,
+    peer_id: &ActrId,
+    wanted_states: &[ConnectionState],
+    timeout: Duration,
+) -> (u64, ConnectionState) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "timed out waiting for peer {} to enter one of {:?}",
+            peer_id,
+            wanted_states
+        );
+
+        match tokio::time::timeout(remaining, event_rx.recv()).await {
+            Ok(Ok(ConnectionEvent::StateChanged {
+                peer_id: event_peer,
+                session_id,
+                state,
+            })) if &event_peer == peer_id && wanted_states.contains(&state) => {
+                return (session_id, state);
+            }
+            Ok(Ok(_)) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                tracing::warn!("Connection event receiver lagged by {} events", n);
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                panic!("connection event channel closed while waiting for peer state");
+            }
+            Err(_) => {
+                panic!(
+                    "timed out waiting for peer {} to enter one of {:?}",
+                    peer_id, wanted_states
+                );
+            }
+        }
+    }
+}
+
+async fn expect_connection_recovering(
+    handle: tokio::task::JoinHandle<actr_protocol::ActorResult<actr_framework::Bytes>>,
+    label: &str,
+) {
+    match tokio::time::timeout(Duration::from_secs(3), handle).await {
+        Ok(Ok(Err(err))) => {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Connection recovering"),
+                "{label} failed, but not with Connection recovering: {msg}"
+            );
+        }
+        Ok(Ok(Ok(response))) => {
+            panic!(
+                "{label} unexpectedly succeeded with {} response bytes",
+                response.len()
+            );
+        }
+        Ok(Err(err)) => panic!("{label} task panicked: {err}"),
+        Err(_) => panic!("{label} did not finish within the outer timeout"),
+    }
+}
+
+async fn expect_request_eventually_ok(
+    harness: &TestHarness,
+    from_serial: u64,
+    to_serial: u64,
+    request_prefix: &str,
+    total_timeout: Duration,
+    attempt_timeout_ms: u32,
+) -> actr_framework::Bytes {
+    let deadline = tokio::time::Instant::now() + total_timeout;
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+        let request_id = format!("{request_prefix}_{attempt}");
+        let handle =
+            harness
+                .peer(from_serial)
+                .spawn_request(to_serial, &request_id, attempt_timeout_ms);
+
+        let last_error = match tokio::time::timeout(
+            Duration::from_millis(attempt_timeout_ms as u64) + Duration::from_secs(1),
+            handle,
+        )
+        .await
+        {
+            Ok(Ok(Ok(response))) => return response,
+            Ok(Ok(Err(err))) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains("Connection recovering")
+                        || msg.contains("Request timeout")
+                        || msg.contains("Connection"),
+                    "unexpected retry error while waiting for recovery: {msg}"
+                );
+                msg
+            }
+            Ok(Err(err)) => panic!("{request_prefix} retry task panicked: {err}"),
+            Err(_) => format!("{request_prefix} attempt {attempt} timed out"),
+        };
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "{request_prefix} did not succeed within {:?}; last error: {}",
+                total_timeout, last_error
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+async fn wait_for_signaling_reconnect(
+    harness: &TestHarness,
+    min_connections: u32,
+    min_disconnections: u32,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let connections = harness.server.get_connection_count();
+        let disconnections = harness.server.get_disconnection_count();
+        if connections >= min_connections && disconnections >= min_disconnections {
+            return;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for signaling reconnect counters: connections >= {}, disconnections >= {}; current connections={}, disconnections={}",
+                min_connections, min_disconnections, connections, disconnections
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 // ==================== DataChannel close cleanup ====================
@@ -362,22 +504,19 @@ async fn test_lost_available_type_changed_batch_restores_webrtc_end_to_end() {
     );
 
     tracing::info!("📤 Step 5: Verifying WebRTC recovery via gate message...");
-    let request_handle =
-        harness
-            .peer(100)
-            .spawn_request(200, "batched_network_restore_verify", 10000);
-
-    match tokio::time::timeout(Duration::from_secs(10), request_handle).await {
-        Ok(Ok(Ok(response))) => {
-            tracing::info!(
-                "✅ WebRTC recovered after batched network events: {} bytes",
-                response.len()
-            );
-        }
-        Ok(Ok(Err(e))) => panic!("❌ WebRTC not recovered — request failed: {}", e),
-        Ok(Err(e)) => panic!("Request task panicked: {}", e),
-        Err(_) => panic!("❌ WebRTC not recovered — request timed out after 10s"),
-    }
+    let response = expect_request_eventually_ok(
+        &harness,
+        100,
+        200,
+        "batched_network_restore_verify",
+        Duration::from_secs(20),
+        2_000,
+    )
+    .await;
+    tracing::info!(
+        "✅ WebRTC recovered after batched network events: {} bytes",
+        response.len()
+    );
 }
 
 #[tokio::test]
@@ -492,30 +631,20 @@ async fn test_offerer_recovery_latency() {
 
     // === Step 5: Wait for recovery and send message ===
     tracing::info!("📤 Step 5: Sending message 200→100 to verify recovery...");
-    let peer_200 = harness.peer(200);
-    let msg_handle = peer_200.spawn_request(100, "offerer_recovery", 30000);
-
-    let msg_result = tokio::time::timeout(Duration::from_secs(30), msg_handle).await;
+    let response = expect_request_eventually_ok(
+        &harness,
+        200,
+        100,
+        "offerer_recovery",
+        Duration::from_secs(30),
+        2_000,
+    )
+    .await;
     let e2e_latency = recovery_start.elapsed();
-
-    match msg_result {
-        Ok(Ok(Ok(response))) => {
-            tracing::info!(
-                "✅ Offerer recovery succeeded! Response: {} bytes",
-                response.len()
-            );
-        }
-        Ok(Ok(Err(e))) => {
-            panic!(
-                "❌ Offerer recovery FAILED: {} (e2e latency: {:?})",
-                e, e2e_latency
-            );
-        }
-        Ok(Err(e)) => panic!("Offerer request task panicked: {}", e),
-        Err(_) => {
-            panic!("❌ Offerer recovery TIMED OUT after {:?}", e2e_latency);
-        }
-    }
+    tracing::info!(
+        "✅ Offerer recovery succeeded! Response: {} bytes",
+        response.len()
+    );
 
     let total_restart_count = harness.ice_restart_count();
 
@@ -587,34 +716,20 @@ async fn test_answerer_recovery_latency() {
 
     // === Step 5: Wait for recovery and send message ===
     tracing::info!("📤 Step 5: Sending message 200→100 to verify recovery...");
-    let peer_200 = harness.peer(200);
-    let msg_handle = peer_200.spawn_request(100, "answerer_recovery", 30000);
-
-    let msg_result = tokio::time::timeout(Duration::from_secs(30), msg_handle).await;
+    let response = expect_request_eventually_ok(
+        &harness,
+        200,
+        100,
+        "answerer_recovery",
+        Duration::from_secs(30),
+        2_000,
+    )
+    .await;
     let e2e_latency = recovery_start.elapsed();
-
-    match msg_result {
-        Ok(Ok(Ok(response))) => {
-            tracing::info!(
-                "✅ Answerer (200) recovered! Response: {} bytes",
-                response.len()
-            );
-        }
-        Ok(Ok(Err(e))) => {
-            tracing::error!(
-                "❌ Answerer (200) recovery FAILED: {} (e2e latency: {:?})",
-                e,
-                e2e_latency
-            );
-        }
-        Ok(Err(e)) => panic!("Answerer request task panicked: {}", e),
-        Err(_) => {
-            tracing::error!(
-                "❌ Answerer (200) recovery TIMED OUT after {:?}",
-                e2e_latency
-            );
-        }
-    }
+    tracing::info!(
+        "✅ Answerer (200) recovered! Response: {} bytes",
+        response.len()
+    );
 
     let total_restart_count = harness.ice_restart_count();
 
@@ -633,4 +748,138 @@ async fn test_answerer_recovery_latency() {
     tracing::info!("╚══════════════════════════════════════════════════════╝");
 
     tracing::info!("✅ test_answerer_recovery_latency completed!");
+}
+
+// ==================== Repro: NetworkEvent returns before WebRTC is usable ====================
+
+/// Reproduces the mobile 5G -> WiFi failure mode:
+///
+/// 1. The client-side NetworkEvent path returns success after it reconnects
+///    signaling and starts/retries WebRTC recovery.
+/// 2. That success does not mean the reliable DataChannel is usable yet.
+/// 3. RPCs sent immediately after the event now fail fast with
+///    `Connection recovering` before they enter pending_requests.
+/// 4. A later retry succeeds once UDP/signaling are restored.
+#[tokio::test]
+#[ignore = "slow VNet recovery regression test"]
+async fn repro_network_event_returns_before_webrtc_ready_causing_early_rpc_timeouts() {
+    init_tracing();
+
+    const CLIENT: u64 = 100;
+    const SERVER: u64 = 200;
+
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(CLIENT).await;
+    harness.add_peer(SERVER).await;
+
+    let server_id = harness.peer(SERVER).id.clone();
+    let mut client_events = harness.peer(CLIENT).subscribe_events();
+
+    tracing::info!("Step 1: Establish client -> server WebRTC RPC path");
+    harness.connect(CLIENT, SERVER).await;
+    harness.reset_counters();
+
+    tracing::info!(
+        "Step 2: Simulate network switch window: UDP blocked, signaling forwarding paused"
+    );
+    harness
+        .vnet
+        .as_ref()
+        .expect("test requires VNet")
+        .block_network();
+    harness.server.pause_forwarding();
+
+    let (session_id, state) = wait_for_peer_state(
+        &mut client_events,
+        &server_id,
+        &[ConnectionState::Disconnected, ConnectionState::Failed],
+        Duration::from_secs(12),
+    )
+    .await;
+    tracing::info!(
+        "Client observed server session {} enter {:?}",
+        session_id,
+        state
+    );
+
+    tracing::info!("Step 3: Run the same NetworkEvent processor used by mobile bindings");
+    assert!(
+        harness.peer(CLIENT).signaling_client.is_connected(),
+        "client signaling should be connected before NetworkEvent closes it"
+    );
+    let processor = DefaultNetworkEventProcessor::new(
+        harness.peer(CLIENT).signaling_client.clone(),
+        Some(harness.peer(CLIENT).coordinator.clone()),
+    );
+    let event_started = std::time::Instant::now();
+    processor
+        .process_network_type_changed(true, false)
+        .await
+        .expect("NetworkEvent::TypeChanged should report success");
+    let event_elapsed = event_started.elapsed();
+    tracing::info!(
+        "NetworkEvent::TypeChanged returned in {:?}; ICE restart offers observed={}",
+        event_elapsed,
+        harness.ice_restart_count()
+    );
+    wait_for_signaling_reconnect(&harness, 1, 1, Duration::from_secs(2)).await;
+    assert!(
+        harness.peer(CLIENT).signaling_client.is_connected(),
+        "client signaling should be reconnected after NetworkEvent returns"
+    );
+    assert!(
+        event_elapsed < Duration::from_secs(3),
+        "NetworkEvent returned too slowly for this repro: {:?}",
+        event_elapsed
+    );
+
+    tracing::info!("Step 4: Send two RPCs immediately after NetworkEvent returns");
+    let client = harness.peer(CLIENT);
+    let early_1 = client.spawn_request(SERVER, "network-event-early-timeout-1", 500);
+    let early_2 = client.spawn_request(SERVER, "network-event-early-timeout-2", 800);
+
+    expect_connection_recovering(early_1, "first immediate RPC").await;
+    expect_connection_recovering(early_2, "second immediate RPC").await;
+
+    tracing::info!("Step 5: Finish network recovery; a later retry should succeed");
+    harness.simulate_reconnect();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let request_id = format!("network-event-late-success-{attempt}");
+        let late_success = harness
+            .peer(CLIENT)
+            .spawn_request(SERVER, &request_id, 2_000);
+
+        match tokio::time::timeout(Duration::from_secs(3), late_success).await {
+            Ok(Ok(Ok(response))) => {
+                tracing::info!(
+                    "Retry after delayed recovery received {} bytes on attempt {}",
+                    response.len(),
+                    attempt
+                );
+                assert_eq!(&response[..], b"pong");
+                break;
+            }
+            Ok(Ok(Err(err))) => {
+                let msg = err.to_string();
+                if tokio::time::Instant::now() >= deadline {
+                    panic!("retry after recovery should eventually succeed, last error: {msg}");
+                }
+                assert!(
+                    msg.contains("Connection recovering")
+                        || msg.contains("Request timeout")
+                        || msg.contains("Connection"),
+                    "unexpected retry error while waiting for recovery: {msg}"
+                );
+            }
+            Ok(Err(err)) => panic!("retry task panicked: {err}"),
+            Err(_) if tokio::time::Instant::now() < deadline => {}
+            Err(_) => panic!("retry did not complete after network recovery"),
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
