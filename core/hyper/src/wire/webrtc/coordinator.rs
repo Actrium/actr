@@ -122,6 +122,11 @@ struct PeerState {
     /// calls to `notify_one()` are safe and won't cause duplicate restarts.
     restart_wake: Arc<tokio::sync::Notify>,
 
+    /// Wake an in-flight ICE restart task while it is sleeping before the next
+    /// offer attempt, without interrupting an offer that is already awaiting
+    /// completion.
+    restart_retry_wake: Arc<tokio::sync::Notify>,
+
     /// Last time we sent an ICE restart offer for this peer.
     last_ice_restart_offer_at: Option<Instant>,
 
@@ -684,7 +689,11 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target_filter: Option<&[ActrId]>,
     ) {
-        let (stale_answerers, targets): (Vec<(ActrId, NetworkRecoveryStatus)>, Vec<ActrId>) = {
+        let (stale_answerers, wake_targets, targets): (
+            Vec<(ActrId, NetworkRecoveryStatus)>,
+            Vec<(ActrId, u64, Arc<tokio::sync::Notify>)>,
+            Vec<ActrId>,
+        ) = {
             let recovery_snapshot: Vec<(ActrId, NetworkRecoveryStatus)> = self
                 .network_recovering_peers
                 .read()
@@ -699,6 +708,7 @@ impl WebRtcCoordinator {
 
             let peers = self.peers.read().await;
             let mut stale_answerers = Vec::new();
+            let mut wake_targets = Vec::new();
             let mut targets = Vec::new();
 
             for (peer_id, recovery_status) in recovery_snapshot.iter() {
@@ -722,12 +732,30 @@ impl WebRtcCoordinator {
                     continue;
                 }
 
-                if !state.ice_restart_inflight {
+                let restart_task_running = state
+                    .restart_task_handle
+                    .as_ref()
+                    .map(|handle| !handle.is_finished())
+                    .unwrap_or(false);
+
+                if restart_task_running {
+                    wake_targets.push((
+                        peer_id.clone(),
+                        recovery_status.session_id,
+                        state.restart_retry_wake.clone(),
+                    ));
+                } else if !state.ice_restart_inflight {
                     targets.push(peer_id.clone());
+                } else {
+                    tracing::debug!(
+                        peer_id = ?peer_id,
+                        session_id = recovery_status.session_id,
+                        "🚧 ICE restart is marked in-flight without a running retry task; not starting a duplicate restart"
+                    );
                 }
             }
 
-            (stale_answerers, targets)
+            (stale_answerers, wake_targets, targets)
         };
 
         for (target, recovery_status) in stale_answerers {
@@ -745,6 +773,15 @@ impl WebRtcCoordinator {
                 "answerer long network recovery timeout",
             )
             .await;
+        }
+
+        for (target, session_id, restart_retry_wake) in wake_targets {
+            tracing::info!(
+                "🔔 Waking existing ICE restart retry for network recovery peer {}, session_id={}",
+                target,
+                session_id
+            );
+            restart_retry_wake.notify_one();
         }
 
         for target in targets {
@@ -1852,6 +1889,7 @@ impl WebRtcCoordinator {
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
                     restart_wake: Arc::new(tokio::sync::Notify::new()),
+                    restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
                     last_ice_restart_offer_at: None,
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
@@ -2111,6 +2149,7 @@ impl WebRtcCoordinator {
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
                     restart_wake: Arc::new(tokio::sync::Notify::new()),
+                    restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
                     last_ice_restart_offer_at: None,
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
@@ -3536,10 +3575,11 @@ impl WebRtcCoordinator {
             // 4. Set flag to prevent concurrent restarts
             state.ice_restart_inflight = true;
 
-            // Clone peer_connection/session and restart_wake while we have the lock.
+            // Clone peer_connection/session and restart wake handles while we have the lock.
             let peer_connection = state.peer_connection.clone();
             let restart_session_id = state.session_id;
             let restart_wake = state.restart_wake.clone();
+            let restart_retry_wake = state.restart_retry_wake.clone();
 
             tracing::info!(
                 "♻️ Initiating ICE restart to serial={}, session_id={}",
@@ -3562,6 +3602,7 @@ impl WebRtcCoordinator {
                     credential_state,
                     &signaling_client,
                     restart_wake,
+                    restart_retry_wake,
                 )
                 .await;
 
@@ -3781,6 +3822,7 @@ impl WebRtcCoordinator {
         credential_state: CredentialState,
         signaling_client: &Arc<dyn SignalingClient>,
         restart_wake: Arc<tokio::sync::Notify>,
+        restart_retry_wake: Arc<tokio::sync::Notify>,
     ) -> ActorResult<bool> {
         // Use enhanced backoff with total duration limit
         let backoff = ExponentialBackoff::with_total_duration(
@@ -3806,6 +3848,12 @@ impl WebRtcCoordinator {
                     _ = restart_wake.notified() => {
                         tracing::info!(
                             "⚡ Backoff interrupted by wake notification (signaling guard), serial={}",
+                            target
+                        );
+                    }
+                    _ = restart_retry_wake.notified() => {
+                        tracing::info!(
+                            "🔔 ICE restart retry wait resumed after signaling recovery for serial={}, reason=signaling_not_ready",
                             target
                         );
                     }
@@ -3840,6 +3888,12 @@ impl WebRtcCoordinator {
                     _ = restart_wake.notified() => {
                         tracing::info!(
                             "⚡ Backoff interrupted by wake notification (gathering guard), serial={}",
+                            target
+                        );
+                    }
+                    _ = restart_retry_wake.notified() => {
+                        tracing::info!(
+                            "🔔 ICE restart retry wait resumed after signaling recovery for serial={}, reason=ice_gathering",
                             target
                         );
                     }
@@ -3889,6 +3943,12 @@ impl WebRtcCoordinator {
                     _ = restart_wake.notified() => {
                         tracing::info!(
                             "⚡ ICE restart offer throttle interrupted by wake notification for serial={}",
+                            target
+                        );
+                    }
+                    _ = restart_retry_wake.notified() => {
+                        tracing::info!(
+                            "🔔 ICE restart retry wait resumed after signaling recovery for serial={}, reason=offer_throttle",
                             target
                         );
                     }
@@ -4034,6 +4094,12 @@ impl WebRtcCoordinator {
                             target
                         );
                     }
+                    _ = restart_retry_wake.notified() => {
+                        tracing::info!(
+                            "🔔 ICE restart retry wait resumed after signaling recovery for serial={}, reason=send_offer_failed",
+                            target
+                        );
+                    }
                 }
                 continue;
             }
@@ -4123,6 +4189,12 @@ impl WebRtcCoordinator {
                 _ = restart_wake.notified() => {
                     tracing::info!(
                         "⚡ ICE restart backoff interrupted by wake notification for serial={}",
+                        target
+                    );
+                }
+                _ = restart_retry_wake.notified() => {
+                    tracing::info!(
+                        "🔔 ICE restart retry wait resumed after signaling recovery for serial={}, reason=attempt_timeout",
                         target
                     );
                 }
