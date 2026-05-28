@@ -4,7 +4,7 @@
 /// to simulate signaling disruption and recovery scenarios, including full
 /// WebRTC peer connection establishment and ICE restart.
 use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::time::{sleep, timeout};
 
 // ==================== Tests ====================
@@ -242,4 +242,109 @@ async fn test_ice_restart_with_paused_forwarding() {
     );
 
     tracing::info!("✅ Test passed: ICE restart recovered from paused forwarding");
+}
+
+/// Regression: an Answerer IceRestartRequest should wake an in-flight restart
+/// attempt after the minimum retry interval, instead of waiting for the full
+/// completion timeout and then an additional backoff.
+#[tokio::test]
+async fn test_answerer_request_wakes_inflight_ice_restart_retry() {
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_file(true)
+        .with_line_number(true)
+        .with_test_writer()
+        .try_init()
+        .ok();
+
+    let server = TestSignalingServer::start().await.unwrap();
+
+    let id_offerer = make_actor_id(103);
+    let id_answerer = make_actor_id(204);
+
+    let (offerer, _client1) = create_peer_with_websocket(id_offerer.clone(), &server.url())
+        .await
+        .unwrap();
+    let (answerer, _client2) = create_peer_with_websocket(id_answerer.clone(), &server.url())
+        .await
+        .unwrap();
+    let _answerer_guard = answerer.clone();
+
+    sleep(Duration::from_secs(1)).await;
+
+    let ready_rx = offerer
+        .initiate_connection(&id_answerer)
+        .await
+        .expect("initiate failed");
+    match timeout(Duration::from_secs(15), ready_rx).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => panic!("Connection failed (channel closed): {}", e),
+        Err(_) => panic!("Connection establishment timed out"),
+    }
+
+    server.reset_counters();
+    server.pause_forwarding();
+
+    offerer
+        .restart_ice(&id_answerer)
+        .await
+        .expect("offerer restart_ice failed");
+
+    wait_for_restart_offer_count(&server, 1, Duration::from_secs(2)).await;
+
+    sleep(Duration::from_millis(2200)).await;
+    server.resume_forwarding();
+
+    answerer
+        .restart_ice(&id_offerer)
+        .await
+        .expect("answerer restart_ice request failed");
+    wait_for_restart_request_count(&server, 1, Duration::from_secs(2)).await;
+
+    let started = Instant::now();
+    let second_offer = wait_for_restart_offer_count(&server, 2, Duration::from_millis(1500)).await;
+
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "expected IceRestartRequest to wake the in-flight restart quickly; observed {second_offer} offers after {:?}",
+        started.elapsed()
+    );
+}
+
+async fn wait_for_restart_offer_count(
+    server: &TestSignalingServer,
+    min_count: u32,
+    timeout_duration: Duration,
+) -> u32 {
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+    loop {
+        let count = server.get_ice_restart_count();
+        if count >= min_count {
+            return count;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!("timed out waiting for ICE restart offer count >= {min_count}; current={count}");
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn wait_for_restart_request_count(
+    server: &TestSignalingServer,
+    min_count: u32,
+    timeout_duration: Duration,
+) -> u32 {
+    let deadline = tokio::time::Instant::now() + timeout_duration;
+    loop {
+        let count = server.get_ice_restart_request_count();
+        if count >= min_count {
+            return count;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            panic!(
+                "timed out waiting for ICE restart request count >= {min_count}; current={count}"
+            );
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
 }
