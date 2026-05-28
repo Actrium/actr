@@ -749,7 +749,7 @@ impl Inner {
     /// Start the system
     pub async fn start(mut self) -> ActorResult<ActrRef> {
         tracing::info!("🚀 Starting ActrNode");
-        println!("Actr Rust version: {}", env!("CARGO_PKG_VERSION"));
+        tracing::info!("Actr Rust version: {}", env!("CARGO_PKG_VERSION"));
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         // 1. Build RegisterRequest
