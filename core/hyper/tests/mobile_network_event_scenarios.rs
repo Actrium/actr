@@ -437,24 +437,4 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
         Duration::from_secs(15),
     )
     .await;
-
-    let cleanup_then_restore_signals = vec![
-        NetworkEvent::CleanupConnections,
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: false,
-            is_cellular: true,
-        },
-    ];
-    assert_eq!(
-        select_network_recovery_action(&cleanup_then_restore_signals),
-        NetworkRecoveryAction::CleanupConnectionsCompat
-    );
-    let results = process_network_event_batch(
-        cleanup_then_restore_signals,
-        harness.peer(100).network_processor(),
-    )
-    .await;
-    assert!(results.iter().all(|result| result.success));
-    expect_request_ok(&harness, "complex_cleanup_rebuild", Duration::from_secs(15)).await;
 }

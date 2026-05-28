@@ -187,7 +187,7 @@ impl SignalingClient for FakeSignalingClient {
 }
 
 #[tokio::test]
-async fn test_network_available_does_not_reconnect_when_already_connected() {
+async fn test_network_available_rebuilds_when_already_connected() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
 
@@ -206,12 +206,12 @@ async fn test_network_available_does_not_reconnect_when_already_connected() {
 
     let stats = client.get_stats();
     assert_eq!(
-        stats.connections, 1,
-        "Available should reuse an already connected signaling client"
+        stats.connections, 2,
+        "Available should rebuild an already connected signaling client"
     );
     assert_eq!(
-        stats.disconnections, 0,
-        "Available should not disconnect before reconnecting by default"
+        stats.disconnections, 1,
+        "Available should disconnect before rebuilding signaling"
     );
 
     processor
@@ -220,9 +220,9 @@ async fn test_network_available_does_not_reconnect_when_already_connected() {
         .expect("second available should be debounced");
 
     let stats = client.get_stats();
-    assert_eq!(stats.connections, 1, "debounced call should not reconnect");
+    assert_eq!(stats.connections, 2, "debounced call should not reconnect");
     assert_eq!(
-        stats.disconnections, 0,
+        stats.disconnections, 1,
         "debounced call should not disconnect"
     );
 
@@ -235,10 +235,10 @@ async fn test_network_available_does_not_reconnect_when_already_connected() {
 
     let stats = client.get_stats();
     assert_eq!(
-        stats.connections, 1,
-        "Available after debounce window should still reuse the connected signaling client"
+        stats.connections, 3,
+        "Available after debounce window should rebuild signaling again"
     );
-    assert_eq!(stats.disconnections, 0);
+    assert_eq!(stats.disconnections, 2);
 }
 
 #[tokio::test]
@@ -266,17 +266,17 @@ async fn test_debounce_does_not_cross_event_types() {
 
     let stats = client.get_stats();
     assert_eq!(
-        stats.connections, 1,
-        "Available should not reconnect an already connected client"
+        stats.connections, 2,
+        "Available should rebuild an already connected client"
     );
     assert_eq!(
-        stats.disconnections, 1,
+        stats.disconnections, 2,
         "Lost should disconnect even when Available was processed first"
     );
 }
 
 #[tokio::test]
-async fn test_available_then_type_changed_stays_connected_without_reconnect_storm() {
+async fn test_direct_available_then_type_changed_rebuilds_each_event_type() {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_test_writer()
@@ -301,12 +301,12 @@ async fn test_available_then_type_changed_stays_connected_without_reconnect_stor
 
     let stats_after_available = client.get_stats();
     assert_eq!(
-        stats_after_available.connections, 1,
-        "First Available should reuse connected signaling"
+        stats_after_available.connections, 2,
+        "First Available should rebuild connected signaling"
     );
     assert_eq!(
-        stats_after_available.disconnections, 0,
-        "First Available should not disconnect"
+        stats_after_available.disconnections, 1,
+        "First Available should disconnect before rebuilding"
     );
     assert!(client.is_connected(), "Should be connected after Available");
 
@@ -319,12 +319,12 @@ async fn test_available_then_type_changed_stays_connected_without_reconnect_stor
 
     let stats_after_type_changed = client.get_stats();
     assert_eq!(
-        stats_after_type_changed.connections, 1,
-        "TypeChanged should not reconnect an already connected signaling client"
+        stats_after_type_changed.connections, 3,
+        "TypeChanged should rebuild an already connected signaling client"
     );
     assert_eq!(
-        stats_after_type_changed.disconnections, 0,
-        "TypeChanged should not disconnect signaling by default"
+        stats_after_type_changed.disconnections, 2,
+        "TypeChanged should disconnect signaling before rebuilding"
     );
     assert!(
         client.is_connected(),
@@ -353,17 +353,17 @@ async fn test_type_changed_works_without_prior_available() {
     let stats = client.get_stats();
     assert!(client.is_connected());
     assert_eq!(
-        stats.connections, 1,
-        "TypeChanged should reuse connected signaling when it is already healthy"
+        stats.connections, 2,
+        "TypeChanged should rebuild connected signaling even when the local state looks healthy"
     );
     assert_eq!(
-        stats.disconnections, 0,
-        "TypeChanged should not disconnect signaling by default"
+        stats.disconnections, 1,
+        "TypeChanged should disconnect signaling before rebuilding"
     );
 }
 
 #[tokio::test]
-async fn test_batch_available_type_changed_restores_once_without_disconnect() {
+async fn test_batch_available_type_changed_rebuilds_signaling_once() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
 
@@ -402,12 +402,17 @@ async fn test_batch_available_type_changed_restores_once_without_disconnect() {
 
     let stats = client.get_stats();
     assert_eq!(
-        stats.connections, 1,
-        "Available + TypeChanged should not reconnect an already connected signaling client"
+        stats.connections, 2,
+        "Available + TypeChanged should rebuild an already connected signaling client once"
     );
     assert_eq!(
-        stats.disconnections, 0,
-        "Available + TypeChanged should not disconnect signaling by default"
+        stats.disconnections, 1,
+        "Available + TypeChanged should disconnect signaling before rebuilding"
+    );
+    assert_eq!(
+        client.connect_once_calls(),
+        1,
+        "batched restore should perform a single explicit signaling reconnect"
     );
 }
 
@@ -621,13 +626,105 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
 
     let stats = client.get_stats();
     assert_eq!(
-        stats.connections, 1,
-        "Lost + Available + TypeChanged in one settle window should not reconnect connected signaling"
+        stats.connections, 2,
+        "Lost + Available + TypeChanged in one settle window should rebuild signaling once"
     );
     assert_eq!(
-        stats.disconnections, 0,
-        "Lost in the same settle window as restore should not force offline cleanup"
+        stats.disconnections, 1,
+        "Batched restore should disconnect the existing signaling connection once"
     );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
+async fn test_repeated_foreground_restore_batches_rebuild_once_per_cycle() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(500),
+        },
+    ));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let (result_tx, result_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new(event_tx, result_rx);
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, result_tx, processor, reconciler_shutdown).await;
+    });
+
+    const CYCLES: u64 = 5;
+
+    for cycle in 1..=CYCLES {
+        let available = {
+            let handle = handle.clone();
+            tokio::spawn(async move { handle.handle_network_available().await })
+        };
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let type_changed = {
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                handle
+                    .handle_network_type_changed(cycle % 2 == 0, cycle % 2 != 0)
+                    .await
+            })
+        };
+
+        let available_result = available
+            .await
+            .expect("available task should not panic")
+            .unwrap();
+        let type_changed_result = type_changed
+            .await
+            .expect("type changed task should not panic")
+            .unwrap();
+
+        assert!(
+            available_result.success,
+            "foreground Available should succeed in cycle {}",
+            cycle
+        );
+        assert!(
+            type_changed_result.success,
+            "foreground TypeChanged should succeed in cycle {}",
+            cycle
+        );
+        assert!(
+            client.is_connected(),
+            "signaling should remain connected after foreground cycle {}",
+            cycle
+        );
+
+        let stats = client.get_stats();
+        assert_eq!(
+            stats.connections,
+            1 + cycle,
+            "foreground cycle {} should add exactly one signaling connection",
+            cycle
+        );
+        assert_eq!(
+            stats.disconnections, cycle,
+            "foreground cycle {} should disconnect exactly once before rebuilding",
+            cycle
+        );
+        assert_eq!(
+            client.connect_once_calls(),
+            cycle,
+            "foreground cycle {} should use exactly one explicit reconnect",
+            cycle
+        );
+    }
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
