@@ -38,6 +38,50 @@ public final class ActrNode: Sendable {
         return try await from(packageConfig: configURL.path, packagePath: packageURL.path)
     }
 
+    /// Creates an EchoService demo proxy from config and explicit actor identity.
+    ///
+    /// This path links a built-in Rust workload that only forwards
+    /// `echo.EchoService.Echo` requests to the sample remote EchoService.
+    public static func linkedEchoProxy(config configPath: String, type actorType: ActrType) async throws -> ActrNode {
+        let wrapper = try await ActrBindings.ActrNode.newLinked(
+            configPath: configPath,
+            actorType: actorType
+        )
+        let handle = try wrapper.createNetworkEventHandle()
+        let monitor = NetworkEventMonitor(handle: handle)
+        let lifecycleMonitor = AppLifecycleMonitor(handle: handle)
+        return ActrNode(inner: wrapper, networkEventMonitor: monitor, appLifecycleMonitor: lifecycleMonitor)
+    }
+
+    /// Creates a linked/static node from config, explicit actor identity, and a Swift-provided workload.
+    public static func linked(config configPath: String, type actorType: ActrType, workload: DynamicWorkload) async throws -> ActrNode {
+        let wrapper = try await ActrBindings.ActrNode.newFromLinkedWorkload(
+            configPath: configPath,
+            actorType: actorType,
+            workload: workload
+        )
+        let handle = try wrapper.createNetworkEventHandle()
+        let monitor = NetworkEventMonitor(handle: handle)
+        let lifecycleMonitor = AppLifecycleMonitor(handle: handle)
+        return ActrNode(inner: wrapper, networkEventMonitor: monitor, appLifecycleMonitor: lifecycleMonitor)
+    }
+
+    /// Creates an EchoService demo proxy from a config file URL and explicit actor identity.
+    public static func linkedEchoProxy(config configURL: URL, type actorType: ActrType) async throws -> ActrNode {
+        guard configURL.isFileURL else {
+            throw ActrError.Config(msg: "config URL must be a file URL")
+        }
+        return try await linkedEchoProxy(config: configURL.path, type: actorType)
+    }
+
+    /// Creates a linked/static node from a config file URL, explicit actor identity, and a Swift-provided workload.
+    public static func linked(config configURL: URL, type actorType: ActrType, workload: DynamicWorkload) async throws -> ActrNode {
+        guard configURL.isFileURL else {
+            throw ActrError.Config(msg: "config URL must be a file URL")
+        }
+        return try await linked(config: configURL.path, type: actorType, workload: workload)
+    }
+
     /// Starts the package-backed actor and returns a running reference.
     public func start() async throws -> ActrRef {
         let refWrapper = try await inner.start()

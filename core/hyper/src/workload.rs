@@ -385,10 +385,10 @@ impl Workload {
 
     pub(crate) fn dispatch_data_stream<'a>(
         &'a mut self,
-        chunk: DataStream,
-        sender: ActrId,
+        _chunk: DataStream,
+        _sender: ActrId,
         invocation: InvocationContext,
-        host_abi: &'a HostAbiFn,
+        _host_abi: &'a HostAbiFn,
     ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
         Box::pin(async move {
             let _ = &invocation;
@@ -399,14 +399,14 @@ impl Workload {
                 )),
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => workload
-                    .handle_data_stream(chunk, sender, invocation, host_abi)
+                    .handle_data_stream(_chunk, _sender, invocation, _host_abi)
                     .await
                     .map_err(|e| {
                         ActrError::Internal(format!("workload stream dispatch failed: {e}"))
                     }),
                 #[cfg(feature = "dynclib-engine")]
                 Workload::DynClib(workload) => workload
-                    .handle_data_stream(chunk, sender, host_abi)
+                    .handle_data_stream(_chunk, _sender, _host_abi)
                     .await
                     .map_err(|e| {
                         ActrError::Internal(format!("workload stream dispatch failed: {e}"))

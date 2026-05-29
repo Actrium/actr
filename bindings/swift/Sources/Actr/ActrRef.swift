@@ -20,7 +20,9 @@ public typealias ActrError = ActrBindings.ActrError
 // Re-export protocol types used by the bridge
 public typealias ContextBridge = ActrBindings.ContextBridge
 public typealias WorkloadLifecycleBridge = ActrBindings.WorkloadLifecycleBridge
+public typealias DynamicWorkload = ActrBindings.DynamicWorkload
 public typealias RpcEnvelopeBridge = ActrBindings.RpcEnvelopeBridge
+public typealias ErrorEventBridge = ActrBindings.ErrorEventBridge
 
 // Re-export data types
 public typealias ActrId = ActrBindings.ActrId

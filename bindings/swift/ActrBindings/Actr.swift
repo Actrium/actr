@@ -670,9 +670,32 @@ open class ActrNode: ActrNodeProtocol, @unchecked Sendable {
     // No primary constructor declared for this class.
 
     deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
         try! rustCall { uniffi_actr_fn_free_actrnode(handle, $0) }
     }
 
+    
+    /**
+     * Create a linked/static runtime from a foreign-language workload.
+     */
+public static func newFromLinkedWorkload(configPath: String, actorType: ActrType, workload: DynamicWorkload)async throws  -> ActrNode  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_constructor_actrnode_new_from_linked_workload(FfiConverterString.lower(configPath),FfiConverterTypeActrType_lower(actorType),FfiConverterTypeDynamicWorkload_lower(workload)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_u64,
+            completeFunc: ffi_actr_rust_future_complete_u64,
+            freeFunc: ffi_actr_rust_future_free_u64,
+            liftFunc: FfiConverterTypeActrNode_lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
     
     /**
      * Create a new runtime wrapper from config and a verified `.actr` package file.
@@ -682,6 +705,24 @@ public static func newFromPackageFile(configPath: String, packagePath: String)as
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_actr_fn_constructor_actrnode_new_from_package_file(FfiConverterString.lower(configPath),FfiConverterString.lower(packagePath)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_u64,
+            completeFunc: ffi_actr_rust_future_complete_u64,
+            freeFunc: ffi_actr_rust_future_free_u64,
+            liftFunc: FfiConverterTypeActrNode_lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
+     * Create a linked/static echo proxy runtime from config and actor identity.
+     */
+public static func newLinked(configPath: String, actorType: ActrType)async throws  -> ActrNode  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_constructor_actrnode_new_linked(FfiConverterString.lower(configPath),FfiConverterTypeActrType_lower(actorType)
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_u64,
@@ -863,6 +904,11 @@ open class ActrRefWrapper: ActrRefWrapperProtocol, @unchecked Sendable {
     // No primary constructor declared for this class.
 
     deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
         try! rustCall { uniffi_actr_fn_free_actrrefwrapper(handle, $0) }
     }
 
@@ -1043,6 +1089,14 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
     func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaType: String) async throws 
     
     /**
+     * Discover and call the sample EchoService from a Swift-provided workload.
+     *
+     * The remote call is spawned onto the Rust runtime so WebRTC offer creation
+     * does not execute on Swift's cooperative task stack during an FFI callback.
+     */
+    func callEchoServiceRaw(routeKey: String, payload: Data, timeoutMs: Int64) async throws  -> Data
+    
+    /**
      * Call a remote actor via RPC (simplified for FFI)
      *
      * # Arguments
@@ -1165,6 +1219,11 @@ open class ContextBridge: ContextBridgeProtocol, @unchecked Sendable {
     // No primary constructor declared for this class.
 
     deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
         try! rustCall { uniffi_actr_fn_free_contextbridge(handle, $0) }
     }
 
@@ -1187,6 +1246,29 @@ open func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaTyp
             completeFunc: ffi_actr_rust_future_complete_void,
             freeFunc: ffi_actr_rust_future_free_void,
             liftFunc: { $0 },
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
+     * Discover and call the sample EchoService from a Swift-provided workload.
+     *
+     * The remote call is spawned onto the Rust runtime so WebRTC offer creation
+     * does not execute on Swift's cooperative task stack during an FFI callback.
+     */
+open func callEchoServiceRaw(routeKey: String, payload: Data, timeoutMs: Int64)async throws  -> Data  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_contextbridge_call_echo_service_raw(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(routeKey),FfiConverterData.lower(payload),FfiConverterInt64.lower(timeoutMs)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
+            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
+            freeFunc: ffi_actr_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterData.lift,
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
@@ -1544,6 +1626,11 @@ public convenience init(lifecycle: WorkloadLifecycleBridge, signaling: Signaling
 }
 
     deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
         try! rustCall { uniffi_actr_fn_free_dynamicworkload(handle, $0) }
     }
 
@@ -1671,6 +1758,11 @@ open class NetworkEventHandleWrapper: NetworkEventHandleWrapperProtocol, @unchec
     // No primary constructor declared for this class.
 
     deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
         try! rustCall { uniffi_actr_fn_free_networkeventhandlewrapper(handle, $0) }
     }
 
@@ -1878,6 +1970,11 @@ public convenience init(sampleRate: UInt32, channels: UInt8, frameSize: UInt16)t
 }
 
     deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
         try! rustCall { uniffi_actr_fn_free_opusencoder(handle, $0) }
     }
 
@@ -1969,6 +2066,8 @@ public struct ActrId: Equatable, Hashable {
     }
 
     
+
+    
 }
 
 #if compiler(>=6)
@@ -2028,6 +2127,8 @@ public struct ActrType: Equatable, Hashable {
     }
 
     
+
+    
 }
 
 #if compiler(>=6)
@@ -2083,6 +2184,8 @@ public struct BackpressureEventBridge: Equatable, Hashable {
         self.queueLen = queueLen
         self.threshold = threshold
     }
+
+    
 
     
 }
@@ -2142,6 +2245,8 @@ public struct CredentialEventBridge: Equatable, Hashable {
          */newExpiryMs: Int64) {
         self.newExpiryMs = newExpiryMs
     }
+
+    
 
     
 }
@@ -2238,6 +2343,8 @@ public struct DataStream: Equatable, Hashable {
     }
 
     
+
+    
 }
 
 #if compiler(>=6)
@@ -2331,6 +2438,8 @@ public struct ErrorEventBridge: Equatable, Hashable {
     }
 
     
+
+    
 }
 
 #if compiler(>=6)
@@ -2394,6 +2503,8 @@ public struct MediaSample: Equatable, Hashable {
     }
 
     
+
+    
 }
 
 #if compiler(>=6)
@@ -2453,6 +2564,8 @@ public struct MetadataEntry: Equatable, Hashable {
     }
 
     
+
+    
 }
 
 #if compiler(>=6)
@@ -2510,6 +2623,8 @@ public struct NetworkEventResult: Equatable, Hashable {
         self.error = error
         self.durationMs = durationMs
     }
+
+    
 
     
 }
@@ -2585,6 +2700,8 @@ public struct PeerEventBridge: Equatable, Hashable {
     }
 
     
+
+    
 }
 
 #if compiler(>=6)
@@ -2636,6 +2753,8 @@ public struct Realm: Equatable, Hashable {
     public init(realmId: UInt32) {
         self.realmId = realmId
     }
+
+    
 
     
 }
@@ -2713,6 +2832,8 @@ public struct RpcEnvelopeBridge: Equatable, Hashable {
     }
 
     
+
+    
 }
 
 #if compiler(>=6)
@@ -2777,7 +2898,7 @@ public enum ActrError: Swift.Error, Equatable, Hashable, Foundation.LocalizedErr
     )
     case UnknownRoute(msg: String
     )
-    case DependencyNotFound(serviceName: String, message: String
+    case DependencyNotFound(serviceName: String, detail: String
     )
     case DecodeFailure(msg: String
     )
@@ -2794,6 +2915,8 @@ public enum ActrError: Swift.Error, Equatable, Hashable, Foundation.LocalizedErr
      */
     case Config(msg: String
     )
+
+    
 
     
 
@@ -2839,7 +2962,7 @@ public struct FfiConverterTypeActrError: FfiConverterRustBuffer {
             )
         case 7: return .DependencyNotFound(
             serviceName: try FfiConverterString.read(from: &buf), 
-            message: try FfiConverterString.read(from: &buf)
+            detail: try FfiConverterString.read(from: &buf)
             )
         case 8: return .DecodeFailure(
             msg: try FfiConverterString.read(from: &buf)
@@ -2894,10 +3017,10 @@ public struct FfiConverterTypeActrError: FfiConverterRustBuffer {
             FfiConverterString.write(msg, into: &buf)
             
         
-        case let .DependencyNotFound(serviceName,message):
+        case let .DependencyNotFound(serviceName,detail):
             writeInt(&buf, Int32(7))
             FfiConverterString.write(serviceName, into: &buf)
-            FfiConverterString.write(message, into: &buf)
+            FfiConverterString.write(detail, into: &buf)
             
         
         case let .DecodeFailure(msg):
@@ -2952,6 +3075,8 @@ public enum ErrorCategoryBridge: Equatable, Hashable {
     case signalingFailure
     case transportFailure
     case dataStreamDeliveryUncertain
+
+
 
 
 
@@ -3059,6 +3184,8 @@ public enum ErrorKind: Equatable, Hashable {
 
 
 
+
+
 }
 
 #if compiler(>=6)
@@ -3139,6 +3266,8 @@ public enum MediaType: Equatable, Hashable {
 
 
 
+
+
 }
 
 #if compiler(>=6)
@@ -3207,6 +3336,8 @@ public enum NetworkEvent: Equatable, Hashable {
     case typeChanged(isWifi: Bool, isCellular: Bool
     )
     case cleanupConnections
+
+
 
 
 
@@ -3300,6 +3431,8 @@ public enum PayloadType: Equatable, Hashable {
     case streamReliable
     case streamLatencyFirst
     case mediaRtp
+
+
 
 
 
@@ -3397,9 +3530,8 @@ fileprivate struct UniffiCallbackInterfaceCredentialObserverBridge {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceCredentialObserverBridge] = [UniffiVTableCallbackInterfaceCredentialObserverBridge(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceCredentialObserverBridge = UniffiVTableCallbackInterfaceCredentialObserverBridge(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterCallbackInterfaceCredentialObserverBridge.handleMap.remove(handle: uniffiHandle)
@@ -3498,11 +3630,19 @@ fileprivate struct UniffiCallbackInterfaceCredentialObserverBridge {
                 droppedCallback: uniffiOutDroppedCallback
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceCredentialObserverBridge> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceCredentialObserverBridge>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitCredentialObserverBridge() {
-    uniffi_actr_fn_init_callback_vtable_credentialobserverbridge(UniffiCallbackInterfaceCredentialObserverBridge.vtable)
+    uniffi_actr_fn_init_callback_vtable_credentialobserverbridge(UniffiCallbackInterfaceCredentialObserverBridge.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -3587,9 +3727,8 @@ fileprivate struct UniffiCallbackInterfaceDataStreamCallback {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceDataStreamCallback] = [UniffiVTableCallbackInterfaceDataStreamCallback(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceDataStreamCallback = UniffiVTableCallbackInterfaceDataStreamCallback(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterCallbackInterfaceDataStreamCallback.handleMap.remove(handle: uniffiHandle)
@@ -3647,11 +3786,19 @@ fileprivate struct UniffiCallbackInterfaceDataStreamCallback {
                 droppedCallback: uniffiOutDroppedCallback
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDataStreamCallback> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceDataStreamCallback>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitDataStreamCallback() {
-    uniffi_actr_fn_init_callback_vtable_datastreamcallback(UniffiCallbackInterfaceDataStreamCallback.vtable)
+    uniffi_actr_fn_init_callback_vtable_datastreamcallback(UniffiCallbackInterfaceDataStreamCallback.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -3733,9 +3880,8 @@ fileprivate struct UniffiCallbackInterfaceMailboxObserverBridge {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceMailboxObserverBridge] = [UniffiVTableCallbackInterfaceMailboxObserverBridge(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMailboxObserverBridge = UniffiVTableCallbackInterfaceMailboxObserverBridge(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterCallbackInterfaceMailboxObserverBridge.handleMap.remove(handle: uniffiHandle)
@@ -3792,11 +3938,19 @@ fileprivate struct UniffiCallbackInterfaceMailboxObserverBridge {
                 droppedCallback: uniffiOutDroppedCallback
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMailboxObserverBridge> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMailboxObserverBridge>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitMailboxObserverBridge() {
-    uniffi_actr_fn_init_callback_vtable_mailboxobserverbridge(UniffiCallbackInterfaceMailboxObserverBridge.vtable)
+    uniffi_actr_fn_init_callback_vtable_mailboxobserverbridge(UniffiCallbackInterfaceMailboxObserverBridge.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -3881,9 +4035,8 @@ fileprivate struct UniffiCallbackInterfaceMediaTrackCallback {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceMediaTrackCallback] = [UniffiVTableCallbackInterfaceMediaTrackCallback(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceMediaTrackCallback = UniffiVTableCallbackInterfaceMediaTrackCallback(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterCallbackInterfaceMediaTrackCallback.handleMap.remove(handle: uniffiHandle)
@@ -3941,11 +4094,19 @@ fileprivate struct UniffiCallbackInterfaceMediaTrackCallback {
                 droppedCallback: uniffiOutDroppedCallback
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMediaTrackCallback> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMediaTrackCallback>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitMediaTrackCallback() {
-    uniffi_actr_fn_init_callback_vtable_mediatrackcallback(UniffiCallbackInterfaceMediaTrackCallback.vtable)
+    uniffi_actr_fn_init_callback_vtable_mediatrackcallback(UniffiCallbackInterfaceMediaTrackCallback.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -4031,9 +4192,8 @@ fileprivate struct UniffiCallbackInterfaceSignalingObserverBridge {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceSignalingObserverBridge] = [UniffiVTableCallbackInterfaceSignalingObserverBridge(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceSignalingObserverBridge = UniffiVTableCallbackInterfaceSignalingObserverBridge(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterCallbackInterfaceSignalingObserverBridge.handleMap.remove(handle: uniffiHandle)
@@ -4168,11 +4328,19 @@ fileprivate struct UniffiCallbackInterfaceSignalingObserverBridge {
                 droppedCallback: uniffiOutDroppedCallback
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceSignalingObserverBridge> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceSignalingObserverBridge>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitSignalingObserverBridge() {
-    uniffi_actr_fn_init_callback_vtable_signalingobserverbridge(UniffiCallbackInterfaceSignalingObserverBridge.vtable)
+    uniffi_actr_fn_init_callback_vtable_signalingobserverbridge(UniffiCallbackInterfaceSignalingObserverBridge.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -4258,9 +4426,8 @@ fileprivate struct UniffiCallbackInterfaceWebRtcObserverBridge {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceWebRtcObserverBridge] = [UniffiVTableCallbackInterfaceWebRtcObserverBridge(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceWebRtcObserverBridge = UniffiVTableCallbackInterfaceWebRtcObserverBridge(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterCallbackInterfaceWebRtcObserverBridge.handleMap.remove(handle: uniffiHandle)
@@ -4401,11 +4568,19 @@ fileprivate struct UniffiCallbackInterfaceWebRtcObserverBridge {
                 droppedCallback: uniffiOutDroppedCallback
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebRtcObserverBridge> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWebRtcObserverBridge>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitWebRtcObserverBridge() {
-    uniffi_actr_fn_init_callback_vtable_webrtcobserverbridge(UniffiCallbackInterfaceWebRtcObserverBridge.vtable)
+    uniffi_actr_fn_init_callback_vtable_webrtcobserverbridge(UniffiCallbackInterfaceWebRtcObserverBridge.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -4491,9 +4666,8 @@ fileprivate struct UniffiCallbackInterfaceWebSocketObserverBridge {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceWebSocketObserverBridge] = [UniffiVTableCallbackInterfaceWebSocketObserverBridge(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceWebSocketObserverBridge = UniffiVTableCallbackInterfaceWebSocketObserverBridge(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterCallbackInterfaceWebSocketObserverBridge.handleMap.remove(handle: uniffiHandle)
@@ -4634,11 +4808,19 @@ fileprivate struct UniffiCallbackInterfaceWebSocketObserverBridge {
                 droppedCallback: uniffiOutDroppedCallback
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebSocketObserverBridge> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWebSocketObserverBridge>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitWebSocketObserverBridge() {
-    uniffi_actr_fn_init_callback_vtable_websocketobserverbridge(UniffiCallbackInterfaceWebSocketObserverBridge.vtable)
+    uniffi_actr_fn_init_callback_vtable_websocketobserverbridge(UniffiCallbackInterfaceWebSocketObserverBridge.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -4747,9 +4929,8 @@ fileprivate struct UniffiCallbackInterfaceWorkloadLifecycleBridge {
     // Create the VTable using a series of closures.
     // Swift automatically converts these into C callback functions.
     //
-    // This creates 1-element array, since this seems to be the only way to construct a const
-    // pointer that we can pass to the Rust code.
-    static let vtable: [UniffiVTableCallbackInterfaceWorkloadLifecycleBridge] = [UniffiVTableCallbackInterfaceWorkloadLifecycleBridge(
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfaceWorkloadLifecycleBridge = UniffiVTableCallbackInterfaceWorkloadLifecycleBridge(
         uniffiFree: { (uniffiHandle: UInt64) -> () in
             do {
                 try FfiConverterCallbackInterfaceWorkloadLifecycleBridge.handleMap.remove(handle: uniffiHandle)
@@ -4975,11 +5156,19 @@ fileprivate struct UniffiCallbackInterfaceWorkloadLifecycleBridge {
                 droppedCallback: uniffiOutDroppedCallback
             )
         }
-    )]
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWorkloadLifecycleBridge> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWorkloadLifecycleBridge>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
 }
 
 private func uniffiCallbackInitWorkloadLifecycleBridge() {
-    uniffi_actr_fn_init_callback_vtable_workloadlifecyclebridge(UniffiCallbackInterfaceWorkloadLifecycleBridge.vtable)
+    uniffi_actr_fn_init_callback_vtable_workloadlifecyclebridge(UniffiCallbackInterfaceWorkloadLifecycleBridge.vtablePtr)
 }
 
 // FfiConverter protocol for callback interfaces
@@ -5399,14 +5588,17 @@ private func uniffiTraitInterfaceCallAsync<T>(
     let handleErrorSendable = UniffiUnsafeSendable(handleError)
 
     let task = Task {
+        var callResult: T
         do {
-            handleSuccessSendable.value(try await makeCallSendable.value())
+            callResult = try await makeCallSendable.value()
         } catch {
             handleErrorSendable.value(
                 CALL_UNEXPECTED_ERROR,
                 FfiConverterString.lower(String(describing: error))
             )
+            return
         }
+        handleSuccessSendable.value(callResult)
     }
     let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
     droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
@@ -5428,16 +5620,20 @@ private func uniffiTraitInterfaceCallAsyncWithError<T, E>(
     let lowerErrorSendable = UniffiUnsafeSendable(lowerError)
 
     let task = Task {
+        var callResult: T
         do {
-            handleSuccessSendable.value(try await makeCallSendable.value())
+            callResult = try await makeCallSendable.value()
         } catch let error as E {
             handleErrorSendable.value(CALL_ERROR, lowerErrorSendable.value(error))
+            return
         } catch {
             handleErrorSendable.value(
                 CALL_UNEXPECTED_ERROR,
                 FfiConverterString.lower(String(describing: error))
             )
+            return
         }
+        handleSuccessSendable.value(callResult)
     }
     let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
     droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
@@ -5561,6 +5757,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_contextbridge_add_media_track() != 62400) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_method_contextbridge_call_echo_service_raw() != 4292) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_method_contextbridge_call_raw() != 32688) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5609,7 +5808,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_opusencoder_frame_size() != 61591) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload() != 52954) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 23972) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_constructor_actrnode_new_linked() != 59877) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_constructor_dynamicworkload_new() != 7106) {
