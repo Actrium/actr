@@ -156,6 +156,14 @@ pub struct NetworkRecoveryStatus {
     pub reason: String,
 }
 
+type RecoveryStatusTarget = (ActrId, NetworkRecoveryStatus);
+type RestartRetryWakeTarget = (ActrId, u64, Arc<tokio::sync::Notify>);
+type NetworkRecoveryRestartPlan = (
+    Vec<RecoveryStatusTarget>,
+    Vec<RestartRetryWakeTarget>,
+    Vec<ActrId>,
+);
+
 impl NetworkRecoveryStatus {
     pub(crate) fn new(session_id: u64, reason: impl Into<String>) -> Self {
         Self {
@@ -689,12 +697,8 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target_filter: Option<&[ActrId]>,
     ) {
-        let (stale_answerers, wake_targets, targets): (
-            Vec<(ActrId, NetworkRecoveryStatus)>,
-            Vec<(ActrId, u64, Arc<tokio::sync::Notify>)>,
-            Vec<ActrId>,
-        ) = {
-            let recovery_snapshot: Vec<(ActrId, NetworkRecoveryStatus)> = self
+        let (stale_answerers, wake_targets, targets): NetworkRecoveryRestartPlan = {
+            let recovery_snapshot: Vec<RecoveryStatusTarget> = self
                 .network_recovering_peers
                 .read()
                 .await

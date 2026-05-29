@@ -38,7 +38,7 @@ const TYPICAL_CAPACITY: f32 = 1000.0;
 const HEARTBEAT_FAILURE_LOG_EVERY: u64 = 12;
 
 fn should_log_heartbeat_failure(consecutive_failures: u64) -> bool {
-    consecutive_failures == 1 || consecutive_failures % HEARTBEAT_FAILURE_LOG_EVERY == 0
+    consecutive_failures == 1 || consecutive_failures.is_multiple_of(HEARTBEAT_FAILURE_LOG_EVERY)
 }
 
 /// Get power reserve, mailbox backlog and calculate service availability
