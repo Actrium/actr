@@ -936,14 +936,17 @@ impl WebSocketSignalingClient {
             }
 
             tracing::warn!("Stream terminated");
-            // Stream terminated → mark disconnected and wake reconnect manager
-            stats.disconnections.fetch_add(1, Ordering::Relaxed);
-            connected.store(false, Ordering::Release);
-            let _ = event_tx.send(SignalingEvent::Disconnected {
-                reason: DisconnectReason::StreamEnded,
-            });
-            if reconnect_enabled {
-                reconnect_notify.notify_one();
+            // If explicit disconnect already marked the client disconnected,
+            // do not start an automatic reconnect cycle for the intentional
+            // close. The disconnect path publishes its own Manual event.
+            if connected.swap(false, Ordering::AcqRel) {
+                stats.disconnections.fetch_add(1, Ordering::Relaxed);
+                let _ = event_tx.send(SignalingEvent::Disconnected {
+                    reason: DisconnectReason::StreamEnded,
+                });
+                if reconnect_enabled {
+                    reconnect_notify.notify_one();
+                }
             }
             pending_pongs.lock().await.clear();
         });
@@ -1172,8 +1175,6 @@ impl SignalingClient for WebSocketSignalingClient {
             return Ok(());
         }
 
-        self.reconnect_notify.notify_waiters();
-
         match self
             .connecting
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -1185,7 +1186,6 @@ impl SignalingClient for WebSocketSignalingClient {
                     return Ok(());
                 }
 
-                self.reconnect_notify.notify_waiters();
                 tracing::debug!(
                     "Another connection attempt in progress, waiting for state change..."
                 );
