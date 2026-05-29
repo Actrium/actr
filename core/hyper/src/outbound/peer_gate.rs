@@ -6,14 +6,16 @@
 //! - Maintain pending_requests (Request/Response matching)
 //! - Block new requests to peers being cleaned up (closing_peers)
 
+use super::data_stream_activity::DataStreamActivityTracker;
 use crate::transport::{ConnectionEvent, ConnectionState, Dest, PayloadTypeExt, PeerTransport};
 use crate::wire::webrtc::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus, WebRtcCoordinator};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, Classify, PayloadType, RpcEnvelope};
+use actr_protocol::{
+    ActorResult, ActrError, ActrId, Classify, DataStream, PayloadType, RpcEnvelope,
+};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::Arc;
-#[cfg(feature = "test-utils")]
 use std::time::Instant;
 use tokio::sync::{RwLock, broadcast, oneshot};
 
@@ -47,6 +49,10 @@ pub struct PeerGate {
     /// Peers in the network/WebRTC recovery window. The stored session id keeps
     /// late events from older sessions from unblocking a newer recovery.
     recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
+
+    /// Recently sent `send_data_stream` chunks used to surface delivery
+    /// uncertainty when WebRTC/DataChannel state changes mid-stream.
+    active_data_streams: Arc<RwLock<DataStreamActivityTracker>>,
 }
 
 impl PeerGate {
@@ -97,6 +103,31 @@ impl PeerGate {
         ))
     }
 
+    async fn notify_active_data_streams_uncertain(
+        webrtc_coordinator: &WebRtcCoordinator,
+        active_data_streams: &Arc<RwLock<DataStreamActivityTracker>>,
+        peer_id: &ActrId,
+        session_id: u64,
+        reason: &str,
+    ) {
+        let notices = {
+            let mut tracker = active_data_streams.write().await;
+            tracker.mark_delivery_uncertain(peer_id, session_id, reason, Instant::now())
+        };
+
+        for notice in notices {
+            webrtc_coordinator
+                .notify_data_stream_delivery_uncertain(
+                    notice.peer_id,
+                    notice.stream_id,
+                    notice.last_sent_seq,
+                    notice.session_id,
+                    notice.reason,
+                )
+                .await;
+        }
+    }
+
     /// Create new PeerGate
     ///
     /// # Arguments
@@ -109,6 +140,7 @@ impl PeerGate {
         let closing_peers = Arc::new(RwLock::new(HashSet::new()));
         let recovering_peers = Arc::new(RwLock::new(HashMap::new()));
         let pending_requests = Arc::new(RwLock::new(HashMap::new()));
+        let active_data_streams = Arc::new(RwLock::new(DataStreamActivityTracker::default()));
 
         // Start event listener if coordinator is available
         // This is the ONLY event subscriber - it triggers top-down cleanup
@@ -119,6 +151,7 @@ impl PeerGate {
                 Arc::clone(&pending_requests),
                 Arc::clone(&closing_peers),
                 Arc::clone(&recovering_peers),
+                Arc::clone(&active_data_streams),
                 Arc::clone(&transport_manager),
             );
         }
@@ -129,6 +162,7 @@ impl PeerGate {
             webrtc_coordinator,
             closing_peers,
             recovering_peers,
+            active_data_streams,
         }
     }
 
@@ -142,6 +176,7 @@ impl PeerGate {
         pending_requests: PendingRequestsMap,
         closing_peers: Arc<RwLock<HashSet<ActrId>>>,
         recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
+        active_data_streams: Arc<RwLock<DataStreamActivityTracker>>,
         transport_manager: Arc<PeerTransport>,
     ) {
         tokio::spawn(async move {
@@ -190,6 +225,14 @@ impl PeerGate {
                                 "peer state Disconnected/Failed",
                             );
                         }
+                        Self::notify_active_data_streams_uncertain(
+                            &webrtc_coordinator,
+                            &active_data_streams,
+                            peer_id,
+                            *session_id,
+                            "peer state Disconnected/Failed",
+                        )
+                        .await;
                         closing_peers.write().await.insert(peer_id.clone());
                         tracing::debug!(
                             "Blocking new requests to peer {} (state: {:?})",
@@ -210,6 +253,19 @@ impl PeerGate {
                                 *session_id,
                                 "ice/network recovery started",
                             );
+                        }
+                        if webrtc_coordinator
+                            .is_active_session(peer_id, *session_id)
+                            .await
+                        {
+                            Self::notify_active_data_streams_uncertain(
+                                &webrtc_coordinator,
+                                &active_data_streams,
+                                peer_id,
+                                *session_id,
+                                "ice/network recovery started",
+                            )
+                            .await;
                         }
                         tracing::debug!("Peer {} entered ICE/network recovery", peer_id);
                     }
@@ -276,11 +332,50 @@ impl PeerGate {
                                 "ice restart failed",
                             );
                             closing_peers.write().await.insert(peer_id.clone());
+                            if webrtc_coordinator
+                                .is_active_session(peer_id, *session_id)
+                                .await
+                            {
+                                Self::notify_active_data_streams_uncertain(
+                                    &webrtc_coordinator,
+                                    &active_data_streams,
+                                    peer_id,
+                                    *session_id,
+                                    "ice restart failed",
+                                )
+                                .await;
+                            }
                         }
                         tracing::debug!(
                             "Peer {} ICE restart failed; keeping sends blocked",
                             peer_id
                         );
+                    }
+
+                    ConnectionEvent::DataChannelClosed {
+                        peer_id,
+                        session_id,
+                        payload_type: PayloadType::StreamReliable | PayloadType::StreamLatencyFirst,
+                    } => {
+                        if webrtc_coordinator
+                            .is_active_session(peer_id, *session_id)
+                            .await
+                        {
+                            Self::notify_active_data_streams_uncertain(
+                                &webrtc_coordinator,
+                                &active_data_streams,
+                                peer_id,
+                                *session_id,
+                                "data channel closed",
+                            )
+                            .await;
+                        } else {
+                            tracing::debug!(
+                                peer_id = ?peer_id,
+                                event_session_id = session_id,
+                                "Ignoring stale data-stream DataChannelClosed event",
+                            );
+                        }
                     }
 
                     // Clean pending requests and trigger downstream cleanup when connection is fully closed
@@ -295,6 +390,20 @@ impl PeerGate {
                         session_id: event_session_id,
                     } => {
                         let dest = Dest::actor(peer_id.clone());
+
+                        if webrtc_coordinator
+                            .is_active_session(peer_id, *event_session_id)
+                            .await
+                        {
+                            Self::notify_active_data_streams_uncertain(
+                                &webrtc_coordinator,
+                                &active_data_streams,
+                                peer_id,
+                                *event_session_id,
+                                "connection closed",
+                            )
+                            .await;
+                        }
 
                         {
                             let mut recovering = recovering_peers.write().await;
@@ -841,12 +950,49 @@ impl PeerGate {
         let dest = Self::actr_id_to_dest(target);
         self.preflight_send(target, &dest).await?;
 
-        // Send via transport manager
+        let stream_marker = match payload_type {
+            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
+                match DataStream::decode(data.as_ref()) {
+                    Ok(stream) => Some((stream.stream_id, stream.sequence)),
+                    Err(e) => {
+                        tracing::warn!(
+                            target = ?target,
+                            payload_type = ?payload_type,
+                            error = %e,
+                            "send_data_stream payload could not be decoded for activity tracking",
+                        );
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
 
-        self.transport_manager
+        if let Some((stream_id, sequence)) = &stream_marker {
+            self.active_data_streams.write().await.record_sent(
+                target,
+                stream_id.clone(),
+                *sequence,
+                Instant::now(),
+            );
+        }
+
+        let result = self
+            .transport_manager
             .send(&dest, payload_type, &data)
             .await
-            .map_err(|e| ActrError::Unavailable(e.to_string()))
+            .map_err(|e| ActrError::Unavailable(e.to_string()));
+
+        if result.is_err() {
+            if let Some((stream_id, _)) = &stream_marker {
+                self.active_data_streams
+                    .write()
+                    .await
+                    .remove_stream(target, stream_id);
+            }
+        }
+
+        result
     }
 }
 

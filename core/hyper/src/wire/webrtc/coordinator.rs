@@ -351,6 +351,32 @@ impl WebRtcCoordinator {
         let _ = self.hook_callback.set(cb);
     }
 
+    async fn invoke_hook(&self, event: crate::wire::webrtc::HookEvent) {
+        if let Some(cb) = self.hook_callback.get() {
+            cb(event).await;
+        }
+    }
+
+    pub(crate) async fn notify_data_stream_delivery_uncertain(
+        &self,
+        peer_id: ActrId,
+        stream_id: String,
+        last_sent_seq: u64,
+        session_id: u64,
+        reason: String,
+    ) {
+        self.invoke_hook(
+            crate::wire::webrtc::HookEvent::DataStreamDeliveryUncertain {
+                peer_id,
+                stream_id,
+                last_sent_seq,
+                session_id,
+                reason,
+            },
+        )
+        .await;
+    }
+
     /// Inject a virtual network for integration testing.
     ///
     /// **Must be called before `start()`** — all subsequently created

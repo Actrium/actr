@@ -13,19 +13,21 @@ mod signaling;
 pub(crate) mod trace;
 
 // Re-export public WebRTC surface from this module boundary; internal hook
-// plumbing stays crate-private.
+// plumbing stays crate-private except under test-utils, where integration
+// tests can install recorders without standing up a full node.
 #[cfg(feature = "test-utils")]
 pub use coordinator::WebRtcCoordinator;
 #[cfg(not(feature = "test-utils"))]
 pub(crate) use coordinator::WebRtcCoordinator;
 pub(crate) use coordinator::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus};
 pub use negotiator::WebRtcConfig;
-#[cfg(feature = "test-utils")]
-pub use signaling::WebSocketSignalingClient;
 #[cfg(not(feature = "test-utils"))]
 pub(crate) use signaling::WebSocketSignalingClient;
 pub use signaling::{
     AuthConfig, AuthType, ConnectionState, DisconnectReason, ReconnectConfig, SignalingClient,
     SignalingConfig, SignalingEvent, SignalingStats,
 };
+#[cfg(not(feature = "test-utils"))]
 pub(crate) use signaling::{HookCallback, HookEvent};
+#[cfg(feature = "test-utils")]
+pub use signaling::{HookCallback, HookEvent, WebSocketSignalingClient};

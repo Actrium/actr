@@ -88,6 +88,7 @@ interface types {
         handler-error,
         signaling-failure,
         transport-failure,
+        data-stream-delivery-uncertain,
     }
 
     // Structured error — one-to-one with `actr_protocol::ActrError`.

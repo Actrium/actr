@@ -321,22 +321,51 @@ pub enum DisconnectReason {
 #[derive(Clone, Debug)]
 pub enum HookEvent {
     // ── Signaling ──
-    SignalingConnectStart { attempt: u32 },
+    SignalingConnectStart {
+        attempt: u32,
+    },
     SignalingConnected,
     SignalingDisconnected,
     // ── WebRTC ──
-    WebRtcConnectStart { peer_id: ActrId },
-    WebRtcConnected { peer_id: ActrId, relayed: bool },
-    WebRtcDisconnected { peer_id: ActrId },
+    WebRtcConnectStart {
+        peer_id: ActrId,
+    },
+    WebRtcConnected {
+        peer_id: ActrId,
+        relayed: bool,
+    },
+    WebRtcDisconnected {
+        peer_id: ActrId,
+    },
+    DataStreamDeliveryUncertain {
+        peer_id: ActrId,
+        stream_id: String,
+        last_sent_seq: u64,
+        session_id: u64,
+        reason: String,
+    },
     // ── WebSocket ──
-    WebSocketConnectStart { peer_id: ActrId },
-    WebSocketConnected { peer_id: ActrId },
-    WebSocketDisconnected { peer_id: ActrId },
+    WebSocketConnectStart {
+        peer_id: ActrId,
+    },
+    WebSocketConnected {
+        peer_id: ActrId,
+    },
+    WebSocketDisconnected {
+        peer_id: ActrId,
+    },
     // ── Credential ──
-    CredentialRenewed { new_expiry: std::time::SystemTime },
-    CredentialExpiring { new_expiry: std::time::SystemTime },
+    CredentialRenewed {
+        new_expiry: std::time::SystemTime,
+    },
+    CredentialExpiring {
+        new_expiry: std::time::SystemTime,
+    },
     // ── Mailbox ──
-    MailboxBackpressure { queue_len: usize, threshold: usize },
+    MailboxBackpressure {
+        queue_len: usize,
+        threshold: usize,
+    },
 }
 
 /// Callback closure that is awaited when a hook event occurs.

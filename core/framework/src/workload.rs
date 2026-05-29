@@ -80,6 +80,10 @@ pub enum ErrorCategory {
     /// Transport layer failure: WebSocket / WebRTC connection errors, lane
     /// / mpsc plumbing faults.
     TransportFailure,
+    /// A `send_data_stream` was active when the WebRTC/DataChannel path was
+    /// interrupted. Delivery is uncertain; the framework has not confirmed
+    /// loss or performed resume.
+    DataStreamDeliveryUncertain,
 }
 
 /// Credential lifecycle event.

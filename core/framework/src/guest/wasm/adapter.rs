@@ -110,6 +110,9 @@ fn error_category_from_wit(c: wit_types::ErrorCategory) -> ErrorCategory {
         wit_types::ErrorCategory::HandlerError => ErrorCategory::HandlerError,
         wit_types::ErrorCategory::SignalingFailure => ErrorCategory::SignalingFailure,
         wit_types::ErrorCategory::TransportFailure => ErrorCategory::TransportFailure,
+        wit_types::ErrorCategory::DataStreamDeliveryUncertain => {
+            ErrorCategory::DataStreamDeliveryUncertain
+        }
     }
 }
 

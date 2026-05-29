@@ -24,7 +24,8 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use actr_framework::{BackpressureEvent, CredentialEvent, ErrorEvent, PeerEvent};
+use actr_framework::{BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent};
+use actr_protocol::ActrError;
 use async_trait::async_trait;
 use futures_util::FutureExt as _;
 
@@ -212,6 +213,29 @@ pub(crate) fn build_hook_callback(
                         });
                     }
                 }
+                HookEvent::DataStreamDeliveryUncertain {
+                    peer_id,
+                    stream_id,
+                    last_sent_seq,
+                    session_id,
+                    reason,
+                } => {
+                    if let Some(ctx) = ctx_opt {
+                        let event = ErrorEvent::now(
+                            ActrError::Unavailable(
+                                "data stream delivery uncertain after WebRTC disconnect"
+                                    .to_string(),
+                            ),
+                            ErrorCategory::DataStreamDeliveryUncertain,
+                            format!(
+                                "peer={peer_id}; stream_id={stream_id}; last_sent_seq={last_sent_seq}; session_id={session_id}; reason={reason}"
+                            ),
+                        );
+                        spawn_hook("on_error", async move {
+                            observer.on_error(&ctx, &event).await;
+                        });
+                    }
+                }
                 HookEvent::WebSocketConnectStart { peer_id } => {
                     if let Some(ctx) = ctx_opt {
                         let event = PeerEvent {
@@ -297,6 +321,22 @@ fn log_hook_event(event: &HookEvent) {
         HookEvent::WebRtcDisconnected { peer_id } => {
             tracing::warn!(peer = %peer_id, "webrtc disconnected");
         }
+        HookEvent::DataStreamDeliveryUncertain {
+            peer_id,
+            stream_id,
+            last_sent_seq,
+            session_id,
+            reason,
+        } => {
+            tracing::warn!(
+                peer = %peer_id,
+                stream_id = %stream_id,
+                last_sent_seq = *last_sent_seq,
+                session_id = *session_id,
+                reason = %reason,
+                "data stream delivery uncertain",
+            );
+        }
         HookEvent::WebSocketConnectStart { peer_id } => {
             tracing::debug!(peer = %peer_id, "websocket connecting");
         }
@@ -328,6 +368,15 @@ fn log_hook_event(event: &HookEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::RuntimeContext;
+    use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::outbound::{Gate, HostGate};
+    use crate::transport::HostTransport;
+    use crate::wire::webrtc::{
+        ReconnectConfig, SignalingClient, SignalingConfig, WebSocketSignalingClient,
+    };
+    use actr_protocol::{AIdCredential, ActrId, ActrType, Realm};
+    use tokio::sync::mpsc;
 
     #[tokio::test(flavor = "current_thread")]
     async fn spawn_hook_survives_panic() {
@@ -350,5 +399,97 @@ mod tests {
             .await
             .expect("hook did not run")
             .expect("sender dropped");
+    }
+
+    fn test_actr_id(serial_number: u64) -> ActrId {
+        ActrId {
+            realm: Realm { realm_id: 1 },
+            serial_number,
+            r#type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "node".to_string(),
+                version: "1.0.0".to_string(),
+            },
+        }
+    }
+
+    fn test_credential() -> AIdCredential {
+        AIdCredential {
+            key_id: 1,
+            claims: bytes::Bytes::from_static(b"claims"),
+            signature: bytes::Bytes::from(vec![0; 64]),
+        }
+    }
+
+    fn test_runtime_context() -> RuntimeContext {
+        let host_transport = Arc::new(HostTransport::new());
+        let inproc_gate = Gate::Host(Arc::new(HostGate::new(host_transport)));
+        let signaling_client: Arc<dyn SignalingClient> =
+            Arc::new(WebSocketSignalingClient::new(SignalingConfig {
+                server_url: url::Url::parse("ws://127.0.0.1:9").expect("valid test URL"),
+                connection_timeout: 1,
+                heartbeat_interval: 30,
+                reconnect_config: ReconnectConfig::default(),
+                auth_config: None,
+                webrtc_role: None,
+            }));
+
+        RuntimeContext::new(
+            test_actr_id(1),
+            None,
+            "hook-test".to_string(),
+            inproc_gate,
+            None,
+            Arc::new(DataStreamRegistry::new()),
+            Arc::new(MediaFrameRegistry::new()),
+            signaling_client,
+            test_credential(),
+            None,
+        )
+    }
+
+    struct ErrorRecorder {
+        tx: mpsc::UnboundedSender<ErrorEvent>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkloadHookObserver for ErrorRecorder {
+        async fn on_error(&self, _ctx: &RuntimeContext, event: &ErrorEvent) {
+            let _ = self.tx.send(event.clone());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn data_stream_uncertain_hook_routes_to_on_error() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let observer: WorkloadHookObserverRef = Arc::new(ErrorRecorder { tx });
+        let ctx = test_runtime_context();
+        let ctx_builder: HookContextBuilder = Arc::new(move || {
+            let ctx = ctx.clone();
+            Box::pin(async move { Some(ctx) })
+        });
+        let cb = build_hook_callback(Some(observer), ctx_builder);
+
+        cb(HookEvent::DataStreamDeliveryUncertain {
+            peer_id: test_actr_id(200),
+            stream_id: "mobile-upload".to_string(),
+            last_sent_seq: 12,
+            session_id: 99,
+            reason: "data channel closed".to_string(),
+        })
+        .await;
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("on_error was not called")
+            .expect("error recorder dropped");
+
+        assert_eq!(event.category, ErrorCategory::DataStreamDeliveryUncertain);
+        assert!(matches!(event.source, ActrError::Unavailable(_)));
+        assert!(event.context.contains("peer=c8@1/acme:node:1.0.0"));
+        assert!(event.context.contains("stream_id=mobile-upload"));
+        assert!(event.context.contains("last_sent_seq=12"));
+        assert!(event.context.contains("session_id=99"));
+        assert!(event.context.contains("reason=data channel closed"));
     }
 }
