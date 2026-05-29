@@ -331,7 +331,7 @@ build_service_package() {
     (
         cd "$TMP_SERVICE_DIR"
         CARGO_TARGET_DIR="$TEMP_SERVICE_TARGET_DIR" run_actr build \
-            -f manifest.toml \
+            --manifest-path manifest.toml \
             --key "$SERVICE_KEYCHAIN" \
             --output "$SERVICE_PACKAGE"
     )
@@ -339,7 +339,7 @@ build_service_package() {
     [ -f "$SERVICE_PACKAGE" ] || fail "Server package missing: $SERVICE_PACKAGE"
 
     run_actr pkg verify --pubkey "$SERVICE_PUBLIC_KEY" --package "$SERVICE_PACKAGE" >/dev/null
-    run_actr pkg publish \
+    run_actr registry publish \
         --package "$SERVICE_PACKAGE" \
         --keychain "$SERVICE_KEYCHAIN" \
         --endpoint "http://127.0.0.1:${HTTP_PORT}"
@@ -370,9 +370,19 @@ build_client_guest_package() {
     client_guest_binary="$(client_guest_library_path)"
     [ -f "$client_guest_binary" ] || fail "Client guest library missing: $client_guest_binary"
 
+    local client_guest_manifest
+    client_guest_manifest="$RUN_DIR/client-guest-manifest.toml"
+    cp "$SCRIPT_DIR/client-guest/manifest.toml" "$client_guest_manifest"
+    cat >>"$client_guest_manifest" <<EOF
+
+[binary]
+path = "$client_guest_binary"
+target = "$HOST_TARGET"
+EOF
+
     run_actr build \
-        --binary "$client_guest_binary" \
-        --config "$SCRIPT_DIR/client-guest/manifest.toml" \
+        --no-compile \
+        --manifest-path "$client_guest_manifest" \
         --key "$PROVISIONED_KEYCHAIN" \
         --target "$HOST_TARGET" \
         --output "$CLIENT_GUEST_PACKAGE"
