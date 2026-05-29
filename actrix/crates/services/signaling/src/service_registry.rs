@@ -19,7 +19,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::service_registry_storage::ServiceRegistryStorage;
 
 /// 服务过期阈值（秒）- 超过此时间未收到心跳则认为服务过期
-pub const SERVICE_EXPIRY_THRESHOLD_SECS: u64 = 5 * 60;
+pub const SERVICE_EXPIRY_THRESHOLD_SECS: u64 = 60;
 
 /// 清理任务执行间隔（秒）
 pub const CLEANUP_INTERVAL_SECS: u64 = 30;

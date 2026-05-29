@@ -100,6 +100,11 @@ enum CleanupMode {
     ExplicitUnregister,
 }
 
+struct StaleClient {
+    id: String,
+    direct_sender: tokio::sync::mpsc::UnboundedSender<WsMessage>,
+}
+
 /// 信令服务器句柄 - 用于在异步任务中操作服务器
 #[derive(Debug, Clone)]
 pub struct SignalingServerHandle {
@@ -186,6 +191,7 @@ pub async fn handle_websocket_connection(
 
     // 创建专用的发送通道用于点对点消息
     let (direct_tx, mut direct_rx) = tokio::sync::mpsc::unbounded_channel();
+    let control_tx = direct_tx.clone();
 
     // 注册客户端（包含专用发送器）
     let (actor_id, credential) = match url_identity {
@@ -193,40 +199,22 @@ pub async fn handle_websocket_connection(
         None => (None, None),
     };
     let actor_id_for_registry = actor_id.clone();
-    let mut stale_client_ids: Vec<String> = Vec::new();
-    {
+    let stale_clients = {
         let mut clients_guard = server.clients.write().await;
 
         // 移除已有相同 actor 的连接（避免 stale 映射），并发送 WS Close 帧让旧连接干净退出。
-        if let Some(ref aid) = actor_id {
-            let mut to_remove = Vec::new();
-            for (cid, conn) in clients_guard.iter() {
-                if conn.actor_id.as_ref() == Some(aid) {
-                    to_remove.push(cid.clone());
-                }
-            }
-            for cid in to_remove {
-                if let Some(old_conn) = clients_guard.remove(&cid) {
-                    let close_frame = axum::extract::ws::CloseFrame {
-                        code: axum::extract::ws::close_code::POLICY,
-                        reason: "displaced by new connection".into(),
-                    };
-                    let _ = old_conn
-                        .direct_sender
-                        .send(WsMessage::Close(Some(close_frame)));
-                    platform::recording::info!(
-                        "🧹 Displaced stale client {} for actor {:?}, sent WS Close",
-                        cid,
-                        aid
-                    );
-                    stale_client_ids.push(cid);
-                }
-            }
+        let stale_clients = if let Some(ref aid) = actor_id {
+            let stale_clients = remove_stale_actor_clients(&mut clients_guard, aid);
+
             // 同步更新 actor_id_index：在持有 clients write lock 时获取 actor_id_index write lock
             // 保持锁顺序 clients -> actor_id_index
             let mut actor_index = server.actor_id_index.write().await;
             actor_index.insert(aid.clone(), client_id.clone());
-        }
+
+            stale_clients
+        } else {
+            Vec::new()
+        };
 
         clients_guard.insert(
             client_id.clone(),
@@ -239,14 +227,11 @@ pub async fn handle_websocket_connection(
                 webrtc_role: webrtc_role.clone(),
             },
         );
-    }
 
-    // Clean up rate limiter for displaced stale connections (outside lock to avoid holding lock across await)
-    for stale_id in stale_client_ids {
-        if let Some(ref limiter) = server.message_rate_limiter {
-            limiter.remove_connection(&stale_id).await;
-        }
-    }
+        stale_clients
+    };
+
+    close_stale_clients(stale_clients, &server).await;
 
     // Register actor in service registry for discovery/routing (only when URL identity is provided)
     if let Some(actor_id_for_registry) = actor_id_for_registry {
@@ -346,16 +331,18 @@ pub async fn handle_websocket_connection(
                         break;
                     }
                 }
-                Ok(WsMessage::Close(_)) => {
-                    platform::recording::info!("客户端 {} 主动断开连接", client_id_for_receive);
-                    break;
-                }
                 Err(e) => {
                     platform::recording::error!("WebSocket 错误: {}", e);
                     break;
                 }
-                _ => {
-                    platform::recording::warn!("收到非 Binary 消息，忽略");
+                Ok(message) => {
+                    if !handle_websocket_control_message(
+                        message,
+                        &control_tx,
+                        &client_id_for_receive,
+                    ) {
+                        break;
+                    }
                 }
             }
         }
@@ -370,14 +357,18 @@ pub async fn handle_websocket_connection(
     });
 
     // 处理发送消息的任务
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 // 处理点对点消息
                 msg = direct_rx.recv() => {
                     match msg {
                         Some(message) => {
+                            let should_close = matches!(message, WsMessage::Close(_));
                             if ws_sender.send(message).await.is_err() {
+                                break;
+                            }
+                            if should_close {
                                 break;
                             }
                         }
@@ -387,11 +378,32 @@ pub async fn handle_websocket_connection(
             }
         }
     });
+    let mut receive_task = receive_task;
 
     // 等待任一任务完成
     tokio::select! {
-        _ = receive_task => {},
-        _ = send_task => {},
+        result = &mut receive_task => {
+            if let Err(e) = result {
+                platform::recording::warn!(
+                    "WebSocket receive task join error for client {}: {}",
+                    client_id,
+                    e
+                );
+            }
+            send_task.abort();
+            let _ = send_task.await;
+        },
+        result = &mut send_task => {
+            if let Err(e) = result {
+                platform::recording::warn!(
+                    "WebSocket send task join error for client {}: {}",
+                    client_id,
+                    e
+                );
+            }
+            receive_task.abort();
+            let _ = receive_task.await;
+        },
     }
 
     // 清理客户端连接
@@ -399,6 +411,91 @@ pub async fn handle_websocket_connection(
     platform::recording::info!("🔌 客户端 {} 已断开连接", client_id);
 
     Ok(())
+}
+
+fn remove_stale_actor_clients(
+    clients: &mut HashMap<String, ClientConnection>,
+    actor_id: &ActrId,
+) -> Vec<StaleClient> {
+    let stale_client_ids = clients
+        .iter()
+        .filter_map(|(cid, conn)| (conn.actor_id.as_ref() == Some(actor_id)).then_some(cid.clone()))
+        .collect::<Vec<_>>();
+
+    stale_client_ids
+        .into_iter()
+        .filter_map(|cid| {
+            clients.remove(&cid).map(|client| StaleClient {
+                id: cid,
+                direct_sender: client.direct_sender,
+            })
+        })
+        .collect()
+}
+
+async fn close_stale_clients(stale_clients: Vec<StaleClient>, server: &SignalingServerHandle) {
+    for stale_client in stale_clients {
+        let close_frame = axum::extract::ws::CloseFrame {
+            code: axum::extract::ws::close_code::POLICY,
+            reason: "displaced by new connection".into(),
+        };
+
+        if stale_client
+            .direct_sender
+            .send(WsMessage::Close(Some(close_frame)))
+            .is_err()
+        {
+            platform::recording::debug!(
+                "Stale WebSocket client {} send task already closed",
+                stale_client.id
+            );
+        }
+
+        platform::recording::info!(
+            "🧹 Closing stale WebSocket client {} for actor reconnect",
+            stale_client.id
+        );
+
+        if let Some(ref limiter) = server.message_rate_limiter {
+            limiter.remove_connection(&stale_client.id).await;
+        }
+    }
+}
+
+fn handle_websocket_control_message(
+    message: WsMessage,
+    control_tx: &tokio::sync::mpsc::UnboundedSender<WsMessage>,
+    client_id: &str,
+) -> bool {
+    match message {
+        WsMessage::Ping(payload) => {
+            platform::recording::debug!("收到 WebSocket Ping，回复 Pong: {}", client_id);
+            if control_tx.send(WsMessage::Pong(payload)).is_err() {
+                platform::recording::warn!(
+                    "WebSocket Pong send queue closed for client {}",
+                    client_id
+                );
+                return false;
+            }
+            true
+        }
+        WsMessage::Pong(_) => {
+            platform::recording::debug!("收到 WebSocket Pong: {}", client_id);
+            true
+        }
+        WsMessage::Close(_) => {
+            platform::recording::info!("客户端 {} 主动断开连接", client_id);
+            false
+        }
+        WsMessage::Text(_) => {
+            platform::recording::warn!("收到 Text WebSocket 消息，忽略: {}", client_id);
+            true
+        }
+        _ => {
+            platform::recording::warn!("收到未支持的非 Binary WebSocket 消息，忽略: {}", client_id);
+            true
+        }
+    }
 }
 
 /// 处理客户端发送的 SignalingEnvelope
@@ -1117,8 +1214,8 @@ fn determine_webrtc_role(
     } else if to_role == Some("answer") && from_role != Some("answer") {
         true
     } else {
-        // 其他情况(双方都偏好 answer 或都无偏好)，使用 ActorId 排序
-        actor_order_key(from) < actor_order_key(to)
+        // 其他情况(双方都偏好 answer 或都无偏好)，使用 ActorId 逆序
+        actor_order_key(from) > actor_order_key(to)
     };
 
     platform::recording::info!(
@@ -1893,6 +1990,55 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn test_websocket_ping_enqueues_pong() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        assert!(handle_websocket_control_message(
+            WsMessage::Ping(Vec::from("probe").into()),
+            &tx,
+            "client",
+        ));
+
+        match rx.try_recv().expect("pong should be queued") {
+            WsMessage::Pong(payload) => assert_eq!(payload.as_ref(), b"probe"),
+            other => panic!("expected Pong, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reconnect_closes_removed_stale_client() {
+        let server = create_test_server_handle();
+        let actor_id = create_test_actr_id(1);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut clients = HashMap::new();
+        clients.insert(
+            "old-client".to_string(),
+            ClientConnection {
+                id: "old-client".to_string(),
+                actor_id: Some(actor_id.clone()),
+                credential: None,
+                direct_sender: tx,
+                client_ip: None,
+                webrtc_role: None,
+            },
+        );
+
+        let stale_clients = remove_stale_actor_clients(&mut clients, &actor_id);
+        assert!(
+            !clients.contains_key("old-client"),
+            "stale client should be removed from routing map"
+        );
+
+        close_stale_clients(stale_clients, &server).await;
+
+        assert!(
+            matches!(rx.try_recv(), Ok(WsMessage::Close(_))),
+            "stale client should receive a WebSocket Close frame"
+        );
+    }
+
     #[tokio::test]
     async fn test_cleanup_stale_connection_keeps_replacement_service() {
         let server = create_test_server_handle();
@@ -1976,7 +2122,7 @@ mod tests {
     fn test_determine_webrtc_role() {
         // 测试数据: (from_serial, to_serial, from_role, to_role, expected_is_offerer, description)
         let test_cases = vec![
-            (2, 1, None, None, false, "双方都没有偏好,使用 ActorId 排序"),
+            (2, 1, None, None, true, "双方都没有偏好,使用 ActorId 逆序"),
             (
                 2,
                 1,
@@ -1998,24 +2144,24 @@ mod tests {
                 1,
                 Some("answer"),
                 Some("answer"),
+                true,
+                "双方都偏好 answer,回退到 ActorId 逆序",
+            ),
+            (
+                1,
+                2,
+                None,
+                None,
                 false,
-                "双方都偏好 answer,回退到排序逻辑",
-            ),
-            (
-                1,
-                2,
-                None,
-                None,
-                true,
-                "serial 1 < serial 2,发起方应该是 offerer",
+                "serial 1 < serial 2,发起方应该是 answerer",
             ),
             (
                 1,
                 2,
                 Some("answer"),
                 Some("answer"),
-                true,
-                "双方都偏好 answer,serial 1 应该是 offerer",
+                false,
+                "双方都偏好 answer,serial 1 应该是 answerer",
             ),
         ];
 
