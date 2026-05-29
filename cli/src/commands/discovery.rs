@@ -30,6 +30,10 @@ pub struct DiscoveryCommand {
     /// Automatically install selected services
     #[arg(long)]
     pub auto_install: bool,
+
+    /// List discovered services and exit without interactive selection
+    #[arg(long)]
+    pub list_only: bool,
 }
 
 #[async_trait]
@@ -59,6 +63,10 @@ impl Command for DiscoveryCommand {
         println!("🔍 Discovered Actor services:");
         // Display discovered services table
         self.display_services_table(&services);
+
+        if self.list_only {
+            return Ok(CommandResult::Success("Services listed".to_string()));
+        }
 
         // Selection Phase
         let service_options: Vec<String> = services.iter().map(|s| s.name.clone()).collect();
@@ -162,6 +170,7 @@ impl DiscoveryCommand {
             filter,
             verbose,
             auto_install,
+            list_only: false,
         }
     }
 
@@ -171,6 +180,7 @@ impl DiscoveryCommand {
             filter: args.filter.clone(),
             verbose: args.verbose,
             auto_install: args.auto_install,
+            list_only: args.list_only,
         }
     }
 

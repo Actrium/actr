@@ -36,6 +36,12 @@ const KNOWN_KEYS: &[&str] = &[
     "storage.hyper_data_dir",
 ];
 
+fn parse_toml_document_value(content: &str, path: impl std::fmt::Display) -> Result<Value> {
+    let table = toml::from_str::<toml::Table>(content)
+        .with_context(|| format!("Failed to parse {path}"))?;
+    Ok(Value::Table(table))
+}
+
 #[derive(Args, Clone)]
 pub struct ConfigCommand {
     /// Read or write the global CLI config (~/.actr/config.toml)
@@ -168,9 +174,7 @@ impl ConfigCommand {
                 }
                 let content = std::fs::read_to_string(&path)
                     .with_context(|| format!("Failed to read {}", path.display()))?;
-                content
-                    .parse::<Value>()
-                    .with_context(|| format!("Failed to parse {}", path.display()))
+                parse_toml_document_value(&content, path.display())
             }
             ConfigScope::Local => {
                 let path = local_config_path();
@@ -179,9 +183,7 @@ impl ConfigCommand {
                 }
                 let content = std::fs::read_to_string(&path)
                     .with_context(|| format!("Failed to read {}", path.display()))?;
-                content
-                    .parse::<Value>()
-                    .with_context(|| format!("Failed to parse {}", path.display()))
+                parse_toml_document_value(&content, path.display())
             }
             ConfigScope::Merged => self.load_merged_value(),
         }
@@ -192,9 +194,7 @@ impl ConfigCommand {
         let mut merged = if global_path.exists() {
             let content = std::fs::read_to_string(&global_path)
                 .with_context(|| format!("Failed to read {}", global_path.display()))?;
-            content
-                .parse::<Value>()
-                .with_context(|| format!("Failed to parse {}", global_path.display()))?
+            parse_toml_document_value(&content, global_path.display())?
         } else {
             Value::Table(toml::map::Map::new())
         };
@@ -203,9 +203,7 @@ impl ConfigCommand {
         if local_path.exists() {
             let content = std::fs::read_to_string(&local_path)
                 .with_context(|| format!("Failed to read {}", local_path.display()))?;
-            let local_value = content
-                .parse::<Value>()
-                .with_context(|| format!("Failed to parse {}", local_path.display()))?;
+            let local_value = parse_toml_document_value(&content, local_path.display())?;
             Self::merge_values(&mut merged, local_value);
         }
         Ok(merged)
@@ -645,4 +643,29 @@ fn value_to_u32(v: &Value, key: &str) -> Result<u32> {
     let s = value_to_string(v)?;
     s.parse::<u32>()
         .map_err(|_| anyhow::anyhow!("Key '{}' expects a positive integer, got '{}'", key, s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_full_toml_document_as_value_table() {
+        let value = parse_toml_document_value(
+            r#"
+[mfr]
+manufacturer = "demo1"
+
+[network]
+realm_id = 2368266035
+"#,
+            ".actr/config.toml",
+        )
+        .expect("config TOML should parse");
+
+        assert_eq!(
+            ConfigCommand::get_nested_value(&value, "mfr.manufacturer"),
+            Some(&Value::String("demo1".to_string()))
+        );
+    }
 }
