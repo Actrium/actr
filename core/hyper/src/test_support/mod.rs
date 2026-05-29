@@ -28,6 +28,11 @@ pub use utils::{
 };
 pub use vnet::{VNetPair, create_vnet_pair};
 
+pub use crate::transport::lane::{
+    WebRtcFragmentSendEvent, WebRtcFragmentSendHook, WebRtcFragmentSendHookGuard,
+    install_webrtc_fragment_send_hook_for_test,
+};
+
 /// Test-only summary of package loading results.
 ///
 /// This keeps `LoadedWorkload` crate-private while preserving the assertions

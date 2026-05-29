@@ -37,8 +37,14 @@ use async_trait::async_trait;
 use futures_util::SinkExt;
 use futures_util::stream::SplitSink;
 use std::collections::HashMap;
+#[cfg(feature = "test-utils")]
+use std::future::Future;
+#[cfg(feature = "test-utils")]
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+#[cfg(feature = "test-utils")]
+use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
@@ -63,6 +69,72 @@ const REASSEMBLY_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 6
 
 /// Maximum payload bytes that fit in one DataChannel message after the header.
 const DC_MAX_PAYLOAD_SIZE: usize = DC_MAX_MESSAGE_SIZE - FRAGMENT_HEADER_SIZE;
+
+#[cfg(feature = "test-utils")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebRtcFragmentSendEvent {
+    pub msg_id: u32,
+    pub frag_index: u16,
+    pub total_frags: u16,
+    pub fragment_payload_len: usize,
+    pub message_len: usize,
+}
+
+#[cfg(feature = "test-utils")]
+pub type WebRtcFragmentSendHookFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+#[cfg(feature = "test-utils")]
+pub type WebRtcFragmentSendHook =
+    Arc<dyn Fn(WebRtcFragmentSendEvent) -> WebRtcFragmentSendHookFuture + Send + Sync + 'static>;
+
+#[cfg(feature = "test-utils")]
+static WEBRTC_FRAGMENT_SEND_HOOK: OnceLock<StdMutex<Option<WebRtcFragmentSendHook>>> =
+    OnceLock::new();
+
+#[cfg(feature = "test-utils")]
+fn webrtc_fragment_send_hook_slot() -> &'static StdMutex<Option<WebRtcFragmentSendHook>> {
+    WEBRTC_FRAGMENT_SEND_HOOK.get_or_init(|| StdMutex::new(None))
+}
+
+#[cfg(feature = "test-utils")]
+pub struct WebRtcFragmentSendHookGuard {
+    previous: Option<WebRtcFragmentSendHook>,
+}
+
+#[cfg(feature = "test-utils")]
+impl Drop for WebRtcFragmentSendHookGuard {
+    fn drop(&mut self) {
+        let mut hook = webrtc_fragment_send_hook_slot()
+            .lock()
+            .expect("fragment send hook mutex poisoned");
+        *hook = self.previous.take();
+    }
+}
+
+#[cfg(feature = "test-utils")]
+pub fn install_webrtc_fragment_send_hook_for_test(
+    hook: WebRtcFragmentSendHook,
+) -> WebRtcFragmentSendHookGuard {
+    let mut slot = webrtc_fragment_send_hook_slot()
+        .lock()
+        .expect("fragment send hook mutex poisoned");
+    let previous = slot.replace(hook);
+    WebRtcFragmentSendHookGuard { previous }
+}
+
+#[cfg(feature = "test-utils")]
+async fn notify_webrtc_fragment_sent_for_test(event: WebRtcFragmentSendEvent) {
+    let hook = {
+        webrtc_fragment_send_hook_slot()
+            .lock()
+            .expect("fragment send hook mutex poisoned")
+            .clone()
+    };
+
+    if let Some(hook) = hook {
+        hook(event).await;
+    }
+}
 
 // ── Reassembly types ──────────────────────────────────────────────────────────
 
@@ -434,6 +506,15 @@ impl DataLane for WebRtcDataLane {
                 .send(&frame)
                 .await
                 .map_err(|e| NetworkError::DataChannelError(format!("Send failed: {e}")))?;
+            #[cfg(feature = "test-utils")]
+            notify_webrtc_fragment_sent_for_test(WebRtcFragmentSendEvent {
+                msg_id,
+                frag_index: 0,
+                total_frags: 1,
+                fragment_payload_len: data_len,
+                message_len: data_len,
+            })
+            .await;
             tracing::trace!(
                 "sent single fragment: msg_id={} payload={} bytes",
                 msg_id,
@@ -465,6 +546,15 @@ impl DataLane for WebRtcDataLane {
                         "Send fragment {frag_index} failed: {e}"
                     ))
                 })?;
+                #[cfg(feature = "test-utils")]
+                notify_webrtc_fragment_sent_for_test(WebRtcFragmentSendEvent {
+                    msg_id,
+                    frag_index: frag_index as u16,
+                    total_frags,
+                    fragment_payload_len: chunk.len(),
+                    message_len: data_len,
+                })
+                .await;
                 tracing::debug!(
                     "sent fragment {}/{}: msg_id={} chunk={} bytes",
                     frag_index + 1,
