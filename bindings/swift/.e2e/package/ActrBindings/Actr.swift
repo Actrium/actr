@@ -3103,9 +3103,9 @@ public struct FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer {
         case 3: return .signalingFailure
         
         case 4: return .transportFailure
-
+        
         case 5: return .dataStreamDeliveryUncertain
-
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -3128,11 +3128,11 @@ public struct FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer {
         
         case .transportFailure:
             writeInt(&buf, Int32(4))
-
-
+        
+        
         case .dataStreamDeliveryUncertain:
             writeInt(&buf, Int32(5))
-
+        
         }
     }
 }
@@ -3634,7 +3634,7 @@ fileprivate struct UniffiCallbackInterfaceCredentialObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceCredentialObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceCredentialObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceCredentialObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -3790,7 +3790,7 @@ fileprivate struct UniffiCallbackInterfaceDataStreamCallback {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDataStreamCallback> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDataStreamCallback> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceDataStreamCallback>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -3942,7 +3942,7 @@ fileprivate struct UniffiCallbackInterfaceMailboxObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMailboxObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMailboxObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMailboxObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4098,7 +4098,7 @@ fileprivate struct UniffiCallbackInterfaceMediaTrackCallback {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMediaTrackCallback> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMediaTrackCallback> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMediaTrackCallback>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4332,7 +4332,7 @@ fileprivate struct UniffiCallbackInterfaceSignalingObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceSignalingObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceSignalingObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceSignalingObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4572,7 +4572,7 @@ fileprivate struct UniffiCallbackInterfaceWebRtcObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebRtcObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebRtcObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWebRtcObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4812,7 +4812,7 @@ fileprivate struct UniffiCallbackInterfaceWebSocketObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebSocketObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebSocketObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWebSocketObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -5160,7 +5160,7 @@ fileprivate struct UniffiCallbackInterfaceWorkloadLifecycleBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWorkloadLifecycleBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWorkloadLifecycleBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWorkloadLifecycleBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -5583,22 +5583,23 @@ private func uniffiTraitInterfaceCallAsync<T>(
     handleError: @escaping (Int8, RustBuffer) -> (),
     droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
 ) {
-    let makeCallSendable = UniffiUnsafeSendable(makeCall)
-    let handleSuccessSendable = UniffiUnsafeSendable(handleSuccess)
-    let handleErrorSendable = UniffiUnsafeSendable(handleError)
-
     let task = Task {
+        // Note: it's important we call either `handleSuccess` or `handleError` exactly once.  Each
+        // call consumes an Arc reference, which means there should be no possibility of a double
+        // call.  The following code is structured so that will will never call both `handleSuccess`
+        // and `handleError`, even in the face of weird errors.
+        //
+        // On platforms that need extra machinery to make C-ABI calls, like JNA or ctypes, it's
+        // possible that we fail to make either call.  However, it doesn't seem like this is
+        // possible on Swift since swift can just make the C call directly.
         var callResult: T
         do {
-            callResult = try await makeCallSendable.value()
+            callResult = try await makeCall()
         } catch {
-            handleErrorSendable.value(
-                CALL_UNEXPECTED_ERROR,
-                FfiConverterString.lower(String(describing: error))
-            )
+            handleError(CALL_UNEXPECTED_ERROR, FfiConverterString.lower(String(describing: error)))
             return
         }
-        handleSuccessSendable.value(callResult)
+        handleSuccess(callResult)
     }
     let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
     droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
@@ -5614,26 +5615,20 @@ private func uniffiTraitInterfaceCallAsyncWithError<T, E>(
     lowerError: @escaping (E) -> RustBuffer,
     droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
 ) {
-    let makeCallSendable = UniffiUnsafeSendable(makeCall)
-    let handleSuccessSendable = UniffiUnsafeSendable(handleSuccess)
-    let handleErrorSendable = UniffiUnsafeSendable(handleError)
-    let lowerErrorSendable = UniffiUnsafeSendable(lowerError)
-
     let task = Task {
+        // See the note in uniffiTraitInterfaceCallAsync for details on `handleSuccess` and
+        // `handleError`.
         var callResult: T
         do {
-            callResult = try await makeCallSendable.value()
+            callResult = try await makeCall()
         } catch let error as E {
-            handleErrorSendable.value(CALL_ERROR, lowerErrorSendable.value(error))
+            handleError(CALL_ERROR, lowerError(error))
             return
         } catch {
-            handleErrorSendable.value(
-                CALL_UNEXPECTED_ERROR,
-                FfiConverterString.lower(String(describing: error))
-            )
+            handleError(CALL_UNEXPECTED_ERROR, FfiConverterString.lower(String(describing: error)))
             return
         }
-        handleSuccessSendable.value(callResult)
+        handleSuccess(callResult)
     }
     let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
     droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
