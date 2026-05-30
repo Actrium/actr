@@ -37,7 +37,7 @@ for i in range(0, len(data), 16):
     chunk = data[i:i+16]
     lines.append('    ' + ', '.join(f'0x{b:02x}' for b in chunk) + ',')
 lines.append('];')
-open('$BYTES_FILE', 'w').write('\n'.join(lines))
+open('$BYTES_FILE', 'w').write('\n'.join(lines) + '\n')
 print(f"Wrote {len(data)} bytes -> $BYTES_FILE")
 PYEOF
 

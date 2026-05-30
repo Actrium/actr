@@ -34,9 +34,11 @@ use std::sync::Arc;
 
 use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrError, ActrId, ActrType, Realm, RpcEnvelope};
+use actr_protocol::{
+    ActrError, ActrId, ActrType, DataStream, MetadataEntry, PayloadType, Realm, RpcEnvelope,
+};
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
-use wasmtime::{Config, Engine, Store};
+use wasmtime::{Config, Engine, OptLevel, RegallocAlgorithm, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use super::component_bindings::ActrWorkloadGuest;
@@ -44,13 +46,17 @@ use super::component_bindings::actr::workload::host::Host as HostImports;
 use super::component_bindings::actr::workload::types::Host as TypesHost;
 use super::component_bindings::actr::workload::types::{
     self as wit_types, ActrError as WitActrError, ActrId as WitActrId, ActrType as WitActrType,
-    Dest as WitDest, Realm as WitRealm, RpcEnvelope as WitRpcEnvelope,
+    DataStream as WitDataStream, Dest as WitDest, PayloadType as WitPayloadType, Realm as WitRealm,
+    RpcEnvelope as WitRpcEnvelope,
 };
 use crate::wasm::error::{WasmError, WasmResult};
 use crate::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 
 use actr_framework::guest::dynclib_abi as guest_abi;
-use actr_framework::guest::dynclib_abi::{HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1};
+use actr_framework::guest::dynclib_abi::{
+    HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1, HostSendDataStreamV1,
+    HostTellV1, HostUnregisterStreamV1,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Engine configuration
@@ -70,6 +76,10 @@ fn build_engine() -> WasmResult<Engine> {
     // We pair it with explicit component-model flags to be self-documenting.
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
+    if std::env::var_os("ACTR_WASM_FAST_COMPILE").is_some() {
+        config.cranelift_opt_level(OptLevel::None);
+        config.cranelift_regalloc_algorithm(RegallocAlgorithm::SinglePass);
+    }
     Engine::new(&config)
         .map_err(|e| WasmError::LoadFailed(format!("wasmtime engine construction failed: {e}")))
 }
@@ -222,6 +232,45 @@ impl HostImports for HostState {
                     "host discover returned undecodable ActrId: {e}"
                 )))),
             },
+            Err(e) => Ok(Err(e)),
+        }
+    }
+
+    async fn register_stream(
+        &mut self,
+        stream_id: String,
+    ) -> wasmtime::Result<Result<(), WitActrError>> {
+        let op = HostOperation::RegisterStream(HostRegisterStreamV1 { stream_id });
+        match forward_host_operation(self, op).await? {
+            Ok(_) => Ok(Ok(())),
+            Err(e) => Ok(Err(e)),
+        }
+    }
+
+    async fn unregister_stream(
+        &mut self,
+        stream_id: String,
+    ) -> wasmtime::Result<Result<(), WitActrError>> {
+        let op = HostOperation::UnregisterStream(HostUnregisterStreamV1 { stream_id });
+        match forward_host_operation(self, op).await? {
+            Ok(_) => Ok(Ok(())),
+            Err(e) => Ok(Err(e)),
+        }
+    }
+
+    async fn send_data_stream(
+        &mut self,
+        target: WitDest,
+        chunk: WitDataStream,
+        payload_type: WitPayloadType,
+    ) -> wasmtime::Result<Result<(), WitActrError>> {
+        let op = HostOperation::SendDataStream(HostSendDataStreamV1 {
+            dest: wit_dest_to_v1(&target),
+            chunk: wit_data_stream_to_proto(chunk),
+            payload_type: wit_payload_type_to_proto(payload_type) as i32,
+        });
+        match forward_host_operation(self, op).await? {
+            Ok(_) => Ok(Ok(())),
             Err(e) => Ok(Err(e)),
         }
     }
@@ -397,6 +446,50 @@ fn rpc_envelope_to_wit(envelope: &RpcEnvelope) -> WitRpcEnvelope {
     }
 }
 
+fn proto_data_stream_to_wit(chunk: DataStream) -> WitDataStream {
+    WitDataStream {
+        stream_id: chunk.stream_id,
+        sequence: chunk.sequence,
+        payload: chunk.payload.to_vec(),
+        metadata: chunk
+            .metadata
+            .into_iter()
+            .map(|entry| wit_types::MetadataEntry {
+                key: entry.key,
+                value: entry.value,
+            })
+            .collect(),
+        timestamp_ms: chunk.timestamp_ms,
+    }
+}
+
+fn wit_data_stream_to_proto(chunk: WitDataStream) -> DataStream {
+    DataStream {
+        stream_id: chunk.stream_id,
+        sequence: chunk.sequence,
+        payload: chunk.payload.into(),
+        metadata: chunk
+            .metadata
+            .into_iter()
+            .map(|entry| MetadataEntry {
+                key: entry.key,
+                value: entry.value,
+            })
+            .collect(),
+        timestamp_ms: chunk.timestamp_ms,
+    }
+}
+
+fn wit_payload_type_to_proto(payload_type: WitPayloadType) -> PayloadType {
+    match payload_type {
+        WitPayloadType::RpcReliable => PayloadType::RpcReliable,
+        WitPayloadType::RpcSignal => PayloadType::RpcSignal,
+        WitPayloadType::StreamReliable => PayloadType::StreamReliable,
+        WitPayloadType::StreamLatencyFirst => PayloadType::StreamLatencyFirst,
+        WitPayloadType::MediaRtp => PayloadType::MediaRtp,
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // WasmHost
 // ─────────────────────────────────────────────────────────────────────────────
@@ -460,7 +553,7 @@ impl WasmHost {
         let bindings = ActrWorkloadGuest::instantiate_async(&mut store, &self.component, &linker)
             .await
             .map_err(|e| {
-                WasmError::LoadFailed(format!("Component instantiate_async failed: {e}"))
+                WasmError::LoadFailed(format!("Component instantiate_async failed: {e:#}"))
             })?;
 
         tracing::info!("wasm Component instantiated");
@@ -597,5 +690,42 @@ impl WasmWorkload {
                 "guest dispatch trapped: {trap}"
             ))),
         }
+    }
+
+    pub(crate) async fn handle_data_stream(
+        &mut self,
+        chunk: DataStream,
+        sender: ActrId,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
+        {
+            let state = self.store.data_mut();
+            state.invocation = Some(ctx);
+            state.host_abi = Some(host_abi_clone);
+        }
+
+        let wit_chunk = proto_data_stream_to_wit(chunk);
+        let wit_sender = proto_actr_id_to_wit(&sender);
+        let result = self
+            .bindings
+            .actr_workload_workload()
+            .call_on_data_stream(&mut self.store, &wit_chunk, &wit_sender)
+            .await;
+        {
+            let state = self.store.data_mut();
+            state.invocation = None;
+            state.host_abi = None;
+        }
+        let result =
+            result.map_err(|e| WasmError::ExecutionFailed(format!("on_data_stream trap: {e}")))?;
+        result.map_err(|e| {
+            WasmError::ExecutionFailed(format!(
+                "on_data_stream error: {:?}",
+                wit_actr_error_to_proto(e)
+            ))
+        })?;
+        Ok(())
     }
 }

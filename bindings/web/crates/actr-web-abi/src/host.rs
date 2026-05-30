@@ -56,6 +56,7 @@ pub trait Workload: 'static {
     async fn dispatch(&self, envelope: RpcEnvelope) -> Result<Vec<u8>, ActrError>;
     async fn on_credential_expiring(&self, event: CredentialEvent);
     async fn on_credential_renewed(&self, event: CredentialEvent);
+    async fn on_data_stream(&self, chunk: DataStream, sender: ActrId) -> Result<(), ActrError>;
     async fn on_error(&self, event: ErrorEvent) -> Result<(), ActrError>;
     async fn on_mailbox_backpressure(&self, event: BackpressureEvent);
     async fn on_ready(&self) -> Result<(), ActrError>;
@@ -137,6 +138,19 @@ pub async fn __actr_workload_on_credential_renewed(event: JsValue) -> Result<JsV
     let __p_event: CredentialEvent = serde_wasm_bindgen::from_value(event).map_err(serde_err)?;
     __w.on_credential_renewed(__p_event).await;
     Ok(JsValue::UNDEFINED)
+}
+
+/// Host-exported entry for WIT `workload.on-data-stream`.
+#[wasm_bindgen(js_name = "on_data_stream")]
+pub async fn __actr_workload_on_data_stream(
+    chunk: JsValue,
+    sender: JsValue,
+) -> Result<JsValue, JsValue> {
+    let __w = workload()?;
+    let __p_chunk: DataStream = serde_wasm_bindgen::from_value(chunk).map_err(serde_err)?;
+    let __p_sender: ActrId = serde_wasm_bindgen::from_value(sender).map_err(serde_err)?;
+    let __r = __w.on_data_stream(__p_chunk, __p_sender).await;
+    serde_wasm_bindgen::to_value(&__r).map_err(serde_err)
 }
 
 /// Host-exported entry for WIT `workload.on-error`.

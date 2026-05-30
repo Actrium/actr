@@ -58,15 +58,16 @@ pub mod __wasm_macro_support {
     // prefix to poke at.
     pub use super::wasm::adapter::{
         WorkloadCell, run_dispatch, run_on_credential_expiring, run_on_credential_renewed,
-        run_on_error, run_on_mailbox_backpressure, run_on_ready, run_on_signaling_connected,
-        run_on_signaling_connecting, run_on_signaling_disconnected, run_on_start, run_on_stop,
-        run_on_webrtc_connected, run_on_webrtc_connecting, run_on_webrtc_disconnected,
-        run_on_websocket_connected, run_on_websocket_connecting, run_on_websocket_disconnected,
+        run_on_data_stream, run_on_error, run_on_mailbox_backpressure, run_on_ready,
+        run_on_signaling_connected, run_on_signaling_connecting, run_on_signaling_disconnected,
+        run_on_start, run_on_stop, run_on_webrtc_connected, run_on_webrtc_connecting,
+        run_on_webrtc_disconnected, run_on_websocket_connected, run_on_websocket_connecting,
+        run_on_websocket_disconnected,
     };
     pub use super::wasm::generated::actr::workload::types::{
-        ActrError as WitActrError, BackpressureEvent as WitBackpressureEvent,
-        CredentialEvent as WitCredentialEvent, ErrorEvent as WitErrorEvent,
-        PeerEvent as WitPeerEvent, RpcEnvelope as WitRpcEnvelope,
+        ActrError as WitActrError, ActrId as WitActrId, BackpressureEvent as WitBackpressureEvent,
+        CredentialEvent as WitCredentialEvent, DataStream as WitDataStream,
+        ErrorEvent as WitErrorEvent, PeerEvent as WitPeerEvent, RpcEnvelope as WitRpcEnvelope,
     };
     pub use super::wasm::generated::exports::actr::workload::workload::Guest;
 }
@@ -298,6 +299,16 @@ macro_rules! entry {
                     )
                     .await
                 }
+
+                async fn on_data_stream(
+                    chunk: $crate::guest::__wasm_macro_support::WitDataStream,
+                    sender: $crate::guest::__wasm_macro_support::WitActrId,
+                ) -> ::core::result::Result<
+                    (),
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_on_data_stream(chunk, sender).await
+                }
             }
 
             $crate::guest::wasm::generated::export!(__ActrEntryAdapter with_types_in $crate::guest::wasm::generated);
@@ -414,6 +425,45 @@ macro_rules! entry {
                     Ok(f) => f,
                     Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
+
+                if frame.op == $crate::guest::dynclib_abi::op::GUEST_DATA_STREAM {
+                    let payload = match <$crate::guest::dynclib_abi::GuestDataStreamV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
+                        Ok(payload) => payload,
+                        Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                    };
+
+                    let resp_bytes = match $crate::guest::dynclib::context::dispatch_registered_stream(payload) {
+                        Ok(()) => match $crate::guest::dynclib_abi::success_reply(::std::vec::Vec::new()) {
+                            Ok(bytes) => bytes,
+                            Err(code) => return code,
+                        },
+                        Err(err) => match $crate::guest::dynclib_abi::error_reply(
+                            $crate::guest::dynclib_abi::code::HANDLE_FAILED,
+                            err.to_string().into_bytes(),
+                        ) {
+                            Ok(bytes) => bytes,
+                            Err(code) => return code,
+                        },
+                    };
+
+                    let resp_len = resp_bytes.len();
+                    let layout = match std::alloc::Layout::from_size_align(resp_len.max(1), 1) {
+                        Ok(l) => l,
+                        Err(_) => return $crate::guest::dynclib_abi::code::GENERIC_ERROR,
+                    };
+                    let ptr = unsafe { std::alloc::alloc(layout) };
+                    if ptr.is_null() {
+                        return $crate::guest::dynclib_abi::code::GENERIC_ERROR;
+                    }
+
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(resp_bytes.as_ptr(), ptr, resp_len);
+                        *resp_out = ptr;
+                        *resp_len_out = resp_len;
+                    }
+
+                    return $crate::guest::dynclib_abi::code::SUCCESS;
+                }
 
                 if frame.op != $crate::guest::dynclib_abi::op::GUEST_HANDLE {
                     return $crate::guest::dynclib_abi::code::UNSUPPORTED_OP;

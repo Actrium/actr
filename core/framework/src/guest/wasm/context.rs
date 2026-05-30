@@ -13,10 +13,15 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use prost::Message as ProstMessage;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::{Context, Dest, MediaSample};
 
-use super::context_helpers::{actr_id_from_wit, actr_id_to_wit, actr_type_to_wit, dest_to_wit};
+use super::context_helpers::{
+    actr_id_from_wit, actr_id_to_wit, actr_type_to_wit, data_stream_from_wit, data_stream_to_wit,
+    dest_to_wit, payload_type_to_wit,
+};
 use super::generated::actr::workload::host as wit_host;
 use super::generated::actr::workload::types as wit_types;
 
@@ -81,6 +86,36 @@ pub(crate) struct WasmContext {
     self_id: ActrId,
     caller_id: Option<ActrId>,
     request_id: String,
+}
+
+type StreamCallback =
+    Arc<dyn Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
+
+fn stream_callbacks() -> &'static Mutex<HashMap<String, StreamCallback>> {
+    static CALLBACKS: OnceLock<Mutex<HashMap<String, StreamCallback>>> = OnceLock::new();
+    CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) async fn dispatch_registered_stream(
+    chunk: wit_types::DataStream,
+    sender: wit_types::ActrId,
+) -> ActorResult<()> {
+    let chunk = data_stream_from_wit(chunk);
+    let sender = actr_id_from_wit(&sender);
+    let callback = {
+        let callbacks = stream_callbacks()
+            .lock()
+            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?;
+        callbacks.get(&chunk.stream_id).cloned()
+    };
+
+    match callback {
+        Some(callback) => callback(chunk, sender).await,
+        None => Err(ActrError::NotFound(format!(
+            "no stream callback registered for '{}'",
+            chunk.stream_id
+        ))),
+    }
 }
 
 impl WasmContext {
@@ -154,30 +189,42 @@ impl Context for WasmContext {
             .map_err(wit_actr_error_to_proto)
     }
 
-    async fn register_stream<F>(&self, _stream_id: String, _callback: F) -> ActorResult<()>
+    async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
         F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
-        Err(ActrError::NotImplemented(
-            "register_stream is not supported in WASM environment".into(),
-        ))
+        stream_callbacks()
+            .lock()
+            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?
+            .insert(stream_id.clone(), Arc::new(callback));
+        wit_host::register_stream(stream_id)
+            .await
+            .map_err(wit_actr_error_to_proto)
     }
 
-    async fn unregister_stream(&self, _stream_id: &str) -> ActorResult<()> {
-        Err(ActrError::NotImplemented(
-            "unregister_stream is not supported in WASM environment".into(),
-        ))
+    async fn unregister_stream(&self, stream_id: &str) -> ActorResult<()> {
+        stream_callbacks()
+            .lock()
+            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?
+            .remove(stream_id);
+        wit_host::unregister_stream(stream_id.to_string())
+            .await
+            .map_err(wit_actr_error_to_proto)
     }
 
     async fn send_data_stream(
         &self,
-        _target: &Dest,
-        _chunk: DataStream,
-        _payload_type: PayloadType,
+        target: &Dest,
+        chunk: DataStream,
+        payload_type: PayloadType,
     ) -> ActorResult<()> {
-        Err(ActrError::NotImplemented(
-            "send_data_stream is not supported in WASM environment".into(),
-        ))
+        wit_host::send_data_stream(
+            dest_to_wit(target),
+            data_stream_to_wit(chunk),
+            payload_type_to_wit(payload_type),
+        )
+        .await
+        .map_err(wit_actr_error_to_proto)
     }
 
     async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {

@@ -10,7 +10,7 @@
 
 use crate::Dest;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrError, ActrId, ActrType};
+use actr_protocol::{ActrError, ActrId, ActrType, DataStream, PayloadType};
 
 /// ABI error codes.
 pub mod code {
@@ -44,7 +44,11 @@ pub mod op {
     pub const HOST_TELL: u32 = 2;
     pub const HOST_CALL_RAW: u32 = 3;
     pub const HOST_DISCOVER: u32 = 4;
+    pub const HOST_REGISTER_STREAM: u32 = 5;
+    pub const HOST_UNREGISTER_STREAM: u32 = 6;
+    pub const HOST_SEND_DATA_STREAM: u32 = 7;
     pub const GUEST_HANDLE: u32 = 101;
+    pub const GUEST_DATA_STREAM: u32 = 102;
 }
 
 /// Dedicated payload used by `actr_init`.
@@ -112,6 +116,15 @@ pub struct GuestHandleV1 {
     pub ctx: InvocationContextV1,
     #[prost(bytes = "vec", tag = "2")]
     pub rpc_envelope: Vec<u8>,
+}
+
+/// Runtime host->guest DataStream payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GuestDataStreamV1 {
+    #[prost(message, required, tag = "1")]
+    pub chunk: DataStream,
+    #[prost(message, required, tag = "2")]
+    pub sender: ActrId,
 }
 
 /// ABI-level destination encoding (replaces hand-rolled 0x00/0x01/0x02 byte protocol).
@@ -207,6 +220,31 @@ pub struct HostDiscoverV1 {
     pub target_type: ActrType,
 }
 
+/// Runtime guest->host DataStream registration payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct HostRegisterStreamV1 {
+    #[prost(string, tag = "1")]
+    pub stream_id: String,
+}
+
+/// Runtime guest->host DataStream unregistration payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct HostUnregisterStreamV1 {
+    #[prost(string, tag = "1")]
+    pub stream_id: String,
+}
+
+/// Runtime guest->host DataStream send payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct HostSendDataStreamV1 {
+    #[prost(message, required, tag = "1")]
+    pub dest: DestV1,
+    #[prost(message, required, tag = "2")]
+    pub chunk: DataStream,
+    #[prost(enumeration = "PayloadType", tag = "3")]
+    pub payload_type: i32,
+}
+
 /// Payloads that can automatically construct runtime frames.
 pub trait AbiPayload: ProstMessage + Default + Sized {
     const ABI_VERSION: u32;
@@ -249,9 +287,29 @@ impl AbiPayload for HostDiscoverV1 {
     const OP: u32 = op::HOST_DISCOVER;
 }
 
+impl AbiPayload for HostRegisterStreamV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::HOST_REGISTER_STREAM;
+}
+
+impl AbiPayload for HostUnregisterStreamV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::HOST_UNREGISTER_STREAM;
+}
+
+impl AbiPayload for HostSendDataStreamV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::HOST_SEND_DATA_STREAM;
+}
+
 impl AbiPayload for GuestHandleV1 {
     const ABI_VERSION: u32 = version::V1;
     const OP: u32 = op::GUEST_HANDLE;
+}
+
+impl AbiPayload for GuestDataStreamV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::GUEST_DATA_STREAM;
 }
 
 /// Encode a protobuf message into bytes.

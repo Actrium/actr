@@ -4,7 +4,8 @@
 //! directly into a runtime `Workload` enum.
 
 use actr_framework::guest::dynclib_abi::{
-    self as guest_abi, HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1,
+    self as guest_abi, HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1,
+    HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1,
 };
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
 use actr_framework::guest::dynclib_abi::{AbiPayload, GuestHandleV1};
@@ -12,7 +13,7 @@ use actr_framework::{
     BackpressureEvent, CredentialEvent, ErrorEvent, MessageDispatcher, PeerEvent,
     Workload as FrameworkWorkload,
 };
-use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, DataStream, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
@@ -33,6 +34,9 @@ pub enum HostOperation {
     Tell(HostTellV1),
     Discover(HostDiscoverV1),
     CallRaw(HostCallRawV1),
+    RegisterStream(HostRegisterStreamV1),
+    UnregisterStream(HostUnregisterStreamV1),
+    SendDataStream(HostSendDataStreamV1),
 }
 
 /// Result of a host operation.
@@ -378,6 +382,38 @@ impl Workload {
             }
         })
     }
+
+    pub(crate) fn dispatch_data_stream<'a>(
+        &'a mut self,
+        chunk: DataStream,
+        sender: ActrId,
+        invocation: InvocationContext,
+        host_abi: &'a HostAbiFn,
+    ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let _ = &invocation;
+            match self {
+                Workload::Linked(_) => Err(ActrError::NotImplemented(
+                    "linked workload stream callbacks are registered directly on RuntimeContext"
+                        .to_string(),
+                )),
+                #[cfg(feature = "wasm-engine")]
+                Workload::Wasm(workload) => workload
+                    .handle_data_stream(chunk, sender, invocation, host_abi)
+                    .await
+                    .map_err(|e| {
+                        ActrError::Internal(format!("workload stream dispatch failed: {e}"))
+                    }),
+                #[cfg(feature = "dynclib-engine")]
+                Workload::DynClib(workload) => workload
+                    .handle_data_stream(chunk, sender, host_abi)
+                    .await
+                    .map_err(|e| {
+                        ActrError::Internal(format!("workload stream dispatch failed: {e}"))
+                    }),
+            }
+        })
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -410,6 +446,18 @@ pub(crate) fn decode_host_operation(frame: guest_abi::AbiFrame) -> Result<HostOp
             let payload = <HostDiscoverV1 as AbiPayload>::decode_payload(&frame.payload)?;
             Ok(HostOperation::Discover(payload))
         }
+        guest_abi::op::HOST_REGISTER_STREAM => {
+            let payload = <HostRegisterStreamV1 as AbiPayload>::decode_payload(&frame.payload)?;
+            Ok(HostOperation::RegisterStream(payload))
+        }
+        guest_abi::op::HOST_UNREGISTER_STREAM => {
+            let payload = <HostUnregisterStreamV1 as AbiPayload>::decode_payload(&frame.payload)?;
+            Ok(HostOperation::UnregisterStream(payload))
+        }
+        guest_abi::op::HOST_SEND_DATA_STREAM => {
+            let payload = <HostSendDataStreamV1 as AbiPayload>::decode_payload(&frame.payload)?;
+            Ok(HostOperation::SendDataStream(payload))
+        }
         _ => Err(guest_abi::code::UNSUPPORTED_OP),
     }
 }
@@ -424,6 +472,16 @@ pub(crate) fn encode_guest_handle_request(
         ctx,
         rpc_envelope: request_bytes.to_vec(),
     };
+    let frame = request.to_frame()?;
+    guest_abi::encode_message(&frame)
+}
+
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+pub(crate) fn encode_guest_data_stream_request(
+    chunk: DataStream,
+    sender: ActrId,
+) -> Result<Vec<u8>, i32> {
+    let request = guest_abi::GuestDataStreamV1 { chunk, sender };
     let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
 }

@@ -1,7 +1,8 @@
 //! Dynclib guest-side `Context` implementation backed by the compressed ABI.
 
 use crate::guest::dynclib_abi::{
-    self as abi, AbiPayload, AbiReply, HostCallRawV1, HostCallV1, HostDiscoverV1, HostTellV1,
+    self as abi, AbiPayload, AbiReply, GuestDataStreamV1, HostCallRawV1, HostCallV1,
+    HostDiscoverV1, HostRegisterStreamV1, HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1,
     InvocationContextV1, abi_error_to_actr, dest_to_v1, reply_to_actr_error,
 };
 use crate::guest::vtable::HostVTable;
@@ -11,6 +12,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use prost::Message as ProstMessage;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// cdylib guest-side actor execution context.
 #[derive(Clone)]
@@ -23,6 +26,41 @@ pub struct DynclibContext {
 
 unsafe impl Send for DynclibContext {}
 unsafe impl Sync for DynclibContext {}
+
+type StreamCallback =
+    Arc<dyn Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
+
+fn stream_callbacks() -> &'static Mutex<HashMap<String, StreamCallback>> {
+    static CALLBACKS: OnceLock<Mutex<HashMap<String, StreamCallback>>> = OnceLock::new();
+    CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn dispatch_registered_stream(payload: GuestDataStreamV1) -> ActorResult<()> {
+    let callback = {
+        let callbacks = stream_callbacks()
+            .lock()
+            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?;
+        callbacks.get(&payload.chunk.stream_id).cloned()
+    };
+
+    let Some(callback) = callback else {
+        return Err(ActrError::NotFound(format!(
+            "no stream callback registered for '{}'",
+            payload.chunk.stream_id
+        )));
+    };
+
+    let fut = callback(payload.chunk, payload.sender);
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    let mut pinned = std::pin::pin!(fut);
+    match pinned.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => Err(ActrError::Internal(
+            "dynclib stream callback returned Pending".into(),
+        )),
+    }
+}
 
 impl DynclibContext {
     /// Construct a context from host-injected invocation data.
@@ -135,30 +173,55 @@ impl Context for DynclibContext {
         Ok(())
     }
 
-    async fn register_stream<F>(&self, _stream_id: String, _callback: F) -> ActorResult<()>
+    async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
         F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
-        Err(ActrError::NotImplemented(
-            "register_stream is not supported in dynclib environment".into(),
-        ))
+        stream_callbacks()
+            .lock()
+            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?
+            .insert(stream_id.clone(), Arc::new(callback));
+
+        let payload = HostRegisterStreamV1 { stream_id };
+        let reply = self.invoke_frame(payload.to_frame().map_err(abi_error_to_actr)?)?;
+        if reply.status != abi::code::SUCCESS {
+            return Err(reply_to_actr_error(reply));
+        }
+        Ok(())
     }
 
-    async fn unregister_stream(&self, _stream_id: &str) -> ActorResult<()> {
-        Err(ActrError::NotImplemented(
-            "unregister_stream is not supported in dynclib environment".into(),
-        ))
+    async fn unregister_stream(&self, stream_id: &str) -> ActorResult<()> {
+        stream_callbacks()
+            .lock()
+            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?
+            .remove(stream_id);
+
+        let payload = HostUnregisterStreamV1 {
+            stream_id: stream_id.to_string(),
+        };
+        let reply = self.invoke_frame(payload.to_frame().map_err(abi_error_to_actr)?)?;
+        if reply.status != abi::code::SUCCESS {
+            return Err(reply_to_actr_error(reply));
+        }
+        Ok(())
     }
 
     async fn send_data_stream(
         &self,
-        _target: &Dest,
-        _chunk: DataStream,
-        _payload_type: PayloadType,
+        target: &Dest,
+        chunk: DataStream,
+        payload_type: PayloadType,
     ) -> ActorResult<()> {
-        Err(ActrError::NotImplemented(
-            "send_data_stream is not supported in dynclib environment".into(),
-        ))
+        let payload = HostSendDataStreamV1 {
+            dest: dest_to_v1(target),
+            chunk,
+            payload_type: payload_type as i32,
+        };
+        let reply = self.invoke_frame(payload.to_frame().map_err(abi_error_to_actr)?)?;
+        if reply.status != abi::code::SUCCESS {
+            return Err(reply_to_actr_error(reply));
+        }
+        Ok(())
     }
 
     async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {

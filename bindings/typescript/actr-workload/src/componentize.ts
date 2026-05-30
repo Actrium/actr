@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 
@@ -22,9 +23,10 @@ function toPublicEnvelope(): string {
   }`;
 }
 
-function shimSource(entry: string): string {
+function shimSource(entry: string, runtimeEntry: string): string {
   return `
-import userWorkload from ${JSON.stringify(entry)};
+	import { __dispatchDataStream } from ${JSON.stringify(runtimeEntry)};
+	import userWorkload from ${JSON.stringify(entry)};
 
 function activeWorkload() {
   if (!userWorkload || typeof userWorkload.dispatch !== 'function') {
@@ -80,9 +82,17 @@ export const workload = {
     await activeWorkload().onStop?.();
   },
 
-  async onError(event) {
-    await activeWorkload().onError?.(errorMessage(event));
-  },
+	  async onError(event) {
+	    await activeWorkload().onError?.(errorMessage(event));
+	  },
+
+	  async onDataStream(chunk, sender) {
+	    if (typeof activeWorkload().onDataStream === 'function') {
+	      await activeWorkload().onDataStream(chunk, sender);
+	      return;
+	    }
+	    await __dispatchDataStream(chunk, sender);
+	  },
 
   onSignalingConnecting() {},
   onSignalingConnected() {},
@@ -108,6 +118,8 @@ export async function componentize(
   const projectDir = resolve(options.projectDir ?? '.');
   const entryPath = resolve(projectDir, entry);
   const output = resolve(options.output);
+  const requireFromProject = createRequire(resolve(projectDir, 'package.json'));
+  const runtimeEntry = requireFromProject.resolve('@actrium/actr-workload');
   const tempDir = await mkdtemp(resolve(tmpdir(), 'actr-workload-ts-'));
   const ownsBindingsDir = options.bindingsDir === undefined;
   const bindingsDir = options.bindingsDir
@@ -118,7 +130,7 @@ export async function componentize(
 
   try {
     await mkdir(dirname(output), { recursive: true });
-    await writeFile(shimPath, shimSource(entryPath), 'utf8');
+    await writeFile(shimPath, shimSource(entryPath, runtimeEntry), 'utf8');
     await build({
       entryPoints: [shimPath],
       outfile: bundlePath,
@@ -126,6 +138,7 @@ export async function componentize(
       format: 'esm',
       platform: 'node',
       target: 'es2022',
+      external: ['actr:workload/host@0.1.0'],
       absWorkingDir: projectDir,
       sourcemap: false,
       logLevel: 'silent',

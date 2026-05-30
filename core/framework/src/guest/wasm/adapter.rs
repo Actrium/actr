@@ -323,3 +323,12 @@ pub async fn run_on_mailbox_backpressure<W: Workload>(
     let event = backpressure_event_from_wit(event);
     workload.on_mailbox_backpressure(&ctx, &event).await;
 }
+
+pub async fn run_on_data_stream(
+    chunk: wit_types::DataStream,
+    sender: wit_types::ActrId,
+) -> Result<(), wit_types::ActrError> {
+    super::context::dispatch_registered_stream(chunk, sender)
+        .await
+        .map_err(actr_error_to_wit)
+}

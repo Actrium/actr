@@ -147,7 +147,7 @@ pub(crate) struct Inner {
     /// instance would be unsound. Only the dispatch path takes this lock —
     /// observation hooks reach the node through `hook_observer` without
     /// holding any lock (see `lifecycle::hooks`).
-    pub(crate) workload_dispatch: Mutex<crate::workload::Workload>,
+    pub(crate) workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
 
     /// Optional shell-side observer that receives workload lifecycle /
     /// transport / credential / mailbox hook invocations.
@@ -239,12 +239,13 @@ impl CredentialState {
 /// Called by the workload dispatch path in `handle_incoming`.
 async fn host_operation_handler(
     ctx: crate::context::RuntimeContext,
+    workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
     pending: crate::workload::HostOperation,
 ) -> crate::workload::HostOperationResult {
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
     use actr_framework::guest::dynclib_abi::code as abi_code;
     use actr_framework::{Context as _, Dest};
-    use actr_protocol::PayloadType;
+    use actr_protocol::{DataStream, PayloadType};
 
     /// Map `ActrError` to ABI error code, preserving semantics for guest-side discrimination
     fn actr_error_to_code(err: &ActrError) -> i32 {
@@ -332,6 +333,189 @@ async fn host_operation_handler(
                     tracing::error!("discover failed: {e:?}");
                     HostOperationResult::Error(actr_error_to_code(&e))
                 }
+            }
+        }
+
+        HostOperation::RegisterStream(req) => {
+            let stream_id = req.stream_id;
+            let callback_ctx = ctx.clone();
+            let callback_workload_dispatch = workload_dispatch.clone();
+            match ctx
+                .register_stream(stream_id, move |chunk: DataStream, sender| {
+                    let ctx_for_executor = callback_ctx.clone();
+                    let workload_dispatch = callback_workload_dispatch.clone();
+                    Box::pin(async move {
+                        let invocation = crate::workload::InvocationContext {
+                            self_id: actr_framework::Context::self_id(&ctx_for_executor).clone(),
+                            caller_id: Some(sender.clone()),
+                            request_id: format!(
+                                "data-stream:{}:{}",
+                                chunk.stream_id, chunk.sequence
+                            ),
+                        };
+                        let call_executor: crate::workload::HostAbiFn =
+                            std::sync::Arc::new(move |pending| {
+                                let ctx = ctx_for_executor.clone();
+                                Box::pin(async move {
+                                    stream_callback_host_operation_handler(ctx, pending).await
+                                })
+                            });
+                        let mut guard = workload_dispatch.lock().await;
+                        guard
+                            .dispatch_data_stream(chunk, sender, invocation, &call_executor)
+                            .await
+                    })
+                })
+                .await
+            {
+                Ok(()) => HostOperationResult::Done,
+                Err(e) => {
+                    tracing::error!("register_stream failed: {e:?}");
+                    HostOperationResult::Error(actr_error_to_code(&e))
+                }
+            }
+        }
+
+        HostOperation::UnregisterStream(req) => match ctx.unregister_stream(&req.stream_id).await {
+            Ok(()) => HostOperationResult::Done,
+            Err(e) => {
+                tracing::error!("unregister_stream failed: {e:?}");
+                HostOperationResult::Error(actr_error_to_code(&e))
+            }
+        },
+
+        HostOperation::SendDataStream(req) => {
+            let dest = match decode_dest(&req.dest) {
+                Some(d) => d,
+                None => {
+                    tracing::error!("send_data_stream: dest decode failed");
+                    return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
+                }
+            };
+            let payload_type = match PayloadType::try_from(req.payload_type) {
+                Ok(PayloadType::StreamReliable | PayloadType::StreamLatencyFirst) => {
+                    PayloadType::try_from(req.payload_type).expect("checked payload type")
+                }
+                Ok(other) => {
+                    tracing::error!(?other, "send_data_stream: invalid stream payload type");
+                    return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
+                }
+                Err(_) => {
+                    tracing::error!(
+                        payload_type = req.payload_type,
+                        "send_data_stream: unknown payload type"
+                    );
+                    return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
+                }
+            };
+            match ctx.send_data_stream(&dest, req.chunk, payload_type).await {
+                Ok(()) => HostOperationResult::Done,
+                Err(e) => {
+                    tracing::error!("send_data_stream failed: {e:?}");
+                    HostOperationResult::Error(actr_error_to_code(&e))
+                }
+            }
+        }
+    }
+}
+
+async fn stream_callback_host_operation_handler(
+    ctx: crate::context::RuntimeContext,
+    pending: crate::workload::HostOperation,
+) -> crate::workload::HostOperationResult {
+    use crate::workload::{HostOperation, HostOperationResult, decode_dest};
+    use actr_framework::guest::dynclib_abi::code as abi_code;
+    use actr_framework::{Context as _, Dest};
+    use actr_protocol::PayloadType;
+
+    fn actr_error_to_code(err: &ActrError) -> i32 {
+        match err {
+            ActrError::DecodeFailure(_) | ActrError::InvalidArgument(_) => abi_code::PROTOCOL_ERROR,
+            _ => abi_code::GENERIC_ERROR,
+        }
+    }
+
+    match pending {
+        HostOperation::CallRaw(req) => {
+            match ctx
+                .call_raw(
+                    &Dest::Actor(req.target),
+                    req.route_key,
+                    PayloadType::RpcReliable,
+                    bytes::Bytes::from(req.payload),
+                    30_000,
+                )
+                .await
+            {
+                Ok(resp) => HostOperationResult::Bytes(resp.to_vec()),
+                Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
+            }
+        }
+        HostOperation::Call(req) => {
+            let dest = match decode_dest(&req.dest) {
+                Some(d) => d,
+                None => return HostOperationResult::Error(abi_code::PROTOCOL_ERROR),
+            };
+            match ctx
+                .call_raw(
+                    &dest,
+                    req.route_key,
+                    PayloadType::RpcReliable,
+                    bytes::Bytes::from(req.payload),
+                    30_000,
+                )
+                .await
+            {
+                Ok(resp) => HostOperationResult::Bytes(resp.to_vec()),
+                Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
+            }
+        }
+        HostOperation::Tell(req) => {
+            let dest = match decode_dest(&req.dest) {
+                Some(d) => d,
+                None => return HostOperationResult::Error(abi_code::PROTOCOL_ERROR),
+            };
+            match ctx
+                .tell_raw(
+                    &dest,
+                    req.route_key,
+                    PayloadType::RpcReliable,
+                    bytes::Bytes::from(req.payload),
+                )
+                .await
+            {
+                Ok(()) => HostOperationResult::Done,
+                Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
+            }
+        }
+        HostOperation::Discover(req) => {
+            match ctx.discover_route_candidate(&req.target_type).await {
+                Ok(id) => HostOperationResult::Bytes(id.encode_to_vec()),
+                Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
+            }
+        }
+        HostOperation::RegisterStream(_) => {
+            tracing::error!("register_stream from inside a stream callback is not supported");
+            HostOperationResult::Error(abi_code::UNSUPPORTED_OP)
+        }
+        HostOperation::UnregisterStream(req) => match ctx.unregister_stream(&req.stream_id).await {
+            Ok(()) => HostOperationResult::Done,
+            Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
+        },
+        HostOperation::SendDataStream(req) => {
+            let dest = match decode_dest(&req.dest) {
+                Some(d) => d,
+                None => return HostOperationResult::Error(abi_code::PROTOCOL_ERROR),
+            };
+            let payload_type = match PayloadType::try_from(req.payload_type) {
+                Ok(PayloadType::StreamReliable | PayloadType::StreamLatencyFirst) => {
+                    PayloadType::try_from(req.payload_type).expect("checked payload type")
+                }
+                Ok(_) | Err(_) => return HostOperationResult::Error(abi_code::PROTOCOL_ERROR),
+            };
+            match ctx.send_data_stream(&dest, req.chunk, payload_type).await {
+                Ok(()) => HostOperationResult::Done,
+                Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
             }
         }
     }
@@ -497,9 +681,11 @@ impl Inner {
             request_id: envelope.request_id.clone(),
         };
         let ctx_for_executor = ctx.clone();
+        let workload_for_executor = self.workload_dispatch.clone();
         let call_executor: crate::workload::HostAbiFn = std::sync::Arc::new(move |pending| {
             let ctx = ctx_for_executor.clone();
-            Box::pin(async move { host_operation_handler(ctx, pending).await })
+            let workload_dispatch = workload_for_executor.clone();
+            Box::pin(async move { host_operation_handler(ctx, workload_dispatch, pending).await })
         });
 
         let mut guard = self.workload_dispatch.lock().await;
@@ -654,7 +840,7 @@ impl Inner {
             discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
-            workload_dispatch: Mutex::new(workload),
+            workload_dispatch: Arc::new(Mutex::new(workload)),
             hook_observer: None,
             mailbox_backpressure_threshold,
             credential_expiry_warning,

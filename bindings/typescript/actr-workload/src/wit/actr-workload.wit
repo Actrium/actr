@@ -81,6 +81,27 @@ interface types {
         payload: list<u8>,
     }
 
+    record metadata-entry {
+        key: string,
+        value: string,
+    }
+
+    record data-stream {
+        stream-id: string,
+        sequence: u64,
+        payload: list<u8>,
+        metadata: list<metadata-entry>,
+        timestamp-ms: option<s64>,
+    }
+
+    variant payload-type {
+        rpc-reliable,
+        rpc-signal,
+        stream-reliable,
+        stream-latency-first,
+        media-rtp,
+    }
+
     // Coarse error classification — one-to-one with
     // `actr_framework::ErrorCategory`.
     variant error-category {
@@ -165,7 +186,7 @@ interface types {
 // `async fn` at the Rust surface.
 
 interface host {
-    use types.{actr-id, actr-type, actr-error, dest};
+    use types.{actr-id, actr-type, actr-error, data-stream, dest, payload-type};
 
     // Typed-routed call: host forwards to the destination, returning the
     // encoded response payload.
@@ -192,6 +213,16 @@ interface host {
 
     // Discovery: find a candidate actor serving the requested type.
     discover: func(target-type: actr-type) -> result<actr-id, actr-error>;
+
+    register-stream: func(stream-id: string) -> result<_, actr-error>;
+
+    unregister-stream: func(stream-id: string) -> result<_, actr-error>;
+
+    send-data-stream: func(
+        target: dest,
+        chunk: data-stream,
+        payload-type: payload-type,
+    ) -> result<_, actr-error>;
 
     // Structured log sink. Host-side maps `level` to tracing log levels.
     log-message: func(level: string, message: string);
@@ -225,6 +256,8 @@ interface workload {
     use types.{
         rpc-envelope,
         actr-error,
+        actr-id,
+        data-stream,
         peer-event,
         error-event,
         credential-event,
@@ -275,6 +308,10 @@ interface workload {
     // ── Mailbox (1, infallible) ──────────────────────────────────────────
 
     on-mailbox-backpressure: func(event: backpressure-event);
+
+    // ── Fast path: DataStream ────────────────────────────────────────────
+
+    on-data-stream: func(chunk: data-stream, sender: actr-id) -> result<_, actr-error>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

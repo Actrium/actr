@@ -67,12 +67,29 @@ extern "C" {
         level: JsValue,
         message: JsValue,
     ) -> Result<js_sys::Promise, JsValue>;
+    #[wasm_bindgen(catch, js_name = "actrHostRegisterStream")]
+    fn __actr_host_register_stream(
+        request_id: JsValue,
+        stream_id: JsValue,
+    ) -> Result<js_sys::Promise, JsValue>;
+    #[wasm_bindgen(catch, js_name = "actrHostSendDataStream")]
+    fn __actr_host_send_data_stream(
+        request_id: JsValue,
+        target: JsValue,
+        chunk: JsValue,
+        payload_type: JsValue,
+    ) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(catch, js_name = "actrHostTell")]
     fn __actr_host_tell(
         request_id: JsValue,
         target: JsValue,
         route_key: JsValue,
         payload: JsValue,
+    ) -> Result<js_sys::Promise, JsValue>;
+    #[wasm_bindgen(catch, js_name = "actrHostUnregisterStream")]
+    fn __actr_host_unregister_stream(
+        request_id: JsValue,
+        stream_id: JsValue,
     ) -> Result<js_sys::Promise, JsValue>;
 }
 
@@ -200,6 +217,47 @@ pub async fn log_message_with_request_id(
     Ok(())
 }
 
+/// Guest-side wrapper for WIT `host.register-stream`.
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn register_stream_with_request_id(
+    request_id: &str,
+    stream_id: String,
+) -> Result<Result<(), ActrError>, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
+    let __js_arg0 = serde_wasm_bindgen::to_value(&stream_id).map_err(serde_err)?;
+    let __js_promise = __actr_host_register_stream(__js_request_id, __js_arg0)?;
+    let __js_result = JsFuture::from(__js_promise).await?;
+    let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
+    Ok(__out)
+}
+
+/// Guest-side wrapper for WIT `host.send-data-stream`.
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn send_data_stream_with_request_id(
+    request_id: &str,
+    target: Dest,
+    chunk: DataStream,
+    payload_type: PayloadType,
+) -> Result<Result<(), ActrError>, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
+    let __js_arg0 = serde_wasm_bindgen::to_value(&target).map_err(serde_err)?;
+    let __js_arg1 = serde_wasm_bindgen::to_value(&chunk).map_err(serde_err)?;
+    let __js_arg2 = serde_wasm_bindgen::to_value(&payload_type).map_err(serde_err)?;
+    let __js_promise =
+        __actr_host_send_data_stream(__js_request_id, __js_arg0, __js_arg1, __js_arg2)?;
+    let __js_result = JsFuture::from(__js_promise).await?;
+    let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
+    Ok(__out)
+}
+
 /// Guest-side wrapper for WIT `host.tell`.
 ///
 /// The `request_id` first parameter threads per-dispatch context
@@ -217,6 +275,24 @@ pub async fn tell_with_request_id(
     let __js_arg1 = serde_wasm_bindgen::to_value(&route_key).map_err(serde_err)?;
     let __js_arg2 = serde_wasm_bindgen::to_value(&payload).map_err(serde_err)?;
     let __js_promise = __actr_host_tell(__js_request_id, __js_arg0, __js_arg1, __js_arg2)?;
+    let __js_result = JsFuture::from(__js_promise).await?;
+    let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
+    Ok(__out)
+}
+
+/// Guest-side wrapper for WIT `host.unregister-stream`.
+///
+/// The `request_id` first parameter threads per-dispatch context
+/// through to the SW host (Phase 6 γ-unified §3.4). Callers are
+/// expected to pass `Context::request_id()`; manual construction
+/// is discouraged.
+pub async fn unregister_stream_with_request_id(
+    request_id: &str,
+    stream_id: String,
+) -> Result<Result<(), ActrError>, JsValue> {
+    let __js_request_id = JsValue::from_str(request_id);
+    let __js_arg0 = serde_wasm_bindgen::to_value(&stream_id).map_err(serde_err)?;
+    let __js_promise = __actr_host_unregister_stream(__js_request_id, __js_arg0)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)

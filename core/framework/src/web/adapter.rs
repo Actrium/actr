@@ -25,7 +25,7 @@
 
 use std::time::{Duration, UNIX_EPOCH};
 
-use actr_protocol::{ActrError, ActrId, Realm, RpcEnvelope};
+use actr_protocol::{ActrError, ActrId, DataStream, MetadataEntry, Realm, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -142,6 +142,23 @@ fn backpressure_event_from_wit(e: wit::BackpressureEvent) -> BackpressureEvent {
     BackpressureEvent {
         queue_len: e.queue_len as usize,
         threshold: e.threshold as usize,
+    }
+}
+
+fn data_stream_from_wit(chunk: wit::DataStream) -> DataStream {
+    DataStream {
+        stream_id: chunk.stream_id,
+        sequence: chunk.sequence,
+        payload: chunk.payload.into(),
+        metadata: chunk
+            .metadata
+            .into_iter()
+            .map(|entry| MetadataEntry {
+                key: entry.key,
+                value: entry.value,
+            })
+            .collect(),
+        timestamp_ms: chunk.timestamp_ms,
     }
 }
 
@@ -330,5 +347,17 @@ where
         let ctx = WebContext::for_lifecycle();
         let event = backpressure_event_from_wit(event);
         self.inner.on_mailbox_backpressure(&ctx, &event).await;
+    }
+
+    async fn on_data_stream(
+        &self,
+        chunk: wit::DataStream,
+        _sender: wit::ActrId,
+    ) -> Result<(), wit::ActrError> {
+        let chunk = data_stream_from_wit(chunk);
+        Err(proto_error_to_wit(ActrError::NotImplemented(format!(
+            "WebWorkloadAdapter::on_data_stream({})",
+            chunk.stream_id
+        ))))
     }
 }

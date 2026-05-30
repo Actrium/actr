@@ -46,9 +46,11 @@ impl<T> SendPtr<T> {
 }
 
 use actr_framework::guest::vtable::HostVTable;
+use actr_protocol::{ActrId, DataStream};
 
 use crate::workload::{
-    HostAbiFn, HostOperation, HostOperationResult, InvocationContext, encode_guest_handle_request,
+    HostAbiFn, HostOperation, HostOperationResult, InvocationContext,
+    encode_guest_data_stream_request, encode_guest_handle_request,
 };
 
 use super::error::{DynclibError, DynclibResult};
@@ -439,17 +441,13 @@ impl DynclibInstance {
     /// `actr_handle`. Those trampolines use `Handle::block_on` to execute the
     /// async `call_executor` — this is safe because `actr_handle` runs inside
     /// `spawn_blocking` (off the tokio worker pool).
-    pub(crate) async fn handle(
+    async fn handle_encoded_request(
         &mut self,
-        request_bytes: &[u8],
-        ctx: InvocationContext,
+        request_owned: Vec<u8>,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<Vec<u8>> {
         let handle_fn = self.handle_fn;
         let free_response_fn = self.free_response_fn;
-        let request_owned = encode_guest_handle_request(request_bytes, ctx).map_err(|code| {
-            DynclibError::DispatchFailed(format!("guest handle frame serialization failed: {code}"))
-        })?;
 
         // Obtain a handle to the current tokio runtime so trampolines can
         // block on async futures from the blocking thread.
@@ -530,6 +528,35 @@ impl DynclibInstance {
 
         Ok(reply.payload)
     }
+
+    pub(crate) async fn handle(
+        &mut self,
+        request_bytes: &[u8],
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<Vec<u8>> {
+        let request_owned = encode_guest_handle_request(request_bytes, ctx).map_err(|code| {
+            DynclibError::DispatchFailed(format!("guest handle frame serialization failed: {code}"))
+        })?;
+        self.handle_encoded_request(request_owned, call_executor)
+            .await
+    }
+
+    pub(crate) async fn handle_data_stream(
+        &mut self,
+        chunk: DataStream,
+        sender: ActrId,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<()> {
+        let request_owned = encode_guest_data_stream_request(chunk, sender).map_err(|code| {
+            DynclibError::DispatchFailed(format!(
+                "guest data stream frame serialization failed: {code}"
+            ))
+        })?;
+        self.handle_encoded_request(request_owned, call_executor)
+            .await
+            .map(|_| ())
+    }
 }
 
 impl DynClibWorkload {
@@ -541,6 +568,17 @@ impl DynClibWorkload {
     ) -> DynclibResult<Vec<u8>> {
         self.instance
             .handle(request_bytes, ctx, call_executor)
+            .await
+    }
+
+    pub(crate) async fn handle_data_stream(
+        &mut self,
+        chunk: DataStream,
+        sender: ActrId,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<()> {
+        self.instance
+            .handle_data_stream(chunk, sender, call_executor)
             .await
     }
 }

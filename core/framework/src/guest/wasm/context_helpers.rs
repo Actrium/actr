@@ -5,7 +5,7 @@
 //! whole `Context`-trait impl surface. Every helper is a one-shot pure
 //! conversion with no I/O or async side effects.
 
-use actr_protocol::{ActrId, ActrType, Realm};
+use actr_protocol::{ActrId, ActrType, DataStream, MetadataEntry, PayloadType, Realm};
 
 use crate::Dest;
 
@@ -60,5 +60,49 @@ pub(crate) fn dest_to_wit(dest: &Dest) -> wit_types::Dest {
         Dest::Shell => wit_types::Dest::Shell,
         Dest::Local => wit_types::Dest::Local,
         Dest::Actor(id) => wit_types::Dest::Actor(actr_id_to_wit(id)),
+    }
+}
+
+pub(crate) fn payload_type_to_wit(payload_type: PayloadType) -> wit_types::PayloadType {
+    match payload_type {
+        PayloadType::RpcReliable => wit_types::PayloadType::RpcReliable,
+        PayloadType::RpcSignal => wit_types::PayloadType::RpcSignal,
+        PayloadType::StreamReliable => wit_types::PayloadType::StreamReliable,
+        PayloadType::StreamLatencyFirst => wit_types::PayloadType::StreamLatencyFirst,
+        PayloadType::MediaRtp => wit_types::PayloadType::MediaRtp,
+    }
+}
+
+pub(crate) fn data_stream_to_wit(chunk: DataStream) -> wit_types::DataStream {
+    wit_types::DataStream {
+        stream_id: chunk.stream_id,
+        sequence: chunk.sequence,
+        payload: chunk.payload.to_vec(),
+        metadata: chunk
+            .metadata
+            .into_iter()
+            .map(|entry| wit_types::MetadataEntry {
+                key: entry.key,
+                value: entry.value,
+            })
+            .collect(),
+        timestamp_ms: chunk.timestamp_ms,
+    }
+}
+
+pub(crate) fn data_stream_from_wit(chunk: wit_types::DataStream) -> DataStream {
+    DataStream {
+        stream_id: chunk.stream_id,
+        sequence: chunk.sequence,
+        payload: chunk.payload.into(),
+        metadata: chunk
+            .metadata
+            .into_iter()
+            .map(|entry| MetadataEntry {
+                key: entry.key,
+                value: entry.value,
+            })
+            .collect(),
+        timestamp_ms: chunk.timestamp_ms,
     }
 }

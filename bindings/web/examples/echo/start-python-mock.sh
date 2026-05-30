@@ -280,7 +280,11 @@ PY_SERVER_LOG="$LOG_DIR/python-server.log"
 : > "$PY_SERVER_LOG"
 RUST_LOG="$ACTR_E2E_RUST_LOG" "$ACTR_CMD" run -c "$PY_SERVER_CONFIG" > "$PY_SERVER_LOG" 2>&1 &
 PY_SERVER_PID=$!
-if ! wait_for_log "$PY_SERVER_LOG" "ActrNode started" "Python server" "$PYTHON_SERVER_READY_ATTEMPTS"; then
+if ! wait_for_log \
+    "$PY_SERVER_LOG" \
+    "ActrNode started" \
+    "Python server" \
+    "$PYTHON_SERVER_READY_ATTEMPTS"; then
     dump_process_state "$PY_SERVER_PID" "Python server"
     exit 1
 fi
