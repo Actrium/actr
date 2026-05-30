@@ -281,8 +281,8 @@ PY_SERVER_LOG="$LOG_DIR/python-server.log"
 RUST_LOG="$ACTR_E2E_RUST_LOG" "$ACTR_CMD" run -c "$PY_SERVER_CONFIG" > "$PY_SERVER_LOG" 2>&1 &
 PY_SERVER_PID=$!
 if ! wait_for_log \
-    "$MOCK_LOG" \
-    'WS bound to HTTP-registered actor actor_id=.*EchoService' \
+    "$PY_SERVER_LOG" \
+    "ActrNode started" \
     "Python server" \
     "$PYTHON_SERVER_READY_ATTEMPTS"; then
     dump_process_state "$PY_SERVER_PID" "Python server"
