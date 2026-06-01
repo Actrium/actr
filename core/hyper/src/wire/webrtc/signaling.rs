@@ -459,6 +459,33 @@ impl WebSocketSignalingClient {
         }
     }
 
+    async fn publish_disconnected_transition(
+        was_connected: bool,
+        stats: &Arc<AtomicSignalingStats>,
+        event_tx: &broadcast::Sender<SignalingEvent>,
+        hook_callback: Option<HookCallback>,
+        reason: DisconnectReason,
+        reconnect_notify: Option<&Arc<tokio::sync::Notify>>,
+    ) -> bool {
+        if !was_connected {
+            return false;
+        }
+
+        stats.disconnections.fetch_add(1, Ordering::Relaxed);
+
+        if let Some(cb) = hook_callback {
+            cb(HookEvent::SignalingDisconnected).await;
+        }
+
+        let _ = event_tx.send(SignalingEvent::Disconnected { reason });
+
+        if let Some(notify) = reconnect_notify {
+            notify.notify_one();
+        }
+
+        true
+    }
+
     pub fn start_reconnect_manager(self: &Arc<Self>) {
         if !self.config.reconnect_config.enabled {
             return;
@@ -893,6 +920,7 @@ impl WebSocketSignalingClient {
         let pending_pongs = self.pending_pongs.clone();
         let reconnect_notify = self.reconnect_notify.clone();
         let reconnect_enabled = self.config.reconnect_config.enabled;
+        let hook_callback = self.hook_callback.get().cloned();
         let handle = tokio::spawn(async move {
             while let Some(msg) = stream.next().await {
                 match msg {
@@ -966,15 +994,16 @@ impl WebSocketSignalingClient {
             // If explicit disconnect already marked the client disconnected,
             // do not start an automatic reconnect cycle for the intentional
             // close. The disconnect path publishes its own Manual event.
-            if connected.swap(false, Ordering::AcqRel) {
-                stats.disconnections.fetch_add(1, Ordering::Relaxed);
-                let _ = event_tx.send(SignalingEvent::Disconnected {
-                    reason: DisconnectReason::StreamEnded,
-                });
-                if reconnect_enabled {
-                    reconnect_notify.notify_one();
-                }
-            }
+            let was_connected = connected.swap(false, Ordering::AcqRel);
+            Self::publish_disconnected_transition(
+                was_connected,
+                &stats,
+                &event_tx,
+                hook_callback,
+                DisconnectReason::StreamEnded,
+                reconnect_enabled.then_some(&reconnect_notify),
+            )
+            .await;
             pending_pongs.lock().await.clear();
         });
 
@@ -995,11 +1024,13 @@ impl WebSocketSignalingClient {
 
         let sink = self.ws_sink.clone();
         let connected = self.connected.clone();
+        let stats = self.stats.clone();
         let event_tx = self.event_tx.clone();
         let last_pong = self.last_pong.clone();
         let receiver_task_clone = Arc::clone(&self.receiver_task);
         let reconnect_notify = self.reconnect_notify.clone();
         let reconnect_enabled = self.config.reconnect_config.enabled;
+        let hook_callback = self.hook_callback.get().cloned();
 
         let handle = tokio::spawn(async move {
             loop {
@@ -1010,52 +1041,47 @@ impl WebSocketSignalingClient {
                 }
 
                 // Send ping; mark disconnect on failure.
-                let mut sink_guard = sink.lock().await;
-                if let Some(sink) = sink_guard.as_mut() {
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
-                        sink.send(tokio_tungstenite::tungstenite::Message::Ping(
-                            Vec::new().into(),
-                        )),
+                let mut disconnect_reason = None;
+                {
+                    let mut sink_guard = sink.lock().await;
+                    if let Some(sink) = sink_guard.as_mut() {
+                        match tokio::time::timeout(
+                            std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
+                            sink.send(tokio_tungstenite::tungstenite::Message::Ping(
+                                Vec::new().into(),
+                            )),
+                        )
+                        .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(e)) => {
+                                tracing::warn!("Signaling ping send failed: {e}");
+                                disconnect_reason = Some(DisconnectReason::PingSendFailed);
+                            }
+                            Err(_) => {
+                                tracing::warn!("Signaling ping send timed out");
+                                disconnect_reason = Some(DisconnectReason::PingSendFailed);
+                            }
+                        }
+                    } else {
+                        tracing::warn!("Signaling not connected");
+                        disconnect_reason = Some(DisconnectReason::PingSendFailed);
+                    }
+                }
+
+                if let Some(reason) = disconnect_reason {
+                    let was_connected = connected.swap(false, Ordering::AcqRel);
+                    Self::publish_disconnected_transition(
+                        was_connected,
+                        &stats,
+                        &event_tx,
+                        hook_callback.clone(),
+                        reason,
+                        reconnect_enabled.then_some(&reconnect_notify),
                     )
-                    .await
-                    {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            tracing::warn!("Signaling ping send failed: {e}");
-                            connected.store(false, Ordering::Release);
-                            let _ = event_tx.send(SignalingEvent::Disconnected {
-                                reason: DisconnectReason::PingSendFailed,
-                            });
-                            if reconnect_enabled {
-                                reconnect_notify.notify_one();
-                            }
-                            break;
-                        }
-                        Err(_) => {
-                            tracing::warn!("Signaling ping send timed out");
-                            connected.store(false, Ordering::Release);
-                            let _ = event_tx.send(SignalingEvent::Disconnected {
-                                reason: DisconnectReason::PingSendFailed,
-                            });
-                            if reconnect_enabled {
-                                reconnect_notify.notify_one();
-                            }
-                            break;
-                        }
-                    }
-                } else {
-                    tracing::warn!("Signaling not connected");
-                    connected.store(false, Ordering::Release);
-                    let _ = event_tx.send(SignalingEvent::Disconnected {
-                        reason: DisconnectReason::PingSendFailed,
-                    });
-                    if reconnect_enabled {
-                        reconnect_notify.notify_one();
-                    }
+                    .await;
                     break;
                 }
-                drop(sink_guard);
 
                 // Check for stale pong
                 let now = current_unix_secs();
@@ -1068,13 +1094,16 @@ impl WebSocketSignalingClient {
                     if let Some(handle) = receiver_task_clone.lock().await.take() {
                         handle.abort();
                     }
-                    connected.store(false, Ordering::Release);
-                    let _ = event_tx.send(SignalingEvent::Disconnected {
-                        reason: DisconnectReason::PongTimeout,
-                    });
-                    if reconnect_enabled {
-                        reconnect_notify.notify_one();
-                    }
+                    let was_connected = connected.swap(false, Ordering::AcqRel);
+                    Self::publish_disconnected_transition(
+                        was_connected,
+                        &stats,
+                        &event_tx,
+                        hook_callback.clone(),
+                        DisconnectReason::PongTimeout,
+                        reconnect_enabled.then_some(&reconnect_notify),
+                    )
+                    .await;
                     break;
                 }
             }
@@ -1252,7 +1281,7 @@ impl SignalingClient for WebSocketSignalingClient {
     async fn disconnect(&self) -> NetworkResult<()> {
         self.drop_pending_replies("signaling disconnect").await;
         self.drop_pending_pongs("signaling disconnect").await;
-        self.connected.store(false, Ordering::Release);
+        let was_connected = self.connected.swap(false, Ordering::AcqRel);
 
         // Stop background tasks before taking the WebSocket sink/stream locks.
         // A ping or receiver task can be inside a socket operation while holding
@@ -1347,13 +1376,16 @@ impl SignalingClient for WebSocketSignalingClient {
 
         self.reset_inbound_channel().await;
 
-        self.stats.disconnections.fetch_add(1, Ordering::Relaxed);
-
         // Invoke hook synchronously, then broadcast for other subscribers
-        self.invoke_hook(HookEvent::SignalingDisconnected).await;
-        let _ = self.event_tx.send(SignalingEvent::Disconnected {
-            reason: DisconnectReason::Manual,
-        });
+        Self::publish_disconnected_transition(
+            was_connected,
+            &self.stats,
+            &self.event_tx,
+            self.hook_callback.get().cloned(),
+            DisconnectReason::Manual,
+            None,
+        )
+        .await;
 
         Ok(())
     }
@@ -1390,10 +1422,16 @@ impl SignalingClient for WebSocketSignalingClient {
 
         if let Err(e) = send_result {
             self.pending_pongs.lock().await.remove(&payload);
-            self.connected.store(false, Ordering::Release);
-            let _ = self.event_tx.send(SignalingEvent::Disconnected {
-                reason: DisconnectReason::PingSendFailed,
-            });
+            let was_connected = self.connected.swap(false, Ordering::AcqRel);
+            Self::publish_disconnected_transition(
+                was_connected,
+                &self.stats,
+                &self.event_tx,
+                self.hook_callback.get().cloned(),
+                DisconnectReason::PingSendFailed,
+                None,
+            )
+            .await;
             return Err(e);
         }
 
@@ -1861,6 +1899,8 @@ fn current_unix_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering as UsizeOrdering};
 
     /// Simple fake SignalingClient implementation for testing the reconnect helper.
@@ -1996,6 +2036,61 @@ mod tests {
     /// Helper: create a WebSocketSignalingClient wrapped in Arc
     fn make_ws_client(config: SignalingConfig) -> Arc<WebSocketSignalingClient> {
         Arc::new(WebSocketSignalingClient::new(config))
+    }
+
+    #[tokio::test]
+    async fn test_publish_disconnected_transition_fires_hook_once() {
+        let stats = Arc::new(AtomicSignalingStats::default());
+        let (event_tx, mut event_rx) = broadcast::channel(4);
+        let hook_count = Arc::new(AtomicUsize::new(0));
+        let hook_count_for_cb = hook_count.clone();
+        let hook_callback: HookCallback = Arc::new(move |event| {
+            let hook_count = hook_count_for_cb.clone();
+            Box::pin(async move {
+                if matches!(event, HookEvent::SignalingDisconnected) {
+                    hook_count.fetch_add(1, UsizeOrdering::SeqCst);
+                }
+            }) as Pin<Box<dyn Future<Output = ()> + Send>>
+        });
+
+        let first = WebSocketSignalingClient::publish_disconnected_transition(
+            true,
+            &stats,
+            &event_tx,
+            Some(hook_callback.clone()),
+            DisconnectReason::StreamEnded,
+            None,
+        )
+        .await;
+        assert!(
+            first,
+            "first connected->disconnected transition should publish"
+        );
+        assert_eq!(hook_count.load(UsizeOrdering::SeqCst), 1);
+        assert_eq!(stats.snapshot().disconnections, 1);
+        assert!(matches!(
+            event_rx.recv().await,
+            Ok(SignalingEvent::Disconnected {
+                reason: DisconnectReason::StreamEnded
+            })
+        ));
+
+        let second = WebSocketSignalingClient::publish_disconnected_transition(
+            false,
+            &stats,
+            &event_tx,
+            Some(hook_callback),
+            DisconnectReason::PongTimeout,
+            None,
+        )
+        .await;
+        assert!(
+            !second,
+            "stale duplicate disconnected transition should be ignored"
+        );
+        assert_eq!(hook_count.load(UsizeOrdering::SeqCst), 1);
+        assert_eq!(stats.snapshot().disconnections, 1);
+        assert!(event_rx.try_recv().is_err());
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
