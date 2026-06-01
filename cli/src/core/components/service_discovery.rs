@@ -5,9 +5,9 @@ use crate::core::{
 use actr_hyper::AisClient;
 use actr_protocol::{
     AIdCredential, ActrId, ActrToSignaling, ActrType, DiscoveryRequest, ErrorResponse,
-    GetServiceSpecRequest, Realm, RegisterRequest, SignalingEnvelope, actr_to_signaling,
-    discovery_response, get_service_spec_response, register_response, signaling_envelope,
-    signaling_to_actr,
+    GetServiceSpecRequest, Realm, RegisterAuthMode, RegisterRequest, SignalingEnvelope,
+    actr_to_signaling, discovery_response, get_service_spec_response, register_response,
+    signaling_envelope, signaling_to_actr,
 };
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -52,12 +52,6 @@ pub struct DiscoveryContext {
 
     /// Optional realm secret for authentication
     pub realm_secret: Option<String>,
-
-    /// Raw manifest.toml bytes for AIS MFR identity verification (Path 2)
-    pub manifest_raw: Option<Vec<u8>>,
-
-    /// Ed25519 signature over manifest_raw bytes
-    pub mfr_signature: Option<Vec<u8>>,
 }
 
 pub struct NetworkServiceDiscovery {
@@ -155,25 +149,13 @@ impl NetworkServiceDiscovery {
     }
 
     async fn connect_and_register(&self) -> Result<SignalingState> {
-        let register_request = RegisterRequest {
-            actr_type: self.context.package_actr_type.clone(),
-            realm: self.context.realm,
-            service_spec: None,
-            service: None,
-            acl: None,
-            ws_address: None,
-            manifest_raw: self.context.manifest_raw.clone().map(Into::into),
-            mfr_signature: self.context.mfr_signature.clone().map(Into::into),
-            ..Default::default()
-        };
+        let realm_secret = self.required_realm_secret()?.to_string();
+        let register_request = self.build_linked_register_request();
 
-        let mut ais_client = AisClient::new(&self.context.ais_endpoint);
-        if let Some(realm_secret) = &self.context.realm_secret {
-            ais_client = ais_client.with_realm_secret(realm_secret.clone());
-        }
+        let ais_client = AisClient::new(&self.context.ais_endpoint).with_realm_secret(realm_secret);
 
         let register_response = ais_client
-            .register_with_manifest(register_request)
+            .register_linked(register_request)
             .await
             .map_err(|err| anyhow!("AIS HTTP registration failed: {err}"))?;
 
@@ -400,6 +382,33 @@ impl NetworkServiceDiscovery {
 
         entry.actr_type == lookup_type
     }
+
+    fn required_realm_secret(&self) -> Result<&str> {
+        self.context
+            .realm_secret
+            .as_deref()
+            .map(str::trim)
+            .filter(|secret| !secret.is_empty())
+            .ok_or_else(|| {
+                anyhow!("network.realm_secret is required for CLI service discovery registration")
+            })
+    }
+
+    fn build_linked_register_request(&self) -> RegisterRequest {
+        RegisterRequest {
+            actr_type: self.context.package_actr_type.clone(),
+            realm: self.context.realm,
+            service_spec: None,
+            service: None,
+            acl: None,
+            ws_address: None,
+            manifest_raw: None,
+            mfr_signature: None,
+            psk_token: None,
+            target: None,
+            auth_mode: Some(RegisterAuthMode::Linked as i32),
+        }
+    }
 }
 
 #[async_trait]
@@ -556,6 +565,20 @@ mod tests {
     use super::*;
     use actr_protocol::Realm;
 
+    fn sample_context(realm_secret: Option<&str>) -> DiscoveryContext {
+        DiscoveryContext {
+            package_actr_type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "cli-client".to_string(),
+                version: "1.0.0".to_string(),
+            },
+            signaling_url: Url::parse("ws://localhost:8081/signaling/ws").unwrap(),
+            ais_endpoint: "http://localhost:8081/ais".to_string(),
+            realm: Realm { realm_id: 1001 },
+            realm_secret: realm_secret.map(str::to_string),
+        }
+    }
+
     fn sample_actor_id() -> ActrId {
         ActrId {
             serial_number: 42,
@@ -604,5 +627,30 @@ mod tests {
             query_pairs.get("signature"),
             Some(&base64::engine::general_purpose::STANDARD.encode([5, 6, 7, 8]))
         );
+    }
+
+    #[test]
+    fn cli_discovery_register_request_uses_linked_auth_mode() {
+        let discovery = NetworkServiceDiscovery::new(sample_context(Some("rs_test_secret")));
+        let request = discovery.build_linked_register_request();
+
+        assert_eq!(request.auth_mode, Some(RegisterAuthMode::Linked as i32));
+        assert_eq!(request.manifest_raw, None);
+        assert_eq!(request.mfr_signature, None);
+        assert_eq!(request.psk_token, None);
+        assert_eq!(request.target, None);
+        assert_eq!(request.actr_type.name, "cli-client");
+        assert_eq!(request.realm.realm_id, 1001);
+    }
+
+    #[test]
+    fn cli_discovery_requires_realm_secret() {
+        let missing = NetworkServiceDiscovery::new(sample_context(None));
+        let err = missing.required_realm_secret().unwrap_err();
+        assert!(err.to_string().contains("network.realm_secret is required"));
+
+        let blank = NetworkServiceDiscovery::new(sample_context(Some("   ")));
+        let err = blank.required_realm_secret().unwrap_err();
+        assert!(err.to_string().contains("network.realm_secret is required"));
     }
 }

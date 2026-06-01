@@ -29,10 +29,10 @@ use std::sync::Arc;
 use actr_mailbox_web::{IndexedDbMailbox, Mailbox, MessageRecord};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Ping, RegisterRequest,
-    RoleNegotiation, RouteCandidatesRequest, RpcEnvelope, ServiceAvailabilityState,
-    SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling, route_candidates_request,
-    session_description, signaling_envelope, signaling_to_actr,
+    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Ping, RegisterAuthMode,
+    RegisterRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
+    ServiceAvailabilityState, SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling,
+    route_candidates_request, session_description, signaling_envelope, signaling_to_actr,
 };
 use actr_protocol::{IceCandidate, SessionDescription, prost_types};
 use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, WebAisClient};
@@ -664,6 +664,11 @@ impl SwRuntime {
 
         // Try to load PSK for renewal
         let psk_token = Self::load_valid_psk_static(platform, cred_kv_ns).await?;
+        let auth_mode = if psk_token.is_some() {
+            RegisterAuthMode::Package
+        } else {
+            RegisterAuthMode::Linked
+        };
 
         let request = RegisterRequest {
             actr_type: client_actr_type.clone(),
@@ -676,6 +681,7 @@ impl SwRuntime {
             mfr_signature: None,
             psk_token: psk_token.clone().map(|t| t.into()),
             target: None,
+            auth_mode: Some(auth_mode as i32),
         };
 
         log::info!(
@@ -687,7 +693,7 @@ impl SwRuntime {
         let response = if psk_token.is_some() {
             ais.register_with_psk(request).await
         } else {
-            ais.register_with_manifest(request).await
+            ais.register_linked(request).await
         }
         .map_err(|e| JsValue::from_str(&format!("AIS registration failed: {e}")))?;
 

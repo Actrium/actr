@@ -248,72 +248,16 @@ async fn build_container() -> Result<ServiceContainer> {
         let realm_id = effective_cli.network.realm_id.unwrap_or(1);
         let realm_secret = effective_cli.network.realm_secret.clone();
 
-        // Attempt to sign manifest.toml for AIS Path 2 identity registration.
-        // Without a signing key we still allow local-only commands (gen, doc, check).
-        let (manifest_raw, mfr_signature) = build_mfr_identity(&effective_cli, &config)?;
-
         let discovery_context = DiscoveryContext {
             package_actr_type: config.package.actr_type.clone(),
             signaling_url,
             ais_endpoint,
             realm: actr_protocol::Realm { realm_id },
             realm_secret,
-            manifest_raw,
-            mfr_signature,
         };
 
         container = container
             .register_service_discovery(Arc::new(NetworkServiceDiscovery::new(discovery_context)));
     }
     Ok(container)
-}
-
-type MfrIdentity = (Option<Vec<u8>>, Option<Vec<u8>>);
-
-fn build_mfr_identity(
-    effective_cli: &crate::config::resolver::EffectiveCliConfig,
-    config: &actr_config::ManifestConfig,
-) -> Result<MfrIdentity> {
-    let configured_key_path = effective_cli.mfr.keychain.as_deref().map(|kc_path| {
-        if let Some(stripped) = kc_path.strip_prefix("~/") {
-            dirs::home_dir()
-                .map(|h| h.join(stripped))
-                .unwrap_or_else(|| std::path::PathBuf::from(kc_path))
-        } else {
-            std::path::PathBuf::from(kc_path)
-        }
-    });
-
-    let try_load_key = |p: &std::path::Path| -> Option<ed25519_dalek::SigningKey> {
-        let json_str = std::fs::read_to_string(p).ok()?;
-        let json: serde_json::Value = serde_json::from_str(&json_str).ok()?;
-        let priv_b64 = json["private_key"].as_str()?;
-        let priv_bytes =
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, priv_b64).ok()?;
-        let arr: [u8; 32] = priv_bytes.try_into().ok()?;
-        Some(ed25519_dalek::SigningKey::from_bytes(&arr))
-    };
-
-    let signing_key = configured_key_path.as_deref().and_then(try_load_key);
-
-    match signing_key {
-        Some(signing_key) => {
-            use ed25519_dalek::Signer;
-            let key_id = actr_pack::compute_key_id(&signing_key.verifying_key().to_bytes());
-            let actr_type = &config.package.actr_type;
-            let manifest_bytes = format!(
-                "manufacturer = \"{}\"\nname = \"{}\"\nversion = \"{}\"\nsigning_key_id = \"{}\"\n",
-                actr_type.manufacturer, actr_type.name, actr_type.version, key_id
-            )
-            .into_bytes();
-            let signature = signing_key.sign(&manifest_bytes).to_bytes().to_vec();
-            Ok((Some(manifest_bytes), Some(signature)))
-        }
-        None => {
-            if let Some(path) = configured_key_path {
-                anyhow::bail!("Failed to load signing key from {}", path.display());
-            }
-            Ok((None, None))
-        }
-    }
 }

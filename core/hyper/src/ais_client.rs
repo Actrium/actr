@@ -4,6 +4,7 @@
 //! Supports two registration modes:
 //! - Initial registration: authenticate with manifest_raw + mfr_signature
 //! - PSK renewal: renew directly using an existing PSK token
+//! - Linked registration: authenticate with realm authorization
 
 use prost::Message;
 use tracing::{debug, error, info, warn};
@@ -69,6 +70,18 @@ impl AisClient {
         debug!(
             endpoint = %self.endpoint,
             "PSK renewal: renewing credential via existing PSK"
+        );
+        self.do_register(req).await
+    }
+
+    /// Linked registration: authenticate with realm authorization.
+    ///
+    /// Sends a RegisterRequest marked as linked source mode. AIS authorizes it
+    /// using the realm secret header instead of MFR package identity.
+    pub async fn register_linked(&self, req: RegisterRequest) -> HyperResult<RegisterResponse> {
+        info!(
+            endpoint = %self.endpoint,
+            "linked registration: registering with AIS via realm authorization"
         );
         self.do_register(req).await
     }

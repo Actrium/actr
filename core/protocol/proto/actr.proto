@@ -149,6 +149,15 @@ message ErrorResponse {
 // =========================================================================
 // Register
 // =========================================================================
+enum RegisterAuthMode {
+  REGISTER_AUTH_MODE_UNSPECIFIED = 0;
+  // Package-backed registration authenticated by MFR package lookup,
+  // manifest signature verification, or package renewal credentials.
+  REGISTER_AUTH_MODE_PACKAGE = 1;
+  // Source-linked workload registration authenticated by realm authorization.
+  REGISTER_AUTH_MODE_LINKED = 2;
+}
+
 // Allocate a new ActrId and register node metadata and API info.
 message RegisterRequest {
   required ActrType actr_type = 1;
@@ -176,6 +185,9 @@ message RegisterRequest {
   // Target platform (e.g. "wasm32-wasip1", "x86_64-unknown-linux-gnu").
   // Extracted from manifest binary.target for AIS lookup path verification.
   optional string target = 13;
+  // Explicit authentication source. Omitted/UNSPECIFIED is treated as PACKAGE
+  // for backward compatibility with older package clients.
+  optional RegisterAuthMode auth_mode = 14;
 }
 
 message RegisterResponse {
