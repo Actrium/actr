@@ -132,7 +132,7 @@ quote = "1.0"
 proc-macro2 = "1.0"
 bytes = "1.0"
 heck = "0.5"
-tokio-tungstenite = { version = "0.28.0", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 uuid = { version = "1.19.0", features = ["v4"] }
 rust-embed = "8.11.0"
