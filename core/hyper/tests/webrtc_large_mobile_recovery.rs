@@ -11,7 +11,7 @@ use actr_hyper::test_support::{
     TestHarness, WebRtcFragmentSendEvent, WebRtcFragmentSendHook,
     install_webrtc_fragment_send_hook_for_test, spawn_response_receiver,
 };
-use actr_hyper::transport::ConnectionEvent;
+use actr_hyper::transport::{ConnectionEvent, ConnectionState};
 use actr_hyper::wire::webrtc::{HookCallback, HookEvent, WebRtcCoordinator};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActrId, DataStream, PayloadType, RpcEnvelope};
@@ -698,6 +698,37 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
         .get_peer_session_id(&server_id)
         .await
         .expect("mobile should have an active WebRTC session to server");
+
+    for state in [ConnectionState::Disconnected, ConnectionState::Failed] {
+        harness
+            .peer(MOBILE)
+            .send_event(ConnectionEvent::StateChanged {
+                peer_id: server_id.clone(),
+                session_id,
+                state,
+            });
+    }
+    harness
+        .peer(MOBILE)
+        .send_event(ConnectionEvent::IceRestartStarted {
+            peer_id: server_id.clone(),
+            session_id,
+        });
+
+    let nonterminal_event = tokio::time::timeout(Duration::from_millis(250), async {
+        loop {
+            if let Some(event) = hook_rx.recv().await {
+                if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
+                    return event;
+                }
+            }
+        }
+    })
+    .await;
+    assert!(
+        nonterminal_event.is_err(),
+        "non-terminal recovery state should not emit delivery uncertainty: {nonterminal_event:?}"
+    );
 
     harness
         .peer(MOBILE)
