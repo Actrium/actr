@@ -49,6 +49,7 @@ RELEASE_PYTHON_ENV=""
 
 VERSION=""
 DRY_RUN=false
+SKIP_PYTHON=false
 RUN_MODE="publish"
 OVERALL_STATUS="success"
 FAILURE_REASON=""
@@ -59,11 +60,12 @@ PACKAGE_SYNC_OWNER="${PACKAGE_SYNC_OWNER:-}"
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release-train-cli-protoc.sh --version <X.Y.Z> [--dry-run]
+  scripts/release-train-cli-protoc.sh --version <X.Y.Z> [--dry-run] [--skip-python]
 
 Options:
   --version <X.Y.Z>  Stable semver used by the monorepo-managed release train.
   --dry-run          Validate the full flow in a disposable worktree without publishing.
+  --skip-python      Skip Python package validation, version update, and publishing.
   --help             Show this help message.
 EOF
 }
@@ -201,6 +203,10 @@ parse_args() {
         ;;
       --dry-run)
         DRY_RUN=true
+        shift
+        ;;
+      --skip-python)
+        SKIP_PYTHON=true
         shift
         ;;
       --help)
@@ -352,7 +358,7 @@ install_python_release_tools() {
 }
 
 update_versions() {
-  python3 - "$WORK_REPO_ROOT" "$VERSION" <<'PY'
+  python3 - "$WORK_REPO_ROOT" "$VERSION" "$SKIP_PYTHON" <<'PY'
 from __future__ import annotations
 
 import re
@@ -361,6 +367,7 @@ from pathlib import Path
 
 repo = Path(sys.argv[1])
 version = sys.argv[2]
+skip_python = sys.argv[3] == "true"
 
 package_files = [
     repo / "Cargo.toml",
@@ -440,21 +447,22 @@ for path in package_files:
 
     path.write_text("\n".join(lines) + "\n")
 
-pyproject = repo / "tools/protoc-gen/python/pyproject.toml"
-py_lines = pyproject.read_text().splitlines()
-current_section = None
-for index, line in enumerate(py_lines):
-    stripped = line.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        current_section = stripped
-        continue
-    if current_section == "[project]" and stripped.startswith("version = "):
-        py_lines[index] = f'version = "{version}"'
-        break
-else:
-    raise RuntimeError("project version not found in pyproject.toml")
+if not skip_python:
+    pyproject = repo / "tools/protoc-gen/python/pyproject.toml"
+    py_lines = pyproject.read_text().splitlines()
+    current_section = None
+    for index, line in enumerate(py_lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped
+            continue
+        if current_section == "[project]" and stripped.startswith("version = "):
+            py_lines[index] = f'version = "{version}"'
+            break
+    else:
+        raise RuntimeError("project version not found in pyproject.toml")
 
-pyproject.write_text("\n".join(py_lines) + "\n")
+    pyproject.write_text("\n".join(py_lines) + "\n")
 PY
 }
 
@@ -481,12 +489,16 @@ run_validation_suite() {
     cargo package -p "$package" --locked --allow-dirty --list >/dev/null
   done < <(all_publishable_crates)
 
-  log_info "Building Python package for validation"
-  rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
-  (
-    cd tools/protoc-gen/python
-    "$RELEASE_PYTHON_BIN" -m build >/dev/null
-  )
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    log_info "Building Python package for validation"
+    rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
+    (
+      cd tools/protoc-gen/python
+      "$RELEASE_PYTHON_BIN" -m build >/dev/null
+    )
+  else
+    log_info "Skipping Python package validation"
+  fi
 }
 
 append_skipped_components() {
@@ -782,6 +794,10 @@ publish_python_package() {
   append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "success" "published" "$registry_url" "$RELEASE_SHA"
 }
 
+skip_python_package() {
+  append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "skipped" "skip_python" "$(python_registry_url)" "$RELEASE_SHA"
+}
+
 create_final_tag() {
   if [[ "$DRY_RUN" == true ]]; then
     return
@@ -818,7 +834,11 @@ main() {
     fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
   fi
 
-  install_python_release_tools
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    install_python_release_tools
+  else
+    log_info "Skipping Python release tool installation"
+  fi
   update_versions
   run_validation_suite
   commit_and_push_version_bump
@@ -833,7 +853,11 @@ main() {
     publish_rust_package "$package" "protoc-gen"
   done
 
-  publish_python_package
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    publish_python_package
+  else
+    skip_python_package
+  fi
 
   for package in "${SDK_CRATES[@]}"; do
     publish_rust_package "$package" "sdk"
