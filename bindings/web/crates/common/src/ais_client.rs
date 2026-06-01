@@ -57,6 +57,15 @@ impl WebAisClient {
         self.do_register(req).await
     }
 
+    /// Linked registration: authenticate as source-linked workload.
+    pub async fn register_linked(&self, req: RegisterRequest) -> WebResult<RegisterResponse> {
+        log::info!(
+            "linked registration: registering with AIS via realm authorization (endpoint={})",
+            self.endpoint
+        );
+        self.do_register(req).await
+    }
+
     /// Common fetch logic for both registration modes.
     async fn do_register(&self, req: RegisterRequest) -> WebResult<RegisterResponse> {
         let url = format!("{}/register", self.endpoint);

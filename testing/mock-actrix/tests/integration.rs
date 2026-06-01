@@ -5,7 +5,7 @@
 
 use actr_hyper::{AisClient, MfrCertCache};
 use actr_mock_actrix::MockActrixServer;
-use actr_protocol::{ActrType, Realm, RegisterRequest, register_response};
+use actr_protocol::{ActrType, Realm, RegisterAuthMode, RegisterRequest, register_response};
 use base64::Engine;
 use ed25519_dalek::SigningKey;
 
@@ -25,6 +25,7 @@ fn test_register_request() -> RegisterRequest {
         mfr_signature: Some(vec![0u8; 64].into()),
         psk_token: None,
         target: Some("wasm32-wasip2".into()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
     }
 }
 

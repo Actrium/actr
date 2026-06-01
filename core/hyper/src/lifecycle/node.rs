@@ -18,8 +18,8 @@ use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, PayloadType, RegisterRequest, RpcEnvelope,
-    TurnCredential, register_response,
+    AIdCredential, ActorResult, ActrError, ActrId, PayloadType, RegisterAuthMode, RegisterRequest,
+    RpcEnvelope, TurnCredential, register_response,
 };
 use actr_runtime::check_acl_permission;
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
@@ -978,6 +978,7 @@ impl Inner {
             acl: self.config.acl.clone(),
             service: None,
             ws_address,
+            auth_mode: Some(RegisterAuthMode::Linked as i32),
             ..Default::default()
         };
 
@@ -1000,7 +1001,7 @@ impl Inner {
                 ais = ais.with_realm_secret(secret);
             }
             let resp = ais
-                .register_with_manifest(register_request.clone())
+                .register_linked(register_request.clone())
                 .await
                 .map_err(|e| ActrError::Unavailable(format!("AIS registration failed: {e}")))?;
             match resp.result {

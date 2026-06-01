@@ -323,7 +323,7 @@ use uuid::Uuid;
 #[cfg(not(target_arch = "wasm32"))]
 use actr_platform_traits::KvOp;
 #[cfg(not(target_arch = "wasm32"))]
-use actr_protocol::{Realm, RegisterRequest, register_response};
+use actr_protocol::{Realm, RegisterAuthMode, RegisterRequest, register_response};
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Compile-time state marker: a [`Node`] has been born from a [`Hyper`]
@@ -1187,6 +1187,7 @@ async fn bootstrap_credential_inner(
             mfr_signature: None,
             psk_token: Some(psk_token.into()),
             target: Some(manifest.binary.target.clone()),
+            auth_mode: Some(RegisterAuthMode::Package as i32),
         };
         ais.register_with_psk(req).await?
     } else {
@@ -1207,6 +1208,7 @@ async fn bootstrap_credential_inner(
             mfr_signature: Some(verified.sig_raw.clone().into()),
             psk_token: None,
             target: Some(manifest.binary.target.clone()),
+            auth_mode: Some(RegisterAuthMode::Package as i32),
         };
         ais.register_with_manifest(req).await?
     };
@@ -1305,6 +1307,25 @@ async fn bootstrap_linked_credential_inner(
         ais = ais.with_realm_secret(secret.clone());
     }
 
+    let req = build_linked_register_request(config, service_spec);
+    let response = ais.register_linked(req).await?;
+    match response.result {
+        Some(register_response::Result::Success(ok)) => Ok(ok),
+        Some(register_response::Result::Error(e)) => Err(HyperError::AisBootstrapFailed(format!(
+            "AIS rejected registration (code={}): {}",
+            e.code, e.message
+        ))),
+        None => Err(HyperError::AisBootstrapFailed(
+            "AIS response missing result field".to_string(),
+        )),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn build_linked_register_request(
+    config: &actr_config::RuntimeConfig,
+    service_spec: Option<ServiceSpec>,
+) -> RegisterRequest {
     let ws_address = if let Some(port) = config.websocket_listen_port {
         let host = config
             .websocket_advertised_host
@@ -1315,26 +1336,15 @@ async fn bootstrap_linked_credential_inner(
         None
     };
 
-    let req = RegisterRequest {
+    RegisterRequest {
         actr_type: config.actr_type().clone(),
         realm: config.realm,
         service_spec,
         acl: config.acl.clone(),
         service: None,
         ws_address,
+        auth_mode: Some(RegisterAuthMode::Linked as i32),
         ..Default::default()
-    };
-
-    let response = ais.register_with_manifest(req).await?;
-    match response.result {
-        Some(register_response::Result::Success(ok)) => Ok(ok),
-        Some(register_response::Result::Error(e)) => Err(HyperError::AisBootstrapFailed(format!(
-            "AIS rejected registration (code={}): {}",
-            e.code, e.message
-        ))),
-        None => Err(HyperError::AisBootstrapFailed(
-            "AIS response missing result field".to_string(),
-        )),
     }
 }
 
@@ -1932,6 +1942,55 @@ mod tests {
 
     fn test_acl() -> Option<Acl> {
         Some(Acl { rules: vec![] })
+    }
+
+    fn linked_runtime_config(dir: &TempDir) -> actr_config::RuntimeConfig {
+        actr_config::RuntimeConfig {
+            package: actr_config::PackageInfo {
+                name: "LinkedActor".to_string(),
+                actr_type: actr_protocol::ActrType {
+                    manufacturer: "test-mfr".to_string(),
+                    name: "LinkedActor".to_string(),
+                    version: "0.1.0".to_string(),
+                },
+                description: None,
+                authors: vec![],
+                license: None,
+            },
+            signaling_url: url::Url::parse("ws://localhost:8081/signaling/ws").unwrap(),
+            realm: Realm { realm_id: 7 },
+            ais_endpoint: "http://localhost:8081/ais".to_string(),
+            realm_secret: Some("test-realm-secret".to_string()),
+            visible_in_discovery: true,
+            acl: test_acl(),
+            mailbox_path: None,
+            scripts: std::collections::HashMap::new(),
+            webrtc: actr_config::WebRtcConfig::default(),
+            websocket_listen_port: Some(9100),
+            websocket_advertised_host: Some("127.0.0.1".to_string()),
+            observability: actr_config::ObservabilityConfig {
+                filter_level: "info".to_string(),
+                tracing_enabled: false,
+                tracing_endpoint: "http://localhost:4317".to_string(),
+                tracing_service_name: "linked-test".to_string(),
+            },
+            config_dir: dir.path().to_path_buf(),
+            trust: vec![],
+            package_path: None,
+            web: None,
+        }
+    }
+
+    #[test]
+    fn linked_register_request_uses_linked_auth_mode() {
+        let dir = TempDir::new().unwrap();
+        let req = build_linked_register_request(&linked_runtime_config(&dir), test_service_spec());
+
+        assert_eq!(req.auth_mode, Some(RegisterAuthMode::Linked as i32));
+        assert_eq!(req.manifest_raw, None);
+        assert_eq!(req.mfr_signature, None);
+        assert_eq!(req.psk_token, None);
+        assert_eq!(req.ws_address.as_deref(), Some("ws://127.0.0.1:9100"));
     }
 
     #[test]
