@@ -12,6 +12,11 @@ on:
         required: true
         type: boolean
         default: false
+      skip_python:
+        description: Skip Python package validation and publishing.
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: release-train-basic
@@ -66,6 +71,9 @@ jobs:
           args=(--version "${{ inputs.version }}")
           if [[ "${{ inputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
+          fi
+          if [[ "${{ inputs.skip_python }}" == "true" ]]; then
+            args+=(--skip-python)
           fi
           scripts/release-train-cli-protoc.sh "${args[@]}"
 
