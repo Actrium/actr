@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Swift Static Workload Implementation Plan</title>
+  <style type="text/css">
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5c6978;
+      --line: #d8dee6;
+      --panel: #ffffff;
+      --soft: #f4f7fa;
+      --blue: #2266aa;
+      --green: #11724f;
+      --amber: #9a6500;
+      --red: #a23b36;
+      --code: #101820;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #eef3f7;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    .page-header {
+      background: #17202a;
+      color: #fff;
+      padding: 40px 48px 32px;
+      border-bottom: 4px solid #3aa37b;
+    }
+
+    .page-header h1 {
+      margin: 0 0 12px;
+      font-size: 34px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .page-header p {
+      margin: 0;
+      max-width: 960px;
+      color: #dce6ef;
+      font-size: 17px;
+    }
+
+    .content {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 24px 56px;
+    }
+
+    .section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px;
+      margin: 18px 0;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 22px;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 22px 0 8px;
+      font-size: 17px;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 8px 0 12px;
+    }
+
+    ul,
+    ol {
+      margin: 8px 0 0 22px;
+      padding: 0;
+    }
+
+    li {
+      margin: 6px 0;
+    }
+
+    code {
+      background: #eef2f5;
+      border: 1px solid #dbe2e9;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow: auto;
+      background: var(--code);
+      color: #eaf2f8;
+      border-radius: 6px;
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      color: inherit;
+      padding: 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: var(--soft);
+      font-weight: 650;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .tile {
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .tile strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--blue);
+    }
+
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 12px;
+      font-weight: 650;
+      margin-right: 6px;
+      color: #fff;
+    }
+
+    .badge.green {
+      background: var(--green);
+    }
+
+    .badge.blue {
+      background: var(--blue);
+    }
+
+    .badge.amber {
+      background: var(--amber);
+    }
+
+    .badge.red {
+      background: var(--red);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr 42px 1fr 42px 1fr;
+      gap: 10px;
+      align-items: stretch;
+      margin-top: 14px;
+    }
+
+    .box {
+      background: #f8fbfd;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      min-height: 112px;
+    }
+
+    .arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--blue);
+      font-size: 26px;
+      font-weight: 700;
+    }
+
+    .note {
+      border-left: 4px solid var(--blue);
+      background: #f1f6fb;
+      padding: 12px 14px;
+      border-radius: 6px;
+      color: #26384a;
+    }
+
+    .warning {
+      border-left-color: var(--amber);
+      background: #fff8ea;
+    }
+
+    .danger {
+      border-left-color: var(--red);
+      background: #fff1f0;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    @media (max-width: 860px) {
+      .page-header {
+        padding: 28px 22px;
+      }
+
+      .page-header h1 {
+        font-size: 26px;
+      }
+
+      .content {
+        padding: 18px 14px 36px;
+      }
+
+      .section {
+        padding: 18px;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        transform: rotate(90deg);
+        min-height: 28px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-header">
+    <h1>Swift Static Workload 实现方案</h1>
+    <p>
+      目标是在 Swift/iOS/macOS 应用内直接实现 ACTR workload 业务逻辑，并通过现有 Rust runtime 的
+      <code>Node::link()</code> 路径运行，不再要求业务 workload 打包成独立 <code>.actr</code> package。
+    </p>
+  </div>
+
+  <div class="content">
+    <div class="section">
+      <h2>结论</h2>
+      <p>
+        推荐方案是复用现有 UniFFI callback bridge，把 Swift workload 包装为 Rust 侧
+        <code>DynamicWorkload</code>，再由新的 FFI 构造器调用 <code>Node::link()</code>。
+        这不是让 Swift 直接实现 Rust trait，也不是让 Swift 产出独立 <code>.a</code> 供 ACTR 动态识别。
+      </p>
+      <div class="grid">
+        <div class="tile">
+          <strong>最小改动</strong>
+          <span class="badge green">Recommended</span>
+          现有 <code>WorkloadLifecycleBridge</code>、<code>DynamicWorkload</code> 已经能承载 Swift 回调。
+        </div>
+        <div class="tile">
+          <strong>运行模型</strong>
+          Swift app、UniFFI 生成层、Rust runtime 在同一进程内运行，workload 不经过包签名和二进制加载。
+        </div>
+        <div class="tile">
+          <strong>边界</strong>
+          package 模式仍保留；新增 linked/static Swift 入口，不改变 <code>.actr</code> package 行为。
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>现状依据</h2>
+      <table summary="当前 Swift static workload 相关实现能力和缺口">
+        <thead>
+          <tr>
+            <th>位置</th>
+            <th>当前能力</th>
+            <th>缺口</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>core/hyper/src/lib.rs</code></td>
+            <td><code>Node::link&lt;W: actr_framework::Workload&gt;()</code> 已是 static link 入口。</td>
+            <td>入口只在 Rust API 层公开，Swift 不能直接调用 Rust 泛型 trait。</td>
+          </tr>
+          <tr>
+            <td><code>bindings/ffi/src/workload.rs</code></td>
+            <td><code>WorkloadLifecycleBridge</code> 和 <code>DynamicWorkload</code> 已把外语回调转换成 Rust workload。</td>
+            <td>没有 FFI runtime 构造器把 <code>DynamicWorkload</code> 送进 <code>Node::link()</code>。</td>
+          </tr>
+          <tr>
+            <td><code>bindings/ffi/src/runtime.rs</code></td>
+            <td><code>ActrNode::new_from_package_file()</code> 已封装 package-backed 流程。</td>
+            <td>当前只支持 <code>attach(package)</code>，没有 linked/static 构造器。</td>
+          </tr>
+          <tr>
+            <td><code>bindings/swift</code></td>
+            <td>SwiftPM 通过 UniFFI 生成 bindings 和 XCFramework 分发。</td>
+            <td>需要新增 Swift-friendly 的 high-level API 和文档示例。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>目标 API</h2>
+      <h3>Swift 调用形态</h3>
+      <pre><code>final class EchoWorkload: WorkloadLifecycleBridge {
+    func onStart(ctx: ContextBridge) async throws {}
+    func onReady(ctx: ContextBridge) async throws {}
+    func onStop(ctx: ContextBridge) async throws {}
+    func onError(ctx: ContextBridge, event: ErrorEventBridge) async throws {}
+
+    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -&gt; [UInt8] {
+        switch envelope.routeKey {
+        case EchoRequest.routeKey:
+            let request = try EchoRequest(serializedBytes: envelope.payload)
+            let response = EchoResponse.with { $0.message = request.message }
+            return Array(try response.serializedData())
+        default:
+            throw ActrError.internal(msg: "unknown route: \(envelope.routeKey)")
+        }
+    }
+}
+
+let workload = DynamicWorkload(
+    lifecycle: EchoWorkload(),
+    signaling: nil,
+    websocket: nil,
+    webrtc: nil,
+    credential: nil,
+    mailbox: nil
+)
+
+let node = try await ActrNode.fromLinkedWorkload(
+    configPath: "/path/to/actr.toml",
+    workload: workload
+)
+let actor = try await node.start()</code></pre>
+
+      <h3>Rust FFI 构造器</h3>
+      <pre><code>#[uniffi::constructor(async_runtime = "tokio")]
+pub async fn new_from_linked_workload(
+    config_path: String,
+    workload: Arc&lt;DynamicWorkload&gt;,
+) -&gt; ActrResult&lt;Arc&lt;Self&gt;&gt; {
+    let init = Node::from_config_file(&amp;config_path).await?;
+    crate::logger::init_observability(init.runtime_config().observability.clone());
+
+    let attached = init.link(LinkedDynamicWorkload::new(workload)).await?;
+    let ais_endpoint = attached.ais_endpoint().to_string();
+    let registered = attached.register(&amp;ais_endpoint).await?;
+
+    Ok(Arc::new(Self {
+        inner: Mutex::new(Some(registered)),
+        network_event_handle: Mutex::new(None),
+    }))
+}</code></pre>
+    </div>
+
+    <div class="section">
+      <h2>架构流</h2>
+      <div class="flow">
+        <div class="box">
+          <strong>Swift app</strong>
+          <p>实现 <code>WorkloadLifecycleBridge</code>，负责 protobuf 解码、业务处理和 response 编码。</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="box">
+          <strong>UniFFI layer</strong>
+          <p><code>DynamicWorkload</code> 持有 Swift callback，对 Rust 暴露 <code>actr_framework::Workload</code>。</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="box">
+          <strong>Rust runtime</strong>
+          <p><code>Node::link()</code> 连接 workload，注册 AIS，启动节点并处理 inbound RPC。</p>
+        </div>
+      </div>
+      <p class="note">
+        inbound RPC 的关键路径是：network message → <code>LinkedWorkloadHandle::dispatch</code> →
+        <code>DynamicDispatcher</code> → Swift <code>dispatch</code> → protobuf response bytes。
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>分层实现步骤</h2>
+      <ol>
+        <li>
+          <strong>Rust FFI runtime 入口</strong>
+          <p>
+            在 <code>bindings/ffi/src/runtime.rs</code> 引入 <code>DynamicWorkload</code>，
+            新增 <code>ActrNode::new_from_linked_workload(config_path, workload)</code>。
+            行为与 <code>new_from_package_file</code> 对齐，但把 <code>attach(package)</code> 替换为 <code>link(workload)</code>。
+          </p>
+        </li>
+        <li>
+          <strong>DynamicWorkload wrapper</strong>
+          <p>
+            如果 <code>Arc&lt;DynamicWorkload&gt;</code> 不能直接满足 <code>Node::link()</code> 的类型边界，
+            新增 <code>LinkedDynamicWorkload</code> newtype，在 Rust 侧实现
+            <code>actr_framework::Workload</code>，内部转发到 <code>DynamicWorkload</code>。
+          </p>
+        </li>
+        <li>
+          <strong>Swift high-level API</strong>
+          <p>
+            在 <code>bindings/swift/Sources/Actr</code> 增加 Swift-friendly wrapper，
+            暴露 <code>ActrNode.fromLinkedWorkload(configPath:workload:)</code>，避免用户直接接触低层生成命名。
+          </p>
+        </li>
+        <li>
+          <strong>Service metadata 策略</strong>
+          <p>
+            第一阶段允许 <code>service_spec = None</code>，用 <code>actr.toml</code> 的 actor metadata 注册。
+            第二阶段再增加可选 <code>serviceSpec</code> 参数或从 Swift proto descriptor 输入生成 metadata。
+          </p>
+        </li>
+        <li>
+          <strong>示例与文档</strong>
+          <p>
+            新增一个 Swift echo workload 示例，展示 route dispatch、protobuf decode/encode、启动和停止流程。
+            更新 <code>bindings/swift/README.md</code> 与 <code>bindings/swift/docs/api.md</code>。
+          </p>
+        </li>
+      </ol>
+    </div>
+
+    <div class="section">
+      <h2>文件改动清单</h2>
+      <table summary="Swift static workload 实现涉及的文件改动清单">
+        <thead>
+          <tr>
+            <th>文件</th>
+            <th>改动</th>
+            <th>验证重点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>bindings/ffi/src/runtime.rs</code></td>
+            <td>新增 linked/static workload 构造器。</td>
+            <td>package 构造器不回归；linked 构造器能 register + start。</td>
+          </tr>
+          <tr>
+            <td><code>bindings/ffi/src/workload.rs</code></td>
+            <td>按需新增 <code>LinkedDynamicWorkload</code> wrapper 或 helper constructor。</td>
+            <td>Swift callback lifecycle 和 dispatch 都能被调用。</td>
+          </tr>
+          <tr>
+            <td><code>bindings/swift/Sources/Actr/*.swift</code></td>
+            <td>新增 high-level Swift API 和 typealias。</td>
+            <td>API 命名符合 Swift 调用习惯，避免暴露 generated FFI 细节。</td>
+          </tr>
+          <tr>
+            <td><code>bindings/swift/docs/api.md</code></td>
+            <td>补充 static/linked workload 使用方式。</td>
+            <td>区分 package-backed 与 linked workload 的适用场景。</td>
+          </tr>
+          <tr>
+            <td><code>examples/</code> 或 <code>bindings/swift/Examples/</code></td>
+            <td>新增 Swift echo workload 示例。</td>
+            <td>能用本地 XCFramework 编译，演示完整 runtime 启动。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>关键设计决策</h2>
+      <div class="note">
+        <strong>使用 UniFFI callback，而不是 Swift 静态库 ABI。</strong>
+        <p>
+          Swift 直接输出一个 ACTR 可识别的 static library 需要定义 C ABI symbol、vtable、async 回调、内存所有权和 protobuf route 协议。
+          仓库里已有 <code>DynamicWorkload</code> 和 callback interfaces，复用它能把工作量集中在 runtime 构造器和 Swift API 上。
+        </p>
+      </div>
+      <div class="note warning">
+        <strong>service_spec 第一阶段不强行生成。</strong>
+        <p>
+          linked/static 模式没有 package manifest，无法像 package 模式一样自动从 <code>.actr</code> 包提取 proto exports。
+          第一阶段先注册 actor type；需要服务发现暴露 schema 时，再增加显式 service spec 输入。
+        </p>
+      </div>
+      <div class="note danger">
+        <strong>不要把 <code>Node&lt;S&gt;</code> typestate 直接暴露给 Swift。</strong>
+        <p>
+          Swift README 已声明 typestate 是 Rust power-user API。Swift 侧应继续提供一站式构造器，保持移动端 SDK 的简单表面。
+        </p>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>验证方案</h2>
+      <h3>最小编译验证</h3>
+      <pre><code>cargo fmt --all
+cargo check -p libactr
+
+cd bindings/swift
+ACTR_BINDINGS_PATH=dist/ActrBindings \
+ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+./build-xcframework.sh</code></pre>
+
+      <h3>示例验证</h3>
+      <pre><code>cd bindings/swift
+ACTR_BINDINGS_PATH=dist/ActrBindings \
+ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+swift build
+
+# Run the Swift linked workload echo example against local signaling/AIS fixtures.</code></pre>
+
+      <h3>行为断言</h3>
+      <ul>
+        <li>Swift <code>onStart</code>、<code>onReady</code>、<code>dispatch</code> 至少各触发一次。</li>
+        <li>unknown <code>routeKey</code> 返回明确错误，不静默掉包。</li>
+        <li>package-backed <code>new_from_package_file()</code> 行为不变。</li>
+        <li>linked/static 模式无需 <code>.actr</code> package 文件即可启动。</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <h2>风险与处理</h2>
+      <table summary="Swift static workload 实现风险和处理方式">
+        <thead>
+          <tr>
+            <th>风险</th>
+            <th>影响</th>
+            <th>处理</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Swift async callback 跨 UniFFI 的线程与 Sendable 约束</td>
+            <td>编译失败或运行时 callback 调度不稳定。</td>
+            <td>保持 callback interface <code>Send + Sync + 'static</code>，Swift 示例使用 <code>final class</code> 并明确并发安全边界。</td>
+          </tr>
+          <tr>
+            <td>没有 package-derived service_spec</td>
+            <td>服务发现可能只看到 actor type，看不到详细 RPC schema。</td>
+            <td>第一阶段记录限制；第二阶段提供 explicit service spec API。</td>
+          </tr>
+          <tr>
+            <td>错误映射过粗</td>
+            <td>Swift dispatch 错误可能只表现为 generic internal error。</td>
+            <td>复用现有 <code>ActrError</code> 桥，并在 route dispatch 示例中明确 unknown route 错误。</td>
+          </tr>
+          <tr>
+            <td>API 命名误导为真正 static archive workload</td>
+            <td>用户可能以为需要 Swift 编译 <code>.a</code>。</td>
+            <td>文档中统一称为 <code>linked workload</code> 或 <code>static link path</code>，说明它是同进程 callback 模式。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>建议里程碑</h2>
+      <ol>
+        <li><span class="badge blue">M1</span> Rust FFI linked constructor + 编译通过。</li>
+        <li><span class="badge blue">M2</span> Swift high-level API + UniFFI 重新生成。</li>
+        <li><span class="badge blue">M3</span> Swift echo linked workload 示例可运行。</li>
+        <li><span class="badge blue">M4</span> 文档补齐 package-backed vs linked/static 的差异。</li>
+        <li><span class="badge amber">M5</span> 可选 service_spec 输入，作为后续增强。</li>
+      </ol>
+      <p class="muted">
+        这个方案的核心交付是让 Swift 能开发同进程 workload。独立 Swift <code>.a</code> package ABI 不纳入第一阶段。
+      </p>
+    </div>
+
+    <div class="section">
+      <h2>参考源</h2>
+      <ul>
+        <li><code>core/hyper/src/lib.rs</code>: <code>Node::link()</code> static link path 与 <code>register_with()</code>。</li>
+        <li><code>core/hyper/src/workload.rs</code>: linked workload handle 的 dispatch 与 lifecycle hook 语义。</li>
+        <li><code>bindings/ffi/src/workload.rs</code>: Swift/Kotlin 等外语侧 callback bridge 与 <code>DynamicWorkload</code>。</li>
+        <li><code>bindings/ffi/src/runtime.rs</code>: 当前 package-backed Swift runtime 构造流程。</li>
+        <li><code>bindings/swift/README.md</code>: Swift SDK 不暴露 Rust typestate 的既有定位。</li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>

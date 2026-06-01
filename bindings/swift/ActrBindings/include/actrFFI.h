@@ -450,9 +450,19 @@ uint64_t uniffi_actr_fn_clone_actrnode(uint64_t handle, RustCallStatus *_Nonnull
 void uniffi_actr_fn_free_actrnode(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
+uint64_t uniffi_actr_fn_constructor_actrnode_new_from_linked_workload(RustBuffer config_path, RustBuffer actor_type, uint64_t workload
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
 uint64_t uniffi_actr_fn_constructor_actrnode_new_from_package_file(RustBuffer config_path, RustBuffer package_path
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_LINKED
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_CONSTRUCTOR_ACTRNODE_NEW_LINKED
+uint64_t uniffi_actr_fn_constructor_actrnode_new_linked(RustBuffer config_path, RustBuffer actor_type
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRNODE_CREATE_NETWORK_EVENT_HANDLE
@@ -523,6 +533,11 @@ void uniffi_actr_fn_free_contextbridge(uint64_t handle, RustCallStatus *_Nonnull
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_ADD_MEDIA_TRACK
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_ADD_MEDIA_TRACK
 uint64_t uniffi_actr_fn_method_contextbridge_add_media_track(uint64_t ptr, RustBuffer target, RustBuffer track_id, RustBuffer codec, RustBuffer media_type
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_CALL_ECHO_SERVICE_RAW
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_CALL_ECHO_SERVICE_RAW
+uint64_t uniffi_actr_fn_method_contextbridge_call_echo_service_raw(uint64_t ptr, RustBuffer route_key, RustBuffer payload, int64_t timeout_ms
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_CONTEXTBRIDGE_CALL_RAW
@@ -1038,6 +1053,12 @@ uint16_t uniffi_actr_checksum_method_contextbridge_add_media_track(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_CALL_ECHO_SERVICE_RAW
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_CALL_ECHO_SERVICE_RAW
+uint16_t uniffi_actr_checksum_method_contextbridge_call_echo_service_raw(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_CALL_RAW
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_CONTEXTBRIDGE_CALL_RAW
 uint16_t uniffi_actr_checksum_method_contextbridge_call_raw(void
@@ -1134,9 +1155,21 @@ uint16_t uniffi_actr_checksum_method_opusencoder_frame_size(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_LINKED_WORKLOAD
+uint16_t uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_FROM_PACKAGE_FILE
 uint16_t uniffi_actr_checksum_constructor_actrnode_new_from_package_file(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_LINKED
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_CONSTRUCTOR_ACTRNODE_NEW_LINKED
+uint16_t uniffi_actr_checksum_constructor_actrnode_new_linked(void
     
 );
 #endif
