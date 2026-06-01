@@ -63,7 +63,7 @@ fn main() -> Result<()> {
     let guest_wasm = std::env::args()
         .nth(1)
         .unwrap_or_else(|| {
-            "../guest/target/wasm32-wasip2/release/spike_guest.wasm".to_string()
+            "../../../target/experiments-component-spike-guest/wasm32-wasip2/release/spike_guest.wasm".to_string()
         });
 
     println!("=== Phase 0 Component Model spike ===");

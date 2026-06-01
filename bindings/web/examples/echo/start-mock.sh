@@ -39,6 +39,8 @@ ACTR_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
 # `--features web --no-default-features`, for the SW-loaded core module).
 SERVER_GUEST_DIR="$SCRIPT_DIR/server-guest"
 CLIENT_GUEST_DIR="$SCRIPT_DIR/client-guest"
+SERVER_GUEST_TARGET_DIR="$ACTR_ROOT/target/bindings-web-examples-echo-server-guest"
+CLIENT_GUEST_TARGET_DIR="$ACTR_ROOT/target/bindings-web-examples-echo-client-guest"
 
 RELEASE_DIR="$SCRIPT_DIR/release"
 SERVER_ACTR_TOML="$SCRIPT_DIR/server-actr.toml"
@@ -170,14 +172,14 @@ echo -e "${BLUE}Step 1a: Building CM guests (default features) for .actr signing
     export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
     cd "$SERVER_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
 )
-SERVER_GUEST_CM_WASM="$SERVER_GUEST_DIR/target/wasm32-wasip2/release/echo_guest.wasm"
+SERVER_GUEST_CM_WASM="$SERVER_GUEST_TARGET_DIR/wasm32-wasip2/release/echo_guest.wasm"
 [ -f "$SERVER_GUEST_CM_WASM" ] || { echo -e "${RED}server CM guest missing${NC}"; exit 1; }
 
 (
     export RUSTFLAGS="-Clinker=$WASM_COMPONENT_LD"
     cd "$CLIENT_GUEST_DIR" && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5
 )
-CLIENT_GUEST_CM_WASM="$CLIENT_GUEST_DIR/target/wasm32-wasip2/release/echo_client_guest_web.wasm"
+CLIENT_GUEST_CM_WASM="$CLIENT_GUEST_TARGET_DIR/wasm32-wasip2/release/echo_client_guest_web.wasm"
 [ -f "$CLIENT_GUEST_CM_WASM" ] || { echo -e "${RED}client CM guest missing${NC}"; exit 1; }
 
 echo -e "${GREEN}CM guests built${NC}"

@@ -4,3 +4,4 @@
 # mismatches and wasm-bindgen stub errors.
 [build]
 target = "wasm32-unknown-unknown"
+target-dir = "../../target/bindings-web"

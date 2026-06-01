@@ -1,0 +1,2 @@
+[build]
+target-dir = "../../../../../target/bindings-web-examples-echo-client-guest"

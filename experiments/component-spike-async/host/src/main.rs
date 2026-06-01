@@ -142,7 +142,7 @@ async fn main() -> Result<()> {
     let guest_wasm = std::env::args()
         .nth(1)
         .unwrap_or_else(|| {
-            "../guest/target/wasm32-wasip2/release/spike_guest_async.wasm".to_string()
+            "../../../target/experiments-component-spike-async-guest/wasm32-wasip2/release/spike_guest_async.wasm".to_string()
         });
 
     println!("=== Phase 0.5 Component Model async spike ===");
