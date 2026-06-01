@@ -357,25 +357,14 @@ impl PeerGate {
                         session_id,
                         payload_type: PayloadType::StreamReliable | PayloadType::StreamLatencyFirst,
                     } => {
-                        if webrtc_coordinator
-                            .is_active_session(peer_id, *session_id)
-                            .await
-                        {
-                            Self::notify_active_data_streams_uncertain(
-                                &webrtc_coordinator,
-                                &active_data_streams,
-                                peer_id,
-                                *session_id,
-                                "data channel closed",
-                            )
-                            .await;
-                        } else {
-                            tracing::debug!(
-                                peer_id = ?peer_id,
-                                event_session_id = session_id,
-                                "Ignoring stale data-stream DataChannelClosed event",
-                            );
-                        }
+                        Self::notify_active_data_streams_uncertain(
+                            &webrtc_coordinator,
+                            &active_data_streams,
+                            peer_id,
+                            *session_id,
+                            "data channel closed",
+                        )
+                        .await;
                     }
 
                     // Clean pending requests and trigger downstream cleanup when connection is fully closed
@@ -391,19 +380,14 @@ impl PeerGate {
                     } => {
                         let dest = Dest::actor(peer_id.clone());
 
-                        if webrtc_coordinator
-                            .is_active_session(peer_id, *event_session_id)
-                            .await
-                        {
-                            Self::notify_active_data_streams_uncertain(
-                                &webrtc_coordinator,
-                                &active_data_streams,
-                                peer_id,
-                                *event_session_id,
-                                "connection closed",
-                            )
-                            .await;
-                        }
+                        Self::notify_active_data_streams_uncertain(
+                            &webrtc_coordinator,
+                            &active_data_streams,
+                            peer_id,
+                            *event_session_id,
+                            "connection closed",
+                        )
+                        .await;
 
                         {
                             let mut recovering = recovering_peers.write().await;
@@ -968,13 +952,26 @@ impl PeerGate {
             _ => None,
         };
 
+        let stream_session_id = if stream_marker.is_some() {
+            if let Some(coordinator) = &self.webrtc_coordinator {
+                coordinator.get_peer_session_id(target).await
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         if let Some((stream_id, sequence)) = &stream_marker {
-            self.active_data_streams.write().await.record_sent(
-                target,
-                stream_id.clone(),
-                *sequence,
-                Instant::now(),
-            );
+            if let Some(session_id) = stream_session_id {
+                self.active_data_streams.write().await.record_sent(
+                    target,
+                    stream_id.clone(),
+                    *sequence,
+                    session_id,
+                    Instant::now(),
+                );
+            }
         }
 
         let result = self
@@ -983,12 +980,37 @@ impl PeerGate {
             .await
             .map_err(|e| ActrError::Unavailable(e.to_string()));
 
-        if result.is_err() {
-            if let Some((stream_id, _)) = &stream_marker {
-                self.active_data_streams
-                    .write()
-                    .await
-                    .remove_stream(target, stream_id);
+        if let Some((stream_id, sequence)) = &stream_marker {
+            if result.is_err() {
+                if let Some(session_id) = stream_session_id {
+                    self.active_data_streams
+                        .write()
+                        .await
+                        .remove_stream_session(target, stream_id, session_id);
+                } else {
+                    self.active_data_streams
+                        .write()
+                        .await
+                        .remove_stream(target, stream_id);
+                }
+            } else {
+                let sent_session_id = if stream_session_id.is_some() {
+                    stream_session_id
+                } else if let Some(coordinator) = &self.webrtc_coordinator {
+                    coordinator.get_peer_session_id(target).await
+                } else {
+                    None
+                };
+
+                if let Some(session_id) = sent_session_id {
+                    self.active_data_streams.write().await.record_sent(
+                        target,
+                        stream_id.clone(),
+                        *sequence,
+                        session_id,
+                        Instant::now(),
+                    );
+                }
             }
         }
 
