@@ -359,17 +359,13 @@ impl WebRtcCoordinator {
 
     pub(crate) async fn notify_data_stream_delivery_uncertain(
         &self,
-        peer_id: ActrId,
         stream_id: String,
-        last_sent_seq: u64,
         session_id: u64,
         reason: String,
     ) {
         self.invoke_hook(
             crate::wire::webrtc::HookEvent::DataStreamDeliveryUncertain {
-                peer_id,
                 stream_id,
-                last_sent_seq,
                 session_id,
                 reason,
             },

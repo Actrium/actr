@@ -142,6 +142,7 @@ impl HostGate {
     /// # Arguments
     /// - `_target`: Target ActorId (for logging only, not needed for intra-process)
     /// - `payload_type`: PayloadType (StreamReliable or StreamLatencyFirst)
+    /// - `stream_id`: DataStream identifier already known before serialization
     /// - `data`: Serialized DataStream bytes
     ///
     /// # Note
@@ -150,18 +151,13 @@ impl HostGate {
         &self,
         _target: &ActrId,
         payload_type: PayloadType,
+        stream_id: &str,
         data: Bytes,
     ) -> ActorResult<()> {
-        use actr_protocol::prost::Message as ProstMessage;
-
-        // Deserialize to get stream_id
-        let stream = actr_protocol::DataStream::decode(&*data)
-            .map_err(|e| ActrError::DecodeFailure(format!("Failed to decode DataStream: {e}")))?;
-
         tracing::debug!(
-            "HostGate::send_data_stream stream_id={}, sequence={}",
-            stream.stream_id,
-            stream.sequence
+            "HostGate::send_data_stream stream_id={}, size={} bytes",
+            stream_id,
+            data.len()
         );
 
         // Wrap in RpcEnvelope for transport
@@ -184,7 +180,7 @@ impl HostGate {
         }
 
         self.transport
-            .send_message(payload_type, Some(stream.stream_id), envelope)
+            .send_message(payload_type, Some(stream_id.to_string()), envelope)
             .await
             .map_err(|e| ActrError::Unavailable(e.to_string()))
     }

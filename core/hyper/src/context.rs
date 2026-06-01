@@ -215,12 +215,18 @@ impl RuntimeContext {
         use actr_protocol::prost::Message as ProstMessage;
 
         let payload = chunk.encode_to_vec();
+        let stream_id = chunk.stream_id.as_str();
 
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        gate.send_data_stream(target_id, payload_type, bytes::Bytes::from(payload))
-            .await
+        gate.send_data_stream(
+            target_id,
+            payload_type,
+            stream_id,
+            bytes::Bytes::from(payload),
+        )
+        .await
     }
 
     /// Get dependency fingerprint from the packaged manifest.lock.toml
@@ -523,10 +529,11 @@ impl Context for RuntimeContext {
 
         // 1. Serialize DataStream to bytes
         let payload = chunk.encode_to_vec();
+        let stream_id = chunk.stream_id.as_str();
 
         tracing::debug!(
             "📤 Sending DataStream: stream_id={}, sequence={}, size={} bytes",
-            chunk.stream_id,
+            stream_id,
             chunk.sequence,
             payload.len()
         );
@@ -536,8 +543,13 @@ impl Context for RuntimeContext {
         let target_id = self.extract_target_id(target);
 
         // 3. Send via Gate with the caller-specified PayloadType
-        gate.send_data_stream(target_id, payload_type, bytes::Bytes::from(payload))
-            .await
+        gate.send_data_stream(
+            target_id,
+            payload_type,
+            stream_id,
+            bytes::Bytes::from(payload),
+        )
+        .await
     }
 
     #[cfg_attr(
