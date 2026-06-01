@@ -245,14 +245,6 @@ impl PeerGate {
                                 "peer state Disconnected/Failed",
                             );
                         }
-                        Self::notify_active_data_streams_uncertain(
-                            &webrtc_coordinator,
-                            &active_data_streams,
-                            peer_id,
-                            *session_id,
-                            "peer state Disconnected/Failed",
-                        )
-                        .await;
                         closing_peers.write().await.insert(peer_id.clone());
                         tracing::debug!(
                             "Blocking new requests to peer {} (state: {:?})",
@@ -273,19 +265,6 @@ impl PeerGate {
                                 *session_id,
                                 "ice/network recovery started",
                             );
-                        }
-                        if webrtc_coordinator
-                            .is_active_session(peer_id, *session_id)
-                            .await
-                        {
-                            Self::notify_active_data_streams_uncertain(
-                                &webrtc_coordinator,
-                                &active_data_streams,
-                                peer_id,
-                                *session_id,
-                                "ice/network recovery started",
-                            )
-                            .await;
                         }
                         tracing::debug!("Peer {} entered ICE/network recovery", peer_id);
                     }
