@@ -3,6 +3,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+GUEST_TARGET_DIR="$REPO_ROOT/target/experiments-component-spike-async-guest"
 cd "$HERE"
 
 # Use the newer wasm-component-ld (>=0.5.22) from ~/.cargo/bin for async
@@ -20,7 +22,7 @@ echo "using wasm-component-ld $LD_VER"
 echo "=== [1/3] building async guest (wasm32-wasip2) ==="
 pushd guest >/dev/null
 RUSTFLAGS="-Clinker=$NEW_LD" cargo build --release --target wasm32-wasip2
-GUEST_WASM="$HERE/guest/target/wasm32-wasip2/release/spike_guest_async.wasm"
+GUEST_WASM="$GUEST_TARGET_DIR/wasm32-wasip2/release/spike_guest_async.wasm"
 popd >/dev/null
 
 echo
@@ -29,7 +31,7 @@ wasm-tools component wit "$GUEST_WASM" | head -70 || true
 SIZE_UNSTRIPPED=$(stat -c %s "$GUEST_WASM")
 echo "unstripped size: ${SIZE_UNSTRIPPED} bytes"
 
-STRIPPED="$HERE/guest/target/wasm32-wasip2/release/spike_guest_async.stripped.wasm"
+STRIPPED="$GUEST_TARGET_DIR/wasm32-wasip2/release/spike_guest_async.stripped.wasm"
 wasm-tools strip "$GUEST_WASM" -o "$STRIPPED" 2>/dev/null || cp "$GUEST_WASM" "$STRIPPED"
 SIZE_STRIPPED=$(stat -c %s "$STRIPPED")
 echo "stripped   size: ${SIZE_STRIPPED} bytes"

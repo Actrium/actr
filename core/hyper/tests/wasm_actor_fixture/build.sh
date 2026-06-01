@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$SCRIPT_DIR/built"
 BYTES_FILE="$SCRIPT_DIR/../wasm_actor_fixture.rs"
+TARGET_DIR="$SCRIPT_DIR/../../../../target/core-hyper-tests-wasm-actor-fixture"
 
 LD="${WASM_COMPONENT_LD:-$HOME/.cargo/bin/wasm-component-ld}"
 if [[ ! -x "$LD" ]]; then
@@ -26,7 +27,7 @@ echo "-> Building wasm-actor-fixture (wasm32-wasip2) via wasm-component-ld $($LD
 cd "$SCRIPT_DIR"
 RUSTFLAGS="-Clinker=$LD" cargo build --release --target wasm32-wasip2
 
-RAW="$SCRIPT_DIR/target/wasm32-wasip2/release/wasm_actor_fixture.wasm"
+RAW="$TARGET_DIR/wasm32-wasip2/release/wasm_actor_fixture.wasm"
 cp "$RAW" "$OUT_DIR/wasm_actor_fixture.wasm"
 
 echo "-> Generating Rust bytes file"

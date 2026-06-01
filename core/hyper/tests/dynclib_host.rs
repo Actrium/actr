@@ -29,7 +29,7 @@ fn build_fixture() -> PathBuf {
         .expect("failed to build dynclib fixture");
     assert!(status.success(), "dynclib fixture build failed");
 
-    let target_dir = fixture_dir.join("target/debug");
+    let target_dir = manifest_dir.join("../../target/core-hyper-tests-dynclib-actor-fixture/debug");
     if cfg!(target_os = "linux") {
         target_dir.join("libdynclib_actor_fixture.so")
     } else if cfg!(target_os = "macos") {
