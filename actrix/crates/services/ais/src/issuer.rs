@@ -79,6 +79,7 @@ use base64::prelude::*;
 use ed25519_dalek::VerifyingKey;
 use hmac::{Hmac, Mac};
 use platform::aid::AidError;
+use platform::realm::RealmSecretCheck;
 use prost::Message as ProstMessage;
 use prost::bytes::Bytes;
 use prost_types::Timestamp;
@@ -88,6 +89,29 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 
 type HmacSha1 = Hmac<Sha1>;
+
+fn aid_error_to_code(err: &AidError) -> u32 {
+    match err {
+        AidError::InvalidFormat
+        | AidError::InvalidPrefix
+        | AidError::EmptyId
+        | AidError::InvalidTimestamp(_)
+        | AidError::Base64DecodeError(_)
+        | AidError::HexDecodeError(_) => 400,
+        AidError::Expired => 401,
+        AidError::RealmError(_) | AidError::ManufacturerNotVerified | AidError::PackageRevoked => {
+            403
+        }
+        AidError::GenerationFailed(msg) => {
+            if msg.contains("KS unavailable") || msg.contains("KS service") {
+                503
+            } else {
+                500
+            }
+        }
+        AidError::InvalidSignature(_) | AidError::DecodeFailure(_) => 500,
+    }
+}
 
 /// AId Token 签发器配置
 #[derive(Debug, Clone)]
@@ -516,13 +540,26 @@ impl AIdIssuer {
         &self,
         request: &RegisterRequest,
     ) -> Result<RegisterResponse, AidError> {
-        match self.issue_credential_inner(request).await {
+        self.issue_credential_with_realm_secret_check(request, None)
+            .await
+    }
+
+    /// 处理 register 请求并签发 credential，携带 handler 已完成的 realm secret 校验结果。
+    pub async fn issue_credential_with_realm_secret_check(
+        &self,
+        request: &RegisterRequest,
+        realm_secret_check: Option<RealmSecretCheck>,
+    ) -> Result<RegisterResponse, AidError> {
+        match self
+            .issue_credential_inner(request, realm_secret_check.as_ref())
+            .await
+        {
             Ok(register_ok) => Ok(RegisterResponse {
                 result: Some(register_response::Result::Success(register_ok)),
             }),
             Err(err) => Ok(RegisterResponse {
                 result: Some(register_response::Result::Error(ErrorResponse {
-                    code: 500,
+                    code: aid_error_to_code(&err),
                     message: err.to_string(),
                 })),
             }),
@@ -533,14 +570,13 @@ impl AIdIssuer {
     async fn issue_credential_inner(
         &self,
         request: &RegisterRequest,
+        realm_secret_check: Option<&RealmSecretCheck>,
     ) -> Result<register_response::RegisterOk, AidError> {
         // 确保有可用的密钥
         self.ensure_key_loaded().await?;
 
-        // verify MFR identity (check mfr_package table; pass if registered and active (published package))
-        // otherwise try signature verification (own package, not yet published)
-        // otherwise reject
-        self.verify_mfr_identity(request).await?;
+        self.verify_registration_identity(request, realm_secret_check)
+            .await?;
 
         // 生成 ActrId
         let actr_id = self.generate_actr_id(&request.actr_type, &request.realm)?;
@@ -601,6 +637,63 @@ impl AIdIssuer {
             psk: None,
             psk_expires_at: None,
         })
+    }
+
+    /// Verify the registration identity according to the explicit request source.
+    async fn verify_registration_identity(
+        &self,
+        request: &RegisterRequest,
+        realm_secret_check: Option<&RealmSecretCheck>,
+    ) -> Result<(), AidError> {
+        let auth_mode = match request.auth_mode {
+            Some(value) if value == actr_protocol::RegisterAuthMode::Linked as i32 => {
+                actr_protocol::RegisterAuthMode::Linked
+            }
+            Some(value) if value == actr_protocol::RegisterAuthMode::Package as i32 => {
+                actr_protocol::RegisterAuthMode::Package
+            }
+            _ => actr_protocol::RegisterAuthMode::Unspecified,
+        };
+
+        match auth_mode {
+            actr_protocol::RegisterAuthMode::Unspecified
+            | actr_protocol::RegisterAuthMode::Package => {
+                // verify MFR identity (check mfr_package table; pass if registered and active (published package))
+                // otherwise try signature verification (own package, not yet published)
+                // otherwise reject
+                self.verify_mfr_identity(request).await
+            }
+            actr_protocol::RegisterAuthMode::Linked => {
+                self.verify_linked_identity(request, realm_secret_check)
+            }
+        }
+    }
+
+    fn verify_linked_identity(
+        &self,
+        request: &RegisterRequest,
+        realm_secret_check: Option<&RealmSecretCheck>,
+    ) -> Result<(), AidError> {
+        if request.actr_type.version.is_empty()
+            || request.manifest_raw.is_some()
+            || request.mfr_signature.is_some()
+            || request.psk_token.is_some()
+        {
+            return Err(AidError::InvalidFormat);
+        }
+
+        match realm_secret_check {
+            Some(RealmSecretCheck::ValidCurrent) | Some(RealmSecretCheck::ValidPrevious) => Ok(()),
+            other => {
+                platform::recording::warn!(
+                    "Linked registration rejected: realm secret was not verified, realm={}, type={}, secret_check={:?}",
+                    request.realm.realm_id,
+                    request.actr_type.to_string_repr(),
+                    other
+                );
+                Err(AidError::ManufacturerNotVerified)
+            }
+        }
     }
 
     /// verify MFR identity

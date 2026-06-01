@@ -94,46 +94,51 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
         .map(str::trim)
         .filter(|v| !v.is_empty());
 
-    match verify_realm_secret(request.realm.realm_id, provided_secret).await {
-        Ok(RealmSecretCheck::NotConfigured)
-        | Ok(RealmSecretCheck::ValidCurrent)
-        | Ok(RealmSecretCheck::ValidPrevious) => {}
-        Ok(RealmSecretCheck::MissingRequired) => {
-            let error_result = RegisterResponse {
-                result: Some(register_response::Result::Error(ErrorResponse {
-                    code: 403,
-                    message: "Realm secret required".to_string(),
-                })),
-            };
-            return encode_result(error_result);
-        }
-        Ok(RealmSecretCheck::Invalid) => {
-            let error_result = RegisterResponse {
-                result: Some(register_response::Result::Error(ErrorResponse {
-                    code: 403,
-                    message: "Invalid realm secret".to_string(),
-                })),
-            };
-            return encode_result(error_result);
-        }
-        Err(e) => {
-            platform::recording::error!(
-                "Failed to verify realm secret for realm {}: {}",
-                request.realm.realm_id,
-                e
-            );
-            let error_result = RegisterResponse {
-                result: Some(register_response::Result::Error(ErrorResponse {
-                    code: 500,
-                    message: "Internal error while verifying realm secret".to_string(),
-                })),
-            };
-            return encode_result(error_result);
-        }
-    }
+    let realm_secret_check =
+        match verify_realm_secret(request.realm.realm_id, provided_secret).await {
+            Ok(check @ RealmSecretCheck::NotConfigured)
+            | Ok(check @ RealmSecretCheck::ValidCurrent)
+            | Ok(check @ RealmSecretCheck::ValidPrevious) => check,
+            Ok(RealmSecretCheck::MissingRequired) => {
+                let error_result = RegisterResponse {
+                    result: Some(register_response::Result::Error(ErrorResponse {
+                        code: 403,
+                        message: "Realm secret required".to_string(),
+                    })),
+                };
+                return encode_result(error_result);
+            }
+            Ok(RealmSecretCheck::Invalid) => {
+                let error_result = RegisterResponse {
+                    result: Some(register_response::Result::Error(ErrorResponse {
+                        code: 403,
+                        message: "Invalid realm secret".to_string(),
+                    })),
+                };
+                return encode_result(error_result);
+            }
+            Err(e) => {
+                platform::recording::error!(
+                    "Failed to verify realm secret for realm {}: {}",
+                    request.realm.realm_id,
+                    e
+                );
+                let error_result = RegisterResponse {
+                    result: Some(register_response::Result::Error(ErrorResponse {
+                        code: 500,
+                        message: "Internal error while verifying realm secret".to_string(),
+                    })),
+                };
+                return encode_result(error_result);
+            }
+        };
 
     // 调用 issuer 签发 credential
-    let result = match state.issuer.issue_credential(&request).await {
+    let result = match state
+        .issuer
+        .issue_credential_with_realm_secret_check(&request, Some(realm_secret_check))
+        .await
+    {
         Ok(response) => {
             if let Some(register_response::Result::Success(ref register_ok)) = response.result {
                 platform::recording::debug!(
@@ -416,7 +421,7 @@ fn aid_error_to_error_response(err: AidError) -> ErrorResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use actr_protocol::{AIdCredential, ActrType, Realm};
+    use actr_protocol::{AIdCredential, ActrType, Realm, RegisterAuthMode};
     use prost::bytes::Bytes as ProstBytes;
 
     #[test]
@@ -441,6 +446,7 @@ mod tests {
             mfr_signature: None,
             psk_token: None,
             target: None,
+            auth_mode: Some(RegisterAuthMode::Package as i32),
         };
 
         // 编码
@@ -472,6 +478,7 @@ mod tests {
             mfr_signature: None,
             psk_token: None,
             target: None,
+            auth_mode: Some(RegisterAuthMode::Package as i32),
         };
 
         // 编码解码循环

@@ -2,13 +2,25 @@
 //!
 //! 在测试进程内启动临时 Signer gRPC 服务，验证 AIS 的签发与校验链路。
 
-use actr_protocol::{ActrType, Realm, RegisterRequest, register_response};
-use ais::issuer::{AIdIssuer, IssuerConfig};
+use actr_protocol::{
+    ActrType, Realm, RegisterAuthMode, RegisterRequest, RegisterResponse, register_response,
+};
 use ais::signer_client_wrapper::create_signer_client;
+use ais::{
+    handlers::{AISState, create_router},
+    issuer::{AIdIssuer, IssuerConfig},
+};
+use axum::{
+    Router,
+    body::{Body, to_bytes},
+    http::{Request, StatusCode},
+};
 use base64::Engine as _;
 use nonce_auth::storage::MemoryStorage;
 use platform::aid::credential::validator::AIdCredentialValidator;
 use platform::config::signer::SignerClientConfig;
+use platform::realm::{REALM_SECRET_HEADER, RealmSecretCheck, hash_realm_secret};
+use prost::Message;
 use serial_test::serial;
 use signer::{GrpcClient, GrpcClientConfig, KeyStorage, SignerServiceConfig, create_grpc_service};
 use std::net::TcpListener;
@@ -18,6 +30,7 @@ use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tonic::transport::Server;
+use tower::ServiceExt;
 
 struct TestEnv {
     issuer_temp_dir: TempDir,
@@ -161,6 +174,394 @@ fn default_issuer_config(temp_dir: &TempDir) -> IssuerConfig {
     }
 }
 
+fn linked_register_request() -> RegisterRequest {
+    RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "linked-src".to_string(),
+            name: "source-workload".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id: 1001 },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: None,
+        mfr_signature: None,
+        psk_token: None,
+        target: None,
+        auth_mode: Some(RegisterAuthMode::Linked as i32),
+    }
+}
+
+async fn create_test_router(env: &TestEnv) -> Router {
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    create_router(AISState::new(issuer))
+}
+
+async fn seed_realm(realm_id: u32, name: &str, secret: Option<&str>) {
+    let pool = platform::storage::db::get_database().get_pool();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let secret_current = secret.map(hash_realm_secret).unwrap_or_default();
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO realm (id, name, status, enabled, created_at, secret_current)
+         VALUES (?, ?, 'Active', 1, ?, ?)",
+    )
+    .bind(realm_id as i64)
+    .bind(name)
+    .bind(now)
+    .bind(secret_current)
+    .execute(pool)
+    .await
+    .expect("seed realm");
+}
+
+async fn seed_active_package(manufacturer: &str, name: &str, version: &str, target: &str) {
+    let pool = platform::storage::db::get_database().get_pool();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO mfr (name, public_key, status, created_at)
+         VALUES (?, '', 'active', ?)",
+    )
+    .bind(manufacturer)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("seed mfr");
+
+    let mfr_id: i64 = sqlx::query_scalar("SELECT id FROM mfr WHERE name = ?")
+        .bind(manufacturer)
+        .fetch_one(pool)
+        .await
+        .expect("get mfr id");
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO mfr_package
+         (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at)
+         VALUES (?, ?, ?, ?, ?, ?, '', '', 'active', ?)",
+    )
+    .bind(mfr_id)
+    .bind(manufacturer)
+    .bind(name)
+    .bind(version)
+    .bind(format!("{manufacturer}:{name}:{version}"))
+    .bind(target)
+    .bind(now)
+    .execute(pool)
+    .await
+    .expect("seed mfr package");
+}
+
+async fn post_register(
+    app: Router,
+    request: RegisterRequest,
+    realm_secret: Option<&str>,
+) -> RegisterResponse {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/register")
+        .header("content-type", "application/protobuf")
+        .header("x-real-ip", "127.0.0.1");
+    if let Some(secret) = realm_secret {
+        builder = builder.header(REALM_SECRET_HEADER, secret);
+    }
+
+    let response = app
+        .oneshot(builder.body(Body::from(request.encode_to_vec())).unwrap())
+        .await
+        .expect("register route response");
+    let status = response.status();
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("register response body");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "unexpected /register status {status}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    RegisterResponse::decode(body).expect("decode register response")
+}
+
+#[tokio::test]
+#[serial]
+async fn test_register_route_linked_with_realm_secret_succeeds() {
+    let env = setup_test_environment().await;
+    let realm_secret = "linked-http-route-secret";
+    let realm_id = 22001;
+    seed_realm(realm_id, "linked-http-route", Some(realm_secret)).await;
+    let app = create_test_router(&env).await;
+
+    let mut request = linked_register_request();
+    request.realm = Realm { realm_id };
+    let response = post_register(app, request, Some(realm_secret)).await;
+
+    match response.result.expect("result") {
+        register_response::Result::Success(ok) => {
+            assert_eq!(ok.actr_id.realm.realm_id, realm_id);
+            assert_eq!(ok.actr_id.r#type.name, "source-workload");
+        }
+        register_response::Result::Error(err) => {
+            panic!("linked /register with realm secret should succeed: {err:?}")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_register_route_package_with_mfr_identity_succeeds() {
+    let env = setup_test_environment().await;
+    let realm_id = 22002;
+    seed_realm(realm_id, "package-http-route", None).await;
+    seed_active_package("httppkg", "PackagedService", "1.0.0", "wasm32-wasip1").await;
+    let app = create_test_router(&env).await;
+
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "httppkg".to_string(),
+            name: "PackagedService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: None,
+        mfr_signature: None,
+        psk_token: None,
+        target: Some("wasm32-wasip1".to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
+    };
+    let response = post_register(app, request, None).await;
+
+    match response.result.expect("result") {
+        register_response::Result::Success(ok) => {
+            assert_eq!(ok.actr_id.realm.realm_id, realm_id);
+            assert_eq!(ok.actr_id.r#type.manufacturer, "httppkg");
+        }
+        register_response::Result::Error(err) => {
+            panic!("package /register with MFR identity should succeed: {err:?}")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_register_route_unspecified_auth_mode_uses_package_identity() {
+    let env = setup_test_environment().await;
+    let realm_id = 22004;
+    seed_realm(realm_id, "unspecified-http-route", None).await;
+    seed_active_package("legacyhttp", "LegacyService", "1.0.0", "wasm32-wasip1").await;
+    let app = create_test_router(&env).await;
+
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "legacyhttp".to_string(),
+            name: "LegacyService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: None,
+        mfr_signature: None,
+        psk_token: None,
+        target: Some("wasm32-wasip1".to_string()),
+        auth_mode: None,
+    };
+    let response = post_register(app, request, None).await;
+
+    match response.result.expect("result") {
+        register_response::Result::Success(ok) => {
+            assert_eq!(ok.actr_id.realm.realm_id, realm_id);
+            assert_eq!(ok.actr_id.r#type.manufacturer, "legacyhttp");
+        }
+        register_response::Result::Error(err) => {
+            panic!("omitted auth_mode should remain package-compatible: {err:?}")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_register_route_package_without_mfr_identity_is_still_rejected() {
+    let env = setup_test_environment().await;
+    let realm_id = 22003;
+    seed_realm(realm_id, "package-http-route-missing-mfr", None).await;
+    let app = create_test_router(&env).await;
+
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "missing-http-mfr".to_string(),
+            name: "PackagedService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: None,
+        mfr_signature: None,
+        psk_token: None,
+        target: Some("wasm32-wasip1".to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
+    };
+    let response = post_register(app, request, None).await;
+
+    match response.result.expect("result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 403);
+            assert!(err.message.contains("manufacturer not verified"));
+        }
+        register_response::Result::Success(_) => {
+            panic!("package /register without MFR identity should still be rejected")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_linked_registration_with_verified_realm_secret_succeeds() {
+    let env = setup_test_environment().await;
+
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    let response = issuer
+        .issue_credential_with_realm_secret_check(
+            &linked_register_request(),
+            Some(RealmSecretCheck::ValidCurrent),
+        )
+        .await
+        .expect("issue linked credential");
+
+    match response.result.expect("result") {
+        register_response::Result::Success(ok) => {
+            assert_eq!(ok.actr_id.r#type.name, "source-workload");
+            assert_eq!(ok.actr_id.realm.realm_id, 1001);
+        }
+        register_response::Result::Error(err) => {
+            panic!("linked registration with verified realm secret should succeed: {err:?}")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_linked_registration_without_verified_realm_secret_is_rejected() {
+    let env = setup_test_environment().await;
+
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    let response = issuer
+        .issue_credential_with_realm_secret_check(
+            &linked_register_request(),
+            Some(RealmSecretCheck::NotConfigured),
+        )
+        .await
+        .expect("issue linked credential");
+
+    match response.result.expect("result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 403);
+            assert!(err.message.contains("manufacturer not verified"));
+        }
+        register_response::Result::Success(_) => {
+            panic!("linked registration without verified realm secret should be rejected")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_package_registration_without_mfr_identity_is_still_rejected() {
+    let env = setup_test_environment().await;
+
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "missing-mfr-for-package-auth-test".to_string(),
+            name: "package-workload".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id: 1001 },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: None,
+        mfr_signature: None,
+        psk_token: None,
+        target: None,
+        auth_mode: Some(RegisterAuthMode::Package as i32),
+    };
+
+    let response = issuer
+        .issue_credential(&request)
+        .await
+        .expect("issue package credential");
+
+    match response.result.expect("result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 403);
+            assert!(err.message.contains("manufacturer not verified"));
+        }
+        register_response::Result::Success(_) => {
+            panic!("package registration without MFR identity should still be rejected")
+        }
+    }
+}
+
 #[tokio::test]
 #[serial]
 async fn test_end_to_end_credential_flow() {
@@ -233,6 +634,7 @@ async fn test_end_to_end_credential_flow() {
         mfr_signature: None,
         psk_token: None,
         target: None,
+        auth_mode: Some(RegisterAuthMode::Package as i32),
     };
 
     let response = issuer
@@ -299,6 +701,7 @@ async fn test_end_to_end_credential_flow() {
             mfr_signature: None,
             psk_token: None,
             target: None,
+            auth_mode: Some(RegisterAuthMode::Package as i32),
         };
 
         let rsp = issuer
@@ -419,6 +822,7 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
         mfr_signature: None,
         psk_token: None,
         target: None,
+        auth_mode: Some(RegisterAuthMode::Package as i32),
     };
     let resp = issuer
         .issue_credential(&request)
@@ -672,6 +1076,7 @@ async fn test_path2_historical_retired_key_passes() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         psk_token: None,
         target: Some("wasm32-wasip1".to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
     };
 
     let response = issuer.issue_credential(&request).await.expect("issue");
@@ -753,6 +1158,7 @@ async fn test_path2_revoked_key_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         psk_token: None,
         target: Some("wasm32-wasip1".to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
     };
 
     let response = issuer.issue_credential(&request).await.expect("issue");
@@ -819,6 +1225,7 @@ async fn test_path2_identity_mismatch_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         psk_token: None,
         target: Some("wasm32-wasip1".to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
     };
 
     let response = issuer.issue_credential(&request).await.expect("issue");

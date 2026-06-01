@@ -455,6 +455,7 @@ async fn ais_register_http_with_secret(
         mfr_signature: None,
         psk_token: None,
         target: None,
+        auth_mode: None,
     };
     let client = reqwest::Client::new();
     let register_url = format!("{base_url}/ais/register");
@@ -807,6 +808,7 @@ async fn actrix_end_to_end_register_and_health() {
         mfr_signature: None,
         psk_token: None,
         target: None,
+        auth_mode: None,
     };
     let body = register_req.encode_to_vec();
     let register_url = format!("{base}/ais/register");
@@ -1071,6 +1073,7 @@ async fn ais_register_rejects_non_preprovisioned_realm() {
         mfr_signature: None,
         psk_token: None,
         target: None,
+        auth_mode: None,
     };
 
     let rsp_bytes = client
@@ -1202,6 +1205,7 @@ async fn ais_register_enforces_realm_secret_when_configured() {
         mfr_signature: None,
         psk_token: None,
         target: None,
+        auth_mode: None,
     };
 
     // 1) 未携带 realm_secret，AIS HTTP 注册应被拒绝
@@ -1335,6 +1339,7 @@ async fn ais_health_and_endpoints_degrade_when_ks_dependency_is_unreachable() {
         mfr_signature: None,
         psk_token: None,
         target: None,
+        auth_mode: None,
     };
     let register_resp = client
         .post(format!("{base}/ais/register"))
@@ -3260,6 +3265,7 @@ async fn signaling_rejects_register_request_via_ws() {
         mfr_signature: None,
         psk_token: None,
         target: None,
+        auth_mode: None,
     };
     let env = make_envelope(signaling_envelope::Flow::PeerToServer(
         actr_protocol::PeerToSignaling {
