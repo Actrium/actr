@@ -683,7 +683,12 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
     harness
         .peer(MOBILE)
         .gate
-        .send_data_stream(&server_id, PayloadType::StreamReliable, payload)
+        .send_data_stream(
+            &server_id,
+            PayloadType::StreamReliable,
+            &stream.stream_id,
+            payload,
+        )
         .await
         .expect("mobile data stream send should reach transport");
 
@@ -716,15 +721,11 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
 
     match event {
         HookEvent::DataStreamDeliveryUncertain {
-            peer_id,
             stream_id,
-            last_sent_seq,
             session_id: got_session_id,
             reason,
         } => {
-            assert_eq!(peer_id, server_id);
             assert_eq!(stream_id, "mobile-large-data-stream");
-            assert_eq!(last_sent_seq, 7);
             assert_eq!(got_session_id, session_id);
             assert_eq!(reason, "data channel closed");
         }

@@ -6,14 +6,12 @@
 //! - Maintain pending_requests (Request/Response matching)
 //! - Block new requests to peers being cleaned up (closing_peers)
 
-use super::data_stream_activity::DataStreamActivityTracker;
+use super::data_stream_activity::{DataStreamActivityTracker, DataStreamRecordState};
 use crate::transport::{ConnectionEvent, ConnectionState, Dest, PayloadTypeExt, PeerTransport};
 use crate::wire::webrtc::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus, WebRtcCoordinator};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{
-    ActorResult, ActrError, ActrId, Classify, DataStream, PayloadType, RpcEnvelope,
-};
+use actr_protocol::{ActorResult, ActrError, ActrId, Classify, PayloadType, RpcEnvelope};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::Arc;
 use std::time::Instant;
@@ -118,14 +116,36 @@ impl PeerGate {
         for notice in notices {
             webrtc_coordinator
                 .notify_data_stream_delivery_uncertain(
-                    notice.peer_id,
                     notice.stream_id,
-                    notice.last_sent_seq,
                     notice.session_id,
                     notice.reason,
                 )
                 .await;
         }
+    }
+
+    async fn record_active_data_stream_if_needed(
+        &self,
+        target: &ActrId,
+        stream_id: &str,
+        session_id: u64,
+        now: Instant,
+    ) -> bool {
+        let record_state = {
+            let tracker = self.active_data_streams.read().await;
+            tracker.record_state(target, stream_id, session_id, now)
+        };
+
+        if record_state != DataStreamRecordState::Fresh {
+            self.active_data_streams.write().await.record_stream(
+                target,
+                stream_id.to_string(),
+                session_id,
+                now,
+            );
+        }
+
+        record_state == DataStreamRecordState::Missing
     }
 
     /// Create new PeerGate
@@ -905,6 +925,7 @@ impl PeerGate {
     /// # Parameters
     /// - `target`: Target Actor ID
     /// - `payload_type`: PayloadType (StreamReliable or StreamLatencyFirst)
+    /// - `stream_id`: DataStream identifier already known before serialization
     /// - `data`: Serialized DataStream bytes
     ///
     /// # Implementation Note
@@ -913,11 +934,13 @@ impl PeerGate {
         &self,
         target: &ActrId,
         payload_type: PayloadType,
+        stream_id: &str,
         data: Bytes,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "PeerGate::send_data_stream to {:?}, payload_type={:?}, size={} bytes",
+            "PeerGate::send_data_stream to {:?}, stream_id={}, payload_type={:?}, size={} bytes",
             target,
+            stream_id,
             payload_type,
             data.len()
         );
@@ -934,25 +957,12 @@ impl PeerGate {
         let dest = Self::actr_id_to_dest(target);
         self.preflight_send(target, &dest).await?;
 
-        let stream_marker = match payload_type {
-            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                match DataStream::decode(data.as_ref()) {
-                    Ok(stream) => Some((stream.stream_id, stream.sequence)),
-                    Err(e) => {
-                        tracing::warn!(
-                            target = ?target,
-                            payload_type = ?payload_type,
-                            error = %e,
-                            "send_data_stream payload could not be decoded for activity tracking",
-                        );
-                        None
-                    }
-                }
-            }
-            _ => None,
-        };
+        let tracks_data_stream = matches!(
+            payload_type,
+            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst
+        );
 
-        let stream_session_id = if stream_marker.is_some() {
+        let stream_session_id = if tracks_data_stream {
             if let Some(coordinator) = &self.webrtc_coordinator {
                 coordinator.get_peer_session_id(target).await
             } else {
@@ -962,17 +972,12 @@ impl PeerGate {
             None
         };
 
-        if let Some((stream_id, sequence)) = &stream_marker {
-            if let Some(session_id) = stream_session_id {
-                self.active_data_streams.write().await.record_sent(
-                    target,
-                    stream_id.clone(),
-                    *sequence,
-                    session_id,
-                    Instant::now(),
-                );
-            }
-        }
+        let recorded_before_send = if let Some(session_id) = stream_session_id {
+            self.record_active_data_stream_if_needed(target, stream_id, session_id, Instant::now())
+                .await
+        } else {
+            false
+        };
 
         let result = self
             .transport_manager
@@ -980,36 +985,25 @@ impl PeerGate {
             .await
             .map_err(|e| ActrError::Unavailable(e.to_string()));
 
-        if let Some((stream_id, sequence)) = &stream_marker {
+        if tracks_data_stream {
             if result.is_err() {
-                if let Some(session_id) = stream_session_id {
+                if recorded_before_send && let Some(session_id) = stream_session_id {
                     self.active_data_streams
                         .write()
                         .await
                         .remove_stream_session(target, stream_id, session_id);
-                } else {
-                    self.active_data_streams
-                        .write()
-                        .await
-                        .remove_stream(target, stream_id);
                 }
-            } else {
-                let sent_session_id = if stream_session_id.is_some() {
-                    stream_session_id
-                } else if let Some(coordinator) = &self.webrtc_coordinator {
-                    coordinator.get_peer_session_id(target).await
-                } else {
-                    None
-                };
-
-                if let Some(session_id) = sent_session_id {
-                    self.active_data_streams.write().await.record_sent(
+            } else if stream_session_id.is_none()
+                && let Some(coordinator) = &self.webrtc_coordinator
+            {
+                if let Some(session_id) = coordinator.get_peer_session_id(target).await {
+                    self.record_active_data_stream_if_needed(
                         target,
-                        stream_id.clone(),
-                        *sequence,
+                        stream_id,
                         session_id,
                         Instant::now(),
-                    );
+                    )
+                    .await;
                 }
             }
         }

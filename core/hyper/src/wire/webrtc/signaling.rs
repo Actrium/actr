@@ -338,9 +338,7 @@ pub enum HookEvent {
         peer_id: ActrId,
     },
     DataStreamDeliveryUncertain {
-        peer_id: ActrId,
         stream_id: String,
-        last_sent_seq: u64,
         session_id: u64,
         reason: String,
     },

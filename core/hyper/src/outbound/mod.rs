@@ -158,6 +158,7 @@ impl Gate {
     ///
     /// - `target`: target actor ID
     /// - `payload_type`: `PayloadType` such as `StreamReliable` or `StreamLatencyFirst`
+    /// - `stream_id`: `DataStream` identifier already known before serialization
     /// - `data`: serialized `DataStream` bytes
     ///
     /// # Semantics
@@ -168,11 +169,18 @@ impl Gate {
         &self,
         target: &ActrId,
         payload_type: actr_protocol::PayloadType,
+        stream_id: &str,
         data: Bytes,
     ) -> ActorResult<()> {
         match self {
-            Gate::Host(gate) => gate.send_data_stream(target, payload_type, data).await,
-            Gate::Peer(gate) => gate.send_data_stream(target, payload_type, data).await,
+            Gate::Host(gate) => {
+                gate.send_data_stream(target, payload_type, stream_id, data)
+                    .await
+            }
+            Gate::Peer(gate) => {
+                gate.send_data_stream(target, payload_type, stream_id, data)
+                    .await
+            }
         }
     }
 }

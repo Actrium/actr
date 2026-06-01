@@ -214,9 +214,7 @@ pub(crate) fn build_hook_callback(
                     }
                 }
                 HookEvent::DataStreamDeliveryUncertain {
-                    peer_id,
                     stream_id,
-                    last_sent_seq,
                     session_id,
                     reason,
                 } => {
@@ -228,7 +226,7 @@ pub(crate) fn build_hook_callback(
                             ),
                             ErrorCategory::DataStreamDeliveryUncertain,
                             format!(
-                                "peer={peer_id}; stream_id={stream_id}; last_sent_seq={last_sent_seq}; session_id={session_id}; reason={reason}"
+                                "stream_id={stream_id}; session_id={session_id}; reason={reason}"
                             ),
                         );
                         spawn_hook("on_error", async move {
@@ -322,16 +320,12 @@ fn log_hook_event(event: &HookEvent) {
             tracing::warn!(peer = %peer_id, "webrtc disconnected");
         }
         HookEvent::DataStreamDeliveryUncertain {
-            peer_id,
             stream_id,
-            last_sent_seq,
             session_id,
             reason,
         } => {
             tracing::warn!(
-                peer = %peer_id,
                 stream_id = %stream_id,
-                last_sent_seq = *last_sent_seq,
                 session_id = *session_id,
                 reason = %reason,
                 "data stream delivery uncertain",
@@ -471,9 +465,7 @@ mod tests {
         let cb = build_hook_callback(Some(observer), ctx_builder);
 
         cb(HookEvent::DataStreamDeliveryUncertain {
-            peer_id: test_actr_id(200),
             stream_id: "mobile-upload".to_string(),
-            last_sent_seq: 12,
             session_id: 99,
             reason: "data channel closed".to_string(),
         })
@@ -486,9 +478,7 @@ mod tests {
 
         assert_eq!(event.category, ErrorCategory::DataStreamDeliveryUncertain);
         assert!(matches!(event.source, ActrError::Unavailable(_)));
-        assert!(event.context.contains("peer=c8@1/acme:node:1.0.0"));
         assert!(event.context.contains("stream_id=mobile-upload"));
-        assert!(event.context.contains("last_sent_seq=12"));
         assert!(event.context.contains("session_id=99"));
         assert!(event.context.contains("reason=data channel closed"));
     }

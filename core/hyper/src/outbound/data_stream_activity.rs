@@ -6,18 +6,22 @@ pub(crate) const DATA_STREAM_ACTIVITY_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DataStreamDeliveryUncertainNotice {
-    pub(crate) peer_id: ActrId,
     pub(crate) stream_id: String,
-    pub(crate) last_sent_seq: u64,
     pub(crate) session_id: u64,
     pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone)]
 struct ActiveDataStream {
-    last_sent_seq: u64,
     last_updated_at: Instant,
     notified: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DataStreamRecordState {
+    Missing,
+    Stale,
+    Fresh,
 }
 
 #[derive(Debug)]
@@ -40,11 +44,34 @@ impl DataStreamActivityTracker {
         }
     }
 
-    pub(crate) fn record_sent(
+    pub(crate) fn record_state(
+        &self,
+        peer_id: &ActrId,
+        stream_id: &str,
+        session_id: u64,
+        now: Instant,
+    ) -> DataStreamRecordState {
+        let Some(stream) = self
+            .streams_by_peer
+            .get(peer_id)
+            .and_then(|streams| streams.get(stream_id))
+            .and_then(|sessions| sessions.get(&session_id))
+        else {
+            return DataStreamRecordState::Missing;
+        };
+
+        let refresh_interval = self.ttl.checked_div(2).unwrap_or(self.ttl);
+        if now.duration_since(stream.last_updated_at) > refresh_interval {
+            DataStreamRecordState::Stale
+        } else {
+            DataStreamRecordState::Fresh
+        }
+    }
+
+    pub(crate) fn record_stream(
         &mut self,
         peer_id: &ActrId,
         stream_id: impl Into<String>,
-        sequence: u64,
         session_id: u64,
         now: Instant,
     ) {
@@ -57,12 +84,10 @@ impl DataStreamActivityTracker {
             .or_default()
             .entry(session_id)
             .or_insert_with(|| ActiveDataStream {
-                last_sent_seq: sequence,
                 last_updated_at: now,
                 notified: false,
             });
 
-        stream.last_sent_seq = sequence;
         stream.last_updated_at = now;
     }
 
@@ -90,9 +115,7 @@ impl DataStreamActivityTracker {
                 stream.notified = true;
 
                 Some(DataStreamDeliveryUncertainNotice {
-                    peer_id: peer_id.clone(),
                     stream_id: stream_id.clone(),
-                    last_sent_seq: stream.last_sent_seq,
                     session_id,
                     reason: reason.clone(),
                 })
@@ -100,7 +123,8 @@ impl DataStreamActivityTracker {
             .collect()
     }
 
-    pub(crate) fn remove_stream(&mut self, peer_id: &ActrId, stream_id: &str) {
+    #[cfg(test)]
+    fn remove_stream(&mut self, peer_id: &ActrId, stream_id: &str) {
         let should_remove_peer = if let Some(streams) = self.streams_by_peer.get_mut(peer_id) {
             streams.remove(stream_id);
             streams.is_empty()
@@ -171,13 +195,24 @@ mod tests {
     }
 
     #[test]
-    fn records_last_sent_sequence_per_stream() {
+    fn records_stream_once_per_session() {
         let peer = actr_id(100);
         let now = Instant::now();
         let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
 
-        tracker.record_sent(&peer, "stream-a", 1, 42, now);
-        tracker.record_sent(&peer, "stream-a", 7, 42, now + Duration::from_secs(1));
+        assert_eq!(
+            tracker.record_state(&peer, "stream-a", 42, now),
+            DataStreamRecordState::Missing
+        );
+        tracker.record_stream(&peer, "stream-a", 42, now);
+        assert_eq!(
+            tracker.record_state(&peer, "stream-a", 42, now + Duration::from_secs(1)),
+            DataStreamRecordState::Fresh
+        );
+        assert_eq!(
+            tracker.record_state(&peer, "stream-a", 42, now + Duration::from_secs(16)),
+            DataStreamRecordState::Stale
+        );
 
         let notices = tracker.mark_delivery_uncertain(
             &peer,
@@ -188,7 +223,6 @@ mod tests {
 
         assert_eq!(notices.len(), 1);
         assert_eq!(notices[0].stream_id, "stream-a");
-        assert_eq!(notices[0].last_sent_seq, 7);
         assert_eq!(notices[0].session_id, 42);
     }
 
@@ -198,17 +232,15 @@ mod tests {
         let now = Instant::now();
         let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
 
-        tracker.record_sent(&peer, "stream-a", 3, 42, now);
-        tracker.record_sent(&peer, "stream-b", 9, 42, now);
+        tracker.record_stream(&peer, "stream-a", 42, now);
+        tracker.record_stream(&peer, "stream-b", 42, now);
 
         let mut notices = tracker.mark_delivery_uncertain(&peer, 42, "webrtc disconnected", now);
         notices.sort_by(|a, b| a.stream_id.cmp(&b.stream_id));
 
         assert_eq!(notices.len(), 2);
         assert_eq!(notices[0].stream_id, "stream-a");
-        assert_eq!(notices[0].last_sent_seq, 3);
         assert_eq!(notices[1].stream_id, "stream-b");
-        assert_eq!(notices[1].last_sent_seq, 9);
     }
 
     #[test]
@@ -217,7 +249,7 @@ mod tests {
         let now = Instant::now();
         let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(5));
 
-        tracker.record_sent(&peer, "stream-a", 1, 42, now);
+        tracker.record_stream(&peer, "stream-a", 42, now);
 
         let notices =
             tracker.mark_delivery_uncertain(&peer, 42, "late close", now + Duration::from_secs(6));
@@ -231,12 +263,12 @@ mod tests {
         let now = Instant::now();
         let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
 
-        tracker.record_sent(&peer, "stream-a", 1, 42, now);
+        tracker.record_stream(&peer, "stream-a", 42, now);
         let first = tracker.mark_delivery_uncertain(&peer, 42, "state disconnected", now);
         let duplicate = tracker.mark_delivery_uncertain(&peer, 42, "data channel closed", now);
         let stale_session = tracker.mark_delivery_uncertain(&peer, 43, "stale close", now);
 
-        tracker.record_sent(&peer, "stream-a", 2, 43, now + Duration::from_secs(1));
+        tracker.record_stream(&peer, "stream-a", 43, now + Duration::from_secs(1));
         let next_session = tracker.mark_delivery_uncertain(
             &peer,
             43,
@@ -249,7 +281,6 @@ mod tests {
         assert!(stale_session.is_empty());
         assert_eq!(next_session.len(), 1);
         assert_eq!(next_session[0].session_id, 43);
-        assert_eq!(next_session[0].last_sent_seq, 2);
     }
 
     #[test]
@@ -258,8 +289,8 @@ mod tests {
         let now = Instant::now();
         let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
 
-        tracker.record_sent(&peer, "stream-a", 1, 42, now);
-        tracker.record_sent(&peer, "stream-a", 2, 43, now + Duration::from_secs(1));
+        tracker.record_stream(&peer, "stream-a", 42, now);
+        tracker.record_stream(&peer, "stream-a", 43, now + Duration::from_secs(1));
 
         let old_session = tracker.mark_delivery_uncertain(
             &peer,
@@ -276,10 +307,8 @@ mod tests {
 
         assert_eq!(old_session.len(), 1);
         assert_eq!(old_session[0].session_id, 42);
-        assert_eq!(old_session[0].last_sent_seq, 1);
         assert_eq!(new_session.len(), 1);
         assert_eq!(new_session[0].session_id, 43);
-        assert_eq!(new_session[0].last_sent_seq, 2);
     }
 
     #[test]
@@ -288,7 +317,7 @@ mod tests {
         let now = Instant::now();
         let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
 
-        tracker.record_sent(&peer, "stream-a", 1, 42, now);
+        tracker.record_stream(&peer, "stream-a", 42, now);
         tracker.remove_stream(&peer, "stream-a");
 
         let notices = tracker.mark_delivery_uncertain(&peer, 42, "late close", now);
@@ -301,8 +330,8 @@ mod tests {
         let now = Instant::now();
         let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
 
-        tracker.record_sent(&peer, "stream-a", 1, 42, now);
-        tracker.record_sent(&peer, "stream-a", 2, 43, now + Duration::from_secs(1));
+        tracker.record_stream(&peer, "stream-a", 42, now);
+        tracker.record_stream(&peer, "stream-a", 43, now + Duration::from_secs(1));
         tracker.remove_stream_session(&peer, "stream-a", 43);
 
         let old_session = tracker.mark_delivery_uncertain(
@@ -319,7 +348,6 @@ mod tests {
         );
 
         assert_eq!(old_session.len(), 1);
-        assert_eq!(old_session[0].last_sent_seq, 1);
         assert!(removed_session.is_empty());
     }
 }

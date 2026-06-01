@@ -133,10 +133,12 @@ async fn test_real_disconnect_stream_send_recovers_and_stale_close_is_ignored() 
         timestamp_ms: Some(0),
     };
     let payload = bytes::Bytes::from(stream.encode_to_vec());
-    let send_fut =
-        source_peer
-            .gate
-            .send_data_stream(&target_id, PayloadType::StreamReliable, payload);
+    let send_fut = source_peer.gate.send_data_stream(
+        &target_id,
+        PayloadType::StreamReliable,
+        &stream.stream_id,
+        payload,
+    );
 
     match tokio::time::timeout(Duration::from_secs(5), send_fut).await {
         Ok(Ok(())) => {
