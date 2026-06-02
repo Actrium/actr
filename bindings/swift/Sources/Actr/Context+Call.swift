@@ -10,12 +10,4 @@ public extension Context {
             timeoutMs: 30000
         )
     }
-
-    func callEchoService(routeKey: String, payload: Data) async throws -> Data {
-        return try await callEchoServiceRaw(
-            routeKey: routeKey,
-            payload: payload,
-            timeoutMs: 30000
-        )
-    }
 }

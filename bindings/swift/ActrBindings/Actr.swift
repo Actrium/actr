@@ -715,24 +715,6 @@ public static func newFromPackageFile(configPath: String, packagePath: String)as
         )
 }
     
-    /**
-     * Create a linked/static echo proxy runtime from config and actor identity.
-     */
-public static func newLinked(configPath: String, actorType: ActrType)async throws  -> ActrNode  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_actr_fn_constructor_actrnode_new_linked(FfiConverterString.lower(configPath),FfiConverterTypeActrType_lower(actorType)
-                )
-            },
-            pollFunc: ffi_actr_rust_future_poll_u64,
-            completeFunc: ffi_actr_rust_future_complete_u64,
-            freeFunc: ffi_actr_rust_future_free_u64,
-            liftFunc: FfiConverterTypeActrNode_lift,
-            errorHandler: FfiConverterTypeActrError_lift
-        )
-}
-    
 
     
     /**
@@ -1089,14 +1071,6 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
     func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaType: String) async throws 
     
     /**
-     * Discover and call the sample EchoService from a Swift-provided workload.
-     *
-     * The remote call is spawned onto the Rust runtime so WebRTC offer creation
-     * does not execute on Swift's cooperative task stack during an FFI callback.
-     */
-    func callEchoServiceRaw(routeKey: String, payload: Data, timeoutMs: Int64) async throws  -> Data
-    
-    /**
      * Call a remote actor via RPC (simplified for FFI)
      *
      * # Arguments
@@ -1246,29 +1220,6 @@ open func addMediaTrack(target: ActrId, trackId: String, codec: String, mediaTyp
             completeFunc: ffi_actr_rust_future_complete_void,
             freeFunc: ffi_actr_rust_future_free_void,
             liftFunc: { $0 },
-            errorHandler: FfiConverterTypeActrError_lift
-        )
-}
-    
-    /**
-     * Discover and call the sample EchoService from a Swift-provided workload.
-     *
-     * The remote call is spawned onto the Rust runtime so WebRTC offer creation
-     * does not execute on Swift's cooperative task stack during an FFI callback.
-     */
-open func callEchoServiceRaw(routeKey: String, payload: Data, timeoutMs: Int64)async throws  -> Data  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_actr_fn_method_contextbridge_call_echo_service_raw(
-                    self.uniffiCloneHandle(),
-                    FfiConverterString.lower(routeKey),FfiConverterData.lower(payload),FfiConverterInt64.lower(timeoutMs)
-                )
-            },
-            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
-            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
-            freeFunc: ffi_actr_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterData.lift,
             errorHandler: FfiConverterTypeActrError_lift
         )
 }
@@ -3103,9 +3054,9 @@ public struct FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer {
         case 3: return .signalingFailure
         
         case 4: return .transportFailure
-
+        
         case 5: return .dataStreamDeliveryUncertain
-
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -3128,11 +3079,11 @@ public struct FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer {
         
         case .transportFailure:
             writeInt(&buf, Int32(4))
-
-
+        
+        
         case .dataStreamDeliveryUncertain:
             writeInt(&buf, Int32(5))
-
+        
         }
     }
 }
@@ -5757,9 +5708,6 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_contextbridge_add_media_track() != 62400) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_call_echo_service_raw() != 4292) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_actr_checksum_method_contextbridge_call_raw() != 32688) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5812,9 +5760,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 23972) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_actr_checksum_constructor_actrnode_new_linked() != 59877) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_constructor_dynamicworkload_new() != 7106) {

@@ -95,44 +95,6 @@ impl ContextBridge {
         Ok(resp.to_vec())
     }
 
-    /// Discover and call the sample EchoService from a Swift-provided workload.
-    ///
-    /// The remote call is spawned onto the Rust runtime so WebRTC offer creation
-    /// does not execute on Swift's cooperative task stack during an FFI callback.
-    pub async fn call_echo_service_raw(
-        &self,
-        route_key: String,
-        payload: Vec<u8>,
-        timeout_ms: i64,
-    ) -> crate::error::ActrResult<Vec<u8>> {
-        let ctx = self.inner.clone();
-        let handle = tokio::spawn(async move {
-            let target_type = actr_protocol::ActrType {
-                manufacturer: "acme".to_string(),
-                name: "EchoService".to_string(),
-                version: "0.1.0".to_string(),
-            };
-            let target = ctx.discover_route_candidate(&target_type).await?;
-            let resp = ctx
-                .call_raw(
-                    &Dest::Actor(target),
-                    route_key,
-                    PayloadType::RpcReliable,
-                    Bytes::from(payload),
-                    timeout_ms,
-                )
-                .await?;
-            Ok::<Vec<u8>, actr_protocol::ActrError>(resp.to_vec())
-        });
-
-        handle
-            .await
-            .map_err(|e| crate::error::ActrError::Internal {
-                msg: format!("EchoService call task failed: {e}"),
-            })?
-            .map_err(crate::error::ActrError::from)
-    }
-
     /// Send a one-way message to an actor (fire-and-forget)
     ///
     /// # Arguments

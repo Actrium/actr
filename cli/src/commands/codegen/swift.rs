@@ -218,12 +218,11 @@ impl LanguageGenerator for SwiftGenerator {
                     // First, try to get actr_type from Config
                     let mut actr_type_str: Option<String> = None;
 
-                    if let Some(dep) = context
-                        .config
-                        .dependencies
-                        .iter()
-                        .find(|d| d.alias == dep_alias)
-                    {
+                    if let Some(dep) = context.config.dependencies.iter().find(|d| {
+                        d.alias == dep_alias
+                            || d.alias == to_pascal_case(dep_alias)
+                            || to_pascal_case(&d.alias) == to_pascal_case(dep_alias)
+                    }) {
                         debug!(
                             "Found matching dependency in Config: alias={}, actr_type={:?}",
                             dep.alias, dep.actr_type
@@ -1671,7 +1670,7 @@ mod tests {
         let layout = SwiftTemplateProjectLayout::detect(project_root, "echo-app")
             .expect("expected standard Swift template layout");
         layout
-            .converge_generated_outputs(&[generated_file.clone()])
+            .converge_generated_outputs(std::slice::from_ref(&generated_file))
             .expect("converge generated outputs");
 
         assert!(
@@ -1747,7 +1746,7 @@ mod tests {
         let layout = SwiftTemplateProjectLayout::detect(project_root, "echo-app")
             .expect("expected standard Swift template layout");
         layout
-            .converge_generated_outputs(&[generated_file.clone()])
+            .converge_generated_outputs(std::slice::from_ref(&generated_file))
             .expect("converge generated outputs");
 
         assert!(

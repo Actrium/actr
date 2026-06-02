@@ -53,60 +53,67 @@ private final class StaticWorkloadProbe: WorkloadLifecycleBridge, @unchecked Sen
     }
 }
 
-@Test func dynamicWorkloadAcceptsSwiftLifecycleBridgeForLinkedNodeApi() async throws {
-    let lifecycle = StaticWorkloadProbe()
-    let workload = DynamicWorkload(
-        lifecycle: lifecycle,
-        signaling: nil,
-        websocket: nil,
-        webrtc: nil,
-        credential: nil,
-        mailbox: nil
-    )
-    let actorType = ActrType(manufacturer: "acme", name: "EchoApp", version: "0.1.0")
-    let remoteConfigURL = try #require(URL(string: "https://example.com/actr.toml"))
+@Suite(.serialized)
+private struct DynamicWorkloadTests {
+    @Test func dynamicWorkloadAcceptsSwiftLifecycleBridgeForLinkedNodeApi() async throws {
+        let lifecycle = StaticWorkloadProbe()
+        let workload = DynamicWorkload(
+            lifecycle: lifecycle,
+            signaling: nil,
+            websocket: nil,
+            webrtc: nil,
+            credential: nil,
+            mailbox: nil
+        )
+        let actorType = ActrType(manufacturer: "acme", name: "EchoApp", version: "0.1.0")
+        let remoteConfigURL = try #require(URL(string: "https://example.com/actr.toml"))
 
-    do {
-        _ = try await ActrNode.linked(config: remoteConfigURL, type: actorType, workload: workload)
-        Issue.record("linked(config:type:workload:) should reject non-file config URLs before starting runtime")
-    } catch ActrError.Config(let msg) {
-        #expect(msg == "config URL must be a file URL")
-    } catch {
-        Issue.record("Unexpected error: \(error)")
+        do {
+            _ = try await ActrNode.linked(config: remoteConfigURL, type: actorType, workload: workload)
+            Issue.record("linked(config:type:workload:) should reject non-file config URLs before starting runtime")
+        } catch ActrError.Config(let msg) {
+            #expect(msg == "config URL must be a file URL")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
-}
 
-@Test(.enabled(if: ProcessInfo.processInfo.environment["ACTR_SWIFT_E2E"] == "1"))
-func linkedNodeDispatchesLocalTellToSwiftLifecycleBridge() async throws {
-    let lifecycle = StaticWorkloadProbe()
-    let workload = DynamicWorkload(
-        lifecycle: lifecycle,
-        signaling: nil,
-        websocket: nil,
-        webrtc: nil,
-        credential: nil,
-        mailbox: nil
-    )
-    let actorType = ActrType(manufacturer: "acme", name: "EchoApp", version: "0.1.0")
-    let tempDir = try makeTemporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: tempDir) }
+    @Test
+    func linkedNodeDispatchesLocalTellToSwiftLifecycleBridge() async throws {
+        guard ProcessInfo.processInfo.environment["ACTR_SWIFT_LINKED_RUNTIME_E2E"] == "1" else {
+            return
+        }
 
-    let configURL = try writeLinkedWorkloadConfig(in: tempDir)
-    let node = try await ActrNode.linked(config: configURL, type: actorType, workload: workload)
-    let actrRef = try await node.start()
+        let lifecycle = StaticWorkloadProbe()
+        let workload = DynamicWorkload(
+            lifecycle: lifecycle,
+            signaling: nil,
+            websocket: nil,
+            webrtc: nil,
+            credential: nil,
+            mailbox: nil
+        )
+        let actorType = ActrType(manufacturer: "acme", name: "EchoApp", version: "0.1.0")
+        let tempDir = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
 
-    try await actrRef.tell(
-        routeKey: "echoapp.LocalEchoService.Send",
-        payloadType: .rpcReliable,
-        messagePayload: Data("hello".utf8)
-    )
+        let configURL = try writeLinkedWorkloadConfig(in: tempDir)
+        let actrRef = try await startLinkedWorkloadRef(config: configURL, type: actorType, workload: workload)
 
-    let records = try await lifecycle.waitForDispatchCount(1)
-    #expect(records == [
-        DispatchRecord(routeKey: "echoapp.LocalEchoService.Send", payload: Data("hello".utf8)),
-    ])
+        let response = try await actrRef.call(
+            routeKey: "echoapp.LocalEchoService.Send",
+            payloadType: .rpcReliable,
+            requestPayload: Data("hello".utf8)
+        )
+        #expect(response == Data("swift-local:hello".utf8))
 
-    await actrRef.stop()
+        let records = try await lifecycle.waitForDispatchCount(1)
+        #expect(records == [
+            DispatchRecord(routeKey: "echoapp.LocalEchoService.Send", payload: Data("hello".utf8)),
+        ])
+
+        await actrRef.stop()
+    }
 }
 
 private func makeTemporaryDirectory() throws -> URL {
@@ -139,4 +146,9 @@ private func writeLinkedWorkloadConfig(in tempDir: URL) throws -> URL {
     """
     try config.write(to: configURL, atomically: true, encoding: .utf8)
     return configURL
+}
+
+private func startLinkedWorkloadRef(config configURL: URL, type actorType: ActrType, workload: DynamicWorkload) async throws -> ActrRef {
+    let node = try await ActrNode.linked(config: configURL, type: actorType, workload: workload)
+    return try await node.start()
 }

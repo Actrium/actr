@@ -120,6 +120,24 @@ fn write_app_cli(project_dir: &std::path::Path) {
 import Foundation
 import SwiftProtobuf
 
+private final class EchoAppLifecycleAdapter: Workload, @unchecked Sendable {
+    private let workload = EchoAppWorkload()
+
+    func onStart(ctx _: ContextBridge) async throws {}
+
+    func onReady(ctx _: ContextBridge) async throws {}
+
+    func onStop(ctx _: ContextBridge) async throws {}
+
+    func onError(ctx _: ContextBridge, event: ErrorEventBridge) async throws {
+        print("EchoAppLifecycleAdapter error: \(event)")
+    }
+
+    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+        return try await workload.__dispatch(ctx: ctx, envelope: envelope)
+    }
+}
+
 @main
 struct EchoAppCLI {
     static func main() async throws {
@@ -130,7 +148,15 @@ struct EchoAppCLI {
             name: "EchoApp",
             version: "1.0.0"
         )
-        let system = try await ActrNode.linkedEchoProxy(config: configPath, type: actorType)
+        let workload = DynamicWorkload(
+            lifecycle: EchoAppLifecycleAdapter(),
+            signaling: nil,
+            websocket: nil,
+            webrtc: nil,
+            credential: nil,
+            mailbox: nil
+        )
+        let system = try await ActrNode.linked(config: configPath, type: actorType, workload: workload)
         let actr = try await system.start()
 
         var request = Echo_EchoRequest()
@@ -182,6 +208,16 @@ fn rewrite_package_name(project_dir: &Path, package_name: &str) {
         "name = \"echo-client-app\"",
         &format!("name = \"{package_name}\""),
         1,
+    );
+    fs::write(&manifest_path, rewritten).expect("write manifest.toml");
+}
+
+fn pin_echo_service_dependency_to_registry_version(project_dir: &Path) {
+    let manifest_path = project_dir.join("manifest.toml");
+    let manifest = fs::read_to_string(&manifest_path).expect("read manifest.toml");
+    let rewritten = manifest.replace(
+        r#"EchoService = { actr_type = "acme:EchoService:1.0.0" }"#,
+        r#"EchoService = { actr_type = "acme:EchoService:0.1.0" }"#,
     );
     fs::write(&manifest_path, rewritten).expect("write manifest.toml");
 }
@@ -281,6 +317,7 @@ fn swift_echo_e2e_service_and_app() {
     align_project_with_local_actrix(&app_dir).expect("failed to set local realm for app");
     pin_echo_service_dependency_version(&app_dir, "acme")
         .expect("failed to pin app echo dependency version");
+    pin_echo_service_dependency_to_registry_version(&app_dir);
     rewrite_package_name(&app_dir, "EchoApp");
     write_linked_runtime_config(&svc_dir);
     write_linked_runtime_config(&app_dir);
