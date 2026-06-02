@@ -149,7 +149,7 @@ impl LanguageGenerator for SwiftGenerator {
         info!("🔧 Generating Swift infrastructure code...");
         let mut generated_files = Vec::new();
 
-        self.ensure_required_tools(context)?;
+        let local_actrframework_plugin = self.ensure_required_tools(context)?;
 
         // Ensure output directory exists
         std::fs::create_dir_all(&context.output).map_err(|e| {
@@ -362,6 +362,12 @@ impl LanguageGenerator for SwiftGenerator {
                     "--actrframework-swift_out={}",
                     context.output.display()
                 ));
+            if let Some(plugin_path) = local_actrframework_plugin.as_ref() {
+                cmd.arg(format!(
+                    "--plugin=protoc-gen-actrframework-swift={}",
+                    plugin_path.display()
+                ));
+            }
 
             for proto_file in actr_proto_files {
                 cmd.arg(proto_file);
@@ -426,7 +432,7 @@ impl LanguageGenerator for SwiftGenerator {
                 .unwrap_or_else(|| {
                     let fallback = format!("{}Workload", service.name);
                     warn!(
-                        "Could not find workload name for service '{}' in local.actor.swift, \
+                        "Could not find workload name for service '{}' in generated *.actor.swift files, \
                         falling back to '{}'. Run `actr gen` infrastructure step first.",
                         service.name, fallback
                     );
@@ -471,7 +477,7 @@ impl LanguageGenerator for SwiftGenerator {
                     let fallback =
                         format!("{}Workload", to_pascal_case(&context.config.package.name));
                     warn!(
-                        "Could not find workload name in local.actor.swift, \
+                        "Could not find workload name in generated *.actor.swift files, \
                         falling back to '{}'. Run `actr gen` infrastructure step first.",
                         fallback
                     );
@@ -585,7 +591,7 @@ impl LanguageGenerator for SwiftGenerator {
 }
 
 impl SwiftGenerator {
-    fn ensure_required_tools(&self, context: &GenContext) -> Result<()> {
+    fn ensure_required_tools(&self, context: &GenContext) -> Result<Option<PathBuf>> {
         // 1. Ensure protoc is available.
         let mut missing_tools: Vec<(&str, &str)> = Vec::new();
         if !command_exists(PROTOC) {
@@ -608,7 +614,10 @@ impl SwiftGenerator {
             }
         }
 
-        if !command_exists(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT) {
+        let local_actrframework_plugin = self.try_build_workspace_actrframework_swift_plugin()?;
+
+        if local_actrframework_plugin.is_none() && !command_exists(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT)
+        {
             self.try_install_actrframework_swift_plugin()?;
             if !command_exists(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT) {
                 missing_tools.push((
@@ -619,12 +628,12 @@ impl SwiftGenerator {
         }
 
         // 3. Check version compatibility for protoc-gen-actrframework-swift
-        if command_exists(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT) {
+        if local_actrframework_plugin.is_none() && command_exists(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT) {
             self.check_and_update_plugin_version(context)?;
         }
 
         if missing_tools.is_empty() {
-            return Ok(());
+            return Ok(local_actrframework_plugin);
         }
 
         let mut error_msg = "Missing required tools:\n".to_string();
@@ -658,6 +667,81 @@ impl SwiftGenerator {
         }
 
         Err(ActrCliError::command_error(error_msg))
+    }
+
+    fn try_build_workspace_actrframework_swift_plugin(&self) -> Result<Option<PathBuf>> {
+        #[cfg(target_os = "macos")]
+        {
+            let plugin_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .map(|path| path.join("tools/protoc-gen/swift"))
+                .unwrap_or_else(|| PathBuf::from("tools/protoc-gen/swift"));
+            let package_swift = plugin_root.join("Package.swift");
+            if !package_swift.is_file() {
+                return Ok(None);
+            }
+
+            if !command_exists("swift") {
+                return Ok(None);
+            }
+
+            info!("🔨 Building workspace-local protoc-gen-actrframework-swift...");
+            let output = StdCommand::new("swift")
+                .args([
+                    "build",
+                    "-c",
+                    "release",
+                    "--product",
+                    PROTOC_GEN_ACTR_FRAMEWORK_SWIFT,
+                    "--arch",
+                    "arm64",
+                ])
+                .current_dir(&plugin_root)
+                .output()
+                .map_err(|e| {
+                    ActrCliError::command_error(format!(
+                        "Failed to build workspace-local {PROTOC_GEN_ACTR_FRAMEWORK_SWIFT}: {e}"
+                    ))
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(ActrCliError::command_error(format!(
+                    "workspace-local {PROTOC_GEN_ACTR_FRAMEWORK_SWIFT} build failed: {stderr}"
+                )));
+            }
+
+            let candidates = [
+                plugin_root
+                    .join(".build/arm64-apple-macosx/release")
+                    .join(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT),
+                plugin_root
+                    .join(".build/release")
+                    .join(PROTOC_GEN_ACTR_FRAMEWORK_SWIFT),
+            ];
+
+            for candidate in candidates {
+                if candidate.is_file() {
+                    info!(
+                        "✅ Using workspace-local {} at {}",
+                        PROTOC_GEN_ACTR_FRAMEWORK_SWIFT,
+                        candidate.display()
+                    );
+                    return Ok(Some(candidate));
+                }
+            }
+
+            Err(ActrCliError::command_error(format!(
+                "workspace-local {} build completed but binary was not found under {}",
+                PROTOC_GEN_ACTR_FRAMEWORK_SWIFT,
+                plugin_root.display()
+            )))
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            Ok(None)
+        }
     }
 
     fn should_overwrite_scaffold(&self, path: &Path, expected_scaffold: &str) -> Result<bool> {
@@ -1400,19 +1484,19 @@ impl SwiftGenerator {
         }
     }
 
-    /// Extract the first workload name from generated local.actor.swift file
+    /// Extract the first workload name from generated `*.actor.swift` files.
     fn extract_first_workload_name_from_generated_file(&self, output_dir: &Path) -> Option<String> {
-        let local_actor_path = output_dir.join("local.actor.swift");
-
-        if let Ok(content) = std::fs::read_to_string(&local_actor_path) {
-            // Look for pattern: "public actor <WorkloadName> {"
-            for line in content.lines() {
-                if let Some(workload_name) = self.extract_actor_name_from_line(line) {
-                    debug!(
-                        "Extracted workload name from local.actor.swift: {}",
-                        workload_name
-                    );
-                    return Some(workload_name);
+        for actor_path in self.generated_actor_files(output_dir) {
+            if let Ok(content) = std::fs::read_to_string(&actor_path) {
+                for line in content.lines() {
+                    if let Some(workload_name) = self.extract_actor_name_from_line(line) {
+                        debug!(
+                            "Extracted workload name from {}: {}",
+                            actor_path.display(),
+                            workload_name
+                        );
+                        return Some(workload_name);
+                    }
                 }
             }
         }
@@ -1420,30 +1504,49 @@ impl SwiftGenerator {
         None
     }
 
-    /// Extract workload name for a specific service from local.actor.swift
+    /// Extract workload name for a specific service from generated `*.actor.swift` files.
     fn extract_workload_name_for_service(
         &self,
         output_dir: &Path,
         service_name: &str,
     ) -> Option<String> {
-        let local_actor_path = output_dir.join("local.actor.swift");
         let expected = format!("{}Workload", service_name);
 
-        if let Ok(content) = std::fs::read_to_string(&local_actor_path) {
-            for line in content.lines() {
-                if let Some(actor_name) = self.extract_actor_name_from_line(line) {
-                    if actor_name == expected
-                        || actor_name
-                            .strip_suffix("Workload")
-                            .is_some_and(|name| name == service_name)
-                    {
-                        return Some(actor_name);
+        for actor_path in self.generated_actor_files(output_dir) {
+            if let Ok(content) = std::fs::read_to_string(&actor_path) {
+                for line in content.lines() {
+                    if let Some(actor_name) = self.extract_actor_name_from_line(line) {
+                        if actor_name == expected
+                            || actor_name
+                                .strip_suffix("Workload")
+                                .is_some_and(|name| name == service_name)
+                        {
+                            return Some(actor_name);
+                        }
                     }
                 }
             }
         }
 
         None
+    }
+
+    fn generated_actor_files(&self, output_dir: &Path) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = WalkDir::new(output_dir)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.into_path())
+            .filter(|path| {
+                path.is_file()
+                    && path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.ends_with(".actor.swift"))
+            })
+            .collect();
+        paths.sort();
+        paths
     }
 
     fn swift_type_from_proto(&self, raw_type: &str, swift_package_prefix: &str) -> String {
@@ -1579,6 +1682,38 @@ mod tests {
             generated_file.exists(),
             "generated file should remain in Generated/"
         );
+    }
+
+    #[test]
+    fn extracts_first_workload_name_from_service_specific_actor_file() {
+        let tmp = TempDir::new().unwrap();
+        let output_dir = tmp.path();
+        std::fs::write(
+            output_dir.join("local_echo.actor.swift"),
+            "public actor LocalEchoServiceWorkload<T: LocalEchoServiceHandler> {\n",
+        )
+        .unwrap();
+
+        let generator = SwiftGenerator;
+        let workload = generator.extract_first_workload_name_from_generated_file(output_dir);
+
+        assert_eq!(workload.as_deref(), Some("LocalEchoServiceWorkload"));
+    }
+
+    #[test]
+    fn extracts_service_workload_name_from_service_specific_actor_file() {
+        let tmp = TempDir::new().unwrap();
+        let output_dir = tmp.path();
+        std::fs::write(
+            output_dir.join("local_echo.actor.swift"),
+            "public actor LocalEchoServiceWorkload<T: LocalEchoServiceHandler> {\n",
+        )
+        .unwrap();
+
+        let generator = SwiftGenerator;
+        let workload = generator.extract_workload_name_for_service(output_dir, "LocalEchoService");
+
+        assert_eq!(workload.as_deref(), Some("LocalEchoServiceWorkload"));
     }
 
     #[test]
