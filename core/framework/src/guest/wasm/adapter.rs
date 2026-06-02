@@ -186,14 +186,13 @@ pub async fn run_dispatch<W: Workload>(
 // would otherwise force an HRTB shape that fights with `&ctx` crossing
 // await points; inlining here keeps the type-check trivial.
 //
-// Lifecycle hooks fire outside an active dispatch, so the host has not
-// installed an `InvocationContext`. Use [`WasmContext::lifecycle_placeholder`]
-// to synthesize a context locally; outbound `ctx.call/tell/discover` still
-// flow through the `host-abi` bridge once that's wired for the lifecycle
-// path (see TODO in `core/hyper/src/wasm/host.rs`).
+// The native host installs a synthetic `InvocationContext` while invoking
+// package lifecycle exports. Read it through the same context imports as
+// dispatch so wasm, dynclib, and linked workloads observe matching
+// `self_id` / `caller_id` / `request_id` semantics.
 
 pub async fn run_on_start<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     match workload.on_start(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),
@@ -201,7 +200,7 @@ pub async fn run_on_start<W: Workload>(workload: &W) -> Result<(), wit_types::Ac
 }
 
 pub async fn run_on_ready<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     match workload.on_ready(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),
@@ -209,7 +208,7 @@ pub async fn run_on_ready<W: Workload>(workload: &W) -> Result<(), wit_types::Ac
 }
 
 pub async fn run_on_stop<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     match workload.on_stop(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),

@@ -10,7 +10,6 @@ use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-
 #[derive(Default)]
 pub struct DoubleActor;
 
@@ -36,7 +35,11 @@ impl MessageDispatcher for DoubleDispatcher {
                 // Call ctx.call_raw() -> triggers vtable.call trampoline
                 let target = ctx.self_id().clone();
                 let resp = ctx
-                    .call_raw(&target, "test/double_impl", Bytes::from(x.to_le_bytes().to_vec()))
+                    .call_raw(
+                        &target,
+                        "test/double_impl",
+                        Bytes::from(x.to_le_bytes().to_vec()),
+                    )
                     .await?;
 
                 Ok(resp)
@@ -50,8 +53,18 @@ impl MessageDispatcher for DoubleDispatcher {
     }
 }
 
+#[async_trait]
 impl Workload for DoubleActor {
     type Dispatcher = DoubleDispatcher;
+
+    async fn on_start<C: Context>(&self, ctx: &C) -> ActorResult<()> {
+        if ctx.request_id() == "lifecycle:on_start" {
+            return Err(ActrError::Internal(
+                "fixture lifecycle on_start failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 entry!(DoubleActor);
