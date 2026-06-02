@@ -37,10 +37,14 @@ fn test_actr_id() -> ActrId {
 }
 
 fn test_ctx() -> InvocationContext {
+    test_ctx_with_request_id("package-hook-test")
+}
+
+fn test_ctx_with_request_id(request_id: &'static str) -> InvocationContext {
     InvocationContext {
         self_id: test_actr_id(),
         caller_id: None,
-        request_id: "package-hook-test".to_string(),
+        request_id: request_id.to_string(),
     }
 }
 
@@ -62,45 +66,45 @@ fn package_hook_cases() -> Vec<(TestPackageHookEvent, &'static str)> {
         ),
         (
             TestPackageHookEvent::WebSocketConnecting { peer: peer.clone() },
-            "on_websocket_connecting",
+            "on_websocket_connecting:peer=1:relayed=none",
         ),
         (
             TestPackageHookEvent::WebSocketConnected { peer: peer.clone() },
-            "on_websocket_connected",
+            "on_websocket_connected:peer=1:relayed=none",
         ),
         (
             TestPackageHookEvent::WebSocketDisconnected { peer: peer.clone() },
-            "on_websocket_disconnected",
+            "on_websocket_disconnected:peer=1:relayed=none",
         ),
         (
             TestPackageHookEvent::WebRtcConnecting { peer: peer.clone() },
-            "on_webrtc_connecting",
+            "on_webrtc_connecting:peer=1:relayed=none",
         ),
         (
             TestPackageHookEvent::WebRtcConnected {
                 peer: peer.clone(),
                 relayed: true,
             },
-            "on_webrtc_connected",
+            "on_webrtc_connected:peer=1:relayed=true",
         ),
         (
             TestPackageHookEvent::WebRtcDisconnected { peer },
-            "on_webrtc_disconnected",
+            "on_webrtc_disconnected:peer=1:relayed=none",
         ),
         (
             TestPackageHookEvent::CredentialRenewed { new_expiry: expiry },
-            "on_credential_renewed",
+            "on_credential_renewed:expiry=1725000000",
         ),
         (
             TestPackageHookEvent::CredentialExpiring { new_expiry: expiry },
-            "on_credential_expiring",
+            "on_credential_expiring:expiry=1725000000",
         ),
         (
             TestPackageHookEvent::MailboxBackpressure {
                 queue_len: 7,
                 threshold: 3,
             },
-            "on_mailbox_backpressure",
+            "on_mailbox_backpressure:queue_len=7:threshold=3",
         ),
     ]
 }
@@ -158,6 +162,28 @@ async fn wasm_package_receives_runtime_hook_events() {
     assert_recorded_hooks(rx, expected).await;
 }
 
+#[cfg(feature = "wasm-engine")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wasm_package_receives_on_ready_and_on_stop() {
+    let host =
+        WasmHost::compile(wasm_actor_fixture::WASM_ACTOR_FIXTURE).expect("compile component");
+    let mut workload = instantiate_wasm_workload(&host)
+        .await
+        .expect("instantiate wasm workload");
+    let (bridge, rx) = recording_bridge();
+
+    workload
+        .call_on_ready(test_ctx_with_request_id("lifecycle:on_ready"), &bridge)
+        .await
+        .expect("wasm on_ready should dispatch");
+    workload
+        .call_on_stop(test_ctx_with_request_id("lifecycle:on_stop"), &bridge)
+        .await
+        .expect("wasm on_stop should dispatch");
+
+    assert_recorded_hooks(rx, vec!["on_ready", "on_stop"]).await;
+}
+
 #[cfg(feature = "dynclib-engine")]
 fn fixture_so_path() -> PathBuf {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -209,4 +235,24 @@ async fn dynclib_package_receives_runtime_hook_events() {
     }
 
     assert_recorded_hooks(rx, expected).await;
+}
+
+#[cfg(feature = "dynclib-engine")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynclib_package_receives_on_ready_and_on_stop() {
+    let host = DynclibHost::load(fixture_so_path()).expect("load dynclib fixture");
+    let mut workload =
+        instantiate_dynclib_workload(host, &dynclib_init_payload()).expect("instantiate dynclib");
+    let (bridge, rx) = recording_bridge();
+
+    workload
+        .call_on_ready(test_ctx_with_request_id("lifecycle:on_ready"), &bridge)
+        .await
+        .expect("dynclib on_ready should dispatch");
+    workload
+        .call_on_stop(test_ctx_with_request_id("lifecycle:on_stop"), &bridge)
+        .await
+        .expect("dynclib on_stop should dispatch");
+
+    assert_recorded_hooks(rx, vec!["on_ready", "on_stop"]).await;
 }

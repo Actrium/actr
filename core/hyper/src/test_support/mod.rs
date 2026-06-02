@@ -181,6 +181,22 @@ impl TestWasmWorkload {
         self.inner.call_on_start(ctx, &host_abi).await
     }
 
+    pub async fn call_on_ready(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> Result<(), crate::wasm::WasmError> {
+        self.inner.call_on_ready(ctx, host_abi).await
+    }
+
+    pub async fn call_on_stop(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> Result<(), crate::wasm::WasmError> {
+        self.inner.call_on_stop(ctx, host_abi).await
+    }
+
     pub async fn call_hook_event(
         &mut self,
         event: TestPackageHookEvent,
@@ -240,6 +256,22 @@ impl TestDynclibWorkload {
         self.inner
             .call_hook_event(event.into(), ctx, call_executor)
             .await
+    }
+
+    pub async fn call_on_ready(
+        &mut self,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> Result<(), crate::dynclib::DynclibError> {
+        self.inner.call_on_ready(ctx, call_executor).await
+    }
+
+    pub async fn call_on_stop(
+        &mut self,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> Result<(), crate::dynclib::DynclibError> {
+        self.inner.call_on_stop(ctx, call_executor).await
     }
 }
 

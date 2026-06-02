@@ -414,6 +414,7 @@ mod tests {
     use crate::wire::webrtc::{
         ReconnectConfig, SignalingClient, SignalingConfig, WebSocketSignalingClient,
     };
+    use actr_framework::Context as _;
     use actr_protocol::{AIdCredential, ActrId, ActrType, Realm};
     use tokio::sync::mpsc;
 
@@ -532,6 +533,245 @@ mod tests {
             let _ = self.tx.send(event.clone());
             Ok(())
         }
+    }
+
+    struct RecordingObserver {
+        tx: mpsc::UnboundedSender<String>,
+    }
+
+    fn relayed_label(relayed: Option<bool>) -> &'static str {
+        match relayed {
+            Some(true) => "true",
+            Some(false) => "false",
+            None => "none",
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkloadHookObserver for RecordingObserver {
+        async fn on_signaling_connecting(&self, ctx: Option<&RuntimeContext>) {
+            let label = if ctx.is_some() { "some" } else { "none" };
+            let _ = self.tx.send(format!("on_signaling_connecting:ctx={label}"));
+        }
+
+        async fn on_signaling_connected(&self, ctx: Option<&RuntimeContext>) {
+            let label = if ctx.is_some() { "some" } else { "none" };
+            let _ = self.tx.send(format!("on_signaling_connected:ctx={label}"));
+        }
+
+        async fn on_signaling_disconnected(&self, ctx: &RuntimeContext) {
+            let _ = self.tx.send(format!(
+                "on_signaling_disconnected:self={}",
+                ctx.self_id().serial_number
+            ));
+        }
+
+        async fn on_websocket_connecting(&self, _ctx: &RuntimeContext, event: &PeerEvent) {
+            let _ = self.tx.send(format!(
+                "on_websocket_connecting:peer={}:relayed={}",
+                event.peer.serial_number,
+                relayed_label(event.relayed)
+            ));
+        }
+
+        async fn on_websocket_connected(&self, _ctx: &RuntimeContext, event: &PeerEvent) {
+            let _ = self.tx.send(format!(
+                "on_websocket_connected:peer={}:relayed={}",
+                event.peer.serial_number,
+                relayed_label(event.relayed)
+            ));
+        }
+
+        async fn on_websocket_disconnected(&self, _ctx: &RuntimeContext, event: &PeerEvent) {
+            let _ = self.tx.send(format!(
+                "on_websocket_disconnected:peer={}:relayed={}",
+                event.peer.serial_number,
+                relayed_label(event.relayed)
+            ));
+        }
+
+        async fn on_webrtc_connecting(&self, _ctx: &RuntimeContext, event: &PeerEvent) {
+            let _ = self.tx.send(format!(
+                "on_webrtc_connecting:peer={}:relayed={}",
+                event.peer.serial_number,
+                relayed_label(event.relayed)
+            ));
+        }
+
+        async fn on_webrtc_connected(&self, _ctx: &RuntimeContext, event: &PeerEvent) {
+            let _ = self.tx.send(format!(
+                "on_webrtc_connected:peer={}:relayed={}",
+                event.peer.serial_number,
+                relayed_label(event.relayed)
+            ));
+        }
+
+        async fn on_webrtc_disconnected(&self, _ctx: &RuntimeContext, event: &PeerEvent) {
+            let _ = self.tx.send(format!(
+                "on_webrtc_disconnected:peer={}:relayed={}",
+                event.peer.serial_number,
+                relayed_label(event.relayed)
+            ));
+        }
+
+        async fn on_credential_renewed(&self, _ctx: &RuntimeContext, event: &CredentialEvent) {
+            let secs = event
+                .new_expiry
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let _ = self.tx.send(format!("on_credential_renewed:expiry={secs}"));
+        }
+
+        async fn on_credential_expiring(&self, _ctx: &RuntimeContext, event: &CredentialEvent) {
+            let secs = event
+                .new_expiry
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let _ = self
+                .tx
+                .send(format!("on_credential_expiring:expiry={secs}"));
+        }
+
+        async fn on_mailbox_backpressure(&self, _ctx: &RuntimeContext, event: &BackpressureEvent) {
+            let _ = self.tx.send(format!(
+                "on_mailbox_backpressure:queue_len={}:threshold={}",
+                event.queue_len, event.threshold
+            ));
+        }
+    }
+
+    async fn expect_recorded(rx: &mut mpsc::UnboundedReceiver<String>, expected: &'static str) {
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("observer hook was not called")
+            .expect("observer channel dropped");
+        assert_eq!(observed, expected);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hook_callback_routes_observation_hooks_to_observer_with_payload() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let observer: WorkloadHookObserverRef = Arc::new(RecordingObserver { tx });
+        let ctx = test_runtime_context();
+        let ctx_builder: HookContextBuilder = Arc::new(move || {
+            let ctx = ctx.clone();
+            Box::pin(async move { Some(ctx) })
+        });
+        let cb = build_hook_callback(Some(observer), ctx_builder);
+        let expiry = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_725_000_000);
+
+        let cases = vec![
+            (
+                HookEvent::SignalingConnectStart { attempt: 3 },
+                "on_signaling_connecting:ctx=some",
+            ),
+            (
+                HookEvent::SignalingConnected,
+                "on_signaling_connected:ctx=some",
+            ),
+            (
+                HookEvent::SignalingDisconnected,
+                "on_signaling_disconnected:self=1",
+            ),
+            (
+                HookEvent::WebRtcConnectStart {
+                    peer_id: test_actr_id(2),
+                },
+                "on_webrtc_connecting:peer=2:relayed=none",
+            ),
+            (
+                HookEvent::WebRtcConnected {
+                    peer_id: test_actr_id(3),
+                    relayed: false,
+                },
+                "on_webrtc_connected:peer=3:relayed=false",
+            ),
+            (
+                HookEvent::WebRtcDisconnected {
+                    peer_id: test_actr_id(4),
+                },
+                "on_webrtc_disconnected:peer=4:relayed=none",
+            ),
+            (
+                HookEvent::WebSocketConnectStart {
+                    peer_id: test_actr_id(5),
+                },
+                "on_websocket_connecting:peer=5:relayed=none",
+            ),
+            (
+                HookEvent::WebSocketConnected {
+                    peer_id: test_actr_id(6),
+                },
+                "on_websocket_connected:peer=6:relayed=none",
+            ),
+            (
+                HookEvent::WebSocketDisconnected {
+                    peer_id: test_actr_id(7),
+                },
+                "on_websocket_disconnected:peer=7:relayed=none",
+            ),
+            (
+                HookEvent::CredentialRenewed { new_expiry: expiry },
+                "on_credential_renewed:expiry=1725000000",
+            ),
+            (
+                HookEvent::CredentialExpiring { new_expiry: expiry },
+                "on_credential_expiring:expiry=1725000000",
+            ),
+            (
+                HookEvent::MailboxBackpressure {
+                    queue_len: 9,
+                    threshold: 4,
+                },
+                "on_mailbox_backpressure:queue_len=9:threshold=4",
+            ),
+        ];
+
+        for (event, expected) in cases {
+            cb(event).await;
+            expect_recorded(&mut rx, expected).await;
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hook_callback_passes_none_for_early_signaling_context() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let observer: WorkloadHookObserverRef = Arc::new(RecordingObserver { tx });
+        let ctx_builder: HookContextBuilder = Arc::new(|| Box::pin(async { None }));
+        let cb = build_hook_callback(Some(observer), ctx_builder);
+
+        cb(HookEvent::SignalingConnectStart { attempt: 1 }).await;
+        expect_recorded(&mut rx, "on_signaling_connecting:ctx=none").await;
+
+        cb(HookEvent::SignalingConnected).await;
+        expect_recorded(&mut rx, "on_signaling_connected:ctx=none").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hook_callback_invokes_linked_observer_once_per_event() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let observer: WorkloadHookObserverRef = Arc::new(RecordingObserver { tx });
+        let ctx = test_runtime_context();
+        let ctx_builder: HookContextBuilder = Arc::new(move || {
+            let ctx = ctx.clone();
+            Box::pin(async move { Some(ctx) })
+        });
+        let cb = build_hook_callback(Some(observer), ctx_builder);
+
+        cb(HookEvent::WebSocketConnected {
+            peer_id: test_actr_id(42),
+        })
+        .await;
+
+        expect_recorded(&mut rx, "on_websocket_connected:peer=42:relayed=none").await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(
+            rx.try_recv().is_err(),
+            "observer should receive exactly one hook event"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
