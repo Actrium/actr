@@ -8,10 +8,13 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.example.MyUnifiedHandler
+import com.example.UnifiedWorkload
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
+import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.dsl.*
 import io.actorrtc.demo.R
@@ -48,7 +51,7 @@ class ClientActivity : AppCompatActivity() {
         setupClickListeners()
         initNetworkMonitoring()
 
-        log("Ready to connect (package-backed runtime)")
+        log("Ready to connect (linked multi-service workload)")
     }
 
     private fun initNetworkMonitoring() {
@@ -98,13 +101,6 @@ class ClientActivity : AppCompatActivity() {
         return outputFile.absolutePath
     }
 
-    private fun copyFirstPackageAssetToInternalStorage(): String {
-        val packageName =
-                assets.list("")!!.firstOrNull { it.endsWith(".actr") }
-                        ?: error("No .actr package found in app assets")
-        return copyAssetToInternalStorage(packageName)
-    }
-
     private fun connect() {
         updateStatus("Connecting...")
         connectButton.isEnabled = false
@@ -112,15 +108,16 @@ class ClientActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val configPath = copyAssetToInternalStorage("actr.toml")
-                copyAssetToInternalStorage("manifest.lock.toml")
-                val packagePath = copyFirstPackageAssetToInternalStorage()
                 Log.i(TAG, "Config path: $configPath")
 
-                val system = createActrNode(configPath, packagePath)
+                val actorType =
+                        ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
+                val workload = UnifiedWorkload(MyUnifiedHandler())
+                val system = linked(configPath, actorType, workload.toDynamicWorkload())
                 clientSystem = system
                 Log.i(TAG, "✅ ActrNode created - NetworkMonitor will auto-handle network events")
 
-                Log.i(TAG, "🚀 Starting package-backed actor...")
+                Log.i(TAG, "🚀 Starting linked multi-service actor...")
                 clientRef = system.start()
                 Log.i(TAG, "✅ Client started: ${clientRef?.actorId()?.serialNumber}")
 
@@ -132,7 +129,7 @@ class ClientActivity : AppCompatActivity() {
                     messageInput.isEnabled = true
                     sendButton.isEnabled = true
                     sendFileButton.isEnabled = true
-                    log("Connected (package-backed mode)")
+                    log("Connected (linked multi-service mode)")
                     log("Client ID: ${clientRef?.actorId()?.serialNumber}")
                 }
             } catch (e: Exception) {

@@ -10,20 +10,17 @@ package com.example
 import android.util.Log
 import com.example.generated.UnifiedDispatcher
 import com.example.generated.UnifiedHandler
-import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.ContextBridge
 import io.actor_rtc.actr.DynamicWorkload
 import io.actor_rtc.actr.ErrorEventBridge
-import io.actor_rtc.actr.Realm
 import io.actor_rtc.actr.RpcEnvelopeBridge
 import io.actor_rtc.actr.WorkloadLifecycleBridge
 
 /**
  * Unified Workload lifecycle scaffold
  *
- * This can already handle dispatch and lifecycle callbacks. The generated [DynamicWorkload] wrapper
- * is ready to use once Kotlin bindings expose a linked-runtime node constructor.
+ * This handles dispatch and lifecycle callbacks for the linked Android client.
  *
  * Usage:
  * ```kotlin
@@ -34,19 +31,11 @@ import io.actor_rtc.actr.WorkloadLifecycleBridge
  */
 class UnifiedWorkload(
         private val handler: UnifiedHandler,
-        private val realmId: UInt = 2281844430u
 ) : WorkloadLifecycleBridge {
 
     companion object {
         private const val TAG = "UnifiedWorkload"
     }
-
-    private val selfId =
-            ActrId(
-                    realm = Realm(realmId = realmId),
-                    serialNumber = System.currentTimeMillis().toULong(),
-                    type = ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
-            )
 
     override suspend fun onStart(ctx: ContextBridge) {
         Log.i(TAG, "UnifiedWorkload.onStart")
@@ -86,9 +75,6 @@ class UnifiedWorkload(
 
     /**
      * Create a DynamicWorkload from this lifecycle scaffold.
-     *
-     * Kotlin bindings do not yet expose an ActrNode constructor for linked workloads, so this is
-     * currently a preparation step for that API.
      */
     fun toDynamicWorkload(): DynamicWorkload {
         return DynamicWorkload(
