@@ -3,13 +3,17 @@
 
 import type { RpcEnvelope } from '@actrium/actr-workload';
 import { fromBinary, toBinary } from '@bufbuild/protobuf';
-import type { EchoRequest, EchoResponse } from './echo_pb.js';
-import { EchoRequestSchema, EchoResponseSchema } from './echo_pb.js';
+import type { EchoRequest, EchoResponse, StreamPrepareRequest, StreamPrepareResponse, StreamReleaseRequest, StreamReleaseResponse } from './echo_pb.js';
+import { EchoRequestSchema, EchoResponseSchema, StreamPrepareRequestSchema, StreamPrepareResponseSchema, StreamReleaseRequestSchema, StreamReleaseResponseSchema } from './echo_pb.js';
 
 export const ECHO_SERVICE_ECHO_ROUTE = "echo.EchoService.Echo";
+export const ECHO_SERVICE_PREPARE_STREAM_ROUTE = "echo.EchoService.PrepareStream";
+export const ECHO_SERVICE_RELEASE_STREAM_ROUTE = "echo.EchoService.ReleaseStream";
 
 export interface EchoServiceHandler {
   echo(req: EchoRequest): EchoResponse | Promise<EchoResponse>;
+  prepareStream(req: StreamPrepareRequest): StreamPrepareResponse | Promise<StreamPrepareResponse>;
+  releaseStream(req: StreamReleaseRequest): StreamReleaseResponse | Promise<StreamReleaseResponse>;
 }
 
 export class EchoServiceDispatcher {
@@ -20,6 +24,18 @@ export class EchoServiceDispatcher {
       const request = fromBinary(EchoRequestSchema, envelope.payload ?? new Uint8Array());
       const response = await this.handler.echo(request);
       return toBinary(EchoResponseSchema, response);
+    }
+
+    if (envelope.method === ECHO_SERVICE_PREPARE_STREAM_ROUTE) {
+      const request = fromBinary(StreamPrepareRequestSchema, envelope.payload ?? new Uint8Array());
+      const response = await this.handler.prepareStream(request);
+      return toBinary(StreamPrepareResponseSchema, response);
+    }
+
+    if (envelope.method === ECHO_SERVICE_RELEASE_STREAM_ROUTE) {
+      const request = fromBinary(StreamReleaseRequestSchema, envelope.payload ?? new Uint8Array());
+      const response = await this.handler.releaseStream(request);
+      return toBinary(StreamReleaseResponseSchema, response);
     }
 
     throw new Error(`Unknown route: ${envelope.method}`);

@@ -9,6 +9,7 @@ export default tseslint.config(
       'index.d.ts',
       'target/**',
       'node_modules/**',
+      'actr-workload/**',
       'examples/**/generated/**',
     ],
   },

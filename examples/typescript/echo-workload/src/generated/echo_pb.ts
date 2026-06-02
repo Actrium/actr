@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file local/echo.proto.
  */
 export const file_local_echo: GenFile = /*@__PURE__*/
-  fileDesc("ChBsb2NhbC9lY2hvLnByb3RvEgRlY2hvIh4KC0VjaG9SZXF1ZXN0Eg8KB21lc3NhZ2UYASABKAkiMAoMRWNob1Jlc3BvbnNlEg0KBXJlcGx5GAEgASgJEhEKCXRpbWVzdGFtcBgCIAEoBDI8CgtFY2hvU2VydmljZRItCgRFY2hvEhEuZWNoby5FY2hvUmVxdWVzdBoSLmVjaG8uRWNob1Jlc3BvbnNlYgZwcm90bzM");
+  fileDesc("ChBsb2NhbC9lY2hvLnByb3RvEgRlY2hvIh4KC0VjaG9SZXF1ZXN0Eg8KB21lc3NhZ2UYASABKAkiMAoMRWNob1Jlc3BvbnNlEg0KBXJlcGx5GAEgASgJEhEKCXRpbWVzdGFtcBgCIAEoBCJhChRTdHJlYW1QcmVwYXJlUmVxdWVzdBIZChFpbmJvdW5kX3N0cmVhbV9pZBgBIAEoCRIXCg9yZXBseV9zdHJlYW1faWQYAiABKAkSFQoNcmVwbHlfbWVzc2FnZRgDIAEoCSInChVTdHJlYW1QcmVwYXJlUmVzcG9uc2USDgoGc3RhdHVzGAEgASgJIikKFFN0cmVhbVJlbGVhc2VSZXF1ZXN0EhEKCXN0cmVhbV9pZBgBIAEoCSInChVTdHJlYW1SZWxlYXNlUmVzcG9uc2USDgoGc3RhdHVzGAEgASgJMtABCgtFY2hvU2VydmljZRItCgRFY2hvEhEuZWNoby5FY2hvUmVxdWVzdBoSLmVjaG8uRWNob1Jlc3BvbnNlEkgKDVByZXBhcmVTdHJlYW0SGi5lY2hvLlN0cmVhbVByZXBhcmVSZXF1ZXN0GhsuZWNoby5TdHJlYW1QcmVwYXJlUmVzcG9uc2USSAoNUmVsZWFzZVN0cmVhbRIaLmVjaG8uU3RyZWFtUmVsZWFzZVJlcXVlc3QaGy5lY2hvLlN0cmVhbVJlbGVhc2VSZXNwb25zZWIGcHJvdG8z");
 
 /**
  * @generated from message echo.EchoRequest
@@ -52,6 +52,84 @@ export const EchoResponseSchema: GenMessage<EchoResponse> = /*@__PURE__*/
   messageDesc(file_local_echo, 1);
 
 /**
+ * @generated from message echo.StreamPrepareRequest
+ */
+export type StreamPrepareRequest = Message<"echo.StreamPrepareRequest"> & {
+  /**
+   * @generated from field: string inbound_stream_id = 1;
+   */
+  inboundStreamId: string;
+
+  /**
+   * @generated from field: string reply_stream_id = 2;
+   */
+  replyStreamId: string;
+
+  /**
+   * @generated from field: string reply_message = 3;
+   */
+  replyMessage: string;
+};
+
+/**
+ * Describes the message echo.StreamPrepareRequest.
+ * Use `create(StreamPrepareRequestSchema)` to create a new message.
+ */
+export const StreamPrepareRequestSchema: GenMessage<StreamPrepareRequest> = /*@__PURE__*/
+  messageDesc(file_local_echo, 2);
+
+/**
+ * @generated from message echo.StreamPrepareResponse
+ */
+export type StreamPrepareResponse = Message<"echo.StreamPrepareResponse"> & {
+  /**
+   * @generated from field: string status = 1;
+   */
+  status: string;
+};
+
+/**
+ * Describes the message echo.StreamPrepareResponse.
+ * Use `create(StreamPrepareResponseSchema)` to create a new message.
+ */
+export const StreamPrepareResponseSchema: GenMessage<StreamPrepareResponse> = /*@__PURE__*/
+  messageDesc(file_local_echo, 3);
+
+/**
+ * @generated from message echo.StreamReleaseRequest
+ */
+export type StreamReleaseRequest = Message<"echo.StreamReleaseRequest"> & {
+  /**
+   * @generated from field: string stream_id = 1;
+   */
+  streamId: string;
+};
+
+/**
+ * Describes the message echo.StreamReleaseRequest.
+ * Use `create(StreamReleaseRequestSchema)` to create a new message.
+ */
+export const StreamReleaseRequestSchema: GenMessage<StreamReleaseRequest> = /*@__PURE__*/
+  messageDesc(file_local_echo, 4);
+
+/**
+ * @generated from message echo.StreamReleaseResponse
+ */
+export type StreamReleaseResponse = Message<"echo.StreamReleaseResponse"> & {
+  /**
+   * @generated from field: string status = 1;
+   */
+  status: string;
+};
+
+/**
+ * Describes the message echo.StreamReleaseResponse.
+ * Use `create(StreamReleaseResponseSchema)` to create a new message.
+ */
+export const StreamReleaseResponseSchema: GenMessage<StreamReleaseResponse> = /*@__PURE__*/
+  messageDesc(file_local_echo, 5);
+
+/**
  * @generated from service echo.EchoService
  */
 export const EchoService: GenService<{
@@ -62,6 +140,22 @@ export const EchoService: GenService<{
     methodKind: "unary";
     input: typeof EchoRequestSchema;
     output: typeof EchoResponseSchema;
+  },
+  /**
+   * @generated from rpc echo.EchoService.PrepareStream
+   */
+  prepareStream: {
+    methodKind: "unary";
+    input: typeof StreamPrepareRequestSchema;
+    output: typeof StreamPrepareResponseSchema;
+  },
+  /**
+   * @generated from rpc echo.EchoService.ReleaseStream
+   */
+  releaseStream: {
+    methodKind: "unary";
+    input: typeof StreamReleaseRequestSchema;
+    output: typeof StreamReleaseResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_local_echo, 0);
