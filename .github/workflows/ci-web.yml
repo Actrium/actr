@@ -115,7 +115,7 @@ jobs:
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
 
       - name: Pre-build actr CLI (release, embeds web assets)
-        run: cargo build --release -p actr-cli --bin actr
+        run: cargo build --release -p actr-cli --bin actr --features wasm-engine
 
       - name: Pre-build mock-actrix
         run: cargo build --release -p actr-mock-actrix --bin mock-actrix
@@ -123,6 +123,7 @@ jobs:
       - name: Run echo browser e2e
         working-directory: bindings/web/examples/echo
         env:
+          ACTR_CMD: ${{ github.workspace }}/target/release/actr
           PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
           # BasicFunction is the default; expand here if more suites
           # are stable in headless CI.

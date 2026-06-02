@@ -1005,7 +1005,7 @@ mkdir -p "$LOG_DIR"
 
 if [ ! -x "$ACTR_BIN" ]; then
   log "Build actr CLI"
-  cargo build --release -p actr-cli --bin actr
+  cargo build --release -p actr-cli --bin actr --features wasm-engine
 fi
 
 if [ ! -x "$MOCK_ACTRIX_BIN" ]; then

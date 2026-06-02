@@ -22,7 +22,7 @@ include = [
 ]
 
 [features]
-default = ["wasm-engine", "dynclib-engine"]
+default = ["dynclib-engine"]
 test-utils = ["dep:actr-mock-actrix", "dep:rusqlite"]
 wasm-engine = ["actr-hyper/wasm-engine"]
 dynclib-engine = ["actr-hyper/dynclib-engine"]
