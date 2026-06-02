@@ -207,8 +207,6 @@ dependencies = [
 name = "actr-mock-actrix"
 version = "0.2.1"
 dependencies = [
- "actr-hyper",
- "actr-pack",
  "actr-protocol",
  "anyhow",
  "axum",
