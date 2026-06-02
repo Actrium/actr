@@ -20,7 +20,12 @@ use actr_protocol::{ActrId, RpcEnvelope};
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::time::Duration;
+
+/// Serialize large WebRTC/SCTP integration cases on constrained CI runners.
+static WEBRTC_LARGE_DATA_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -334,6 +339,7 @@ fn hex_str(hash: &[u8; 32]) -> String {
 #[tokio::test]
 async fn test_large_data_100kb() {
     init_tracing();
+    let _test_guard = WEBRTC_LARGE_DATA_TEST_LOCK.lock().await;
     tracing::info!("═══ test_large_data_100kb ═══");
 
     let (harness, _bg) = setup_connected_peers(100, 200).await;
@@ -360,6 +366,7 @@ async fn test_large_data_100kb() {
 #[tokio::test]
 async fn test_large_data_200kb() {
     init_tracing();
+    let _test_guard = WEBRTC_LARGE_DATA_TEST_LOCK.lock().await;
     tracing::info!("═══ test_large_data_200kb ═══");
 
     let (harness, _bg) = setup_connected_peers(100, 200).await;
@@ -386,6 +393,7 @@ async fn test_large_data_200kb() {
 #[tokio::test]
 async fn test_large_data_512kb() {
     init_tracing();
+    let _test_guard = WEBRTC_LARGE_DATA_TEST_LOCK.lock().await;
     tracing::info!("═══ test_large_data_512kb ═══");
 
     let (harness, _bg) = setup_connected_peers(100, 200).await;
@@ -413,6 +421,7 @@ async fn test_large_data_512kb() {
 #[ignore = "slow test, run with --include-ignored for stress testing"]
 async fn test_large_data_1mb() {
     init_tracing();
+    let _test_guard = WEBRTC_LARGE_DATA_TEST_LOCK.lock().await;
     tracing::info!("═══ test_large_data_1mb ═══");
 
     let (harness, _bg) = setup_connected_peers(100, 200).await;
@@ -442,6 +451,7 @@ async fn test_large_data_1mb() {
 #[tokio::test]
 async fn test_sequential_large_messages() {
     init_tracing();
+    let _test_guard = WEBRTC_LARGE_DATA_TEST_LOCK.lock().await;
     tracing::info!("═══ test_sequential_large_messages ═══");
 
     let (harness, _bg) = setup_connected_peers(100, 200).await;
@@ -482,6 +492,7 @@ async fn test_sequential_large_messages() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bidirectional_large_data() {
     init_tracing();
+    let _test_guard = WEBRTC_LARGE_DATA_TEST_LOCK.lock().await;
     tracing::info!("═══ test_bidirectional_large_data ═══");
 
     // ── Direction 1: peer 100 → peer 200 (128 KB) ──
@@ -572,6 +583,7 @@ async fn test_bidirectional_large_data() {
 #[tokio::test]
 async fn test_boundary_max_single_fragment() {
     init_tracing();
+    let _test_guard = WEBRTC_LARGE_DATA_TEST_LOCK.lock().await;
     tracing::info!("═══ test_boundary_max_single_fragment ═══");
 
     let (harness, _bg) = setup_connected_peers(100, 200).await;
@@ -604,6 +616,7 @@ async fn test_boundary_max_single_fragment() {
 #[tokio::test]
 async fn test_boundary_just_over_single_fragment() {
     init_tracing();
+    let _test_guard = WEBRTC_LARGE_DATA_TEST_LOCK.lock().await;
     tracing::info!("═══ test_boundary_just_over_single_fragment ═══");
 
     let (harness, _bg) = setup_connected_peers(100, 200).await;
