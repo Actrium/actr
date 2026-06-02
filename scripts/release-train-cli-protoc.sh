@@ -16,6 +16,11 @@ readonly FOUNDATION_CRATES=(
   "actr-framework"
   "actr-runtime-mailbox"
   "actr-runtime"
+  "actr-platform-traits"
+  "actr-pack"
+  "actr-mock-actrix"
+  "actr-hyper"
+  "actr-platform-native"
 )
 
 readonly PROTOC_CRATES=(
@@ -379,6 +384,11 @@ package_files = [
     repo / "core/framework/Cargo.toml",
     repo / "core/runtime-mailbox/Cargo.toml",
     repo / "core/runtime/Cargo.toml",
+    repo / "core/platform-traits/Cargo.toml",
+    repo / "core/pack/Cargo.toml",
+    repo / "core/hyper/Cargo.toml",
+    repo / "core/platform-native/Cargo.toml",
+    repo / "testing/mock-actrix/Cargo.toml",
     repo / "tools/protoc-gen/rust/Cargo.toml",
     repo / "tools/protoc-gen/web/Cargo.toml",
     repo / "cli/Cargo.toml",
@@ -387,6 +397,10 @@ package_files = [
 cli_dependency_names = {
     "actr",
     "actr-runtime-mailbox",
+    "actr-hyper",
+    "actr-pack",
+    "actr-platform-native",
+    "actr-mock-actrix",
     "actr-config",
     "actr-protocol",
     "actr-service-compat",
@@ -406,6 +420,11 @@ workspace_dependency_names = {
     "actr-framework-protoc-codegen",
     "actr-runtime",
     "actr-runtime-mailbox",
+    "actr-platform-traits",
+    "actr-pack",
+    "actr-hyper",
+    "actr-platform-native",
+    "actr-mock-actrix",
 }
 
 def replace_first_version(lines: list[str]) -> list[str]:
