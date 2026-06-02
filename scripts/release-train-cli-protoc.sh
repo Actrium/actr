@@ -667,12 +667,16 @@ python_registry_url() {
   printf 'https://pypi.org/project/%s/%s/' "$PYTHON_PACKAGE_NAME" "$VERSION"
 }
 
+registry_user_agent() {
+  printf 'actr-release-train/%s (https://github.com/Actrium/actr)' "${VERSION:-unknown}"
+}
+
 crate_version_visible() {
-  curl -fsSLo /dev/null "${CRATES_IO_API}/$1/${VERSION}"
+  curl -A "$(registry_user_agent)" -fsSLo /dev/null "${CRATES_IO_API}/$1/${VERSION}"
 }
 
 python_version_visible() {
-  curl -fsSLo /dev/null "${PYPI_API}/${PYTHON_PACKAGE_NAME}/${VERSION}/json"
+  curl -A "$(registry_user_agent)" -fsSLo /dev/null "${PYPI_API}/${PYTHON_PACKAGE_NAME}/${VERSION}/json"
 }
 
 wait_for_visibility() {
