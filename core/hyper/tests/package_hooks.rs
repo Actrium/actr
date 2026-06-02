@@ -2,11 +2,13 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+#[cfg(feature = "dynclib-engine")]
+use std::sync::LazyLock;
 use std::time::{Duration, UNIX_EPOCH};
 
-use actr_hyper::test_support::TestPackageHookEvent;
+use actr_hyper::test_support::{TestPackageHookEvent, runtime_context_with_host_transport};
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
-use actr_protocol::{ActrId, ActrType, Realm};
+use actr_protocol::{ActrError, ActrId, ActrType, PayloadType, Realm};
 
 #[cfg(feature = "wasm-engine")]
 use actr_hyper::test_support::instantiate_wasm_workload;
@@ -23,6 +25,10 @@ use actr_hyper::test_support::instantiate_dynclib_workload;
 #[cfg(feature = "wasm-engine")]
 #[path = "wasm_actor_fixture.rs"]
 mod wasm_actor_fixture;
+
+#[cfg(feature = "dynclib-engine")]
+static DYNCLIB_PACKAGE_HOOK_TEST_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 fn test_actr_id() -> ActrId {
     ActrId {
@@ -127,6 +133,43 @@ fn recording_bridge() -> (HostAbiFn, tokio::sync::mpsc::UnboundedReceiver<String
     (bridge, rx)
 }
 
+fn recording_host_transport() -> (
+    Arc<actr_hyper::HostTransport>,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+    tokio::task::JoinHandle<()>,
+) {
+    let host_transport = Arc::new(actr_hyper::HostTransport::new());
+    let recorder_transport = host_transport.clone();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        let request_lane = recorder_transport
+            .get_lane(PayloadType::RpcReliable, None)
+            .await
+            .expect("host transport reliable lane should exist");
+        while let Ok(envelope) = request_lane.recv_envelope().await {
+            let request_id = envelope.request_id.clone();
+            match envelope.route_key.as_str() {
+                "test/record_hook" => {
+                    let payload = envelope.payload.unwrap_or_default();
+                    let name = String::from_utf8(payload.to_vec()).expect("hook name is utf8");
+                    let _ = tx.send(name);
+                    let _ = recorder_transport
+                        .complete_response(&request_id, bytes::Bytes::new())
+                        .await;
+                }
+                route_key => {
+                    let _ = tx.send(format!("unexpected route: {route_key}"));
+                    let _ = recorder_transport
+                        .complete_error(&request_id, ActrError::UnknownRoute(route_key.to_string()))
+                        .await;
+                }
+            }
+        }
+    });
+
+    (host_transport, rx, task)
+}
+
 async fn assert_recorded_hooks(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
     expected: Vec<&'static str>,
@@ -160,6 +203,28 @@ async fn wasm_package_receives_runtime_hook_events() {
     }
 
     assert_recorded_hooks(rx, expected).await;
+}
+
+#[cfg(feature = "wasm-engine")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wasm_package_observer_bridge_reaches_guest_hooks() {
+    let host =
+        WasmHost::compile(wasm_actor_fixture::WASM_ACTOR_FIXTURE).expect("compile component");
+    let workload = instantiate_wasm_workload(&host)
+        .await
+        .expect("instantiate wasm workload");
+    let observer = workload.into_package_hook_observer();
+    let (host_transport, rx, recorder) = recording_host_transport();
+    let ctx = runtime_context_with_host_transport(test_actr_id(), host_transport);
+    let cases = package_hook_cases();
+    let expected = cases.iter().map(|(_, name)| *name).collect::<Vec<_>>();
+
+    for (event, _) in cases {
+        observer.call(event, &ctx).await;
+    }
+
+    assert_recorded_hooks(rx, expected).await;
+    recorder.abort();
 }
 
 #[cfg(feature = "wasm-engine")]
@@ -220,6 +285,7 @@ fn dynclib_init_payload() -> InitPayloadV1 {
 #[cfg(feature = "dynclib-engine")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dynclib_package_receives_runtime_hook_events() {
+    let _guard = DYNCLIB_PACKAGE_HOOK_TEST_LOCK.lock().await;
     let host = DynclibHost::load(fixture_so_path()).expect("load dynclib fixture");
     let mut workload =
         instantiate_dynclib_workload(host, &dynclib_init_payload()).expect("instantiate dynclib");
@@ -239,7 +305,29 @@ async fn dynclib_package_receives_runtime_hook_events() {
 
 #[cfg(feature = "dynclib-engine")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynclib_package_observer_bridge_reaches_guest_hooks() {
+    let _guard = DYNCLIB_PACKAGE_HOOK_TEST_LOCK.lock().await;
+    let host = DynclibHost::load(fixture_so_path()).expect("load dynclib fixture");
+    let workload =
+        instantiate_dynclib_workload(host, &dynclib_init_payload()).expect("instantiate dynclib");
+    let observer = workload.into_package_hook_observer();
+    let (host_transport, rx, recorder) = recording_host_transport();
+    let ctx = runtime_context_with_host_transport(test_actr_id(), host_transport);
+    let cases = package_hook_cases();
+    let expected = cases.iter().map(|(_, name)| *name).collect::<Vec<_>>();
+
+    for (event, _) in cases {
+        observer.call(event, &ctx).await;
+    }
+
+    assert_recorded_hooks(rx, expected).await;
+    recorder.abort();
+}
+
+#[cfg(feature = "dynclib-engine")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dynclib_package_receives_on_ready_and_on_stop() {
+    let _guard = DYNCLIB_PACKAGE_HOOK_TEST_LOCK.lock().await;
     let host = DynclibHost::load(fixture_so_path()).expect("load dynclib fixture");
     let mut workload =
         instantiate_dynclib_workload(host, &dynclib_init_payload()).expect("instantiate dynclib");

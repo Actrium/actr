@@ -911,14 +911,18 @@ pub(crate) fn decode_dest(
 mod tests {
     use super::*;
     use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::lifecycle::hooks::{
+        HookContextBuilder, WorkloadHookObserverRef, build_hook_callback,
+    };
     use crate::outbound::{Gate, HostGate};
     use crate::transport::HostTransport;
     use crate::wire::webrtc::{
-        ReconnectConfig, SignalingClient, SignalingConfig, WebSocketSignalingClient,
+        HookEvent, ReconnectConfig, SignalingClient, SignalingConfig, WebSocketSignalingClient,
     };
     use actr_framework::Context as FrameworkContext;
     use actr_framework::test_support::DummyContext;
     use actr_protocol::{AIdCredential, ActrId, ActrType, Realm};
+    use tokio::sync::mpsc;
 
     fn make_id(serial: u64) -> ActrId {
         ActrId {
@@ -1031,6 +1035,65 @@ mod tests {
         }
     }
 
+    struct RecordingWorkload {
+        tx: mpsc::UnboundedSender<String>,
+    }
+
+    #[async_trait]
+    impl FrameworkWorkload for RecordingWorkload {
+        type Dispatcher = RecordingDispatcher;
+
+        async fn on_ready<C: FrameworkContext>(&self, ctx: &C) -> ActorResult<()> {
+            let _ = self
+                .tx
+                .send(format!("on_ready:self={}", ctx.self_id().serial_number));
+            Ok(())
+        }
+
+        async fn on_stop<C: FrameworkContext>(&self, ctx: &C) -> ActorResult<()> {
+            let _ = self
+                .tx
+                .send(format!("on_stop:self={}", ctx.self_id().serial_number));
+            Ok(())
+        }
+
+        async fn on_websocket_connected<C: FrameworkContext>(&self, ctx: &C, event: &PeerEvent) {
+            let _ = self.tx.send(format!(
+                "on_websocket_connected:self={}:peer={}:relayed={}",
+                ctx.self_id().serial_number,
+                event.peer.serial_number,
+                match event.relayed {
+                    Some(true) => "true",
+                    Some(false) => "false",
+                    None => "none",
+                }
+            ));
+        }
+    }
+
+    struct RecordingDispatcher;
+
+    #[async_trait]
+    impl MessageDispatcher for RecordingDispatcher {
+        type Workload = RecordingWorkload;
+
+        async fn dispatch<C: FrameworkContext>(
+            _workload: &Self::Workload,
+            _envelope: RpcEnvelope,
+            _ctx: &C,
+        ) -> ActorResult<Bytes> {
+            Ok(Bytes::new())
+        }
+    }
+
+    async fn expect_recorded(rx: &mut mpsc::UnboundedReceiver<String>, expected: &'static str) {
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("linked hook was not called")
+            .expect("recording workload dropped");
+        assert_eq!(observed, expected);
+    }
+
     #[tokio::test]
     async fn adapter_dispatch_routes_to_workload_dispatcher() {
         let adapter = WorkloadAdapter::new(EchoWorkload {
@@ -1115,6 +1178,72 @@ mod tests {
             }
             other => panic!("expected Internal, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn workload_on_ready_and_on_stop_reach_linked_workload() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle: Arc<dyn LinkedWorkloadHandle> = WorkloadAdapter::new(RecordingWorkload { tx });
+        let mut workload = Workload::Linked(handle);
+        let host_abi: HostAbiFn = Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
+
+        workload
+            .on_ready(
+                test_runtime_context(9),
+                InvocationContext {
+                    self_id: make_id(9),
+                    caller_id: None,
+                    request_id: "lifecycle:on_ready".to_string(),
+                },
+                &host_abi,
+            )
+            .await
+            .expect("linked on_ready should dispatch");
+        workload
+            .on_stop(
+                test_runtime_context(9),
+                InvocationContext {
+                    self_id: make_id(9),
+                    caller_id: None,
+                    request_id: "lifecycle:on_stop".to_string(),
+                },
+                &host_abi,
+            )
+            .await
+            .expect("linked on_stop should dispatch");
+
+        expect_recorded(&mut rx, "on_ready:self=9").await;
+        expect_recorded(&mut rx, "on_stop:self=9").await;
+    }
+
+    #[tokio::test]
+    async fn hook_callback_reaches_linked_workload_once() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let handle: Arc<dyn LinkedWorkloadHandle> = WorkloadAdapter::new(RecordingWorkload { tx });
+        let observer: WorkloadHookObserverRef = Arc::new(LinkedHandleObserver { handle });
+        let ctx = test_runtime_context(10);
+        let ctx_builder: HookContextBuilder = Arc::new(move || {
+            let ctx = ctx.clone();
+            Box::pin(async move { Some(ctx) })
+        });
+        let cb = build_hook_callback(Some(observer), ctx_builder);
+
+        cb(HookEvent::WebSocketConnected {
+            peer_id: make_id(42),
+        })
+        .await;
+
+        expect_recorded(
+            &mut rx,
+            "on_websocket_connected:self=10:peer=42:relayed=none",
+        )
+        .await;
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert!(
+            rx.try_recv().is_err(),
+            "linked workload should receive exactly one hook event"
+        );
     }
 
     /// The object-safe bound is the whole point of `LinkedWorkloadHandle`;
