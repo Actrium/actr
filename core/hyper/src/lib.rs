@@ -2008,6 +2008,19 @@ mod tests {
         assert_eq!(req.ws_address.as_deref(), Some("ws://127.0.0.1:9100"));
     }
 
+    #[tokio::test]
+    async fn with_actor_type_overrides_pending_runtime_metadata() {
+        let dir = TempDir::new().unwrap();
+        let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
+        let node = Node::from_hyper(hyper, linked_runtime_config(&dir))
+        .with_actor_type("acme", "UnifiedActor", "1.0.0");
+
+        let actr_type = node.runtime_config().actr_type();
+        assert_eq!(actr_type.manufacturer, "acme");
+        assert_eq!(actr_type.name, "UnifiedActor");
+        assert_eq!(actr_type.version, "1.0.0");
+    }
+
     #[test]
     fn compatible_native_target_matches_current_host() {
         // Current host should always match itself.

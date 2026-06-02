@@ -88,7 +88,7 @@ open class RustBuffer : Structure() {
 
     @Suppress("TooGenericExceptionThrown")
     fun asByteBuffer() =
-        this.data?.getByteBuffer(0, this.len.toLong())?.also {
+        this.data?.getByteBuffer(0, this.len)?.also {
             it.order(ByteOrder.BIG_ENDIAN)
         }
 }
@@ -289,8 +289,9 @@ internal inline fun<T> uniffiTraitInterfaceCall(
     try {
         writeReturn(makeCall())
     } catch(e: kotlin.Exception) {
+        val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
         callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
-        callStatus.error_buf = FfiConverterString.lower(e.toString())
+        callStatus.error_buf = FfiConverterString.lower(err)
     }
 }
 
@@ -307,8 +308,9 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallWithError(
             callStatus.code = UNIFFI_CALL_ERROR
             callStatus.error_buf = lowerError(e)
         } else {
+            val err = try { e.stackTraceToString() } catch(_: Throwable) { "" }
             callStatus.code = UNIFFI_CALL_UNEXPECTED_ERROR
-            callStatus.error_buf = FfiConverterString.lower(e.toString())
+            callStatus.error_buf = FfiConverterString.lower(err)
         }
     }
 }
@@ -941,7 +943,11 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_method_opusencoder_frame_size(
     ): Short
+    external fun uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload(
+    ): Short
     external fun uniffi_actr_checksum_constructor_actrnode_new_from_package_file(
+    ): Short
+    external fun uniffi_actr_checksum_constructor_actrnode_new_linked(
     ): Short
     external fun uniffi_actr_checksum_constructor_dynamicworkload_new(
     ): Short
@@ -987,7 +993,7 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun ffi_actr_uniffi_contract_version(
     ): Int
-    
+
         
 }
 
@@ -1015,7 +1021,11 @@ internal object UniffiLib {
 ): Long
 external fun uniffi_actr_fn_free_actrnode(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+external fun uniffi_actr_fn_constructor_actrnode_new_from_linked_workload(`configPath`: RustBuffer.ByValue,`actorType`: RustBuffer.ByValue,`workload`: Long,
+): Long
 external fun uniffi_actr_fn_constructor_actrnode_new_from_package_file(`configPath`: RustBuffer.ByValue,`packagePath`: RustBuffer.ByValue,
+): Long
+external fun uniffi_actr_fn_constructor_actrnode_new_linked(`configPath`: RustBuffer.ByValue,`actorType`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_actr_fn_method_actrnode_create_network_event_handle(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1321,7 +1331,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_actr_checksum_method_opusencoder_frame_size() != 61591.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload() != 33293.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 23972.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_constructor_actrnode_new_linked() != 46641.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_constructor_dynamicworkload_new() != 7106.toShort()) {
@@ -1452,9 +1468,17 @@ internal inline fun<T> uniffiTraitInterfaceCallAsync(
     // Uniffi does its best to support structured concurrency across the FFI.
     // If the Rust future is dropped, `uniffiForeignFutureDroppedCallbackImpl` is called, which will cancel the Kotlin coroutine if it's still running.
     @OptIn(DelicateCoroutinesApi::class)
-    val job = GlobalScope.launch {
-        try {
-            handleSuccess(makeCall())
+    val job = GlobalScope.launch coroutineBlock@ {
+        // Note: it's important we call either `handleSuccess` or `handleError` exactly once.  Each
+        // call consumes an Arc reference, which means there should be no possibility of a double
+        // call.  The following code is structured so that will will never call both `handleSuccess`
+        // and `handleError`, even in the face of weird exceptions.
+        //
+        // In extreme circumstances we may not call either, for example if we fail to make the JNA
+        // call to `handleSuccess`.  This means we will leak the Arc reference, which is better than
+        // double-freeing it.
+        val callResult = try {
+            makeCall()
         } catch(e: kotlin.Exception) {
             handleError(
                 UniffiRustCallStatus.create(
@@ -1462,7 +1486,9 @@ internal inline fun<T> uniffiTraitInterfaceCallAsync(
                     FfiConverterString.lower(e.toString()),
                 )
             )
+            return@coroutineBlock
         }
+        handleSuccess(callResult)
     }
     val handle = uniffiForeignFutureHandleMap.insert(job)
     uniffiOutDroppedCallback.uniffiSetValue(UniffiForeignFutureDroppedCallbackStruct(handle, uniffiForeignFutureDroppedCallbackImpl))
@@ -1477,9 +1503,11 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallAsyncWithEr
 ) {
     // See uniffiTraitInterfaceCallAsync for details on `DelicateCoroutinesApi`
     @OptIn(DelicateCoroutinesApi::class)
-    val job = GlobalScope.launch {
-        try {
-            handleSuccess(makeCall())
+    val job = GlobalScope.launch coroutineBlock@ {
+        // See the note in uniffiTraitInterfaceCallAsync for details on `handleSuccess` and
+        // `handleError`.
+        val callResult = try {
+            makeCall()
         } catch(e: kotlin.Exception) {
             if (e is E) {
                 handleError(
@@ -1496,7 +1524,9 @@ internal inline fun<T, reified E: Throwable> uniffiTraitInterfaceCallAsyncWithEr
                     )
                 )
             }
+            return@coroutineBlock
         }
+        handleSuccess(callResult)
     }
     val handle = uniffiForeignFutureHandleMap.insert(job)
     uniffiOutDroppedCallback.uniffiSetValue(UniffiForeignFutureDroppedCallbackStruct(handle, uniffiForeignFutureDroppedCallbackImpl))
@@ -2023,7 +2053,6 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 //
 
 
-//
 /**
  * Wrapper for a package-backed runtime before startup.
  */
@@ -2069,11 +2098,11 @@ open class ActrNode: Disposable, AutoCloseable, ActrNodeInterface
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+        this.cleanable = null
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -2084,7 +2113,7 @@ open class ActrNode: Disposable, AutoCloseable, ActrNodeInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -2112,7 +2141,7 @@ open class ActrNode: Disposable, AutoCloseable, ActrNodeInterface
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -2195,6 +2224,25 @@ open class ActrNode: Disposable, AutoCloseable, ActrNodeInterface
     companion object {
         
     /**
+     * Create a linked runtime wrapper from a foreign-language DynamicWorkload.
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+     suspend fun `newFromLinkedWorkload`(`configPath`: kotlin.String, `actorType`: ActrType, `workload`: DynamicWorkload) : ActrNode {
+        return uniffiRustCallAsync(
+        UniffiLib.uniffi_actr_fn_constructor_actrnode_new_from_linked_workload(FfiConverterString.lower(`configPath`),FfiConverterTypeActrType.lower(`actorType`),FfiConverterTypeDynamicWorkload.lower(`workload`),),
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_u64(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_u64(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_u64(future) },
+        // lift function
+        { FfiConverterTypeActrNode.lift(it) },
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
+    }
+
+        
+    /**
      * Create a new runtime wrapper from config and a verified `.actr` package file.
      */
     @Throws(ActrException::class)
@@ -2202,6 +2250,28 @@ open class ActrNode: Disposable, AutoCloseable, ActrNodeInterface
      suspend fun `newFromPackageFile`(`configPath`: kotlin.String, `packagePath`: kotlin.String) : ActrNode {
         return uniffiRustCallAsync(
         UniffiLib.uniffi_actr_fn_constructor_actrnode_new_from_package_file(FfiConverterString.lower(`configPath`),FfiConverterString.lower(`packagePath`),),
+        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_u64(future, callback, continuation) },
+        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_u64(future, continuation) },
+        { future -> UniffiLib.ffi_actr_rust_future_free_u64(future) },
+        // lift function
+        { FfiConverterTypeActrNode.lift(it) },
+        // Error FFI converter
+        ActrException.ErrorHandler,
+    )
+    }
+
+        
+    /**
+     * Create a linked runtime wrapper using the built-in echo proxy workload.
+     *
+     * This convenience constructor is intended for simple Kotlin/Android
+     * clients that forward local echo RPCs to a remote `acme/EchoService/1.0.0`.
+     */
+    @Throws(ActrException::class)
+    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
+     suspend fun `newLinked`(`configPath`: kotlin.String, `actorType`: ActrType) : ActrNode {
+        return uniffiRustCallAsync(
+        UniffiLib.uniffi_actr_fn_constructor_actrnode_new_linked(FfiConverterString.lower(`configPath`),FfiConverterTypeActrType.lower(`actorType`),),
         { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_u64(future, callback, continuation) },
         { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_u64(future, continuation) },
         { future -> UniffiLib.ffi_actr_rust_future_free_u64(future) },
@@ -2337,7 +2407,6 @@ public object FfiConverterTypeActrNode: FfiConverter<ActrNode, Long> {
 //
 
 
-//
 /**
  * Wrapper for a running actor reference.
  */
@@ -2406,11 +2475,11 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+        this.cleanable = null
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -2421,7 +2490,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -2449,7 +2518,7 @@ open class ActrRefWrapper: Disposable, AutoCloseable, ActrRefWrapperInterface
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -2758,7 +2827,6 @@ public object FfiConverterTypeActrRefWrapper: FfiConverter<ActrRefWrapper, Long>
 //
 
 
-//
 /**
  * Context provided to the workload
  */
@@ -2874,11 +2942,11 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+        this.cleanable = null
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -2889,7 +2957,7 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -2917,7 +2985,7 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -3382,7 +3450,6 @@ public object FfiConverterTypeContextBridge: FfiConverter<ContextBridge, Long> {
 //
 
 
-//
 /**
  * Dynamic workload composed of one mandatory [`WorkloadLifecycleBridge`]
  * and up to five optional category observers.
@@ -3424,7 +3491,7 @@ open class DynamicWorkload: Disposable, AutoCloseable, DynamicWorkloadInterface
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+        this.cleanable = null
     }
     /**
      * Construct a `DynamicWorkload` from a mandatory lifecycle bridge and
@@ -3440,7 +3507,7 @@ open class DynamicWorkload: Disposable, AutoCloseable, DynamicWorkloadInterface
     )
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -3451,7 +3518,7 @@ open class DynamicWorkload: Disposable, AutoCloseable, DynamicWorkloadInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -3479,7 +3546,7 @@ open class DynamicWorkload: Disposable, AutoCloseable, DynamicWorkloadInterface
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -3644,7 +3711,6 @@ public object FfiConverterTypeDynamicWorkload: FfiConverter<DynamicWorkload, Lon
 //
 
 
-//
 /**
  * Wrapper for `NetworkEventHandle` - network lifecycle callbacks.
  */
@@ -3698,11 +3764,11 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+        this.cleanable = null
     }
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -3713,7 +3779,7 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -3741,7 +3807,7 @@ open class NetworkEventHandleWrapper: Disposable, AutoCloseable, NetworkEventHan
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -4002,7 +4068,6 @@ public object FfiConverterTypeNetworkEventHandleWrapper: FfiConverter<NetworkEve
 //
 
 
-//
 /**
  * Reusable Opus encoder for Swift audio capture.
  */
@@ -4043,7 +4108,7 @@ open class OpusEncoder: Disposable, AutoCloseable, OpusEncoderInterface
     @Suppress("UNUSED_PARAMETER")
     constructor(noHandle: NoHandle) {
         this.handle = 0
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
+        this.cleanable = null
     }
     /**
      * Create an Opus encoder for fixed-size PCM float frames.
@@ -4058,7 +4123,7 @@ open class OpusEncoder: Disposable, AutoCloseable, OpusEncoderInterface
     )
 
     protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable
+    protected val cleanable: UniffiCleaner.Cleanable?
 
     private val wasDestroyed = AtomicBoolean(false)
     private val callCounter = AtomicLong(1)
@@ -4069,7 +4134,7 @@ open class OpusEncoder: Disposable, AutoCloseable, OpusEncoderInterface
         if (this.wasDestroyed.compareAndSet(false, true)) {
             // This decrement always matches the initial count of 1 given at creation time.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -4097,7 +4162,7 @@ open class OpusEncoder: Disposable, AutoCloseable, OpusEncoderInterface
         } finally {
             // This decrement always matches the increment we performed above.
             if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable.clean()
+                cleanable?.clean()
             }
         }
     }
@@ -4212,6 +4277,8 @@ data class ActrId (
     
 
     
+
+    
     companion object
 }
 
@@ -4253,6 +4320,8 @@ data class ActrType (
     var `version`: kotlin.String
     
 ){
+    
+
     
 
     
@@ -4298,6 +4367,8 @@ data class BackpressureEventBridge (
     
 
     
+
+    
     companion object
 }
 
@@ -4335,6 +4406,8 @@ data class CredentialEventBridge (
     var `newExpiryMs`: kotlin.Long
     
 ){
+    
+
     
 
     
@@ -4397,6 +4470,8 @@ data class DataStream (
     var `timestampMs`: kotlin.Long?
     
 ){
+    
+
     
 
     
@@ -4468,6 +4543,8 @@ data class ErrorEventBridge (
     
 
     
+
+    
     companion object
 }
 
@@ -4517,6 +4594,8 @@ data class MediaSample (
     
 
     
+
+    
     companion object
 }
 
@@ -4562,6 +4641,8 @@ data class MetadataEntry (
     
 
     
+
+    
     companion object
 }
 
@@ -4602,6 +4683,8 @@ data class NetworkEventResult (
     var `durationMs`: kotlin.ULong
     
 ){
+    
+
     
 
     
@@ -4657,6 +4740,8 @@ data class PeerEventBridge (
     
 
     
+
+    
     companion object
 }
 
@@ -4691,6 +4776,8 @@ data class Realm (
     var `realmId`: kotlin.UInt
     
 ){
+    
+
     
 
     
@@ -4740,6 +4827,8 @@ data class RpcEnvelopeBridge (
     var `requestId`: kotlin.String
     
 ){
+    
+
     
 
     
@@ -4879,6 +4968,9 @@ sealed class ActrException: kotlin.Exception() {
             get() = "msg=${ `msg` }"
     }
     
+
+    
+
 
     companion object ErrorHandler : UniffiRustCallStatusErrorHandler<ActrException> {
         override fun lift(error_buf: RustBuffer.ByValue): ActrException = FfiConverterTypeActrError.lift(error_buf)
@@ -5065,7 +5157,12 @@ enum class ErrorCategoryBridge {
     HANDLER_PANIC,
     HANDLER_ERROR,
     SIGNALING_FAILURE,
-    TRANSPORT_FAILURE;
+    TRANSPORT_FAILURE,
+    DATA_STREAM_DELIVERY_UNCERTAIN;
+
+    
+
+
     companion object
 }
 
@@ -5117,6 +5214,10 @@ enum class ErrorKind {
      * Data corruption — route to Dead Letter Queue; manual intervention.
      */
     CORRUPT;
+
+    
+
+
     companion object
 }
 
@@ -5150,6 +5251,10 @@ enum class MediaType {
     
     AUDIO,
     VIDEO;
+
+    
+
+
     companion object
 }
 
@@ -5201,6 +5306,11 @@ sealed class NetworkEvent {
     
 
     
+
+    
+    
+
+
     companion object
 }
 
@@ -5296,6 +5406,10 @@ enum class PayloadType {
     STREAM_RELIABLE,
     STREAM_LATENCY_FIRST,
     MEDIA_RTP;
+
+    
+
+
     companion object
 }
 
@@ -6813,3 +6927,5 @@ public object FfiConverterSequenceTypeMetadataEntry: FfiConverterRustBuffer<List
     )
     }
     
+
+
