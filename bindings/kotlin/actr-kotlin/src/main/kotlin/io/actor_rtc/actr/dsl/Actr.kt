@@ -111,6 +111,49 @@ suspend fun createActrNode(configPath: String, packagePath: String): ActrNode {
     return ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
 }
 
+/**
+ * Create an ActrNode backed by a linked dynamic workload.
+ *
+ * Use this when workload logic lives in Kotlin instead of a packaged `.actr` guest.
+ */
+suspend fun ActrNodeGenerated.Companion.linked(
+    configPath: String,
+    actorType: ActrType,
+    workload: DynamicWorkload
+): ActrNode {
+    return ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
+}
+
+/**
+ * Create an ActrNode backed by a linked dynamic workload.
+ */
+suspend fun linked(
+    configPath: String,
+    actorType: ActrType,
+    workload: DynamicWorkload
+): ActrNode {
+    return ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
+}
+
+/**
+ * Create a linked node using the built-in echo proxy workload.
+ *
+ * This convenience path is echo-focused and intended for simple clients.
+ */
+suspend fun ActrNodeGenerated.Companion.linkedEchoProxy(
+    configPath: String,
+    actorType: ActrType
+): ActrNode {
+    return ActrNodeGenerated.newLinked(configPath, actorType)
+}
+
+/**
+ * Create a linked node using the built-in echo proxy workload.
+ */
+suspend fun linkedEchoProxy(configPath: String, actorType: ActrType): ActrNode {
+    return ActrNodeGenerated.newLinked(configPath, actorType)
+}
+
 // ============================================================================
 // ActrNode Extensions
 // ============================================================================
