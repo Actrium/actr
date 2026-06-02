@@ -9,6 +9,12 @@ authors.workspace = true
 description = "Actor-RTC: A WebRTC-native actor framework for distributed real-time systems"
 keywords = ["actor", "webrtc", "distributed", "realtime", "p2p"]
 categories = ["network-programming", "asynchronous", "web-programming"]
+readme = "README.md"
+include = [
+    "/Cargo.toml",
+    "/README.md",
+    "/src/**",
+]
 
 [lints]
 workspace = true
