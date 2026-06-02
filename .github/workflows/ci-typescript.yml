@@ -81,6 +81,7 @@ jobs:
         run: |
           npm ci
           npm run build
+          npm test
           node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
 
       - name: Build TypeScript EchoService workload

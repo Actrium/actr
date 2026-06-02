@@ -38,7 +38,7 @@ export interface MetadataEntry {
 export interface DataStream {
   streamId: string;
   sequence: bigint | number;
-  payload: Uint8Array;
+  payload: PayloadBytes;
   metadata?: MetadataEntry[];
   timestampMs?: bigint | number;
 }
@@ -98,7 +98,7 @@ export function defineWorkload(workload: Workload): Workload {
 
 const streamCallbacks = new Map<string, StreamCallback>();
 
-function toUint8Array(value: PayloadBytes): Uint8Array {
+export function toUint8Array(value: PayloadBytes): Uint8Array {
   if (value instanceof Uint8Array) {
     return value;
   }

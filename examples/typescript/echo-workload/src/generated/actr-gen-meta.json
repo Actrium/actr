@@ -16,6 +16,20 @@
           "input_type": "EchoRequest",
           "output_type": "EchoResponse",
           "route_key": "echo.EchoService.Echo"
+        },
+        {
+          "name": "PrepareStream",
+          "snake_name": "prepare_stream",
+          "input_type": "StreamPrepareRequest",
+          "output_type": "StreamPrepareResponse",
+          "route_key": "echo.EchoService.PrepareStream"
+        },
+        {
+          "name": "ReleaseStream",
+          "snake_name": "release_stream",
+          "input_type": "StreamReleaseRequest",
+          "output_type": "StreamReleaseResponse",
+          "route_key": "echo.EchoService.ReleaseStream"
         }
       ]
     }

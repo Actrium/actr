@@ -11,6 +11,26 @@ message EchoResponse {
   uint64 timestamp = 2;
 }
 
+message StreamPrepareRequest {
+  string inbound_stream_id = 1;
+  string reply_stream_id = 2;
+  string reply_message = 3;
+}
+
+message StreamPrepareResponse {
+  string status = 1;
+}
+
+message StreamReleaseRequest {
+  string stream_id = 1;
+}
+
+message StreamReleaseResponse {
+  string status = 1;
+}
+
 service EchoService {
   rpc Echo(EchoRequest) returns (EchoResponse);
+  rpc PrepareStream(StreamPrepareRequest) returns (StreamPrepareResponse);
+  rpc ReleaseStream(StreamReleaseRequest) returns (StreamReleaseResponse);
 }

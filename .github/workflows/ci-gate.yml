@@ -179,6 +179,7 @@ jobs:
         run: |
           npm ci
           npm run build
+          npm test
           node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
       - name: Build TypeScript EchoService workload
         working-directory: examples/typescript/echo-workload
@@ -473,6 +474,51 @@ jobs:
           PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
         run: cargo test -p actr-cli --test e2e_typescript_generated_echo_web -- --ignored --test-threads=1
 
+  ts_stream_e2e:
+    name: TypeScript Stream E2E
+    needs: determine
+    if: needs.determine.outputs.ts_workload == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Install wasm Component Model toolchain
+        run: |
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.247.0 --locked
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux test deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq lsof perl
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Pre-build actr and mock-actrix
+        run: |
+          cargo build --release -p actr-cli --bin actr
+          cargo build --release -p actr-mock-actrix --bin mock-actrix
+      - name: Run TypeScript stream e2e
+        run: bash e2e/typescript-stream/run.sh
+
   python_web_e2e:
     name: Python Web E2E
     needs: determine
@@ -541,6 +587,7 @@ jobs:
       - rust
       - typescript
       - typescript_workload
+      - ts_stream_e2e
       - python_codegen
       - python_workload
       - swift
@@ -555,6 +602,7 @@ jobs:
       RUST_RESULT: ${{ needs.rust.result }}
       TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
       TYPESCRIPT_WORKLOAD_RESULT: ${{ needs.typescript_workload.result }}
+      TS_STREAM_E2E_RESULT: ${{ needs.ts_stream_e2e.result }}
       PYTHON_CODEGEN_RESULT: ${{ needs.python_codegen.result }}
       PYTHON_WORKLOAD_RESULT: ${{ needs.python_workload.result }}
       SWIFT_RESULT: ${{ needs.swift.result }}
@@ -574,6 +622,7 @@ jobs:
               "rust": os.environ["RUST_RESULT"],
               "typescript": os.environ["TYPESCRIPT_RESULT"],
               "typescript_workload": os.environ["TYPESCRIPT_WORKLOAD_RESULT"],
+              "ts_stream_e2e": os.environ["TS_STREAM_E2E_RESULT"],
               "python_codegen": os.environ["PYTHON_CODEGEN_RESULT"],
               "python_workload": os.environ["PYTHON_WORKLOAD_RESULT"],
               "swift": os.environ["SWIFT_RESULT"],
