@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use actr_hyper::test_support::TestSignalingServer;
+use actr_hyper::test_support::{TestSignalingServer, attached_node_has_hook_observer};
 use actr_hyper::{Hyper, HyperConfig, Node, StaticTrust, WorkloadPackage};
 use actr_protocol::{ActrType, Realm};
 use ed25519_dalek::SigningKey;
@@ -129,6 +129,10 @@ async fn assert_package_on_start_failure(
         .attach(&package)
         .await
         .expect("package should attach");
+    assert!(
+        attached_node_has_hook_observer(&attached),
+        "package attach should install hook observer"
+    );
     let registered = attached
         .register(&ais_endpoint)
         .await

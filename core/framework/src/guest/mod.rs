@@ -519,6 +519,160 @@ macro_rules! entry {
                     return $crate::guest::dynclib_abi::code::SUCCESS;
                 }
 
+                if frame.op == $crate::guest::dynclib_abi::op::GUEST_HOOK {
+                    let payload = match <$crate::guest::dynclib_abi::GuestHookV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
+                        Ok(payload) => payload,
+                        Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                    };
+
+                    let ctx = match unsafe {
+                        $crate::guest::dynclib::context::DynclibContext::from_invocation(vtable, payload.ctx)
+                    } {
+                        Ok(c) => c,
+                        Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
+                    };
+
+                    let workload = unsafe {
+                        match __ACTR_WORKLOAD.as_ref() {
+                            Some(w) => w,
+                            None => return $crate::guest::dynclib_abi::code::INIT_FAILED,
+                        }
+                    };
+
+                    macro_rules! __actr_poll_unit {
+                        ($future:expr) => {{
+                            let fut = $future;
+                            let waker = std::task::Waker::noop();
+                            let mut cx = std::task::Context::from_waker(waker);
+                            let mut pinned = std::pin::pin!(fut);
+                            match pinned.as_mut().poll(&mut cx) {
+                                std::task::Poll::Ready(()) => {}
+                                std::task::Poll::Pending => {
+                                    return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
+                                }
+                            }
+                        }};
+                    }
+
+                    let peer_event = |peer: $crate::guest::dynclib_abi::PeerEventV1| {
+                        $crate::PeerEvent {
+                            peer: peer.peer,
+                            relayed: peer.relayed,
+                        }
+                    };
+
+                    let timestamp = |ts: $crate::guest::dynclib_abi::TimestampV1| {
+                        std::time::UNIX_EPOCH
+                            + std::time::Duration::new(ts.seconds, ts.nanoseconds)
+                    };
+
+                    match payload.hook {
+                        $crate::guest::dynclib_abi::runtime_hook::ON_SIGNALING_CONNECTING => {
+                            __actr_poll_unit!(workload.on_signaling_connecting(Some(&ctx)));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_SIGNALING_CONNECTED => {
+                            __actr_poll_unit!(workload.on_signaling_connected(Some(&ctx)));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_SIGNALING_DISCONNECTED => {
+                            __actr_poll_unit!(workload.on_signaling_disconnected(&ctx));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_WEBSOCKET_CONNECTING => {
+                            let event = match payload.peer {
+                                Some(peer) => peer_event(peer),
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_websocket_connecting(&ctx, &event));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_WEBSOCKET_CONNECTED => {
+                            let event = match payload.peer {
+                                Some(peer) => peer_event(peer),
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_websocket_connected(&ctx, &event));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_WEBSOCKET_DISCONNECTED => {
+                            let event = match payload.peer {
+                                Some(peer) => peer_event(peer),
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_websocket_disconnected(&ctx, &event));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_WEBRTC_CONNECTING => {
+                            let event = match payload.peer {
+                                Some(peer) => peer_event(peer),
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_webrtc_connecting(&ctx, &event));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_WEBRTC_CONNECTED => {
+                            let event = match payload.peer {
+                                Some(peer) => peer_event(peer),
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_webrtc_connected(&ctx, &event));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_WEBRTC_DISCONNECTED => {
+                            let event = match payload.peer {
+                                Some(peer) => peer_event(peer),
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_webrtc_disconnected(&ctx, &event));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_CREDENTIAL_RENEWED => {
+                            let event = match payload.credential {
+                                Some(credential) => $crate::CredentialEvent {
+                                    new_expiry: timestamp(credential.new_expiry),
+                                },
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_credential_renewed(&ctx, &event));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_CREDENTIAL_EXPIRING => {
+                            let event = match payload.credential {
+                                Some(credential) => $crate::CredentialEvent {
+                                    new_expiry: timestamp(credential.new_expiry),
+                                },
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_credential_expiring(&ctx, &event));
+                        }
+                        $crate::guest::dynclib_abi::runtime_hook::ON_MAILBOX_BACKPRESSURE => {
+                            let event = match payload.backpressure {
+                                Some(backpressure) => $crate::BackpressureEvent {
+                                    queue_len: backpressure.queue_len as usize,
+                                    threshold: backpressure.threshold as usize,
+                                },
+                                None => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                            };
+                            __actr_poll_unit!(workload.on_mailbox_backpressure(&ctx, &event));
+                        }
+                        _ => return $crate::guest::dynclib_abi::code::UNSUPPORTED_OP,
+                    }
+
+                    let resp_bytes = match $crate::guest::dynclib_abi::success_reply(::std::vec::Vec::new()) {
+                        Ok(bytes) => bytes,
+                        Err(code) => return code,
+                    };
+
+                    let resp_len = resp_bytes.len();
+                    let layout = match std::alloc::Layout::from_size_align(resp_len.max(1), 1) {
+                        Ok(l) => l,
+                        Err(_) => return $crate::guest::dynclib_abi::code::GENERIC_ERROR,
+                    };
+                    let ptr = unsafe { std::alloc::alloc(layout) };
+                    if ptr.is_null() {
+                        return $crate::guest::dynclib_abi::code::GENERIC_ERROR;
+                    }
+
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(resp_bytes.as_ptr(), ptr, resp_len);
+                        *resp_out = ptr;
+                        *resp_len_out = resp_len;
+                    }
+
+                    return $crate::guest::dynclib_abi::code::SUCCESS;
+                }
+
                 if frame.op == $crate::guest::dynclib_abi::op::GUEST_DATA_STREAM {
                     let payload = match <$crate::guest::dynclib_abi::GuestDataStreamV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
                         Ok(payload) => payload,

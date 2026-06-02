@@ -1,0 +1,212 @@
+#![cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
+
+use actr_hyper::test_support::TestPackageHookEvent;
+use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
+use actr_protocol::{ActrId, ActrType, Realm};
+
+#[cfg(feature = "wasm-engine")]
+use actr_hyper::test_support::instantiate_wasm_workload;
+#[cfg(feature = "wasm-engine")]
+use actr_hyper::wasm::WasmHost;
+
+#[cfg(feature = "dynclib-engine")]
+use actr_framework::guest::dynclib_abi::{InitPayloadV1, version};
+#[cfg(feature = "dynclib-engine")]
+use actr_hyper::dynclib::DynclibHost;
+#[cfg(feature = "dynclib-engine")]
+use actr_hyper::test_support::instantiate_dynclib_workload;
+
+#[cfg(feature = "wasm-engine")]
+#[path = "wasm_actor_fixture.rs"]
+mod wasm_actor_fixture;
+
+fn test_actr_id() -> ActrId {
+    ActrId {
+        realm: Realm { realm_id: 1 },
+        serial_number: 1,
+        r#type: ActrType {
+            manufacturer: "test".to_string(),
+            name: "fixture".to_string(),
+            version: "0.1.0".to_string(),
+        },
+    }
+}
+
+fn test_ctx() -> InvocationContext {
+    InvocationContext {
+        self_id: test_actr_id(),
+        caller_id: None,
+        request_id: "package-hook-test".to_string(),
+    }
+}
+
+fn package_hook_cases() -> Vec<(TestPackageHookEvent, &'static str)> {
+    let peer = test_actr_id();
+    let expiry = UNIX_EPOCH + Duration::from_secs(1_725_000_000);
+    vec![
+        (
+            TestPackageHookEvent::SignalingConnecting,
+            "on_signaling_connecting",
+        ),
+        (
+            TestPackageHookEvent::SignalingConnected,
+            "on_signaling_connected",
+        ),
+        (
+            TestPackageHookEvent::SignalingDisconnected,
+            "on_signaling_disconnected",
+        ),
+        (
+            TestPackageHookEvent::WebSocketConnecting { peer: peer.clone() },
+            "on_websocket_connecting",
+        ),
+        (
+            TestPackageHookEvent::WebSocketConnected { peer: peer.clone() },
+            "on_websocket_connected",
+        ),
+        (
+            TestPackageHookEvent::WebSocketDisconnected { peer: peer.clone() },
+            "on_websocket_disconnected",
+        ),
+        (
+            TestPackageHookEvent::WebRtcConnecting { peer: peer.clone() },
+            "on_webrtc_connecting",
+        ),
+        (
+            TestPackageHookEvent::WebRtcConnected {
+                peer: peer.clone(),
+                relayed: true,
+            },
+            "on_webrtc_connected",
+        ),
+        (
+            TestPackageHookEvent::WebRtcDisconnected { peer },
+            "on_webrtc_disconnected",
+        ),
+        (
+            TestPackageHookEvent::CredentialRenewed { new_expiry: expiry },
+            "on_credential_renewed",
+        ),
+        (
+            TestPackageHookEvent::CredentialExpiring { new_expiry: expiry },
+            "on_credential_expiring",
+        ),
+        (
+            TestPackageHookEvent::MailboxBackpressure {
+                queue_len: 7,
+                threshold: 3,
+            },
+            "on_mailbox_backpressure",
+        ),
+    ]
+}
+
+fn recording_bridge() -> (HostAbiFn, tokio::sync::mpsc::UnboundedReceiver<String>) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let bridge: HostAbiFn = Arc::new(move |op| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            match op {
+                HostOperation::CallRaw(req) if req.route_key == "test/record_hook" => {
+                    let name = String::from_utf8(req.payload).expect("hook name is utf8");
+                    let _ = tx.send(name);
+                    HostOperationResult::Bytes(Vec::new())
+                }
+                _ => HostOperationResult::Error(-1),
+            }
+        })
+    });
+    (bridge, rx)
+}
+
+async fn assert_recorded_hooks(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    expected: Vec<&'static str>,
+) {
+    for expected_name in expected {
+        let observed = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for hook record")
+            .expect("recording bridge dropped");
+        assert_eq!(observed, expected_name);
+    }
+}
+
+#[cfg(feature = "wasm-engine")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wasm_package_receives_runtime_hook_events() {
+    let host =
+        WasmHost::compile(wasm_actor_fixture::WASM_ACTOR_FIXTURE).expect("compile component");
+    let mut workload = instantiate_wasm_workload(&host)
+        .await
+        .expect("instantiate wasm workload");
+    let (bridge, rx) = recording_bridge();
+    let cases = package_hook_cases();
+    let expected = cases.iter().map(|(_, name)| *name).collect::<Vec<_>>();
+
+    for (event, _) in cases {
+        workload
+            .call_hook_event(event, test_ctx(), &bridge)
+            .await
+            .expect("wasm hook event should dispatch");
+    }
+
+    assert_recorded_hooks(rx, expected).await;
+}
+
+#[cfg(feature = "dynclib-engine")]
+fn fixture_so_path() -> PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixture_dir = manifest_dir.join("tests/dynclib_actor_fixture");
+
+    let status = std::process::Command::new("cargo")
+        .args(["build"])
+        .current_dir(&fixture_dir)
+        .status()
+        .expect("failed to build dynclib fixture");
+    assert!(status.success(), "dynclib fixture build failed");
+
+    let target_dir = manifest_dir.join("../../target/core-hyper-tests-dynclib-actor-fixture/debug");
+    if cfg!(target_os = "linux") {
+        target_dir.join("libdynclib_actor_fixture.so")
+    } else if cfg!(target_os = "macos") {
+        target_dir.join("libdynclib_actor_fixture.dylib")
+    } else {
+        target_dir.join("dynclib_actor_fixture.dll")
+    }
+}
+
+#[cfg(feature = "dynclib-engine")]
+fn dynclib_init_payload() -> InitPayloadV1 {
+    InitPayloadV1 {
+        version: version::V1,
+        actr_type: "test:fixture:0.1.0".to_string(),
+        credential: Vec::new(),
+        actor_id: Vec::new(),
+        realm_id: 1,
+    }
+}
+
+#[cfg(feature = "dynclib-engine")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dynclib_package_receives_runtime_hook_events() {
+    let host = DynclibHost::load(fixture_so_path()).expect("load dynclib fixture");
+    let mut workload =
+        instantiate_dynclib_workload(host, &dynclib_init_payload()).expect("instantiate dynclib");
+    let (bridge, rx) = recording_bridge();
+    let cases = package_hook_cases();
+    let expected = cases.iter().map(|(_, name)| *name).collect::<Vec<_>>();
+
+    for (event, _) in cases {
+        workload
+            .call_hook_event(event, test_ctx(), &bridge)
+            .await
+            .expect("dynclib hook event should dispatch");
+    }
+
+    assert_recorded_hooks(rx, expected).await;
+}

@@ -8,7 +8,7 @@ use actr_framework::guest::dynclib_abi::{
     HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1,
 };
 #[cfg(feature = "dynclib-engine")]
-use actr_framework::guest::dynclib_abi::{AbiPayload, GuestHandleV1};
+use actr_framework::guest::dynclib_abi::{AbiPayload, GuestHandleV1, GuestHookV1};
 use actr_framework::{
     BackpressureEvent, CredentialEvent, ErrorEvent, MessageDispatcher, PeerEvent,
     Workload as FrameworkWorkload,
@@ -59,6 +59,48 @@ pub type HostAbiFn = Arc<
         + Send
         + Sync,
 >;
+
+/// Package-backed observation hook event.
+///
+/// Linked workloads receive observation hooks through [`LinkedHandleObserver`].
+/// Package-backed observers lower hook callbacks into this enum and serialize
+/// them through [`Workload::dispatch_hook_event`], which enters the Wasm /
+/// DynClib guest ABI.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub(crate) enum PackageHookEvent {
+    SignalingConnecting,
+    SignalingConnected,
+    SignalingDisconnected,
+    WebSocketConnecting(PeerEvent),
+    WebSocketConnected(PeerEvent),
+    WebSocketDisconnected(PeerEvent),
+    WebRtcConnecting(PeerEvent),
+    WebRtcConnected(PeerEvent),
+    WebRtcDisconnected(PeerEvent),
+    CredentialRenewed(CredentialEvent),
+    CredentialExpiring(CredentialEvent),
+    MailboxBackpressure(BackpressureEvent),
+}
+
+impl PackageHookEvent {
+    pub(crate) fn request_id(&self) -> &'static str {
+        match self {
+            PackageHookEvent::SignalingConnecting => "hook:on_signaling_connecting",
+            PackageHookEvent::SignalingConnected => "hook:on_signaling_connected",
+            PackageHookEvent::SignalingDisconnected => "hook:on_signaling_disconnected",
+            PackageHookEvent::WebSocketConnecting(_) => "hook:on_websocket_connecting",
+            PackageHookEvent::WebSocketConnected(_) => "hook:on_websocket_connected",
+            PackageHookEvent::WebSocketDisconnected(_) => "hook:on_websocket_disconnected",
+            PackageHookEvent::WebRtcConnecting(_) => "hook:on_webrtc_connecting",
+            PackageHookEvent::WebRtcConnected(_) => "hook:on_webrtc_connected",
+            PackageHookEvent::WebRtcDisconnected(_) => "hook:on_webrtc_disconnected",
+            PackageHookEvent::CredentialRenewed(_) => "hook:on_credential_renewed",
+            PackageHookEvent::CredentialExpiring(_) => "hook:on_credential_expiring",
+            PackageHookEvent::MailboxBackpressure(_) => "hook:on_mailbox_backpressure",
+        }
+    }
+}
 
 /// Object-safe handle to a workload linked directly into the host process
 /// (e.g. an embedded Swift / Kotlin app, or a Rust process that owns the
@@ -316,6 +358,156 @@ impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
     }
 }
 
+/// Bridge adapter for package-backed workloads.
+///
+/// Attach installs this observer so the regular hook callback path can
+/// forward observation events into Wasm / DynClib guests through the same
+/// workload ABI used by lifecycle and dispatch entrypoints.
+pub(crate) struct PackageHookObserver {
+    pub(crate) workload_dispatch: Arc<tokio::sync::Mutex<Workload>>,
+}
+
+impl PackageHookObserver {
+    async fn dispatch_hook(
+        &self,
+        label: &'static str,
+        ctx: &RuntimeContext,
+        event: PackageHookEvent,
+    ) {
+        use actr_framework::Context as _;
+
+        let invocation = InvocationContext {
+            self_id: ctx.self_id().clone(),
+            caller_id: None,
+            request_id: event.request_id().to_string(),
+        };
+        let call_executor =
+            crate::lifecycle::node::lifecycle_host_abi(ctx.clone(), self.workload_dispatch.clone());
+        let mut workload = self.workload_dispatch.lock().await;
+        if let Err(e) = workload
+            .dispatch_hook_event(event, invocation, &call_executor)
+            .await
+        {
+            tracing::warn!(hook = label, error = %e, "workload package hook returned Err");
+        }
+    }
+}
+
+#[async_trait]
+impl crate::lifecycle::hooks::WorkloadHookObserver for PackageHookObserver {
+    async fn on_signaling_connecting(&self, ctx: Option<&RuntimeContext>) {
+        if let Some(ctx) = ctx {
+            self.dispatch_hook(
+                "on_signaling_connecting",
+                ctx,
+                PackageHookEvent::SignalingConnecting,
+            )
+            .await;
+        }
+    }
+
+    async fn on_signaling_connected(&self, ctx: Option<&RuntimeContext>) {
+        if let Some(ctx) = ctx {
+            self.dispatch_hook(
+                "on_signaling_connected",
+                ctx,
+                PackageHookEvent::SignalingConnected,
+            )
+            .await;
+        }
+    }
+
+    async fn on_signaling_disconnected(&self, ctx: &RuntimeContext) {
+        self.dispatch_hook(
+            "on_signaling_disconnected",
+            ctx,
+            PackageHookEvent::SignalingDisconnected,
+        )
+        .await;
+    }
+
+    async fn on_websocket_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.dispatch_hook(
+            "on_websocket_connecting",
+            ctx,
+            PackageHookEvent::WebSocketConnecting(event.clone()),
+        )
+        .await;
+    }
+
+    async fn on_websocket_connected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.dispatch_hook(
+            "on_websocket_connected",
+            ctx,
+            PackageHookEvent::WebSocketConnected(event.clone()),
+        )
+        .await;
+    }
+
+    async fn on_websocket_disconnected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.dispatch_hook(
+            "on_websocket_disconnected",
+            ctx,
+            PackageHookEvent::WebSocketDisconnected(event.clone()),
+        )
+        .await;
+    }
+
+    async fn on_webrtc_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.dispatch_hook(
+            "on_webrtc_connecting",
+            ctx,
+            PackageHookEvent::WebRtcConnecting(event.clone()),
+        )
+        .await;
+    }
+
+    async fn on_webrtc_connected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.dispatch_hook(
+            "on_webrtc_connected",
+            ctx,
+            PackageHookEvent::WebRtcConnected(event.clone()),
+        )
+        .await;
+    }
+
+    async fn on_webrtc_disconnected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        self.dispatch_hook(
+            "on_webrtc_disconnected",
+            ctx,
+            PackageHookEvent::WebRtcDisconnected(event.clone()),
+        )
+        .await;
+    }
+
+    async fn on_credential_renewed(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
+        self.dispatch_hook(
+            "on_credential_renewed",
+            ctx,
+            PackageHookEvent::CredentialRenewed(event.clone()),
+        )
+        .await;
+    }
+
+    async fn on_credential_expiring(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
+        self.dispatch_hook(
+            "on_credential_expiring",
+            ctx,
+            PackageHookEvent::CredentialExpiring(event.clone()),
+        )
+        .await;
+    }
+
+    async fn on_mailbox_backpressure(&self, ctx: &RuntimeContext, event: &BackpressureEvent) {
+        self.dispatch_hook(
+            "on_mailbox_backpressure",
+            ctx,
+            PackageHookEvent::MailboxBackpressure(*event),
+        )
+        .await;
+    }
+}
+
 /// Runtime workload enum.
 ///
 /// Covers four attach flavours:
@@ -491,6 +683,35 @@ impl Workload {
             }
         })
     }
+
+    /// Dispatch an observation hook into a package-backed workload.
+    ///
+    /// Linked workloads are intentionally a no-op here: they receive the same
+    /// events through `hook_observer`, and calling them here would duplicate
+    /// every hook invocation on the linked path.
+    pub(crate) fn dispatch_hook_event<'a>(
+        &'a mut self,
+        event: PackageHookEvent,
+        invocation: InvocationContext,
+        host_abi: &'a HostAbiFn,
+    ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let _ = (&event, &invocation, host_abi);
+            match self {
+                Workload::Linked(_) => Ok(()),
+                #[cfg(feature = "wasm-engine")]
+                Workload::Wasm(workload) => workload
+                    .call_hook_event(event, invocation, host_abi)
+                    .await
+                    .map_err(|e| ActrError::Internal(format!("workload hook failed: {e}"))),
+                #[cfg(feature = "dynclib-engine")]
+                Workload::DynClib(workload) => workload
+                    .call_hook_event(event, invocation, host_abi)
+                    .await
+                    .map_err(|e| ActrError::Internal(format!("workload hook failed: {e}"))),
+            }
+        })
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -570,6 +791,106 @@ pub(crate) fn encode_guest_lifecycle_request(
     ctx: InvocationContext,
 ) -> Result<Vec<u8>, i32> {
     let request = guest_abi::GuestLifecycleV1 { ctx, hook };
+    let frame = request.to_frame()?;
+    guest_abi::encode_message(&frame)
+}
+
+#[cfg(feature = "dynclib-engine")]
+fn timestamp_to_v1(time: std::time::SystemTime) -> guest_abi::TimestampV1 {
+    let duration = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    guest_abi::TimestampV1 {
+        seconds: duration.as_secs(),
+        nanoseconds: duration.subsec_nanos(),
+    }
+}
+
+#[cfg(feature = "dynclib-engine")]
+fn peer_event_to_v1(event: PeerEvent) -> guest_abi::PeerEventV1 {
+    guest_abi::PeerEventV1 {
+        peer: event.peer,
+        relayed: event.relayed,
+    }
+}
+
+#[cfg(feature = "dynclib-engine")]
+fn credential_event_to_v1(event: CredentialEvent) -> guest_abi::CredentialEventV1 {
+    guest_abi::CredentialEventV1 {
+        new_expiry: timestamp_to_v1(event.new_expiry),
+    }
+}
+
+#[cfg(feature = "dynclib-engine")]
+fn backpressure_event_to_v1(event: BackpressureEvent) -> guest_abi::BackpressureEventV1 {
+    guest_abi::BackpressureEventV1 {
+        queue_len: event.queue_len as u64,
+        threshold: event.threshold as u64,
+    }
+}
+
+/// Encode a host-to-guest observation hook request as `GuestHookV1`.
+#[cfg(feature = "dynclib-engine")]
+pub(crate) fn encode_guest_hook_request(
+    event: PackageHookEvent,
+    ctx: InvocationContext,
+) -> Result<Vec<u8>, i32> {
+    let mut request = GuestHookV1 {
+        ctx,
+        hook: 0,
+        peer: None,
+        credential: None,
+        backpressure: None,
+    };
+
+    match event {
+        PackageHookEvent::SignalingConnecting => {
+            request.hook = guest_abi::runtime_hook::ON_SIGNALING_CONNECTING;
+        }
+        PackageHookEvent::SignalingConnected => {
+            request.hook = guest_abi::runtime_hook::ON_SIGNALING_CONNECTED;
+        }
+        PackageHookEvent::SignalingDisconnected => {
+            request.hook = guest_abi::runtime_hook::ON_SIGNALING_DISCONNECTED;
+        }
+        PackageHookEvent::WebSocketConnecting(event) => {
+            request.hook = guest_abi::runtime_hook::ON_WEBSOCKET_CONNECTING;
+            request.peer = Some(peer_event_to_v1(event));
+        }
+        PackageHookEvent::WebSocketConnected(event) => {
+            request.hook = guest_abi::runtime_hook::ON_WEBSOCKET_CONNECTED;
+            request.peer = Some(peer_event_to_v1(event));
+        }
+        PackageHookEvent::WebSocketDisconnected(event) => {
+            request.hook = guest_abi::runtime_hook::ON_WEBSOCKET_DISCONNECTED;
+            request.peer = Some(peer_event_to_v1(event));
+        }
+        PackageHookEvent::WebRtcConnecting(event) => {
+            request.hook = guest_abi::runtime_hook::ON_WEBRTC_CONNECTING;
+            request.peer = Some(peer_event_to_v1(event));
+        }
+        PackageHookEvent::WebRtcConnected(event) => {
+            request.hook = guest_abi::runtime_hook::ON_WEBRTC_CONNECTED;
+            request.peer = Some(peer_event_to_v1(event));
+        }
+        PackageHookEvent::WebRtcDisconnected(event) => {
+            request.hook = guest_abi::runtime_hook::ON_WEBRTC_DISCONNECTED;
+            request.peer = Some(peer_event_to_v1(event));
+        }
+        PackageHookEvent::CredentialRenewed(event) => {
+            request.hook = guest_abi::runtime_hook::ON_CREDENTIAL_RENEWED;
+            request.credential = Some(credential_event_to_v1(event));
+        }
+        PackageHookEvent::CredentialExpiring(event) => {
+            request.hook = guest_abi::runtime_hook::ON_CREDENTIAL_EXPIRING;
+            request.credential = Some(credential_event_to_v1(event));
+        }
+        PackageHookEvent::MailboxBackpressure(event) => {
+            request.hook = guest_abi::runtime_hook::ON_MAILBOX_BACKPRESSURE;
+            request.backpressure = Some(backpressure_event_to_v1(event));
+        }
+    }
+
     let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
 }

@@ -33,6 +33,7 @@
 use std::sync::Arc;
 
 use actr_framework::guest::dynclib_abi::InitPayloadV1;
+use actr_framework::{BackpressureEvent, CredentialEvent, PeerEvent};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     ActrError, ActrId, ActrType, DataStream, MetadataEntry, PayloadType, Realm, RpcEnvelope,
@@ -46,11 +47,14 @@ use super::component_bindings::actr::workload::host::Host as HostImports;
 use super::component_bindings::actr::workload::types::Host as TypesHost;
 use super::component_bindings::actr::workload::types::{
     self as wit_types, ActrError as WitActrError, ActrId as WitActrId, ActrType as WitActrType,
-    DataStream as WitDataStream, Dest as WitDest, PayloadType as WitPayloadType, Realm as WitRealm,
-    RpcEnvelope as WitRpcEnvelope,
+    BackpressureEvent as WitBackpressureEvent, CredentialEvent as WitCredentialEvent,
+    DataStream as WitDataStream, Dest as WitDest, PayloadType as WitPayloadType,
+    PeerEvent as WitPeerEvent, Realm as WitRealm, RpcEnvelope as WitRpcEnvelope,
 };
 use crate::wasm::error::{WasmError, WasmResult};
-use crate::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
+use crate::workload::{
+    HostAbiFn, HostOperation, HostOperationResult, InvocationContext, PackageHookEvent,
+};
 
 use actr_framework::guest::dynclib_abi as guest_abi;
 use actr_framework::guest::dynclib_abi::{
@@ -463,6 +467,36 @@ fn proto_data_stream_to_wit(chunk: DataStream) -> WitDataStream {
     }
 }
 
+fn proto_peer_event_to_wit(event: PeerEvent) -> WitPeerEvent {
+    WitPeerEvent {
+        peer: proto_actr_id_to_wit(&event.peer),
+        relayed: event.relayed,
+    }
+}
+
+fn system_time_to_wit(time: std::time::SystemTime) -> wit_types::Timestamp {
+    let duration = time
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    wit_types::Timestamp {
+        seconds: duration.as_secs(),
+        nanoseconds: duration.subsec_nanos(),
+    }
+}
+
+fn proto_credential_event_to_wit(event: CredentialEvent) -> WitCredentialEvent {
+    WitCredentialEvent {
+        new_expiry: system_time_to_wit(event.new_expiry),
+    }
+}
+
+fn proto_backpressure_event_to_wit(event: BackpressureEvent) -> WitBackpressureEvent {
+    WitBackpressureEvent {
+        queue_len: event.queue_len as u64,
+        threshold: event.threshold as u64,
+    }
+}
+
 fn wit_data_stream_to_proto(chunk: WitDataStream) -> DataStream {
     DataStream {
         stream_id: chunk.stream_id,
@@ -601,6 +635,19 @@ impl WasmWorkload {
         Ok(())
     }
 
+    fn install_invocation(&mut self, ctx: InvocationContext, host_abi: &HostAbiFn) {
+        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
+        let state = self.store.data_mut();
+        state.invocation = Some(ctx);
+        state.host_abi = Some(host_abi_clone);
+    }
+
+    fn clear_invocation(&mut self) {
+        let state = self.store.data_mut();
+        state.invocation = None;
+        state.host_abi = None;
+    }
+
     /// Invoke the workload's `on-start` lifecycle hook.
     ///
     /// Phase 1 exposes this as a distinct entry point so the host can
@@ -612,12 +659,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
-        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
-        {
-            let state = self.store.data_mut();
-            state.invocation = Some(ctx);
-            state.host_abi = Some(host_abi_clone);
-        }
+        self.install_invocation(ctx, host_abi);
 
         let result = self
             .bindings
@@ -625,11 +667,7 @@ impl WasmWorkload {
             .call_on_start(&mut self.store)
             .await;
 
-        {
-            let state = self.store.data_mut();
-            state.invocation = None;
-            state.host_abi = None;
-        }
+        self.clear_invocation();
 
         let result =
             result.map_err(|e| WasmError::ExecutionFailed(format!("on_start trap: {e}")))?;
@@ -642,12 +680,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
-        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
-        {
-            let state = self.store.data_mut();
-            state.invocation = Some(ctx);
-            state.host_abi = Some(host_abi_clone);
-        }
+        self.install_invocation(ctx, host_abi);
 
         let result = self
             .bindings
@@ -655,11 +688,7 @@ impl WasmWorkload {
             .call_on_ready(&mut self.store)
             .await;
 
-        {
-            let state = self.store.data_mut();
-            state.invocation = None;
-            state.host_abi = None;
-        }
+        self.clear_invocation();
 
         let result =
             result.map_err(|e| WasmError::ExecutionFailed(format!("on_ready trap: {e}")))?;
@@ -672,12 +701,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
-        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
-        {
-            let state = self.store.data_mut();
-            state.invocation = Some(ctx);
-            state.host_abi = Some(host_abi_clone);
-        }
+        self.install_invocation(ctx, host_abi);
 
         let result = self
             .bindings
@@ -685,15 +709,108 @@ impl WasmWorkload {
             .call_on_stop(&mut self.store)
             .await;
 
-        {
-            let state = self.store.data_mut();
-            state.invocation = None;
-            state.host_abi = None;
-        }
+        self.clear_invocation();
 
         let result =
             result.map_err(|e| WasmError::ExecutionFailed(format!("on_stop trap: {e}")))?;
         result.map_err(|e| WasmError::ExecutionFailed(format!("on_stop error: {:?}", e)))?;
+        Ok(())
+    }
+
+    pub(crate) async fn call_hook_event(
+        &mut self,
+        event: PackageHookEvent,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        let label = event.request_id();
+        self.install_invocation(ctx, host_abi);
+        let result = match event {
+            PackageHookEvent::SignalingConnecting => {
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_signaling_connecting(&mut self.store)
+                    .await
+            }
+            PackageHookEvent::SignalingConnected => {
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_signaling_connected(&mut self.store)
+                    .await
+            }
+            PackageHookEvent::SignalingDisconnected => {
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_signaling_disconnected(&mut self.store)
+                    .await
+            }
+            PackageHookEvent::WebSocketConnecting(event) => {
+                let event = proto_peer_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_websocket_connecting(&mut self.store, &event)
+                    .await
+            }
+            PackageHookEvent::WebSocketConnected(event) => {
+                let event = proto_peer_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_websocket_connected(&mut self.store, &event)
+                    .await
+            }
+            PackageHookEvent::WebSocketDisconnected(event) => {
+                let event = proto_peer_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_websocket_disconnected(&mut self.store, &event)
+                    .await
+            }
+            PackageHookEvent::WebRtcConnecting(event) => {
+                let event = proto_peer_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_webrtc_connecting(&mut self.store, &event)
+                    .await
+            }
+            PackageHookEvent::WebRtcConnected(event) => {
+                let event = proto_peer_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_webrtc_connected(&mut self.store, &event)
+                    .await
+            }
+            PackageHookEvent::WebRtcDisconnected(event) => {
+                let event = proto_peer_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_webrtc_disconnected(&mut self.store, &event)
+                    .await
+            }
+            PackageHookEvent::CredentialRenewed(event) => {
+                let event = proto_credential_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_credential_renewed(&mut self.store, event)
+                    .await
+            }
+            PackageHookEvent::CredentialExpiring(event) => {
+                let event = proto_credential_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_credential_expiring(&mut self.store, event)
+                    .await
+            }
+            PackageHookEvent::MailboxBackpressure(event) => {
+                let event = proto_backpressure_event_to_wit(event);
+                self.bindings
+                    .actr_workload_workload()
+                    .call_on_mailbox_backpressure(&mut self.store, event)
+                    .await
+            }
+        };
+        self.clear_invocation();
+
+        result.map_err(|e| WasmError::ExecutionFailed(format!("{label} trap: {e}")))?;
         Ok(())
     }
 
@@ -731,12 +848,7 @@ impl WasmWorkload {
         // dispatch boundary. A fresh clone is installed per dispatch
         // so the bridge is dropped when the dispatch completes or
         // traps.
-        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
-        {
-            let state = self.store.data_mut();
-            state.invocation = Some(ctx);
-            state.host_abi = Some(host_abi_clone);
-        }
+        self.install_invocation(ctx, host_abi);
 
         let wit_envelope = rpc_envelope_to_wit(&envelope);
         let dispatch_result = self
@@ -749,11 +861,7 @@ impl WasmWorkload {
         // poisons the Store (wasmtime drops further use anyway) but
         // clearing keeps the state machine observable even when the
         // caller decides to retain the store for a next dispatch.
-        {
-            let state = self.store.data_mut();
-            state.invocation = None;
-            state.host_abi = None;
-        }
+        self.clear_invocation();
 
         match dispatch_result {
             Ok(Ok(bytes)) => Ok(bytes),
@@ -774,12 +882,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
-        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
-        {
-            let state = self.store.data_mut();
-            state.invocation = Some(ctx);
-            state.host_abi = Some(host_abi_clone);
-        }
+        self.install_invocation(ctx, host_abi);
 
         let wit_chunk = proto_data_stream_to_wit(chunk);
         let wit_sender = proto_actr_id_to_wit(&sender);
@@ -788,11 +891,7 @@ impl WasmWorkload {
             .actr_workload_workload()
             .call_on_data_stream(&mut self.store, &wit_chunk, &wit_sender)
             .await;
-        {
-            let state = self.store.data_mut();
-            state.invocation = None;
-            state.host_abi = None;
-        }
+        self.clear_invocation();
         let result =
             result.map_err(|e| WasmError::ExecutionFailed(format!("on_data_stream trap: {e}")))?;
         result.map_err(|e| {

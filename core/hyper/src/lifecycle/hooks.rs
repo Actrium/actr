@@ -5,7 +5,7 @@
 //! methods), so `Arc<dyn Workload>` is not representable. The node still
 //! needs a way to dispatch observation events (signaling / transport /
 //! credential / mailbox) into whatever workload the shell is hosting
-//! *without* holding the dispatch Mutex.
+//! through a single object-safe callback surface.
 //!
 //! This module bridges the gap by defining [`WorkloadHookObserver`] — an
 //! object-safe counterpart of the framework's observation hooks — that can
@@ -174,35 +174,33 @@ pub(crate) fn build_hook_callback(
             // Always log the framework tracing default for the event.
             log_hook_event(&event);
 
-            // If an observer is installed, forward with panic isolation.
-            let Some(observer) = observer else {
-                return;
-            };
-
             let ctx_opt = ctx_builder().await;
 
             match event {
                 HookEvent::SignalingConnectStart { .. } => {
                     let label = "on_signaling_connecting";
-                    let observer = observer.clone();
-                    spawn_hook(label, async move {
-                        observer.on_signaling_connecting(ctx_opt.as_ref()).await;
-                    });
+                    if let Some(observer) = observer.clone() {
+                        spawn_hook(label, async move {
+                            observer.on_signaling_connecting(ctx_opt.as_ref()).await;
+                        });
+                    }
                 }
                 HookEvent::SignalingConnected => {
                     let label = "on_signaling_connected";
-                    let observer = observer.clone();
-                    spawn_hook(label, async move {
-                        observer.on_signaling_connected(ctx_opt.as_ref()).await;
-                    });
+                    if let Some(observer) = observer.clone() {
+                        spawn_hook(label, async move {
+                            observer.on_signaling_connected(ctx_opt.as_ref()).await;
+                        });
+                    }
                 }
                 HookEvent::SignalingDisconnected => {
                     let label = "on_signaling_disconnected";
                     if let Some(ctx) = ctx_opt {
-                        let observer = observer.clone();
-                        spawn_hook(label, async move {
-                            observer.on_signaling_disconnected(&ctx).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook(label, async move {
+                                observer.on_signaling_disconnected(&ctx).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::WebRtcConnectStart { peer_id } => {
@@ -211,9 +209,11 @@ pub(crate) fn build_hook_callback(
                             peer: peer_id,
                             relayed: None,
                         };
-                        spawn_hook("on_webrtc_connecting", async move {
-                            observer.on_webrtc_connecting(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_webrtc_connecting", async move {
+                                observer.on_webrtc_connecting(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::WebRtcConnected { peer_id, relayed } => {
@@ -222,9 +222,11 @@ pub(crate) fn build_hook_callback(
                             peer: peer_id,
                             relayed: Some(relayed),
                         };
-                        spawn_hook("on_webrtc_connected", async move {
-                            observer.on_webrtc_connected(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_webrtc_connected", async move {
+                                observer.on_webrtc_connected(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::WebRtcDisconnected { peer_id } => {
@@ -233,9 +235,11 @@ pub(crate) fn build_hook_callback(
                             peer: peer_id,
                             relayed: None,
                         };
-                        spawn_hook("on_webrtc_disconnected", async move {
-                            observer.on_webrtc_disconnected(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_webrtc_disconnected", async move {
+                                observer.on_webrtc_disconnected(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::DataStreamDeliveryUncertain {
@@ -254,11 +258,13 @@ pub(crate) fn build_hook_callback(
                                 "stream_id={stream_id}; session_id={session_id}; reason={reason}"
                             ),
                         );
-                        spawn_hook("on_error", async move {
-                            if let Err(e) = observer.on_error(&ctx, &event).await {
-                                tracing::warn!(error = %e, "workload on_error returned Err");
-                            }
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_error", async move {
+                                if let Err(e) = observer.on_error(&ctx, &event).await {
+                                    tracing::warn!(error = %e, "workload on_error returned Err");
+                                }
+                            });
+                        }
                     }
                 }
                 HookEvent::WebSocketConnectStart { peer_id } => {
@@ -267,9 +273,11 @@ pub(crate) fn build_hook_callback(
                             peer: peer_id,
                             relayed: None,
                         };
-                        spawn_hook("on_websocket_connecting", async move {
-                            observer.on_websocket_connecting(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_websocket_connecting", async move {
+                                observer.on_websocket_connecting(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::WebSocketConnected { peer_id } => {
@@ -278,9 +286,11 @@ pub(crate) fn build_hook_callback(
                             peer: peer_id,
                             relayed: None,
                         };
-                        spawn_hook("on_websocket_connected", async move {
-                            observer.on_websocket_connected(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_websocket_connected", async move {
+                                observer.on_websocket_connected(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::WebSocketDisconnected { peer_id } => {
@@ -289,25 +299,31 @@ pub(crate) fn build_hook_callback(
                             peer: peer_id,
                             relayed: None,
                         };
-                        spawn_hook("on_websocket_disconnected", async move {
-                            observer.on_websocket_disconnected(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_websocket_disconnected", async move {
+                                observer.on_websocket_disconnected(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::CredentialRenewed { new_expiry } => {
                     if let Some(ctx) = ctx_opt {
                         let event = CredentialEvent { new_expiry };
-                        spawn_hook("on_credential_renewed", async move {
-                            observer.on_credential_renewed(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_credential_renewed", async move {
+                                observer.on_credential_renewed(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::CredentialExpiring { new_expiry } => {
                     if let Some(ctx) = ctx_opt {
                         let event = CredentialEvent { new_expiry };
-                        spawn_hook("on_credential_expiring", async move {
-                            observer.on_credential_expiring(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_credential_expiring", async move {
+                                observer.on_credential_expiring(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
                 HookEvent::MailboxBackpressure {
@@ -319,9 +335,11 @@ pub(crate) fn build_hook_callback(
                             queue_len,
                             threshold,
                         };
-                        spawn_hook("on_mailbox_backpressure", async move {
-                            observer.on_mailbox_backpressure(&ctx, &event).await;
-                        });
+                        if let Some(observer) = observer.clone() {
+                            spawn_hook("on_mailbox_backpressure", async move {
+                                observer.on_mailbox_backpressure(&ctx, &event).await;
+                            });
+                        }
                     }
                 }
             }

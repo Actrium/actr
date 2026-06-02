@@ -12,6 +12,8 @@ use crate::{HostAbiFn, InvocationContext};
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
 use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_pack::PackageManifest;
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+use actr_protocol::ActrId;
 
 #[path = "../../tests/common/harness.rs"]
 pub mod harness;
@@ -34,6 +36,97 @@ pub use crate::transport::lane::{
     WebRtcFragmentSendEvent, WebRtcFragmentSendHook, WebRtcFragmentSendHookGuard,
     install_webrtc_fragment_send_hook_for_test,
 };
+
+/// Assert whether an attached node has the runtime hook observer installed.
+///
+/// Package attach uses this observer to bridge observation hooks into Wasm /
+/// DynClib guests; linked attach installs its own linked observer.
+pub fn attached_node_has_hook_observer(node: &crate::Node<crate::Attached>) -> bool {
+    node.attachment
+        .as_ref()
+        .expect("Node<Attached> without attachment")
+        .node
+        .hook_observer
+        .is_some()
+}
+
+/// Public test-facing mirror of package observation hook events.
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+#[derive(Debug, Clone)]
+pub enum TestPackageHookEvent {
+    SignalingConnecting,
+    SignalingConnected,
+    SignalingDisconnected,
+    WebSocketConnecting { peer: ActrId },
+    WebSocketConnected { peer: ActrId },
+    WebSocketDisconnected { peer: ActrId },
+    WebRtcConnecting { peer: ActrId },
+    WebRtcConnected { peer: ActrId, relayed: bool },
+    WebRtcDisconnected { peer: ActrId },
+    CredentialRenewed { new_expiry: std::time::SystemTime },
+    CredentialExpiring { new_expiry: std::time::SystemTime },
+    MailboxBackpressure { queue_len: usize, threshold: usize },
+}
+
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+impl From<TestPackageHookEvent> for crate::workload::PackageHookEvent {
+    fn from(event: TestPackageHookEvent) -> Self {
+        match event {
+            TestPackageHookEvent::SignalingConnecting => Self::SignalingConnecting,
+            TestPackageHookEvent::SignalingConnected => Self::SignalingConnected,
+            TestPackageHookEvent::SignalingDisconnected => Self::SignalingDisconnected,
+            TestPackageHookEvent::WebSocketConnecting { peer } => {
+                Self::WebSocketConnecting(actr_framework::PeerEvent {
+                    peer,
+                    relayed: None,
+                })
+            }
+            TestPackageHookEvent::WebSocketConnected { peer } => {
+                Self::WebSocketConnected(actr_framework::PeerEvent {
+                    peer,
+                    relayed: None,
+                })
+            }
+            TestPackageHookEvent::WebSocketDisconnected { peer } => {
+                Self::WebSocketDisconnected(actr_framework::PeerEvent {
+                    peer,
+                    relayed: None,
+                })
+            }
+            TestPackageHookEvent::WebRtcConnecting { peer } => {
+                Self::WebRtcConnecting(actr_framework::PeerEvent {
+                    peer,
+                    relayed: None,
+                })
+            }
+            TestPackageHookEvent::WebRtcConnected { peer, relayed } => {
+                Self::WebRtcConnected(actr_framework::PeerEvent {
+                    peer,
+                    relayed: Some(relayed),
+                })
+            }
+            TestPackageHookEvent::WebRtcDisconnected { peer } => {
+                Self::WebRtcDisconnected(actr_framework::PeerEvent {
+                    peer,
+                    relayed: None,
+                })
+            }
+            TestPackageHookEvent::CredentialRenewed { new_expiry } => {
+                Self::CredentialRenewed(actr_framework::CredentialEvent { new_expiry })
+            }
+            TestPackageHookEvent::CredentialExpiring { new_expiry } => {
+                Self::CredentialExpiring(actr_framework::CredentialEvent { new_expiry })
+            }
+            TestPackageHookEvent::MailboxBackpressure {
+                queue_len,
+                threshold,
+            } => Self::MailboxBackpressure(actr_framework::BackpressureEvent {
+                queue_len,
+                threshold,
+            }),
+        }
+    }
+}
 
 /// Test-only summary of package loading results.
 ///
@@ -88,6 +181,17 @@ impl TestWasmWorkload {
         self.inner.call_on_start(ctx, &host_abi).await
     }
 
+    pub async fn call_hook_event(
+        &mut self,
+        event: TestPackageHookEvent,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> Result<(), crate::wasm::WasmError> {
+        self.inner
+            .call_hook_event(event.into(), ctx, host_abi)
+            .await
+    }
+
     pub async fn handle(
         &mut self,
         request_bytes: &[u8],
@@ -125,6 +229,17 @@ impl TestDynclibWorkload {
         call_executor: &HostAbiFn,
     ) -> Result<Vec<u8>, crate::dynclib::DynclibError> {
         self.inner.handle(request_bytes, ctx, call_executor).await
+    }
+
+    pub async fn call_hook_event(
+        &mut self,
+        event: TestPackageHookEvent,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> Result<(), crate::dynclib::DynclibError> {
+        self.inner
+            .call_hook_event(event.into(), ctx, call_executor)
+            .await
     }
 }
 

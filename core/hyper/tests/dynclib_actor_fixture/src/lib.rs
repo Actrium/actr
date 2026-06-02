@@ -10,6 +10,12 @@ use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
 
+async fn record_hook<C: Context>(ctx: &C, name: &'static str) {
+    let _ = ctx
+        .call_raw(ctx.self_id(), "test/record_hook", Bytes::from_static(name.as_bytes()))
+        .await;
+}
+
 #[derive(Default)]
 pub struct DoubleActor;
 
@@ -48,6 +54,10 @@ impl MessageDispatcher for DoubleDispatcher {
                 let payload = envelope.payload.unwrap_or_default();
                 Ok(Bytes::from(payload))
             }
+            "test/record_hook" => {
+                let payload = envelope.payload.unwrap_or_default();
+                Ok(Bytes::from(payload))
+            }
             _ => Err(ActrError::UnknownRoute(envelope.route_key)),
         }
     }
@@ -64,6 +74,90 @@ impl Workload for DoubleActor {
             ));
         }
         Ok(())
+    }
+
+    async fn on_signaling_connecting<C: Context>(&self, ctx: Option<&C>) {
+        if let Some(ctx) = ctx {
+            record_hook(ctx, "on_signaling_connecting").await;
+        }
+    }
+
+    async fn on_signaling_connected<C: Context>(&self, ctx: Option<&C>) {
+        if let Some(ctx) = ctx {
+            record_hook(ctx, "on_signaling_connected").await;
+        }
+    }
+
+    async fn on_signaling_disconnected<C: Context>(&self, ctx: &C) {
+        record_hook(ctx, "on_signaling_disconnected").await;
+    }
+
+    async fn on_websocket_connecting<C: Context>(
+        &self,
+        ctx: &C,
+        _event: &actr_framework::PeerEvent,
+    ) {
+        record_hook(ctx, "on_websocket_connecting").await;
+    }
+
+    async fn on_websocket_connected<C: Context>(
+        &self,
+        ctx: &C,
+        _event: &actr_framework::PeerEvent,
+    ) {
+        record_hook(ctx, "on_websocket_connected").await;
+    }
+
+    async fn on_websocket_disconnected<C: Context>(
+        &self,
+        ctx: &C,
+        _event: &actr_framework::PeerEvent,
+    ) {
+        record_hook(ctx, "on_websocket_disconnected").await;
+    }
+
+    async fn on_webrtc_connecting<C: Context>(
+        &self,
+        ctx: &C,
+        _event: &actr_framework::PeerEvent,
+    ) {
+        record_hook(ctx, "on_webrtc_connecting").await;
+    }
+
+    async fn on_webrtc_connected<C: Context>(&self, ctx: &C, _event: &actr_framework::PeerEvent) {
+        record_hook(ctx, "on_webrtc_connected").await;
+    }
+
+    async fn on_webrtc_disconnected<C: Context>(
+        &self,
+        ctx: &C,
+        _event: &actr_framework::PeerEvent,
+    ) {
+        record_hook(ctx, "on_webrtc_disconnected").await;
+    }
+
+    async fn on_credential_renewed<C: Context>(
+        &self,
+        ctx: &C,
+        _event: &actr_framework::CredentialEvent,
+    ) {
+        record_hook(ctx, "on_credential_renewed").await;
+    }
+
+    async fn on_credential_expiring<C: Context>(
+        &self,
+        ctx: &C,
+        _event: &actr_framework::CredentialEvent,
+    ) {
+        record_hook(ctx, "on_credential_expiring").await;
+    }
+
+    async fn on_mailbox_backpressure<C: Context>(
+        &self,
+        ctx: &C,
+        _event: &actr_framework::BackpressureEvent,
+    ) {
+        record_hook(ctx, "on_mailbox_backpressure").await;
     }
 }
 

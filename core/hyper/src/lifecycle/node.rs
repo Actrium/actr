@@ -431,7 +431,7 @@ fn lifecycle_invocation(
     }
 }
 
-fn lifecycle_host_abi(
+pub(crate) fn lifecycle_host_abi(
     ctx: crate::context::RuntimeContext,
     workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
 ) -> crate::workload::HostAbiFn {

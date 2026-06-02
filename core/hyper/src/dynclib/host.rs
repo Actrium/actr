@@ -49,8 +49,9 @@ use actr_framework::guest::vtable::HostVTable;
 use actr_protocol::{ActrId, DataStream};
 
 use crate::workload::{
-    HostAbiFn, HostOperation, HostOperationResult, InvocationContext,
-    encode_guest_data_stream_request, encode_guest_handle_request, encode_guest_lifecycle_request,
+    HostAbiFn, HostOperation, HostOperationResult, InvocationContext, PackageHookEvent,
+    encode_guest_data_stream_request, encode_guest_handle_request, encode_guest_hook_request,
+    encode_guest_lifecycle_request,
 };
 
 use super::error::{DynclibError, DynclibResult};
@@ -573,6 +574,20 @@ impl DynclibInstance {
             .await
             .map(|_| ())
     }
+
+    pub(crate) async fn handle_hook_event(
+        &mut self,
+        event: PackageHookEvent,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<()> {
+        let request_owned = encode_guest_hook_request(event, ctx).map_err(|code| {
+            DynclibError::DispatchFailed(format!("guest hook frame serialization failed: {code}"))
+        })?;
+        self.handle_encoded_request(request_owned, call_executor)
+            .await
+            .map(|_| ())
+    }
 }
 
 impl DynClibWorkload {
@@ -625,6 +640,17 @@ impl DynClibWorkload {
     ) -> DynclibResult<()> {
         self.instance
             .handle_lifecycle(guest_abi::lifecycle_hook::ON_STOP, ctx, call_executor)
+            .await
+    }
+
+    pub(crate) async fn call_hook_event(
+        &mut self,
+        event: PackageHookEvent,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<()> {
+        self.instance
+            .handle_hook_event(event, ctx, call_executor)
             .await
     }
 }
