@@ -25,7 +25,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use actr_framework::{BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent};
-use actr_protocol::ActrError;
+use actr_protocol::{ActorResult, ActrError};
 use async_trait::async_trait;
 use futures_util::FutureExt as _;
 
@@ -47,13 +47,20 @@ use crate::wire::webrtc::{HookCallback, HookEvent};
 #[async_trait]
 #[allow(dead_code)]
 pub(crate) trait WorkloadHookObserver: Send + Sync + 'static {
-    // Lifecycle (fallible — but in hook path we always swallow Err after
-    // logging since the trait-object boundary erases the error semantics
-    // the user-facing framework `Workload` trait offers).
-    async fn on_start(&self, _ctx: &RuntimeContext) {}
-    async fn on_ready(&self, _ctx: &RuntimeContext) {}
-    async fn on_stop(&self, _ctx: &RuntimeContext) {}
-    async fn on_error(&self, _ctx: &RuntimeContext, _event: &ErrorEvent) {}
+    // Lifecycle (fallible). Startup code awaits these hooks directly when
+    // their result participates in node lifecycle semantics.
+    async fn on_start(&self, _ctx: &RuntimeContext) -> ActorResult<()> {
+        Ok(())
+    }
+    async fn on_ready(&self, _ctx: &RuntimeContext) -> ActorResult<()> {
+        Ok(())
+    }
+    async fn on_stop(&self, _ctx: &RuntimeContext) -> ActorResult<()> {
+        Ok(())
+    }
+    async fn on_error(&self, _ctx: &RuntimeContext, _event: &ErrorEvent) -> ActorResult<()> {
+        Ok(())
+    }
 
     // Signaling
     async fn on_signaling_connecting(&self, _ctx: Option<&RuntimeContext>) {}
@@ -113,6 +120,24 @@ where
             }
         }
     });
+}
+
+/// Await a lifecycle hook with panic isolation and preserve fallible results.
+///
+/// Unlike [`spawn_hook`], this helper runs inline so startup/shutdown code can
+/// decide whether a lifecycle hook failure should abort or only be logged.
+#[allow(dead_code)]
+pub(crate) async fn call_lifecycle_hook<F>(label: &'static str, fut: F) -> ActorResult<()>
+where
+    F: Future<Output = ActorResult<()>>,
+{
+    match AssertUnwindSafe(fut).catch_unwind().await {
+        Ok(result) => result,
+        Err(panic_payload) => {
+            let info = extract_panic_info(panic_payload);
+            Err(ActrError::Internal(format!("{label} panicked: {info}")))
+        }
+    }
 }
 
 fn extract_panic_info(payload: Box<dyn std::any::Any + Send>) -> String {
@@ -230,7 +255,9 @@ pub(crate) fn build_hook_callback(
                             ),
                         );
                         spawn_hook("on_error", async move {
-                            observer.on_error(&ctx, &event).await;
+                            if let Err(e) = observer.on_error(&ctx, &event).await {
+                                tracing::warn!(error = %e, "workload on_error returned Err");
+                            }
                         });
                     }
                 }
@@ -395,6 +422,41 @@ mod tests {
             .expect("sender dropped");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn call_lifecycle_hook_propagates_error() {
+        let err = call_lifecycle_hook("on_start", async {
+            Err(ActrError::Internal("startup failed".to_string()))
+        })
+        .await
+        .expect_err("lifecycle error must propagate");
+
+        match err {
+            ActrError::Internal(msg) => {
+                assert!(msg.contains("startup failed"), "unexpected message: {msg}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn call_lifecycle_hook_converts_panic_to_error() {
+        let err = call_lifecycle_hook("on_start", async {
+            panic!("startup panic");
+        })
+        .await
+        .expect_err("panic must become lifecycle error");
+
+        match err {
+            ActrError::Internal(msg) => {
+                assert!(
+                    msg.contains("on_start panicked: startup panic"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
     fn test_actr_id(serial_number: u64) -> ActrId {
         ActrId {
             realm: Realm { realm_id: 1 },
@@ -448,8 +510,9 @@ mod tests {
 
     #[async_trait::async_trait]
     impl WorkloadHookObserver for ErrorRecorder {
-        async fn on_error(&self, _ctx: &RuntimeContext, event: &ErrorEvent) {
+        async fn on_error(&self, _ctx: &RuntimeContext, event: &ErrorEvent) -> ActorResult<()> {
             let _ = self.tx.send(event.clone());
+            Ok(())
         }
     }
 

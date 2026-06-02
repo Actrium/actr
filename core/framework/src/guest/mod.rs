@@ -426,6 +426,99 @@ macro_rules! entry {
                     Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                 };
 
+                if frame.op == $crate::guest::dynclib_abi::op::GUEST_LIFECYCLE {
+                    let payload = match <$crate::guest::dynclib_abi::GuestLifecycleV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
+                        Ok(payload) => payload,
+                        Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
+                    };
+
+                    let ctx = match unsafe {
+                        $crate::guest::dynclib::context::DynclibContext::from_invocation(vtable, payload.ctx)
+                    } {
+                        Ok(c) => c,
+                        Err(_) => return $crate::guest::dynclib_abi::code::HANDLE_FAILED,
+                    };
+
+                    let workload = unsafe {
+                        match __ACTR_WORKLOAD.as_ref() {
+                            Some(w) => w,
+                            None => return $crate::guest::dynclib_abi::code::INIT_FAILED,
+                        }
+                    };
+
+                    let lifecycle_result = match payload.hook {
+                        $crate::guest::dynclib_abi::lifecycle_hook::ON_START => {
+                            let fut = workload.on_start(&ctx);
+                            let waker = std::task::Waker::noop();
+                            let mut cx = std::task::Context::from_waker(waker);
+                            let mut pinned = std::pin::pin!(fut);
+                            match pinned.as_mut().poll(&mut cx) {
+                                std::task::Poll::Ready(v) => v,
+                                std::task::Poll::Pending => {
+                                    return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
+                                }
+                            }
+                        }
+                        $crate::guest::dynclib_abi::lifecycle_hook::ON_READY => {
+                            let fut = workload.on_ready(&ctx);
+                            let waker = std::task::Waker::noop();
+                            let mut cx = std::task::Context::from_waker(waker);
+                            let mut pinned = std::pin::pin!(fut);
+                            match pinned.as_mut().poll(&mut cx) {
+                                std::task::Poll::Ready(v) => v,
+                                std::task::Poll::Pending => {
+                                    return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
+                                }
+                            }
+                        }
+                        $crate::guest::dynclib_abi::lifecycle_hook::ON_STOP => {
+                            let fut = workload.on_stop(&ctx);
+                            let waker = std::task::Waker::noop();
+                            let mut cx = std::task::Context::from_waker(waker);
+                            let mut pinned = std::pin::pin!(fut);
+                            match pinned.as_mut().poll(&mut cx) {
+                                std::task::Poll::Ready(v) => v,
+                                std::task::Poll::Pending => {
+                                    return $crate::guest::dynclib_abi::code::HANDLE_FAILED;
+                                }
+                            }
+                        }
+                        _ => return $crate::guest::dynclib_abi::code::UNSUPPORTED_OP,
+                    };
+
+                    let resp_bytes = match lifecycle_result {
+                        Ok(()) => match $crate::guest::dynclib_abi::success_reply(::std::vec::Vec::new()) {
+                            Ok(bytes) => bytes,
+                            Err(code) => return code,
+                        },
+                        Err(err) => match $crate::guest::dynclib_abi::error_reply(
+                            $crate::guest::dynclib_abi::code::HANDLE_FAILED,
+                            err.to_string().into_bytes(),
+                        ) {
+                            Ok(bytes) => bytes,
+                            Err(code) => return code,
+                        },
+                    };
+
+                    let resp_len = resp_bytes.len();
+                    let layout = match std::alloc::Layout::from_size_align(resp_len.max(1), 1) {
+                        Ok(l) => l,
+                        Err(_) => return $crate::guest::dynclib_abi::code::GENERIC_ERROR,
+                    };
+                    let ptr = unsafe { std::alloc::alloc(layout) };
+                    if ptr.is_null() {
+                        return $crate::guest::dynclib_abi::code::GENERIC_ERROR;
+                    }
+
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(resp_bytes.as_ptr(), ptr, resp_len);
+                        *resp_out = ptr;
+                        *resp_len_out = resp_len;
+                    }
+
+                    return $crate::guest::dynclib_abi::code::SUCCESS;
+                }
+
                 if frame.op == $crate::guest::dynclib_abi::op::GUEST_DATA_STREAM {
                     let payload = match <$crate::guest::dynclib_abi::GuestDataStreamV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
                         Ok(payload) => payload,

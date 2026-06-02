@@ -49,6 +49,14 @@ pub mod op {
     pub const HOST_SEND_DATA_STREAM: u32 = 7;
     pub const GUEST_HANDLE: u32 = 101;
     pub const GUEST_DATA_STREAM: u32 = 102;
+    pub const GUEST_LIFECYCLE: u32 = 103;
+}
+
+/// Lifecycle hook identifiers carried by [`GuestLifecycleV1`].
+pub mod lifecycle_hook {
+    pub const ON_START: u32 = 1;
+    pub const ON_READY: u32 = 2;
+    pub const ON_STOP: u32 = 3;
 }
 
 /// Dedicated payload used by `actr_init`.
@@ -125,6 +133,15 @@ pub struct GuestDataStreamV1 {
     pub chunk: DataStream,
     #[prost(message, required, tag = "2")]
     pub sender: ActrId,
+}
+
+/// Runtime host->guest lifecycle hook payload.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct GuestLifecycleV1 {
+    #[prost(message, required, tag = "1")]
+    pub ctx: InvocationContextV1,
+    #[prost(uint32, tag = "2")]
+    pub hook: u32,
 }
 
 /// ABI-level destination encoding (replaces hand-rolled 0x00/0x01/0x02 byte protocol).
@@ -310,6 +327,11 @@ impl AbiPayload for GuestHandleV1 {
 impl AbiPayload for GuestDataStreamV1 {
     const ABI_VERSION: u32 = version::V1;
     const OP: u32 = op::GUEST_DATA_STREAM;
+}
+
+impl AbiPayload for GuestLifecycleV1 {
+    const ABI_VERSION: u32 = version::V1;
+    const OP: u32 = op::GUEST_LIFECYCLE;
 }
 
 /// Encode a protobuf message into bytes.

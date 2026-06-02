@@ -50,7 +50,7 @@ use actr_protocol::{ActrId, DataStream};
 
 use crate::workload::{
     HostAbiFn, HostOperation, HostOperationResult, InvocationContext,
-    encode_guest_data_stream_request, encode_guest_handle_request,
+    encode_guest_data_stream_request, encode_guest_handle_request, encode_guest_lifecycle_request,
 };
 
 use super::error::{DynclibError, DynclibResult};
@@ -557,6 +557,22 @@ impl DynclibInstance {
             .await
             .map(|_| ())
     }
+
+    pub(crate) async fn handle_lifecycle(
+        &mut self,
+        hook: u32,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<()> {
+        let request_owned = encode_guest_lifecycle_request(hook, ctx).map_err(|code| {
+            DynclibError::DispatchFailed(format!(
+                "guest lifecycle frame serialization failed: {code}"
+            ))
+        })?;
+        self.handle_encoded_request(request_owned, call_executor)
+            .await
+            .map(|_| ())
+    }
 }
 
 impl DynClibWorkload {
@@ -579,6 +595,36 @@ impl DynClibWorkload {
     ) -> DynclibResult<()> {
         self.instance
             .handle_data_stream(chunk, sender, call_executor)
+            .await
+    }
+
+    pub(crate) async fn call_on_start(
+        &mut self,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<()> {
+        self.instance
+            .handle_lifecycle(guest_abi::lifecycle_hook::ON_START, ctx, call_executor)
+            .await
+    }
+
+    pub(crate) async fn call_on_ready(
+        &mut self,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<()> {
+        self.instance
+            .handle_lifecycle(guest_abi::lifecycle_hook::ON_READY, ctx, call_executor)
+            .await
+    }
+
+    pub(crate) async fn call_on_stop(
+        &mut self,
+        ctx: InvocationContext,
+        call_executor: &HostAbiFn,
+    ) -> DynclibResult<()> {
+        self.instance
+            .handle_lifecycle(guest_abi::lifecycle_hook::ON_STOP, ctx, call_executor)
             .await
     }
 }

@@ -6,7 +6,7 @@
 
 use crate::{BinaryKind, Hyper, WorkloadPackage};
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
-use crate::{HostAbiFn, InvocationContext};
+use crate::{HostAbiFn, HostOperationResult, InvocationContext};
 #[cfg(feature = "dynclib-engine")]
 use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_pack::PackageManifest;
@@ -76,7 +76,14 @@ impl TestWasmWorkload {
     }
 
     pub async fn call_on_start(&mut self) -> Result<(), crate::wasm::WasmError> {
-        self.inner.call_on_start().await
+        let ctx = InvocationContext {
+            self_id: actr_protocol::ActrId::default(),
+            caller_id: None,
+            request_id: "test:on_start".to_string(),
+        };
+        let host_abi: HostAbiFn =
+            std::sync::Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
+        self.inner.call_on_start(ctx, &host_abi).await
     }
 
     pub async fn handle(

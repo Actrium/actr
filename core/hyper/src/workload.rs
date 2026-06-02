@@ -7,7 +7,7 @@ use actr_framework::guest::dynclib_abi::{
     self as guest_abi, HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1,
     HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1,
 };
-#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+#[cfg(feature = "dynclib-engine")]
 use actr_framework::guest::dynclib_abi::{AbiPayload, GuestHandleV1};
 use actr_framework::{
     BackpressureEvent, CredentialEvent, ErrorEvent, MessageDispatcher, PeerEvent,
@@ -85,11 +85,20 @@ pub type HostAbiFn = Arc<
 #[async_trait]
 #[allow(dead_code)]
 pub(crate) trait LinkedWorkloadHandle: Send + Sync + 'static {
-    // Lifecycle (fallible — hook-path errors are logged & swallowed)
-    async fn on_start(&self, _ctx: &RuntimeContext) {}
-    async fn on_ready(&self, _ctx: &RuntimeContext) {}
-    async fn on_stop(&self, _ctx: &RuntimeContext) {}
-    async fn on_error(&self, _ctx: &RuntimeContext, _event: &ErrorEvent) {}
+    // Lifecycle (fallible). The node decides at each lifecycle phase whether
+    // an error aborts startup or is logged as best-effort observation.
+    async fn on_start(&self, _ctx: &RuntimeContext) -> ActorResult<()> {
+        Ok(())
+    }
+    async fn on_ready(&self, _ctx: &RuntimeContext) -> ActorResult<()> {
+        Ok(())
+    }
+    async fn on_stop(&self, _ctx: &RuntimeContext) -> ActorResult<()> {
+        Ok(())
+    }
+    async fn on_error(&self, _ctx: &RuntimeContext, _event: &ErrorEvent) -> ActorResult<()> {
+        Ok(())
+    }
 
     // Signaling
     async fn on_signaling_connecting(&self, _ctx: Option<&RuntimeContext>) {}
@@ -178,25 +187,17 @@ impl<W: FrameworkWorkload> WorkloadAdapter<W> {
 #[async_trait]
 impl<W: FrameworkWorkload> LinkedWorkloadHandle for WorkloadAdapter<W> {
     // ── Lifecycle ────────────────────────────────────────────────────────
-    async fn on_start(&self, ctx: &RuntimeContext) {
-        if let Err(e) = self.inner.on_start(ctx).await {
-            tracing::warn!(error = %e, "linked workload on_start returned Err");
-        }
+    async fn on_start(&self, ctx: &RuntimeContext) -> ActorResult<()> {
+        self.inner.on_start(ctx).await
     }
-    async fn on_ready(&self, ctx: &RuntimeContext) {
-        if let Err(e) = self.inner.on_ready(ctx).await {
-            tracing::warn!(error = %e, "linked workload on_ready returned Err");
-        }
+    async fn on_ready(&self, ctx: &RuntimeContext) -> ActorResult<()> {
+        self.inner.on_ready(ctx).await
     }
-    async fn on_stop(&self, ctx: &RuntimeContext) {
-        if let Err(e) = self.inner.on_stop(ctx).await {
-            tracing::warn!(error = %e, "linked workload on_stop returned Err");
-        }
+    async fn on_stop(&self, ctx: &RuntimeContext) -> ActorResult<()> {
+        self.inner.on_stop(ctx).await
     }
-    async fn on_error(&self, ctx: &RuntimeContext, event: &ErrorEvent) {
-        if let Err(e) = self.inner.on_error(ctx, event).await {
-            tracing::warn!(error = %e, "linked workload on_error returned Err");
-        }
+    async fn on_error(&self, ctx: &RuntimeContext, event: &ErrorEvent) -> ActorResult<()> {
+        self.inner.on_error(ctx, event).await
     }
 
     // ── Signaling ────────────────────────────────────────────────────────
@@ -265,16 +266,16 @@ pub(crate) struct LinkedHandleObserver {
 
 #[async_trait]
 impl crate::lifecycle::hooks::WorkloadHookObserver for LinkedHandleObserver {
-    async fn on_start(&self, ctx: &RuntimeContext) {
+    async fn on_start(&self, ctx: &RuntimeContext) -> ActorResult<()> {
         self.handle.on_start(ctx).await
     }
-    async fn on_ready(&self, ctx: &RuntimeContext) {
+    async fn on_ready(&self, ctx: &RuntimeContext) -> ActorResult<()> {
         self.handle.on_ready(ctx).await
     }
-    async fn on_stop(&self, ctx: &RuntimeContext) {
+    async fn on_stop(&self, ctx: &RuntimeContext) -> ActorResult<()> {
         self.handle.on_stop(ctx).await
     }
-    async fn on_error(&self, ctx: &RuntimeContext, event: &ErrorEvent) {
+    async fn on_error(&self, ctx: &RuntimeContext, event: &ErrorEvent) -> ActorResult<()> {
         self.handle.on_error(ctx, event).await
     }
     async fn on_signaling_connecting(&self, ctx: Option<&RuntimeContext>) {
@@ -349,6 +350,81 @@ impl std::fmt::Debug for Workload {
 }
 
 impl Workload {
+    /// Invoke the workload's `on_start` lifecycle hook.
+    pub(crate) fn on_start<'a>(
+        &'a mut self,
+        ctx: RuntimeContext,
+        invocation: InvocationContext,
+        host_abi: &'a HostAbiFn,
+    ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let _ = (&invocation, host_abi);
+            match self {
+                Workload::Linked(handle) => handle.on_start(&ctx).await,
+                #[cfg(feature = "wasm-engine")]
+                Workload::Wasm(workload) => workload
+                    .call_on_start(invocation, host_abi)
+                    .await
+                    .map_err(|e| ActrError::Internal(format!("workload on_start failed: {e}"))),
+                #[cfg(feature = "dynclib-engine")]
+                Workload::DynClib(workload) => workload
+                    .call_on_start(invocation, host_abi)
+                    .await
+                    .map_err(|e| ActrError::Internal(format!("workload on_start failed: {e}"))),
+            }
+        })
+    }
+
+    /// Invoke the workload's `on_ready` lifecycle hook.
+    pub(crate) fn on_ready<'a>(
+        &'a mut self,
+        ctx: RuntimeContext,
+        invocation: InvocationContext,
+        host_abi: &'a HostAbiFn,
+    ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let _ = (&invocation, host_abi);
+            match self {
+                Workload::Linked(handle) => handle.on_ready(&ctx).await,
+                #[cfg(feature = "wasm-engine")]
+                Workload::Wasm(workload) => workload
+                    .call_on_ready(invocation, host_abi)
+                    .await
+                    .map_err(|e| ActrError::Internal(format!("workload on_ready failed: {e}"))),
+                #[cfg(feature = "dynclib-engine")]
+                Workload::DynClib(workload) => workload
+                    .call_on_ready(invocation, host_abi)
+                    .await
+                    .map_err(|e| ActrError::Internal(format!("workload on_ready failed: {e}"))),
+            }
+        })
+    }
+
+    /// Invoke the workload's `on_stop` lifecycle hook.
+    pub(crate) fn on_stop<'a>(
+        &'a mut self,
+        ctx: RuntimeContext,
+        invocation: InvocationContext,
+        host_abi: &'a HostAbiFn,
+    ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let _ = (&invocation, host_abi);
+            match self {
+                Workload::Linked(handle) => handle.on_stop(&ctx).await,
+                #[cfg(feature = "wasm-engine")]
+                Workload::Wasm(workload) => workload
+                    .call_on_stop(invocation, host_abi)
+                    .await
+                    .map_err(|e| ActrError::Internal(format!("workload on_stop failed: {e}"))),
+                #[cfg(feature = "dynclib-engine")]
+                Workload::DynClib(workload) => workload
+                    .call_on_stop(invocation, host_abi)
+                    .await
+                    .map_err(|e| ActrError::Internal(format!("workload on_stop failed: {e}"))),
+            }
+        })
+    }
+
     /// Dispatch one inbound RPC envelope.
     pub(crate) fn dispatch_envelope<'a>(
         &'a mut self,
@@ -391,6 +467,7 @@ impl Workload {
         host_abi: &'a HostAbiFn,
     ) -> Pin<Box<dyn Future<Output = ActorResult<()>> + Send + 'a>> {
         Box::pin(async move {
+            let _ = (&chunk, &sender, host_abi);
             let _ = &invocation;
             match self {
                 Workload::Linked(_) => Err(ActrError::NotImplemented(
@@ -423,7 +500,7 @@ impl Workload {
 /// Decode an [`guest_abi::AbiFrame`] into a strongly-typed [`HostOperation`].
 ///
 /// Shared by both WASM and DynClib host backends.
-#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+#[cfg(feature = "dynclib-engine")]
 pub(crate) fn decode_host_operation(frame: guest_abi::AbiFrame) -> Result<HostOperation, i32> {
     if frame.abi_version != guest_abi::version::V1 {
         return Err(guest_abi::code::PROTOCOL_ERROR);
@@ -463,7 +540,7 @@ pub(crate) fn decode_host_operation(frame: guest_abi::AbiFrame) -> Result<HostOp
 }
 
 /// Encode an inbound guest dispatch as `GuestHandleV1` wrapped in `AbiFrame`.
-#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+#[cfg(feature = "dynclib-engine")]
 pub(crate) fn encode_guest_handle_request(
     request_bytes: &[u8],
     ctx: InvocationContext,
@@ -476,12 +553,23 @@ pub(crate) fn encode_guest_handle_request(
     guest_abi::encode_message(&frame)
 }
 
-#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+#[cfg(feature = "dynclib-engine")]
 pub(crate) fn encode_guest_data_stream_request(
     chunk: DataStream,
     sender: ActrId,
 ) -> Result<Vec<u8>, i32> {
     let request = guest_abi::GuestDataStreamV1 { chunk, sender };
+    let frame = request.to_frame()?;
+    guest_abi::encode_message(&frame)
+}
+
+/// Encode a host-to-guest lifecycle request as `GuestLifecycleV1` wrapped in `AbiFrame`.
+#[cfg(feature = "dynclib-engine")]
+pub(crate) fn encode_guest_lifecycle_request(
+    hook: u32,
+    ctx: InvocationContext,
+) -> Result<Vec<u8>, i32> {
+    let request = guest_abi::GuestLifecycleV1 { ctx, hook };
     let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
 }
@@ -498,9 +586,15 @@ pub(crate) fn decode_dest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::outbound::{Gate, HostGate};
+    use crate::transport::HostTransport;
+    use crate::wire::webrtc::{
+        ReconnectConfig, SignalingClient, SignalingConfig, WebSocketSignalingClient,
+    };
     use actr_framework::Context as FrameworkContext;
     use actr_framework::test_support::DummyContext;
-    use actr_protocol::{ActrId, ActrType, Realm};
+    use actr_protocol::{AIdCredential, ActrId, ActrType, Realm};
 
     fn make_id(serial: u64) -> ActrId {
         ActrId {
@@ -512,6 +606,41 @@ mod tests {
                 version: "0.0.1".to_string(),
             },
         }
+    }
+
+    fn test_credential() -> AIdCredential {
+        AIdCredential {
+            key_id: 1,
+            claims: bytes::Bytes::from_static(b"claims"),
+            signature: bytes::Bytes::from(vec![0; 64]),
+        }
+    }
+
+    fn test_runtime_context(serial: u64) -> RuntimeContext {
+        let host_transport = Arc::new(HostTransport::new());
+        let inproc_gate = Gate::Host(Arc::new(HostGate::new(host_transport)));
+        let signaling_client: Arc<dyn SignalingClient> =
+            Arc::new(WebSocketSignalingClient::new(SignalingConfig {
+                server_url: url::Url::parse("ws://127.0.0.1:9").expect("valid test URL"),
+                connection_timeout: 1,
+                heartbeat_interval: 30,
+                reconnect_config: ReconnectConfig::default(),
+                auth_config: None,
+                webrtc_role: None,
+            }));
+
+        RuntimeContext::new(
+            make_id(serial),
+            None,
+            "workload-test".to_string(),
+            inproc_gate,
+            None,
+            Arc::new(DataStreamRegistry::new()),
+            Arc::new(MediaFrameRegistry::new()),
+            signaling_client,
+            test_credential(),
+            None,
+        )
     }
 
     // ── Minimal Workload + Dispatcher used for adapter tests ────────────────
@@ -549,6 +678,32 @@ mod tests {
                     "unknown route: {other}"
                 ))),
             }
+        }
+    }
+
+    struct LifecycleFailingWorkload;
+
+    #[async_trait]
+    impl FrameworkWorkload for LifecycleFailingWorkload {
+        type Dispatcher = LifecycleFailingDispatcher;
+
+        async fn on_start<C: FrameworkContext>(&self, _ctx: &C) -> ActorResult<()> {
+            Err(ActrError::Internal("on_start failed".to_string()))
+        }
+    }
+
+    struct LifecycleFailingDispatcher;
+
+    #[async_trait]
+    impl MessageDispatcher for LifecycleFailingDispatcher {
+        type Workload = LifecycleFailingWorkload;
+
+        async fn dispatch<C: FrameworkContext>(
+            _workload: &Self::Workload,
+            _envelope: RpcEnvelope,
+            _ctx: &C,
+        ) -> ActorResult<Bytes> {
+            Ok(Bytes::new())
         }
     }
 
@@ -592,6 +747,49 @@ mod tests {
                 assert!(msg.contains("unknown route"), "unexpected message: {msg}")
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn adapter_on_start_propagates_workload_error() {
+        let adapter = WorkloadAdapter::new(LifecycleFailingWorkload);
+        let ctx = test_runtime_context(7);
+
+        let err = adapter
+            .on_start(&ctx)
+            .await
+            .expect_err("adapter must preserve lifecycle errors");
+
+        match err {
+            ActrError::Internal(msg) => {
+                assert!(msg.contains("on_start failed"), "unexpected message: {msg}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn workload_on_start_propagates_linked_error() {
+        let handle: Arc<dyn LinkedWorkloadHandle> = WorkloadAdapter::new(LifecycleFailingWorkload);
+        let mut workload = Workload::Linked(handle);
+        let ctx = test_runtime_context(8);
+        let invocation = InvocationContext {
+            self_id: make_id(8),
+            caller_id: None,
+            request_id: "lifecycle:on_start".to_string(),
+        };
+        let host_abi: HostAbiFn = Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
+
+        let err = workload
+            .on_start(ctx, invocation, &host_abi)
+            .await
+            .expect_err("workload lifecycle must preserve linked errors");
+
+        match err {
+            ActrError::Internal(msg) => {
+                assert!(msg.contains("on_start failed"), "unexpected message: {msg}");
+            }
+            other => panic!("expected Internal, got {other:?}"),
         }
     }
 

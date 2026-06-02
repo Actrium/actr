@@ -607,18 +607,93 @@ impl WasmWorkload {
     /// pump the lifecycle after instantiation. Returns `Err` on a host
     /// trap or an `actr-error` variant from the guest.
     ///
-    /// Currently only consumed by `test_support` (gated on `test-utils`),
-    /// so the gate matches; remove the gate once a production caller
-    /// pumps lifecycle here.
-    #[cfg(feature = "test-utils")]
-    pub(crate) async fn call_on_start(&mut self) -> WasmResult<()> {
+    pub(crate) async fn call_on_start(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
+        {
+            let state = self.store.data_mut();
+            state.invocation = Some(ctx);
+            state.host_abi = Some(host_abi_clone);
+        }
+
         let result = self
             .bindings
             .actr_workload_workload()
             .call_on_start(&mut self.store)
-            .await
-            .map_err(|e| WasmError::ExecutionFailed(format!("on_start trap: {e}")))?;
+            .await;
+
+        {
+            let state = self.store.data_mut();
+            state.invocation = None;
+            state.host_abi = None;
+        }
+
+        let result =
+            result.map_err(|e| WasmError::ExecutionFailed(format!("on_start trap: {e}")))?;
         result.map_err(|e| WasmError::ExecutionFailed(format!("on_start error: {:?}", e)))?;
+        Ok(())
+    }
+
+    pub(crate) async fn call_on_ready(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
+        {
+            let state = self.store.data_mut();
+            state.invocation = Some(ctx);
+            state.host_abi = Some(host_abi_clone);
+        }
+
+        let result = self
+            .bindings
+            .actr_workload_workload()
+            .call_on_ready(&mut self.store)
+            .await;
+
+        {
+            let state = self.store.data_mut();
+            state.invocation = None;
+            state.host_abi = None;
+        }
+
+        let result =
+            result.map_err(|e| WasmError::ExecutionFailed(format!("on_ready trap: {e}")))?;
+        result.map_err(|e| WasmError::ExecutionFailed(format!("on_ready error: {:?}", e)))?;
+        Ok(())
+    }
+
+    pub(crate) async fn call_on_stop(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
+        {
+            let state = self.store.data_mut();
+            state.invocation = Some(ctx);
+            state.host_abi = Some(host_abi_clone);
+        }
+
+        let result = self
+            .bindings
+            .actr_workload_workload()
+            .call_on_stop(&mut self.store)
+            .await;
+
+        {
+            let state = self.store.data_mut();
+            state.invocation = None;
+            state.host_abi = None;
+        }
+
+        let result =
+            result.map_err(|e| WasmError::ExecutionFailed(format!("on_stop trap: {e}")))?;
+        result.map_err(|e| WasmError::ExecutionFailed(format!("on_stop error: {:?}", e)))?;
         Ok(())
     }
 
