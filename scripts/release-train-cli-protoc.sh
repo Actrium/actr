@@ -770,7 +770,12 @@ publish_rust_package() {
   publish_log=$(mktemp)
   if ! (
     cd "$(package_workspace_dir "$package")"
-    cargo publish -p "$package" --locked
+    local publish_args=(publish -p "$package" --locked)
+    if [[ "$package" == "actr-cli" ]]; then
+      # The CLI package embeds web runtime assets generated during validation.
+      publish_args+=(--allow-dirty)
+    fi
+    cargo "${publish_args[@]}"
   ) 2>&1 | tee "$publish_log"; then
     if grep -qi "already exists" "$publish_log"; then
       append_state "$package" "$stage" "crate" "success" "already_published" "$registry_url" "$RELEASE_SHA"

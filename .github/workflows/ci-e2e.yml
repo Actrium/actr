@@ -97,7 +97,7 @@ jobs:
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Pre-build actr and mock-actrix
         run: |
-          cargo build --release -p actr-cli --bin actr
+          cargo build --release -p actr-cli --bin actr --features wasm-engine
           cargo build --release -p actr-mock-actrix --bin mock-actrix
       - name: Run TypeScript stream e2e
         run: bash e2e/typescript-stream/run.sh
