@@ -112,25 +112,29 @@ Use the manual workflow `Release Train (Basic)` for the monorepo-managed
 foundation crates, protoc tools, supported SDK crates, and `actr-cli` with one
 shared stable version.
 
-- Workflow file: `.github/workflows/release-train-cli-protoc.yml`
+- Workflow file: `.github/workflows/release-train.yml`
 - Local/CI entrypoint: `scripts/release-train-cli-protoc.sh`
-- Required secrets: `CARGO_REGISTRY_TOKEN`, `PYPI_API_TOKEN`
+- Required secrets:
+  - `CARGO_REGISTRY_TOKEN` — crates.io publishing
+  - `PYPI_API_TOKEN` — PyPI publishing (optional; omit to skip Python)
+  - `PACKAGE_SYNC_GITHUB_TOKEN` — dispatch Swift/Kotlin/TS package-sync workflows
+- npm publishing uses Trusted Publishing (OIDC) via `id-token: write`;
+  no `NPM_TOKEN` secret is needed.
 - Reports are generated under `release/reports/` and uploaded as workflow
   artifacts.
-- Components without a monorepo-native publish path yet are recorded as skipped
-  in the report and do not block the basic train.
 
-TypeScript package releases use the separate manual workflow
-`Publish TypeScript Package`, which publishes `@actrium/actr` from
-`bindings/typescript` using npm trusted publishing via GitHub Actions OIDC.
-The package must be published manually once before enabling the trusted
-publisher for `.github/workflows/publish-typescript.yml`.
+The release train publishes all components in a single run:
+  1. Foundation crates → protoc-gen crates → Python (optional) → SDK → CLI
+  2. Final Git tag created
+  3. Swift package-sync dispatched (`Actrium/actr-swift-package-sync`)
+  4. Kotlin package-sync dispatched (`Actrium/actr-kotlin-package-sync`)
+  5. TypeScript/Node.js npm publish dispatched (`actor-rtc/actr-ts`)
+  6. Web npm packages published (`@actrium/actr-dom`, `@actrium/actr-web`,
+     `@actrium/actr-web-react`) via `bindings/web/scripts/publish.sh`
 
-Web package releases use the separate manual workflow `Publish Web Packages`.
-It publishes the browser packages from `bindings/web` in dependency order:
-`@actrium/actr-dom`, `@actrium/actr-web`, then `@actrium/actr-web-react`.
-Run the workflow with `dry_run=true` first to validate the package metadata and
-tarball contents before publishing.
+Pre-release support is available via the `pre_release` workflow input,
+which accepts semver `X.Y.Z-<id>` and publishes npm packages with
+`--tag pre` (does not affect the `latest` dist-tag).
 
 ## 📄 License
 

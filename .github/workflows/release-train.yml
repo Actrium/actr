@@ -17,6 +17,11 @@ on:
         required: true
         type: boolean
         default: false
+      pre_release:
+        description: Publish as a pre-release (npm tag "pre", allows pre-release semver).
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: release-train-basic
@@ -24,6 +29,7 @@ concurrency:
 
 permissions:
   contents: write
+  id-token: write
 
 env:
   PROTOC_VERSION: "29.3"
@@ -67,6 +73,18 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
       - name: Run release train
         run: |
           args=(--version "${{ inputs.version }}")
@@ -75,6 +93,9 @@ jobs:
           fi
           if [[ "${{ inputs.skip_python }}" == "true" ]]; then
             args+=(--skip-python)
+          fi
+          if [[ "${{ inputs.pre_release }}" == "true" ]]; then
+            args+=(--pre-release)
           fi
           scripts/release-train-cli-protoc.sh "${args[@]}"
 

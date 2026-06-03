@@ -5,8 +5,8 @@ on:
     branches:
       - "*"
     paths:
-      - ".github/workflows/release-train-cli-protoc.yml"
-      - ".github/workflows/release-train-cli-protoc-verify.yml"
+      - ".github/workflows/release-train.yml"
+      - ".github/workflows/release-train-verify.yml"
       - "scripts/release-train-cli-protoc.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -16,12 +16,13 @@ on:
       - "bindings/swift/**"
       - "bindings/kotlin/**"
       - "tools/protoc-gen/**"
+      - "bindings/web/**"
   pull_request:
     branches:
       - main
     paths:
-      - ".github/workflows/release-train-cli-protoc.yml"
-      - ".github/workflows/release-train-cli-protoc-verify.yml"
+      - ".github/workflows/release-train.yml"
+      - ".github/workflows/release-train-verify.yml"
       - "scripts/release-train-cli-protoc.sh"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -31,6 +32,7 @@ on:
       - "bindings/swift/**"
       - "bindings/kotlin/**"
       - "tools/protoc-gen/**"
+      - "bindings/web/**"
 
 concurrency:
   group: release-train-basic-verify-${{ github.ref }}
@@ -38,6 +40,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   PROTOC_VERSION: "29.3"
@@ -72,6 +75,52 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+
+      - name: Run release train script unit checks
+        run: bash scripts/tests/release-train-cli-protoc-package-sync.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Install web dependencies
+        run: |
+          cd bindings/web
+          pnpm install --frozen-lockfile
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+
+      - name: Validate web package metadata
+        run: |
+          cd bindings/web
+          node <<'EOF'
+          const fs = require("node:fs");
+
+          const packages = [
+            ["packages/actr-dom/package.json", "@actrium/actr-dom"],
+            ["packages/web-sdk/package.json", "@actrium/actr-web"],
+            ["packages/web-react/package.json", "@actrium/actr-web-react"],
+          ];
+
+          for (const [path, expectedName] of packages) {
+            const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+            if (pkg.name !== expectedName) throw new Error(path + ": expected " + expectedName + ", got " + pkg.name);
+            if (!pkg.version || !pkg.version.match(/^\d+\.\d+\.\d+/)) throw new Error(path + ": invalid version " + pkg.version);
+            if (pkg.publishConfig?.access !== "public") throw new Error(path + ": publishConfig.access must be public");
+            if (pkg.repository?.url !== "git+https://github.com/Actrium/actr.git") throw new Error(path + ": bad repository.url");
+            console.log("  OK " + pkg.name + "@" + pkg.version);
+          }
+          console.log("  All web package metadata valid");
+          EOF
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.13.1 --locked
