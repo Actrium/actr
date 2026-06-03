@@ -1015,7 +1015,8 @@ ensure_publish_worktree_clean() {
       ":(exclude)release/reports/release-train-v${VERSION}.state.tsv" \
       ":(exclude)release/reports/release-train-v${VERSION}.md" \
       ":(exclude)release/reports/release-train-v${VERSION}.json" \
-      ":(exclude)cli/assets/web-runtime/"
+      ":(exclude)cli/assets/web-runtime/" \
+      ":(exclude)bindings/web/Cargo.lock"
   )
   if [[ -n "$dirty_files" ]]; then
     printf '%s\n' "$dirty_files" >&2
