@@ -89,8 +89,12 @@ object UnifiedDispatcher {
     suspend fun discoverRemoteServices(ctx: ContextBridge) {
         for ((_, actrType) in RemoteServiceRegistry.remoteRoutes) {
             if (!discoveredActors.containsKey(actrType)) {
-                val actorId = ctx.discover(actrType)
-                discoveredActors[actrType] = actorId
+                try {
+                    val actorId = ctx.discover(actrType)
+                    discoveredActors[actrType] = actorId
+                } catch (e: Exception) {
+                    android.util.Log.w("UnifiedDispatcher", "Failed to discover $actrType: ${e.message}")
+                }
             }
         }
     }

@@ -168,6 +168,8 @@ require_file "${HOST_LIBRARY_PATH}"
 
 echo ""
 echo "Building Android static libraries..."
+# Force static linking of opus for Android (no system libopus available)
+export LIBOPUS_STATIC=1
 (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target aarch64-linux-android)
 (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target x86_64-linux-android)
 

@@ -2759,6 +2759,7 @@ dependencies = [
  "actr-runtime",
  "android_logger",
  "async-trait",
+ "audiopus_sys",
  "bytes",
  "futures-util",
  "log",
