@@ -12,9 +12,15 @@ readonly FOUNDATION_CRATES=(
   "actr-protocol"
   "actr-service-compat"
   "actr-config"
+  "actr-web-abi"
   "actr-framework"
   "actr-runtime-mailbox"
   "actr-runtime"
+  "actr-platform-traits"
+  "actr-pack"
+  "actr-mock-actrix"
+  "actr-hyper"
+  "actr-platform-native"
 )
 
 readonly PROTOC_CRATES=(
@@ -49,6 +55,7 @@ RELEASE_PYTHON_ENV=""
 
 VERSION=""
 DRY_RUN=false
+SKIP_PYTHON=false
 RUN_MODE="publish"
 OVERALL_STATUS="success"
 FAILURE_REASON=""
@@ -59,11 +66,12 @@ PACKAGE_SYNC_OWNER="${PACKAGE_SYNC_OWNER:-}"
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release-train-cli-protoc.sh --version <X.Y.Z> [--dry-run]
+  scripts/release-train-cli-protoc.sh --version <X.Y.Z> [--dry-run] [--skip-python]
 
 Options:
   --version <X.Y.Z>  Stable semver used by the monorepo-managed release train.
   --dry-run          Validate the full flow in a disposable worktree without publishing.
+  --skip-python      Skip Python package validation, version update, and publishing.
   --help             Show this help message.
 EOF
 }
@@ -201,6 +209,10 @@ parse_args() {
         ;;
       --dry-run)
         DRY_RUN=true
+        shift
+        ;;
+      --skip-python)
+        SKIP_PYTHON=true
         shift
         ;;
       --help)
@@ -352,7 +364,7 @@ install_python_release_tools() {
 }
 
 update_versions() {
-  python3 - "$WORK_REPO_ROOT" "$VERSION" <<'PY'
+  python3 - "$WORK_REPO_ROOT" "$VERSION" "$SKIP_PYTHON" <<'PY'
 from __future__ import annotations
 
 import re
@@ -361,15 +373,22 @@ from pathlib import Path
 
 repo = Path(sys.argv[1])
 version = sys.argv[2]
+skip_python = sys.argv[3] == "true"
 
 package_files = [
     repo / "Cargo.toml",
+    repo / "bindings/web/Cargo.toml",
     repo / "core/protocol/Cargo.toml",
     repo / "core/service-compat/Cargo.toml",
     repo / "core/config/Cargo.toml",
     repo / "core/framework/Cargo.toml",
     repo / "core/runtime-mailbox/Cargo.toml",
     repo / "core/runtime/Cargo.toml",
+    repo / "core/platform-traits/Cargo.toml",
+    repo / "core/pack/Cargo.toml",
+    repo / "core/hyper/Cargo.toml",
+    repo / "core/platform-native/Cargo.toml",
+    repo / "testing/mock-actrix/Cargo.toml",
     repo / "tools/protoc-gen/rust/Cargo.toml",
     repo / "tools/protoc-gen/web/Cargo.toml",
     repo / "cli/Cargo.toml",
@@ -378,11 +397,19 @@ package_files = [
 cli_dependency_names = {
     "actr",
     "actr-runtime-mailbox",
+    "actr-hyper",
+    "actr-pack",
+    "actr-platform-native",
+    "actr-mock-actrix",
     "actr-config",
     "actr-protocol",
     "actr-service-compat",
     "actr-framework-protoc-codegen",
     "actr-web-protoc-codegen",
+}
+
+dependency_version_names = {
+    "actr-web-abi",
 }
 
 workspace_dependency_names = {
@@ -393,6 +420,11 @@ workspace_dependency_names = {
     "actr-framework-protoc-codegen",
     "actr-runtime",
     "actr-runtime-mailbox",
+    "actr-platform-traits",
+    "actr-pack",
+    "actr-hyper",
+    "actr-platform-native",
+    "actr-mock-actrix",
 }
 
 def replace_first_version(lines: list[str]) -> list[str]:
@@ -438,23 +470,30 @@ for path in package_files:
             if name in cli_dependency_names and "version = " in line:
                 lines[index] = re.sub(r'version = "[^"]+"', f'version = "{version}"', line)
 
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        name = stripped.split("=", 1)[0].strip()
+        if name in dependency_version_names and "version = " in line:
+            lines[index] = re.sub(r'version = "[^"]+"', f'version = "{version}"', line)
+
     path.write_text("\n".join(lines) + "\n")
 
-pyproject = repo / "tools/protoc-gen/python/pyproject.toml"
-py_lines = pyproject.read_text().splitlines()
-current_section = None
-for index, line in enumerate(py_lines):
-    stripped = line.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        current_section = stripped
-        continue
-    if current_section == "[project]" and stripped.startswith("version = "):
-        py_lines[index] = f'version = "{version}"'
-        break
-else:
-    raise RuntimeError("project version not found in pyproject.toml")
+if not skip_python:
+    pyproject = repo / "tools/protoc-gen/python/pyproject.toml"
+    py_lines = pyproject.read_text().splitlines()
+    current_section = None
+    for index, line in enumerate(py_lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped
+            continue
+        if current_section == "[project]" and stripped.startswith("version = "):
+            py_lines[index] = f'version = "{version}"'
+            break
+    else:
+        raise RuntimeError("project version not found in pyproject.toml")
 
-pyproject.write_text("\n".join(py_lines) + "\n")
+    pyproject.write_text("\n".join(py_lines) + "\n")
 PY
 }
 
@@ -464,6 +503,17 @@ all_publishable_crates() {
     "${PROTOC_CRATES[@]}" \
     "${SDK_CRATES[@]}" \
     "${CLI_CRATES[@]}"
+}
+
+package_workspace_dir() {
+  case "$1" in
+    actr-web-abi)
+      printf '%s/bindings/web' "$WORK_REPO_ROOT"
+      ;;
+    *)
+      printf '%s' "$WORK_REPO_ROOT"
+      ;;
+  esac
 }
 
 run_validation_suite() {
@@ -478,15 +528,22 @@ run_validation_suite() {
   while IFS= read -r package; do
     [[ -n "$package" ]] || continue
     log_info "Checking package contents for ${package}"
-    cargo package -p "$package" --locked --allow-dirty --list >/dev/null
+    (
+      cd "$(package_workspace_dir "$package")"
+      cargo package -p "$package" --locked --allow-dirty --list >/dev/null
+    )
   done < <(all_publishable_crates)
 
-  log_info "Building Python package for validation"
-  rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
-  (
-    cd tools/protoc-gen/python
-    "$RELEASE_PYTHON_BIN" -m build >/dev/null
-  )
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    log_info "Building Python package for validation"
+    rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
+    (
+      cd tools/protoc-gen/python
+      "$RELEASE_PYTHON_BIN" -m build >/dev/null
+    )
+  else
+    log_info "Skipping Python package validation"
+  fi
 }
 
 append_skipped_components() {
@@ -655,12 +712,16 @@ python_registry_url() {
   printf 'https://pypi.org/project/%s/%s/' "$PYTHON_PACKAGE_NAME" "$VERSION"
 }
 
+registry_user_agent() {
+  printf 'actr-release-train/%s (https://github.com/Actrium/actr)' "${VERSION:-unknown}"
+}
+
 crate_version_visible() {
-  curl -fsSLo /dev/null "${CRATES_IO_API}/$1/${VERSION}"
+  curl -A "$(registry_user_agent)" -fsSLo /dev/null "${CRATES_IO_API}/$1/${VERSION}"
 }
 
 python_version_visible() {
-  curl -fsSLo /dev/null "${PYPI_API}/${PYTHON_PACKAGE_NAME}/${VERSION}/json"
+  curl -A "$(registry_user_agent)" -fsSLo /dev/null "${PYPI_API}/${PYTHON_PACKAGE_NAME}/${VERSION}/json"
 }
 
 wait_for_visibility() {
@@ -707,7 +768,15 @@ publish_rust_package() {
 
   local publish_log
   publish_log=$(mktemp)
-  if ! cargo publish -p "$package" --locked 2>&1 | tee "$publish_log"; then
+  if ! (
+    cd "$(package_workspace_dir "$package")"
+    local publish_args=(publish -p "$package" --locked)
+    if [[ "$package" == "actr-cli" ]]; then
+      # The CLI package embeds web runtime assets generated during validation.
+      publish_args+=(--allow-dirty)
+    fi
+    cargo "${publish_args[@]}"
+  ) 2>&1 | tee "$publish_log"; then
     if grep -qi "already exists" "$publish_log"; then
       append_state "$package" "$stage" "crate" "success" "already_published" "$registry_url" "$RELEASE_SHA"
       rm -f "$publish_log"
@@ -744,6 +813,12 @@ publish_python_package() {
     return
   fi
 
+  if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
+    log_warn "Skipping ${PYTHON_PACKAGE_NAME}; PYPI_API_TOKEN not set"
+    append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "skipped" "pypi_token_missing" "$registry_url" "$RELEASE_SHA"
+    return
+  fi
+
   local upload_log
   upload_log=$(mktemp)
   (
@@ -776,6 +851,10 @@ publish_python_package() {
   append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "success" "published" "$registry_url" "$RELEASE_SHA"
 }
 
+skip_python_package() {
+  append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "skipped" "skip_python" "$(python_registry_url)" "$RELEASE_SHA"
+}
+
 create_final_tag() {
   if [[ "$DRY_RUN" == true ]]; then
     return
@@ -805,15 +884,18 @@ main() {
     fail "CARGO_REGISTRY_TOKEN must be set for publishing"
   fi
 
-  if [[ -z "${PYPI_API_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
-    fail "PYPI_API_TOKEN must be set for publishing"
-  fi
+  # PYPI_API_TOKEN is optional: when unset, the Python package publish is
+  # skipped (see publish_python_package) and the train continues.
 
   if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
     fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
   fi
 
-  install_python_release_tools
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    install_python_release_tools
+  else
+    log_info "Skipping Python release tool installation"
+  fi
   update_versions
   run_validation_suite
   commit_and_push_version_bump
@@ -828,7 +910,11 @@ main() {
     publish_rust_package "$package" "protoc-gen"
   done
 
-  publish_python_package
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    publish_python_package
+  else
+    skip_python_package
+  fi
 
   for package in "${SDK_CRATES[@]}"; do
     publish_rust_package "$package" "sdk"

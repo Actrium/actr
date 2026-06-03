@@ -144,13 +144,14 @@ pub(crate) struct Inner {
     /// `WasmWorkload::handle` and `DynClibWorkload::handle` both take
     /// `&mut self` because the underlying Wasmtime `Store` / native guest
     /// ABI is single-threaded, so concurrent dispatch through the same
-    /// instance would be unsound. Only the dispatch path takes this lock —
-    /// observation hooks reach the node through `hook_observer` without
-    /// holding any lock (see `lifecycle::hooks`).
+    /// instance would be unsound. Lifecycle hooks also take this lock because
+    /// package-backed WASM / dynclib workloads expose them on the same guest
+    /// instance; transport and other observation hooks reach linked workloads
+    /// through `hook_observer` without holding this lock.
     pub(crate) workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
 
-    /// Optional shell-side observer that receives workload lifecycle /
-    /// transport / credential / mailbox hook invocations.
+    /// Optional shell-side observer that receives linked-workload transport /
+    /// credential / mailbox hook invocations.
     ///
     /// `None` means "no observer installed"; the built-in tracing defaults
     /// still fire from the event-source wiring sites. When `Some`, hook
@@ -417,6 +418,28 @@ async fn host_operation_handler(
             }
         }
     }
+}
+
+fn lifecycle_invocation(
+    actor_id: &ActrId,
+    request_id: &'static str,
+) -> crate::workload::InvocationContext {
+    crate::workload::InvocationContext {
+        self_id: actor_id.clone(),
+        caller_id: None,
+        request_id: request_id.to_string(),
+    }
+}
+
+pub(crate) fn lifecycle_host_abi(
+    ctx: crate::context::RuntimeContext,
+    workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+) -> crate::workload::HostAbiFn {
+    std::sync::Arc::new(move |pending| {
+        let ctx = ctx.clone();
+        let workload_dispatch = workload_dispatch.clone();
+        Box::pin(async move { host_operation_handler(ctx, workload_dispatch, pending).await })
+    })
 }
 
 async fn stream_callback_host_operation_handler(
@@ -1300,6 +1323,24 @@ impl Inner {
             self.webrtc_gate = Some(gate.clone());
             tracing::info!("✅ WebRTC infrastructure initialized");
 
+            // Fire `on_start` once the runtime context can see the initialized
+            // gates, before starting request-accepting/background loops. Its
+            // Err/panic aborts Node::start.
+            {
+                let startup_ctx = self
+                    .bootstrap_ctx_builder()
+                    .build_bootstrap(&actor_id, &credential_state.credential().await);
+                let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_start");
+                let call_executor =
+                    lifecycle_host_abi(startup_ctx.clone(), self.workload_dispatch.clone());
+                let mut workload = self.workload_dispatch.lock().await;
+                crate::lifecycle::hooks::call_lifecycle_hook(
+                    "on_start",
+                    workload.on_start(startup_ctx, invocation, &call_executor),
+                )
+                .await?;
+            }
+
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // 1.7.6. WebSocket Server (direct-connect mode, optional)
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1574,26 +1615,8 @@ impl Inner {
         let node_ref = Arc::new(self);
 
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // 3.2. Fire workload-level lifecycle hooks via the hook observer.
+        // 3.2. Register workload-level stop hook.
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        //
-        // These are pure observation points — the dispatch Mutex is NOT
-        // held here. If no observer is installed we still get the built-in
-        // framework tracing default by emitting it directly.
-        {
-            let startup_ctx = bootstrap_ctx_builder
-                .build_bootstrap(&actor_id, &credential_state.credential().await);
-            if let Some(observer) = node_ref.hook_observer.clone() {
-                let ctx_for_hook = startup_ctx.clone();
-                crate::lifecycle::hooks::spawn_hook("on_start", async move {
-                    observer.on_start(&ctx_for_hook).await;
-                });
-            } else {
-                tracing::info!("workload on_start");
-            }
-            let _ = startup_ctx; // drop
-        }
-
         {
             let node = node_ref.clone();
             let actor_id = actor_id.clone();
@@ -1604,13 +1627,17 @@ impl Inner {
                 let stop_ctx = node
                     .bootstrap_ctx_builder()
                     .build_bootstrap(&actor_id, &credential_state.credential().await);
-                if let Some(observer) = node.hook_observer.clone() {
-                    let ctx_for_hook = stop_ctx.clone();
-                    crate::lifecycle::hooks::spawn_hook("on_stop", async move {
-                        observer.on_stop(&ctx_for_hook).await;
-                    });
-                } else {
-                    tracing::info!("workload on_stop");
+                let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
+                let call_executor =
+                    lifecycle_host_abi(stop_ctx.clone(), node.workload_dispatch.clone());
+                let mut workload = node.workload_dispatch.lock().await;
+                if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
+                    "on_stop",
+                    workload.on_stop(stop_ctx, invocation, &call_executor),
+                )
+                .await
+                {
+                    tracing::warn!(error = %e, "workload on_stop returned Err");
                 }
             });
             task_handles.push(on_stop_handle);
@@ -2217,6 +2244,23 @@ impl Inner {
         }
         tracing::info!("✅ Mailbox processing loop started");
         tracing::info!("✅ ActrNode started successfully");
+
+        {
+            let ready_ctx = bootstrap_ctx_builder
+                .build_bootstrap(&actor_id, &credential_state.credential().await);
+            let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_ready");
+            let call_executor =
+                lifecycle_host_abi(ready_ctx.clone(), node_ref.workload_dispatch.clone());
+            let mut workload = node_ref.workload_dispatch.lock().await;
+            if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
+                "on_ready",
+                workload.on_ready(ready_ctx, invocation, &call_executor),
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "workload on_ready returned Err");
+            }
+        }
 
         // Create ActrRefShared
         let shared = Arc::new(ActrRefShared {

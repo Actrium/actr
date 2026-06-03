@@ -12,6 +12,11 @@ on:
         required: true
         type: boolean
         default: false
+      skip_python:
+        description: Skip Python package validation and publishing.
+        required: true
+        type: boolean
+        default: false
 
 concurrency:
   group: release-train-basic
@@ -34,14 +39,15 @@ jobs:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
     steps:
-      - name: Checkout main
+      - name: Checkout release ref
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ github.ref_name }}
 
-      - name: Switch to local main branch
-        run: git switch main
+      - name: Switch to local release branch
+        run: |
+          git switch "${{ github.ref_name }}" || git switch -c "${{ github.ref_name }}" "origin/${{ github.ref_name }}"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -66,6 +72,9 @@ jobs:
           args=(--version "${{ inputs.version }}")
           if [[ "${{ inputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
+          fi
+          if [[ "${{ inputs.skip_python }}" == "true" ]]; then
+            args+=(--skip-python)
           fi
           scripts/release-train-cli-protoc.sh "${args[@]}"
 

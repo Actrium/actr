@@ -726,7 +726,7 @@ prost-types = "0.14"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 actr-config = { version = "0.2", optional = true }
-actr-hyper = { version = "0.1", features = ["dynclib-engine"], optional = true }
+actr-hyper = { version = "0.2", features = ["dynclib-engine"], optional = true }
 anyhow = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 serde_json = { version = "1", optional = true }
@@ -1005,7 +1005,7 @@ mkdir -p "$LOG_DIR"
 
 if [ ! -x "$ACTR_BIN" ]; then
   log "Build actr CLI"
-  cargo build --release -p actr-cli --bin actr
+  cargo build --release -p actr-cli --bin actr --features wasm-engine
 fi
 
 if [ ! -x "$MOCK_ACTRIX_BIN" ]; then

@@ -186,14 +186,13 @@ pub async fn run_dispatch<W: Workload>(
 // would otherwise force an HRTB shape that fights with `&ctx` crossing
 // await points; inlining here keeps the type-check trivial.
 //
-// Lifecycle hooks fire outside an active dispatch, so the host has not
-// installed an `InvocationContext`. Use [`WasmContext::lifecycle_placeholder`]
-// to synthesize a context locally; outbound `ctx.call/tell/discover` still
-// flow through the `host-abi` bridge once that's wired for the lifecycle
-// path (see TODO in `core/hyper/src/wasm/host.rs`).
+// The native host installs a synthetic `InvocationContext` while invoking
+// package lifecycle exports. Read it through the same context imports as
+// dispatch so wasm, dynclib, and linked workloads observe matching
+// `self_id` / `caller_id` / `request_id` semantics.
 
 pub async fn run_on_start<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     match workload.on_start(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),
@@ -201,7 +200,7 @@ pub async fn run_on_start<W: Workload>(workload: &W) -> Result<(), wit_types::Ac
 }
 
 pub async fn run_on_ready<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     match workload.on_ready(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),
@@ -209,7 +208,7 @@ pub async fn run_on_ready<W: Workload>(workload: &W) -> Result<(), wit_types::Ac
 }
 
 pub async fn run_on_stop<W: Workload>(workload: &W) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     match workload.on_stop(&ctx).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_wit(e)),
@@ -220,7 +219,7 @@ pub async fn run_on_error<W: Workload>(
     workload: &W,
     event: wit_types::ErrorEvent,
 ) -> Result<(), wit_types::ActrError> {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = error_event_from_wit(event);
     match workload.on_error(&ctx, &event).await {
         Ok(()) => Ok(()),
@@ -239,36 +238,36 @@ pub async fn run_on_error<W: Workload>(
 // the guest runtime path.
 
 pub async fn run_on_signaling_connecting<W: Workload>(workload: &W) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     workload.on_signaling_connecting(Some(&ctx)).await;
 }
 
 pub async fn run_on_signaling_connected<W: Workload>(workload: &W) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     workload.on_signaling_connected(Some(&ctx)).await;
 }
 
 pub async fn run_on_signaling_disconnected<W: Workload>(workload: &W) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     workload.on_signaling_disconnected(&ctx).await;
 }
 
 // ── WebSocket (3, infallible) ─────────────────────────────────────────────
 
 pub async fn run_on_websocket_connecting<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = peer_event_from_wit(event);
     workload.on_websocket_connecting(&ctx, &event).await;
 }
 
 pub async fn run_on_websocket_connected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = peer_event_from_wit(event);
     workload.on_websocket_connected(&ctx, &event).await;
 }
 
 pub async fn run_on_websocket_disconnected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = peer_event_from_wit(event);
     workload.on_websocket_disconnected(&ctx, &event).await;
 }
@@ -276,19 +275,19 @@ pub async fn run_on_websocket_disconnected<W: Workload>(workload: &W, event: wit
 // ── WebRTC P2P (3, infallible) ────────────────────────────────────────────
 
 pub async fn run_on_webrtc_connecting<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = peer_event_from_wit(event);
     workload.on_webrtc_connecting(&ctx, &event).await;
 }
 
 pub async fn run_on_webrtc_connected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = peer_event_from_wit(event);
     workload.on_webrtc_connected(&ctx, &event).await;
 }
 
 pub async fn run_on_webrtc_disconnected<W: Workload>(workload: &W, event: wit_types::PeerEvent) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = peer_event_from_wit(event);
     workload.on_webrtc_disconnected(&ctx, &event).await;
 }
@@ -299,7 +298,7 @@ pub async fn run_on_credential_renewed<W: Workload>(
     workload: &W,
     event: wit_types::CredentialEvent,
 ) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = credential_event_from_wit(event);
     workload.on_credential_renewed(&ctx, &event).await;
 }
@@ -308,7 +307,7 @@ pub async fn run_on_credential_expiring<W: Workload>(
     workload: &W,
     event: wit_types::CredentialEvent,
 ) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = credential_event_from_wit(event);
     workload.on_credential_expiring(&ctx, &event).await;
 }
@@ -319,7 +318,7 @@ pub async fn run_on_mailbox_backpressure<W: Workload>(
     workload: &W,
     event: wit_types::BackpressureEvent,
 ) {
-    let ctx = WasmContext::lifecycle_placeholder();
+    let ctx = WasmContext::from_host().await;
     let event = backpressure_event_from_wit(event);
     workload.on_mailbox_backpressure(&ctx, &event).await;
 }
