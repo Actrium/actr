@@ -41,7 +41,7 @@ readonly OPTIONAL_SKIPPED_COMPONENTS=(
 readonly PACKAGE_SYNC_GITHUB_API="https://api.github.com"
 readonly SWIFT_PACKAGE_SYNC_REPO="actr-swift-package-sync"
 readonly KOTLIN_PACKAGE_SYNC_REPO="actr-kotlin-package-sync"
-readonly RELEASE_BRANCH_PREFIX="release/prepare-v"
+readonly RELEASE_BRANCH_PREFIX="release-prepare/v"
 
 ORIGINAL_REPO_ROOT=""
 WORK_REPO_ROOT=""
@@ -228,12 +228,12 @@ detect_conventional_bump() {
   last_tag=$(git -C "$ORIGINAL_REPO_ROOT" describe --tags --match "${FINAL_TAG_PREFIX}*" --abbrev=0 2>/dev/null || echo "")
 
   if [[ -z "$last_tag" ]]; then
-    log_info "No prior release-train tag found; defaulting to minor bump"
+    log_info "No prior release-train tag found; defaulting to minor bump" >&2
     echo "minor"
     return
   fi
 
-  log_info "Analyzing conventional commits since ${last_tag}"
+  log_info "Analyzing conventional commits since ${last_tag}" >&2
   local highest="none"
 
   while IFS= read -r commit_msg; do
