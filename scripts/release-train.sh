@@ -1014,7 +1014,8 @@ ensure_publish_worktree_clean() {
     git status --porcelain --untracked-files=normal -- . \
       ":(exclude)release/reports/release-train-v${VERSION}.state.tsv" \
       ":(exclude)release/reports/release-train-v${VERSION}.md" \
-      ":(exclude)release/reports/release-train-v${VERSION}.json"
+      ":(exclude)release/reports/release-train-v${VERSION}.json" \
+      ":(exclude)cli/assets/web-runtime/"
   )
   if [[ -n "$dirty_files" ]]; then
     printf '%s\n' "$dirty_files" >&2
