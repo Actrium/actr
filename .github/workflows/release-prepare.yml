@@ -1,0 +1,119 @@
+name: Release Prepare
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "release/**"
+
+concurrency:
+  group: release-prepare
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  PROTOC_VERSION: "29.3"
+
+jobs:
+  prepare:
+    name: Prepare release PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Run release prepare
+        id: prepare
+        run: |
+          set -euo pipefail
+          PREPARE_HEAD=$(git rev-parse HEAD)
+          scripts/release-train.sh --prepare-only
+          NEW_HEAD=$(git rev-parse HEAD)
+          if [ "$PREPARE_HEAD" = "$NEW_HEAD" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ver=$(python3 -c "import tomllib;from pathlib import Path;d=tomllib.loads(Path('Cargo.toml').read_text());print(d['workspace']['package']['version'])")
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Push release branch
+        if: steps.prepare.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          BRANCH="release/prepare-v${{ steps.prepare.outputs.version }}"
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH" --force
+
+      - name: Create or update Release PR
+        if: steps.prepare.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER="${{ steps.prepare.outputs.version }}"
+          BRANCH="release/prepare-v${VER}"
+          TITLE="chore(release): prepare v${VER}"
+
+          LAST_TAG=$(git describe --tags --match "release-train-v*" --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            CHANGELOG="Initial release v${VER}"
+          else
+            CHANGELOG=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s" --reverse)
+          fi
+
+          BODY="## Release v${VER}"$'\n'$'\n'"### Changes since ${LAST_TAG:-initial commit}"$'\n'$'\n'"${CHANGELOG}"$'\n'$'\n'"---"$'\n'"> Auto-created by release prepare workflow. Merge to publish."
+
+          EXISTING=$(gh pr list --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null || echo "")
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing PR #${EXISTING}"
+            gh pr edit "$EXISTING" --title "$TITLE" --body "$BODY"
+          else
+            echo "Creating new PR"
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body "$BODY"
+          fi
+
+      - name: Upload release reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-prepare-report-${{ steps.prepare.outputs.version || 'skip' }}
+          path: release/reports/release-train-v*.*
+          if-no-files-found: ignore

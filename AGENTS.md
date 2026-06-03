@@ -45,7 +45,10 @@ match exactly.
 - Execute targeted tests with `cargo test -p crate_name` when iterating on a specific component; finish with a workspace-wide `cargo test` before merging.
 
 ## Commit & Pull Request Guidelines
-- Commit messages follow the common imperative style (`Fix runtime tracing guard`). Keep them short but descriptive.
+- All commits and PR titles MUST follow [Conventional Commits](https://www.conventionalcommits.org/): `<type>[optional scope]: <description>`.
+- Valid types: `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `test`, `ci`, `perf`, `build`, `revert`.
+- Breaking changes: append `!` after type/scope (e.g. `feat!:`) or include `BREAKING CHANGE` in the footer.
+- The release train auto-detects semver bump from PR titles: `feat` → MINOR, `fix` → PATCH, `feat!` / `BREAKING CHANGE` → MAJOR.
 - Each PR should describe the change scope, mention affected crates or directories, and link to any relevant issues or design docs.
 - Include reproduction or validation steps (commands, screenshots, or log excerpts) so reviewers can verify behavior quickly.
 - Ensure generated files are up to date (`actr gen …`) and that formatters/tests have been run prior to opening a PR.

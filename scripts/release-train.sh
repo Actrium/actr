@@ -41,6 +41,7 @@ readonly OPTIONAL_SKIPPED_COMPONENTS=(
 readonly PACKAGE_SYNC_GITHUB_API="https://api.github.com"
 readonly SWIFT_PACKAGE_SYNC_REPO="actr-swift-package-sync"
 readonly KOTLIN_PACKAGE_SYNC_REPO="actr-kotlin-package-sync"
+readonly RELEASE_BRANCH_PREFIX="release/prepare-v"
 
 ORIGINAL_REPO_ROOT=""
 WORK_REPO_ROOT=""
@@ -58,6 +59,7 @@ PREPARE_ONLY=false
 SKIP_PYTHON=false
 PRE_RELEASE=false
 SKIP_WEB=false
+AUTO_VERSION=false
 RUN_MODE="publish"
 OVERALL_STATUS="success"
 FAILURE_REASON=""
@@ -69,10 +71,10 @@ RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release-train.sh --version <X.Y.Z> [--dry-run] [--prepare-only] [--skip-python] [--branch <branch>]
+  scripts/release-train.sh [--version <X.Y.Z>] [--dry-run] [--prepare-only] [--skip-python] [--branch <branch>]
 
 Options:
-  --version <X.Y.Z>  Stable semver used by the monorepo-managed release train.
+  --version <X.Y.Z>  Stable semver used by the monorepo-managed release train (optional in CI).
   --dry-run          Validate the full flow in a disposable worktree without publishing.
   --prepare-only     Update release versions, validate, and commit locally for a release PR.
   --skip-python      Skip Python package validation, version update, and publishing.
@@ -207,6 +209,63 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
 }
 
+current_workspace_version() {
+  python3 - "$ORIGINAL_REPO_ROOT" <<'PY'
+from __future__ import annotations
+import tomllib, sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+cargo = repo / "Cargo.toml"
+with cargo.open("rb") as fh:
+    data = tomllib.load(fh)
+print(data["workspace"]["package"]["version"])
+PY
+}
+
+detect_conventional_bump() {
+  local last_tag
+  last_tag=$(git -C "$ORIGINAL_REPO_ROOT" describe --tags --match "${FINAL_TAG_PREFIX}*" --abbrev=0 2>/dev/null || echo "")
+
+  if [[ -z "$last_tag" ]]; then
+    log_info "No prior release-train tag found; defaulting to minor bump"
+    echo "minor"
+    return
+  fi
+
+  log_info "Analyzing conventional commits since ${last_tag}"
+  local highest="none"
+
+  while IFS= read -r commit_msg; do
+    if echo "$commit_msg" | grep -qE '^[a-z]+\([^)]+\)?!:|BREAKING CHANGE'; then
+      highest="major"
+      break
+    fi
+    if [[ "$highest" != "major" ]] && echo "$commit_msg" | grep -qE '^feat(\([^)]+\))?:'; then
+      highest="minor"
+    fi
+    if [[ "$highest" == "none" ]] && echo "$commit_msg" | grep -qE '^fix(\([^)]+\))?:'; then
+      highest="patch"
+    fi
+  done < <(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --pretty=format:"%s")
+
+  echo "$highest"
+}
+
+calculate_next_version() {
+  local current=$1
+  local bump=$2
+
+  IFS='.' read -r major minor patch <<< "$current"
+
+  case "$bump" in
+    major) echo "$((major + 1)).0.0" ;;
+    minor) echo "${major}.$((minor + 1)).0" ;;
+    patch) echo "${major}.${minor}.$((patch + 1))" ;;
+    *) echo "$current" ;;
+  esac
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -246,8 +305,7 @@ parse_args() {
   done
 
   if [[ -z "$VERSION" ]]; then
-    usage
-    fail "Missing required --version"
+    AUTO_VERSION=true
   fi
 
   if [[ "$DRY_RUN" == true && "$PREPARE_ONLY" == true ]]; then
@@ -1187,9 +1245,27 @@ main() {
   require_command python3
 
   parse_args "$@"
-  validate_version
 
   ORIGINAL_REPO_ROOT=$(git rev-parse --show-toplevel)
+
+  if [[ "$AUTO_VERSION" == true ]]; then
+    if [[ "$PREPARE_ONLY" == true ]]; then
+      local current_ver bump
+      current_ver=$(current_workspace_version)
+      bump=$(detect_conventional_bump)
+      if [[ "$bump" == "none" ]]; then
+        log_info "No publishable conventional-commit changes since last release; nothing to prepare"
+        exit 0
+      fi
+      VERSION=$(calculate_next_version "$current_ver" "$bump")
+      log_info "Auto-detected version: ${VERSION} (bump: ${bump}, current: ${current_ver})"
+    else
+      VERSION=$(current_workspace_version)
+      log_info "Using workspace version: ${VERSION}"
+    fi
+  fi
+
+  validate_version
   ensure_clean_worktree
   prepare_paths
   prepare_worktree
