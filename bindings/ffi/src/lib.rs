@@ -18,7 +18,6 @@ mod opus;
 mod runtime;
 mod types;
 mod workload;
-mod workload_echo;
 
 pub use error::*;
 pub use opus::*;

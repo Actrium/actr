@@ -135,25 +135,6 @@ suspend fun linked(
     return ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
 }
 
-/**
- * Create a linked node using the built-in echo proxy workload.
- *
- * This convenience path is echo-focused and intended for simple clients.
- */
-suspend fun ActrNodeGenerated.Companion.linkedEchoProxy(
-    configPath: String,
-    actorType: ActrType
-): ActrNode {
-    return ActrNodeGenerated.newLinked(configPath, actorType)
-}
-
-/**
- * Create a linked node using the built-in echo proxy workload.
- */
-suspend fun linkedEchoProxy(configPath: String, actorType: ActrType): ActrNode {
-    return ActrNodeGenerated.newLinked(configPath, actorType)
-}
-
 // ============================================================================
 // ActrNode Extensions
 // ============================================================================

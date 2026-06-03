@@ -3,7 +3,6 @@
 use crate::error::{ActrError, ActrResult};
 use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
 use crate::workload::DynamicWorkload;
-use crate::workload_echo::EchoProxyWorkload;
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
 use parking_lot::Mutex;
@@ -69,24 +68,6 @@ impl ActrNode {
             inner: Mutex::new(Some(registered)),
             network_event_handle: Mutex::new(None),
         }))
-    }
-
-    /// Create a linked runtime wrapper using the built-in echo proxy workload.
-    ///
-    /// This convenience constructor is intended for simple Kotlin/Android
-    /// clients that forward local echo RPCs to a remote `acme/EchoService/1.0.0`.
-    #[uniffi::constructor(async_runtime = "tokio")]
-    pub async fn new_linked(config_path: String, actor_type: ActrType) -> ActrResult<Arc<Self>> {
-        let actor_type: actr_protocol::ActrType = actor_type.into();
-        let init = load_linked_init(&config_path).await?;
-        let attached = init
-            .with_actor_type(actor_type.clone())
-            .link(EchoProxyWorkload::default())
-            .await
-            .map_err(|e| ActrError::Internal {
-                msg: format!("Failed to link echo proxy workload: {e}"),
-            })?;
-        register_linked_node(attached).await
     }
 
     /// Create a linked/static runtime from a foreign-language workload.

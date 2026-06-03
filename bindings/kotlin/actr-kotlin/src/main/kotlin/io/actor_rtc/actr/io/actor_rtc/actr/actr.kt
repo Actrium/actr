@@ -947,8 +947,6 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_constructor_actrnode_new_from_package_file(
     ): Short
-    external fun uniffi_actr_checksum_constructor_actrnode_new_linked(
-    ): Short
     external fun uniffi_actr_checksum_constructor_dynamicworkload_new(
     ): Short
     external fun uniffi_actr_checksum_constructor_opusencoder_new(
@@ -1024,8 +1022,6 @@ external fun uniffi_actr_fn_free_actrnode(`handle`: Long,uniffi_out_err: UniffiR
 external fun uniffi_actr_fn_constructor_actrnode_new_from_linked_workload(`configPath`: RustBuffer.ByValue,`actorType`: RustBuffer.ByValue,`workload`: Long,
 ): Long
 external fun uniffi_actr_fn_constructor_actrnode_new_from_package_file(`configPath`: RustBuffer.ByValue,`packagePath`: RustBuffer.ByValue,
-): Long
-external fun uniffi_actr_fn_constructor_actrnode_new_linked(`configPath`: RustBuffer.ByValue,`actorType`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_actr_fn_method_actrnode_create_network_event_handle(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1331,13 +1327,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_actr_checksum_method_opusencoder_frame_size() != 61591.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload() != 33293.toShort()) {
+    if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload() != 52954.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 23972.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if (lib.uniffi_actr_checksum_constructor_actrnode_new_linked() != 46641.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_constructor_dynamicworkload_new() != 7106.toShort()) {
@@ -2224,7 +2217,7 @@ open class ActrNode: Disposable, AutoCloseable, ActrNodeInterface
     companion object {
         
     /**
-     * Create a linked runtime wrapper from a foreign-language DynamicWorkload.
+     * Create a linked/static runtime from a foreign-language workload.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -2250,28 +2243,6 @@ open class ActrNode: Disposable, AutoCloseable, ActrNodeInterface
      suspend fun `newFromPackageFile`(`configPath`: kotlin.String, `packagePath`: kotlin.String) : ActrNode {
         return uniffiRustCallAsync(
         UniffiLib.uniffi_actr_fn_constructor_actrnode_new_from_package_file(FfiConverterString.lower(`configPath`),FfiConverterString.lower(`packagePath`),),
-        { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_u64(future, callback, continuation) },
-        { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_u64(future, continuation) },
-        { future -> UniffiLib.ffi_actr_rust_future_free_u64(future) },
-        // lift function
-        { FfiConverterTypeActrNode.lift(it) },
-        // Error FFI converter
-        ActrException.ErrorHandler,
-    )
-    }
-
-        
-    /**
-     * Create a linked runtime wrapper using the built-in echo proxy workload.
-     *
-     * This convenience constructor is intended for simple Kotlin/Android
-     * clients that forward local echo RPCs to a remote `acme/EchoService/1.0.0`.
-     */
-    @Throws(ActrException::class)
-    @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-     suspend fun `newLinked`(`configPath`: kotlin.String, `actorType`: ActrType) : ActrNode {
-        return uniffiRustCallAsync(
-        UniffiLib.uniffi_actr_fn_constructor_actrnode_new_linked(FfiConverterString.lower(`configPath`),FfiConverterTypeActrType.lower(`actorType`),),
         { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_u64(future, callback, continuation) },
         { future, continuation -> UniffiLib.ffi_actr_rust_future_complete_u64(future, continuation) },
         { future -> UniffiLib.ffi_actr_rust_future_free_u64(future) },
