@@ -533,6 +533,21 @@ impl PeerGate {
         self.pending_requests.read().await.len()
     }
 
+    /// Register a pending request without sending on the wire.
+    #[cfg(feature = "test-utils")]
+    pub async fn register_pending_for_test(
+        &self,
+        request_id: &str,
+        target: ActrId,
+    ) -> oneshot::Receiver<ActorResult<Bytes>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.pending_requests
+            .write()
+            .await
+            .insert(request_id.to_string(), (target, response_tx));
+        response_rx
+    }
+
     /// Get pending_requests reference (for WebRtcGate to share)
     pub fn get_pending_requests(&self) -> PendingRequestsMap {
         self.pending_requests.clone()
@@ -665,6 +680,17 @@ impl PeerGate {
         data: &[u8],
     ) -> ActorResult<()> {
         let policy = payload_type.retry_policy();
+        self.send_with_retry_policy(dest, payload_type, data, policy)
+            .await
+    }
+
+    async fn send_with_retry_policy(
+        &self,
+        dest: &Dest,
+        payload_type: PayloadType,
+        data: &[u8],
+        policy: crate::transport::RetryPolicy,
+    ) -> ActorResult<()> {
         let mut delay = policy.initial_delay;
         let mut attempt = 0u32;
 
@@ -701,6 +727,23 @@ impl PeerGate {
                 }
             }
         }
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub async fn send_serialized_with_zero_retry_delay_for_test(
+        &self,
+        target: &ActrId,
+        payload_type: PayloadType,
+        data: &[u8],
+    ) -> ActorResult<()> {
+        let dest = Self::actr_id_to_dest(target);
+        self.preflight_send(target, &dest).await?;
+
+        let mut policy = payload_type.retry_policy();
+        policy.initial_delay = std::time::Duration::ZERO;
+        policy.max_delay = std::time::Duration::ZERO;
+        self.send_with_retry_policy(&dest, payload_type, data, policy)
+            .await
     }
 
     /// Send request and wait for response (with specified PayloadType).

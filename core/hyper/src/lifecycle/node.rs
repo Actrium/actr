@@ -9,7 +9,7 @@ use crate::actr_ref::{ActrRef, ActrRefShared};
 use crate::ais_client::AisClient;
 use crate::context::{BootstrapContextBuilder, RuntimeContext};
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
-use crate::lifecycle::dedup::{DedupOutcome, DedupState};
+use crate::lifecycle::dedup::{DEDUP_TTL, DedupOutcome, DedupState, DedupWaiter};
 use crate::outbound::Gate;
 use crate::transport::HostTransport;
 use crate::wire::webrtc::SignalingClient;
@@ -587,6 +587,44 @@ impl Inner {
         .await;
     }
 
+    fn duplicate_wait_timeout(timeout_ms: i64) -> Duration {
+        if timeout_ms > 0 {
+            Duration::from_millis(timeout_ms as u64)
+        } else {
+            DEDUP_TTL
+        }
+    }
+
+    async fn wait_for_inflight_duplicate(
+        mut waiter: DedupWaiter,
+        timeout: Duration,
+    ) -> ActorResult<Bytes> {
+        let wait_for_result = async {
+            loop {
+                if let Some(result) = waiter.borrow().clone() {
+                    return result;
+                }
+
+                if waiter.changed().await.is_err() {
+                    if let Some(result) = waiter.borrow().clone() {
+                        return result;
+                    }
+                    return Err(ActrError::Unavailable(
+                        "duplicate request result unavailable".to_string(),
+                    ));
+                }
+            }
+        };
+
+        match tokio::time::timeout(timeout, wait_for_result).await {
+            Ok(result) => result,
+            Err(_) => Err(ActrError::Unavailable(format!(
+                "duplicate request in-flight timed out after {}ms",
+                timeout.as_millis()
+            ))),
+        }
+    }
+
     /// - Single-hop calls: effectively identical
     /// - Multi-hop calls: trace_id spans all hops, request_id per hop
     #[cfg_attr(
@@ -655,32 +693,33 @@ impl Inner {
         }
 
         // 0.2. Deduplication: return cached response for retried request_ids
-        {
-            let outcome = self
-                .dedup_state
+        let outcome = {
+            self.dedup_state
                 .lock()
                 .await
-                .check_or_mark(&envelope.request_id);
-            match outcome {
-                DedupOutcome::Fresh => {} // proceed normally
-                DedupOutcome::InFlight => {
-                    tracing::warn!(
-                        request_id = %envelope.request_id,
-                        route_key = %envelope.route_key,
-                        "⚠️ duplicate request in-flight, dropping concurrent copy"
-                    );
-                    return Err(ActrError::InvalidArgument(
-                        "duplicate request already in-flight".to_string(),
-                    ));
-                }
-                DedupOutcome::Duplicate(cached) => {
-                    tracing::debug!(
-                        request_id = %envelope.request_id,
-                        route_key = %envelope.route_key,
-                        "♻️ returning cached response for duplicate request_id"
-                    );
-                    return cached;
-                }
+                .check_or_mark(&envelope.request_id)
+        };
+        match outcome {
+            DedupOutcome::Fresh => {} // proceed normally
+            DedupOutcome::InFlight(waiter) => {
+                tracing::debug!(
+                    request_id = %envelope.request_id,
+                    route_key = %envelope.route_key,
+                    "duplicate request in-flight; waiting for original result"
+                );
+                return Self::wait_for_inflight_duplicate(
+                    waiter,
+                    Self::duplicate_wait_timeout(envelope.timeout_ms),
+                )
+                .await;
+            }
+            DedupOutcome::Duplicate(cached) => {
+                tracing::debug!(
+                    request_id = %envelope.request_id,
+                    route_key = %envelope.route_key,
+                    "♻️ returning cached response for duplicate request_id"
+                );
+                return cached;
             }
         }
 

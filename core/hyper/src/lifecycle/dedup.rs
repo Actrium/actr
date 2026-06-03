@@ -6,8 +6,10 @@
 //! may process the same `request_id` twice, leading to double side-effects.
 //!
 //! `DedupState` prevents this by caching the response for each `request_id` for a
-//! fixed TTL (default 15 s).  A second call with the same `request_id` within the TTL
+//! fixed TTL (default 30 s).  A second call with the same `request_id` within the TTL
 //! returns the cached response without re-invoking the handler.
+//! If the original request is still in-flight, duplicate callers wait for the
+//! original result instead of receiving a synthetic duplicate error.
 //!
 //! ## Eviction
 //!
@@ -18,10 +20,15 @@ use actr_framework::Bytes;
 use actr_protocol::ActorResult;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 /// Default TTL: must be comfortably longer than the longest RpcReliable retry window.
-/// RpcReliable: 5 attempts, up to 5s per gap → worst-case ~20s total; 15s covers most cases.
-pub(crate) const DEDUP_TTL: Duration = Duration::from_secs(15);
+/// RpcReliable: 5 attempts, 1s + 2s + 4s + 5s gaps = 12s of retry backoff,
+/// plus connection/recovery timing. Keep enough margin so a late retry still
+/// sees the completed cache instead of re-running the handler.
+pub(crate) const DEDUP_TTL: Duration = Duration::from_secs(30);
+
+pub(crate) type DedupWaiter = watch::Receiver<Option<ActorResult<Bytes>>>;
 
 /// Cached outcome of a completed request.
 #[derive(Clone, Debug)]
@@ -29,7 +36,9 @@ enum CachedResult {
     /// Request processed and response stored.
     Done(ActorResult<Bytes>),
     /// Request is currently in-flight (guards against concurrent duplicates).
-    InFlight,
+    InFlight {
+        completion_tx: watch::Sender<Option<ActorResult<Bytes>>>,
+    },
 }
 
 /// Entry stored per request_id.
@@ -53,14 +62,14 @@ pub(crate) struct DedupState {
 pub(crate) enum DedupOutcome {
     /// First time we see this request_id; proceed with handling.
     Fresh,
-    /// Request is already being processed concurrently.
-    InFlight,
+    /// Request is already being processed; wait for the original result.
+    InFlight(DedupWaiter),
     /// Request was already processed; the cached response is returned.
     Duplicate(ActorResult<Bytes>),
 }
 
 impl DedupState {
-    /// Create a dedup state with the default 15 s TTL.
+    /// Create a dedup state with the default 30 s TTL.
     pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -71,25 +80,29 @@ impl DedupState {
     /// Check whether `request_id` is a duplicate.
     ///
     /// - If fresh: inserts an `InFlight` marker and returns `DedupOutcome::Fresh`.
-    /// - If already seen and still in TTL: returns `InFlight` or `Duplicate`.
-    /// - Expired entries are evicted on every call.
+    /// - If already in-flight: returns a waiter for the original result.
+    /// - If already completed and still in TTL: returns the cached result.
+    /// - Expired completed entries are evicted on every call.
     pub(crate) fn check_or_mark(&mut self, request_id: &str) -> DedupOutcome {
         let now = Instant::now();
         self.evict_expired(now);
 
         match self.entries.get(request_id) {
             None => {
+                let (completion_tx, _completion_rx) = watch::channel(None);
                 self.entries.insert(
                     request_id.to_string(),
                     Entry {
                         received_at: now,
-                        result: CachedResult::InFlight,
+                        result: CachedResult::InFlight { completion_tx },
                     },
                 );
                 DedupOutcome::Fresh
             }
             Some(entry) => match &entry.result {
-                CachedResult::InFlight => DedupOutcome::InFlight,
+                CachedResult::InFlight { completion_tx } => {
+                    DedupOutcome::InFlight(completion_tx.subscribe())
+                }
                 CachedResult::Done(r) => DedupOutcome::Duplicate(r.clone()),
             },
         }
@@ -100,14 +113,24 @@ impl DedupState {
     /// Call this after the handler finishes (success or error).
     pub(crate) fn complete(&mut self, request_id: &str, result: ActorResult<Bytes>) {
         if let Some(entry) = self.entries.get_mut(request_id) {
+            if let CachedResult::InFlight { completion_tx } = &entry.result {
+                let _ = completion_tx.send(Some(result.clone()));
+            }
             entry.result = CachedResult::Done(result);
         }
     }
 
-    /// Evict entries that have exceeded the TTL.
+    /// Evict completed entries that have exceeded the TTL.
+    ///
+    /// In-flight entries are retained until completion. Evicting them on the
+    /// completed-cache TTL would allow a slow handler to be re-entered by a
+    /// retry with the same request_id.
     fn evict_expired(&mut self, now: Instant) {
-        self.entries
-            .retain(|_, e| now.duration_since(e.received_at) < self.ttl);
+        let ttl = self.ttl;
+        self.entries.retain(|_, e| match e.result {
+            CachedResult::InFlight { .. } => true,
+            CachedResult::Done(_) => now.duration_since(e.received_at) < ttl,
+        });
     }
 
     /// Number of entries currently tracked (for monitoring / tests).
@@ -126,21 +149,66 @@ mod tests {
     }
 
     #[test]
-    fn fresh_request_is_marked_in_flight() {
+    fn fresh_request_is_marked_and_concurrent_duplicate_returns_waiter() {
         let mut d = DedupState::new();
         assert!(matches!(d.check_or_mark("req-1"), DedupOutcome::Fresh));
         assert_eq!(d.len(), 1);
+        assert!(matches!(
+            d.check_or_mark("req-1"),
+            DedupOutcome::InFlight(_)
+        ));
     }
 
-    #[test]
-    fn concurrent_duplicate_returns_in_flight() {
+    #[tokio::test]
+    async fn in_flight_duplicate_waiter_receives_original_result() {
         let mut d = DedupState::new();
-        d.check_or_mark("req-1"); // marks InFlight
-        assert!(matches!(d.check_or_mark("req-1"), DedupOutcome::InFlight));
+        assert!(matches!(d.check_or_mark("req-1"), DedupOutcome::Fresh));
+
+        let mut waiter = match d.check_or_mark("req-1") {
+            DedupOutcome::InFlight(waiter) => waiter,
+            other => panic!("expected InFlight waiter, got {other:?}"),
+        };
+
+        d.complete("req-1", ok_bytes("hello"));
+        let _ = waiter.changed().await;
+
+        let result = waiter
+            .borrow()
+            .clone()
+            .expect("waiter should observe completed result");
+        assert!(
+            matches!(result, Ok(ref b) if b == "hello"),
+            "expected waiter to receive original Ok(\"hello\")"
+        );
     }
 
     #[test]
-    fn completed_duplicate_returns_cached_response() {
+    fn in_flight_entry_is_not_evicted_by_completed_cache_ttl() {
+        let mut d = DedupState {
+            ttl: Duration::from_nanos(1),
+            ..DedupState::new()
+        };
+        assert!(matches!(d.check_or_mark("req-slow"), DedupOutcome::Fresh));
+
+        // A different request triggers lazy eviction. The in-flight entry must
+        // stay protected even when completed-cache TTL is tiny.
+        d.check_or_mark("req-other");
+        assert!(matches!(
+            d.check_or_mark("req-slow"),
+            DedupOutcome::InFlight(_)
+        ));
+    }
+
+    #[test]
+    fn dedup_ttl_covers_reliable_rpc_retry_window() {
+        assert!(
+            DEDUP_TTL >= Duration::from_secs(20),
+            "dedup TTL should cover late RpcReliable retries"
+        );
+    }
+
+    #[test]
+    fn completed_duplicate_returns_cached_success_or_error() {
         let mut d = DedupState::new();
         d.check_or_mark("req-1");
         d.complete("req-1", ok_bytes("hello"));
@@ -150,10 +218,7 @@ mod tests {
             matches!(outcome, DedupOutcome::Duplicate(Ok(ref b)) if b == "hello"),
             "expected cached Ok(\"hello\")"
         );
-    }
 
-    #[test]
-    fn error_response_is_cached_and_returned() {
         use actr_protocol::ActrError;
         let mut d = DedupState::new();
         d.check_or_mark("req-err");

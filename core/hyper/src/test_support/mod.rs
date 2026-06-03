@@ -23,6 +23,8 @@ pub mod signaling;
 pub mod utils;
 #[path = "../../tests/common/vnet.rs"]
 pub mod vnet;
+#[path = "../../tests/common/wait.rs"]
+pub mod wait;
 
 pub use harness::{TestHarness, TestPeer};
 pub use signaling::TestSignalingServer;
@@ -31,6 +33,7 @@ pub use utils::{
     dummy_credential, make_actor_id, spawn_echo_responder, spawn_response_receiver,
 };
 pub use vnet::{VNetPair, create_vnet_pair};
+pub use wait::*;
 
 pub use crate::transport::lane::{
     WebRtcFragmentSendEvent, WebRtcFragmentSendHook, WebRtcFragmentSendHookGuard,
@@ -292,6 +295,94 @@ impl TestPackageHookObserver {
                     .await;
             }
         }
+    }
+}
+
+pub struct TestDedupWaiter {
+    inner: crate::lifecycle::dedup::DedupWaiter,
+}
+
+impl std::fmt::Debug for TestDedupWaiter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TestDedupWaiter").finish_non_exhaustive()
+    }
+}
+
+impl TestDedupWaiter {
+    pub async fn wait(mut self) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        loop {
+            if let Some(result) = self.inner.borrow().clone() {
+                return result;
+            }
+
+            if self.inner.changed().await.is_err() {
+                if let Some(result) = self.inner.borrow().clone() {
+                    return result;
+                }
+                return Err(actr_protocol::ActrError::Unavailable(
+                    "duplicate request result unavailable".to_string(),
+                ));
+            }
+        }
+    }
+
+    pub async fn wait_timeout(
+        self,
+        timeout: std::time::Duration,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        match tokio::time::timeout(timeout, self.wait()).await {
+            Ok(result) => result,
+            Err(_) => Err(actr_protocol::ActrError::Unavailable(format!(
+                "duplicate request in-flight timed out after {}ms",
+                timeout.as_millis()
+            ))),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum TestDedupOutcome {
+    Fresh,
+    InFlight(TestDedupWaiter),
+    Duplicate(actr_protocol::ActorResult<actr_framework::Bytes>),
+}
+
+#[derive(Debug)]
+pub struct TestDedupState {
+    inner: crate::lifecycle::dedup::DedupState,
+}
+
+impl TestDedupState {
+    pub fn new() -> Self {
+        Self {
+            inner: crate::lifecycle::dedup::DedupState::new(),
+        }
+    }
+
+    pub fn check_or_mark(&mut self, request_id: &str) -> TestDedupOutcome {
+        match self.inner.check_or_mark(request_id) {
+            crate::lifecycle::dedup::DedupOutcome::Fresh => TestDedupOutcome::Fresh,
+            crate::lifecycle::dedup::DedupOutcome::InFlight(waiter) => {
+                TestDedupOutcome::InFlight(TestDedupWaiter { inner: waiter })
+            }
+            crate::lifecycle::dedup::DedupOutcome::Duplicate(result) => {
+                TestDedupOutcome::Duplicate(result)
+            }
+        }
+    }
+
+    pub fn complete(
+        &mut self,
+        request_id: &str,
+        result: actr_protocol::ActorResult<actr_framework::Bytes>,
+    ) {
+        self.inner.complete(request_id, result);
+    }
+}
+
+impl Default for TestDedupState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
