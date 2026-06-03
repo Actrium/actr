@@ -12,6 +12,8 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+type ErrorCtor = fn(String) -> NetworkError;
+
 use actr_hyper::lifecycle::{
     NetworkEvent, NetworkEventProcessor, NetworkRecoveryAction, process_network_event_batch,
 };
@@ -441,7 +443,7 @@ async fn retry_attempt_matrix_matches_payload_type_policy() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retryable_error_kinds_retry_once_preserve_request_id_and_reuse_transport() {
     let target = make_actor_id(2);
-    let cases: [(&str, fn(String) -> NetworkError); 12] = [
+    let cases: [(&str, ErrorCtor); 12] = [
         ("ConnectionError", NetworkError::ConnectionError),
         ("ConnectionClosed", NetworkError::ConnectionClosed),
         ("ChannelClosed", NetworkError::ChannelClosed),
@@ -499,7 +501,7 @@ async fn retryable_error_kinds_retry_once_preserve_request_id_and_reuse_transpor
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn non_retryable_error_kinds_do_not_retry() {
     let target = make_actor_id(2);
-    let cases: [(&str, fn(String) -> NetworkError); 8] = [
+    let cases: [(&str, ErrorCtor); 8] = [
         ("NoRoute", NetworkError::NoRoute),
         ("InvalidOperation", NetworkError::InvalidOperation),
         ("InvalidArgument", NetworkError::InvalidArgument),
