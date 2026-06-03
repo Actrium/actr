@@ -228,12 +228,12 @@ detect_conventional_bump() {
   last_tag=$(git -C "$ORIGINAL_REPO_ROOT" describe --tags --match "${FINAL_TAG_PREFIX}*" --abbrev=0 2>/dev/null || echo "")
 
   if [[ -z "$last_tag" ]]; then
-    log_info "No prior release-train tag found; defaulting to minor bump"
+    log_info "No prior release-train tag found; defaulting to minor bump" >&2
     echo "minor"
     return
   fi
 
-  log_info "Analyzing conventional commits since ${last_tag}"
+  log_info "Analyzing conventional commits since ${last_tag}" >&2
   local highest="none"
 
   while IFS= read -r commit_msg; do
