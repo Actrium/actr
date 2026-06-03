@@ -59,8 +59,8 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: actr.linux-arm64-gnu.node
-            build_args: "--use-napi-cross"
-            use_zig: false
+            build_args: "--cross-compile"
+            use_zig: true
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             artifact: actr.linux-arm64-musl.node
