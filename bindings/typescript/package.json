@@ -24,7 +24,7 @@
     "format": "prettier --check \"**/*.{js,ts,mjs,cjs,json,md}\"",
     "format:write": "prettier --write \"**/*.{js,ts,mjs,cjs,json,md}\"",
     "lint": "eslint .",
-    "prepublishOnly": "napi prepublish -t npm",
+    "prepublishOnly": "napi prepublish -t npm --skip-optional-publish",
     "test": "vitest run",
     "test:watch": "vitest",
     "version": "napi version",
