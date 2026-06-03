@@ -101,11 +101,13 @@ jobs:
 
       - name: Build native package
         shell: bash
-        run: npx napi build --target ${{ matrix.target }} --release --output-dir artifacts ${{ matrix.build_args }}
+        run: npx napi build --platform --target ${{ matrix.target }} --release --output-dir artifacts ${{ matrix.build_args }}
 
       - name: Verify native artifact
         shell: bash
-        run: test -f "artifacts/${{ matrix.artifact }}"
+        run: |
+          ls -la artifacts
+          test -f "artifacts/${{ matrix.artifact }}"
 
       - name: Upload native artifact
         uses: actions/upload-artifact@v4
