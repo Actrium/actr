@@ -33,7 +33,7 @@ FULL_TRIGGER_PATTERNS = (
     "rustfmt.toml",
     "clippy.toml",
     "deny.toml",
-    "scripts/release-train-cli-protoc.sh",
+    "scripts/release-train.sh",
 )
 
 
