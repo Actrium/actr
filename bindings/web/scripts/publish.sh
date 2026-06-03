@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: bash scripts/publish.sh [--dry-run] [--expected-version <version>] [--skip-build]
+Usage: bash scripts/publish.sh [--dry-run] [--expected-version <version>] [--skip-build] [--tag <npm-dist-tag>]
 
 Publishes the Actrium web npm packages in dependency order:
   1. @actrium/actr-dom
@@ -18,6 +18,7 @@ EOF
 dry_run=0
 skip_build=0
 expected_version=""
+npm_tag="latest"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -28,6 +29,14 @@ while [ "$#" -gt 0 ]; do
     --skip-build)
       skip_build=1
       shift
+      ;;
+    --tag)
+      npm_tag="${2:-}"
+      if [ -z "$npm_tag" ]; then
+        echo "--tag requires a value" >&2
+        exit 2
+      fi
+      shift 2
       ;;
     --expected-version)
       expected_version="${2:-}"
@@ -85,6 +94,9 @@ pack_dir="$(mktemp -d)"
 trap 'rm -rf "$pack_dir"' EXIT
 
 publish_args=(publish --access public)
+if [ "$npm_tag" != "latest" ]; then
+  publish_args+=(--tag "$npm_tag")
+fi
 if [ "$dry_run" -eq 1 ]; then
   publish_args+=(--dry-run)
 fi
