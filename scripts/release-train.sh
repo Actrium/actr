@@ -409,6 +409,13 @@ package_files = [
     repo / "tools/protoc-gen/web/Cargo.toml",
     repo / "cli/Cargo.toml",
     repo / "bindings/typescript/Cargo.toml",
+    repo / "bindings/web/crates/actr-web-abi/Cargo.toml",
+    repo / "bindings/web/crates/common/Cargo.toml",
+    repo / "bindings/web/crates/sw-host/Cargo.toml",
+    repo / "bindings/web/crates/dom-bridge/Cargo.toml",
+    repo / "bindings/web/crates/mailbox-web/Cargo.toml",
+    repo / "bindings/web/crates/platform-web/Cargo.toml",
+    repo / "bindings/web/crates/framework-web-entry-smoke/Cargo.toml",
 ]
 
 cli_dependency_names = {
@@ -427,6 +434,7 @@ cli_dependency_names = {
 
 dependency_version_names = {
     "actr-web-abi",
+    "actr-pack",
 }
 
 workspace_dependency_names = {
@@ -888,7 +896,14 @@ commit_and_push_version_bump() {
     bindings/web/packages/web-sdk/package.json \
     bindings/web/packages/web-react/package.json \
     bindings/typescript/Cargo.toml \
-    bindings/typescript/package.json
+    bindings/typescript/package.json \
+    bindings/web/crates/actr-web-abi/Cargo.toml \
+    bindings/web/crates/common/Cargo.toml \
+    bindings/web/crates/sw-host/Cargo.toml \
+    bindings/web/crates/dom-bridge/Cargo.toml \
+    bindings/web/crates/mailbox-web/Cargo.toml \
+    bindings/web/crates/platform-web/Cargo.toml \
+    bindings/web/crates/framework-web-entry-smoke/Cargo.toml
   git commit -m "chore(release): basic train v${VERSION}"
   git push origin main
   set_release_sha
