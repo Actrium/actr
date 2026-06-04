@@ -198,6 +198,18 @@ jobs:
           echo "package.json version: $(node -p "require('./package.json').version")"
           echo "Cargo.toml version: $(grep '^version = ' Cargo.toml | head -n 1)"
 
+      - name: Validate npm token
+        if: ${{ !inputs.dry_run }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is required when dry_run is false."
+            exit 1
+          fi
+          npm whoami
+
       - name: Download native artifacts
         uses: actions/download-artifact@v4
         with:
@@ -241,6 +253,7 @@ jobs:
         if: ${{ !inputs.dry_run }}
         env:
           EXPECTED_VERSION: ${{ inputs.expected_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           for dir in npm/*; do
@@ -254,7 +267,16 @@ jobs:
 
       - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        run: npm publish --access public --ignore-scripts
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if npm view "@actrium/actr@$EXPECTED_VERSION" version >/dev/null 2>&1; then
+            echo "@actrium/actr@$EXPECTED_VERSION already exists; skipping"
+            exit 0
+          fi
+          npm publish --access public --ignore-scripts
 
       - name: Verify npm package version
         if: ${{ !inputs.dry_run }}
