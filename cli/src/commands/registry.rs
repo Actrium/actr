@@ -41,7 +41,15 @@ impl Command for RegistryArgs {
                 let command = DiscoveryCommand::from_args(cmd);
                 {
                     let container = ctx.container.lock().unwrap();
-                    container.validate(&command.required_components())?;
+                    if command.standalone_config().is_some() {
+                        // Standalone mode: only need ServiceDiscovery + basic UI
+                        container.validate(&[
+                            ComponentType::ServiceDiscovery,
+                            ComponentType::UserInterface,
+                        ])?;
+                    } else {
+                        container.validate(&command.required_components())?;
+                    }
                 }
                 command.execute(ctx).await
             }

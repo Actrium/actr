@@ -20,9 +20,10 @@ use url::Url;
 
 use crate::commands::{
     BuildCommand, CheckCommand, CompletionCommand, ConfigCommand, DepsArgs, DlqArgs, DocCommand,
-    GenCommand, InitCommand, LogsCommand, PkgArgs, PsCommand, RegistryArgs, RestartCommand,
-    RmCommand, RunCommand, StartCommand, StopCommand, VersionCommand,
+    GenCommand, InitCommand, LogsCommand, PkgArgs, PsCommand, RegistryArgs, RegistryCommand,
+    RestartCommand, RmCommand, RunCommand, StartCommand, StopCommand, VersionCommand,
 };
+use crate::commands::discovery::StandaloneDiscoverConfig;
 use crate::core::{
     ActrCliError, Command, CommandContext, CommandResult, ConfigManager, ConsoleUI,
     ContainerBuilder, DefaultCacheManager, DefaultDependencyResolver, DefaultFingerprintValidator,
@@ -138,15 +139,18 @@ pub fn build_cli() -> clap::Command {
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    let Some(cmd) = cli.command else {
+    let Some(ref cmd_variant) = cli.command else {
         Cli::command().print_help()?;
         return Ok(());
     };
 
-    let command = cmd.as_command();
+    // Extract standalone discover config early (before building container).
+    let standalone_discover = extract_standalone_discover(cmd_variant);
+
+    let command = cmd_variant.as_command();
     let needs_container = !command.required_components().is_empty();
     let container = if needs_container {
-        build_container().await?
+        build_container(standalone_discover).await?
     } else {
         ContainerBuilder::new().build()?
     };
@@ -181,6 +185,18 @@ pub async fn run() -> Result<()> {
     }
 }
 
+/// If the user ran `actr registry discover` with standalone flags,
+/// extract them before the container is built so we can register
+/// ServiceDiscovery without needing a local `manifest.toml`.
+fn extract_standalone_discover(cmd: &Commands) -> Option<StandaloneDiscoverConfig> {
+    if let Commands::Registry(registry_args) = cmd {
+        if let RegistryCommand::Discover(discover_cmd) = &registry_args.command {
+            return discover_cmd.standalone_config();
+        }
+    }
+    None
+}
+
 fn render_result(result: CommandResult) {
     match result {
         CommandResult::Success(msg) => {
@@ -205,23 +221,58 @@ fn render_result(result: CommandResult) {
     }
 }
 
-async fn build_container() -> Result<ServiceContainer> {
-    let config_path = std::path::Path::new("manifest.toml");
-    let mut builder = ContainerBuilder::new();
-    let mut config_manager = None;
+async fn build_container(
+    standalone_discover: Option<StandaloneDiscoverConfig>,
+) -> Result<ServiceContainer> {
+    // ── Standalone mode (--endpoint --realm-id --realm-secret) ──
+    if let Some(cfg) = standalone_discover {
+        let mut builder = ContainerBuilder::new();
+        builder = builder.config_path(std::path::Path::new("."));
 
-    if config_path.exists() {
-        builder = builder.config_path(config_path);
+        let mut container = builder.build()?;
+        container = container.register_user_interface(Arc::new(ConsoleUI::new()));
+
+        let discovery_context = DiscoveryContext {
+            package_actr_type: actr_protocol::ActrType {
+                manufacturer: "cli".into(),
+                name: "registry-discover".into(),
+                version: "0.0.0".into(),
+            },
+            signaling_url: cfg.endpoint.clone(),
+            ais_endpoint: cfg.endpoint.to_string(),
+            realm: actr_protocol::Realm {
+                realm_id: cfg.realm_id as u32,
+            },
+            realm_secret: Some(cfg.realm_secret),
+        };
+
+        container = container
+            .register_service_discovery(Arc::new(NetworkServiceDiscovery::new(discovery_context)));
+        return Ok(container);
     }
+
+    // ── Project mode (needs manifest.toml or actr.toml in cwd) ──
+    let manifest_path = std::path::Path::new("manifest.toml");
+    let actr_path = std::path::Path::new("actr.toml");
+
+    let config_path = if manifest_path.exists() {
+        manifest_path
+    } else if actr_path.exists() {
+        actr_path
+    } else {
+        // Neither file exists — register minimal container;
+        // ServiceDiscovery will fail validation with a clear error.
+        return build_minimal_container().await;
+    };
+
+    let mut builder = ContainerBuilder::new();
+    builder = builder.config_path(config_path);
 
     let mut container = builder.build()?;
     container = container.register_user_interface(Arc::new(ConsoleUI::new()));
 
-    if config_path.exists() {
-        let manager = Arc::new(TomlConfigManager::new(config_path));
-        container = container.register_config_manager(manager.clone());
-        config_manager = Some(manager);
-    }
+    let manager = Arc::new(TomlConfigManager::new(config_path));
+    container = container.register_config_manager(manager.clone());
 
     let mut container =
         container.register_dependency_resolver(Arc::new(DefaultDependencyResolver::new()));
@@ -231,33 +282,40 @@ async fn build_container() -> Result<ServiceContainer> {
     container = container.register_proto_processor(Arc::new(DefaultProtoProcessor::new()));
     container = container.register_cache_manager(Arc::new(DefaultCacheManager::new()));
 
-    if let Some(manager) = config_manager {
-        let config = manager.load_config(config_path).await?;
-        let effective_cli =
-            crate::config::resolver::resolve_effective_cli_config().unwrap_or_default();
+    let config = manager.load_config(config_path).await?;
+    let effective_cli =
+        crate::config::resolver::resolve_effective_cli_config().unwrap_or_default();
 
-        let signaling_url = Url::parse(&effective_cli.network.signaling_url).map_err(|e| {
-            anyhow::anyhow!(
-                "Invalid network.signaling_url '{}': {}",
-                effective_cli.network.signaling_url,
-                e
-            )
-        })?;
+    let signaling_url = Url::parse(&effective_cli.network.signaling_url).map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid network.signaling_url '{}': {}",
+            effective_cli.network.signaling_url,
+            e
+        )
+    })?;
 
-        let ais_endpoint = effective_cli.network.ais_endpoint.clone();
-        let realm_id = effective_cli.network.realm_id.unwrap_or(1);
-        let realm_secret = effective_cli.network.realm_secret.clone();
+    let ais_endpoint = effective_cli.network.ais_endpoint.clone();
+    let realm_id = effective_cli.network.realm_id.unwrap_or(1);
+    let realm_secret = effective_cli.network.realm_secret.clone();
 
-        let discovery_context = DiscoveryContext {
-            package_actr_type: config.package.actr_type.clone(),
-            signaling_url,
-            ais_endpoint,
-            realm: actr_protocol::Realm { realm_id },
-            realm_secret,
-        };
+    let discovery_context = DiscoveryContext {
+        package_actr_type: config.package.actr_type.clone(),
+        signaling_url,
+        ais_endpoint,
+        realm: actr_protocol::Realm { realm_id },
+        realm_secret,
+    };
 
-        container = container
-            .register_service_discovery(Arc::new(NetworkServiceDiscovery::new(discovery_context)));
-    }
+    container = container
+        .register_service_discovery(Arc::new(NetworkServiceDiscovery::new(discovery_context)));
+
+    Ok(container)
+}
+
+/// Build a container with only shell-level components (UI),
+/// for when neither manifest.toml nor actr.toml exists.
+async fn build_minimal_container() -> Result<ServiceContainer> {
+    let mut container = ContainerBuilder::new().build()?;
+    container = container.register_user_interface(Arc::new(ConsoleUI::new()));
     Ok(container)
 }
