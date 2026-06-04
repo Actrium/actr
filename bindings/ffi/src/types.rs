@@ -223,37 +223,6 @@ impl From<runtime_lifecycle::NetworkAvailability> for NetworkAvailability {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
-pub enum InternetReachability {
-    Unknown,
-    Reachable,
-    NotReachable,
-}
-
-impl From<InternetReachability> for runtime_lifecycle::InternetReachability {
-    fn from(reachability: InternetReachability) -> Self {
-        match reachability {
-            InternetReachability::Unknown => runtime_lifecycle::InternetReachability::Unknown,
-            InternetReachability::Reachable => runtime_lifecycle::InternetReachability::Reachable,
-            InternetReachability::NotReachable => {
-                runtime_lifecycle::InternetReachability::NotReachable
-            }
-        }
-    }
-}
-
-impl From<runtime_lifecycle::InternetReachability> for InternetReachability {
-    fn from(reachability: runtime_lifecycle::InternetReachability) -> Self {
-        match reachability {
-            runtime_lifecycle::InternetReachability::Unknown => InternetReachability::Unknown,
-            runtime_lifecycle::InternetReachability::Reachable => InternetReachability::Reachable,
-            runtime_lifecycle::InternetReachability::NotReachable => {
-                InternetReachability::NotReachable
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Record)]
 pub struct NetworkTransportFlags {
     pub wifi: bool,
@@ -291,7 +260,6 @@ impl From<runtime_lifecycle::NetworkTransportFlags> for NetworkTransportFlags {
 pub struct NetworkSnapshot {
     pub sequence: u64,
     pub availability: NetworkAvailability,
-    pub reachability: InternetReachability,
     pub transport: NetworkTransportFlags,
     pub is_expensive: bool,
     pub is_constrained: bool,
@@ -302,7 +270,6 @@ impl From<NetworkSnapshot> for runtime_lifecycle::NetworkSnapshot {
         Self {
             sequence: snapshot.sequence,
             availability: snapshot.availability.into(),
-            reachability: snapshot.reachability.into(),
             transport: snapshot.transport.into(),
             is_expensive: snapshot.is_expensive,
             is_constrained: snapshot.is_constrained,
@@ -315,7 +282,6 @@ impl From<runtime_lifecycle::NetworkSnapshot> for NetworkSnapshot {
         Self {
             sequence: snapshot.sequence,
             availability: snapshot.availability.into(),
-            reachability: snapshot.reachability.into(),
             transport: snapshot.transport.into(),
             is_expensive: snapshot.is_expensive,
             is_constrained: snapshot.is_constrained,

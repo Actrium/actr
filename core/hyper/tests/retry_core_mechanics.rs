@@ -15,8 +15,8 @@ use std::time::Duration;
 type ErrorCtor = fn(String) -> NetworkError;
 
 use actr_hyper::lifecycle::{
-    InternetReachability, NetworkAvailability, NetworkEvent, NetworkEventProcessor,
-    NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags, process_network_event_batch,
+    NetworkAvailability, NetworkEvent, NetworkEventProcessor, NetworkRecoveryAction,
+    NetworkSnapshot, NetworkTransportFlags, process_network_event_batch,
 };
 use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{TestDedupOutcome, TestDedupState, make_actor_id};
@@ -33,11 +33,6 @@ fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> 
                 NetworkAvailability::Available
             } else {
                 NetworkAvailability::Unavailable
-            },
-            reachability: if available {
-                InternetReachability::Reachable
-            } else {
-                InternetReachability::NotReachable
             },
             transport: NetworkTransportFlags {
                 wifi,

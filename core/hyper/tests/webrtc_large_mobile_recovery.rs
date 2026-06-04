@@ -3,8 +3,8 @@
 
 use actr_framework::Bytes;
 use actr_hyper::lifecycle::{
-    InternetReachability, NetworkAvailability, NetworkEvent, NetworkRecoveryAction,
-    NetworkSnapshot, NetworkTransportFlags, ReconnectReason, process_network_event_batch,
+    NetworkAvailability, NetworkEvent, NetworkRecoveryAction, NetworkSnapshot,
+    NetworkTransportFlags, ReconnectReason, process_network_event_batch,
     select_network_recovery_action,
 };
 use actr_hyper::outbound::PeerGate;
@@ -62,11 +62,6 @@ fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> 
                 NetworkAvailability::Available
             } else {
                 NetworkAvailability::Unavailable
-            },
-            reachability: if available {
-                InternetReachability::Reachable
-            } else {
-                InternetReachability::NotReachable
             },
             transport: NetworkTransportFlags {
                 wifi,

@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use actr_hyper::lifecycle::{
-    DefaultNetworkEventProcessor, InternetReachability, NetworkAvailability, NetworkEvent,
-    NetworkEventHandle, NetworkEventProcessor, NetworkEventResult, NetworkSnapshot,
-    NetworkTransportFlags, process_network_event_batch,
+    DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent, NetworkEventHandle,
+    NetworkEventProcessor, NetworkEventResult, NetworkSnapshot, NetworkTransportFlags,
+    process_network_event_batch,
 };
 use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
 
@@ -25,11 +25,6 @@ fn network_snapshot(sequence: u64, available: bool) -> NetworkSnapshot {
             NetworkAvailability::Available
         } else {
             NetworkAvailability::Unavailable
-        },
-        reachability: if available {
-            InternetReachability::Reachable
-        } else {
-            InternetReachability::NotReachable
         },
         transport: NetworkTransportFlags {
             wifi: available,

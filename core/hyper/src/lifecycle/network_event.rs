@@ -85,7 +85,6 @@ pub(super) const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
 pub struct NetworkSnapshot {
     pub sequence: u64,
     pub availability: NetworkAvailability,
-    pub reachability: InternetReachability,
     pub transport: NetworkTransportFlags,
     pub is_expensive: bool,
     pub is_constrained: bool,
@@ -94,12 +93,10 @@ pub struct NetworkSnapshot {
 impl NetworkSnapshot {
     pub fn is_offline(&self) -> bool {
         matches!(self.availability, NetworkAvailability::Unavailable)
-            || matches!(self.reachability, InternetReachability::NotReachable)
     }
 
     pub fn should_restore(&self) -> bool {
         matches!(self.availability, NetworkAvailability::Available)
-            || matches!(self.reachability, InternetReachability::Reachable)
     }
 }
 
@@ -109,14 +106,6 @@ pub enum NetworkAvailability {
     Unknown,
     Available,
     Unavailable,
-}
-
-/// Whether the platform has validated internet reachability.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum InternetReachability {
-    Unknown,
-    Reachable,
-    NotReachable,
 }
 
 /// Active network transport flags. Multiple flags can be true at the same time.

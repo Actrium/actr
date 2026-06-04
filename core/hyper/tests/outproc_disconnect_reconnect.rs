@@ -17,9 +17,9 @@
 //!   → sends IceRestartRequest → Offerer receives → wakes backoff → immediate retry
 
 use actr_hyper::lifecycle::{
-    DefaultNetworkEventProcessor, InternetReachability, NetworkAvailability, NetworkEvent,
-    NetworkEventProcessor, NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags,
-    ReconnectReason, process_network_event_batch, select_network_recovery_action,
+    DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent, NetworkEventProcessor,
+    NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags, ReconnectReason,
+    process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
 use actr_hyper::transport::{ConnectionEvent, ConnectionState, Dest};
@@ -45,11 +45,6 @@ fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> 
                 NetworkAvailability::Available
             } else {
                 NetworkAvailability::Unavailable
-            },
-            reachability: if available {
-                InternetReachability::Reachable
-            } else {
-                InternetReachability::NotReachable
             },
             transport: NetworkTransportFlags {
                 wifi,

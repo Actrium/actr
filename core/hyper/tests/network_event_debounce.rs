@@ -4,11 +4,10 @@ use std::time::Duration;
 
 use actr_hyper::lifecycle::{
     AppLifecycleState, CleanupReason, ConnectionFact, ConnectionSupervisor, CredentialState,
-    DebounceConfig, DefaultNetworkEventProcessor, InternetReachability, NetworkAvailability,
-    NetworkEvent, NetworkEventHandle, NetworkEventProcessor, NetworkEventRequest,
-    NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags,
-    ReconnectReason, process_network_event_batch, run_network_event_reconciler,
-    select_network_recovery_action,
+    DebounceConfig, DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent,
+    NetworkEventHandle, NetworkEventProcessor, NetworkEventRequest, NetworkEventResult,
+    NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags, ReconnectReason,
+    process_network_event_batch, run_network_event_reconciler, select_network_recovery_action,
 };
 use actr_hyper::transport::{NetworkError, NetworkResult};
 use actr_hyper::wire::webrtc::{DisconnectReason, SignalingClient, SignalingEvent, SignalingStats};
@@ -220,7 +219,6 @@ impl SignalingClient for FakeSignalingClient {
 fn snapshot(
     sequence: u64,
     availability: NetworkAvailability,
-    reachability: InternetReachability,
     wifi: bool,
     cellular: bool,
     vpn: bool,
@@ -228,7 +226,6 @@ fn snapshot(
     NetworkSnapshot {
         sequence,
         availability,
-        reachability,
         transport: NetworkTransportFlags {
             wifi,
             cellular,
@@ -243,14 +240,7 @@ fn snapshot(
 
 fn online_event(sequence: u64) -> NetworkEvent {
     NetworkEvent::NetworkPathChanged {
-        snapshot: snapshot(
-            sequence,
-            NetworkAvailability::Available,
-            InternetReachability::Reachable,
-            true,
-            false,
-            false,
-        ),
+        snapshot: snapshot(sequence, NetworkAvailability::Available, true, false, false),
     }
 }
 
@@ -259,7 +249,6 @@ fn offline_event(sequence: u64) -> NetworkEvent {
         snapshot: snapshot(
             sequence,
             NetworkAvailability::Unavailable,
-            InternetReachability::NotReachable,
             false,
             false,
             false,
@@ -273,14 +262,7 @@ fn wifi_event(sequence: u64) -> NetworkEvent {
 
 fn cellular_event(sequence: u64) -> NetworkEvent {
     NetworkEvent::NetworkPathChanged {
-        snapshot: snapshot(
-            sequence,
-            NetworkAvailability::Available,
-            InternetReachability::Reachable,
-            false,
-            true,
-            false,
-        ),
+        snapshot: snapshot(sequence, NetworkAvailability::Available, false, true, false),
     }
 }
 
@@ -719,7 +701,6 @@ fn test_connection_supervisor_cleanup_fact_suppresses_later_restore() {
     supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
         1,
         NetworkAvailability::Available,
-        InternetReachability::Reachable,
         true,
         false,
         false,
@@ -739,7 +720,6 @@ fn test_connection_supervisor_uses_latest_snapshot_sequence() {
     supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
         2,
         NetworkAvailability::Available,
-        InternetReachability::Reachable,
         true,
         false,
         true,
@@ -747,7 +727,6 @@ fn test_connection_supervisor_uses_latest_snapshot_sequence() {
     supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
         1,
         NetworkAvailability::Unavailable,
-        InternetReachability::NotReachable,
         false,
         false,
         false,
@@ -765,14 +744,7 @@ fn test_connection_supervisor_selector_matches_public_selector() {
     let events = vec![
         foreground_event(60_000),
         NetworkEvent::NetworkPathChanged {
-            snapshot: snapshot(
-                2,
-                NetworkAvailability::Available,
-                InternetReachability::Reachable,
-                false,
-                true,
-                false,
-            ),
+            snapshot: snapshot(2, NetworkAvailability::Available, false, true, false),
         },
     ];
 
@@ -789,14 +761,7 @@ fn test_connection_supervisor_selector_matches_public_selector() {
 
 #[test]
 fn test_snapshot_and_lifecycle_events_select_expected_actions() {
-    let offline_snapshot = snapshot(
-        1,
-        NetworkAvailability::Unavailable,
-        InternetReachability::NotReachable,
-        false,
-        false,
-        false,
-    );
+    let offline_snapshot = snapshot(1, NetworkAvailability::Unavailable, false, false, false);
     assert_eq!(
         select_network_recovery_action(&[NetworkEvent::NetworkPathChanged {
             snapshot: offline_snapshot,
@@ -804,14 +769,7 @@ fn test_snapshot_and_lifecycle_events_select_expected_actions() {
         NetworkRecoveryAction::Offline
     );
 
-    let vpn_snapshot = snapshot(
-        2,
-        NetworkAvailability::Available,
-        InternetReachability::Reachable,
-        true,
-        false,
-        true,
-    );
+    let vpn_snapshot = snapshot(2, NetworkAvailability::Available, true, false, true);
     assert_eq!(
         select_network_recovery_action(&[NetworkEvent::NetworkPathChanged {
             snapshot: vpn_snapshot,

@@ -9,9 +9,8 @@
 use std::time::{Duration, Instant};
 
 use actr_hyper::lifecycle::{
-    InternetReachability, NetworkAvailability, NetworkEvent, NetworkRecoveryAction,
-    NetworkSnapshot, NetworkTransportFlags, process_network_event_batch,
-    select_network_recovery_action,
+    NetworkAvailability, NetworkEvent, NetworkRecoveryAction, NetworkSnapshot,
+    NetworkTransportFlags, process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
 use actr_protocol::ActrId;
@@ -41,11 +40,6 @@ fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> 
                 NetworkAvailability::Available
             } else {
                 NetworkAvailability::Unavailable
-            },
-            reachability: if available {
-                InternetReachability::Reachable
-            } else {
-                InternetReachability::NotReachable
             },
             transport: NetworkTransportFlags {
                 wifi,
