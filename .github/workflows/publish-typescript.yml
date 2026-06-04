@@ -281,12 +281,26 @@ jobs:
       - name: Verify npm package version
         if: ${{ !inputs.dry_run }}
         run: |
+          set -euo pipefail
           expected_version="${{ inputs.expected_version }}"
-          published_version="$(npm view @actrium/actr version)"
-          if [ "$published_version" != "$expected_version" ]; then
-            echo "Expected published version $expected_version, got $published_version"
+          wait_for_version() {
+            local package="$1"
+            local expected="$2"
+            local attempt
+            for attempt in $(seq 1 20); do
+              if published_version="$(npm view "$package@$expected" version 2>/dev/null)" && [ "$published_version" = "$expected" ]; then
+                echo "$package@$expected is visible on npm"
+                return 0
+              fi
+              echo "Waiting for $package@$expected to become visible on npm (attempt $attempt/20)"
+              sleep 15
+            done
+
+            echo "Expected $package@$expected to be visible on npm"
             exit 1
-          fi
+          }
+
+          wait_for_version @actrium/actr "$expected_version"
           for package in \
             @actrium/actr-darwin-x64 \
             @actrium/actr-darwin-arm64 \
@@ -296,9 +310,5 @@ jobs:
             @actrium/actr-linux-arm64-musl \
             @actrium/actr-win32-x64-msvc
           do
-            native_version="$(npm view "$package" version)"
-            if [ "$native_version" != "$expected_version" ]; then
-              echo "Expected $package version $expected_version, got $native_version"
-              exit 1
-            fi
+            wait_for_version "$package" "$expected_version"
           done
