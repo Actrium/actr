@@ -854,12 +854,28 @@ pub async fn run_network_event_reconciler(
 pub struct NetworkEventHandle {
     /// Event sender (to ActrNode)
     event_tx: mpsc::Sender<NetworkEventRequest>,
+    result_timeout: Duration,
 }
 
 impl NetworkEventHandle {
     /// Create a new NetworkEventHandle
     pub fn new(event_tx: mpsc::Sender<NetworkEventRequest>) -> Self {
-        Self { event_tx }
+        Self::new_with_result_timeout(event_tx, NETWORK_EVENT_RESULT_TIMEOUT)
+    }
+
+    /// Create a new NetworkEventHandle with a custom result timeout.
+    ///
+    /// Production bindings use [`NetworkEventHandle::new`]. Tests can use this
+    /// constructor to verify bounded waiting without sleeping for the full
+    /// binding timeout.
+    pub fn new_with_result_timeout(
+        event_tx: mpsc::Sender<NetworkEventRequest>,
+        result_timeout: Duration,
+    ) -> Self {
+        Self {
+            event_tx,
+            result_timeout,
+        }
     }
 
     /// Handle network available event
@@ -1012,12 +1028,12 @@ impl NetworkEventHandle {
             .await
             .map_err(|e| format!("Failed to send network event: {}", e))?;
 
-        tokio::time::timeout(NETWORK_EVENT_RESULT_TIMEOUT, result_rx)
+        tokio::time::timeout(self.result_timeout, result_rx)
             .await
             .map_err(|_| {
                 format!(
                     "Timed out waiting for network event result after {}ms",
-                    NETWORK_EVENT_RESULT_TIMEOUT.as_millis()
+                    self.result_timeout.as_millis()
                 )
             })?
             .map_err(|_| "Failed to receive network event result".to_string())
@@ -1028,6 +1044,7 @@ impl Clone for NetworkEventHandle {
     fn clone(&self) -> Self {
         Self {
             event_tx: self.event_tx.clone(),
+            result_timeout: self.result_timeout,
         }
     }
 }

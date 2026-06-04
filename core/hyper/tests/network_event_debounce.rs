@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use actr_hyper::lifecycle::{
     CleanupReason, CredentialState, DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent,
-    NetworkEventHandle, NetworkEventProcessor, NetworkRecoveryAction, NetworkSnapshot,
-    ReconnectReason, process_network_event_batch, run_network_event_reconciler,
-    select_network_recovery_action,
+    NetworkEventHandle, NetworkEventProcessor, NetworkEventRequest, NetworkEventResult,
+    NetworkRecoveryAction, NetworkSnapshot, ReconnectReason, process_network_event_batch,
+    run_network_event_reconciler, select_network_recovery_action,
 };
 use actr_hyper::transport::{NetworkError, NetworkResult};
 use actr_hyper::wire::webrtc::{DisconnectReason, SignalingClient, SignalingEvent, SignalingStats};
@@ -873,6 +873,15 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
     assert!(lost_result.success);
     assert!(available_result.success);
     assert!(type_changed_result.success);
+    assert!(matches!(lost_result.event, NetworkEvent::Lost));
+    assert!(matches!(available_result.event, NetworkEvent::Available));
+    assert!(matches!(
+        type_changed_result.event,
+        NetworkEvent::TypeChanged {
+            is_wifi: true,
+            is_cellular: false
+        }
+    ));
     assert!(client.is_connected());
 
     let stats = client.get_stats();
@@ -984,4 +993,120 @@ async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
+async fn test_network_event_handle_fails_fast_when_receiver_closed() {
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
+    drop(event_rx);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_millis(100));
+
+    let err = handle
+        .handle_network_available()
+        .await
+        .expect_err("closed network event receiver should fail");
+
+    assert!(
+        err.contains("Failed to send network event"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_network_event_handle_pending_request_is_bounded_by_deadline() {
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_millis(100));
+
+    let call = tokio::spawn(async move { handle.handle_network_available().await });
+    let _request = event_rx
+        .recv()
+        .await
+        .expect("request should be queued before timeout");
+
+    let err = call
+        .await
+        .expect("event call should not panic")
+        .expect_err("pending request should time out");
+
+    assert!(
+        err.contains("Timed out waiting for network event result"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_reconciler_ignores_cancelled_network_event_callers() {
+    let client = Arc::new(FakeSignalingClient::new());
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client,
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(10),
+        },
+    ));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(1));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let cancelled = {
+        let handle = handle.clone();
+        tokio::spawn(async move { handle.handle_network_available().await })
+    };
+    cancelled.abort();
+
+    let result = handle
+        .handle_network_lost()
+        .await
+        .expect("subsequent event should still complete");
+    assert!(matches!(result.event, NetworkEvent::Lost));
+    assert!(result.success);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
+async fn test_network_event_handle_preserves_per_request_result_correlation() {
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<NetworkEventRequest>(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(1));
+
+    let available = {
+        let handle = handle.clone();
+        tokio::spawn(async move { handle.handle_network_available().await })
+    };
+    let lost = {
+        let handle = handle.clone();
+        tokio::spawn(async move { handle.handle_network_lost().await })
+    };
+
+    let first = event_rx.recv().await.expect("first request");
+    let second = event_rx.recv().await.expect("second request");
+
+    second
+        .result_tx
+        .send(NetworkEventResult::success(second.event.clone(), 1))
+        .expect("second caller should receive result");
+    first
+        .result_tx
+        .send(NetworkEventResult::success(first.event.clone(), 1))
+        .expect("first caller should receive result");
+
+    let available_result = available
+        .await
+        .expect("available task should not panic")
+        .expect("available should complete");
+    let lost_result = lost
+        .await
+        .expect("lost task should not panic")
+        .expect("lost should complete");
+
+    assert!(matches!(available_result.event, NetworkEvent::Available));
+    assert!(matches!(lost_result.event, NetworkEvent::Lost));
 }
