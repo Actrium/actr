@@ -41,6 +41,7 @@ readonly OPTIONAL_SKIPPED_COMPONENTS=(
 readonly PACKAGE_SYNC_GITHUB_API="https://api.github.com"
 readonly SWIFT_PACKAGE_SYNC_REPO="actr-swift-package-sync"
 readonly KOTLIN_PACKAGE_SYNC_REPO="actr-kotlin-package-sync"
+readonly RELEASE_BRANCH_PREFIX="release-prepare/v"
 
 ORIGINAL_REPO_ROOT=""
 WORK_REPO_ROOT=""
@@ -54,27 +55,32 @@ RELEASE_PYTHON_ENV=""
 
 VERSION=""
 DRY_RUN=false
+PREPARE_ONLY=false
 SKIP_PYTHON=false
 PRE_RELEASE=false
 SKIP_WEB=false
+AUTO_VERSION=false
 RUN_MODE="publish"
 OVERALL_STATUS="success"
 FAILURE_REASON=""
 RELEASE_SHA=""
 FINAL_TAG=""
 PACKAGE_SYNC_OWNER="${PACKAGE_SYNC_OWNER:-}"
+RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release-train.sh --version <X.Y.Z> [--dry-run] [--skip-python]
+  scripts/release-train.sh [--version <X.Y.Z>] [--dry-run] [--prepare-only] [--skip-python] [--branch <branch>]
 
 Options:
-  --version <X.Y.Z>  Stable semver used by the monorepo-managed release train.
+  --version <X.Y.Z>  Stable semver used by the monorepo-managed release train (optional in CI).
   --dry-run          Validate the full flow in a disposable worktree without publishing.
+  --prepare-only     Update release versions, validate, and commit locally for a release PR.
   --skip-python      Skip Python package validation, version update, and publishing.
   --pre-release      Mark this release as a pre-release (e.g. 0.2.2-pre.1).
                      Uses npm tag "pre" and allows pre-release semver versions.
+  --branch <branch>  Target release branch (default: main).
   --help             Show this help message.
 EOF
 }
@@ -203,6 +209,63 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
 }
 
+current_workspace_version() {
+  python3 - "$ORIGINAL_REPO_ROOT" <<'PY'
+from __future__ import annotations
+import tomllib, sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+cargo = repo / "Cargo.toml"
+with cargo.open("rb") as fh:
+    data = tomllib.load(fh)
+print(data["workspace"]["package"]["version"])
+PY
+}
+
+detect_conventional_bump() {
+  local last_tag
+  last_tag=$(git -C "$ORIGINAL_REPO_ROOT" describe --tags --match "${FINAL_TAG_PREFIX}*" --abbrev=0 2>/dev/null || echo "")
+
+  if [[ -z "$last_tag" ]]; then
+    log_info "No prior release-train tag found; defaulting to minor bump" >&2
+    echo "minor"
+    return
+  fi
+
+  log_info "Analyzing conventional commits since ${last_tag}" >&2
+  local highest="none"
+
+  while IFS= read -r commit_msg; do
+    if echo "$commit_msg" | grep -qE '^[a-z]+\([^)]+\)?!:|BREAKING CHANGE'; then
+      highest="major"
+      break
+    fi
+    if [[ "$highest" != "major" ]] && echo "$commit_msg" | grep -qE '^feat(\([^)]+\))?:'; then
+      highest="minor"
+    fi
+    if [[ "$highest" == "none" ]] && echo "$commit_msg" | grep -qE '^fix(\([^)]+\))?:'; then
+      highest="patch"
+    fi
+  done < <(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --pretty=format:"%s")
+
+  echo "$highest"
+}
+
+calculate_next_version() {
+  local current=$1
+  local bump=$2
+
+  IFS='.' read -r major minor patch <<< "$current"
+
+  case "$bump" in
+    major) echo "$((major + 1)).0.0" ;;
+    minor) echo "${major}.$((minor + 1)).0" ;;
+    patch) echo "${major}.${minor}.$((patch + 1))" ;;
+    *) echo "$current" ;;
+  esac
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -214,6 +277,10 @@ parse_args() {
         DRY_RUN=true
         shift
         ;;
+      --prepare-only)
+        PREPARE_ONLY=true
+        shift
+        ;;
       --skip-python)
         SKIP_PYTHON=true
         shift
@@ -221,6 +288,10 @@ parse_args() {
       --pre-release)
         PRE_RELEASE=true
         shift
+        ;;
+      --branch)
+        RELEASE_BRANCH="${2:-main}"
+        shift 2
         ;;
       --help)
         usage
@@ -234,12 +305,17 @@ parse_args() {
   done
 
   if [[ -z "$VERSION" ]]; then
-    usage
-    fail "Missing required --version"
+    AUTO_VERSION=true
+  fi
+
+  if [[ "$DRY_RUN" == true && "$PREPARE_ONLY" == true ]]; then
+    fail "--dry-run and --prepare-only cannot be used together"
   fi
 
   if [[ "$DRY_RUN" == true ]]; then
     RUN_MODE="dry-run"
+  elif [[ "$PREPARE_ONLY" == true ]]; then
+    RUN_MODE="prepare"
   fi
 }
 
@@ -278,14 +354,16 @@ prepare_worktree() {
     WORKTREE_PATH=$(mktemp -d "${TMPDIR:-/tmp}/actr-release-train.XXXXXX")
     git -C "$ORIGINAL_REPO_ROOT" worktree add --detach "$WORKTREE_PATH" "$current_head" >/dev/null
     WORK_REPO_ROOT="$WORKTREE_PATH"
+  elif [[ "$PREPARE_ONLY" == true ]]; then
+    :
   else
-    local current_branch current_head origin_main
+    local current_branch current_head origin_target
     current_branch=$(git -C "$ORIGINAL_REPO_ROOT" rev-parse --abbrev-ref HEAD)
-    [[ "$current_branch" == "main" ]] || fail "Non-dry-run execution must start from the local main branch"
+    [[ "$current_branch" == "$RELEASE_BRANCH" ]] || fail "Publish execution must start from the local ${RELEASE_BRANCH} branch"
 
     current_head=$(git -C "$ORIGINAL_REPO_ROOT" rev-parse HEAD)
-    origin_main=$(git -C "$ORIGINAL_REPO_ROOT" rev-parse origin/main)
-    [[ "$current_head" == "$origin_main" ]] || fail "Local main must match origin/main before releasing"
+    origin_target=$(git -C "$ORIGINAL_REPO_ROOT" rev-parse "origin/${RELEASE_BRANCH}")
+    [[ "$current_head" == "$origin_target" ]] || fail "Local ${RELEASE_BRANCH} must match origin/${RELEASE_BRANCH} before publishing"
   fi
 
   cd "$WORK_REPO_ROOT"
@@ -409,6 +487,13 @@ package_files = [
     repo / "tools/protoc-gen/web/Cargo.toml",
     repo / "cli/Cargo.toml",
     repo / "bindings/typescript/Cargo.toml",
+    repo / "bindings/web/crates/actr-web-abi/Cargo.toml",
+    repo / "bindings/web/crates/common/Cargo.toml",
+    repo / "bindings/web/crates/sw-host/Cargo.toml",
+    repo / "bindings/web/crates/dom-bridge/Cargo.toml",
+    repo / "bindings/web/crates/mailbox-web/Cargo.toml",
+    repo / "bindings/web/crates/platform-web/Cargo.toml",
+    repo / "bindings/web/crates/framework-web-entry-smoke/Cargo.toml",
 ]
 
 cli_dependency_names = {
@@ -427,6 +512,7 @@ cli_dependency_names = {
 
 dependency_version_names = {
     "actr-web-abi",
+    "actr-pack",
 }
 
 workspace_dependency_names = {
@@ -576,6 +662,10 @@ run_validation_suite() {
 }
 
 append_skipped_components() {
+  if (( ${#OPTIONAL_SKIPPED_COMPONENTS[@]} == 0 )); then
+    return
+  fi
+
   local descriptor name stage reason
   for descriptor in "${OPTIONAL_SKIPPED_COMPONENTS[@]}"; do
     IFS='|' read -r name stage reason <<<"$descriptor"
@@ -853,20 +943,7 @@ publish_package_sync_repo() {
   append_state "$repo" "sdk" "package_sync" "success" "$run_url" "$release_url" "$RELEASE_SHA"
 }
 
-commit_and_push_version_bump() {
-  if [[ "$DRY_RUN" == true ]]; then
-    set_release_sha
-    return
-  fi
-
-  if git diff --quiet; then
-    log_info "Version files already match ${VERSION}; skipping commit"
-    set_release_sha
-    return
-  fi
-
-  configure_git_identity
-
+stage_release_version_files() {
   git add Cargo.toml Cargo.lock \
     bindings/web/Cargo.toml \
     core/protocol/Cargo.toml \
@@ -888,10 +965,63 @@ commit_and_push_version_bump() {
     bindings/web/packages/web-sdk/package.json \
     bindings/web/packages/web-react/package.json \
     bindings/typescript/Cargo.toml \
-    bindings/typescript/package.json
+    bindings/typescript/package.json \
+    bindings/web/crates/actr-web-abi/Cargo.toml \
+    bindings/web/crates/common/Cargo.toml \
+    bindings/web/crates/sw-host/Cargo.toml \
+    bindings/web/crates/dom-bridge/Cargo.toml \
+    bindings/web/crates/mailbox-web/Cargo.toml \
+    bindings/web/crates/platform-web/Cargo.toml \
+    bindings/web/crates/framework-web-entry-smoke/Cargo.toml
+}
+
+commit_release_prepare() {
+  if git diff --quiet; then
+    log_info "Version files already match ${VERSION}; skipping release prepare commit"
+    set_release_sha
+    return
+  fi
+
+  configure_git_identity
+  stage_release_version_files
   git commit -m "chore(release): basic train v${VERSION}"
-  git push origin main
   set_release_sha
+}
+
+ensure_versions_prepared() {
+  local check_path previous_work_repo_root diff_files
+  check_path=$(mktemp -d "${TMPDIR:-/tmp}/actr-release-version-check.XXXXXX")
+  git -C "$ORIGINAL_REPO_ROOT" worktree add --detach "$check_path" HEAD >/dev/null
+
+  previous_work_repo_root="$WORK_REPO_ROOT"
+  WORK_REPO_ROOT="$check_path"
+  update_versions
+
+  diff_files=$(git -C "$check_path" diff --name-only)
+
+  git -C "$ORIGINAL_REPO_ROOT" worktree remove --force "$check_path" >/dev/null
+  WORK_REPO_ROOT="$previous_work_repo_root"
+
+  if [[ -n "$diff_files" ]]; then
+    printf '%s\n' "$diff_files" >&2
+    fail "Release version files do not match ${VERSION}; run scripts/release-train.sh --version ${VERSION} --prepare-only on a PR branch and merge it before publishing"
+  fi
+}
+
+ensure_publish_worktree_clean() {
+  local dirty_files
+  dirty_files=$(
+    git status --porcelain --untracked-files=normal -- . \
+      ":(exclude)release/reports/release-train-v${VERSION}.state.tsv" \
+      ":(exclude)release/reports/release-train-v${VERSION}.md" \
+      ":(exclude)release/reports/release-train-v${VERSION}.json" \
+      ":(exclude)cli/assets/web-runtime/" \
+      ":(exclude)bindings/web/Cargo.lock"
+  )
+  if [[ -n "$dirty_files" ]]; then
+    printf '%s\n' "$dirty_files" >&2
+    fail "Release validation modified files; include these changes in the release prepare PR before publishing"
+  fi
 }
 
 crate_registry_url() {
@@ -1054,41 +1184,25 @@ create_final_tag() {
   git push origin "$FINAL_TAG"
 }
 
-main() {
-  require_command git
-  require_command cargo
-  require_command curl
-  require_command python3
-
-  parse_args "$@"
-  validate_version
-
-  ORIGINAL_REPO_ROOT=$(git rev-parse --show-toplevel)
-  ensure_clean_worktree
-  prepare_paths
-  prepare_worktree
-  ensure_release_tag_absent
-  resolve_package_sync_owner
-
-  if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
-    fail "CARGO_REGISTRY_TOKEN must be set for publishing"
+run_release_train() {
+  if [[ "$PREPARE_ONLY" == true ]]; then
+    update_versions
+    run_validation_suite
+    commit_release_prepare
+    return
   fi
 
-  # PYPI_API_TOKEN is optional: when unset, the Python package publish is
-  # skipped (see publish_python_package) and the train continues.
-
-  if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
-    fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
-  fi
-
-  if [[ "$SKIP_PYTHON" == false ]]; then
-    install_python_release_tools
+  if [[ "$DRY_RUN" == true ]]; then
+    update_versions
   else
-    log_info "Skipping Python release tool installation"
+    ensure_versions_prepared
   fi
-  update_versions
+
   run_validation_suite
-  commit_and_push_version_bump
+  if [[ "$DRY_RUN" == false ]]; then
+    ensure_publish_worktree_clean
+  fi
+  set_release_sha
   append_skipped_components
 
   local package
@@ -1124,6 +1238,59 @@ main() {
   if [[ "$SKIP_WEB" != true ]]; then
     publish_typescript_package
   fi
+}
+
+main() {
+  require_command git
+  require_command cargo
+  require_command curl
+  require_command python3
+
+  parse_args "$@"
+
+  ORIGINAL_REPO_ROOT=$(git rev-parse --show-toplevel)
+
+  if [[ "$AUTO_VERSION" == true ]]; then
+    if [[ "$PREPARE_ONLY" == true ]]; then
+      local current_ver bump
+      current_ver=$(current_workspace_version)
+      bump=$(detect_conventional_bump)
+      if [[ "$bump" == "none" ]]; then
+        log_info "No publishable conventional-commit changes since last release; nothing to prepare"
+        exit 0
+      fi
+      VERSION=$(calculate_next_version "$current_ver" "$bump")
+      log_info "Auto-detected version: ${VERSION} (bump: ${bump}, current: ${current_ver})"
+    else
+      VERSION=$(current_workspace_version)
+      log_info "Using workspace version: ${VERSION}"
+    fi
+  fi
+
+  validate_version
+  ensure_clean_worktree
+  prepare_paths
+  prepare_worktree
+  ensure_release_tag_absent
+  resolve_package_sync_owner
+
+  if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]] && [[ "$DRY_RUN" == false && "$PREPARE_ONLY" == false ]]; then
+    fail "CARGO_REGISTRY_TOKEN must be set for publishing"
+  fi
+
+  # PYPI_API_TOKEN is optional: when unset, the Python package publish is
+  # skipped (see publish_python_package) and the train continues.
+
+  if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false && "$PREPARE_ONLY" == false ]]; then
+    fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
+  fi
+
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    install_python_release_tools
+  else
+    log_info "Skipping Python release tool installation"
+  fi
+  run_release_train
 }
 
 main "$@"

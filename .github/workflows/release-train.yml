@@ -1,25 +1,41 @@
 name: Release Train (Basic)
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "core/**/Cargo.toml"
+      - "cli/Cargo.toml"
+      - "testing/**/Cargo.toml"
+      - "tools/protoc-gen/**/Cargo.toml"
+      - "tools/protoc-gen/**/pyproject.toml"
+      - "bindings/web/Cargo.toml"
+      - "bindings/web/crates/**/Cargo.toml"
+      - "bindings/web/packages/**/package.json"
+      - "bindings/typescript/Cargo.toml"
+      - "bindings/typescript/package.json"
   workflow_dispatch:
     inputs:
       version:
-        description: Stable semver shared by the monorepo-managed release train.
-        required: true
+        description: Stable semver (optional; auto-detected from workspace Cargo.toml if omitted).
+        required: false
         type: string
       dry_run:
-        description: Validate the full flow without publishing.
-        required: true
+        description: Validate without publishing.
+        required: false
         type: boolean
         default: false
       skip_python:
         description: Skip Python package validation and publishing.
-        required: true
+        required: false
         type: boolean
         default: false
       pre_release:
-        description: Publish as a pre-release (npm tag "pre", allows pre-release semver).
-        required: true
+        description: Publish as a pre-release.
+        required: false
         type: boolean
         default: false
 
@@ -45,15 +61,11 @@ jobs:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
     steps:
-      - name: Checkout release ref
+      - name: Checkout main
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ github.ref_name }}
-
-      - name: Switch to local release branch
-        run: |
-          git switch "${{ github.ref_name }}" || git switch -c "${{ github.ref_name }}" "origin/${{ github.ref_name }}"
+          ref: main
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -87,7 +99,10 @@ jobs:
 
       - name: Run release train
         run: |
-          args=(--version "${{ inputs.version }}")
+          args=()
+          if [[ -n "${{ inputs.version }}" ]]; then
+            args+=(--version "${{ inputs.version }}")
+          fi
           if [[ "${{ inputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
@@ -97,12 +112,20 @@ jobs:
           if [[ "${{ inputs.pre_release }}" == "true" ]]; then
             args+=(--pre-release)
           fi
+          args+=(--branch main)
           scripts/release-train.sh "${args[@]}"
+
+      - name: Resolve report version
+        if: always()
+        id: report_version
+        run: |
+          ver=$(python3 -c "import tomllib;from pathlib import Path;d=tomllib.loads(Path('Cargo.toml').read_text());print(d['workspace']['package']['version'])")
+          echo "value=${ver}" >> "$GITHUB_OUTPUT"
 
       - name: Upload release reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: basic-release-train-report-${{ inputs.version }}
-          path: release/reports/release-train-v${{ inputs.version }}.*
+          name: basic-release-train-report-${{ steps.report_version.outputs.value }}
+          path: release/reports/release-train-v${{ steps.report_version.outputs.value }}.*
           if-no-files-found: error

@@ -10,8 +10,10 @@ pub mod harness;
 pub mod signaling;
 pub mod utils;
 pub mod vnet;
+pub mod wait;
 
 pub use harness::{TestHarness, TestPeer};
 pub use signaling::TestSignalingServer;
 pub use utils::*;
 pub use vnet::{VNetPair, create_vnet_pair};
+pub use wait::*;
