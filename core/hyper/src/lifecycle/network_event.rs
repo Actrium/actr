@@ -557,10 +557,8 @@ impl DefaultNetworkEventProcessor {
             coordinator.clear_pending_restarts().await;
         }
 
-        if self.signaling_client.is_connected() {
-            tracing::info!("🔌 Disconnecting WebSocket...");
-            let _ = self.signaling_client.disconnect().await;
-        }
+        tracing::info!("🔌 Disconnecting WebSocket...");
+        let _ = self.signaling_client.disconnect().await;
 
         Ok(())
     }
@@ -643,17 +641,15 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         }
 
         // Step 3: Proactively disconnect the WebSocket.
-        if self.signaling_client.is_connected() {
-            tracing::info!("🔌 Disconnecting WebSocket...");
-            match self.signaling_client.disconnect().await {
-                Ok(_) => {
-                    tracing::info!("✅ WebSocket disconnected successfully");
-                }
-                Err(e) => {
-                    let err_msg = format!("Failed to disconnect WebSocket: {}", e);
-                    tracing::warn!("⚠️  {}", err_msg);
-                    // Do not fail the whole cleanup; continue releasing other resources.
-                }
+        tracing::info!("🔌 Disconnecting WebSocket...");
+        match self.signaling_client.disconnect().await {
+            Ok(_) => {
+                tracing::info!("✅ WebSocket disconnected successfully");
+            }
+            Err(e) => {
+                let err_msg = format!("Failed to disconnect WebSocket: {}", e);
+                tracing::warn!("⚠️  {}", err_msg);
+                // Do not fail the whole cleanup; continue releasing other resources.
             }
         }
 

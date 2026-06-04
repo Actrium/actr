@@ -965,3 +965,114 @@ async fn mobile_event_batch_during_retry_backoff_does_not_duplicate_handler() {
         "retry duplicate should wait for/cache original handler result"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn continuous_requests_during_mobile_event_storm_complete_without_pending_leak() {
+    let target = make_actor_id(2);
+    let outcomes = std::iter::repeat_with(|| Ok(()))
+        .take(6)
+        .collect::<Vec<_>>();
+    let (gate, lane, _stats) =
+        gate_with_lane(ScriptedLane::new(outcomes), Duration::from_millis(10));
+
+    let request_ids = (0..6)
+        .map(|index| format!("mobile-event-storm-continuous-{index}"))
+        .collect::<Vec<_>>();
+
+    let mut request_tasks = Vec::new();
+    for request_id in &request_ids {
+        let gate = gate.clone();
+        let target = target.clone();
+        let request_id = request_id.clone();
+        request_tasks.push(tokio::spawn(async move {
+            gate.send_request(&target, envelope(&request_id)).await
+        }));
+    }
+
+    let mut response_tasks = Vec::new();
+    for request_id in &request_ids {
+        let gate = gate.clone();
+        let request_id = request_id.clone();
+        response_tasks.push(tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                if gate
+                    .handle_response(&request_id, Ok(Bytes::from_static(b"storm-ok")))
+                    .await
+                    .expect("test response injection should not fail")
+                {
+                    return;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "request {request_id} was never registered as pending"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }));
+    }
+
+    let actions = Arc::new(StdMutex::new(Vec::new()));
+    let processor = Arc::new(MobileEventRecorder {
+        actions: actions.clone(),
+        delay: Duration::from_millis(30),
+    });
+    let storm_task = tokio::spawn(async move {
+        let batches = [
+            vec![
+                network_event(1, false, false, false),
+                network_event(2, true, false, false),
+                network_event(3, true, false, true),
+            ],
+            vec![network_event(4, false, false, false)],
+            vec![network_event(5, true, true, false)],
+        ];
+
+        for batch in batches {
+            let results = process_network_event_batch(batch, processor.clone()).await;
+            assert!(results.iter().all(|result| result.success));
+        }
+    });
+
+    for task in response_tasks {
+        task.await
+            .expect("response injection task should not panic");
+    }
+
+    for task in request_tasks {
+        let response = task
+            .await
+            .expect("request task should not panic")
+            .expect("request should complete during mobile event storm");
+        assert_eq!(response, Bytes::from_static(b"storm-ok"));
+    }
+
+    storm_task
+        .await
+        .expect("mobile event storm task should not panic");
+
+    assert_eq!(
+        gate.pending_count().await,
+        0,
+        "continuous requests during event storm should leave no pending requests"
+    );
+    assert_eq!(
+        lane.sent_payloads().len(),
+        request_ids.len(),
+        "each continuous request should send exactly once"
+    );
+
+    let actions = actions
+        .lock()
+        .expect("mobile event actions mutex poisoned")
+        .clone();
+    assert_eq!(
+        actions,
+        vec![
+            NetworkRecoveryAction::Restore,
+            NetworkRecoveryAction::Offline,
+            NetworkRecoveryAction::Restore,
+        ],
+        "event storm batches should settle to one action per batch"
+    );
+}

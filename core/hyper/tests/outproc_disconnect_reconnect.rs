@@ -377,6 +377,43 @@ async fn wait_for_signaling_reconnect(
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_unreachable_peer_request_fails_bounded_and_clears_pending() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+
+    let source = harness.peer(100);
+    let request = source.spawn_request(999, "unreachable_peer_bounded_failure", 500);
+
+    match tokio::time::timeout(Duration::from_secs(3), request).await {
+        Ok(Ok(Err(err))) => {
+            let message = err.to_string();
+            assert!(
+                message.contains("Request timeout")
+                    || message.contains("timeout")
+                    || message.contains("Connection")
+                    || message.contains("Unavailable")
+                    || message.contains("unavailable"),
+                "unreachable peer should fail with an explainable bounded error, got: {message}"
+            );
+        }
+        Ok(Ok(Ok(response))) => panic!(
+            "unreachable peer request unexpectedly succeeded with {} bytes",
+            response.len()
+        ),
+        Ok(Err(err)) => panic!("unreachable peer request task panicked: {err}"),
+        Err(_) => panic!("unreachable peer request did not complete within bounded timeout"),
+    }
+
+    assert_eq!(
+        source.pending_count().await,
+        0,
+        "unreachable peer request must clear pending state after bounded failure"
+    );
+}
+
 // ==================== DataChannel close cleanup ====================
 
 #[tokio::test]
@@ -704,6 +741,71 @@ async fn test_signaling_restore_wakes_existing_restart_without_duplicate_offer()
         1,
         "repeated recovery resumes should wake the existing restart task, not send duplicate offers"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_signaling_connected_event_resumes_existing_webrtc_recovery() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establish connection with peer 100 as offerer");
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    let offerer = harness.peer(100);
+
+    tracing::info!("Step 2: Put WebRTC recovery into waiting state while signaling is down");
+    offerer
+        .signaling_client
+        .disconnect()
+        .await
+        .expect("test should disconnect offerer signaling");
+    offerer
+        .coordinator
+        .begin_network_recovery("NetworkLost")
+        .await;
+    offerer
+        .coordinator
+        .restart_network_recovery_connections()
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        0,
+        "ICE restart must not send an offer while signaling is disconnected"
+    );
+
+    tracing::info!("Step 3: Reconnect signaling only; Node bridge should resume WebRTC recovery");
+    offerer
+        .signaling_client
+        .connect_once()
+        .await
+        .expect("test should reconnect offerer signaling");
+
+    harness
+        .wait_for_ice_restart_count(1, Duration::from_secs(5))
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        1,
+        "signaling Connected event should resume once without requiring another mobile event"
+    );
+
+    let response = expect_request_eventually_ok(
+        &harness,
+        100,
+        200,
+        "signaling_connected_bridge_recovery",
+        Duration::from_secs(15),
+        2_000,
+    )
+    .await;
+    assert!(!response.is_empty());
 }
 
 #[tokio::test]

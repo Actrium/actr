@@ -19,8 +19,15 @@ enum EventSpec {
     Lost,
     TypeWifi,
     TypeCellular,
+    TypeVpn,
     TypeOther,
+    UnknownPath,
+    ExpensiveConstrainedCellular,
+    Background,
+    ForegroundShort,
+    ForegroundLong,
     CleanupConnections,
+    ForceReconnect,
 }
 
 impl EventSpec {
@@ -30,9 +37,84 @@ impl EventSpec {
             EventSpec::Lost => network_event(sequence, false, false, false),
             EventSpec::TypeWifi => network_event(sequence, true, true, false),
             EventSpec::TypeCellular => network_event(sequence, true, false, true),
-            EventSpec::TypeOther => network_event(sequence, true, false, false),
+            EventSpec::TypeVpn => NetworkEvent::NetworkPathChanged {
+                snapshot: NetworkSnapshot {
+                    sequence,
+                    availability: NetworkAvailability::Available,
+                    transport: NetworkTransportFlags {
+                        wifi: false,
+                        cellular: false,
+                        ethernet: false,
+                        vpn: true,
+                        other: true,
+                    },
+                    is_expensive: false,
+                    is_constrained: false,
+                },
+            },
+            EventSpec::TypeOther => NetworkEvent::NetworkPathChanged {
+                snapshot: NetworkSnapshot {
+                    sequence,
+                    availability: NetworkAvailability::Available,
+                    transport: NetworkTransportFlags {
+                        wifi: false,
+                        cellular: false,
+                        ethernet: false,
+                        vpn: false,
+                        other: true,
+                    },
+                    is_expensive: false,
+                    is_constrained: false,
+                },
+            },
+            EventSpec::UnknownPath => NetworkEvent::NetworkPathChanged {
+                snapshot: NetworkSnapshot {
+                    sequence,
+                    availability: NetworkAvailability::Unknown,
+                    transport: NetworkTransportFlags {
+                        wifi: true,
+                        cellular: false,
+                        ethernet: false,
+                        vpn: false,
+                        other: false,
+                    },
+                    is_expensive: false,
+                    is_constrained: false,
+                },
+            },
+            EventSpec::ExpensiveConstrainedCellular => NetworkEvent::NetworkPathChanged {
+                snapshot: NetworkSnapshot {
+                    sequence,
+                    availability: NetworkAvailability::Available,
+                    transport: NetworkTransportFlags {
+                        wifi: false,
+                        cellular: true,
+                        ethernet: false,
+                        vpn: false,
+                        other: false,
+                    },
+                    is_expensive: true,
+                    is_constrained: true,
+                },
+            },
+            EventSpec::Background => NetworkEvent::AppLifecycleChanged {
+                state: actr_hyper::lifecycle::AppLifecycleState::Background,
+            },
+            EventSpec::ForegroundShort => NetworkEvent::AppLifecycleChanged {
+                state: actr_hyper::lifecycle::AppLifecycleState::Foreground {
+                    background_duration_ms: 5_000,
+                },
+            },
+            EventSpec::ForegroundLong => NetworkEvent::AppLifecycleChanged {
+                state: actr_hyper::lifecycle::AppLifecycleState::Foreground {
+                    background_duration_ms: 45_000,
+                },
+            },
             EventSpec::CleanupConnections => NetworkEvent::CleanupConnections {
                 reason: CleanupReason::ManualReset,
+            },
+            EventSpec::ForceReconnect => NetworkEvent::ForceReconnect {
+                reason: actr_hyper::lifecycle::ReconnectReason::ManualReconnect,
             },
         }
     }
@@ -83,8 +165,15 @@ const A: EventSpec = EventSpec::Available;
 const L: EventSpec = EventSpec::Lost;
 const TW: EventSpec = EventSpec::TypeWifi;
 const TC: EventSpec = EventSpec::TypeCellular;
+const TV: EventSpec = EventSpec::TypeVpn;
 const TO: EventSpec = EventSpec::TypeOther;
+const TU: EventSpec = EventSpec::UnknownPath;
+const TEC: EventSpec = EventSpec::ExpensiveConstrainedCellular;
+const BG: EventSpec = EventSpec::Background;
+const FS: EventSpec = EventSpec::ForegroundShort;
+const FL: EventSpec = EventSpec::ForegroundLong;
 const CC: EventSpec = EventSpec::CleanupConnections;
+const FR: EventSpec = EventSpec::ForceReconnect;
 
 const ANDROID_SCENARIOS: &[MobileScenario] = &[
     MobileScenario {
@@ -118,6 +207,11 @@ const ANDROID_SCENARIOS: &[MobileScenario] = &[
         expected_action: NetworkRecoveryAction::Restore,
     },
     MobileScenario {
+        name: "android_duplicate_available_type_changed_storm",
+        sdk_events: &[A, A, TW, TW, A],
+        expected_action: NetworkRecoveryAction::Restore,
+    },
+    MobileScenario {
         name: "android_short_network_flap",
         sdk_events: &[L, A, TW],
         expected_action: NetworkRecoveryAction::Restore,
@@ -134,18 +228,23 @@ const ANDROID_SCENARIOS: &[MobileScenario] = &[
     },
     MobileScenario {
         name: "android_vpn_toggle",
+        sdk_events: &[TV],
+        expected_action: NetworkRecoveryAction::Restore,
+    },
+    MobileScenario {
+        name: "android_other_transport_available",
         sdk_events: &[TO],
         expected_action: NetworkRecoveryAction::Restore,
     },
     MobileScenario {
         name: "android_captive_portal_or_validated_change",
-        sdk_events: &[A, TW],
-        expected_action: NetworkRecoveryAction::Restore,
+        sdk_events: &[TU],
+        expected_action: NetworkRecoveryAction::Probe,
     },
     MobileScenario {
         name: "android_dns_or_link_properties_change",
-        sdk_events: &[TW],
-        expected_action: NetworkRecoveryAction::Restore,
+        sdk_events: &[TU],
+        expected_action: NetworkRecoveryAction::Probe,
     },
     MobileScenario {
         name: "android_metered_change_no_event",
@@ -154,7 +253,7 @@ const ANDROID_SCENARIOS: &[MobileScenario] = &[
     },
     MobileScenario {
         name: "android_metered_change_reported_as_type_changed",
-        sdk_events: &[TC],
+        sdk_events: &[TEC],
         expected_action: NetworkRecoveryAction::Restore,
     },
     MobileScenario {
@@ -164,8 +263,28 @@ const ANDROID_SCENARIOS: &[MobileScenario] = &[
     },
     MobileScenario {
         name: "android_background_default_no_cleanup",
-        sdk_events: &[],
+        sdk_events: &[BG],
         expected_action: NetworkRecoveryAction::Noop,
+    },
+    MobileScenario {
+        name: "android_short_foreground_probe_without_path",
+        sdk_events: &[FS],
+        expected_action: NetworkRecoveryAction::Probe,
+    },
+    MobileScenario {
+        name: "android_short_foreground_with_online_snapshot",
+        sdk_events: &[FS, A, TW],
+        expected_action: NetworkRecoveryAction::Restore,
+    },
+    MobileScenario {
+        name: "android_long_foreground_force_reconnect",
+        sdk_events: &[FL, A, TW],
+        expected_action: NetworkRecoveryAction::ForceReconnect,
+    },
+    MobileScenario {
+        name: "android_long_foreground_offline_wins",
+        sdk_events: &[FL, L],
+        expected_action: NetworkRecoveryAction::Offline,
     },
     MobileScenario {
         name: "android_foreground_without_cleanup",
@@ -176,6 +295,16 @@ const ANDROID_SCENARIOS: &[MobileScenario] = &[
         name: "android_foreground_legacy_cleanup",
         sdk_events: &[CC, A, TW],
         expected_action: NetworkRecoveryAction::CleanupOnly,
+    },
+    MobileScenario {
+        name: "android_cleanup_suppresses_later_network_restore",
+        sdk_events: &[CC, A, TW, A],
+        expected_action: NetworkRecoveryAction::CleanupOnly,
+    },
+    MobileScenario {
+        name: "android_force_reconnect_over_online_path",
+        sdk_events: &[FR, A, TW],
+        expected_action: NetworkRecoveryAction::ForceReconnect,
     },
     MobileScenario {
         name: "android_background_network_change_delayed_online",
@@ -231,6 +360,11 @@ const IOS_SCENARIOS: &[MobileScenario] = &[
         expected_action: NetworkRecoveryAction::Restore,
     },
     MobileScenario {
+        name: "ios_duplicate_path_updates_collapse_to_restore",
+        sdk_events: &[A, A, TW, TW],
+        expected_action: NetworkRecoveryAction::Restore,
+    },
+    MobileScenario {
         name: "ios_wifi_lost_without_cellular",
         sdk_events: &[L],
         expected_action: NetworkRecoveryAction::Offline,
@@ -247,6 +381,11 @@ const IOS_SCENARIOS: &[MobileScenario] = &[
     },
     MobileScenario {
         name: "ios_vpn_or_hotspot_change",
+        sdk_events: &[TV],
+        expected_action: NetworkRecoveryAction::Restore,
+    },
+    MobileScenario {
+        name: "ios_hotspot_other_transport_change",
         sdk_events: &[TO],
         expected_action: NetworkRecoveryAction::Restore,
     },
@@ -254,6 +393,11 @@ const IOS_SCENARIOS: &[MobileScenario] = &[
         name: "ios_low_data_mode_change",
         sdk_events: &[],
         expected_action: NetworkRecoveryAction::Noop,
+    },
+    MobileScenario {
+        name: "ios_low_data_mode_reported_as_constrained_path",
+        sdk_events: &[TEC],
+        expected_action: NetworkRecoveryAction::Restore,
     },
     MobileScenario {
         name: "ios_expensive_network_change_no_event",
@@ -267,13 +411,33 @@ const IOS_SCENARIOS: &[MobileScenario] = &[
     },
     MobileScenario {
         name: "ios_route_or_dns_change",
-        sdk_events: &[TW],
-        expected_action: NetworkRecoveryAction::Restore,
+        sdk_events: &[TU],
+        expected_action: NetworkRecoveryAction::Probe,
     },
     MobileScenario {
         name: "ios_background_default_no_cleanup",
-        sdk_events: &[],
+        sdk_events: &[BG],
         expected_action: NetworkRecoveryAction::Noop,
+    },
+    MobileScenario {
+        name: "ios_short_foreground_probe_without_path",
+        sdk_events: &[FS],
+        expected_action: NetworkRecoveryAction::Probe,
+    },
+    MobileScenario {
+        name: "ios_short_foreground_with_online_snapshot",
+        sdk_events: &[FS, A, TW],
+        expected_action: NetworkRecoveryAction::Restore,
+    },
+    MobileScenario {
+        name: "ios_long_foreground_force_reconnect",
+        sdk_events: &[FL, A, TW],
+        expected_action: NetworkRecoveryAction::ForceReconnect,
+    },
+    MobileScenario {
+        name: "ios_long_foreground_offline_wins",
+        sdk_events: &[FL, L],
+        expected_action: NetworkRecoveryAction::Offline,
     },
     MobileScenario {
         name: "ios_foreground_without_cleanup",
@@ -284,6 +448,16 @@ const IOS_SCENARIOS: &[MobileScenario] = &[
         name: "ios_foreground_legacy_cleanup",
         sdk_events: &[CC, A, TW],
         expected_action: NetworkRecoveryAction::CleanupOnly,
+    },
+    MobileScenario {
+        name: "ios_cleanup_suppresses_delayed_path_callbacks",
+        sdk_events: &[CC, A, TW],
+        expected_action: NetworkRecoveryAction::CleanupOnly,
+    },
+    MobileScenario {
+        name: "ios_force_reconnect_over_online_path",
+        sdk_events: &[FR, A, TW],
+        expected_action: NetworkRecoveryAction::ForceReconnect,
     },
     MobileScenario {
         name: "ios_suspended_restore_online",
@@ -403,6 +577,62 @@ fn test_android_documented_network_scenarios() {
 #[test]
 fn test_ios_documented_network_scenarios() {
     assert_documented_scenarios("ios", IOS_SCENARIOS);
+}
+
+#[test]
+fn test_mobile_replay_ignores_late_old_snapshot_sequences() {
+    let android_old_lost_late = vec![
+        network_event(10, true, false, true),
+        wifi_event(11),
+        offline_event(9),
+    ];
+    assert_eq!(
+        select_network_recovery_action(&android_old_lost_late),
+        NetworkRecoveryAction::Restore,
+        "late old Android lost callback must not override a newer available snapshot"
+    );
+
+    let ios_unsatisfied_gap_restored = vec![
+        offline_event(20),
+        network_event(21, true, false, true),
+        wifi_event(22),
+    ];
+    assert_eq!(
+        select_network_recovery_action(&ios_unsatisfied_gap_restored),
+        NetworkRecoveryAction::Restore,
+        "iOS unsatisfied gap should restore when the latest sequence is available"
+    );
+}
+
+#[test]
+fn test_mobile_replay_lifecycle_and_path_batch_priority() {
+    let short_foreground_online = materialize_events(&[FS, A, TW]);
+    assert_eq!(
+        select_network_recovery_action(&short_foreground_online),
+        NetworkRecoveryAction::Restore,
+        "short foreground plus online path should restore without force reconnect"
+    );
+
+    let long_foreground_online = materialize_events(&[FL, A, TW]);
+    assert_eq!(
+        select_network_recovery_action(&long_foreground_online),
+        NetworkRecoveryAction::ForceReconnect,
+        "long foreground plus online path should force cleanup and reconnect"
+    );
+
+    let long_foreground_offline = materialize_events(&[FL, L]);
+    assert_eq!(
+        select_network_recovery_action(&long_foreground_offline),
+        NetworkRecoveryAction::Offline,
+        "offline path must suppress long-background force reconnect in the same batch"
+    );
+
+    let cleanup_path_force = materialize_events(&[CC, A, FR]);
+    assert_eq!(
+        select_network_recovery_action(&cleanup_path_force),
+        NetworkRecoveryAction::CleanupOnly,
+        "cleanup-only commands must not become reconnects because a path or force event is nearby"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

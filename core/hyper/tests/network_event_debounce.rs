@@ -223,19 +223,39 @@ fn snapshot(
     cellular: bool,
     vpn: bool,
 ) -> NetworkSnapshot {
-    NetworkSnapshot {
+    snapshot_with_flags(
         sequence,
         availability,
-        transport: NetworkTransportFlags {
+        NetworkTransportFlags {
             wifi,
             cellular,
             ethernet: false,
             vpn,
             other: false,
         },
-        is_expensive: false,
-        is_constrained: false,
+        false,
+        false,
+    )
+}
+
+fn snapshot_with_flags(
+    sequence: u64,
+    availability: NetworkAvailability,
+    transport: NetworkTransportFlags,
+    is_expensive: bool,
+    is_constrained: bool,
+) -> NetworkSnapshot {
+    NetworkSnapshot {
+        sequence,
+        availability,
+        transport,
+        is_expensive,
+        is_constrained,
     }
+}
+
+fn path_event(snapshot: NetworkSnapshot) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged { snapshot }
 }
 
 fn online_event(sequence: u64) -> NetworkEvent {
@@ -278,6 +298,224 @@ fn background_event() -> NetworkEvent {
     NetworkEvent::AppLifecycleChanged {
         state: AppLifecycleState::Background,
     }
+}
+
+#[test]
+fn test_l0_documented_event_action_matrix() {
+    struct Case {
+        case_id: &'static str,
+        events: Vec<NetworkEvent>,
+        expected: NetworkRecoveryAction,
+    }
+
+    let legacy_available = |sequence| {
+        path_event(snapshot(
+            sequence,
+            NetworkAvailability::Available,
+            false,
+            false,
+            false,
+        ))
+    };
+
+    let cases = vec![
+        Case {
+            case_id: "L0-01 empty events",
+            events: vec![],
+            expected: NetworkRecoveryAction::Noop,
+        },
+        Case {
+            case_id: "L0-02 available",
+            events: vec![online_event(1)],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-03 unavailable",
+            events: vec![offline_event(1)],
+            expected: NetworkRecoveryAction::Offline,
+        },
+        Case {
+            case_id: "L0-04 wifi",
+            events: vec![wifi_event(1)],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-05 cellular",
+            events: vec![cellular_event(1)],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-06 other transport",
+            events: vec![path_event(snapshot_with_flags(
+                1,
+                NetworkAvailability::Available,
+                NetworkTransportFlags {
+                    other: true,
+                    ..Default::default()
+                },
+                false,
+                false,
+            ))],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-07 cleanup",
+            events: vec![NetworkEvent::CleanupConnections {
+                reason: CleanupReason::ManualReset,
+            }],
+            expected: NetworkRecoveryAction::CleanupOnly,
+        },
+        Case {
+            case_id: "L0-08 unavailable then available",
+            events: vec![offline_event(1), wifi_event(2)],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-09 available then unavailable",
+            events: vec![online_event(1), offline_event(2)],
+            expected: NetworkRecoveryAction::Offline,
+        },
+        Case {
+            case_id: "L0-10 cleanup before available",
+            events: vec![
+                NetworkEvent::CleanupConnections {
+                    reason: CleanupReason::ManualReset,
+                },
+                wifi_event(1),
+            ],
+            expected: NetworkRecoveryAction::CleanupOnly,
+        },
+        Case {
+            case_id: "L0-11 cleanup suppresses later restore",
+            events: vec![
+                online_event(1),
+                NetworkEvent::CleanupConnections {
+                    reason: CleanupReason::ManualReset,
+                },
+                cellular_event(2),
+            ],
+            expected: NetworkRecoveryAction::CleanupOnly,
+        },
+        Case {
+            case_id: "L0-12 cleanup after available",
+            events: vec![
+                wifi_event(1),
+                NetworkEvent::CleanupConnections {
+                    reason: CleanupReason::ManualReset,
+                },
+            ],
+            expected: NetworkRecoveryAction::CleanupOnly,
+        },
+        Case {
+            case_id: "L0-15 latest sequence wins after flapping",
+            events: vec![
+                offline_event(1),
+                online_event(2),
+                offline_event(3),
+                online_event(4),
+            ],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-16 legacy available maps to path available",
+            events: vec![legacy_available(1)],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-17 latest wifi sequence wins",
+            events: vec![offline_event(1), wifi_event(2)],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-18 unknown availability probes",
+            events: vec![path_event(snapshot(
+                1,
+                NetworkAvailability::Unknown,
+                false,
+                false,
+                false,
+            ))],
+            expected: NetworkRecoveryAction::Probe,
+        },
+        Case {
+            case_id: "L0-19 vpn available restores",
+            events: vec![path_event(snapshot_with_flags(
+                1,
+                NetworkAvailability::Available,
+                NetworkTransportFlags {
+                    vpn: true,
+                    other: true,
+                    ..Default::default()
+                },
+                false,
+                false,
+            ))],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-20 expensive constrained available stays restore",
+            events: vec![path_event(snapshot_with_flags(
+                1,
+                NetworkAvailability::Available,
+                NetworkTransportFlags {
+                    cellular: true,
+                    ..Default::default()
+                },
+                true,
+                true,
+            ))],
+            expected: NetworkRecoveryAction::Restore,
+        },
+    ];
+
+    for case in cases {
+        assert_eq!(
+            select_network_recovery_action(&case.events),
+            case.expected,
+            "{} selected unexpected action for {:?}",
+            case.case_id,
+            case.events
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_l0_duplicate_path_storms_execute_one_settled_action() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(500),
+        },
+    ));
+
+    let repeated_available = (1..=10).map(online_event).collect::<Vec<_>>();
+    let results = process_network_event_batch(repeated_available, processor.clone()).await;
+    assert_eq!(results.len(), 10);
+    assert!(results.iter().all(|result| result.success));
+    assert_eq!(
+        client.probe_calls(),
+        1,
+        "duplicate available storm should probe once after batch reconciliation"
+    );
+    assert_eq!(
+        client.get_stats().connections,
+        1,
+        "duplicate available storm should keep the healthy signaling socket"
+    );
+
+    let repeated_offline = (11..=20).map(offline_event).collect::<Vec<_>>();
+    let results = process_network_event_batch(repeated_offline, processor).await;
+    assert_eq!(results.len(), 10);
+    assert!(results.iter().all(|result| result.success));
+    assert_eq!(
+        client.get_stats().disconnections,
+        1,
+        "duplicate unavailable storm should execute one offline action"
+    );
 }
 
 #[tokio::test]
@@ -1122,6 +1360,179 @@ async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
             cycle
         );
     }
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
+async fn test_l1_pre_start_queued_event_drains_when_reconciler_starts() {
+    let client = Arc::new(FakeSignalingClient::new());
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(500),
+        },
+    ));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+
+    let pre_start_call = tokio::spawn(async move {
+        handle
+            .handle_network_path_changed(match online_event(1) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !pre_start_call.is_finished(),
+        "pre-start event should wait while the reconciler is not running"
+    );
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let result = pre_start_call
+        .await
+        .expect("pre-start event task should not panic")
+        .expect("queued pre-start event should complete after reconciler starts");
+    assert!(result.success);
+    assert!(matches!(
+        result.event,
+        NetworkEvent::NetworkPathChanged { .. }
+    ));
+    assert!(client.is_connected());
+    assert_eq!(client.connect_once_calls(), 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
+async fn test_l1_old_handle_after_reconciler_shutdown_fails_fast() {
+    let client = Arc::new(FakeSignalingClient::new());
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client, None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_millis(100));
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+
+    let err = handle
+        .handle_network_path_changed(match online_event(1) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
+        .await
+        .expect_err("old handle should fail after reconciler shutdown");
+
+    assert!(
+        err.contains("Failed to send network event"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_l1_reconciler_shutdown_during_settle_window_is_bounded() {
+    let client = Arc::new(FakeSignalingClient::new());
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client, None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_millis(150));
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let event_call = tokio::spawn(async move {
+        handle
+            .handle_network_path_changed(match online_event(1) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+
+    let err = event_call
+        .await
+        .expect("event call should not panic")
+        .expect_err("shutdown during settle should not leave caller waiting forever");
+    assert!(
+        err.contains("Timed out waiting for network event result")
+            || err.contains("Failed to receive network event result"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_l1_command_apis_complete_through_network_event_handle() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(500),
+        },
+    ));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let cleanup = handle
+        .cleanup_connections(CleanupReason::ManualReset)
+        .await
+        .expect("cleanup command should complete through handle");
+    assert!(cleanup.success);
+    assert!(matches!(
+        cleanup.event,
+        NetworkEvent::CleanupConnections {
+            reason: CleanupReason::ManualReset
+        }
+    ));
+    assert!(!client.is_connected());
+
+    let reconnect = handle
+        .force_reconnect(ReconnectReason::ManualReconnect)
+        .await
+        .expect("force reconnect command should complete through handle");
+    assert!(reconnect.success);
+    assert!(matches!(
+        reconnect.event,
+        NetworkEvent::ForceReconnect {
+            reason: ReconnectReason::ManualReconnect
+        }
+    ));
+    assert!(client.is_connected());
+    assert_eq!(client.connect_once_calls(), 1);
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");

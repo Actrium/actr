@@ -1545,6 +1545,55 @@ impl Inner {
                 tracing::debug!("network_event.node.loop_not_started_no_handle");
             }
 
+            if let Some(coordinator) = self.webrtc_coordinator.clone() {
+                let mut signaling_events = self.signaling_client.subscribe_events();
+                let shutdown = self.shutdown_token.clone();
+                let signaling_recovery_handle = tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            _ = shutdown.cancelled() => {
+                                tracing::debug!("network_event.signaling_bridge.stopped");
+                                break;
+                            }
+                            event = signaling_events.recv() => {
+                                match event {
+                                    Ok(crate::wire::webrtc::SignalingEvent::Connected) => {
+                                        tracing::info!(
+                                            "network_event.signaling_bridge.connected_resume_webrtc"
+                                        );
+                                        coordinator.restart_network_recovery_connections().await;
+                                    }
+                                    Ok(crate::wire::webrtc::SignalingEvent::Disconnected { reason }) => {
+                                        tracing::debug!(
+                                            reason = ?reason,
+                                            "network_event.signaling_bridge.disconnected"
+                                        );
+                                    }
+                                    Ok(crate::wire::webrtc::SignalingEvent::ConnectStart { attempt }) => {
+                                        tracing::debug!(
+                                            attempt,
+                                            "network_event.signaling_bridge.connect_start"
+                                        );
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                        tracing::warn!(
+                                            skipped,
+                                            "network_event.signaling_bridge.lagged"
+                                        );
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                        tracing::debug!("network_event.signaling_bridge.closed");
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                task_handles.push(signaling_recovery_handle);
+                tracing::info!("network_event.signaling_bridge.started");
+            }
+
             {
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // 1.9. Spawn dedicated Unregister task (best-effort, with timeout)
