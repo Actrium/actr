@@ -1194,7 +1194,7 @@ run_release_train() {
     cargo update --workspace
     cargo update --workspace --manifest-path bindings/web/Cargo.toml
     npm install --package-lock-only --prefix bindings/typescript
-    cargo update --manifest-path bindings/typescript/Cargo.toml
+    cargo update --manifest-path bindings/typescript/Cargo.toml -p actr-protocol -p actr-framework -p actr-config -p actr-hyper
     run_validation_suite
     commit_release_prepare
     return
