@@ -48,6 +48,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Install Linux e2e dependencies
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
           sudo apt-get update
           sudo apt-get install -y jq sqlite3 lsof perl
       - name: Install protoc
@@ -86,6 +87,7 @@ jobs:
           node-version: "24"
       - name: Install Linux e2e dependencies
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
           sudo apt-get update
           sudo apt-get install -y jq lsof perl
       - name: Install protoc
@@ -107,7 +109,7 @@ jobs:
     # Pending mock-actrix migration of LocalActrix usage in
     # cli/tests/e2e_swift_echo.rs. Re-enable once the test no longer
     # needs the private Actrix repo.
-    if: ${{ false }}
+    if: ${{ vars.ENABLE_SWIFT_E2E == 'true' }}
     runs-on: macos-latest
     timeout-minutes: 120
     permissions:

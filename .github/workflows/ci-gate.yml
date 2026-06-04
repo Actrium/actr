@@ -470,6 +470,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux test deps
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
           sudo apt-get update
           sudo apt-get install -y lsof
           google-chrome --version || google-chrome-stable --version || true
@@ -535,6 +536,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux test deps
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
           sudo apt-get update
           sudo apt-get install -y jq lsof perl
       - name: Generate CLI web runtime assets
@@ -580,6 +582,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux test deps
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
           sudo apt-get update
           sudo apt-get install -y lsof netcat-openbsd
           google-chrome --version || google-chrome-stable --version || true
