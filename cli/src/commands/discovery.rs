@@ -12,11 +12,28 @@ use crate::core::{
     NetworkValidator, ResolvedDependency, ServiceDetails, ServiceDiscovery, ServiceInfo,
 };
 
+/// Standalone discovery mode — bypass local project config.
+/// When set, `actr registry discover` doesn't need `manifest.toml` in cwd.
+#[derive(Debug, Clone)]
+pub struct StandaloneDiscoverConfig {
+    pub endpoint: url::Url,
+    pub realm_id: u64,
+    pub realm_secret: String,
+}
+
 /// Discovery command
 #[derive(Args, Debug)]
 #[command(
     about = "Discover network services",
-    long_about = "Discover Actor services in the network, view available services and choose to install"
+    long_about = "Discover Actor services in the network, view available services and choose to install\n\n\
+    Examples:\n  \
+    # Discover services using the local project's actr.toml config\n  \
+    actr registry discover --list-only\n\n  \
+    # Discover services on a remote actrix server (standalone, no local project needed)\n  \
+    actr registry discover --list-only \\\n    \
+    --endpoint http://124.71.231.251:9080/ais \\\n    \
+    --realm-id 33554433 \\\n    \
+    --realm-secret rs_xxx"
 )]
 pub struct DiscoveryCommand {
     /// Service name filter pattern (e.g., user-*)
@@ -34,6 +51,37 @@ pub struct DiscoveryCommand {
     /// List discovered services and exit without interactive selection
     #[arg(long)]
     pub list_only: bool,
+
+    /// Standalone mode: actrix AIS endpoint URL (e.g. http://124.71.231.251:9080/ais)
+    ///
+    /// When specified together with --realm-id and --realm-secret, runs in standalone
+    /// mode that doesn't require a local project's manifest.toml / actr.toml.
+    #[arg(long, value_name = "URL")]
+    pub endpoint: Option<url::Url>,
+
+    /// Standalone mode: realm ID to query against
+    #[arg(long, value_name = "REALM_ID")]
+    pub realm_id: Option<u64>,
+
+    /// Standalone mode: realm secret for authentication
+    #[arg(long, value_name = "SECRET")]
+    pub realm_secret: Option<String>,
+}
+
+impl DiscoveryCommand {
+    /// If all three standalone flags are provided, return a `StandaloneDiscoverConfig`.
+    pub fn standalone_config(&self) -> Option<StandaloneDiscoverConfig> {
+        match (&self.endpoint, self.realm_id, &self.realm_secret) {
+            (Some(endpoint), Some(realm_id), Some(secret)) if !secret.is_empty() => {
+                Some(StandaloneDiscoverConfig {
+                    endpoint: endpoint.clone(),
+                    realm_id,
+                    realm_secret: secret.clone(),
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 #[async_trait]
@@ -171,6 +219,9 @@ impl DiscoveryCommand {
             verbose,
             auto_install,
             list_only: false,
+            endpoint: None,
+            realm_id: None,
+            realm_secret: None,
         }
     }
 
@@ -181,6 +232,9 @@ impl DiscoveryCommand {
             verbose: args.verbose,
             auto_install: args.auto_install,
             list_only: args.list_only,
+            endpoint: args.endpoint.clone(),
+            realm_id: args.realm_id,
+            realm_secret: args.realm_secret.clone(),
         }
     }
 
