@@ -973,6 +973,12 @@ impl Inner {
         self.network_event_rx = Some(event_rx);
         self.network_event_debounce_config = debounce_config;
 
+        tracing::info!(
+            debounce_ms,
+            channel_capacity = 100_u64,
+            "network_event.node.handle_created"
+        );
+
         crate::lifecycle::NetworkEventHandle::new(event_tx)
     }
 
@@ -1534,7 +1540,9 @@ impl Inner {
                     Self::network_event_loop(event_rx, event_processor, shutdown).await;
                 });
                 task_handles.push(network_event_handle);
-                tracing::info!("✅ Network event loop started");
+                tracing::info!("network_event.node.loop_started");
+            } else {
+                tracing::debug!("network_event.node.loop_not_started_no_handle");
             }
 
             {

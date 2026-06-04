@@ -10,7 +10,7 @@ use actr_framework::{Bytes, Dest};
 use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
 use parking_lot::Mutex;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Wrapper for a package-backed runtime before startup.
 #[derive(uniffi::Object)]
@@ -122,6 +122,11 @@ impl ActrNode {
     pub fn create_network_event_handle(&self) -> ActrResult<Arc<NetworkEventHandleWrapper>> {
         let mut handle_guard = self.network_event_handle.lock();
         if let Some(handle) = handle_guard.as_ref() {
+            info!(
+                api = "create_network_event_handle",
+                reused = true,
+                "network_event.ffi.handle_created"
+            );
             return Ok(Arc::new(NetworkEventHandleWrapper {
                 inner: handle.clone(),
             }));
@@ -134,6 +139,13 @@ impl ActrNode {
 
         let handle = node.create_network_event_handle(0);
         *handle_guard = Some(handle.clone());
+
+        info!(
+            api = "create_network_event_handle",
+            reused = false,
+            debounce_ms = 0_u64,
+            "network_event.ffi.handle_created"
+        );
 
         Ok(Arc::new(NetworkEventHandleWrapper { inner: handle }))
     }
@@ -170,12 +182,27 @@ impl NetworkEventHandleWrapper {
         &self,
         snapshot: NetworkSnapshot,
     ) -> ActrResult<NetworkEventResult> {
+        info!(
+            api = "handle_network_path_changed",
+            snapshot = ?snapshot,
+            "network_event.ffi.event_received"
+        );
+
         let result = self
             .inner
             .handle_network_path_changed(snapshot.into())
             .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
+            .map_err(|e| {
+                warn!(
+                    api = "handle_network_path_changed",
+                    error = %e,
+                    "network_event.ffi.event_failed"
+                );
+                ActrError::Internal { msg: e }
+            })?;
+        let result = result.into();
+        log_network_event_result("handle_network_path_changed", &result);
+        Ok(result)
     }
 
     /// Handle an app lifecycle change.
@@ -183,12 +210,27 @@ impl NetworkEventHandleWrapper {
         &self,
         state: AppLifecycleState,
     ) -> ActrResult<NetworkEventResult> {
+        info!(
+            api = "handle_app_lifecycle_changed",
+            state = ?state,
+            "network_event.ffi.event_received"
+        );
+
         let result = self
             .inner
             .handle_app_lifecycle_changed(state.into())
             .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
+            .map_err(|e| {
+                warn!(
+                    api = "handle_app_lifecycle_changed",
+                    error = %e,
+                    "network_event.ffi.event_failed"
+                );
+                ActrError::Internal { msg: e }
+            })?;
+        let result = result.into();
+        log_network_event_result("handle_app_lifecycle_changed", &result);
+        Ok(result)
     }
 
     /// Cleanup all connections without reconnecting.
@@ -196,22 +238,71 @@ impl NetworkEventHandleWrapper {
         &self,
         reason: CleanupReason,
     ) -> ActrResult<NetworkEventResult> {
+        info!(
+            api = "cleanup_connections",
+            reason = ?reason,
+            "network_event.ffi.event_received"
+        );
+
         let result = self
             .inner
             .cleanup_connections(reason.into())
             .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
+            .map_err(|e| {
+                warn!(
+                    api = "cleanup_connections",
+                    error = %e,
+                    "network_event.ffi.event_failed"
+                );
+                ActrError::Internal { msg: e }
+            })?;
+        let result = result.into();
+        log_network_event_result("cleanup_connections", &result);
+        Ok(result)
     }
 
     /// Force cleanup and reconnect.
     pub async fn force_reconnect(&self, reason: ReconnectReason) -> ActrResult<NetworkEventResult> {
+        info!(
+            api = "force_reconnect",
+            reason = ?reason,
+            "network_event.ffi.event_received"
+        );
+
         let result = self
             .inner
             .force_reconnect(reason.into())
             .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
+            .map_err(|e| {
+                warn!(
+                    api = "force_reconnect",
+                    error = %e,
+                    "network_event.ffi.event_failed"
+                );
+                ActrError::Internal { msg: e }
+            })?;
+        let result = result.into();
+        log_network_event_result("force_reconnect", &result);
+        Ok(result)
+    }
+}
+
+fn log_network_event_result(api: &'static str, result: &NetworkEventResult) {
+    if result.success {
+        info!(
+            api,
+            event = ?result.event,
+            duration_ms = result.duration_ms,
+            "network_event.ffi.event_completed"
+        );
+    } else {
+        warn!(
+            api,
+            event = ?result.event,
+            duration_ms = result.duration_ms,
+            error = ?result.error,
+            "network_event.ffi.event_completed"
+        );
     }
 }
 

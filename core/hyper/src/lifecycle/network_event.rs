@@ -66,19 +66,23 @@
 //! - FFI path: Uses NetworkEventHandle + channel (implemented)
 //! - Actor path: Direct proto message to mailbox (TODO, future enhancement)
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{Duration, Instant};
 
 use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::connection_supervisor::ConnectionSupervisor;
+use super::connection_supervisor::{ConnectionFact, ConnectionSupervisor};
 
 const NETWORK_EVENT_SETTLE_WINDOW: Duration = Duration::from_millis(400);
 const NETWORK_EVENT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNALING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(super) const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
+static NEXT_NETWORK_EVENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Mobile network path snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -702,9 +706,31 @@ pub async fn process_network_event_batch(
     let action = select_network_recovery_action(&events);
     let start = Instant::now();
 
+    tracing::info!(
+        event_count = events.len(),
+        action = ?action,
+        "network_event.action.start"
+    );
+
     let result = processor.process_network_recovery_action(action).await;
 
     let duration_ms = start.elapsed().as_millis() as u64;
+    match &result {
+        Ok(()) => tracing::info!(
+            event_count = events.len(),
+            action = ?action,
+            duration_ms,
+            "network_event.action.completed"
+        ),
+        Err(e) => tracing::warn!(
+            event_count = events.len(),
+            action = ?action,
+            duration_ms,
+            error = %e,
+            "network_event.action.completed"
+        ),
+    }
+
     events
         .into_iter()
         .map(|event| match &result {
@@ -729,6 +755,10 @@ pub async fn run_network_event_reconciler(
     loop {
         tokio::select! {
             Some(first_request) = event_rx.recv() => {
+                tracing::debug!(
+                    event = ?first_request.event,
+                    "network_event.reconciler.received"
+                );
                 let mut requests = vec![first_request];
                 let settle = tokio::time::sleep(NETWORK_EVENT_SETTLE_WINDOW);
                 tokio::pin!(settle);
@@ -736,6 +766,10 @@ pub async fn run_network_event_reconciler(
                 loop {
                     tokio::select! {
                         Some(next_request) = event_rx.recv() => {
+                            tracing::debug!(
+                                event = ?next_request.event,
+                                "network_event.reconciler.coalesced"
+                            );
                             requests.push(next_request);
                         }
                         _ = &mut settle => {
@@ -752,6 +786,10 @@ pub async fn run_network_event_reconciler(
                 }
 
                 while let Ok(next_request) = event_rx.try_recv() {
+                    tracing::debug!(
+                        event = ?next_request.event,
+                        "network_event.reconciler.coalesced"
+                    );
                     requests.push(next_request);
                 }
 
@@ -760,11 +798,17 @@ pub async fn run_network_event_reconciler(
                     .map(|request| request.event.clone())
                     .collect::<Vec<_>>();
                 let action = select_network_recovery_action(&events);
+                let facts = events
+                    .iter()
+                    .map(ConnectionFact::from_network_event)
+                    .collect::<Vec<_>>();
                 tracing::info!(
                     event_count = events.len(),
                     action = ?action,
+                    events = ?events,
+                    facts = ?facts,
                     settle_window_ms = NETWORK_EVENT_SETTLE_WINDOW.as_millis() as u64,
-                    "📱 Processing settled network event batch"
+                    "network_event.reconciler.batch_reconciled"
                 );
 
                 let results = process_network_event_batch(events, processor.clone()).await;
@@ -856,26 +900,70 @@ impl NetworkEventHandle {
         &self,
         event: NetworkEvent,
     ) -> Result<NetworkEventResult, String> {
+        let event_request_id = NEXT_NETWORK_EVENT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        let start = Instant::now();
         let (result_tx, result_rx) = oneshot::channel();
         let request = NetworkEventRequest {
             event: event.clone(),
             result_tx,
         };
 
-        self.event_tx
-            .send(request)
-            .await
-            .map_err(|e| format!("Failed to send network event: {}", e))?;
+        tracing::info!(
+            event_request_id,
+            event = ?event,
+            result_timeout_ms = self.result_timeout.as_millis() as u64,
+            "network_event.handle.enqueue"
+        );
 
-        tokio::time::timeout(self.result_timeout, result_rx)
-            .await
-            .map_err(|_| {
-                format!(
-                    "Timed out waiting for network event result after {}ms",
-                    self.result_timeout.as_millis()
-                )
-            })?
-            .map_err(|_| "Failed to receive network event result".to_string())
+        if let Err(e) = self.event_tx.send(request).await {
+            let err = format!("Failed to send network event: {}", e);
+            tracing::warn!(
+                event_request_id,
+                event = ?event,
+                error = %err,
+                "network_event.handle.enqueue_failed"
+            );
+            return Err(err);
+        }
+
+        let result = match tokio::time::timeout(self.result_timeout, result_rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err("Failed to receive network event result".to_string()),
+            Err(_) => Err(format!(
+                "Timed out waiting for network event result after {}ms",
+                self.result_timeout.as_millis()
+            )),
+        };
+
+        let wait_ms = start.elapsed().as_millis() as u64;
+        match &result {
+            Ok(result) if result.success => tracing::info!(
+                event_request_id,
+                event = ?event,
+                result_event = ?result.event,
+                duration_ms = result.duration_ms,
+                wait_ms,
+                "network_event.handle.result_received"
+            ),
+            Ok(result) => tracing::warn!(
+                event_request_id,
+                event = ?event,
+                result_event = ?result.event,
+                duration_ms = result.duration_ms,
+                wait_ms,
+                error = ?result.error,
+                "network_event.handle.result_received"
+            ),
+            Err(e) => tracing::warn!(
+                event_request_id,
+                event = ?event,
+                wait_ms,
+                error = %e,
+                "network_event.handle.result_failed"
+            ),
+        }
+
+        result
     }
 }
 
