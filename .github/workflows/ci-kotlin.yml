@@ -53,6 +53,8 @@ jobs:
         run: ./gradlew :demo:compileDebugKotlin --no-daemon
       - name: Build Kotlin protoc plugin
         working-directory: tools/protoc-gen/kotlin
-        run: ./gradlew protocPluginJar --no-daemon
+        run: |
+          gradle wrapper --gradle-version 8.10
+          ./gradlew protocPluginJar --no-daemon
       - name: Run Kotlin codegen integration tests
         run: cargo test --test kotlin_echo --verbose
