@@ -524,10 +524,25 @@ impl WebSocketSignalingClient {
 
         let cfg = &self.config.reconnect_config;
 
-        // Cleanup old WebSocket resources first
-        tracing::debug!("🧹 Cleaning up old WebSocket resources before reconnect");
-        if let Err(e) = self.disconnect().await {
-            tracing::warn!("⚠️ Disconnect cleanup failed (non-fatal): {e}");
+        if self.connected.load(Ordering::Acquire) {
+            tracing::debug!("🔎 Probing connected signaling before reconnect cycle");
+            match self
+                .probe_alive(Duration::from_secs(PONG_TIMEOUT_SECS))
+                .await
+            {
+                Ok(()) => {
+                    tracing::debug!("Signaling probe succeeded, skipping reconnect cycle");
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!("Signaling probe failed before reconnect: {e}");
+                    if let Err(disconnect_err) = self.disconnect().await {
+                        tracing::warn!(
+                            "⚠️ Disconnect cleanup failed after failed probe (non-fatal): {disconnect_err}"
+                        );
+                    }
+                }
+            }
         }
 
         let backoff = ExponentialBackoff::builder()
@@ -548,11 +563,9 @@ impl WebSocketSignalingClient {
             attempt += 1;
             let _ = self.event_tx.send(SignalingEvent::ConnectStart { attempt });
 
-            match self.establish_connection_once().await {
+            match self.connect_once().await {
                 Ok(()) => {
                     tracing::info!("✅ Signaling reconnect succeeded on attempt {attempt}");
-                    self.start_receiver().await;
-                    self.start_ping_task().await;
                     return;
                 }
                 Err(e) => {

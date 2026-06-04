@@ -74,8 +74,7 @@ async fn test_network_available_triggers_recovery() {
 
     // Create channels for NetworkEventHandle
     let (event_tx, mut event_rx) = mpsc::channel(10);
-    let (result_tx, result_rx) = mpsc::channel(10);
-    let network_handle = NetworkEventHandle::new(event_tx, result_rx);
+    let network_handle = NetworkEventHandle::new(event_tx);
 
     // Start event loop to process events
     let processor_clone = processor.clone();
@@ -84,7 +83,8 @@ async fn test_network_available_triggers_recovery() {
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                Some(event) = event_rx.recv() => {
+                Some(request) = event_rx.recv() => {
+                    let event = request.event;
                     tracing::info!("📥 Processing event: {:?}", event);
                     let start = Instant::now();
                     let result = match &event {
@@ -93,9 +93,10 @@ async fn test_network_available_triggers_recovery() {
                         NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
                             processor_clone.process_network_type_changed(*is_wifi, *is_cellular).await
                         },
-                        NetworkEvent::CleanupConnections => {
+                        NetworkEvent::CleanupConnections { .. } => {
                             processor_clone.cleanup_connections().await
                         },
+                        _ => Ok(()),
                     };
                     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -103,7 +104,7 @@ async fn test_network_available_triggers_recovery() {
                         Ok(_) => NetworkEventResult::success(event, duration_ms),
                         Err(e) => NetworkEventResult::failure(event, e, duration_ms),
                     };
-                    let _ = result_tx.send(event_result).await;
+                    let _ = request.result_tx.send(event_result);
                 }
                 _ = shutdown_clone.cancelled() => break,
             }
@@ -179,8 +180,7 @@ async fn test_network_lost_cleanup() {
 
     // Create handle
     let (event_tx, mut event_rx) = mpsc::channel(10);
-    let (result_tx, result_rx) = mpsc::channel(10);
-    let network_handle = NetworkEventHandle::new(event_tx, result_rx);
+    let network_handle = NetworkEventHandle::new(event_tx);
 
     // Start event loop
     let processor_clone = processor.clone();
@@ -189,7 +189,8 @@ async fn test_network_lost_cleanup() {
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                Some(event) = event_rx.recv() => {
+                Some(request) = event_rx.recv() => {
+                    let event = request.event;
                     let start = Instant::now();
                     let result = match &event {
                         NetworkEvent::Available => processor_clone.process_network_available().await,
@@ -197,16 +198,17 @@ async fn test_network_lost_cleanup() {
                         NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
                             processor_clone.process_network_type_changed(*is_wifi, *is_cellular).await
                         },
-                        NetworkEvent::CleanupConnections => {
+                        NetworkEvent::CleanupConnections { .. } => {
                             processor_clone.cleanup_connections().await
                         },
+                        _ => Ok(()),
                     };
                     let duration_ms = start.elapsed().as_millis() as u64;
                     let event_result = match result {
                         Ok(_) => NetworkEventResult::success(event, duration_ms),
                         Err(e) => NetworkEventResult::failure(event, e, duration_ms),
                     };
-                    let _ = result_tx.send(event_result).await;
+                    let _ = request.result_tx.send(event_result);
                 }
                 _ = shutdown_clone.cancelled() => break,
             }
@@ -269,9 +271,7 @@ async fn test_result_feedback_mechanism() {
     tracing::info!("🧪 Test: Result feedback mechanism");
 
     let (event_tx, mut event_rx) = mpsc::channel(10);
-    // Use a small buffer for result channel to test backpressure if needed, but here standard is fine
-    let (result_tx, result_rx) = mpsc::channel(10);
-    let network_handle = NetworkEventHandle::new(event_tx, result_rx);
+    let network_handle = NetworkEventHandle::new(event_tx);
 
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let shutdown_clone = shutdown_token.clone();
@@ -280,13 +280,14 @@ async fn test_result_feedback_mechanism() {
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                Some(event) = event_rx.recv() => {
+                Some(request) = event_rx.recv() => {
+                    let event = request.event;
                     // Simulate processing delay
                     tokio::time::sleep(Duration::from_millis(50)).await;
 
                     // Always return success for this test
                     let result = NetworkEventResult::success(event, 50);
-                    let _ = result_tx.send(result).await;
+                    let _ = request.result_tx.send(result);
                 }
                 _ = shutdown_clone.cancelled() => break,
             }
@@ -362,8 +363,7 @@ async fn test_network_repeatedly_changing() {
 
     // Create channels and handle
     let (event_tx, mut event_rx) = mpsc::channel(10);
-    let (result_tx, result_rx) = mpsc::channel(10);
-    let network_handle = NetworkEventHandle::new(event_tx, result_rx);
+    let network_handle = NetworkEventHandle::new(event_tx);
 
     // Start event loop
     let processor_clone = processor.clone();
@@ -372,7 +372,8 @@ async fn test_network_repeatedly_changing() {
     tokio::spawn(async move {
         loop {
             tokio::select! {
-                Some(event) = event_rx.recv() => {
+                Some(request) = event_rx.recv() => {
+                    let event = request.event;
                     let start = Instant::now();
                     let result = match &event {
                         NetworkEvent::Available => processor_clone.process_network_available().await,
@@ -380,16 +381,17 @@ async fn test_network_repeatedly_changing() {
                         NetworkEvent::TypeChanged { is_wifi, is_cellular } => {
                             processor_clone.process_network_type_changed(*is_wifi, *is_cellular).await
                         },
-                        NetworkEvent::CleanupConnections => {
+                        NetworkEvent::CleanupConnections { .. } => {
                             processor_clone.cleanup_connections().await
                         }
+                        _ => Ok(()),
                     };
                     let duration_ms = start.elapsed().as_millis() as u64;
                     let event_result = match result {
                         Ok(_) => NetworkEventResult::success(event, duration_ms),
                         Err(e) => NetworkEventResult::failure(event, e, duration_ms),
                     };
-                    let _ = result_tx.send(event_result).await;
+                    let _ = request.result_tx.send(event_result);
                 }
                 _ = shutdown_clone.cancelled() => break,
             }
@@ -519,7 +521,7 @@ async fn test_manual_cleanup_connections() {
     let is_connected = signaling_client_a.is_connected();
     tracing::info!("📊 Is connected after cleanup: {}", is_connected);
     assert!(
-        is_connected,
+        !is_connected,
         "Client should be disconnected after cleanup_connections"
     );
 
@@ -611,7 +613,7 @@ async fn test_cleanup_then_network_events() {
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
-        signaling_client_a.is_connected(),
+        !signaling_client_a.is_connected(),
         "Should be disconnected after cleanup"
     );
 

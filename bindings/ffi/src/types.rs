@@ -196,12 +196,148 @@ impl From<actr_protocol::PayloadType> for PayloadType {
 }
 
 /// Network event types for runtime lifecycle callbacks
+#[derive(Debug, Clone, PartialEq, Eq, Hash, uniffi::Record)]
+pub struct NetworkSnapshot {
+    pub is_available: bool,
+    pub is_wifi: bool,
+    pub is_cellular: bool,
+    pub is_vpn: bool,
+    pub timestamp_ms: u64,
+}
+
+impl From<NetworkSnapshot> for runtime_lifecycle::NetworkSnapshot {
+    fn from(snapshot: NetworkSnapshot) -> Self {
+        Self {
+            is_available: snapshot.is_available,
+            is_wifi: snapshot.is_wifi,
+            is_cellular: snapshot.is_cellular,
+            is_vpn: snapshot.is_vpn,
+            timestamp_ms: snapshot.timestamp_ms,
+        }
+    }
+}
+
+impl From<runtime_lifecycle::NetworkSnapshot> for NetworkSnapshot {
+    fn from(snapshot: runtime_lifecycle::NetworkSnapshot) -> Self {
+        Self {
+            is_available: snapshot.is_available,
+            is_wifi: snapshot.is_wifi,
+            is_cellular: snapshot.is_cellular,
+            is_vpn: snapshot.is_vpn,
+            timestamp_ms: snapshot.timestamp_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum CleanupReason {
+    AppTerminating,
+    UserLogout,
+    StaleConnectionSuspected,
+    ManualReset,
+}
+
+impl From<CleanupReason> for runtime_lifecycle::CleanupReason {
+    fn from(reason: CleanupReason) -> Self {
+        match reason {
+            CleanupReason::AppTerminating => runtime_lifecycle::CleanupReason::AppTerminating,
+            CleanupReason::UserLogout => runtime_lifecycle::CleanupReason::UserLogout,
+            CleanupReason::StaleConnectionSuspected => {
+                runtime_lifecycle::CleanupReason::StaleConnectionSuspected
+            }
+            CleanupReason::ManualReset => runtime_lifecycle::CleanupReason::ManualReset,
+        }
+    }
+}
+
+impl From<runtime_lifecycle::CleanupReason> for CleanupReason {
+    fn from(reason: runtime_lifecycle::CleanupReason) -> Self {
+        match reason {
+            runtime_lifecycle::CleanupReason::AppTerminating => CleanupReason::AppTerminating,
+            runtime_lifecycle::CleanupReason::UserLogout => CleanupReason::UserLogout,
+            runtime_lifecycle::CleanupReason::StaleConnectionSuspected => {
+                CleanupReason::StaleConnectionSuspected
+            }
+            runtime_lifecycle::CleanupReason::ManualReset => CleanupReason::ManualReset,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, uniffi::Enum)]
+pub enum ReconnectReason {
+    NetworkPathChanged,
+    LongBackground,
+    ProbeFailed,
+    ManualReconnect,
+    StaleConnectionSuspected,
+}
+
+impl From<ReconnectReason> for runtime_lifecycle::ReconnectReason {
+    fn from(reason: ReconnectReason) -> Self {
+        match reason {
+            ReconnectReason::NetworkPathChanged => {
+                runtime_lifecycle::ReconnectReason::NetworkPathChanged
+            }
+            ReconnectReason::LongBackground => runtime_lifecycle::ReconnectReason::LongBackground,
+            ReconnectReason::ProbeFailed => runtime_lifecycle::ReconnectReason::ProbeFailed,
+            ReconnectReason::ManualReconnect => runtime_lifecycle::ReconnectReason::ManualReconnect,
+            ReconnectReason::StaleConnectionSuspected => {
+                runtime_lifecycle::ReconnectReason::StaleConnectionSuspected
+            }
+        }
+    }
+}
+
+impl From<runtime_lifecycle::ReconnectReason> for ReconnectReason {
+    fn from(reason: runtime_lifecycle::ReconnectReason) -> Self {
+        match reason {
+            runtime_lifecycle::ReconnectReason::NetworkPathChanged => {
+                ReconnectReason::NetworkPathChanged
+            }
+            runtime_lifecycle::ReconnectReason::LongBackground => ReconnectReason::LongBackground,
+            runtime_lifecycle::ReconnectReason::ProbeFailed => ReconnectReason::ProbeFailed,
+            runtime_lifecycle::ReconnectReason::ManualReconnect => ReconnectReason::ManualReconnect,
+            runtime_lifecycle::ReconnectReason::StaleConnectionSuspected => {
+                ReconnectReason::StaleConnectionSuspected
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum NetworkEvent {
     Available,
     Lost,
-    TypeChanged { is_wifi: bool, is_cellular: bool },
-    CleanupConnections,
+    TypeChanged {
+        is_wifi: bool,
+        is_cellular: bool,
+    },
+    PathChanged {
+        snapshot: NetworkSnapshot,
+    },
+    AppEnteredBackground {
+        timestamp_ms: u64,
+    },
+    AppEnteredForeground {
+        background_duration_ms: u64,
+        timestamp_ms: u64,
+    },
+    AppBecameInactive {
+        timestamp_ms: u64,
+    },
+    AppBecameActive {
+        timestamp_ms: u64,
+    },
+    AppTerminating {
+        timestamp_ms: u64,
+    },
+    CleanupConnections {
+        reason: CleanupReason,
+    },
+    ForceReconnect {
+        reason: ReconnectReason,
+    },
+    ProbeConnectivity,
 }
 
 impl From<runtime_lifecycle::NetworkEvent> for NetworkEvent {
@@ -216,7 +352,41 @@ impl From<runtime_lifecycle::NetworkEvent> for NetworkEvent {
                 is_wifi,
                 is_cellular,
             },
-            runtime_lifecycle::NetworkEvent::CleanupConnections => NetworkEvent::CleanupConnections,
+            runtime_lifecycle::NetworkEvent::PathChanged { snapshot } => {
+                NetworkEvent::PathChanged {
+                    snapshot: snapshot.into(),
+                }
+            }
+            runtime_lifecycle::NetworkEvent::AppEnteredBackground { timestamp_ms } => {
+                NetworkEvent::AppEnteredBackground { timestamp_ms }
+            }
+            runtime_lifecycle::NetworkEvent::AppEnteredForeground {
+                background_duration_ms,
+                timestamp_ms,
+            } => NetworkEvent::AppEnteredForeground {
+                background_duration_ms,
+                timestamp_ms,
+            },
+            runtime_lifecycle::NetworkEvent::AppBecameInactive { timestamp_ms } => {
+                NetworkEvent::AppBecameInactive { timestamp_ms }
+            }
+            runtime_lifecycle::NetworkEvent::AppBecameActive { timestamp_ms } => {
+                NetworkEvent::AppBecameActive { timestamp_ms }
+            }
+            runtime_lifecycle::NetworkEvent::AppTerminating { timestamp_ms } => {
+                NetworkEvent::AppTerminating { timestamp_ms }
+            }
+            runtime_lifecycle::NetworkEvent::CleanupConnections { reason } => {
+                NetworkEvent::CleanupConnections {
+                    reason: reason.into(),
+                }
+            }
+            runtime_lifecycle::NetworkEvent::ForceReconnect { reason } => {
+                NetworkEvent::ForceReconnect {
+                    reason: reason.into(),
+                }
+            }
+            runtime_lifecycle::NetworkEvent::ProbeConnectivity => NetworkEvent::ProbeConnectivity,
         }
     }
 }

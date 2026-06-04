@@ -3,7 +3,7 @@
 
 use actr_framework::Bytes;
 use actr_hyper::lifecycle::{
-    NetworkEvent, NetworkRecoveryAction, process_network_event_batch,
+    NetworkEvent, NetworkRecoveryAction, ReconnectReason, process_network_event_batch,
     select_network_recovery_action,
 };
 use actr_hyper::outbound::PeerGate;
@@ -608,7 +608,9 @@ async fn inflight_long_background_is_bounded_and_retries() {
     );
 
     let events = vec![
-        NetworkEvent::CleanupConnections,
+        NetworkEvent::ForceReconnect {
+            reason: ReconnectReason::LongBackground,
+        },
         NetworkEvent::Available,
         NetworkEvent::TypeChanged {
             is_wifi: true,
@@ -617,7 +619,7 @@ async fn inflight_long_background_is_bounded_and_retries() {
     ];
     assert_eq!(
         select_network_recovery_action(&events),
-        NetworkRecoveryAction::CleanupConnectionsCompat
+        NetworkRecoveryAction::ForceReconnect
     );
     process_mobile_events(&harness, events).await;
 

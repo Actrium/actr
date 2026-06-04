@@ -106,11 +106,7 @@ pub(crate) struct Inner {
     pub(crate) actr_lock: Option<Arc<actr_config::lock::LockFile>>,
     /// Network event receiver (from NetworkEventHandle)
     pub(crate) network_event_rx:
-        Option<tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>>,
-
-    /// Network event result sender (to NetworkEventHandle)
-    pub(crate) network_event_result_tx:
-        Option<tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>>,
+        Option<tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEventRequest>>,
 
     /// Network event debounce configuration
     pub(crate) network_event_debounce_config:
@@ -573,14 +569,12 @@ impl Inner {
     /// - Delegate to NetworkEventProcessor for handling
     /// - Record processing time and send results
     async fn network_event_loop(
-        event_rx: tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEvent>,
-        result_tx: tokio::sync::mpsc::Sender<crate::lifecycle::network_event::NetworkEventResult>,
+        event_rx: tokio::sync::mpsc::Receiver<crate::lifecycle::network_event::NetworkEventRequest>,
         event_processor: Arc<dyn crate::lifecycle::network_event::NetworkEventProcessor>,
         shutdown_token: CancellationToken,
     ) {
         crate::lifecycle::network_event::run_network_event_reconciler(
             event_rx,
-            result_tx,
             event_processor,
             shutdown_token,
         )
@@ -894,7 +888,6 @@ impl Inner {
             shutdown_token: CancellationToken::new(),
             actr_lock,
             network_event_rx: None,
-            network_event_result_tx: None,
             network_event_debounce_config: None,
             dedup_state: Arc::new(Mutex::new(DedupState::new())),
             package_manifest,
@@ -968,7 +961,6 @@ impl Inner {
         }
 
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(100);
-        let (result_tx, result_rx) = tokio::sync::mpsc::channel(100);
 
         let debounce_config = if debounce_ms > 0 {
             Some(crate::lifecycle::network_event::DebounceConfig {
@@ -979,10 +971,9 @@ impl Inner {
         };
 
         self.network_event_rx = Some(event_rx);
-        self.network_event_result_tx = Some(result_tx);
         self.network_event_debounce_config = debounce_config;
 
-        crate::lifecycle::NetworkEventHandle::new(event_tx, result_rx)
+        crate::lifecycle::NetworkEventHandle::new(event_tx)
     }
 
     /// Attach a credential already issued by AIS so that `start()` can skip
@@ -1519,10 +1510,7 @@ impl Inner {
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             // 1.8.5. Spawn network event processing loop
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            if let (Some(event_rx), Some(result_tx)) = (
-                self.network_event_rx.take(),
-                self.network_event_result_tx.take(),
-            ) {
+            if let Some(event_rx) = self.network_event_rx.take() {
                 use crate::lifecycle::network_event::DefaultNetworkEventProcessor;
 
                 // Create DefaultNetworkEventProcessor
@@ -1543,7 +1531,7 @@ impl Inner {
 
                 let shutdown = self.shutdown_token.clone();
                 let network_event_handle = tokio::spawn(async move {
-                    Self::network_event_loop(event_rx, result_tx, event_processor, shutdown).await;
+                    Self::network_event_loop(event_rx, event_processor, shutdown).await;
                 });
                 task_handles.push(network_event_handle);
                 tracing::info!("✅ Network event loop started");

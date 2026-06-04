@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
-    NetworkEvent, NetworkRecoveryAction, process_network_event_batch,
+    CleanupReason, NetworkEvent, NetworkRecoveryAction, process_network_event_batch,
     select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
@@ -40,7 +40,9 @@ impl EventSpec {
                 is_wifi: false,
                 is_cellular: false,
             },
-            EventSpec::CleanupConnections => NetworkEvent::CleanupConnections,
+            EventSpec::CleanupConnections => NetworkEvent::CleanupConnections {
+                reason: CleanupReason::ManualReset,
+            },
         }
     }
 }
@@ -148,7 +150,7 @@ const ANDROID_SCENARIOS: &[MobileScenario] = &[
     MobileScenario {
         name: "android_foreground_legacy_cleanup",
         sdk_events: &[CC, A, TW],
-        expected_action: NetworkRecoveryAction::CleanupConnectionsCompat,
+        expected_action: NetworkRecoveryAction::CleanupOnly,
     },
     MobileScenario {
         name: "android_background_network_change_delayed_online",
@@ -256,7 +258,7 @@ const IOS_SCENARIOS: &[MobileScenario] = &[
     MobileScenario {
         name: "ios_foreground_legacy_cleanup",
         sdk_events: &[CC, A, TW],
-        expected_action: NetworkRecoveryAction::CleanupConnectionsCompat,
+        expected_action: NetworkRecoveryAction::CleanupOnly,
     },
     MobileScenario {
         name: "ios_suspended_restore_online",

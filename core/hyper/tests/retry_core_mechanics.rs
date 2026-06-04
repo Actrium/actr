@@ -68,7 +68,7 @@ impl NetworkEventProcessor for MobileEventRecorder {
         self.actions
             .lock()
             .expect("mobile event actions mutex poisoned")
-            .push(NetworkRecoveryAction::CleanupConnectionsCompat);
+            .push(NetworkRecoveryAction::CleanupOnly);
         Ok(())
     }
 

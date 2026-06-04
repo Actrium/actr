@@ -18,7 +18,7 @@
 
 use actr_hyper::lifecycle::{
     DefaultNetworkEventProcessor, NetworkEvent, NetworkEventProcessor, NetworkRecoveryAction,
-    process_network_event_batch, select_network_recovery_action,
+    ReconnectReason, process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
 use actr_hyper::transport::{ConnectionEvent, ConnectionState, Dest};
@@ -1037,7 +1037,9 @@ async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() 
     harness.reset_counters();
 
     let events = vec![
-        NetworkEvent::CleanupConnections,
+        NetworkEvent::ForceReconnect {
+            reason: ReconnectReason::LongBackground,
+        },
         NetworkEvent::Available,
         NetworkEvent::TypeChanged {
             is_wifi: true,
@@ -1046,7 +1048,7 @@ async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() 
     ];
     assert_eq!(
         select_network_recovery_action(&events),
-        NetworkRecoveryAction::CleanupConnectionsCompat
+        NetworkRecoveryAction::ForceReconnect
     );
 
     tracing::info!(

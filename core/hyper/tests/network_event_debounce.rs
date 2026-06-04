@@ -3,9 +3,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
-    CredentialState, DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent,
-    NetworkEventHandle, NetworkEventProcessor, NetworkRecoveryAction, process_network_event_batch,
-    run_network_event_reconciler, select_network_recovery_action,
+    CleanupReason, CredentialState, DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent,
+    NetworkEventHandle, NetworkEventProcessor, NetworkRecoveryAction, NetworkSnapshot,
+    ReconnectReason, process_network_event_batch, run_network_event_reconciler,
+    select_network_recovery_action,
 };
 use actr_hyper::transport::{NetworkError, NetworkResult};
 use actr_hyper::wire::webrtc::{DisconnectReason, SignalingClient, SignalingEvent, SignalingStats};
@@ -640,8 +641,96 @@ fn test_batch_action_uses_latest_network_state_event() {
     );
 }
 
+#[test]
+fn test_snapshot_and_lifecycle_events_select_expected_actions() {
+    let offline_snapshot = NetworkSnapshot {
+        is_available: false,
+        is_wifi: false,
+        is_cellular: false,
+        is_vpn: false,
+        timestamp_ms: 100,
+    };
+    assert_eq!(
+        select_network_recovery_action(&[NetworkEvent::PathChanged {
+            snapshot: offline_snapshot,
+        }]),
+        NetworkRecoveryAction::Offline
+    );
+
+    let vpn_snapshot = NetworkSnapshot {
+        is_available: true,
+        is_wifi: true,
+        is_cellular: false,
+        is_vpn: true,
+        timestamp_ms: 200,
+    };
+    assert_eq!(
+        select_network_recovery_action(&[NetworkEvent::PathChanged {
+            snapshot: vpn_snapshot,
+        }]),
+        NetworkRecoveryAction::Restore
+    );
+
+    assert_eq!(
+        select_network_recovery_action(&[NetworkEvent::AppEnteredForeground {
+            background_duration_ms: 5_000,
+            timestamp_ms: 300,
+        }]),
+        NetworkRecoveryAction::Probe
+    );
+    assert_eq!(
+        select_network_recovery_action(&[NetworkEvent::AppEnteredForeground {
+            background_duration_ms: 60_000,
+            timestamp_ms: 400,
+        }]),
+        NetworkRecoveryAction::ForceReconnect
+    );
+    assert_eq!(
+        select_network_recovery_action(&[NetworkEvent::AppTerminating { timestamp_ms: 500 }]),
+        NetworkRecoveryAction::CleanupOnly
+    );
+}
+
+#[test]
+fn test_action_priority_cleanup_offline_and_force_reconnect() {
+    let cleanup_and_online = vec![
+        NetworkEvent::CleanupConnections {
+            reason: CleanupReason::ManualReset,
+        },
+        NetworkEvent::Available,
+    ];
+    assert_eq!(
+        select_network_recovery_action(&cleanup_and_online),
+        NetworkRecoveryAction::CleanupOnly,
+        "cleanup-only requests must not be turned into reconnects by later online events"
+    );
+
+    let force_reconnect = vec![
+        NetworkEvent::ForceReconnect {
+            reason: ReconnectReason::ManualReconnect,
+        },
+        NetworkEvent::Available,
+    ];
+    assert_eq!(
+        select_network_recovery_action(&force_reconnect),
+        NetworkRecoveryAction::ForceReconnect
+    );
+
+    let offline_wins = vec![
+        NetworkEvent::ForceReconnect {
+            reason: ReconnectReason::ManualReconnect,
+        },
+        NetworkEvent::Lost,
+    ];
+    assert_eq!(
+        select_network_recovery_action(&offline_wins),
+        NetworkRecoveryAction::Offline,
+        "offline fact should suppress forced reconnect in the same settled batch"
+    );
+}
+
 #[tokio::test]
-async fn test_batch_cleanup_connections_wins_and_preserves_compat_reconnect() {
+async fn test_batch_cleanup_connections_wins_without_implicit_reconnect() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
 
@@ -654,7 +743,9 @@ async fn test_batch_cleanup_connections_wins_and_preserves_compat_reconnect() {
     ));
 
     let events = vec![
-        NetworkEvent::CleanupConnections,
+        NetworkEvent::CleanupConnections {
+            reason: CleanupReason::ManualReset,
+        },
         NetworkEvent::Available,
         NetworkEvent::TypeChanged {
             is_wifi: true,
@@ -663,36 +754,29 @@ async fn test_batch_cleanup_connections_wins_and_preserves_compat_reconnect() {
     ];
     assert_eq!(
         select_network_recovery_action(&events),
-        NetworkRecoveryAction::CleanupConnectionsCompat
+        NetworkRecoveryAction::CleanupOnly
     );
 
     let results = process_network_event_batch(events, processor).await;
 
     assert_eq!(results.len(), 3, "each merged request should get a result");
     assert!(results.iter().all(|result| result.success));
-    assert!(
-        client.is_connected(),
-        "cleanup compat should reconnect signaling"
-    );
+    assert!(!client.is_connected(), "cleanup only should not reconnect");
 
     let stats = client.get_stats();
     assert_eq!(
-        stats.connections, 2,
-        "cleanup compat should preserve exactly one reconnect after the initial connection"
+        stats.connections, 1,
+        "cleanup only should not reconnect after the initial connection"
     );
     assert_eq!(
         stats.disconnections, 1,
-        "cleanup compat should preserve exactly one signaling disconnect"
+        "cleanup only should preserve exactly one signaling disconnect"
     );
-    assert_eq!(
-        client.probe_calls(),
-        0,
-        "cleanup compat should not probe because it deliberately resets signaling"
-    );
+    assert_eq!(client.probe_calls(), 0, "cleanup only should not probe");
 }
 
 #[tokio::test]
-async fn test_cleanup_available_batch_uses_single_attempt_connect_not_retry_backoff() {
+async fn test_cleanup_available_batch_does_not_reconnect() {
     let client = Arc::new(FakeSignalingClient::new_with_delays(
         Duration::from_secs(5),
         Duration::ZERO,
@@ -707,10 +791,15 @@ async fn test_cleanup_available_batch_uses_single_attempt_connect_not_retry_back
         },
     ));
 
-    let events = vec![NetworkEvent::CleanupConnections, NetworkEvent::Available];
+    let events = vec![
+        NetworkEvent::CleanupConnections {
+            reason: CleanupReason::ManualReset,
+        },
+        NetworkEvent::Available,
+    ];
     assert_eq!(
         select_network_recovery_action(&events),
-        NetworkRecoveryAction::CleanupConnectionsCompat
+        NetworkRecoveryAction::CleanupOnly
     );
 
     let results = tokio::time::timeout(
@@ -722,15 +811,15 @@ async fn test_cleanup_available_batch_uses_single_attempt_connect_not_retry_back
 
     assert_eq!(results.len(), 2, "each merged request should get a result");
     assert!(results.iter().all(|result| result.success));
-    assert!(client.is_connected(), "signaling should reconnect");
+    assert!(!client.is_connected(), "cleanup only should not reconnect");
     assert_eq!(
         client.connect_once_calls(),
-        1,
-        "network recovery should use the explicit single-attempt connect path"
+        0,
+        "cleanup only should not connect"
     );
 
     let stats = client.get_stats();
-    assert_eq!(stats.connections, 2);
+    assert_eq!(stats.connections, 1);
     assert_eq!(stats.disconnections, 1);
     assert_eq!(client.probe_calls(), 0);
 }
@@ -749,14 +838,13 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
     ));
 
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
-    let (result_tx, result_rx) = tokio::sync::mpsc::channel(10);
-    let handle = NetworkEventHandle::new(event_tx, result_rx);
+    let handle = NetworkEventHandle::new(event_tx);
     let shutdown = tokio_util::sync::CancellationToken::new();
     let processor: Arc<dyn NetworkEventProcessor> = processor;
     let reconciler_shutdown = shutdown.clone();
 
     let reconciler = tokio::spawn(async move {
-        run_network_event_reconciler(event_rx, result_tx, processor, reconciler_shutdown).await;
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
     });
 
     let lost = {
@@ -816,14 +904,13 @@ async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
     ));
 
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
-    let (result_tx, result_rx) = tokio::sync::mpsc::channel(10);
-    let handle = NetworkEventHandle::new(event_tx, result_rx);
+    let handle = NetworkEventHandle::new(event_tx);
     let shutdown = tokio_util::sync::CancellationToken::new();
     let processor: Arc<dyn NetworkEventProcessor> = processor;
     let reconciler_shutdown = shutdown.clone();
 
     let reconciler = tokio::spawn(async move {
-        run_network_event_reconciler(event_rx, result_tx, processor, reconciler_shutdown).await;
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
     });
 
     const CYCLES: u64 = 5;

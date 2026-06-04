@@ -1,7 +1,10 @@
 //! Runtime wrappers for UniFFI export
 
 use crate::error::{ActrError, ActrResult};
-use crate::types::{ActrId, ActrType, NetworkEventResult, PayloadType};
+use crate::types::{
+    ActrId, ActrType, CleanupReason, NetworkEventResult, NetworkSnapshot, PayloadType,
+    ReconnectReason,
+};
 use crate::workload::DynamicWorkload;
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
@@ -197,10 +200,112 @@ impl NetworkEventHandleWrapper {
     }
 
     /// Cleanup all connections.
-    pub async fn cleanup_connections(&self) -> ActrResult<NetworkEventResult> {
+    pub async fn cleanup_connections(
+        &self,
+        reason: CleanupReason,
+    ) -> ActrResult<NetworkEventResult> {
         let result = self
             .inner
-            .cleanup_connections()
+            .cleanup_connections_with_reason(reason.into())
+            .await
+            .map_err(|e| ActrError::Internal { msg: e })?;
+        Ok(result.into())
+    }
+
+    /// Force cleanup and reconnect.
+    pub async fn force_reconnect(&self, reason: ReconnectReason) -> ActrResult<NetworkEventResult> {
+        let result = self
+            .inner
+            .force_reconnect(reason.into())
+            .await
+            .map_err(|e| ActrError::Internal { msg: e })?;
+        Ok(result.into())
+    }
+
+    /// Handle a full network path change.
+    pub async fn handle_network_path_changed(
+        &self,
+        snapshot: NetworkSnapshot,
+    ) -> ActrResult<NetworkEventResult> {
+        let result = self
+            .inner
+            .handle_network_path_changed(snapshot.into())
+            .await
+            .map_err(|e| ActrError::Internal { msg: e })?;
+        Ok(result.into())
+    }
+
+    /// Probe current connectivity.
+    pub async fn probe_connectivity(&self) -> ActrResult<NetworkEventResult> {
+        let result = self
+            .inner
+            .probe_connectivity()
+            .await
+            .map_err(|e| ActrError::Internal { msg: e })?;
+        Ok(result.into())
+    }
+
+    /// Handle app entering background.
+    pub async fn handle_app_entered_background(
+        &self,
+        timestamp_ms: u64,
+    ) -> ActrResult<NetworkEventResult> {
+        let result = self
+            .inner
+            .handle_app_entered_background(timestamp_ms)
+            .await
+            .map_err(|e| ActrError::Internal { msg: e })?;
+        Ok(result.into())
+    }
+
+    /// Handle app entering foreground.
+    pub async fn handle_app_entered_foreground(
+        &self,
+        background_duration_ms: u64,
+        timestamp_ms: u64,
+    ) -> ActrResult<NetworkEventResult> {
+        let result = self
+            .inner
+            .handle_app_entered_foreground(background_duration_ms, timestamp_ms)
+            .await
+            .map_err(|e| ActrError::Internal { msg: e })?;
+        Ok(result.into())
+    }
+
+    /// Handle app becoming inactive.
+    pub async fn handle_app_became_inactive(
+        &self,
+        timestamp_ms: u64,
+    ) -> ActrResult<NetworkEventResult> {
+        let result = self
+            .inner
+            .handle_app_became_inactive(timestamp_ms)
+            .await
+            .map_err(|e| ActrError::Internal { msg: e })?;
+        Ok(result.into())
+    }
+
+    /// Handle app becoming active.
+    pub async fn handle_app_became_active(
+        &self,
+        timestamp_ms: u64,
+    ) -> ActrResult<NetworkEventResult> {
+        let result = self
+            .inner
+            .handle_app_became_active(timestamp_ms)
+            .await
+            .map_err(|e| ActrError::Internal { msg: e })?;
+        Ok(result.into())
+    }
+
+    /// Handle app termination.
+    pub async fn handle_app_terminating(
+        &self,
+        timestamp_ms: u64,
+    ) -> ActrResult<NetworkEventResult> {
+        let result = self
+            .inner
+            .handle_app_terminating(timestamp_ms)
             .await
             .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
