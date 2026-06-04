@@ -31,18 +31,15 @@
 //! │  NetworkEventProcessor (Trait)                          │
 //! │                                                          │
 //! │  DefaultNetworkEventProcessor:                          │
-//! │  • process_network_available()                          │
-//! │    └─► Reconnect signaling + ICE restart                │
-//! │  • process_network_lost()                               │
-//! │    └─► Clear pending + disconnect                       │
-//! │  • process_network_type_changed()                       │
-//! │    └─► Disconnect + wait + reconnect                    │
+//! │  • reconcile settled network/app events                 │
+//! │  • execute one recovery action                          │
+//! │    └─► Offline / Probe / Restore / Cleanup / Reconnect  │
 //! └─────────────────────────────────────────────────────────┘
 //! ```
 //!
 //! # Key Components
 //!
-//! - **NetworkEvent**: Event types (Available, Lost, TypeChanged)
+//! - **NetworkEvent**: Unified mobile network/app/command events
 //! - **NetworkEventResult**: Processing result with success/error/duration
 //! - **NetworkEventProcessor**: Trait for custom event handling logic
 //! - **DefaultNetworkEventProcessor**: Default implementation with signaling + WebRTC recovery
@@ -53,16 +50,16 @@
 //! ```ignore
 //! // Platform layer calls NetworkEventHandle via FFI
 //! let network_handle = system.create_network_event_handle();
-//! let result = network_handle.handle_network_available().await?;
+//! let result = network_handle.handle_network_path_changed(snapshot).await?;
 //! if result.success {
-//!     println!("✅ Processed in {}ms", result.duration_ms);
+//!     println!("Processed in {}ms", result.duration_ms);
 //! }
 //! ```
 //!
 //! ## 2. Actor Proto Message (Optional, TODO)
 //! ```ignore
 //! // TODO: actors send proto message directly (not yet implemented)
-//! actor_ref.call(NetworkAvailableMessage).await?;
+//! actor_ref.call(NetworkPathChangedMessage { snapshot }).await?;
 //! ```
 //!
 //! **Key Differences:**
@@ -86,11 +83,57 @@ pub(super) const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
 /// Mobile network path snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NetworkSnapshot {
-    pub is_available: bool,
-    pub is_wifi: bool,
-    pub is_cellular: bool,
-    pub is_vpn: bool,
-    pub timestamp_ms: u64,
+    pub sequence: u64,
+    pub availability: NetworkAvailability,
+    pub reachability: InternetReachability,
+    pub transport: NetworkTransportFlags,
+    pub is_expensive: bool,
+    pub is_constrained: bool,
+}
+
+impl NetworkSnapshot {
+    pub fn is_offline(&self) -> bool {
+        matches!(self.availability, NetworkAvailability::Unavailable)
+            || matches!(self.reachability, InternetReachability::NotReachable)
+    }
+
+    pub fn should_restore(&self) -> bool {
+        matches!(self.availability, NetworkAvailability::Available)
+            || matches!(self.reachability, InternetReachability::Reachable)
+    }
+}
+
+/// Whether the platform currently has a usable network path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NetworkAvailability {
+    Unknown,
+    Available,
+    Unavailable,
+}
+
+/// Whether the platform has validated internet reachability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InternetReachability {
+    Unknown,
+    Reachable,
+    NotReachable,
+}
+
+/// Active network transport flags. Multiple flags can be true at the same time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct NetworkTransportFlags {
+    pub wifi: bool,
+    pub cellular: bool,
+    pub ethernet: bool,
+    pub vpn: bool,
+    pub other: bool,
+}
+
+/// App lifecycle state relevant to connection recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AppLifecycleState {
+    Background,
+    Foreground { background_duration_ms: u64 },
 }
 
 /// Reason for a cleanup-only operation.
@@ -115,35 +158,11 @@ pub enum ReconnectReason {
 /// Network event type
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NetworkEvent {
-    /// Network available (recovered from disconnection)
-    Available,
-
-    /// Network lost (disconnected)
-    Lost,
-
-    /// Network type changed (WiFi <-> Cellular)
-    TypeChanged { is_wifi: bool, is_cellular: bool },
-
     /// Full mobile network path changed.
-    PathChanged { snapshot: NetworkSnapshot },
+    NetworkPathChanged { snapshot: NetworkSnapshot },
 
-    /// App entered background. Does not imply cleanup by itself.
-    AppEnteredBackground { timestamp_ms: u64 },
-
-    /// App returned to foreground.
-    AppEnteredForeground {
-        background_duration_ms: u64,
-        timestamp_ms: u64,
-    },
-
-    /// App became inactive. Diagnostic/lightweight lifecycle fact.
-    AppBecameInactive { timestamp_ms: u64 },
-
-    /// App became active. Diagnostic/lightweight lifecycle fact.
-    AppBecameActive { timestamp_ms: u64 },
-
-    /// App is terminating. Cleanup only, no reconnect.
-    AppTerminating { timestamp_ms: u64 },
+    /// App lifecycle changed.
+    AppLifecycleChanged { state: AppLifecycleState },
 
     /// Proactively clean up all connections
     ///
@@ -155,9 +174,6 @@ pub enum NetworkEvent {
 
     /// Proactively clean up and restore connections.
     ForceReconnect { reason: ReconnectReason },
-
-    /// Probe connectivity without forcing cleanup.
-    ProbeConnectivity,
 }
 
 /// Final action selected from a settled batch of network events.
@@ -325,6 +341,13 @@ impl DebounceState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DebounceEvent {
+    Available,
+    Lost,
+    TypeChanged,
+}
+
 #[derive(Debug)]
 struct SignalingRecoveryState {
     connect_lock: tokio::sync::Mutex<()>,
@@ -380,11 +403,11 @@ impl DefaultNetworkEventProcessor {
     /// # Returns
     /// - `true`: the event should be processed
     /// - `false`: the event is within the debounce window and should be ignored
-    async fn should_process_event(&self, event: &NetworkEvent) -> bool {
+    async fn should_process_event(&self, event: DebounceEvent) -> bool {
         let now = Instant::now();
 
         match event {
-            NetworkEvent::Available => {
+            DebounceEvent::Available => {
                 let mut last = self.debounce_state.last_available.lock().await;
                 if let Some(last_time) = *last {
                     if now.duration_since(last_time) < self.debounce_config.window {
@@ -398,7 +421,7 @@ impl DefaultNetworkEventProcessor {
                 *last = Some(now);
                 true
             }
-            NetworkEvent::Lost => {
+            DebounceEvent::Lost => {
                 let mut last = self.debounce_state.last_lost.lock().await;
                 if let Some(last_time) = *last {
                     if now.duration_since(last_time) < self.debounce_config.window {
@@ -412,7 +435,7 @@ impl DefaultNetworkEventProcessor {
                 *last = Some(now);
                 true
             }
-            NetworkEvent::TypeChanged { .. } => {
+            DebounceEvent::TypeChanged => {
                 let mut last = self.debounce_state.last_type_changed.lock().await;
                 if let Some(last_time) = *last {
                     if now.duration_since(last_time) < self.debounce_config.window {
@@ -424,21 +447,6 @@ impl DefaultNetworkEventProcessor {
                     }
                 }
                 *last = Some(now);
-                true
-            }
-            NetworkEvent::PathChanged { .. }
-            | NetworkEvent::AppEnteredBackground { .. }
-            | NetworkEvent::AppEnteredForeground { .. }
-            | NetworkEvent::AppBecameInactive { .. }
-            | NetworkEvent::AppBecameActive { .. }
-            | NetworkEvent::AppTerminating { .. }
-            | NetworkEvent::ForceReconnect { .. }
-            | NetworkEvent::ProbeConnectivity => true,
-            // CleanupConnections skips debounce check; proactive cleanup always executes immediately.
-            NetworkEvent::CleanupConnections { .. } => {
-                tracing::debug!(
-                    "🧹 CleanupConnections event - no debouncing (always execute immediately)"
-                );
                 true
             }
         }
@@ -570,7 +578,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     /// Process network available event
     async fn process_network_available(&self) -> Result<(), String> {
         // Debounce check
-        let should_process = self.should_process_event(&NetworkEvent::Available).await;
+        let should_process = self.should_process_event(DebounceEvent::Available).await;
         if !should_process && self.signaling_client.is_connected() {
             return Ok(());
         }
@@ -583,7 +591,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     /// Process network lost event
     async fn process_network_lost(&self) -> Result<(), String> {
         // Debounce check
-        if !self.should_process_event(&NetworkEvent::Lost).await {
+        if !self.should_process_event(DebounceEvent::Lost).await {
             return Ok(());
         }
 
@@ -597,12 +605,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         is_cellular: bool,
     ) -> Result<(), String> {
         // Debounce check
-        let should_process = self
-            .should_process_event(&NetworkEvent::TypeChanged {
-                is_wifi,
-                is_cellular,
-            })
-            .await;
+        let should_process = self.should_process_event(DebounceEvent::TypeChanged).await;
         if !should_process && self.signaling_client.is_connected() {
             return Ok(());
         }
@@ -685,7 +688,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         match action {
             NetworkRecoveryAction::Noop => Ok(()),
             NetworkRecoveryAction::Offline => self.process_offline().await,
-            NetworkRecoveryAction::Probe => self.probe_or_restore("ProbeConnectivity").await,
+            NetworkRecoveryAction::Probe => self.probe_or_restore("Probe").await,
             NetworkRecoveryAction::Restore => {
                 self.restore_signaling_and_webrtc("NetworkEventBatch").await
             }
@@ -823,60 +826,26 @@ impl NetworkEventHandle {
         }
     }
 
-    /// Handle network available event
-    ///
-    /// # Returns
-    /// - `Ok(NetworkEventResult)`: Processing result
-    /// - `Err(String)`: Failed to send event or receive result
-    pub async fn handle_network_available(&self) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::Available)
-            .await
-    }
-
-    /// Handle network lost event
-    ///
-    /// # Returns
-    /// - `Ok(NetworkEventResult)`: Processing result
-    /// - `Err(String)`: Failed to send event or receive result
-    pub async fn handle_network_lost(&self) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::Lost).await
-    }
-
-    /// Handle network type changed event
-    ///
-    /// # Returns
-    /// - `Ok(NetworkEventResult)`: Processing result
-    /// - `Err(String)`: Failed to send event or receive result
-    pub async fn handle_network_type_changed(
+    /// Handle full network path changes.
+    pub async fn handle_network_path_changed(
         &self,
-        is_wifi: bool,
-        is_cellular: bool,
+        snapshot: NetworkSnapshot,
     ) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::TypeChanged {
-            is_wifi,
-            is_cellular,
-        })
-        .await
-    }
-
-    /// Proactively clean up all connections.
-    ///
-    /// Use this to proactively clean up all network connections in cases such as:
-    /// - App entering the background (iOS/Android)
-    /// - User logging out
-    /// - App preparing to exit
-    /// - Network state reset
-    ///
-    /// # Returns
-    /// - `Ok(NetworkEventResult)`: Processing result
-    /// - `Err(String)`: Failed to send event or receive result
-    pub async fn cleanup_connections(&self) -> Result<NetworkEventResult, String> {
-        self.cleanup_connections_with_reason(CleanupReason::ManualReset)
+        self.send_event_and_await_result(NetworkEvent::NetworkPathChanged { snapshot })
             .await
     }
 
-    /// Proactively clean up all connections with a reason.
-    pub async fn cleanup_connections_with_reason(
+    /// Handle app lifecycle changes.
+    pub async fn handle_app_lifecycle_changed(
+        &self,
+        state: AppLifecycleState,
+    ) -> Result<NetworkEventResult, String> {
+        self.send_event_and_await_result(NetworkEvent::AppLifecycleChanged { state })
+            .await
+    }
+
+    /// Proactively clean up all connections with a reason. This never reconnects.
+    pub async fn cleanup_connections(
         &self,
         reason: CleanupReason,
     ) -> Result<NetworkEventResult, String> {
@@ -890,70 +859,6 @@ impl NetworkEventHandle {
         reason: ReconnectReason,
     ) -> Result<NetworkEventResult, String> {
         self.send_event_and_await_result(NetworkEvent::ForceReconnect { reason })
-            .await
-    }
-
-    /// Handle full network path changes.
-    pub async fn handle_network_path_changed(
-        &self,
-        snapshot: NetworkSnapshot,
-    ) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::PathChanged { snapshot })
-            .await
-    }
-
-    /// Probe current connectivity.
-    pub async fn probe_connectivity(&self) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::ProbeConnectivity)
-            .await
-    }
-
-    /// Handle app entering background.
-    pub async fn handle_app_entered_background(
-        &self,
-        timestamp_ms: u64,
-    ) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::AppEnteredBackground { timestamp_ms })
-            .await
-    }
-
-    /// Handle app entering foreground.
-    pub async fn handle_app_entered_foreground(
-        &self,
-        background_duration_ms: u64,
-        timestamp_ms: u64,
-    ) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::AppEnteredForeground {
-            background_duration_ms,
-            timestamp_ms,
-        })
-        .await
-    }
-
-    /// Handle app becoming inactive.
-    pub async fn handle_app_became_inactive(
-        &self,
-        timestamp_ms: u64,
-    ) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::AppBecameInactive { timestamp_ms })
-            .await
-    }
-
-    /// Handle app becoming active.
-    pub async fn handle_app_became_active(
-        &self,
-        timestamp_ms: u64,
-    ) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::AppBecameActive { timestamp_ms })
-            .await
-    }
-
-    /// Handle app termination.
-    pub async fn handle_app_terminating(
-        &self,
-        timestamp_ms: u64,
-    ) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::AppTerminating { timestamp_ms })
             .await
     }
 

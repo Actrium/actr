@@ -13,9 +13,10 @@ pub(crate) mod node;
 
 pub use connection_supervisor::{ConnectionFact, ConnectionSupervisor};
 pub use network_event::{
-    CleanupReason, DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle,
+    AppLifecycleState, CleanupReason, DebounceConfig, DefaultNetworkEventProcessor,
+    InternetReachability, NetworkAvailability, NetworkEvent, NetworkEventHandle,
     NetworkEventProcessor, NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction,
-    NetworkSnapshot, ReconnectReason, process_network_event_batch, run_network_event_reconciler,
-    select_network_recovery_action,
+    NetworkSnapshot, NetworkTransportFlags, ReconnectReason, process_network_event_batch,
+    run_network_event_reconciler, select_network_recovery_action,
 };
 pub use node::CredentialState;

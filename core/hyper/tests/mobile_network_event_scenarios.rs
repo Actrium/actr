@@ -8,7 +8,8 @@
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
-    CleanupReason, NetworkEvent, NetworkRecoveryAction, process_network_event_batch,
+    CleanupReason, InternetReachability, NetworkAvailability, NetworkEvent, NetworkRecoveryAction,
+    NetworkSnapshot, NetworkTransportFlags, process_network_event_batch,
     select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
@@ -24,27 +25,57 @@ enum EventSpec {
 }
 
 impl EventSpec {
-    fn to_event(self) -> NetworkEvent {
+    fn to_event(self, sequence: u64) -> NetworkEvent {
         match self {
-            EventSpec::Available => NetworkEvent::Available,
-            EventSpec::Lost => NetworkEvent::Lost,
-            EventSpec::TypeWifi => NetworkEvent::TypeChanged {
-                is_wifi: true,
-                is_cellular: false,
-            },
-            EventSpec::TypeCellular => NetworkEvent::TypeChanged {
-                is_wifi: false,
-                is_cellular: true,
-            },
-            EventSpec::TypeOther => NetworkEvent::TypeChanged {
-                is_wifi: false,
-                is_cellular: false,
-            },
+            EventSpec::Available => network_event(sequence, true, false, false),
+            EventSpec::Lost => network_event(sequence, false, false, false),
+            EventSpec::TypeWifi => network_event(sequence, true, true, false),
+            EventSpec::TypeCellular => network_event(sequence, true, false, true),
+            EventSpec::TypeOther => network_event(sequence, true, false, false),
             EventSpec::CleanupConnections => NetworkEvent::CleanupConnections {
                 reason: CleanupReason::ManualReset,
             },
         }
     }
+}
+
+fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: NetworkSnapshot {
+            sequence,
+            availability: if available {
+                NetworkAvailability::Available
+            } else {
+                NetworkAvailability::Unavailable
+            },
+            reachability: if available {
+                InternetReachability::Reachable
+            } else {
+                InternetReachability::NotReachable
+            },
+            transport: NetworkTransportFlags {
+                wifi,
+                cellular,
+                ethernet: false,
+                vpn: false,
+                other: false,
+            },
+            is_expensive: false,
+            is_constrained: false,
+        },
+    }
+}
+
+fn online_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, false, false)
+}
+
+fn offline_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, false, false, false)
+}
+
+fn wifi_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, true, false)
 }
 
 #[derive(Clone, Copy)]
@@ -303,7 +334,11 @@ fn init_tracing() {
 }
 
 fn materialize_events(specs: &[EventSpec]) -> Vec<NetworkEvent> {
-    specs.iter().map(|spec| spec.to_event()).collect()
+    specs
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| spec.to_event(index as u64 + 1))
+        .collect()
 }
 
 async fn expect_request_ok(harness: &TestHarness, request_id: &str, timeout: Duration) {
@@ -391,14 +426,7 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
     tokio::time::sleep(Duration::from_secs(8)).await;
     harness.simulate_reconnect();
 
-    let recovered_after_outage = vec![
-        NetworkEvent::Lost,
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
-        },
-    ];
+    let recovered_after_outage = vec![offline_event(1), online_event(2), wifi_event(3)];
     assert_eq!(
         select_network_recovery_action(&recovered_after_outage),
         NetworkRecoveryAction::Restore
@@ -419,11 +447,7 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
     )
     .await;
 
-    let restore_last = vec![
-        NetworkEvent::Available,
-        NetworkEvent::Lost,
-        NetworkEvent::Available,
-    ];
+    let restore_last = vec![online_event(4), offline_event(5), online_event(6)];
     assert_eq!(
         select_network_recovery_action(&restore_last),
         NetworkRecoveryAction::Restore
@@ -438,11 +462,7 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
     )
     .await;
 
-    let offline_last = vec![
-        NetworkEvent::Lost,
-        NetworkEvent::Available,
-        NetworkEvent::Lost,
-    ];
+    let offline_last = vec![offline_event(7), online_event(8), offline_event(9)];
     assert_eq!(
         select_network_recovery_action(&offline_last),
         NetworkRecoveryAction::Offline
@@ -452,7 +472,7 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
     assert!(results.iter().all(|result| result.success));
 
     let restore_results = process_network_event_batch(
-        vec![NetworkEvent::Available],
+        vec![online_event(10)],
         harness.peer(100).network_processor(),
     )
     .await;

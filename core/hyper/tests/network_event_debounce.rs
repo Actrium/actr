@@ -3,9 +3,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
-    CleanupReason, ConnectionFact, ConnectionSupervisor, CredentialState, DebounceConfig,
-    DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
-    NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot,
+    AppLifecycleState, CleanupReason, ConnectionFact, ConnectionSupervisor, CredentialState,
+    DebounceConfig, DefaultNetworkEventProcessor, InternetReachability, NetworkAvailability,
+    NetworkEvent, NetworkEventHandle, NetworkEventProcessor, NetworkEventRequest,
+    NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags,
     ReconnectReason, process_network_event_batch, run_network_event_reconciler,
     select_network_recovery_action,
 };
@@ -214,6 +215,87 @@ impl SignalingClient for FakeSignalingClient {
     async fn set_credential_state(&self, _credential_state: CredentialState) {}
 
     async fn clear_identity(&self) {}
+}
+
+fn snapshot(
+    sequence: u64,
+    availability: NetworkAvailability,
+    reachability: InternetReachability,
+    wifi: bool,
+    cellular: bool,
+    vpn: bool,
+) -> NetworkSnapshot {
+    NetworkSnapshot {
+        sequence,
+        availability,
+        reachability,
+        transport: NetworkTransportFlags {
+            wifi,
+            cellular,
+            ethernet: false,
+            vpn,
+            other: false,
+        },
+        is_expensive: false,
+        is_constrained: false,
+    }
+}
+
+fn online_event(sequence: u64) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: snapshot(
+            sequence,
+            NetworkAvailability::Available,
+            InternetReachability::Reachable,
+            true,
+            false,
+            false,
+        ),
+    }
+}
+
+fn offline_event(sequence: u64) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: snapshot(
+            sequence,
+            NetworkAvailability::Unavailable,
+            InternetReachability::NotReachable,
+            false,
+            false,
+            false,
+        ),
+    }
+}
+
+fn wifi_event(sequence: u64) -> NetworkEvent {
+    online_event(sequence)
+}
+
+fn cellular_event(sequence: u64) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: snapshot(
+            sequence,
+            NetworkAvailability::Available,
+            InternetReachability::Reachable,
+            false,
+            true,
+            false,
+        ),
+    }
+}
+
+fn foreground_event(background_duration_ms: u64) -> NetworkEvent {
+    NetworkEvent::AppLifecycleChanged {
+        state: AppLifecycleState::Foreground {
+            background_duration_ms,
+        },
+    }
+}
+
+fn background_event() -> NetworkEvent {
+    NetworkEvent::AppLifecycleChanged {
+        state: AppLifecycleState::Background,
+    }
 }
 
 #[tokio::test]
@@ -480,26 +562,11 @@ async fn test_batch_available_type_changed_probes_signaling_once() {
         },
     ));
 
-    let action = select_network_recovery_action(&[
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
-        },
-    ]);
+    let action = select_network_recovery_action(&[online_event(1), wifi_event(2)]);
     assert_eq!(action, NetworkRecoveryAction::Restore);
 
-    let results = process_network_event_batch(
-        vec![
-            NetworkEvent::Available,
-            NetworkEvent::TypeChanged {
-                is_wifi: true,
-                is_cellular: false,
-            },
-        ],
-        processor,
-    )
-    .await;
+    let results =
+        process_network_event_batch(vec![online_event(1), wifi_event(2)], processor).await;
 
     assert_eq!(results.len(), 2, "each merged request should get a result");
     assert!(results.iter().all(|result| result.success));
@@ -540,17 +607,8 @@ async fn test_batch_restore_rebuilds_once_when_signaling_probe_fails() {
         },
     ));
 
-    let results = process_network_event_batch(
-        vec![
-            NetworkEvent::Available,
-            NetworkEvent::TypeChanged {
-                is_wifi: false,
-                is_cellular: true,
-            },
-        ],
-        processor,
-    )
-    .await;
+    let results =
+        process_network_event_batch(vec![online_event(1), cellular_event(2)], processor).await;
 
     assert_eq!(results.len(), 2);
     assert!(results.iter().all(|result| result.success));
@@ -581,14 +639,7 @@ async fn test_batch_lost_available_type_changed_prefers_restore() {
         },
     ));
 
-    let events = vec![
-        NetworkEvent::Lost,
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: false,
-            is_cellular: true,
-        },
-    ];
+    let events = vec![offline_event(1), online_event(2), cellular_event(3)];
     assert_eq!(
         select_network_recovery_action(&events),
         NetworkRecoveryAction::Restore
@@ -619,22 +670,14 @@ async fn test_batch_lost_available_type_changed_prefers_restore() {
 
 #[test]
 fn test_batch_action_uses_latest_network_state_event() {
-    let available_last = vec![
-        NetworkEvent::Available,
-        NetworkEvent::Lost,
-        NetworkEvent::Available,
-    ];
+    let available_last = vec![online_event(1), offline_event(2), online_event(3)];
     assert_eq!(
         select_network_recovery_action(&available_last),
         NetworkRecoveryAction::Restore,
         "Available after Lost means the settled final state is online"
     );
 
-    let lost_last = vec![
-        NetworkEvent::Lost,
-        NetworkEvent::Available,
-        NetworkEvent::Lost,
-    ];
+    let lost_last = vec![offline_event(1), online_event(2), offline_event(3)];
     assert_eq!(
         select_network_recovery_action(&lost_last),
         NetworkRecoveryAction::Offline,
@@ -646,25 +689,21 @@ fn test_batch_action_uses_latest_network_state_event() {
 fn test_connection_supervisor_converges_mobile_facts_to_action() {
     let mut supervisor = ConnectionSupervisor::new();
 
-    supervisor.submit_event(&NetworkEvent::AppEnteredBackground { timestamp_ms: 100 });
-    supervisor.submit_event(&NetworkEvent::AppBecameInactive { timestamp_ms: 110 });
+    supervisor.submit_event(&background_event());
     assert_eq!(
         supervisor.reconcile(),
         NetworkRecoveryAction::Noop,
         "background/inactive lifecycle facts should not clean up or reconnect by themselves"
     );
 
-    supervisor.submit_event(&NetworkEvent::AppEnteredForeground {
-        background_duration_ms: 5_000,
-        timestamp_ms: 200,
-    });
+    supervisor.submit_event(&foreground_event(5_000));
     assert_eq!(
         supervisor.reconcile(),
         NetworkRecoveryAction::Probe,
         "short foreground return should only probe when no network fact is known"
     );
 
-    supervisor.submit_event(&NetworkEvent::Available);
+    supervisor.submit_event(&online_event(1));
     assert_eq!(
         supervisor.reconcile(),
         NetworkRecoveryAction::Restore,
@@ -677,8 +716,14 @@ fn test_connection_supervisor_cleanup_fact_suppresses_later_restore() {
     let mut supervisor = ConnectionSupervisor::new();
 
     supervisor.submit_fact(ConnectionFact::CleanupRequested(CleanupReason::UserLogout));
-    supervisor.submit_fact(ConnectionFact::NetworkOnline);
-    supervisor.submit_fact(ConnectionFact::NetworkPathChanged);
+    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
+        1,
+        NetworkAvailability::Available,
+        InternetReachability::Reachable,
+        true,
+        false,
+        false,
+    )));
 
     assert_eq!(
         supervisor.reconcile(),
@@ -688,23 +733,25 @@ fn test_connection_supervisor_cleanup_fact_suppresses_later_restore() {
 }
 
 #[test]
-fn test_connection_supervisor_uses_latest_snapshot_timestamp() {
+fn test_connection_supervisor_uses_latest_snapshot_sequence() {
     let mut supervisor = ConnectionSupervisor::new();
 
-    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(NetworkSnapshot {
-        is_available: true,
-        is_wifi: true,
-        is_cellular: false,
-        is_vpn: true,
-        timestamp_ms: 200,
-    }));
-    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(NetworkSnapshot {
-        is_available: false,
-        is_wifi: false,
-        is_cellular: false,
-        is_vpn: false,
-        timestamp_ms: 100,
-    }));
+    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
+        2,
+        NetworkAvailability::Available,
+        InternetReachability::Reachable,
+        true,
+        false,
+        true,
+    )));
+    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
+        1,
+        NetworkAvailability::Unavailable,
+        InternetReachability::NotReachable,
+        false,
+        false,
+        false,
+    )));
 
     assert_eq!(
         supervisor.reconcile(),
@@ -716,18 +763,16 @@ fn test_connection_supervisor_uses_latest_snapshot_timestamp() {
 #[test]
 fn test_connection_supervisor_selector_matches_public_selector() {
     let events = vec![
-        NetworkEvent::AppEnteredForeground {
-            background_duration_ms: 60_000,
-            timestamp_ms: 100,
-        },
-        NetworkEvent::PathChanged {
-            snapshot: NetworkSnapshot {
-                is_available: true,
-                is_wifi: false,
-                is_cellular: true,
-                is_vpn: false,
-                timestamp_ms: 200,
-            },
+        foreground_event(60_000),
+        NetworkEvent::NetworkPathChanged {
+            snapshot: snapshot(
+                2,
+                NetworkAvailability::Available,
+                InternetReachability::Reachable,
+                false,
+                true,
+                false,
+            ),
         },
     ];
 
@@ -744,50 +789,48 @@ fn test_connection_supervisor_selector_matches_public_selector() {
 
 #[test]
 fn test_snapshot_and_lifecycle_events_select_expected_actions() {
-    let offline_snapshot = NetworkSnapshot {
-        is_available: false,
-        is_wifi: false,
-        is_cellular: false,
-        is_vpn: false,
-        timestamp_ms: 100,
-    };
+    let offline_snapshot = snapshot(
+        1,
+        NetworkAvailability::Unavailable,
+        InternetReachability::NotReachable,
+        false,
+        false,
+        false,
+    );
     assert_eq!(
-        select_network_recovery_action(&[NetworkEvent::PathChanged {
+        select_network_recovery_action(&[NetworkEvent::NetworkPathChanged {
             snapshot: offline_snapshot,
         }]),
         NetworkRecoveryAction::Offline
     );
 
-    let vpn_snapshot = NetworkSnapshot {
-        is_available: true,
-        is_wifi: true,
-        is_cellular: false,
-        is_vpn: true,
-        timestamp_ms: 200,
-    };
+    let vpn_snapshot = snapshot(
+        2,
+        NetworkAvailability::Available,
+        InternetReachability::Reachable,
+        true,
+        false,
+        true,
+    );
     assert_eq!(
-        select_network_recovery_action(&[NetworkEvent::PathChanged {
+        select_network_recovery_action(&[NetworkEvent::NetworkPathChanged {
             snapshot: vpn_snapshot,
         }]),
         NetworkRecoveryAction::Restore
     );
 
     assert_eq!(
-        select_network_recovery_action(&[NetworkEvent::AppEnteredForeground {
-            background_duration_ms: 5_000,
-            timestamp_ms: 300,
-        }]),
+        select_network_recovery_action(&[foreground_event(5_000)]),
         NetworkRecoveryAction::Probe
     );
     assert_eq!(
-        select_network_recovery_action(&[NetworkEvent::AppEnteredForeground {
-            background_duration_ms: 60_000,
-            timestamp_ms: 400,
-        }]),
+        select_network_recovery_action(&[foreground_event(60_000)]),
         NetworkRecoveryAction::ForceReconnect
     );
     assert_eq!(
-        select_network_recovery_action(&[NetworkEvent::AppTerminating { timestamp_ms: 500 }]),
+        select_network_recovery_action(&[NetworkEvent::CleanupConnections {
+            reason: CleanupReason::AppTerminating
+        }]),
         NetworkRecoveryAction::CleanupOnly
     );
 }
@@ -798,7 +841,7 @@ fn test_action_priority_cleanup_offline_and_force_reconnect() {
         NetworkEvent::CleanupConnections {
             reason: CleanupReason::ManualReset,
         },
-        NetworkEvent::Available,
+        online_event(1),
     ];
     assert_eq!(
         select_network_recovery_action(&cleanup_and_online),
@@ -810,7 +853,7 @@ fn test_action_priority_cleanup_offline_and_force_reconnect() {
         NetworkEvent::ForceReconnect {
             reason: ReconnectReason::ManualReconnect,
         },
-        NetworkEvent::Available,
+        online_event(1),
     ];
     assert_eq!(
         select_network_recovery_action(&force_reconnect),
@@ -821,7 +864,7 @@ fn test_action_priority_cleanup_offline_and_force_reconnect() {
         NetworkEvent::ForceReconnect {
             reason: ReconnectReason::ManualReconnect,
         },
-        NetworkEvent::Lost,
+        offline_event(1),
     ];
     assert_eq!(
         select_network_recovery_action(&offline_wins),
@@ -847,11 +890,8 @@ async fn test_batch_cleanup_connections_wins_without_implicit_reconnect() {
         NetworkEvent::CleanupConnections {
             reason: CleanupReason::ManualReset,
         },
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
-        },
+        online_event(1),
+        wifi_event(2),
     ];
     assert_eq!(
         select_network_recovery_action(&events),
@@ -896,7 +936,7 @@ async fn test_cleanup_available_batch_does_not_reconnect() {
         NetworkEvent::CleanupConnections {
             reason: CleanupReason::ManualReset,
         },
-        NetworkEvent::Available,
+        online_event(1),
     ];
     assert_eq!(
         select_network_recovery_action(&events),
@@ -950,16 +990,36 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
 
     let lost = {
         let handle = handle.clone();
-        tokio::spawn(async move { handle.handle_network_lost().await })
+        tokio::spawn(async move {
+            handle
+                .handle_network_path_changed(match offline_event(1) {
+                    NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                    _ => unreachable!(),
+                })
+                .await
+        })
     };
     tokio::time::sleep(Duration::from_millis(20)).await;
     let available = {
         let handle = handle.clone();
-        tokio::spawn(async move { handle.handle_network_available().await })
+        tokio::spawn(async move {
+            handle
+                .handle_network_path_changed(match online_event(2) {
+                    NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                    _ => unreachable!(),
+                })
+                .await
+        })
     };
     tokio::time::sleep(Duration::from_millis(20)).await;
-    let type_changed =
-        tokio::spawn(async move { handle.handle_network_type_changed(true, false).await });
+    let type_changed = tokio::spawn(async move {
+        handle
+            .handle_network_path_changed(match wifi_event(3) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+    });
 
     let lost_result = lost.await.expect("lost task should not panic").unwrap();
     let available_result = available
@@ -974,14 +1034,17 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
     assert!(lost_result.success);
     assert!(available_result.success);
     assert!(type_changed_result.success);
-    assert!(matches!(lost_result.event, NetworkEvent::Lost));
-    assert!(matches!(available_result.event, NetworkEvent::Available));
+    assert!(matches!(
+        lost_result.event,
+        NetworkEvent::NetworkPathChanged { .. }
+    ));
+    assert!(matches!(
+        available_result.event,
+        NetworkEvent::NetworkPathChanged { .. }
+    ));
     assert!(matches!(
         type_changed_result.event,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false
-        }
+        NetworkEvent::NetworkPathChanged { .. }
     ));
     assert!(client.is_connected());
 
@@ -1028,7 +1091,14 @@ async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
     for cycle in 1..=CYCLES {
         let available = {
             let handle = handle.clone();
-            tokio::spawn(async move { handle.handle_network_available().await })
+            tokio::spawn(async move {
+                handle
+                    .handle_network_path_changed(match online_event(cycle * 2) {
+                        NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                        _ => unreachable!(),
+                    })
+                    .await
+            })
         };
 
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1037,7 +1107,10 @@ async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
             let handle = handle.clone();
             tokio::spawn(async move {
                 handle
-                    .handle_network_type_changed(cycle % 2 == 0, cycle % 2 != 0)
+                    .handle_network_path_changed(match cellular_event(cycle * 2 + 1) {
+                        NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                        _ => unreachable!(),
+                    })
                     .await
             })
         };
@@ -1103,7 +1176,10 @@ async fn test_network_event_handle_fails_fast_when_receiver_closed() {
     let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_millis(100));
 
     let err = handle
-        .handle_network_available()
+        .handle_network_path_changed(match online_event(1) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
         .await
         .expect_err("closed network event receiver should fail");
 
@@ -1118,7 +1194,14 @@ async fn test_network_event_handle_pending_request_is_bounded_by_deadline() {
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
     let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_millis(100));
 
-    let call = tokio::spawn(async move { handle.handle_network_available().await });
+    let call = tokio::spawn(async move {
+        handle
+            .handle_network_path_changed(match online_event(1) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+    });
     let _request = event_rx
         .recv()
         .await
@@ -1158,15 +1241,28 @@ async fn test_reconciler_ignores_cancelled_network_event_callers() {
 
     let cancelled = {
         let handle = handle.clone();
-        tokio::spawn(async move { handle.handle_network_available().await })
+        tokio::spawn(async move {
+            handle
+                .handle_network_path_changed(match online_event(1) {
+                    NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                    _ => unreachable!(),
+                })
+                .await
+        })
     };
     cancelled.abort();
 
     let result = handle
-        .handle_network_lost()
+        .handle_network_path_changed(match offline_event(2) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
         .await
         .expect("subsequent event should still complete");
-    assert!(matches!(result.event, NetworkEvent::Lost));
+    assert!(matches!(
+        result.event,
+        NetworkEvent::NetworkPathChanged { .. }
+    ));
     assert!(result.success);
 
     shutdown.cancel();
@@ -1180,11 +1276,25 @@ async fn test_network_event_handle_preserves_per_request_result_correlation() {
 
     let available = {
         let handle = handle.clone();
-        tokio::spawn(async move { handle.handle_network_available().await })
+        tokio::spawn(async move {
+            handle
+                .handle_network_path_changed(match online_event(1) {
+                    NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                    _ => unreachable!(),
+                })
+                .await
+        })
     };
     let lost = {
         let handle = handle.clone();
-        tokio::spawn(async move { handle.handle_network_lost().await })
+        tokio::spawn(async move {
+            handle
+                .handle_network_path_changed(match offline_event(2) {
+                    NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                    _ => unreachable!(),
+                })
+                .await
+        })
     };
 
     let first = event_rx.recv().await.expect("first request");
@@ -1208,6 +1318,12 @@ async fn test_network_event_handle_preserves_per_request_result_correlation() {
         .expect("lost task should not panic")
         .expect("lost should complete");
 
-    assert!(matches!(available_result.event, NetworkEvent::Available));
-    assert!(matches!(lost_result.event, NetworkEvent::Lost));
+    assert!(matches!(
+        available_result.event,
+        NetworkEvent::NetworkPathChanged { .. }
+    ));
+    assert!(matches!(
+        lost_result.event,
+        NetworkEvent::NetworkPathChanged { .. }
+    ));
 }

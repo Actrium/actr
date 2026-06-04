@@ -3,7 +3,8 @@
 
 use actr_framework::Bytes;
 use actr_hyper::lifecycle::{
-    NetworkEvent, NetworkRecoveryAction, ReconnectReason, process_network_event_batch,
+    InternetReachability, NetworkAvailability, NetworkEvent, NetworkRecoveryAction,
+    NetworkSnapshot, NetworkTransportFlags, ReconnectReason, process_network_event_batch,
     select_network_recovery_action,
 };
 use actr_hyper::outbound::PeerGate;
@@ -51,6 +52,45 @@ fn generate_test_data(size: usize) -> (Vec<u8>, [u8; 32]) {
     let data: Vec<u8> = (0..size).map(|i| ((i * 31 + 7) % 251) as u8).collect();
     let hash: [u8; 32] = Sha256::digest(&data).into();
     (data, hash)
+}
+
+fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: NetworkSnapshot {
+            sequence,
+            availability: if available {
+                NetworkAvailability::Available
+            } else {
+                NetworkAvailability::Unavailable
+            },
+            reachability: if available {
+                InternetReachability::Reachable
+            } else {
+                InternetReachability::NotReachable
+            },
+            transport: NetworkTransportFlags {
+                wifi,
+                cellular,
+                ethernet: false,
+                vpn: false,
+                other: false,
+            },
+            is_expensive: false,
+            is_constrained: false,
+        },
+    }
+}
+
+fn wifi_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, true, false)
+}
+
+fn cellular_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, false, true)
+}
+
+fn offline_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, false, false, false)
 }
 
 fn spawn_data_echo_responder(
@@ -127,21 +167,40 @@ async fn setup_mobile_to_server() -> (TestHarness, BackgroundTasks) {
     };
 
     let server_id = harness.peer(SERVER).id.clone();
-    let setup = RpcEnvelope {
-        request_id: "mobile_setup_ping".to_string(),
-        route_key: "test.setup".to_string(),
-        payload: Some(Bytes::from_static(b"ping")),
-        timeout_ms: 15_000,
-        ..Default::default()
-    };
+    let setup_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut setup_attempt = 0;
+    loop {
+        setup_attempt += 1;
+        let setup = RpcEnvelope {
+            request_id: format!("mobile_setup_ping_{setup_attempt}"),
+            route_key: "test.setup".to_string(),
+            payload: Some(Bytes::from_static(b"ping")),
+            timeout_ms: 5_000,
+            ..Default::default()
+        };
 
-    tokio::time::timeout(
-        Duration::from_secs(15),
-        harness.peer(MOBILE).gate.send_request(&server_id, setup),
-    )
-    .await
-    .expect("mobile setup request timed out")
-    .expect("mobile setup request failed");
+        match tokio::time::timeout(
+            Duration::from_secs(7),
+            harness.peer(MOBILE).gate.send_request(&server_id, setup),
+        )
+        .await
+        {
+            Ok(Ok(_)) => break,
+            Ok(Err(err)) => {
+                let msg = err.to_string();
+                assert!(
+                    is_expected_bounded_transport_failure(&msg),
+                    "mobile setup request failed with unexpected error: {msg}"
+                );
+            }
+            Err(_) => {}
+        }
+
+        if tokio::time::Instant::now() >= setup_deadline {
+            panic!("mobile setup request did not succeed within 30s");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 
     tokio::time::sleep(Duration::from_millis(300)).await;
     (harness, bg_tasks)
@@ -455,10 +514,7 @@ async fn inflight_network_type_switch_recovers_original_request() {
         event.total_frags
     );
 
-    let events = vec![NetworkEvent::TypeChanged {
-        is_wifi: false,
-        is_cellular: true,
-    }];
+    let events = vec![cellular_event(1)];
     assert_eq!(
         select_network_recovery_action(&events),
         NetworkRecoveryAction::Restore
@@ -500,7 +556,7 @@ async fn inflight_long_offline_fails_bounded_then_retries() {
     );
 
     harness.simulate_disconnect();
-    process_mobile_events(&harness, vec![NetworkEvent::Lost]).await;
+    process_mobile_events(&harness, vec![offline_event(1)]).await;
 
     let err = expect_bounded_failure(
         request,
@@ -518,13 +574,7 @@ async fn inflight_long_offline_fails_bounded_then_retries() {
     harness.simulate_reconnect();
     process_mobile_events(
         &harness,
-        vec![
-            NetworkEvent::Available,
-            NetworkEvent::TypeChanged {
-                is_wifi: false,
-                is_cellular: true,
-            },
-        ],
+        vec![network_event(2, true, false, false), cellular_event(3)],
     )
     .await;
 
@@ -560,13 +610,7 @@ async fn inflight_short_background_survives_foreground_restore() {
     );
 
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let events = vec![
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
-        },
-    ];
+    let events = vec![network_event(1, true, false, false), wifi_event(2)];
     assert_eq!(
         select_network_recovery_action(&events),
         NetworkRecoveryAction::Restore
@@ -611,11 +655,8 @@ async fn inflight_long_background_is_bounded_and_retries() {
         NetworkEvent::ForceReconnect {
             reason: ReconnectReason::LongBackground,
         },
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
-        },
+        network_event(1, true, false, false),
+        wifi_event(2),
     ];
     assert_eq!(
         select_network_recovery_action(&events),

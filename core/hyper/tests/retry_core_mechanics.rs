@@ -15,7 +15,8 @@ use std::time::Duration;
 type ErrorCtor = fn(String) -> NetworkError;
 
 use actr_hyper::lifecycle::{
-    NetworkEvent, NetworkEventProcessor, NetworkRecoveryAction, process_network_event_batch,
+    InternetReachability, NetworkAvailability, NetworkEvent, NetworkEventProcessor,
+    NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags, process_network_event_batch,
 };
 use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{TestDedupOutcome, TestDedupState, make_actor_id};
@@ -23,6 +24,33 @@ use actr_hyper::transport::{
     ConnType, DataLane, Dest, NetworkError, NetworkResult, PeerTransport, WireBuilder, WireHandle,
 };
 use actr_protocol::prost::Message;
+
+fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: NetworkSnapshot {
+            sequence,
+            availability: if available {
+                NetworkAvailability::Available
+            } else {
+                NetworkAvailability::Unavailable
+            },
+            reachability: if available {
+                InternetReachability::Reachable
+            } else {
+                InternetReachability::NotReachable
+            },
+            transport: NetworkTransportFlags {
+                wifi,
+                cellular,
+                ethernet: false,
+                vpn: false,
+                other: false,
+            },
+            is_expensive: false,
+            is_constrained: false,
+        },
+    }
+}
 use actr_protocol::{ActrId, PayloadType, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -891,12 +919,9 @@ async fn mobile_event_batch_during_retry_backoff_does_not_duplicate_handler() {
     });
     let results = process_network_event_batch(
         vec![
-            NetworkEvent::Lost,
-            NetworkEvent::Available,
-            NetworkEvent::TypeChanged {
-                is_wifi: false,
-                is_cellular: true,
-            },
+            network_event(1, false, false, false),
+            network_event(2, true, false, false),
+            network_event(3, true, false, true),
         ],
         processor,
     )

@@ -2,8 +2,8 @@
 
 use crate::error::{ActrError, ActrResult};
 use crate::types::{
-    ActrId, ActrType, CleanupReason, NetworkEventResult, NetworkSnapshot, PayloadType,
-    ReconnectReason,
+    ActrId, ActrType, AppLifecycleState, CleanupReason, NetworkEventResult, NetworkSnapshot,
+    PayloadType, ReconnectReason,
 };
 use crate::workload::DynamicWorkload;
 use actr_framework::{Bytes, Dest};
@@ -165,63 +165,6 @@ pub struct NetworkEventHandleWrapper {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl NetworkEventHandleWrapper {
-    /// Handle network available event.
-    pub async fn handle_network_available(&self) -> ActrResult<NetworkEventResult> {
-        let result = self
-            .inner
-            .handle_network_available()
-            .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
-    }
-
-    /// Handle network lost event.
-    pub async fn handle_network_lost(&self) -> ActrResult<NetworkEventResult> {
-        let result = self
-            .inner
-            .handle_network_lost()
-            .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
-    }
-
-    /// Handle network type changed event.
-    pub async fn handle_network_type_changed(
-        &self,
-        is_wifi: bool,
-        is_cellular: bool,
-    ) -> ActrResult<NetworkEventResult> {
-        let result = self
-            .inner
-            .handle_network_type_changed(is_wifi, is_cellular)
-            .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
-    }
-
-    /// Cleanup all connections.
-    pub async fn cleanup_connections(
-        &self,
-        reason: CleanupReason,
-    ) -> ActrResult<NetworkEventResult> {
-        let result = self
-            .inner
-            .cleanup_connections_with_reason(reason.into())
-            .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
-    }
-
-    /// Force cleanup and reconnect.
-    pub async fn force_reconnect(&self, reason: ReconnectReason) -> ActrResult<NetworkEventResult> {
-        let result = self
-            .inner
-            .force_reconnect(reason.into())
-            .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
-    }
-
     /// Handle a full network path change.
     pub async fn handle_network_path_changed(
         &self,
@@ -235,77 +178,37 @@ impl NetworkEventHandleWrapper {
         Ok(result.into())
     }
 
-    /// Probe current connectivity.
-    pub async fn probe_connectivity(&self) -> ActrResult<NetworkEventResult> {
+    /// Handle an app lifecycle change.
+    pub async fn handle_app_lifecycle_changed(
+        &self,
+        state: AppLifecycleState,
+    ) -> ActrResult<NetworkEventResult> {
         let result = self
             .inner
-            .probe_connectivity()
+            .handle_app_lifecycle_changed(state.into())
             .await
             .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 
-    /// Handle app entering background.
-    pub async fn handle_app_entered_background(
+    /// Cleanup all connections without reconnecting.
+    pub async fn cleanup_connections(
         &self,
-        timestamp_ms: u64,
+        reason: CleanupReason,
     ) -> ActrResult<NetworkEventResult> {
         let result = self
             .inner
-            .handle_app_entered_background(timestamp_ms)
+            .cleanup_connections(reason.into())
             .await
             .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())
     }
 
-    /// Handle app entering foreground.
-    pub async fn handle_app_entered_foreground(
-        &self,
-        background_duration_ms: u64,
-        timestamp_ms: u64,
-    ) -> ActrResult<NetworkEventResult> {
+    /// Force cleanup and reconnect.
+    pub async fn force_reconnect(&self, reason: ReconnectReason) -> ActrResult<NetworkEventResult> {
         let result = self
             .inner
-            .handle_app_entered_foreground(background_duration_ms, timestamp_ms)
-            .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
-    }
-
-    /// Handle app becoming inactive.
-    pub async fn handle_app_became_inactive(
-        &self,
-        timestamp_ms: u64,
-    ) -> ActrResult<NetworkEventResult> {
-        let result = self
-            .inner
-            .handle_app_became_inactive(timestamp_ms)
-            .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
-    }
-
-    /// Handle app becoming active.
-    pub async fn handle_app_became_active(
-        &self,
-        timestamp_ms: u64,
-    ) -> ActrResult<NetworkEventResult> {
-        let result = self
-            .inner
-            .handle_app_became_active(timestamp_ms)
-            .await
-            .map_err(|e| ActrError::Internal { msg: e })?;
-        Ok(result.into())
-    }
-
-    /// Handle app termination.
-    pub async fn handle_app_terminating(
-        &self,
-        timestamp_ms: u64,
-    ) -> ActrResult<NetworkEventResult> {
-        let result = self
-            .inner
-            .handle_app_terminating(timestamp_ms)
+            .force_reconnect(reason.into())
             .await
             .map_err(|e| ActrError::Internal { msg: e })?;
         Ok(result.into())

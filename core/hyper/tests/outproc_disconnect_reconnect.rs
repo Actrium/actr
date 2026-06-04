@@ -17,7 +17,8 @@
 //!   → sends IceRestartRequest → Offerer receives → wakes backoff → immediate retry
 
 use actr_hyper::lifecycle::{
-    DefaultNetworkEventProcessor, NetworkEvent, NetworkEventProcessor, NetworkRecoveryAction,
+    DefaultNetworkEventProcessor, InternetReachability, NetworkAvailability, NetworkEvent,
+    NetworkEventProcessor, NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags,
     ReconnectReason, process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
@@ -34,6 +35,45 @@ fn init_tracing() {
         .with_test_writer()
         .try_init()
         .ok();
+}
+
+fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> NetworkEvent {
+    NetworkEvent::NetworkPathChanged {
+        snapshot: NetworkSnapshot {
+            sequence,
+            availability: if available {
+                NetworkAvailability::Available
+            } else {
+                NetworkAvailability::Unavailable
+            },
+            reachability: if available {
+                InternetReachability::Reachable
+            } else {
+                InternetReachability::NotReachable
+            },
+            transport: NetworkTransportFlags {
+                wifi,
+                cellular,
+                ethernet: false,
+                vpn: false,
+                other: false,
+            },
+            is_expensive: false,
+            is_constrained: false,
+        },
+    }
+}
+
+fn offline_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, false, false, false)
+}
+
+fn online_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, false, false)
+}
+
+fn wifi_event(sequence: u64) -> NetworkEvent {
+    network_event(sequence, true, true, false)
 }
 
 async fn wait_for_data_channel_opened(
@@ -889,7 +929,7 @@ async fn test_data_channel_on_close_cleans_webrtc_transport() {
 // ==================== Test 1: Two-peer disconnect/reconnect with NetworkEvent ====================
 
 /// Test: disconnect two peers via VNet + signaling pause,
-/// simulate NetworkEvent::Available (retry_failed_connections),
+/// simulate a network-online snapshot (retry_failed_connections),
 /// verify the connection is actually recovered by sending a message through the gate.
 #[tokio::test]
 async fn test_two_peer_disconnect_reconnect() {
@@ -922,9 +962,9 @@ async fn test_two_peer_disconnect_reconnect() {
     tracing::info!("🟢 Step 3: Restoring network (VNet + signaling)...");
     harness.simulate_reconnect();
 
-    // Step 4: Simulate NetworkEvent::Available → triggers retry_failed_connections()
+    // Step 4: Simulate network-online snapshot -> triggers retry_failed_connections()
     // This is what happens in production when the platform layer detects network recovery
-    tracing::info!("📱 Step 4: Triggering NetworkEvent::Available (retry_failed_connections)...");
+    tracing::info!("Step 4: Triggering network-online snapshot (retry_failed_connections)...");
     let start = tokio::time::Instant::now();
     harness.peer(100).retry_failed().await;
 
@@ -934,7 +974,7 @@ async fn test_two_peer_disconnect_reconnect() {
 
     let recovery_time = start.elapsed();
     tracing::info!(
-        "📊 Recovery time (from NetworkEvent::Available): {:?}",
+        "Recovery time (from network-online snapshot): {:?}",
         recovery_time
     );
 
@@ -981,14 +1021,7 @@ async fn test_lost_available_type_changed_batch_restores_webrtc_end_to_end() {
     tracing::info!("🟢 Step 3: Restoring network (VNet + signaling)...");
     harness.simulate_reconnect();
 
-    let events = vec![
-        NetworkEvent::Lost,
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
-        },
-    ];
+    let events = vec![offline_event(1), online_event(2), wifi_event(3)];
     assert_eq!(
         select_network_recovery_action(&events),
         NetworkRecoveryAction::Restore
@@ -1040,11 +1073,8 @@ async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() 
         NetworkEvent::ForceReconnect {
             reason: ReconnectReason::LongBackground,
         },
-        NetworkEvent::Available,
-        NetworkEvent::TypeChanged {
-            is_wifi: true,
-            is_cellular: false,
-        },
+        online_event(1),
+        wifi_event(2),
     ];
     assert_eq!(
         select_network_recovery_action(&events),
@@ -1089,7 +1119,7 @@ async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() 
 ///    → ICE Disconnected → auto-restart triggered on offerer (peer 100)
 ///    → First attempt fails (signaling blocked) → enters backoff
 /// 3. Unblock network
-/// 4. Offerer (peer 100) calls `retry_failed_connections()` (simulating NetworkEvent::Available)
+/// 4. Offerer (peer 100) calls `retry_failed_connections()` (simulating network-online snapshot)
 ///    → `restart_ice()` but already inflight → no-op (dedup check)
 /// 5. Measure time from unblock to message delivery
 ///
@@ -1130,7 +1160,7 @@ async fn test_offerer_recovery_latency() {
     let recovery_start = std::time::Instant::now();
     harness.simulate_reconnect();
 
-    // === Step 4: Offerer calls retry_failed (simulating NetworkEvent::Available) ===
+    // === Step 4: Offerer calls retry_failed (simulating network-online snapshot) ===
     tracing::info!("📱 Step 4: Offerer (100) calls retry_failed_connections()...");
     tracing::info!("   → restart_ice() will find restart already inflight → no-op");
     harness.peer(100).retry_failed().await;
@@ -1215,7 +1245,7 @@ async fn test_answerer_recovery_latency() {
     let recovery_start = std::time::Instant::now();
     harness.simulate_reconnect();
 
-    // === Step 4: ANSWERER calls retry_failed (simulating NetworkEvent::Available) ===
+    // === Step 4: ANSWERER calls retry_failed (simulating network-online snapshot) ===
     tracing::info!("📱 Step 4: Answerer (200) calls retry_failed_connections()...");
     tracing::info!("   → restart_ice() → !is_offerer → sends IceRestartRequest to Offerer");
     harness.peer(200).retry_failed().await;
@@ -1313,18 +1343,20 @@ async fn repro_network_event_returns_before_webrtc_ready_causing_early_rpc_timeo
         harness.peer(CLIENT).signaling_client.is_connected(),
         "client signaling should be connected before NetworkEvent closes it"
     );
-    let processor = DefaultNetworkEventProcessor::new(
+    let processor = std::sync::Arc::new(DefaultNetworkEventProcessor::new(
         harness.peer(CLIENT).signaling_client.clone(),
         Some(harness.peer(CLIENT).coordinator.clone()),
-    );
+    ));
     let event_started = std::time::Instant::now();
-    processor
-        .process_network_type_changed(true, false)
-        .await
-        .expect("NetworkEvent::TypeChanged should report success");
+    let results = process_network_event_batch(vec![wifi_event(1)], processor).await;
+    assert!(
+        results.iter().all(|result| result.success),
+        "NetworkEvent path change should report success: {:?}",
+        results
+    );
     let event_elapsed = event_started.elapsed();
     tracing::info!(
-        "NetworkEvent::TypeChanged returned in {:?}; ICE restart offers observed={}",
+        "network snapshot event returned in {:?}; ICE restart offers observed={}",
         event_elapsed,
         harness.ice_restart_count()
     );
