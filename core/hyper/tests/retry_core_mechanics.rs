@@ -354,13 +354,16 @@ fn gate_with_lane_and_transport(
     (gate, lane, stats, transport)
 }
 
-fn transport_with_paused_builder() -> (
-    Arc<PeerTransport>,
-    Arc<ScriptedLane>,
-    Arc<BuilderStats>,
-    Arc<Notify>,
-    Arc<Notify>,
-) {
+struct PausedBuilderFixture {
+    transport: Arc<PeerTransport>,
+    #[expect(dead_code)]
+    lane: Arc<ScriptedLane>,
+    stats: Arc<BuilderStats>,
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+fn transport_with_paused_builder() -> PausedBuilderFixture {
     let lane = Arc::new(ScriptedLane::new(vec![Ok(())]));
     let wire = Arc::new(StaticWire::new(lane.clone()));
     let stats = Arc::new(BuilderStats::default());
@@ -373,7 +376,7 @@ fn transport_with_paused_builder() -> (
         release: release.clone(),
     });
     let transport = Arc::new(PeerTransport::new(make_actor_id(1), builder));
-    (transport, lane, stats, started, release)
+    PausedBuilderFixture { transport, lane, stats, started, release }
 }
 
 fn envelope(request_id: &str) -> RpcEnvelope {
@@ -1172,7 +1175,11 @@ async fn continuous_requests_during_mobile_event_storm_complete_without_pending_
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_transport_cancelled_by_cleanup_does_not_leave_stale_dest() {
-    let (transport, _lane, stats, started, release) = transport_with_paused_builder();
+    let f = transport_with_paused_builder();
+    let transport = f.transport;
+    let stats = f.stats;
+    let started = f.started;
+    let release = f.release;
     let target = make_actor_id(2);
     let dest = Dest::actor(target);
 
@@ -1222,7 +1229,11 @@ async fn create_transport_cancelled_by_cleanup_does_not_leave_stale_dest() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_transport_cancelled_by_shutdown_does_not_leave_stale_dest() {
-    let (transport, _lane, stats, started, release) = transport_with_paused_builder();
+    let f = transport_with_paused_builder();
+    let transport = f.transport;
+    let stats = f.stats;
+    let started = f.started;
+    let release = f.release;
     let target = make_actor_id(2);
     let dest = Dest::actor(target);
 
