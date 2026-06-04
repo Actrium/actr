@@ -35,7 +35,6 @@ jobs:
       python_web_e2e: ${{ steps.targets.outputs.python_web_e2e }}
       swift_binding: ${{ steps.targets.outputs.swift_binding }}
       kotlin_binding: ${{ steps.targets.outputs.kotlin_binding }}
-      android: ${{ steps.targets.outputs.android }}
       web_binding: ${{ steps.targets.outputs.web_binding }}
       release_related: ${{ steps.targets.outputs.release_related }}
     steps:
@@ -384,12 +383,6 @@ jobs:
     if: needs.determine.outputs.kotlin_binding == 'true'
     uses: ./.github/workflows/ci-kotlin.yml
 
-  android:
-    name: Android
-    needs: determine
-    if: needs.determine.outputs.android == 'true'
-    uses: ./.github/workflows/ci-android.yml
-
   web:
     name: Web
     needs: determine
@@ -616,7 +609,6 @@ jobs:
       - python_workload
       - swift
       - kotlin
-      - android
       - web
       - web_browser_e2e
       - python_web_e2e
@@ -632,7 +624,6 @@ jobs:
       PYTHON_WORKLOAD_RESULT: ${{ needs.python_workload.result }}
       SWIFT_RESULT: ${{ needs.swift.result }}
       KOTLIN_RESULT: ${{ needs.kotlin.result }}
-      ANDROID_RESULT: ${{ needs.android.result }}
       WEB_RESULT: ${{ needs.web.result }}
       WEB_BROWSER_E2E_RESULT: ${{ needs.web_browser_e2e.result }}
       PYTHON_WEB_E2E_RESULT: ${{ needs.python_web_e2e.result }}
@@ -653,7 +644,6 @@ jobs:
               "python_workload": os.environ["PYTHON_WORKLOAD_RESULT"],
               "swift": os.environ["SWIFT_RESULT"],
               "kotlin": os.environ["KOTLIN_RESULT"],
-              "android": os.environ["ANDROID_RESULT"],
               "web": os.environ["WEB_RESULT"],
               "web_browser_e2e": os.environ["WEB_BROWSER_E2E_RESULT"],
               "python_web_e2e": os.environ["PYTHON_WEB_E2E_RESULT"],
