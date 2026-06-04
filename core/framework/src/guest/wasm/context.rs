@@ -146,6 +146,7 @@ impl WasmContext {
     /// `ctx.call` / `ctx.tell` / `ctx.discover` operations route through
     /// the host's standalone `host-abi` bridge (when installed for the
     /// lifecycle path) and do not require these identity fields.
+    #[allow(dead_code)]
     pub(crate) fn lifecycle_placeholder() -> Self {
         Self {
             self_id: ActrId::default(),

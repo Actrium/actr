@@ -1,0 +1,156 @@
+name: Release Train (Basic Verify)
+
+on:
+  push:
+    branches:
+      - "*"
+    paths:
+      - ".github/workflows/release-train.yml"
+      - ".github/workflows/release-train-verify.yml"
+      - "scripts/release-train.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "cli/**"
+      - "core/**"
+      - "bindings/ffi/**"
+      - "bindings/swift/**"
+      - "bindings/kotlin/**"
+      - "tools/protoc-gen/**"
+      - "bindings/web/**"
+      - "bindings/typescript/**"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release-train.yml"
+      - ".github/workflows/release-train-verify.yml"
+      - "scripts/release-train.sh"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "cli/**"
+      - "core/**"
+      - "bindings/ffi/**"
+      - "bindings/swift/**"
+      - "bindings/kotlin/**"
+      - "tools/protoc-gen/**"
+      - "bindings/web/**"
+      - "bindings/typescript/**"
+
+concurrency:
+  group: release-train-basic-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  PROTOC_VERSION: "29.3"
+
+jobs:
+  verify:
+    name: Verify basic release train dry-run
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      CARGO_REGISTRY_TOKEN: dummy-token-for-dry-run
+      PYPI_API_TOKEN: dummy-token-for-dry-run
+      PACKAGE_SYNC_GITHUB_TOKEN: dummy-token-for-dry-run
+    steps:
+      - name: Checkout current ref
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Run release train script unit checks
+        run: |
+          bash scripts/tests/release-train-package-sync.sh
+          bash scripts/tests/release-train-modes.sh
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Install web dependencies
+        run: |
+          cd bindings/web
+          pnpm install --frozen-lockfile
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+
+      - name: Validate web package metadata
+        run: |
+          cd bindings/web
+          node <<'EOF'
+          const fs = require("node:fs");
+
+          const packages = [
+            ["packages/actr-dom/package.json", "@actrium/actr-dom"],
+            ["packages/web-sdk/package.json", "@actrium/actr-web"],
+            ["packages/web-react/package.json", "@actrium/actr-web-react"],
+          ];
+
+          for (const [path, expectedName] of packages) {
+            const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+            if (pkg.name !== expectedName) throw new Error(path + ": expected " + expectedName + ", got " + pkg.name);
+            if (!pkg.version || !pkg.version.match(/^\d+\.\d+\.\d+/)) throw new Error(path + ": invalid version " + pkg.version);
+            if (pkg.publishConfig?.access !== "public") throw new Error(path + ": publishConfig.access must be public");
+            if (pkg.repository?.url !== "git+https://github.com/Actrium/actr.git") throw new Error(path + ": bad repository.url");
+            console.log("  OK " + pkg.name + "@" + pkg.version);
+          }
+          console.log("  All web package metadata valid");
+          EOF
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Resolve release train version
+        id: version
+        run: |
+          version=$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          with Path("Cargo.toml").open("rb") as fh:
+              data = tomllib.load(fh)
+
+          print(data["workspace"]["package"]["version"])
+          PY
+          )
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Run dry-run validation
+        run: scripts/release-train.sh --version "${{ steps.version.outputs.value }}" --dry-run
+
+      - name: Upload dry-run reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: basic-release-train-verify-${{ steps.version.outputs.value }}
+          path: release/reports/release-train-v${{ steps.version.outputs.value }}.*
+          if-no-files-found: error

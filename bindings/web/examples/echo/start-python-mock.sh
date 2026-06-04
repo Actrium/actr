@@ -107,7 +107,7 @@ else
         ACTR_CMD="$ACTR_ROOT/target/release/actr"
     else
         log_step "Building current actr CLI..."
-        (cd "$ACTR_ROOT" && cargo build -p actr-cli --bin actr)
+        (cd "$ACTR_ROOT" && cargo build -p actr-cli --bin actr --features wasm-engine)
         ACTR_CMD="$ACTR_ROOT/target/debug/actr"
     fi
 fi

@@ -204,7 +204,7 @@ impl PeerTransport {
             }
 
             // 2. Slow path: try to become the creator
-            let notify = {
+            let (notify, is_creator) = {
                 let mut transports = self.transports.write().await;
 
                 // Double-check: may have been created while waiting for write lock
@@ -214,7 +214,7 @@ impl PeerTransport {
                     }
                     Some(Either::Left(notify)) => {
                         // Another thread is creating, wait for it
-                        Arc::clone(notify)
+                        (Arc::clone(notify), false)
                     }
                     None => {
                         // Check closing again before creating
@@ -228,15 +228,9 @@ impl PeerTransport {
                         let notify = Arc::new(Notify::new());
                         transports.insert(dest.clone(), Either::Left(Arc::clone(&notify)));
                         tracing::debug!("Inserted Connecting state for: {:?}", dest);
-                        Arc::clone(&notify)
+                        (notify, true)
                     }
                 }
-            };
-
-            // Check if we are the creator (notify was just created)
-            let is_creator = {
-                let transports = self.transports.read().await;
-                matches!(transports.get(dest), Some(Either::Left(n)) if Arc::ptr_eq(n, &notify))
             };
 
             if !is_creator {

@@ -726,7 +726,7 @@ impl Node<Init> {
         let mailbox_backpressure_threshold =
             hyper_inner.config.resolved_mailbox_backpressure_threshold();
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
-        let node_inner = crate::lifecycle::node::Inner::build(
+        let mut node_inner = crate::lifecycle::node::Inner::build(
             runtime_config,
             loaded.workload,
             Some(loaded.verified.manifest.clone()),
@@ -736,6 +736,11 @@ impl Node<Init> {
         )
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;
+        let observer: Arc<dyn crate::lifecycle::hooks::WorkloadHookObserver> =
+            Arc::new(crate::workload::PackageHookObserver {
+                workload_dispatch: node_inner.workload_dispatch.clone(),
+            });
+        node_inner.hook_observer = Some(observer);
         Ok(Node {
             hyper: hyper_inner,
             attachment: Some(Attachment {

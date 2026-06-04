@@ -1,0 +1,29 @@
+name: PR Lint
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  title:
+    name: Validate PR title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check conventional commit format
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          if echo "$TITLE" | grep -qE '^(feat|fix|chore|docs|style|refactor|test|ci|perf|build|revert)(\([^)]+\))?!?: '; then
+            echo "✓ PR title follows Conventional Commits format"
+            exit 0
+          fi
+          echo "::error::PR title does not follow Conventional Commits format"
+          echo "Expected: <type>[optional scope]: <description>"
+          echo "Examples:"
+          echo "  feat: add streaming API"
+          echo "  fix(hyper): prevent duplicate disconnect"
+          echo "  chore(deps): bump tokio to 1.45"
+          echo "Valid types: feat, fix, chore, docs, style, refactor, test, ci, perf, build, revert"
+          exit 1

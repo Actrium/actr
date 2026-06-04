@@ -34,7 +34,7 @@ FULL_TRIGGER_PATTERNS = (
     "rustfmt.toml",
     "clippy.toml",
     "deny.toml",
-    "scripts/release-train-cli-protoc.sh",
+    "scripts/release-train.sh",
 )
 
 
@@ -153,6 +153,11 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             targets["ts_workload"] = True
             targets["web_binding"] = True
             reasons.append(f"typescript_workload_web_e2e:{path}")
+            continue
+
+        if path.startswith("e2e/typescript-stream/"):
+            targets["ts_workload"] = True
+            reasons.append(f"typescript_stream_e2e:{path}")
             continue
 
         if path.startswith(("bindings/swift/", "tools/protoc-gen/swift/")):

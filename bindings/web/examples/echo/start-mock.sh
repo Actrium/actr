@@ -125,7 +125,7 @@ elif command -v actr > /dev/null 2>&1; then
     ACTR_CMD="actr"
 else
     echo -e "${YELLOW}actr CLI not found, building...${NC}"
-    (cd "$ACTR_ROOT" && cargo build --bin actr 2>&1 | tail -5)
+    (cd "$ACTR_ROOT" && cargo build --bin actr --features wasm-engine 2>&1 | tail -5)
     ACTR_CMD="$ACTR_ROOT/target/debug/actr"
 fi
 echo -e "${GREEN}actr CLI: $ACTR_CMD${NC}"

@@ -1,12 +1,31 @@
-import { defineWorkload } from '@actrium/actr-workload';
+import {
+  PayloadType,
+  defineWorkload,
+  registerStream,
+  sendDataStream,
+  toUint8Array,
+  unregisterStream,
+} from '@actrium/actr-workload';
 import { create } from '@bufbuild/protobuf';
 
-import type { EchoRequest, EchoResponse } from './generated/echo_pb.js';
-import { EchoResponseSchema } from './generated/echo_pb.js';
-import type { EchoServiceHandler } from './generated/echo_workload.js';
+import type {
+  EchoRequest,
+  EchoResponse,
+  StreamPrepareRequest,
+  StreamPrepareResponse,
+  StreamReleaseRequest,
+  StreamReleaseResponse,
+} from './generated/echo_pb.js';
 import {
-  EchoServiceDispatcher,
-} from './generated/echo_workload.js';
+  EchoResponseSchema,
+  StreamPrepareResponseSchema,
+  StreamReleaseResponseSchema,
+} from './generated/echo_pb.js';
+import type { EchoServiceHandler } from './generated/echo_workload.js';
+import { EchoServiceDispatcher } from './generated/echo_workload.js';
+
+const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
 
 class EchoServiceHandlerImpl implements EchoServiceHandler {
   echo(request: EchoRequest): EchoResponse {
@@ -15,6 +34,45 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
     return create(EchoResponseSchema, {
       reply: request.message,
       timestamp: BigInt(Math.floor(Date.now() / 1000)),
+    });
+  }
+
+  async prepareStream(
+    request: StreamPrepareRequest,
+  ): Promise<StreamPrepareResponse> {
+    const inboundStreamId = request.inboundStreamId;
+    const replyStreamId = request.replyStreamId;
+    const replyMessage = request.replyMessage;
+
+    await registerStream(inboundStreamId, async (chunk, sender) => {
+      const incoming = textDecoder.decode(toUint8Array(chunk.payload));
+
+      await sendDataStream(
+        { actor: sender },
+        {
+          streamId: replyStreamId,
+          sequence: BigInt(chunk.sequence) + 1n,
+          payload: textEncoder.encode(`${replyMessage}: ${incoming}`),
+          metadata: [{ key: 'echo-runtime', value: 'typescript-wasm' }],
+          timestampMs: BigInt(Date.now()),
+        },
+        PayloadType.StreamReliable,
+      );
+
+      await unregisterStream(inboundStreamId);
+    });
+
+    return create(StreamPrepareResponseSchema, {
+      status: `registered:${inboundStreamId}`,
+    });
+  }
+
+  async releaseStream(
+    request: StreamReleaseRequest,
+  ): Promise<StreamReleaseResponse> {
+    await unregisterStream(request.streamId);
+    return create(StreamReleaseResponseSchema, {
+      status: `unregistered:${request.streamId}`,
     });
   }
 }

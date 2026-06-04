@@ -12,9 +12,15 @@ readonly FOUNDATION_CRATES=(
   "actr-protocol"
   "actr-service-compat"
   "actr-config"
+  "actr-web-abi"
   "actr-framework"
   "actr-runtime-mailbox"
   "actr-runtime"
+  "actr-platform-traits"
+  "actr-pack"
+  "actr-mock-actrix"
+  "actr-hyper"
+  "actr-platform-native"
 )
 
 readonly PROTOC_CRATES=(
@@ -31,11 +37,11 @@ readonly CLI_CRATES=(
 )
 
 readonly OPTIONAL_SKIPPED_COMPONENTS=(
-  "actr-ts|sdk|external_repo_not_managed_in_monorepo"
 )
 readonly PACKAGE_SYNC_GITHUB_API="https://api.github.com"
 readonly SWIFT_PACKAGE_SYNC_REPO="actr-swift-package-sync"
 readonly KOTLIN_PACKAGE_SYNC_REPO="actr-kotlin-package-sync"
+readonly RELEASE_BRANCH_PREFIX="release-prepare/v"
 
 ORIGINAL_REPO_ROOT=""
 WORK_REPO_ROOT=""
@@ -49,21 +55,32 @@ RELEASE_PYTHON_ENV=""
 
 VERSION=""
 DRY_RUN=false
+PREPARE_ONLY=false
+SKIP_PYTHON=false
+PRE_RELEASE=false
+SKIP_WEB=false
+AUTO_VERSION=false
 RUN_MODE="publish"
 OVERALL_STATUS="success"
 FAILURE_REASON=""
 RELEASE_SHA=""
 FINAL_TAG=""
 PACKAGE_SYNC_OWNER="${PACKAGE_SYNC_OWNER:-}"
+RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release-train-cli-protoc.sh --version <X.Y.Z> [--dry-run]
+  scripts/release-train.sh [--version <X.Y.Z>] [--dry-run] [--prepare-only] [--skip-python] [--branch <branch>]
 
 Options:
-  --version <X.Y.Z>  Stable semver used by the monorepo-managed release train.
+  --version <X.Y.Z>  Stable semver used by the monorepo-managed release train (optional in CI).
   --dry-run          Validate the full flow in a disposable worktree without publishing.
+  --prepare-only     Update release versions, validate, and commit locally for a release PR.
+  --skip-python      Skip Python package validation, version update, and publishing.
+  --pre-release      Mark this release as a pre-release (e.g. 0.2.2-pre.1).
+                     Uses npm tag "pre" and allows pre-release semver versions.
+  --branch <branch>  Target release branch (default: main).
   --help             Show this help message.
 EOF
 }
@@ -192,6 +209,63 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Required command not found: $1"
 }
 
+current_workspace_version() {
+  python3 - "$ORIGINAL_REPO_ROOT" <<'PY'
+from __future__ import annotations
+import tomllib, sys
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+cargo = repo / "Cargo.toml"
+with cargo.open("rb") as fh:
+    data = tomllib.load(fh)
+print(data["workspace"]["package"]["version"])
+PY
+}
+
+detect_conventional_bump() {
+  local last_tag
+  last_tag=$(git -C "$ORIGINAL_REPO_ROOT" describe --tags --match "${FINAL_TAG_PREFIX}*" --abbrev=0 2>/dev/null || echo "")
+
+  if [[ -z "$last_tag" ]]; then
+    log_info "No prior release-train tag found; defaulting to minor bump" >&2
+    echo "minor"
+    return
+  fi
+
+  log_info "Analyzing conventional commits since ${last_tag}" >&2
+  local highest="none"
+
+  while IFS= read -r commit_msg; do
+    if echo "$commit_msg" | grep -qE '^[a-z]+\([^)]+\)?!:|BREAKING CHANGE'; then
+      highest="major"
+      break
+    fi
+    if [[ "$highest" != "major" ]] && echo "$commit_msg" | grep -qE '^feat(\([^)]+\))?:'; then
+      highest="minor"
+    fi
+    if [[ "$highest" == "none" ]] && echo "$commit_msg" | grep -qE '^fix(\([^)]+\))?:'; then
+      highest="patch"
+    fi
+  done < <(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --pretty=format:"%s")
+
+  echo "$highest"
+}
+
+calculate_next_version() {
+  local current=$1
+  local bump=$2
+
+  IFS='.' read -r major minor patch <<< "$current"
+
+  case "$bump" in
+    major) echo "$((major + 1)).0.0" ;;
+    minor) echo "${major}.$((minor + 1)).0" ;;
+    patch) echo "${major}.${minor}.$((patch + 1))" ;;
+    *) echo "$current" ;;
+  esac
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -202,6 +276,22 @@ parse_args() {
       --dry-run)
         DRY_RUN=true
         shift
+        ;;
+      --prepare-only)
+        PREPARE_ONLY=true
+        shift
+        ;;
+      --skip-python)
+        SKIP_PYTHON=true
+        shift
+        ;;
+      --pre-release)
+        PRE_RELEASE=true
+        shift
+        ;;
+      --branch)
+        RELEASE_BRANCH="${2:-main}"
+        shift 2
         ;;
       --help)
         usage
@@ -215,17 +305,26 @@ parse_args() {
   done
 
   if [[ -z "$VERSION" ]]; then
-    usage
-    fail "Missing required --version"
+    AUTO_VERSION=true
+  fi
+
+  if [[ "$DRY_RUN" == true && "$PREPARE_ONLY" == true ]]; then
+    fail "--dry-run and --prepare-only cannot be used together"
   fi
 
   if [[ "$DRY_RUN" == true ]]; then
     RUN_MODE="dry-run"
+  elif [[ "$PREPARE_ONLY" == true ]]; then
+    RUN_MODE="prepare"
   fi
 }
 
 validate_version() {
-  [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Version must be a stable semver in X.Y.Z format"
+  if [[ "$PRE_RELEASE" == true ]]; then
+    [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[a-zA-Z0-9.]+$ ]] || fail "Pre-release version must follow semver X.Y.Z-<id> format"
+  else
+    [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "Version must be a stable semver in X.Y.Z format"
+  fi
 }
 
 ensure_clean_worktree() {
@@ -255,14 +354,16 @@ prepare_worktree() {
     WORKTREE_PATH=$(mktemp -d "${TMPDIR:-/tmp}/actr-release-train.XXXXXX")
     git -C "$ORIGINAL_REPO_ROOT" worktree add --detach "$WORKTREE_PATH" "$current_head" >/dev/null
     WORK_REPO_ROOT="$WORKTREE_PATH"
+  elif [[ "$PREPARE_ONLY" == true ]]; then
+    :
   else
-    local current_branch current_head origin_main
+    local current_branch current_head origin_target
     current_branch=$(git -C "$ORIGINAL_REPO_ROOT" rev-parse --abbrev-ref HEAD)
-    [[ "$current_branch" == "main" ]] || fail "Non-dry-run execution must start from the local main branch"
+    [[ "$current_branch" == "$RELEASE_BRANCH" ]] || fail "Publish execution must start from the local ${RELEASE_BRANCH} branch"
 
     current_head=$(git -C "$ORIGINAL_REPO_ROOT" rev-parse HEAD)
-    origin_main=$(git -C "$ORIGINAL_REPO_ROOT" rev-parse origin/main)
-    [[ "$current_head" == "$origin_main" ]] || fail "Local main must match origin/main before releasing"
+    origin_target=$(git -C "$ORIGINAL_REPO_ROOT" rev-parse "origin/${RELEASE_BRANCH}")
+    [[ "$current_head" == "$origin_target" ]] || fail "Local ${RELEASE_BRANCH} must match origin/${RELEASE_BRANCH} before publishing"
   fi
 
   cd "$WORK_REPO_ROOT"
@@ -335,6 +436,10 @@ package_sync_release_url() {
 
 ensure_release_tag_absent() {
   FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"
+  if [[ "$DRY_RUN" == true ]]; then
+    log_info "Skipping final tag existence check in dry-run mode (tag: ${FINAL_TAG})"
+    return
+  fi
   if git rev-parse -q --verify "refs/tags/${FINAL_TAG}" >/dev/null 2>&1; then
     fail "Final release tag already exists locally: ${FINAL_TAG}"
   fi
@@ -352,37 +457,62 @@ install_python_release_tools() {
 }
 
 update_versions() {
-  python3 - "$WORK_REPO_ROOT" "$VERSION" <<'PY'
+  python3 - "$WORK_REPO_ROOT" "$VERSION" "$SKIP_PYTHON" <<'PY'
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
 
 repo = Path(sys.argv[1])
 version = sys.argv[2]
+skip_python = sys.argv[3] == "true"
 
 package_files = [
     repo / "Cargo.toml",
+    repo / "bindings/web/Cargo.toml",
     repo / "core/protocol/Cargo.toml",
     repo / "core/service-compat/Cargo.toml",
     repo / "core/config/Cargo.toml",
     repo / "core/framework/Cargo.toml",
     repo / "core/runtime-mailbox/Cargo.toml",
     repo / "core/runtime/Cargo.toml",
+    repo / "core/platform-traits/Cargo.toml",
+    repo / "core/pack/Cargo.toml",
+    repo / "core/hyper/Cargo.toml",
+    repo / "core/platform-native/Cargo.toml",
+    repo / "testing/mock-actrix/Cargo.toml",
     repo / "tools/protoc-gen/rust/Cargo.toml",
     repo / "tools/protoc-gen/web/Cargo.toml",
     repo / "cli/Cargo.toml",
+    repo / "bindings/typescript/Cargo.toml",
+    repo / "bindings/web/crates/actr-web-abi/Cargo.toml",
+    repo / "bindings/web/crates/common/Cargo.toml",
+    repo / "bindings/web/crates/sw-host/Cargo.toml",
+    repo / "bindings/web/crates/dom-bridge/Cargo.toml",
+    repo / "bindings/web/crates/mailbox-web/Cargo.toml",
+    repo / "bindings/web/crates/platform-web/Cargo.toml",
+    repo / "bindings/web/crates/framework-web-entry-smoke/Cargo.toml",
 ]
 
 cli_dependency_names = {
     "actr",
     "actr-runtime-mailbox",
+    "actr-hyper",
+    "actr-pack",
+    "actr-platform-native",
+    "actr-mock-actrix",
     "actr-config",
     "actr-protocol",
     "actr-service-compat",
     "actr-framework-protoc-codegen",
     "actr-web-protoc-codegen",
+}
+
+dependency_version_names = {
+    "actr-web-abi",
+    "actr-pack",
 }
 
 workspace_dependency_names = {
@@ -393,6 +523,11 @@ workspace_dependency_names = {
     "actr-framework-protoc-codegen",
     "actr-runtime",
     "actr-runtime-mailbox",
+    "actr-platform-traits",
+    "actr-pack",
+    "actr-hyper",
+    "actr-platform-native",
+    "actr-mock-actrix",
 }
 
 def replace_first_version(lines: list[str]) -> list[str]:
@@ -438,23 +573,42 @@ for path in package_files:
             if name in cli_dependency_names and "version = " in line:
                 lines[index] = re.sub(r'version = "[^"]+"', f'version = "{version}"', line)
 
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        name = stripped.split("=", 1)[0].strip()
+        if name in dependency_version_names and "version = " in line:
+            lines[index] = re.sub(r'version = "[^"]+"', f'version = "{version}"', line)
+
     path.write_text("\n".join(lines) + "\n")
 
-pyproject = repo / "tools/protoc-gen/python/pyproject.toml"
-py_lines = pyproject.read_text().splitlines()
-current_section = None
-for index, line in enumerate(py_lines):
-    stripped = line.strip()
-    if stripped.startswith("[") and stripped.endswith("]"):
-        current_section = stripped
-        continue
-    if current_section == "[project]" and stripped.startswith("version = "):
-        py_lines[index] = f'version = "{version}"'
-        break
-else:
-    raise RuntimeError("project version not found in pyproject.toml")
+if not skip_python:
+    pyproject = repo / "tools/protoc-gen/python/pyproject.toml"
+    py_lines = pyproject.read_text().splitlines()
+    current_section = None
+    for index, line in enumerate(py_lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped
+            continue
+        if current_section == "[project]" and stripped.startswith("version = "):
+            py_lines[index] = f'version = "{version}"'
+            break
+    else:
+        raise RuntimeError("project version not found in pyproject.toml")
 
-pyproject.write_text("\n".join(py_lines) + "\n")
+    pyproject.write_text("\n".join(py_lines) + "\n")
+
+# Bump web package versions to match the release train version.
+web_packages = [
+    repo / "bindings/web/packages/actr-dom/package.json",
+    repo / "bindings/web/packages/web-sdk/package.json",
+    repo / "bindings/web/packages/web-react/package.json",
+    repo / "bindings/typescript/package.json",
+]
+for wp in web_packages:
+    pkg = json.loads(wp.read_text())
+    pkg["version"] = version
+    wp.write_text(json.dumps(pkg, indent=2) + "\n")
 PY
 }
 
@@ -464,6 +618,17 @@ all_publishable_crates() {
     "${PROTOC_CRATES[@]}" \
     "${SDK_CRATES[@]}" \
     "${CLI_CRATES[@]}"
+}
+
+package_workspace_dir() {
+  case "$1" in
+    actr-web-abi)
+      printf '%s/bindings/web' "$WORK_REPO_ROOT"
+      ;;
+    *)
+      printf '%s' "$WORK_REPO_ROOT"
+      ;;
+  esac
 }
 
 run_validation_suite() {
@@ -478,18 +643,29 @@ run_validation_suite() {
   while IFS= read -r package; do
     [[ -n "$package" ]] || continue
     log_info "Checking package contents for ${package}"
-    cargo package -p "$package" --locked --allow-dirty --list >/dev/null
+    (
+      cd "$(package_workspace_dir "$package")"
+      cargo package -p "$package" --locked --allow-dirty --list >/dev/null
+    )
   done < <(all_publishable_crates)
 
-  log_info "Building Python package for validation"
-  rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
-  (
-    cd tools/protoc-gen/python
-    "$RELEASE_PYTHON_BIN" -m build >/dev/null
-  )
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    log_info "Building Python package for validation"
+    rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
+    (
+      cd tools/protoc-gen/python
+      "$RELEASE_PYTHON_BIN" -m build >/dev/null
+    )
+  else
+    log_info "Skipping Python package validation"
+  fi
 }
 
 append_skipped_components() {
+  if (( ${#OPTIONAL_SKIPPED_COMPONENTS[@]} == 0 )); then
+    return
+  fi
+
   local descriptor name stage reason
   for descriptor in "${OPTIONAL_SKIPPED_COMPONENTS[@]}"; do
     IFS='|' read -r name stage reason <<<"$descriptor"
@@ -511,6 +687,8 @@ PY
     -X POST \
     -H "Accept: application/vnd.github+json" \
     -H "Authorization: Bearer ${PACKAGE_SYNC_GITHUB_TOKEN}" \
+    -H "User-Agent: actr-release-train" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
     "${PACKAGE_SYNC_GITHUB_API}/repos/${PACKAGE_SYNC_OWNER}/${repo}/actions/workflows/${workflow}/dispatches" \
     -d @- >/dev/null <<EOF
 {
@@ -530,12 +708,16 @@ find_package_sync_run_id() {
   local repo=$1
   local workflow=$2
   local dispatched_at=$3
+  local response
 
-  curl -fsSL \
+  response=$(curl -fsSL \
     -H "Accept: application/vnd.github+json" \
     -H "Authorization: Bearer ${PACKAGE_SYNC_GITHUB_TOKEN}" \
-    "${PACKAGE_SYNC_GITHUB_API}/repos/${PACKAGE_SYNC_OWNER}/${repo}/actions/workflows/${workflow}/runs?event=workflow_dispatch&branch=main&per_page=10" \
-    | python3 - "$dispatched_at" <<'PY'
+    -H "User-Agent: actr-release-train" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${PACKAGE_SYNC_GITHUB_API}/repos/${PACKAGE_SYNC_OWNER}/${repo}/actions/workflows/${workflow}/runs?event=workflow_dispatch&branch=main&per_page=10") || return
+
+  python3 -c '
 from __future__ import annotations
 
 import json
@@ -548,7 +730,7 @@ for run in payload.get("workflow_runs", []):
     if run.get("created_at", "") >= dispatched_at:
         print(run["id"])
         break
-PY
+' "$dispatched_at" <<<"$response"
 }
 
 wait_for_package_sync_workflow() {
@@ -557,15 +739,26 @@ wait_for_package_sync_workflow() {
   local dispatched_at=$3
   local run_id=""
   local attempt
+  local query_failed=false
 
   for attempt in $(seq 1 30); do
-    run_id=$(find_package_sync_run_id "$repo" "$workflow" "$dispatched_at" || true)
+    if ! run_id=$(find_package_sync_run_id "$repo" "$workflow" "$dispatched_at"); then
+      run_id=""
+      if [[ "$query_failed" == false ]]; then
+        log_warn "Unable to query ${repo} workflow runs; verify PACKAGE_SYNC_GITHUB_TOKEN has Actions read access for ${PACKAGE_SYNC_OWNER}/${repo}"
+      fi
+      query_failed=true
+    fi
     if [[ -n "${run_id}" ]]; then
       break
     fi
     log_info "Waiting for ${repo} workflow run creation (${attempt}/30)"
     sleep 10
   done
+
+  if [[ -z "${run_id}" && "$query_failed" == true ]]; then
+    fail "Failed to locate workflow run for ${repo} after ${dispatched_at}; package-sync workflow run queries failed"
+  fi
 
   [[ -n "${run_id}" ]] || fail "Failed to locate workflow run for ${repo} after ${dispatched_at}"
 
@@ -574,6 +767,8 @@ wait_for_package_sync_workflow() {
     response=$(curl -fsSL \
       -H "Accept: application/vnd.github+json" \
       -H "Authorization: Bearer ${PACKAGE_SYNC_GITHUB_TOKEN}" \
+      -H "User-Agent: actr-release-train" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
       "${PACKAGE_SYNC_GITHUB_API}/repos/${PACKAGE_SYNC_OWNER}/${repo}/actions/runs/${run_id}")
     status=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])' <<<"$response")
     conclusion=$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("conclusion",""))' <<<"$response")
@@ -594,6 +789,137 @@ wait_for_package_sync_workflow() {
 
   log_error "Timed out waiting for ${repo} workflow completion"
   return 1
+}
+
+publish_web_packages() {
+  local web_root="$WORK_REPO_ROOT/bindings/web"
+  local publish_script="$web_root/scripts/publish.sh"
+  local web_version publish_args
+
+  if [[ ! -f "$publish_script" ]]; then
+    log_warn "Web publish script not found; skipping web packages"
+    append_state "actr-web" "sdk" "npm" "skipped" "publish_script_missing" "-" "$RELEASE_SHA"
+    return
+  fi
+
+  if ! command -v node >/dev/null 2>&1 || ! command -v pnpm >/dev/null 2>&1; then
+    log_warn "Node.js or pnpm not found; skipping web packages"
+    append_state "actr-web" "sdk" "npm" "skipped" "toolchain_missing" "-" "$RELEASE_SHA"
+    return
+  fi
+
+  log_info "Installing web dependencies"
+  (
+    cd "$web_root"
+    pnpm install --frozen-lockfile
+  )
+
+  publish_args=(--skip-build)
+
+  if [[ "$DRY_RUN" == true ]]; then
+    log_info "Web package dry-run validation"
+    (
+      cd "$web_root"
+      # Validate metadata without contacting npm
+      # (npm publish --dry-run rejects already-published versions,
+      #  and pnpm pack --dry-run is only available in pnpm >= 10)
+      node <<'EOF'
+const fs = require("node:fs");
+const packages = [
+  ["packages/actr-dom/package.json", "@actrium/actr-dom"],
+  ["packages/web-sdk/package.json", "@actrium/actr-web"],
+  ["packages/web-react/package.json", "@actrium/actr-web-react"],
+];
+for (const [path, expectedName] of packages) {
+  const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+  if (pkg.name !== expectedName) throw new Error(path + ": expected " + expectedName + ", got " + pkg.name);
+  if (!pkg.version) throw new Error(path + ": missing version");
+  if (pkg.publishConfig?.access !== "public") throw new Error(path + ": publishConfig.access must be public");
+  console.log("  OK " + pkg.name + "@" + pkg.version);
+}
+console.log("  All web package metadata valid");
+EOF
+    )
+    append_state "actr-web" "sdk" "npm" "success" "dry_run_validated" "https://www.npmjs.com/package/@actrium/actr-web" "$RELEASE_SHA"
+    return
+  fi
+
+  log_info "Publishing web packages to npm"
+
+  # Prepare for npm Trusted Publishing (OIDC).
+  # Clear any lingering token-based auth so OIDC takes precedence.
+  rm -f "${NPM_CONFIG_USERCONFIG:-}"
+  unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
+  npm config set registry https://registry.npmjs.org/
+
+  if [[ "$PRE_RELEASE" == true ]]; then
+    publish_args+=(--tag pre)
+  fi
+
+  # Read the actual version from the first web package (updated by update_versions).
+  web_version=$(node -p "require('${web_root}/packages/actr-dom/package.json').version")
+  publish_args+=(--expected-version "$web_version")
+
+  (
+    cd "$web_root"
+    bash scripts/publish.sh "${publish_args[@]}"
+  )
+
+  append_state "actr-web" "sdk" "npm" "success" "published" "https://www.npmjs.com/package/@actrium/actr-web" "$RELEASE_SHA"
+}
+
+publish_typescript_package() {
+  local ts_root="$WORK_REPO_ROOT/bindings/typescript"
+  local ts_version
+
+  if [[ ! -d "$ts_root" ]]; then
+    log_warn "TypeScript package directory not found; skipping"
+    append_state "actr-ts" "sdk" "npm" "skipped" "directory_missing" "-" "$RELEASE_SHA"
+    return
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    log_warn "npm not found; skipping TypeScript package"
+    append_state "actr-ts" "sdk" "npm" "skipped" "toolchain_missing" "-" "$RELEASE_SHA"
+    return
+  fi
+
+  log_info "Installing TypeScript dependencies"
+  (cd "$ts_root" && npm ci)
+
+  if [[ "$DRY_RUN" == true ]]; then
+    log_info "TypeScript package dry-run validation"
+    ts_version=$(node -p "require('${ts_root}/package.json').version")
+    # Validate metadata without contacting npm
+    # (npm publish --dry-run rejects already-published versions)
+    local pkg_name
+    pkg_name=$(node -p "require('${ts_root}/package.json').name")
+    if [[ "$pkg_name" != "@actrium/actr" ]]; then
+      fail "Expected package name @actrium/actr, got ${pkg_name}"
+    fi
+    log_info "  OK ${pkg_name}@${ts_version}"
+    append_state "actr-ts" "sdk" "npm" "success" "dry_run_validated" "https://www.npmjs.com/package/@actrium/actr" "$RELEASE_SHA"
+    return
+  fi
+
+  log_info "Publishing TypeScript package to npm"
+
+  # Prepare for npm Trusted Publishing (OIDC).
+  rm -f "${NPM_CONFIG_USERCONFIG:-}"
+  unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
+  npm config set registry https://registry.npmjs.org/
+
+  local npm_tag="latest"
+  if [[ "$PRE_RELEASE" == true ]]; then
+    npm_tag="pre"
+  fi
+
+  ts_version=$(node -p "require('${ts_root}/package.json').version")
+  log_info "Publishing @actrium/actr@${ts_version} (tag: ${npm_tag})"
+
+  (cd "$ts_root" && npm publish --access public --tag "$npm_tag")
+
+  append_state "actr-ts" "sdk" "npm" "success" "published" "https://www.npmjs.com/package/@actrium/actr" "$RELEASE_SHA"
 }
 
 publish_package_sync_repo() {
@@ -617,34 +943,85 @@ publish_package_sync_repo() {
   append_state "$repo" "sdk" "package_sync" "success" "$run_url" "$release_url" "$RELEASE_SHA"
 }
 
-commit_and_push_version_bump() {
-  if [[ "$DRY_RUN" == true ]]; then
-    set_release_sha
-    return
-  fi
-
-  if git diff --quiet; then
-    log_info "Version files already match ${VERSION}; skipping commit"
-    set_release_sha
-    return
-  fi
-
-  configure_git_identity
-
+stage_release_version_files() {
   git add Cargo.toml Cargo.lock \
+    bindings/web/Cargo.toml \
     core/protocol/Cargo.toml \
     core/service-compat/Cargo.toml \
     core/config/Cargo.toml \
     core/framework/Cargo.toml \
     core/runtime-mailbox/Cargo.toml \
     core/runtime/Cargo.toml \
+    core/platform-traits/Cargo.toml \
+    core/pack/Cargo.toml \
+    core/hyper/Cargo.toml \
+    core/platform-native/Cargo.toml \
+    testing/mock-actrix/Cargo.toml \
     tools/protoc-gen/rust/Cargo.toml \
     tools/protoc-gen/web/Cargo.toml \
     cli/Cargo.toml \
-    tools/protoc-gen/python/pyproject.toml
+    tools/protoc-gen/python/pyproject.toml \
+    bindings/web/packages/actr-dom/package.json \
+    bindings/web/packages/web-sdk/package.json \
+    bindings/web/packages/web-react/package.json \
+    bindings/typescript/Cargo.toml \
+    bindings/typescript/package.json \
+    bindings/web/crates/actr-web-abi/Cargo.toml \
+    bindings/web/crates/common/Cargo.toml \
+    bindings/web/crates/sw-host/Cargo.toml \
+    bindings/web/crates/dom-bridge/Cargo.toml \
+    bindings/web/crates/mailbox-web/Cargo.toml \
+    bindings/web/crates/platform-web/Cargo.toml \
+    bindings/web/crates/framework-web-entry-smoke/Cargo.toml
+}
+
+commit_release_prepare() {
+  if git diff --quiet; then
+    log_info "Version files already match ${VERSION}; skipping release prepare commit"
+    set_release_sha
+    return
+  fi
+
+  configure_git_identity
+  stage_release_version_files
   git commit -m "chore(release): basic train v${VERSION}"
-  git push origin main
   set_release_sha
+}
+
+ensure_versions_prepared() {
+  local check_path previous_work_repo_root diff_files
+  check_path=$(mktemp -d "${TMPDIR:-/tmp}/actr-release-version-check.XXXXXX")
+  git -C "$ORIGINAL_REPO_ROOT" worktree add --detach "$check_path" HEAD >/dev/null
+
+  previous_work_repo_root="$WORK_REPO_ROOT"
+  WORK_REPO_ROOT="$check_path"
+  update_versions
+
+  diff_files=$(git -C "$check_path" diff --name-only)
+
+  git -C "$ORIGINAL_REPO_ROOT" worktree remove --force "$check_path" >/dev/null
+  WORK_REPO_ROOT="$previous_work_repo_root"
+
+  if [[ -n "$diff_files" ]]; then
+    printf '%s\n' "$diff_files" >&2
+    fail "Release version files do not match ${VERSION}; run scripts/release-train.sh --version ${VERSION} --prepare-only on a PR branch and merge it before publishing"
+  fi
+}
+
+ensure_publish_worktree_clean() {
+  local dirty_files
+  dirty_files=$(
+    git status --porcelain --untracked-files=normal -- . \
+      ":(exclude)release/reports/release-train-v${VERSION}.state.tsv" \
+      ":(exclude)release/reports/release-train-v${VERSION}.md" \
+      ":(exclude)release/reports/release-train-v${VERSION}.json" \
+      ":(exclude)cli/assets/web-runtime/" \
+      ":(exclude)bindings/web/Cargo.lock"
+  )
+  if [[ -n "$dirty_files" ]]; then
+    printf '%s\n' "$dirty_files" >&2
+    fail "Release validation modified files; include these changes in the release prepare PR before publishing"
+  fi
 }
 
 crate_registry_url() {
@@ -655,12 +1032,16 @@ python_registry_url() {
   printf 'https://pypi.org/project/%s/%s/' "$PYTHON_PACKAGE_NAME" "$VERSION"
 }
 
+registry_user_agent() {
+  printf 'actr-release-train/%s (https://github.com/Actrium/actr)' "${VERSION:-unknown}"
+}
+
 crate_version_visible() {
-  curl -fsSLo /dev/null "${CRATES_IO_API}/$1/${VERSION}"
+  curl -A "$(registry_user_agent)" -fsSLo /dev/null "${CRATES_IO_API}/$1/${VERSION}"
 }
 
 python_version_visible() {
-  curl -fsSLo /dev/null "${PYPI_API}/${PYTHON_PACKAGE_NAME}/${VERSION}/json"
+  curl -A "$(registry_user_agent)" -fsSLo /dev/null "${PYPI_API}/${PYTHON_PACKAGE_NAME}/${VERSION}/json"
 }
 
 wait_for_visibility() {
@@ -707,7 +1088,15 @@ publish_rust_package() {
 
   local publish_log
   publish_log=$(mktemp)
-  if ! cargo publish -p "$package" --locked 2>&1 | tee "$publish_log"; then
+  if ! (
+    cd "$(package_workspace_dir "$package")"
+    local publish_args=(publish -p "$package" --locked)
+    if [[ "$package" == "actr-cli" ]]; then
+      # The CLI package embeds web runtime assets generated during validation.
+      publish_args+=(--allow-dirty)
+    fi
+    cargo "${publish_args[@]}"
+  ) 2>&1 | tee "$publish_log"; then
     if grep -qi "already exists" "$publish_log"; then
       append_state "$package" "$stage" "crate" "success" "already_published" "$registry_url" "$RELEASE_SHA"
       rm -f "$publish_log"
@@ -782,6 +1171,10 @@ publish_python_package() {
   append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "success" "published" "$registry_url" "$RELEASE_SHA"
 }
 
+skip_python_package() {
+  append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "skipped" "skip_python" "$(python_registry_url)" "$RELEASE_SHA"
+}
+
 create_final_tag() {
   if [[ "$DRY_RUN" == true ]]; then
     return
@@ -791,37 +1184,25 @@ create_final_tag() {
   git push origin "$FINAL_TAG"
 }
 
-main() {
-  require_command git
-  require_command cargo
-  require_command curl
-  require_command python3
-
-  parse_args "$@"
-  validate_version
-
-  ORIGINAL_REPO_ROOT=$(git rev-parse --show-toplevel)
-  ensure_clean_worktree
-  prepare_paths
-  prepare_worktree
-  ensure_release_tag_absent
-  resolve_package_sync_owner
-
-  if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
-    fail "CARGO_REGISTRY_TOKEN must be set for publishing"
+run_release_train() {
+  if [[ "$PREPARE_ONLY" == true ]]; then
+    update_versions
+    run_validation_suite
+    commit_release_prepare
+    return
   fi
 
-  # PYPI_API_TOKEN is optional: when unset, the Python package publish is
-  # skipped (see publish_python_package) and the train continues.
-
-  if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
-    fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
+  if [[ "$DRY_RUN" == true ]]; then
+    update_versions
+  else
+    ensure_versions_prepared
   fi
 
-  install_python_release_tools
-  update_versions
   run_validation_suite
-  commit_and_push_version_bump
+  if [[ "$DRY_RUN" == false ]]; then
+    ensure_publish_worktree_clean
+  fi
+  set_release_sha
   append_skipped_components
 
   local package
@@ -833,7 +1214,11 @@ main() {
     publish_rust_package "$package" "protoc-gen"
   done
 
-  publish_python_package
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    publish_python_package
+  else
+    skip_python_package
+  fi
 
   for package in "${SDK_CRATES[@]}"; do
     publish_rust_package "$package" "sdk"
@@ -846,6 +1231,66 @@ main() {
   create_final_tag
   publish_package_sync_repo "swift" "$SWIFT_PACKAGE_SYNC_REPO" "release.yml"
   publish_package_sync_repo "kotlin" "$KOTLIN_PACKAGE_SYNC_REPO" "release.yml"
+  if [[ "$SKIP_WEB" != true ]]; then
+    publish_web_packages
+  fi
+
+  if [[ "$SKIP_WEB" != true ]]; then
+    publish_typescript_package
+  fi
+}
+
+main() {
+  require_command git
+  require_command cargo
+  require_command curl
+  require_command python3
+
+  parse_args "$@"
+
+  ORIGINAL_REPO_ROOT=$(git rev-parse --show-toplevel)
+
+  if [[ "$AUTO_VERSION" == true ]]; then
+    if [[ "$PREPARE_ONLY" == true ]]; then
+      local current_ver bump
+      current_ver=$(current_workspace_version)
+      bump=$(detect_conventional_bump)
+      if [[ "$bump" == "none" ]]; then
+        log_info "No publishable conventional-commit changes since last release; nothing to prepare"
+        exit 0
+      fi
+      VERSION=$(calculate_next_version "$current_ver" "$bump")
+      log_info "Auto-detected version: ${VERSION} (bump: ${bump}, current: ${current_ver})"
+    else
+      VERSION=$(current_workspace_version)
+      log_info "Using workspace version: ${VERSION}"
+    fi
+  fi
+
+  validate_version
+  ensure_clean_worktree
+  prepare_paths
+  prepare_worktree
+  ensure_release_tag_absent
+  resolve_package_sync_owner
+
+  if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]] && [[ "$DRY_RUN" == false && "$PREPARE_ONLY" == false ]]; then
+    fail "CARGO_REGISTRY_TOKEN must be set for publishing"
+  fi
+
+  # PYPI_API_TOKEN is optional: when unset, the Python package publish is
+  # skipped (see publish_python_package) and the train continues.
+
+  if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false && "$PREPARE_ONLY" == false ]]; then
+    fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
+  fi
+
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    install_python_release_tools
+  else
+    log_info "Skipping Python release tool installation"
+  fi
+  run_release_train
 }
 
 main "$@"

@@ -6,6 +6,7 @@ on:
       - codex/harry-e2e-nightly
     paths:
       - ".github/workflows/ci-e2e.yml"
+      - "e2e/typescript-stream/**"
   schedule:
     # GitHub Actions cron uses UTC. 18:00 UTC = 02:00 UTC+8 next day.
     - cron: "0 18 * * *"
@@ -47,6 +48,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Install Linux e2e dependencies
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
           sudo apt-get update
           sudo apt-get install -y jq sqlite3 lsof perl
       - name: Install protoc
@@ -69,47 +71,45 @@ jobs:
 
   typescript-e2e:
     name: TypeScript E2E
-    # Pending mock-actrix migration of LocalActrix usage in
-    # cli/tests/e2e_typescript_echo.rs. Re-enable once the test no longer
-    # needs the private Actrix repo.
-    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
-      actions: read
     steps:
       - uses: actions/checkout@v5
-      - name: Configure git for private Actrix checkout
-        shell: bash
-        env:
-          ACTRIX_READ_TOKEN: ${{ secrets.ACTRIX_READ_TOKEN }}
-        run: |
-          git config --global url."https://x-access-token:${ACTRIX_READ_TOKEN}@github.com/Actrium/actrix".insteadOf "https://github.com/Actrium/actrix"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
       - name: Install Linux e2e dependencies
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
           sudo apt-get update
-          sudo apt-get install -y jq sqlite3 lsof perl
+          sudo apt-get install -y jq lsof perl
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Run TypeScript echo e2e
-        run: cargo test -p actr-cli --test e2e_typescript_echo -- --ignored --test-threads=1
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Pre-build actr and mock-actrix
+        run: |
+          cargo build --release -p actr-cli --bin actr --features wasm-engine
+          cargo build --release -p actr-mock-actrix --bin mock-actrix
+      - name: Run TypeScript stream e2e
+        run: bash e2e/typescript-stream/run.sh
 
   swift-e2e:
     name: Swift E2E
     # Pending mock-actrix migration of LocalActrix usage in
     # cli/tests/e2e_swift_echo.rs. Re-enable once the test no longer
     # needs the private Actrix repo.
-    if: ${{ false }}
+    if: ${{ vars.ENABLE_SWIFT_E2E == 'true' }}
     runs-on: macos-latest
     timeout-minutes: 120
     permissions:

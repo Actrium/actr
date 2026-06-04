@@ -21,20 +21,20 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.88"
 
 [workspace.dependencies]
 # Actr Framework Dependencies (used by all members)
-actr = { version = "0.2.0" }
-actr-framework = { version = "0.2.0" }
-actr-protocol = { version = "0.2.0" }
-actr-runtime = { version = "0.2.0" }
-actr-hyper = { version = "0.1.0", features = ["opentelemetry"] }
-actr-config = { version = "0.2.0" }
-actr-platform-native = { version = "0.2.0" }
-actr-pack = { version = "0.2.0" }
+actr = { version = "0.2.1" }
+actr-framework = { version = "0.2.1" }
+actr-protocol = { version = "0.2.1" }
+actr-runtime = { version = "0.2.1" }
+actr-hyper = { version = "0.2.1", features = ["opentelemetry"] }
+actr-config = { version = "0.2.1" }
+actr-platform-native = { version = "0.2.1" }
+actr-pack = { version = "0.2.1" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }

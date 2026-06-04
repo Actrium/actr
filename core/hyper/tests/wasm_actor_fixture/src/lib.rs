@@ -21,10 +21,45 @@
 //! All other routes surface `ActrError::UnknownRoute(route_key)`,
 //! exercising guest→host structured error propagation.
 
-use actr_framework::{Context, MessageDispatcher, Workload, entry};
+use actr_framework::{entry, Context, MessageDispatcher, Workload};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
+use std::time::UNIX_EPOCH;
+
+async fn record_hook<C: Context>(ctx: &C, name: &'static str) {
+    record_hook_value(ctx, name.to_string()).await;
+}
+
+async fn record_hook_value<C: Context>(ctx: &C, value: String) {
+    let _ = ctx
+        .call_raw(ctx.self_id(), "test/record_hook", Bytes::from(value))
+        .await;
+}
+
+fn relayed_label(event: &actr_framework::PeerEvent) -> &'static str {
+    match event.relayed {
+        Some(true) => "true",
+        Some(false) => "false",
+        None => "none",
+    }
+}
+
+async fn record_peer_hook<C: Context>(
+    ctx: &C,
+    name: &'static str,
+    event: &actr_framework::PeerEvent,
+) {
+    record_hook_value(
+        ctx,
+        format!(
+            "{name}:peer={}:relayed={}",
+            event.peer.serial_number,
+            relayed_label(event)
+        ),
+    )
+    .await;
+}
 
 // ── Workload ──────────────────────────────────────────────────────────────────
 
@@ -44,9 +79,8 @@ impl MessageDispatcher for DoubleDispatcher {
         ctx: &C,
     ) -> ActorResult<Bytes> {
         match envelope.route_key.as_str() {
-            "test/echo" => Ok(Bytes::from(
-                envelope.payload.unwrap_or_default().to_vec(),
-            )),
+            "test/echo" => Ok(Bytes::from(envelope.payload.unwrap_or_default().to_vec())),
+            "test/record_hook" => Ok(Bytes::from(envelope.payload.unwrap_or_default().to_vec())),
             "test/double" => {
                 // payload: 4-byte little-endian i32 (RpcEnvelope.payload is optional)
                 let payload = envelope.payload.unwrap_or_default();
@@ -58,7 +92,11 @@ impl MessageDispatcher for DoubleDispatcher {
                 // Call ctx.call_raw() -> triggers the host-import await path.
                 let target = ctx.self_id().clone();
                 let resp = ctx
-                    .call_raw(&target, "test/double_impl", Bytes::from(x.to_le_bytes().to_vec()))
+                    .call_raw(
+                        &target,
+                        "test/double_impl",
+                        Bytes::from(x.to_le_bytes().to_vec()),
+                    )
                     .await?;
 
                 Ok(resp)
@@ -70,9 +108,7 @@ impl MessageDispatcher for DoubleDispatcher {
                 // reply; the actual content is discarded.
                 let target = ctx.self_id().clone();
                 let payload = envelope.payload.unwrap_or_default();
-                let _ = ctx
-                    .call_raw(&target, "test/double_impl", payload)
-                    .await?;
+                let _ = ctx.call_raw(&target, "test/double_impl", payload).await?;
                 panic!("fixture: intentional post-await panic for trap test");
             }
             _ => Err(ActrError::UnknownRoute(envelope.route_key)),
@@ -80,8 +116,130 @@ impl MessageDispatcher for DoubleDispatcher {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Workload for DoubleActor {
     type Dispatcher = DoubleDispatcher;
+
+    async fn on_start<C: Context>(&self, ctx: &C) -> ActorResult<()> {
+        if ctx.request_id() == "lifecycle:on_start" {
+            return Err(ActrError::Internal(
+                "fixture lifecycle on_start failed".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn on_ready<C: Context>(&self, ctx: &C) -> ActorResult<()> {
+        record_hook(ctx, "on_ready").await;
+        Ok(())
+    }
+
+    async fn on_stop<C: Context>(&self, ctx: &C) -> ActorResult<()> {
+        record_hook(ctx, "on_stop").await;
+        Ok(())
+    }
+
+    async fn on_signaling_connecting<C: Context>(&self, ctx: Option<&C>) {
+        if let Some(ctx) = ctx {
+            record_hook(ctx, "on_signaling_connecting").await;
+        }
+    }
+
+    async fn on_signaling_connected<C: Context>(&self, ctx: Option<&C>) {
+        if let Some(ctx) = ctx {
+            record_hook(ctx, "on_signaling_connected").await;
+        }
+    }
+
+    async fn on_signaling_disconnected<C: Context>(&self, ctx: &C) {
+        record_hook(ctx, "on_signaling_disconnected").await;
+    }
+
+    async fn on_websocket_connecting<C: Context>(
+        &self,
+        ctx: &C,
+        event: &actr_framework::PeerEvent,
+    ) {
+        record_peer_hook(ctx, "on_websocket_connecting", event).await;
+    }
+
+    async fn on_websocket_connected<C: Context>(
+        &self,
+        ctx: &C,
+        event: &actr_framework::PeerEvent,
+    ) {
+        record_peer_hook(ctx, "on_websocket_connected", event).await;
+    }
+
+    async fn on_websocket_disconnected<C: Context>(
+        &self,
+        ctx: &C,
+        event: &actr_framework::PeerEvent,
+    ) {
+        record_peer_hook(ctx, "on_websocket_disconnected", event).await;
+    }
+
+    async fn on_webrtc_connecting<C: Context>(
+        &self,
+        ctx: &C,
+        event: &actr_framework::PeerEvent,
+    ) {
+        record_peer_hook(ctx, "on_webrtc_connecting", event).await;
+    }
+
+    async fn on_webrtc_connected<C: Context>(&self, ctx: &C, event: &actr_framework::PeerEvent) {
+        record_peer_hook(ctx, "on_webrtc_connected", event).await;
+    }
+
+    async fn on_webrtc_disconnected<C: Context>(
+        &self,
+        ctx: &C,
+        event: &actr_framework::PeerEvent,
+    ) {
+        record_peer_hook(ctx, "on_webrtc_disconnected", event).await;
+    }
+
+    async fn on_credential_renewed<C: Context>(
+        &self,
+        ctx: &C,
+        event: &actr_framework::CredentialEvent,
+    ) {
+        let secs = event
+            .new_expiry
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        record_hook_value(ctx, format!("on_credential_renewed:expiry={secs}")).await;
+    }
+
+    async fn on_credential_expiring<C: Context>(
+        &self,
+        ctx: &C,
+        event: &actr_framework::CredentialEvent,
+    ) {
+        let secs = event
+            .new_expiry
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        record_hook_value(ctx, format!("on_credential_expiring:expiry={secs}")).await;
+    }
+
+    async fn on_mailbox_backpressure<C: Context>(
+        &self,
+        ctx: &C,
+        event: &actr_framework::BackpressureEvent,
+    ) {
+        record_hook_value(
+            ctx,
+            format!(
+                "on_mailbox_backpressure:queue_len={}:threshold={}",
+                event.queue_len, event.threshold
+            ),
+        )
+        .await;
+    }
 }
 
 // ── ABI exports (generated by entry! macro) ──────────────────────────────────

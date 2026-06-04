@@ -33,7 +33,7 @@ pub use lane::DataLane;
 #[cfg(not(feature = "test-utils"))]
 pub(crate) use lane::DataLane;
 pub(crate) use lane::{MpscLane, WebRtcDataLane, WebSocketDataLane, WsSink};
-pub(crate) use route_table::PayloadTypeExt;
+pub(crate) use route_table::{PayloadTypeExt, RetryPolicy};
 
 // ConnType leaks through the public `WireHandle::connection_type` method,
 // so it must stay pub even though the `wire_pool` module itself is private.
