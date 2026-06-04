@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use tokio::sync::Notify;
 
 type ErrorCtor = fn(String) -> NetworkError;
 
@@ -270,10 +271,76 @@ impl WireBuilder for ScriptedWireBuilder {
     }
 }
 
+struct PausedWireBuilder {
+    wire: Arc<StaticWire>,
+    stats: Arc<BuilderStats>,
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl WireBuilder for PausedWireBuilder {
+    async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        self.stats.begin_create();
+        self.started.notify_waiters();
+        self.release.notified().await;
+        self.stats.end_create();
+
+        let wire: Arc<dyn WireHandle> = self.wire.clone();
+        Ok(vec![wire])
+    }
+
+    async fn create_connections_with_cancel(
+        &self,
+        dest: &Dest,
+        cancel_token: Option<tokio_util::sync::CancellationToken>,
+    ) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        self.stats.begin_create();
+        self.started.notify_waiters();
+
+        match cancel_token {
+            Some(token) => {
+                tokio::select! {
+                    _ = self.release.notified() => {
+                        self.stats.end_create();
+                        let wire: Arc<dyn WireHandle> = self.wire.clone();
+                        Ok(vec![wire])
+                    }
+                    _ = token.cancelled() => {
+                        self.stats.end_create();
+                        Err(NetworkError::ConnectionClosed(format!(
+                            "connection creation cancelled for {dest:?}"
+                        )))
+                    }
+                }
+            }
+            None => {
+                self.release.notified().await;
+                self.stats.end_create();
+                let wire: Arc<dyn WireHandle> = self.wire.clone();
+                Ok(vec![wire])
+            }
+        }
+    }
+}
+
 fn gate_with_lane(
     lane: ScriptedLane,
     builder_delay: Duration,
 ) -> (Arc<PeerGate>, Arc<ScriptedLane>, Arc<BuilderStats>) {
+    let (gate, lane, stats, _transport) = gate_with_lane_and_transport(lane, builder_delay);
+    (gate, lane, stats)
+}
+
+fn gate_with_lane_and_transport(
+    lane: ScriptedLane,
+    builder_delay: Duration,
+) -> (
+    Arc<PeerGate>,
+    Arc<ScriptedLane>,
+    Arc<BuilderStats>,
+    Arc<PeerTransport>,
+) {
     let lane = Arc::new(lane);
     let wire = Arc::new(StaticWire::new(lane.clone()));
     let stats = Arc::new(BuilderStats::default());
@@ -283,16 +350,42 @@ fn gate_with_lane(
         delay: builder_delay,
     });
     let transport = Arc::new(PeerTransport::new(make_actor_id(1), builder));
-    let gate = Arc::new(PeerGate::new(transport, None));
-    (gate, lane, stats)
+    let gate = Arc::new(PeerGate::new(transport.clone(), None));
+    (gate, lane, stats, transport)
+}
+
+fn transport_with_paused_builder() -> (
+    Arc<PeerTransport>,
+    Arc<ScriptedLane>,
+    Arc<BuilderStats>,
+    Arc<Notify>,
+    Arc<Notify>,
+) {
+    let lane = Arc::new(ScriptedLane::new(vec![Ok(())]));
+    let wire = Arc::new(StaticWire::new(lane.clone()));
+    let stats = Arc::new(BuilderStats::default());
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let builder = Arc::new(PausedWireBuilder {
+        wire,
+        stats: stats.clone(),
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let transport = Arc::new(PeerTransport::new(make_actor_id(1), builder));
+    (transport, lane, stats, started, release)
 }
 
 fn envelope(request_id: &str) -> RpcEnvelope {
+    envelope_with_timeout(request_id, 30_000)
+}
+
+fn envelope_with_timeout(request_id: &str, timeout_ms: i64) -> RpcEnvelope {
     RpcEnvelope {
         request_id: request_id.to_string(),
         route_key: "test.retry".to_string(),
         payload: Some(Bytes::from_static(b"payload")),
-        timeout_ms: 30_000,
+        timeout_ms,
         ..Default::default()
     }
 }
@@ -1074,5 +1167,273 @@ async fn continuous_requests_during_mobile_event_storm_complete_without_pending_
             NetworkRecoveryAction::Restore,
         ],
         "event storm batches should settle to one action per batch"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_transport_cancelled_by_cleanup_does_not_leave_stale_dest() {
+    let (transport, _lane, stats, started, release) = transport_with_paused_builder();
+    let target = make_actor_id(2);
+    let dest = Dest::actor(target);
+
+    let send_task = tokio::spawn({
+        let transport = transport.clone();
+        let dest = dest.clone();
+        async move {
+            transport
+                .send(&dest, PayloadType::RpcReliable, b"cleanup-race")
+                .await
+        }
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .expect("connection creation should start");
+    assert!(
+        transport.is_connecting(&dest).await,
+        "destination should be in Connecting state before cleanup"
+    );
+
+    transport
+        .close_transport(&dest)
+        .await
+        .expect("cleanup close should be idempotent");
+
+    let err = tokio::time::timeout(Duration::from_secs(1), send_task)
+        .await
+        .expect("cancelled create should finish promptly")
+        .expect("send task should not panic")
+        .expect_err("send should fail after cleanup cancels connection creation");
+    assert!(
+        err.to_string().contains("cancelled") || err.to_string().contains("closed"),
+        "unexpected create cancellation error: {err}"
+    );
+
+    release.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(
+        transport.dest_count().await,
+        0,
+        "cleanup during connection creation must not leave a stale DestTransport"
+    );
+    assert_eq!(stats.create_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_transport_cancelled_by_shutdown_does_not_leave_stale_dest() {
+    let (transport, _lane, stats, started, release) = transport_with_paused_builder();
+    let target = make_actor_id(2);
+    let dest = Dest::actor(target);
+
+    let send_task = tokio::spawn({
+        let transport = transport.clone();
+        let dest = dest.clone();
+        async move {
+            transport
+                .send(&dest, PayloadType::RpcReliable, b"shutdown-race")
+                .await
+        }
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), started.notified())
+        .await
+        .expect("connection creation should start");
+    assert!(
+        transport.is_connecting(&dest).await,
+        "destination should be in Connecting state before shutdown"
+    );
+
+    transport
+        .close_all()
+        .await
+        .expect("shutdown close_all should be idempotent");
+
+    let err = tokio::time::timeout(Duration::from_secs(1), send_task)
+        .await
+        .expect("shutdown-cancelled create should finish promptly")
+        .expect("send task should not panic")
+        .expect_err("send should fail after shutdown cancels connection creation");
+    assert!(
+        err.to_string().contains("cancelled") || err.to_string().contains("closed"),
+        "unexpected shutdown cancellation error: {err}"
+    );
+
+    release.notify_waiters();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(
+        transport.dest_count().await,
+        0,
+        "shutdown during connection creation must not leave a stale DestTransport"
+    );
+    assert_eq!(stats.create_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cleanup_during_inflight_rpc_is_bounded_and_next_rpc_is_clean() {
+    let (gate, lane, _stats, transport) =
+        gate_with_lane_and_transport(ScriptedLane::new(vec![Ok(()), Ok(())]), Duration::ZERO);
+    let target = make_actor_id(2);
+    let dest = Dest::actor(target.clone());
+
+    let first = tokio::spawn({
+        let gate = gate.clone();
+        let target = target.clone();
+        async move {
+            gate.send_request(&target, envelope_with_timeout("cleanup-inflight-rpc", 150))
+                .await
+        }
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        if !lane.sent_payloads().is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "first RPC was never sent before cleanup"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    transport
+        .close_transport(&dest)
+        .await
+        .expect("cleanup should close active transport");
+
+    let err = tokio::time::timeout(Duration::from_secs(1), first)
+        .await
+        .expect("cleanup-overlapped RPC should complete within caller deadline")
+        .expect("RPC task should not panic")
+        .expect_err("in-flight RPC without response should fail boundedly");
+    assert!(
+        err.to_string().contains("Request timeout"),
+        "in-flight RPC should fail with an explicit deadline error, got: {err}"
+    );
+    assert_eq!(
+        gate.pending_count().await,
+        0,
+        "timed-out cleanup-overlapped RPC should clear pending state"
+    );
+    assert_eq!(
+        transport.dest_count().await,
+        0,
+        "cleanup should remove the closed transport before the next send"
+    );
+
+    let second = tokio::spawn({
+        let gate = gate.clone();
+        let target = target.clone();
+        async move {
+            gate.send_request(&target, envelope_with_timeout("after-cleanup-rpc", 1_000))
+                .await
+        }
+    });
+
+    let response_task = tokio::spawn({
+        let gate = gate.clone();
+        async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+            loop {
+                if gate
+                    .handle_response(
+                        "after-cleanup-rpc",
+                        Ok(Bytes::from_static(b"after-cleanup-ok")),
+                    )
+                    .await
+                    .expect("test response injection should not fail")
+                {
+                    return;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "second RPC was never registered as pending"
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+    });
+
+    response_task
+        .await
+        .expect("response injection task should not panic");
+    let response = second
+        .await
+        .expect("second RPC task should not panic")
+        .expect("second RPC should succeed after cleanup");
+    assert_eq!(response, Bytes::from_static(b"after-cleanup-ok"));
+    assert_eq!(
+        gate.pending_count().await,
+        0,
+        "successful post-cleanup RPC should leave no pending state"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unrecoverable_rpc_send_failure_clears_pending_without_waiting_for_deadline() {
+    let (gate, lane, _stats, _transport) = gate_with_lane_and_transport(
+        ScriptedLane::new(vec![Err(NetworkError::NoRoute(
+            "rpc route permanently unavailable".into(),
+        ))]),
+        Duration::ZERO,
+    );
+    let target = make_actor_id(2);
+
+    let start = std::time::Instant::now();
+    let err = gate
+        .send_request(&target, envelope_with_timeout("unrecoverable-rpc", 5_000))
+        .await
+        .expect_err("unrecoverable RPC send failure should return an explicit error");
+
+    assert!(
+        start.elapsed() < Duration::from_secs(1),
+        "non-retryable RPC failure should not wait for the request deadline"
+    );
+    assert!(
+        err.to_string().contains("No route") || err.to_string().contains("permanently unavailable"),
+        "unexpected RPC failure error: {err}"
+    );
+    assert_eq!(lane.sent_payloads().len(), 1);
+    assert_eq!(
+        gate.pending_count().await,
+        0,
+        "failed RPC send should remove pending state immediately"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unrecoverable_data_stream_send_failure_is_explicit_and_bounded() {
+    let (gate, lane, _stats, _transport) = gate_with_lane_and_transport(
+        ScriptedLane::new(vec![Err(NetworkError::ChannelClosed(
+            "stream channel permanently closed".into(),
+        ))]),
+        Duration::ZERO,
+    );
+    let target = make_actor_id(2);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        gate.send_data_stream(
+            &target,
+            PayloadType::StreamReliable,
+            "unrecoverable-stream",
+            Bytes::from_static(b"stream-payload"),
+        ),
+    )
+    .await
+    .expect("unrecoverable DataStream send should not hang");
+
+    let err = result.expect_err("unrecoverable DataStream send should fail explicitly");
+    assert!(
+        err.to_string().contains("permanently closed")
+            || err.to_string().contains("Channel closed"),
+        "unexpected DataStream failure error: {err}"
+    );
+    assert_eq!(
+        lane.sent_payloads().len(),
+        1,
+        "DataStream should make one bounded send attempt"
     );
 }
