@@ -106,7 +106,7 @@ jobs:
             --html \
             --no-run
           grep -q '^LF:' web-rust-lcov.info
-          test "$(find target/llvm-cov/html -type f | wc -l)" -gt 3
+          test "$(find ../../target/bindings-web/llvm-cov/html -type f | wc -l)" -gt 3
       - name: Upload lcov
         uses: actions/upload-artifact@v4
         with:
@@ -117,7 +117,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-web-rust-html
-          path: bindings/web/target/llvm-cov/html/
+          path: target/bindings-web/llvm-cov/html/
           retention-days: 7
 
   coverage-web-wasm:
