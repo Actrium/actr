@@ -328,6 +328,9 @@ validate_version() {
 }
 
 ensure_clean_worktree() {
+  if [[ "$DRY_RUN" == true ]] || [[ "$PREPARE_ONLY" == true ]]; then
+    return
+  fi
   if [[ -n "$(git -C "$ORIGINAL_REPO_ROOT" status --porcelain)" ]]; then
     fail "Working tree must be clean before running the release train"
   fi
@@ -972,7 +975,9 @@ stage_release_version_files() {
     bindings/web/crates/dom-bridge/Cargo.toml \
     bindings/web/crates/mailbox-web/Cargo.toml \
     bindings/web/crates/platform-web/Cargo.toml \
-    bindings/web/crates/framework-web-entry-smoke/Cargo.toml
+    bindings/web/crates/framework-web-entry-smoke/Cargo.toml \
+    bindings/web/Cargo.lock \
+    bindings/typescript/Cargo.lock
 }
 
 commit_release_prepare() {
@@ -1015,8 +1020,7 @@ ensure_publish_worktree_clean() {
       ":(exclude)release/reports/release-train-v${VERSION}.state.tsv" \
       ":(exclude)release/reports/release-train-v${VERSION}.md" \
       ":(exclude)release/reports/release-train-v${VERSION}.json" \
-      ":(exclude)cli/assets/web-runtime/" \
-      ":(exclude)bindings/web/Cargo.lock"
+      ":(exclude)cli/assets/web-runtime/"
   )
   if [[ -n "$dirty_files" ]]; then
     printf '%s\n' "$dirty_files" >&2
@@ -1187,6 +1191,10 @@ create_final_tag() {
 run_release_train() {
   if [[ "$PREPARE_ONLY" == true ]]; then
     update_versions
+    cargo update --workspace
+    cargo update --workspace --manifest-path bindings/web/Cargo.toml
+    npm install --package-lock-only --prefix bindings/typescript
+    cargo update --manifest-path bindings/typescript/Cargo.toml
     run_validation_suite
     commit_release_prepare
     return
