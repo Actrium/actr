@@ -80,7 +80,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip2
+          targets: wasm32-wasip2,wasm32-unknown-unknown
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -94,6 +94,8 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
