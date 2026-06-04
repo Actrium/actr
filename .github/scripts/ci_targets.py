@@ -18,6 +18,7 @@ TARGETS = (
     "python_web_e2e",
     "swift_binding",
     "kotlin_binding",
+    "android",
     "web_binding",
     "release_related",
 )
@@ -161,8 +162,30 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
 
         if path.startswith(("bindings/kotlin/", "tools/protoc-gen/kotlin/")):
             targets["kotlin_binding"] = True
+            targets["android"] = True
             reasons.append(f"kotlin:{path}")
+            reasons.append(f"android:{path}")
             continue
+
+        # Android also triggers on FFI / runtime changes that affect native libs
+        if path.startswith(
+            (
+                "bindings/ffi/",
+                "core/hyper/",
+                "core/runtime/",
+                "core/config/",
+                "core/protocol/",
+                "core/framework/",
+                "core/platform-traits/",
+                "core/platform-native/",
+                "core/runtime-mailbox/",
+                "core/pack/",
+                "core/service-compat/",
+            )
+        ):
+            targets["android"] = True
+            reasons.append(f"android:{path}")
+            # Don't continue — may also affect other targets
 
         if path.startswith(
             (

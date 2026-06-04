@@ -1,0 +1,271 @@
+name: CI (Android)
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  PROTOC_VERSION: "29.3"
+  NDK_VERSION: "25.2.9519653"
+  ANDROID_API_LEVEL: "21"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Android Build (arm64 + x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # ------------------------------------------------------------------
+      # Rust toolchain: host + Android targets
+      # ------------------------------------------------------------------
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+
+      # ------------------------------------------------------------------
+      # Protobuf compiler (required by actr-protocol build)
+      # ------------------------------------------------------------------
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      # ------------------------------------------------------------------
+      # UniFFI bindgen (generates Kotlin bindings from Rust FFI)
+      # ------------------------------------------------------------------
+      - name: Install UniFFI bindgen
+        run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
+
+      # ------------------------------------------------------------------
+      # Java + Gradle
+      # ------------------------------------------------------------------
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+          cache: gradle
+
+      # ------------------------------------------------------------------
+      # Android SDK + NDK
+      # ------------------------------------------------------------------
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-34"
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install Android NDK
+        run: |
+          NDK_ZIP="android-ndk-r${NDK_VERSION}-linux.zip"
+          NDK_URL="https://dl.google.com/android/repository/${NDK_ZIP}"
+          NDK_HOME="${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}"
+
+          if [[ -d "${NDK_HOME}" ]]; then
+            echo "NDK ${NDK_VERSION} already installed at ${NDK_HOME}"
+          else
+            echo "Downloading NDK ${NDK_VERSION}..."
+            curl -fsSL -o "/tmp/${NDK_ZIP}" "${NDK_URL}"
+            mkdir -p "$(dirname "${NDK_HOME}")"
+            unzip -q "/tmp/${NDK_ZIP}" -d "$(dirname "${NDK_HOME}")"
+            mv "$(dirname "${NDK_HOME}")/android-ndk-r${NDK_VERSION}" "${NDK_HOME}"
+            echo "NDK installed at ${NDK_HOME}"
+          fi
+
+          echo "ANDROID_NDK_HOME=${NDK_HOME}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK=${NDK_HOME}" >> "${GITHUB_ENV}"
+
+      # ------------------------------------------------------------------
+      # Cross-compile Rust native library for Android
+      # ------------------------------------------------------------------
+      - name: Set up Android cross-compilation environment
+        run: |
+          TOOLCHAIN_PATH="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
+          echo "TOOLCHAIN_PATH=${TOOLCHAIN_PATH}" >> "${GITHUB_ENV}"
+
+          CC_AARCH64="${TOOLCHAIN_PATH}/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
+          CC_X86_64="${TOOLCHAIN_PATH}/bin/x86_64-linux-android${ANDROID_API_LEVEL}-clang"
+
+          echo "CC_aarch64_linux_android=${CC_AARCH64}" >> "${GITHUB_ENV}"
+          echo "CC_x86_64_linux_android=${CC_X86_64}" >> "${GITHUB_ENV}"
+          echo "AR_aarch64_linux_android=${TOOLCHAIN_PATH}/bin/llvm-ar" >> "${GITHUB_ENV}"
+          echo "AR_x86_64_linux_android=${TOOLCHAIN_PATH}/bin/llvm-ar" >> "${GITHUB_ENV}"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${CC_AARCH64}" >> "${GITHUB_ENV}"
+          echo "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER=${CC_X86_64}" >> "${GITHUB_ENV}"
+
+          echo "PATH=${TOOLCHAIN_PATH}/bin:${PATH}" >> "${GITHUB_ENV}"
+
+      # Two-phase build (see build-android.sh for rationale):
+      # 1. cargo build → audiopus_sys cmake generates .o files but broken libopus.a
+      # 2. fix_opus → NDK llvm-ar repacks .a, NDK clang builds libopus.so
+      # 3. Rebuild with RUSTFLAGS="-l opus" for DT_NEEDED
+      - name: Phase 1 — Cargo build (generate .o files)
+        env:
+          LIBOPUS_STATIC: "1"
+        run: |
+          cargo build -p libactr --release --target aarch64-linux-android
+          cargo build -p libactr --release --target x86_64-linux-android
+
+      - name: Phase 2 — Fix opus libraries
+        run: |
+          set -euo pipefail
+          for target in aarch64-linux-android x86_64-linux-android; do
+            TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+            AUDIOPUS_BUILD=$(find "target/${target}/release/build" -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+            if [[ -z "${AUDIOPUS_BUILD}" ]]; then
+              echo "WARNING: audiopus_sys build directory not found for ${target}"
+              continue
+            fi
+
+            OPUS_O_DIR="${AUDIOPUS_BUILD}/out/build/CMakeFiles/opus.dir"
+            if [[ ! -d "${OPUS_O_DIR}" ]]; then
+              echo "WARNING: opus .o directory not found at ${OPUS_O_DIR}"
+              continue
+            fi
+
+            O_COUNT=$(find "${OPUS_O_DIR}" -name "*.o" | wc -l)
+            echo "Fixing opus for ${target}: ${O_COUNT} .o files"
+
+            # Repack static lib
+            rm -f "${AUDIOPUS_BUILD}/out/lib/libopus.a"
+            find "${OPUS_O_DIR}" -name "*.o" -print0 | \
+              xargs -0 "${TOOLCHAIN}/llvm-ar" crs "${AUDIOPUS_BUILD}/out/lib/libopus.a"
+
+            # Build shared lib
+            TARGET_UPPER=$(echo "${target}" | sed 's/-linux-android//' | tr '-' '_')
+            CC="${TOOLCHAIN}/${TARGET_UPPER}-linux-android${ANDROID_API_LEVEL}-clang"
+            "${CC}" -shared -o "${AUDIOPUS_BUILD}/out/lib/libopus.so" \
+              $(find "${OPUS_O_DIR}" -name "*.o") -lm
+
+            A_SIZE=$(ls -l "${AUDIOPUS_BUILD}/out/lib/libopus.a" | awk '{print $5}')
+            SO_SIZE=$(ls -l "${AUDIOPUS_BUILD}/out/lib/libopus.so" | awk '{print $5}')
+            echo "  libopus.a: ${A_SIZE} bytes, libopus.so: ${SO_SIZE} bytes"
+          done
+
+      - name: Phase 3 — Rebuild with DT_NEEDED libopus.so
+        run: |
+          set -euo pipefail
+          for target in aarch64-linux-android x86_64-linux-android; do
+            AUDIOPUS_BUILD=$(find "target/${target}/release/build" -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+            RUSTFLAGS_LOCAL=""
+            if [[ -n "${AUDIOPUS_BUILD}" ]]; then
+              RUSTFLAGS_LOCAL="-L ${AUDIOPUS_BUILD}/out/lib -l opus"
+            fi
+
+            # Force relink
+            rm -f "target/${target}/release/libactr.so"
+            find "target/${target}/release/deps" -name "liblibactr*" -delete 2>/dev/null || true
+            find "target/${target}/release/.fingerprint" -name "libactr-*" -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+
+            RUSTFLAGS="${RUSTFLAGS_LOCAL}" cargo build -p libactr --release --target "${target}"
+          done
+
+      - name: Verify DT_NEEDED
+        run: |
+          TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for target in aarch64-linux-android x86_64-linux-android; do
+            echo "=== ${target} ==="
+            "${TOOLCHAIN}/llvm-readelf" -d "target/${target}/release/libactr.so" | grep NEEDED || true
+            UNDEFINED=$("${TOOLCHAIN}/llvm-nm" -D "target/${target}/release/libactr.so" | grep "U opus" -c || true)
+            echo "Undefined opus symbols: ${UNDEFINED} (expected: 5, resolved by libopus.so)"
+          done
+
+      - name: Copy native libs into jniLibs
+        run: |
+          AUDIOPUS_ARM=$(find target/aarch64-linux-android/release/build -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+          AUDIOPUS_X86=$(find target/x86_64-linux-android/release/build -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+
+          mkdir -p bindings/kotlin/{demo,actr-kotlin}/src/main/jniLibs/{arm64-v8a,x86_64}
+
+          # arm64
+          cp target/aarch64-linux-android/release/libactr.so \
+            bindings/kotlin/demo/src/main/jniLibs/arm64-v8a/
+          cp target/aarch64-linux-android/release/libactr.so \
+            bindings/kotlin/actr-kotlin/src/main/jniLibs/arm64-v8a/
+          if [[ -n "${AUDIOPUS_ARM}" && -f "${AUDIOPUS_ARM}/out/lib/libopus.so" ]]; then
+            cp "${AUDIOPUS_ARM}/out/lib/libopus.so" \
+              bindings/kotlin/demo/src/main/jniLibs/arm64-v8a/
+            cp "${AUDIOPUS_ARM}/out/lib/libopus.so" \
+              bindings/kotlin/actr-kotlin/src/main/jniLibs/arm64-v8a/
+          fi
+
+          # x86_64
+          cp target/x86_64-linux-android/release/libactr.so \
+            bindings/kotlin/demo/src/main/jniLibs/x86_64/
+          cp target/x86_64-linux-android/release/libactr.so \
+            bindings/kotlin/actr-kotlin/src/main/jniLibs/x86_64/
+          if [[ -n "${AUDIOPUS_X86}" && -f "${AUDIOPUS_X86}/out/lib/libopus.so" ]]; then
+            cp "${AUDIOPUS_X86}/out/lib/libopus.so" \
+              bindings/kotlin/demo/src/main/jniLibs/x86_64/
+            cp "${AUDIOPUS_X86}/out/lib/libopus.so" \
+              bindings/kotlin/actr-kotlin/src/main/jniLibs/x86_64/
+          fi
+
+          echo "=== jniLibs contents ==="
+          find bindings/kotlin -path "*/jniLibs/*" -name "*.so" -exec ls -lh {} \;
+
+      # ------------------------------------------------------------------
+      # Generate UniFFI Kotlin bindings
+      # ------------------------------------------------------------------
+      - name: Generate UniFFI Kotlin bindings
+        run: |
+          HOST_TARGET=$(rustc -vV | awk -F': ' '/^host:/{print $2}')
+          HOST_LIB="target/${HOST_TARGET}/debug/libactr.so"
+
+          # Build host library for bindgen
+          cargo build -p libactr
+
+          if [[ ! -f "${HOST_LIB}" ]]; then
+            HOST_LIB="target/${HOST_TARGET}/debug/libactr.dylib"
+          fi
+          if [[ ! -f "${HOST_LIB}" ]]; then
+            HOST_LIB=$(find target -name "libactr.so" -o -name "libactr.dylib" 2>/dev/null | head -1)
+          fi
+
+          echo "Host library: ${HOST_LIB}"
+          GENERATED_DIR="bindings/kotlin/actr-kotlin/src/main/kotlin/io/actor_rtc/actr"
+          mkdir -p "${GENERATED_DIR}"
+          rm -f "${GENERATED_DIR}/actr.kt"
+
+          uniffi-bindgen generate \
+            --library "${HOST_LIB}" \
+            --language kotlin \
+            --out-dir "${GENERATED_DIR}"
+
+          echo "UniFFI bindings generated"
+
+      # ------------------------------------------------------------------
+      # Build Kotlin library + demo APK
+      # ------------------------------------------------------------------
+      - name: Build Kotlin library
+        working-directory: bindings/kotlin
+        run: ./gradlew :actr-kotlin:build --no-daemon
+
+      - name: Build demo APK
+        working-directory: bindings/kotlin
+        run: ./gradlew :demo:assembleDebug --no-daemon
+
+      - name: Verify APK contains native libs
+        run: |
+          for apk in bindings/kotlin/demo/build/outputs/apk/debug/demo-debug.apk; do
+            echo "=== ${apk} ==="
+            unzip -l "${apk}" | grep "\.so" || echo "WARNING: no .so files found in APK"
+          done
+
+      # ------------------------------------------------------------------
+      # Archive APK as build artifact
+      # ------------------------------------------------------------------
+      - name: Archive APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-debug-apk
+          path: bindings/kotlin/demo/build/outputs/apk/debug/demo-debug.apk
+          retention-days: 7
