@@ -3,10 +3,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
-    CleanupReason, CredentialState, DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent,
-    NetworkEventHandle, NetworkEventProcessor, NetworkEventRequest, NetworkEventResult,
-    NetworkRecoveryAction, NetworkSnapshot, ReconnectReason, process_network_event_batch,
-    run_network_event_reconciler, select_network_recovery_action,
+    CleanupReason, ConnectionFact, ConnectionSupervisor, CredentialState, DebounceConfig,
+    DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
+    NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot,
+    ReconnectReason, process_network_event_batch, run_network_event_reconciler,
+    select_network_recovery_action,
 };
 use actr_hyper::transport::{NetworkError, NetworkResult};
 use actr_hyper::wire::webrtc::{DisconnectReason, SignalingClient, SignalingEvent, SignalingStats};
@@ -638,6 +639,106 @@ fn test_batch_action_uses_latest_network_state_event() {
         select_network_recovery_action(&lost_last),
         NetworkRecoveryAction::Offline,
         "Lost after Available means the settled final state is offline"
+    );
+}
+
+#[test]
+fn test_connection_supervisor_converges_mobile_facts_to_action() {
+    let mut supervisor = ConnectionSupervisor::new();
+
+    supervisor.submit_event(&NetworkEvent::AppEnteredBackground { timestamp_ms: 100 });
+    supervisor.submit_event(&NetworkEvent::AppBecameInactive { timestamp_ms: 110 });
+    assert_eq!(
+        supervisor.reconcile(),
+        NetworkRecoveryAction::Noop,
+        "background/inactive lifecycle facts should not clean up or reconnect by themselves"
+    );
+
+    supervisor.submit_event(&NetworkEvent::AppEnteredForeground {
+        background_duration_ms: 5_000,
+        timestamp_ms: 200,
+    });
+    assert_eq!(
+        supervisor.reconcile(),
+        NetworkRecoveryAction::Probe,
+        "short foreground return should only probe when no network fact is known"
+    );
+
+    supervisor.submit_event(&NetworkEvent::Available);
+    assert_eq!(
+        supervisor.reconcile(),
+        NetworkRecoveryAction::Restore,
+        "online network fact should restore connections"
+    );
+}
+
+#[test]
+fn test_connection_supervisor_cleanup_fact_suppresses_later_restore() {
+    let mut supervisor = ConnectionSupervisor::new();
+
+    supervisor.submit_fact(ConnectionFact::CleanupRequested(CleanupReason::UserLogout));
+    supervisor.submit_fact(ConnectionFact::NetworkOnline);
+    supervisor.submit_fact(ConnectionFact::NetworkPathChanged);
+
+    assert_eq!(
+        supervisor.reconcile(),
+        NetworkRecoveryAction::CleanupOnly,
+        "cleanup-only facts should not be converted into restore by later online/path facts"
+    );
+}
+
+#[test]
+fn test_connection_supervisor_uses_latest_snapshot_timestamp() {
+    let mut supervisor = ConnectionSupervisor::new();
+
+    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(NetworkSnapshot {
+        is_available: true,
+        is_wifi: true,
+        is_cellular: false,
+        is_vpn: true,
+        timestamp_ms: 200,
+    }));
+    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(NetworkSnapshot {
+        is_available: false,
+        is_wifi: false,
+        is_cellular: false,
+        is_vpn: false,
+        timestamp_ms: 100,
+    }));
+
+    assert_eq!(
+        supervisor.reconcile(),
+        NetworkRecoveryAction::Restore,
+        "older offline snapshots should not override newer online snapshots"
+    );
+}
+
+#[test]
+fn test_connection_supervisor_selector_matches_public_selector() {
+    let events = vec![
+        NetworkEvent::AppEnteredForeground {
+            background_duration_ms: 60_000,
+            timestamp_ms: 100,
+        },
+        NetworkEvent::PathChanged {
+            snapshot: NetworkSnapshot {
+                is_available: true,
+                is_wifi: false,
+                is_cellular: true,
+                is_vpn: false,
+                timestamp_ms: 200,
+            },
+        },
+    ];
+
+    assert_eq!(
+        ConnectionSupervisor::select_action(&events),
+        select_network_recovery_action(&events)
+    );
+    assert_eq!(
+        ConnectionSupervisor::select_action(&events),
+        NetworkRecoveryAction::ForceReconnect,
+        "long background foreground return should force a rebuild when network is available"
     );
 }
 

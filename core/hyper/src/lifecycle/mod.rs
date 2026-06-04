@@ -4,12 +4,14 @@
 //! - `node::Inner`: internal running-state struct used by `Node<S>` / `ActrRef`.
 
 pub(crate) mod compat_lock;
+mod connection_supervisor;
 pub(crate) mod dedup;
 mod heartbeat;
 pub(crate) mod hooks;
 mod network_event;
 pub(crate) mod node;
 
+pub use connection_supervisor::{ConnectionFact, ConnectionSupervisor};
 pub use network_event::{
     CleanupReason, DebounceConfig, DefaultNetworkEventProcessor, NetworkEvent, NetworkEventHandle,
     NetworkEventProcessor, NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction,

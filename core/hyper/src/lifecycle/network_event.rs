@@ -76,10 +76,12 @@ use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+use super::connection_supervisor::ConnectionSupervisor;
+
 const NETWORK_EVENT_SETTLE_WINDOW: Duration = Duration::from_millis(400);
 const NETWORK_EVENT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNALING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
-const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
+pub(super) const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
 
 /// Mobile network path snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -694,64 +696,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
 }
 
 pub fn select_network_recovery_action(events: &[NetworkEvent]) -> NetworkRecoveryAction {
-    let mut saw_cleanup_only = false;
-    let mut saw_force_reconnect = false;
-    let mut latest_state_action = NetworkRecoveryAction::Noop;
-    let mut latest_snapshot_timestamp: Option<u64> = None;
-
-    for event in events {
-        match event {
-            NetworkEvent::CleanupConnections { .. } | NetworkEvent::AppTerminating { .. } => {
-                saw_cleanup_only = true
-            }
-            NetworkEvent::ForceReconnect { .. } => saw_force_reconnect = true,
-            NetworkEvent::Available | NetworkEvent::TypeChanged { .. } => {
-                latest_state_action = NetworkRecoveryAction::Restore
-            }
-            NetworkEvent::Lost => latest_state_action = NetworkRecoveryAction::Offline,
-            NetworkEvent::PathChanged { snapshot } => {
-                let is_latest = latest_snapshot_timestamp
-                    .map(|timestamp| snapshot.timestamp_ms >= timestamp)
-                    .unwrap_or(true);
-                if is_latest {
-                    latest_snapshot_timestamp = Some(snapshot.timestamp_ms);
-                    latest_state_action = if snapshot.is_available {
-                        NetworkRecoveryAction::Restore
-                    } else {
-                        NetworkRecoveryAction::Offline
-                    };
-                }
-            }
-            NetworkEvent::AppEnteredForeground {
-                background_duration_ms,
-                ..
-            } => {
-                if *background_duration_ms >= LONG_BACKGROUND_RECONNECT_THRESHOLD_MS {
-                    saw_force_reconnect = true;
-                } else if latest_state_action == NetworkRecoveryAction::Noop {
-                    latest_state_action = NetworkRecoveryAction::Probe;
-                }
-            }
-            NetworkEvent::ProbeConnectivity => {
-                if latest_state_action == NetworkRecoveryAction::Noop {
-                    latest_state_action = NetworkRecoveryAction::Probe;
-                }
-            }
-            NetworkEvent::AppEnteredBackground { .. }
-            | NetworkEvent::AppBecameInactive { .. }
-            | NetworkEvent::AppBecameActive { .. } => {}
-        }
-    }
-
-    if saw_cleanup_only {
-        NetworkRecoveryAction::CleanupOnly
-    } else if latest_state_action == NetworkRecoveryAction::Offline {
-        NetworkRecoveryAction::Offline
-    } else if saw_force_reconnect {
-        NetworkRecoveryAction::ForceReconnect
-    } else {
-        latest_state_action
-    }
+    ConnectionSupervisor::select_action(events)
 }
 
 pub async fn process_network_event_batch(
