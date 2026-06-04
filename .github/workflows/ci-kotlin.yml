@@ -57,4 +57,4 @@ jobs:
           gradle wrapper --gradle-version 8.10
           ./gradlew protocPluginJar --no-daemon
       - name: Run Kotlin codegen integration tests
-        run: cargo test --test kotlin_echo --verbose
+        run: cargo test -p actr-cli --test kotlin_echo --verbose
