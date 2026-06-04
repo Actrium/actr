@@ -327,9 +327,7 @@ async fn load_linked_init(config_path: &str) -> ActrResult<Node<actr_hyper::Init
     Ok(init)
 }
 
-async fn register_linked_node(
-    attached: Node<actr_hyper::Attached>,
-) -> ActrResult<Arc<ActrNode>> {
+async fn register_linked_node(attached: Node<actr_hyper::Attached>) -> ActrResult<Arc<ActrNode>> {
     let ais_endpoint = attached.ais_endpoint().to_string();
     let registered = attached.register(&ais_endpoint).await.map_err(|e| {
         error!("AIS registration failed: {}", e);

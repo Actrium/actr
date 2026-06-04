@@ -111,11 +111,17 @@ impl KotlinGenerator {
         } else if command_exists("gradle") {
             "gradle"
         } else {
-            debug!("No gradlew or gradle found in {:?}, skipping workspace-local build", plugin_root);
+            debug!(
+                "No gradlew or gradle found in {:?}, skipping workspace-local build",
+                plugin_root
+            );
             return Ok(None);
         };
 
-        info!("🔨 Building workspace-local {}...", PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN);
+        info!(
+            "🔨 Building workspace-local {}...",
+            PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN
+        );
         let output = StdCommand::new(gradlew)
             .args(["protocPluginJar"])
             .current_dir(&plugin_root)

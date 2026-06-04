@@ -65,19 +65,13 @@ jobs:
 
       - name: Install Android NDK
         run: |
-          NDK_ZIP="android-ndk-r${NDK_VERSION}-linux.zip"
-          NDK_URL="https://dl.google.com/android/repository/${NDK_ZIP}"
           NDK_HOME="${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}"
 
           if [[ -d "${NDK_HOME}" ]]; then
             echo "NDK ${NDK_VERSION} already installed at ${NDK_HOME}"
           else
-            echo "Downloading NDK ${NDK_VERSION}..."
-            curl -fsSL -o "/tmp/${NDK_ZIP}" "${NDK_URL}"
-            mkdir -p "$(dirname "${NDK_HOME}")"
-            unzip -q "/tmp/${NDK_ZIP}" -d "$(dirname "${NDK_HOME}")"
-            mv "$(dirname "${NDK_HOME}")/android-ndk-r${NDK_VERSION}" "${NDK_HOME}"
-            echo "NDK installed at ${NDK_HOME}"
+            echo "Installing NDK ${NDK_VERSION} via sdkmanager..."
+            yes | ${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager --install "ndk;${NDK_VERSION}" 2>&1 | tail -5
           fi
 
           echo "ANDROID_NDK_HOME=${NDK_HOME}" >> "${GITHUB_ENV}"

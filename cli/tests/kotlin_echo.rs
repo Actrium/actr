@@ -86,7 +86,9 @@ fn kotlin_echo_init_creates_expected_files() {
         "app/build.gradle.kts should exist"
     );
     assert!(
-        project_dir.join("app/src/main/AndroidManifest.xml").exists(),
+        project_dir
+            .join("app/src/main/AndroidManifest.xml")
+            .exists(),
         "AndroidManifest.xml should exist"
     );
 }
@@ -177,8 +179,7 @@ fn kotlin_gen_produces_linked_workload_scaffold() {
     let workload_file = output_dir.join("UnifiedWorkload.kt");
 
     if workload_file.exists() {
-        let content =
-            std::fs::read_to_string(&workload_file).expect("read UnifiedWorkload.kt");
+        let content = std::fs::read_to_string(&workload_file).expect("read UnifiedWorkload.kt");
 
         // Verify linked workload patterns
         assert!(

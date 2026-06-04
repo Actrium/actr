@@ -36,6 +36,10 @@ jobs:
           java-version: "17"
           distribution: "temurin"
           cache: gradle
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
       - name: Build CLI
         run: cargo build -p actr-cli
       - name: Compile Kotlin demo
