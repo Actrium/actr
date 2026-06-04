@@ -40,6 +40,8 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Build CLI
         run: cargo build -p actr-cli
       - name: Compile Kotlin demo

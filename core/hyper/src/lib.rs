@@ -2018,9 +2018,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let hyper = Hyper::new(dev_config(&dir)).await.unwrap();
         let node = Node::from_hyper(hyper, linked_runtime_config(&dir)).with_actor_type(
-            "acme",
-            "UnifiedActor",
-            "1.0.0",
+            actr_protocol::ActrType {
+                manufacturer: "acme".into(),
+                name: "UnifiedActor".into(),
+                version: "1.0.0".into(),
+            },
         );
 
         let actr_type = node.runtime_config().actr_type();
