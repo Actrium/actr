@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Basic release train for the monorepo-managed foundations, tools, SDKs, and CLI.
 
-readonly FINAL_TAG_PREFIX="release-train-v"
+readonly FINAL_TAG_PREFIX="v"
+readonly LEGACY_FINAL_TAG_PREFIX="release-train-v"
 readonly PYTHON_PACKAGE_NAME="framework_codegen_python"
 readonly CRATES_IO_API="https://crates.io/api/v1/crates"
 readonly PYPI_API="https://pypi.org/pypi"
@@ -225,10 +226,10 @@ PY
 
 detect_conventional_bump() {
   local last_tag
-  last_tag=$(git -C "$ORIGINAL_REPO_ROOT" describe --tags --match "${FINAL_TAG_PREFIX}*" --abbrev=0 2>/dev/null || echo "")
+  last_tag=$(latest_release_tag)
 
   if [[ -z "$last_tag" ]]; then
-    log_info "No prior release-train tag found; defaulting to minor bump" >&2
+    log_info "No prior release tag found; defaulting to minor bump" >&2
     echo "minor"
     return
   fi
@@ -250,6 +251,14 @@ detect_conventional_bump() {
   done < <(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --pretty=format:"%s")
 
   echo "$highest"
+}
+
+latest_release_tag() {
+  git -C "$ORIGINAL_REPO_ROOT" describe \
+    --tags \
+    --match "${FINAL_TAG_PREFIX}[0-9]*" \
+    --match "${LEGACY_FINAL_TAG_PREFIX}[0-9]*" \
+    --abbrev=0 2>/dev/null || echo ""
 }
 
 calculate_next_version() {

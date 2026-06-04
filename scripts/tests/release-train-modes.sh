@@ -97,6 +97,47 @@ test_publish_clean_check_allows_current_report_artifacts() {
   rm -rf "$temp_repo"
 }
 
+test_final_tag_uses_conventional_v_prefix() {
+  reset_release_train_state
+
+  local temp_repo previous_pwd
+  temp_repo=$(mktemp -d)
+  previous_pwd=$PWD
+  git -C "$temp_repo" init -q
+
+  cd "$temp_repo"
+  VERSION="1.2.3"
+  DRY_RUN=false
+
+  ensure_release_tag_absent
+
+  cd "$previous_pwd"
+  rm -rf "$temp_repo"
+
+  assert_eq "v1.2.3" "$FINAL_TAG" "FINAL_TAG"
+}
+
+test_latest_release_tag_accepts_legacy_release_train_prefix() {
+  reset_release_train_state
+
+  local temp_repo previous_root
+  temp_repo=$(mktemp -d)
+  previous_root=$ORIGINAL_REPO_ROOT
+
+  git -C "$temp_repo" init -q
+  printf 'tracked\n' >"$temp_repo/tracked.txt"
+  git -C "$temp_repo" add tracked.txt
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "init"
+  git -C "$temp_repo" tag release-train-v0.3.1
+
+  ORIGINAL_REPO_ROOT=$temp_repo
+
+  assert_eq "release-train-v0.3.1" "$(latest_release_tag)" "latest legacy release tag"
+
+  ORIGINAL_REPO_ROOT=$previous_root
+  rm -rf "$temp_repo"
+}
+
 test_publish_mode_uses_prepared_versions_without_mutating() {
   reset_release_train_state
 
@@ -176,5 +217,7 @@ test_parse_prepare_only_mode
 test_append_skipped_components_allows_empty_list
 test_publish_clean_check_rejects_untracked_files
 test_publish_clean_check_allows_current_report_artifacts
+test_final_tag_uses_conventional_v_prefix
+test_latest_release_tag_accepts_legacy_release_train_prefix
 test_publish_mode_uses_prepared_versions_without_mutating
 test_prepare_only_updates_validates_and_commits_without_publishing
