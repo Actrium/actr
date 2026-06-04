@@ -376,7 +376,13 @@ fn transport_with_paused_builder() -> PausedBuilderFixture {
         release: release.clone(),
     });
     let transport = Arc::new(PeerTransport::new(make_actor_id(1), builder));
-    PausedBuilderFixture { transport, lane, stats, started, release }
+    PausedBuilderFixture {
+        transport,
+        lane,
+        stats,
+        started,
+        release,
+    }
 }
 
 fn envelope(request_id: &str) -> RpcEnvelope {
