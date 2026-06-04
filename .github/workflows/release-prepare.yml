@@ -6,6 +6,16 @@ on:
       - main
     paths-ignore:
       - "release/**"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Source ref to prepare from.
+        required: true
+        type: string
+      version:
+        description: Stable semver to prepare.
+        required: true
+        type: string
 
 concurrency:
   group: release-prepare
@@ -23,11 +33,11 @@ jobs:
     name: Prepare release PR
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main
+      - name: Checkout release source
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: main
+          ref: ${{ inputs.ref || github.ref_name }}
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -64,7 +74,11 @@ jobs:
         run: |
           set -euo pipefail
           PREPARE_HEAD=$(git rev-parse HEAD)
-          scripts/release-train.sh --prepare-only
+          args=(--prepare-only)
+          if [[ -n "${{ inputs.version }}" ]]; then
+            args+=(--version "${{ inputs.version }}")
+          fi
+          scripts/release-train.sh "${args[@]}"
           NEW_HEAD=$(git rev-parse HEAD)
           if [ "$PREPARE_HEAD" = "$NEW_HEAD" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"

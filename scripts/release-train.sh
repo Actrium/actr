@@ -969,6 +969,7 @@ stage_release_version_files() {
     bindings/web/packages/web-react/package.json \
     bindings/typescript/Cargo.toml \
     bindings/typescript/package.json \
+    bindings/typescript/package-lock.json \
     bindings/web/crates/actr-web-abi/Cargo.toml \
     bindings/web/crates/common/Cargo.toml \
     bindings/web/crates/sw-host/Cargo.toml \
@@ -1107,9 +1108,13 @@ publish_rust_package() {
       return
     fi
 
-    rm -f "$publish_log"
-    append_state "$package" "$stage" "crate" "failure" "publish_failed" "$registry_url" "$RELEASE_SHA"
-    fail "cargo publish failed for ${package}"
+    if grep -qiE "Uploaded[[:space:]]+${package} v${VERSION}" "$publish_log"; then
+      log_warn "cargo publish uploaded ${package} ${VERSION} but returned non-zero while waiting for registry visibility"
+    else
+      rm -f "$publish_log"
+      append_state "$package" "$stage" "crate" "failure" "publish_failed" "$registry_url" "$RELEASE_SHA"
+      fail "cargo publish failed for ${package}"
+    fi
   fi
 
   rm -f "$publish_log"
@@ -1194,7 +1199,7 @@ run_release_train() {
     cargo update --workspace
     cargo update --workspace --manifest-path bindings/web/Cargo.toml
     npm install --package-lock-only --prefix bindings/typescript
-    cargo update --manifest-path bindings/typescript/Cargo.toml
+    cargo update --manifest-path bindings/typescript/Cargo.toml -p actr-protocol -p actr-framework -p actr-config -p actr-hyper
     run_validation_suite
     commit_release_prepare
     return
