@@ -19,14 +19,6 @@ on:
       - "bindings/typescript/package.json"
   workflow_dispatch:
     inputs:
-      ref:
-        description: Ref to checkout before publishing.
-        required: false
-        type: string
-      branch:
-        description: Release branch to publish from.
-        required: false
-        type: string
       version:
         description: Stable semver (optional; auto-detected from workspace Cargo.toml if omitted).
         required: false
@@ -69,22 +61,11 @@ jobs:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
     steps:
-      - name: Checkout release ref
+      - name: Checkout main
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ inputs.ref || inputs.branch || github.ref_name }}
-
-      - name: Select release branch
-        run: |
-          set -euo pipefail
-          branch="${{ inputs.branch }}"
-          if [[ -z "$branch" ]]; then
-            branch="${{ inputs.ref || github.ref_name }}"
-          fi
-          if git rev-parse --verify "origin/${branch}" >/dev/null 2>&1; then
-            git checkout -B "$branch" "origin/${branch}"
-          fi
+          ref: main
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -118,7 +99,6 @@ jobs:
 
       - name: Run release train
         run: |
-          set -euo pipefail
           args=()
           if [[ -n "${{ inputs.version }}" ]]; then
             args+=(--version "${{ inputs.version }}")
@@ -132,11 +112,7 @@ jobs:
           if [[ "${{ inputs.pre_release }}" == "true" ]]; then
             args+=(--pre-release)
           fi
-          release_branch="${{ inputs.branch }}"
-          if [[ -z "$release_branch" ]]; then
-            release_branch="${{ inputs.ref || github.ref_name }}"
-          fi
-          args+=(--branch "$release_branch")
+          args+=(--branch main)
           scripts/release-train.sh "${args[@]}"
 
       - name: Resolve report version

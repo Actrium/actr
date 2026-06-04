@@ -381,6 +381,22 @@ append_state() {
   local registry_url=$6
   local git_sha=$7
 
+  name=${name//$'\t'/ }
+  stage=${stage//$'\t'/ }
+  kind=${kind//$'\t'/ }
+  status=${status//$'\t'/ }
+  mode=${mode//$'\t'/ }
+  registry_url=${registry_url//$'\t'/ }
+  git_sha=${git_sha//$'\t'/ }
+
+  name=${name//$'\n'/ }
+  stage=${stage//$'\n'/ }
+  kind=${kind//$'\n'/ }
+  status=${status//$'\n'/ }
+  mode=${mode//$'\n'/ }
+  registry_url=${registry_url//$'\n'/ }
+  git_sha=${git_sha//$'\n'/ }
+
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$name" \
     "$stage" \
@@ -755,7 +771,7 @@ wait_for_package_sync_workflow() {
     if [[ -n "${run_id}" ]]; then
       break
     fi
-    log_info "Waiting for ${repo} workflow run creation (${attempt}/30)"
+    log_info "Waiting for ${repo} workflow run creation (${attempt}/30)" >&2
     sleep 10
   done
 
@@ -786,7 +802,7 @@ wait_for_package_sync_workflow() {
       return 1
     fi
 
-    log_info "Waiting for ${repo} workflow completion (${attempt}/120)"
+    log_info "Waiting for ${repo} workflow completion (${attempt}/120)" >&2
     sleep 15
   done
 
