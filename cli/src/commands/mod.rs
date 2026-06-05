@@ -60,6 +60,7 @@ pub use logs::LogsCommand;
 pub use pkg::PkgArgs;
 pub use ps::PsCommand;
 pub use registry::RegistryArgs;
+pub use registry::RegistryCommand;
 pub use restart::RestartCommand;
 pub use rm::RmCommand;
 pub use run::RunCommand;

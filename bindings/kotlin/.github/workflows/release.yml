@@ -1,0 +1,89 @@
+name: release-kotlin
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout actr source
+        uses: actions/checkout@v4
+        with:
+          repository: Actrium/actr
+          ref: v${{ inputs.version }}
+          submodules: recursive
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Setup Android SDK & NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 ndk;25.2.9519653 build-tools;34.0.0'
+
+      - name: Build native libraries
+        working-directory: bindings/kotlin
+        run: |
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/25.2.9519653
+          bash build-android.sh
+
+      - name: Package native binaries
+        working-directory: bindings/kotlin
+        run: bash scripts/package-binary.sh v${{ inputs.version }}
+
+      - name: Publish Maven artifact
+        working-directory: bindings/kotlin
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ./gradlew :actr-kotlin:publish --no-daemon \
+            -PactrVersion=${{ inputs.version }} \
+            -Pgpr.user=${{ github.actor }} \
+            -Pgpr.key=${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ inputs.version }}
+          files: bindings/kotlin/dist/actr-kotlin-native.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - name: Release summary
+        run: |
+          {
+            echo "## Release artifacts"
+            echo ""
+            echo "### Maven (GitHub Packages)"
+            echo "- Group: \`io.actrium\`"
+            echo "- Artifact: \`actr\`"
+            echo "- Version: \`${{ inputs.version }}\`"
+            echo ""
+            echo "### Native libraries"
+            cat bindings/kotlin/dist/release.txt
+          } >> "$GITHUB_STEP_SUMMARY"

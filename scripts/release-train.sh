@@ -2,8 +2,10 @@
 set -euo pipefail
 
 # Basic release train for the monorepo-managed foundations, tools, SDKs, and CLI.
+# Supports staged execution via --stage for parallel CI jobs.
 
-readonly FINAL_TAG_PREFIX="release-train-v"
+readonly FINAL_TAG_PREFIX="v"
+readonly LEGACY_FINAL_TAG_PREFIX="release-train-v"
 readonly PYTHON_PACKAGE_NAME="framework_codegen_python"
 readonly CRATES_IO_API="https://crates.io/api/v1/crates"
 readonly PYPI_API="https://pypi.org/pypi"
@@ -36,6 +38,20 @@ readonly CLI_CRATES=(
   "actr-cli"
 )
 
+readonly VALID_STAGES=(
+  "validate"
+  "create-tag"
+  "publish-rust"
+  "publish-python"
+  "publish-swift"
+  "publish-kotlin"
+  "publish-web"
+  "build-typescript-native"
+  "publish-typescript-workload"
+  "publish-typescript"
+  "report"
+)
+
 readonly OPTIONAL_SKIPPED_COMPONENTS=(
 )
 readonly PACKAGE_SYNC_GITHUB_API="https://api.github.com"
@@ -65,13 +81,14 @@ OVERALL_STATUS="success"
 FAILURE_REASON=""
 RELEASE_SHA=""
 FINAL_TAG=""
+STAGE="all"
 PACKAGE_SYNC_OWNER="${PACKAGE_SYNC_OWNER:-}"
 RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release-train.sh [--version <X.Y.Z>] [--dry-run] [--prepare-only] [--skip-python] [--branch <branch>]
+  scripts/release-train.sh [--version <X.Y.Z>] [--dry-run] [--prepare-only] [--skip-python] [--branch <branch>] [--stage <name>]
 
 Options:
   --version <X.Y.Z>  Stable semver used by the monorepo-managed release train (optional in CI).
@@ -81,6 +98,12 @@ Options:
   --pre-release      Mark this release as a pre-release (e.g. 0.2.2-pre.1).
                      Uses npm tag "pre" and allows pre-release semver versions.
   --branch <branch>  Target release branch (default: main).
+  --stage <name>     Run a single stage instead of the full pipeline.
+                     Stages: validate, create-tag, publish-rust, publish-python,
+                     publish-swift, publish-kotlin, publish-web,
+                     build-typescript-native, publish-typescript-workload,
+                     publish-typescript, report.
+                     Default: all (runs full pipeline sequentially).
   --help             Show this help message.
 EOF
 }
@@ -114,6 +137,24 @@ cleanup() {
 
 generate_report() {
   mkdir -p "$REPORT_DIR"
+
+  # When running a specific stage, merge all per-stage state files first.
+  if [[ "$STAGE" != "all" ]] && [[ "$STAGE" != "report" ]]; then
+    # Per-stage: only generate state file, skip full report.
+    return
+  fi
+
+  if [[ "$STAGE" == "report" ]]; then
+    # Merge per-stage state files into the main state file.
+    : >"$STATE_FILE"
+    local stage_state
+    for stage_name in "${VALID_STAGES[@]}"; do
+      stage_state="$REPORT_DIR/release-train-v${VERSION}.${stage_name}.state.tsv"
+      if [[ -f "$stage_state" ]]; then
+        cat "$stage_state" >>"$STATE_FILE"
+      fi
+    done
+  fi
 
   python3 - "$STATE_FILE" "$REPORT_MARKDOWN" "$REPORT_JSON" "$VERSION" "$RUN_MODE" "$OVERALL_STATUS" "$FAILURE_REASON" <<'PY'
 from __future__ import annotations
@@ -225,10 +266,10 @@ PY
 
 detect_conventional_bump() {
   local last_tag
-  last_tag=$(git -C "$ORIGINAL_REPO_ROOT" describe --tags --match "${FINAL_TAG_PREFIX}*" --abbrev=0 2>/dev/null || echo "")
+  last_tag=$(latest_release_tag)
 
   if [[ -z "$last_tag" ]]; then
-    log_info "No prior release-train tag found; defaulting to minor bump" >&2
+    log_info "No prior release tag found; defaulting to minor bump" >&2
     echo "minor"
     return
   fi
@@ -250,6 +291,14 @@ detect_conventional_bump() {
   done < <(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --pretty=format:"%s")
 
   echo "$highest"
+}
+
+latest_release_tag() {
+  git -C "$ORIGINAL_REPO_ROOT" describe \
+    --tags \
+    --match "${FINAL_TAG_PREFIX}[0-9]*" \
+    --match "${LEGACY_FINAL_TAG_PREFIX}[0-9]*" \
+    --abbrev=0 2>/dev/null || echo ""
 }
 
 calculate_next_version() {
@@ -293,6 +342,10 @@ parse_args() {
         RELEASE_BRANCH="${2:-main}"
         shift 2
         ;;
+      --stage)
+        STAGE="${2:-}"
+        shift 2
+        ;;
       --help)
         usage
         exit 0
@@ -317,6 +370,20 @@ parse_args() {
   elif [[ "$PREPARE_ONLY" == true ]]; then
     RUN_MODE="prepare"
   fi
+
+  if [[ "$STAGE" != "all" ]]; then
+    local found=false
+    local s
+    for s in "${VALID_STAGES[@]}"; do
+      if [[ "$s" == "$STAGE" ]]; then
+        found=true
+        break
+      fi
+    done
+    if [[ "$found" == false ]]; then
+      fail "Unknown stage: ${STAGE}. Valid stages: ${VALID_STAGES[*]}"
+    fi
+  fi
 }
 
 validate_version() {
@@ -328,18 +395,75 @@ validate_version() {
 }
 
 ensure_clean_worktree() {
+  if [[ "$DRY_RUN" == true ]] || [[ "$PREPARE_ONLY" == true ]]; then
+    return
+  fi
   if [[ -n "$(git -C "$ORIGINAL_REPO_ROOT" status --porcelain)" ]]; then
     fail "Working tree must be clean before running the release train"
   fi
+}
+
+# Path helpers: per-stage state file for parallel-safe writes.
+stage_state_file() {
+  printf '%s/release-train-v%s.%s.state.tsv' "$REPORT_DIR" "$VERSION" "$1"
+}
+
+context_file() {
+  printf '%s/release-train-v%s.context.json' "$REPORT_DIR" "$VERSION"
+}
+
+write_context() {
+  mkdir -p "$REPORT_DIR"
+  python3 - "$VERSION" "$RELEASE_SHA" "$DRY_RUN" "$PRE_RELEASE" "$SKIP_PYTHON" "$FINAL_TAG" "$(context_file)" <<'PY'
+from __future__ import annotations
+import json, sys
+version, sha, dry_run, pre_release, skip_python, tag, path = sys.argv[1:8]
+json.dump({
+    "version": version,
+    "release_sha": sha,
+    "dry_run": dry_run == "true",
+    "pre_release": pre_release == "true",
+    "skip_python": skip_python == "true",
+    "final_tag": tag,
+}, open(path, "w"), indent=2)
+print(path)
+PY
+}
+
+read_context() {
+  local ctx
+  ctx="$(context_file)"
+  if [[ ! -f "$ctx" ]]; then
+    fail "Context file not found: ${ctx}. Run --stage validate first."
+  fi
+  eval "$(python3 - "$ctx" <<'PY'
+from __future__ import annotations
+import json, sys
+ctx = json.load(open(sys.argv[1]))
+for k, v in ctx.items():
+    if isinstance(v, bool):
+        print(f'{k.upper()}={"true" if v else "false"}')
+    else:
+        print(f'{k.upper()}={v}')
+PY
+)"
 }
 
 prepare_paths() {
   ORIGINAL_REPO_ROOT=$(git rev-parse --show-toplevel)
   WORK_REPO_ROOT="$ORIGINAL_REPO_ROOT"
   REPORT_DIR="$ORIGINAL_REPO_ROOT/release/reports"
-  STATE_FILE="$REPORT_DIR/release-train-v${VERSION}.state.tsv"
-  REPORT_MARKDOWN="$REPORT_DIR/release-train-v${VERSION}.md"
-  REPORT_JSON="$REPORT_DIR/release-train-v${VERSION}.json"
+
+  if [[ "$STAGE" == "all" || "$STAGE" == "report" ]]; then
+    STATE_FILE="$REPORT_DIR/release-train-v${VERSION}.state.tsv"
+    REPORT_MARKDOWN="$REPORT_DIR/release-train-v${VERSION}.md"
+    REPORT_JSON="$REPORT_DIR/release-train-v${VERSION}.json"
+  else
+    # Per-stage: write to stage-specific state file.
+    STATE_FILE="$(stage_state_file "$STAGE")"
+    REPORT_MARKDOWN=""
+    REPORT_JSON=""
+  fi
 
   mkdir -p "$REPORT_DIR"
   : >"$STATE_FILE"
@@ -377,6 +501,22 @@ append_state() {
   local mode=$5
   local registry_url=$6
   local git_sha=$7
+
+  name=${name//$'\t'/ }
+  stage=${stage//$'\t'/ }
+  kind=${kind//$'\t'/ }
+  status=${status//$'\t'/ }
+  mode=${mode//$'\t'/ }
+  registry_url=${registry_url//$'\t'/ }
+  git_sha=${git_sha//$'\t'/ }
+
+  name=${name//$'\n'/ }
+  stage=${stage//$'\n'/ }
+  kind=${kind//$'\n'/ }
+  status=${status//$'\n'/ }
+  mode=${mode//$'\n'/ }
+  registry_url=${registry_url//$'\n'/ }
+  git_sha=${git_sha//$'\n'/ }
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$name" \
@@ -449,11 +589,30 @@ ensure_release_tag_absent() {
   fi
 }
 
+stage_requires_absent_tag_check() {
+  case "$STAGE" in
+    all|validate|create-tag)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 install_python_release_tools() {
   RELEASE_PYTHON_ENV=$(mktemp -d "${TMPDIR:-/tmp}/actr-release-python.XXXXXX")
   python3 -m venv "$RELEASE_PYTHON_ENV"
   RELEASE_PYTHON_BIN="${RELEASE_PYTHON_ENV}/bin/python"
   "$RELEASE_PYTHON_BIN" -m pip install --quiet --upgrade pip build twine
+}
+
+build_python_distribution() {
+  rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
+  (
+    cd tools/protoc-gen/python
+    "$RELEASE_PYTHON_BIN" -m build >/dev/null
+  )
 }
 
 update_versions() {
@@ -598,16 +757,21 @@ if not skip_python:
 
     pyproject.write_text("\n".join(py_lines) + "\n")
 
-# Bump web package versions to match the release train version.
+# Bump web and typescript package versions to match the release train version.
 web_packages = [
     repo / "bindings/web/packages/actr-dom/package.json",
     repo / "bindings/web/packages/web-sdk/package.json",
     repo / "bindings/web/packages/web-react/package.json",
     repo / "bindings/typescript/package.json",
+    repo / "bindings/typescript/actr-workload/package.json",
 ]
 for wp in web_packages:
     pkg = json.loads(wp.read_text())
     pkg["version"] = version
+    # Sync optionalDependencies for @actrium/actr-* platform packages.
+    for dep_name, dep_val in list(pkg.get("optionalDependencies", {}).items()):
+        if dep_name.startswith("@actrium/actr-"):
+            pkg["optionalDependencies"][dep_name] = version
     wp.write_text(json.dumps(pkg, indent=2) + "\n")
 PY
 }
@@ -651,11 +815,7 @@ run_validation_suite() {
 
   if [[ "$SKIP_PYTHON" == false ]]; then
     log_info "Building Python package for validation"
-    rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
-    (
-      cd tools/protoc-gen/python
-      "$RELEASE_PYTHON_BIN" -m build >/dev/null
-    )
+    build_python_distribution
   else
     log_info "Skipping Python package validation"
   fi
@@ -752,7 +912,7 @@ wait_for_package_sync_workflow() {
     if [[ -n "${run_id}" ]]; then
       break
     fi
-    log_info "Waiting for ${repo} workflow run creation (${attempt}/30)"
+    log_info "Waiting for ${repo} workflow run creation (${attempt}/30)" >&2
     sleep 10
   done
 
@@ -783,7 +943,7 @@ wait_for_package_sync_workflow() {
       return 1
     fi
 
-    log_info "Waiting for ${repo} workflow completion (${attempt}/120)"
+    log_info "Waiting for ${repo} workflow completion (${attempt}/120)" >&2
     sleep 15
   done
 
@@ -814,7 +974,7 @@ publish_web_packages() {
     pnpm install --frozen-lockfile
   )
 
-  publish_args=(--skip-build)
+  publish_args=()
 
   if [[ "$DRY_RUN" == true ]]; then
     log_info "Web package dry-run validation"
@@ -868,41 +1028,49 @@ EOF
   append_state "actr-web" "sdk" "npm" "success" "published" "https://www.npmjs.com/package/@actrium/actr-web" "$RELEASE_SHA"
 }
 
-publish_typescript_package() {
-  local ts_root="$WORK_REPO_ROOT/bindings/typescript"
+publish_typescript_workload_package() {
+  local ts_workload_root="$WORK_REPO_ROOT/bindings/typescript/actr-workload"
   local ts_version
 
-  if [[ ! -d "$ts_root" ]]; then
-    log_warn "TypeScript package directory not found; skipping"
-    append_state "actr-ts" "sdk" "npm" "skipped" "directory_missing" "-" "$RELEASE_SHA"
+  if [[ ! -d "$ts_workload_root" ]]; then
+    log_warn "TypeScript workload package directory not found; skipping"
+    append_state "actr-ts-workload" "sdk" "npm" "skipped" "directory_missing" "-" "$RELEASE_SHA"
     return
   fi
 
   if ! command -v npm >/dev/null 2>&1; then
-    log_warn "npm not found; skipping TypeScript package"
-    append_state "actr-ts" "sdk" "npm" "skipped" "toolchain_missing" "-" "$RELEASE_SHA"
+    log_warn "npm not found; skipping TypeScript workload package"
+    append_state "actr-ts-workload" "sdk" "npm" "skipped" "toolchain_missing" "-" "$RELEASE_SHA"
     return
   fi
 
-  log_info "Installing TypeScript dependencies"
-  (cd "$ts_root" && npm ci)
+  log_info "Installing TypeScript workload dependencies"
+  (cd "$ts_workload_root" && npm ci)
+
+  log_info "Building TypeScript workload package"
+  (cd "$ts_workload_root" && npm run build)
+  (
+    cd "$ts_workload_root"
+    test -f dist/index.js
+    test -f dist/index.d.ts
+    test -f dist/cli.js
+  )
+
+  ts_version=$(node -p "require('${ts_workload_root}/package.json').version")
 
   if [[ "$DRY_RUN" == true ]]; then
-    log_info "TypeScript package dry-run validation"
-    ts_version=$(node -p "require('${ts_root}/package.json').version")
-    # Validate metadata without contacting npm
-    # (npm publish --dry-run rejects already-published versions)
+    log_info "TypeScript workload package dry-run validation"
     local pkg_name
-    pkg_name=$(node -p "require('${ts_root}/package.json').name")
-    if [[ "$pkg_name" != "@actrium/actr" ]]; then
-      fail "Expected package name @actrium/actr, got ${pkg_name}"
+    pkg_name=$(node -p "require('${ts_workload_root}/package.json').name")
+    if [[ "$pkg_name" != "@actrium/actr-workload" ]]; then
+      fail "Expected package name @actrium/actr-workload, got ${pkg_name}"
     fi
     log_info "  OK ${pkg_name}@${ts_version}"
-    append_state "actr-ts" "sdk" "npm" "success" "dry_run_validated" "https://www.npmjs.com/package/@actrium/actr" "$RELEASE_SHA"
+    append_state "actr-ts-workload" "sdk" "npm" "success" "dry_run_validated" "https://www.npmjs.com/package/@actrium/actr-workload" "$RELEASE_SHA"
     return
   fi
 
-  log_info "Publishing TypeScript package to npm"
+  log_info "Publishing TypeScript workload package to npm"
 
   # Prepare for npm Trusted Publishing (OIDC).
   rm -f "${NPM_CONFIG_USERCONFIG:-}"
@@ -914,12 +1082,194 @@ publish_typescript_package() {
     npm_tag="pre"
   fi
 
+  # Check if already published.
+  if npm view "@actrium/actr-workload@${ts_version}" version >/dev/null 2>&1; then
+    log_info "@actrium/actr-workload@${ts_version} already exists; skipping"
+    append_state "actr-ts-workload" "sdk" "npm" "success" "already_published" "https://www.npmjs.com/package/@actrium/actr-workload" "$RELEASE_SHA"
+    return
+  fi
+
+  (cd "$ts_workload_root" && npm publish --access public --tag "$npm_tag")
+
+  # Visibility verification.
+  local attempt
+  for attempt in $(seq 1 20); do
+    if npm view "@actrium/actr-workload@${ts_version}" version >/dev/null 2>&1; then
+      log_info "@actrium/actr-workload@${ts_version} is visible on npm"
+      break
+    fi
+    if [[ "$attempt" -eq 20 ]]; then
+      append_state "actr-ts-workload" "sdk" "npm" "failure" "visibility_timeout" "https://www.npmjs.com/package/@actrium/actr-workload" "$RELEASE_SHA"
+      fail "Timed out waiting for @actrium/actr-workload@${ts_version} to become visible on npm"
+    fi
+    log_info "Waiting for @actrium/actr-workload@${ts_version} visibility (${attempt}/20)"
+    sleep 15
+  done
+
+  append_state "actr-ts-workload" "sdk" "npm" "success" "published" "https://www.npmjs.com/package/@actrium/actr-workload" "$RELEASE_SHA"
+}
+
+publish_typescript_package() {
+  local ts_root="$WORK_REPO_ROOT/bindings/typescript"
+  local ts_version main_package cargo_version npm_tag
+  local native_packages=(
+    "@actrium/actr-darwin-x64|darwin-x64|actr.darwin-x64.node"
+    "@actrium/actr-darwin-arm64|darwin-arm64|actr.darwin-arm64.node"
+    "@actrium/actr-linux-x64-gnu|linux-x64-gnu|actr.linux-x64-gnu.node"
+    "@actrium/actr-linux-x64-musl|linux-x64-musl|actr.linux-x64-musl.node"
+    "@actrium/actr-linux-arm64-gnu|linux-arm64-gnu|actr.linux-arm64-gnu.node"
+    "@actrium/actr-linux-arm64-musl|linux-arm64-musl|actr.linux-arm64-musl.node"
+    "@actrium/actr-win32-x64-msvc|win32-x64-msvc|actr.win32-x64-msvc.node"
+  )
+
+  if [[ ! -d "$ts_root" ]]; then
+    log_warn "TypeScript package directory not found; skipping"
+    append_state "@actrium/actr" "sdk" "npm" "skipped" "directory_missing" "-" "$RELEASE_SHA"
+    return
+  fi
+
+  if ! command -v npm >/dev/null 2>&1; then
+    log_warn "npm not found; skipping TypeScript package"
+    append_state "@actrium/actr" "sdk" "npm" "skipped" "toolchain_missing" "-" "$RELEASE_SHA"
+    return
+  fi
+
+  log_info "Installing TypeScript dependencies"
+  (cd "$ts_root" && npm ci)
+
   ts_version=$(node -p "require('${ts_root}/package.json').version")
+  main_package=$(node -p "require('${ts_root}/package.json').name")
+  if [[ "$main_package" != "@actrium/actr" ]]; then
+    fail "Expected package name @actrium/actr, got ${main_package}"
+  fi
+
+  cargo_version=$(python3 - "$ts_root/Cargo.toml" <<'PY'
+from __future__ import annotations
+import re
+import sys
+
+content = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r'^version = "([^"]+)"$', content, re.M)
+if not match:
+    raise SystemExit("failed to read Cargo.toml version")
+print(match.group(1))
+PY
+)
+  if [[ "$ts_version" != "$cargo_version" ]]; then
+    fail "Version mismatch: package.json=${ts_version}, Cargo.toml=${cargo_version}"
+  fi
+
+  if [[ "$DRY_RUN" != true && "$ts_version" != "$VERSION" ]]; then
+    fail "Expected TypeScript version ${VERSION}, but repository version is ${ts_version}"
+  fi
+
+  log_info "Preparing TypeScript native package layout"
+  (
+    cd "$ts_root"
+    npm run compile:ts
+    npx napi create-npm-dirs
+    if [[ -d artifacts ]]; then
+      npm run artifacts -- --output-dir artifacts
+    elif [[ "$DRY_RUN" == true ]]; then
+      log_info "No native artifacts directory; validating TypeScript package metadata only in dry-run"
+    else
+      fail "TypeScript native artifacts directory is required for publish"
+    fi
+  )
+
+  local descriptor package dir artifact
+  local missing_native_artifacts=false
+  for descriptor in "${native_packages[@]}"; do
+    IFS='|' read -r package dir artifact <<<"$descriptor"
+    if [[ ! -f "$ts_root/npm/$dir/$artifact" ]]; then
+      missing_native_artifacts=true
+      if [[ "$DRY_RUN" != true ]]; then
+        fail "Missing TypeScript native artifact: npm/${dir}/${artifact}"
+      fi
+    fi
+  done
+
+  if [[ "$DRY_RUN" == true ]]; then
+    log_info "TypeScript package dry-run validation"
+    for descriptor in "${native_packages[@]}"; do
+      IFS='|' read -r package dir artifact <<<"$descriptor"
+      if [[ "$missing_native_artifacts" == true ]]; then
+        node - "$ts_root/npm/$dir/package.json" "$package" "$ts_version" <<'NODE'
+const fs = require("node:fs");
+const [packageJsonPath, expectedName, expectedVersion] = process.argv.slice(2);
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+if (packageJson.name !== expectedName) {
+  throw new Error(`${packageJsonPath}: expected ${expectedName}, got ${packageJson.name}`);
+}
+if (packageJson.version !== expectedVersion) {
+  throw new Error(`${packageJsonPath}: expected ${expectedVersion}, got ${packageJson.version}`);
+}
+NODE
+      else
+        (cd "$ts_root" && npm publish "./npm/$dir" --access public --dry-run)
+      fi
+      append_state "$package" "sdk" "npm" "success" "dry_run_validated" "$(npm_registry_url "$package")" "$RELEASE_SHA"
+    done
+    (cd "$ts_root" && npm publish --access public --dry-run --ignore-scripts)
+    append_state "@actrium/actr" "sdk" "npm" "success" "dry_run_validated" "$(npm_registry_url "@actrium/actr")" "$RELEASE_SHA"
+    return
+  fi
+
+  log_info "Publishing TypeScript packages to npm"
+
+  # Prepare for npm Trusted Publishing (OIDC).
+  rm -f "${NPM_CONFIG_USERCONFIG:-}"
+  unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
+  npm config set registry https://registry.npmjs.org/
+
+  npm_tag="latest"
+  if [[ "$PRE_RELEASE" == true ]]; then
+    npm_tag="pre"
+  fi
+
+  # Publish native platform packages first, then the main package.
+  log_info "Publishing native platform packages"
+  local publish_results=()
+  for descriptor in "${native_packages[@]}"; do
+    IFS='|' read -r package dir artifact <<<"$descriptor"
+    if npm view "${package}@${ts_version}" version >/dev/null 2>&1; then
+      log_info "${package}@${ts_version} already exists; skipping"
+      publish_results+=("$package|already_published")
+      continue
+    fi
+    (cd "$ts_root" && npm publish "./npm/$dir" --access public --tag "$npm_tag")
+    publish_results+=("$package|published")
+  done
+
+  # Publish the main @actrium/actr package.
   log_info "Publishing @actrium/actr@${ts_version} (tag: ${npm_tag})"
 
-  (cd "$ts_root" && npm publish --access public --tag "$npm_tag")
+  if npm view "@actrium/actr@${ts_version}" version >/dev/null 2>&1; then
+    log_info "@actrium/actr@${ts_version} already exists; skipping"
+    publish_results+=("@actrium/actr|already_published")
+  else
+    (cd "$ts_root" && npm publish --access public --tag "$npm_tag" --ignore-scripts)
+    publish_results+=("@actrium/actr|published")
+  fi
 
-  append_state "actr-ts" "sdk" "npm" "success" "published" "https://www.npmjs.com/package/@actrium/actr" "$RELEASE_SHA"
+  # Visibility verification for all 8 packages.
+  local result pkg mode attempt
+  for result in "${publish_results[@]}"; do
+    IFS='|' read -r pkg mode <<<"$result"
+    for attempt in $(seq 1 20); do
+      if npm view "${pkg}@${ts_version}" version >/dev/null 2>&1; then
+        log_info "${pkg}@${ts_version} is visible on npm"
+        append_state "$pkg" "sdk" "npm" "success" "$mode" "$(npm_registry_url "$pkg")" "$RELEASE_SHA"
+        break
+      fi
+      if [[ "$attempt" -eq 20 ]]; then
+        append_state "$pkg" "sdk" "npm" "failure" "visibility_timeout" "$(npm_registry_url "$pkg")" "$RELEASE_SHA"
+        fail "Timed out waiting for ${pkg}@${ts_version} to become visible on npm"
+      fi
+      log_info "Waiting for ${pkg}@${ts_version} visibility (${attempt}/20)"
+      sleep 15
+    done
+  done
 }
 
 publish_package_sync_repo() {
@@ -966,13 +1316,17 @@ stage_release_version_files() {
     bindings/web/packages/web-react/package.json \
     bindings/typescript/Cargo.toml \
     bindings/typescript/package.json \
+    bindings/typescript/package-lock.json \
+    bindings/typescript/actr-workload/package.json \
     bindings/web/crates/actr-web-abi/Cargo.toml \
     bindings/web/crates/common/Cargo.toml \
     bindings/web/crates/sw-host/Cargo.toml \
     bindings/web/crates/dom-bridge/Cargo.toml \
     bindings/web/crates/mailbox-web/Cargo.toml \
     bindings/web/crates/platform-web/Cargo.toml \
-    bindings/web/crates/framework-web-entry-smoke/Cargo.toml
+    bindings/web/crates/framework-web-entry-smoke/Cargo.toml \
+    bindings/web/Cargo.lock \
+    bindings/typescript/Cargo.lock
 }
 
 commit_release_prepare() {
@@ -1015,8 +1369,9 @@ ensure_publish_worktree_clean() {
       ":(exclude)release/reports/release-train-v${VERSION}.state.tsv" \
       ":(exclude)release/reports/release-train-v${VERSION}.md" \
       ":(exclude)release/reports/release-train-v${VERSION}.json" \
-      ":(exclude)cli/assets/web-runtime/" \
-      ":(exclude)bindings/web/Cargo.lock"
+      ":(exclude)release/reports/release-train-v${VERSION}.*.state.tsv" \
+      ":(exclude)release/reports/release-train-v${VERSION}.context.json" \
+      ":(exclude)cli/assets/web-runtime/"
   )
   if [[ -n "$dirty_files" ]]; then
     printf '%s\n' "$dirty_files" >&2
@@ -1030,6 +1385,10 @@ crate_registry_url() {
 
 python_registry_url() {
   printf 'https://pypi.org/project/%s/%s/' "$PYTHON_PACKAGE_NAME" "$VERSION"
+}
+
+npm_registry_url() {
+  printf 'https://www.npmjs.com/package/%s' "$1"
 }
 
 registry_user_agent() {
@@ -1063,7 +1422,7 @@ wait_for_visibility() {
 
     log_info "Waiting for ${component} ${VERSION} visibility (${attempt}/${max_attempts})"
     sleep 10
-    attempt=$((attempt + 1))
+    attempt=$(( attempt + 1 ))
   done
 
   return 1
@@ -1103,9 +1462,13 @@ publish_rust_package() {
       return
     fi
 
-    rm -f "$publish_log"
-    append_state "$package" "$stage" "crate" "failure" "publish_failed" "$registry_url" "$RELEASE_SHA"
-    fail "cargo publish failed for ${package}"
+    if grep -qiE "Uploaded[[:space:]]+${package} v${VERSION}" "$publish_log"; then
+      log_warn "cargo publish uploaded ${package} ${VERSION} but returned non-zero while waiting for registry visibility"
+    else
+      rm -f "$publish_log"
+      append_state "$package" "$stage" "crate" "failure" "publish_failed" "$registry_url" "$RELEASE_SHA"
+      fail "cargo publish failed for ${package}"
+    fi
   fi
 
   rm -f "$publish_log"
@@ -1138,6 +1501,9 @@ publish_python_package() {
     append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "skipped" "pypi_token_missing" "$registry_url" "$RELEASE_SHA"
     return
   fi
+
+  log_info "Building Python package for publishing"
+  build_python_distribution
 
   local upload_log
   upload_log=$(mktemp)
@@ -1177,6 +1543,7 @@ skip_python_package() {
 
 create_final_tag() {
   if [[ "$DRY_RUN" == true ]]; then
+    log_info "Dry-run: skipping tag creation (tag: ${FINAL_TAG})"
     return
   fi
 
@@ -1184,14 +1551,180 @@ create_final_tag() {
   git push origin "$FINAL_TAG"
 }
 
+# ---------------------------------------------------------------------------
+# Staged execution
+# ---------------------------------------------------------------------------
+
+stage_validate() {
+  if [[ "$DRY_RUN" == true ]]; then
+    update_versions
+  else
+    ensure_versions_prepared
+  fi
+
+  run_validation_suite
+
+  if [[ "$DRY_RUN" == false ]]; then
+    ensure_publish_worktree_clean
+  fi
+
+  set_release_sha
+  append_skipped_components
+
+  # Write context for downstream stages.
+  write_context
+
+  log_info "Stage validate complete (sha: ${RELEASE_SHA})"
+}
+
+stage_create_tag() {
+  # Read context written by validate stage.
+  read_context
+  FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"
+
+  create_final_tag
+
+  log_info "Stage create-tag complete (tag: ${FINAL_TAG})"
+}
+
+stage_publish_rust() {
+  read_context
+
+  local package
+  for package in "${FOUNDATION_CRATES[@]}"; do
+    publish_rust_package "$package" "foundation"
+  done
+
+  for package in "${PROTOC_CRATES[@]}"; do
+    publish_rust_package "$package" "protoc-gen"
+  done
+
+  for package in "${SDK_CRATES[@]}"; do
+    publish_rust_package "$package" "sdk"
+  done
+
+  for package in "${CLI_CRATES[@]}"; do
+    publish_rust_package "$package" "cli"
+  done
+
+  log_info "Stage publish-rust complete"
+}
+
+stage_publish_python() {
+  read_context
+
+  if [[ "$SKIP_PYTHON" == false ]]; then
+    publish_python_package
+  else
+    skip_python_package
+  fi
+
+  log_info "Stage publish-python complete"
+}
+
+stage_publish_swift() {
+  read_context
+
+  publish_package_sync_repo "swift" "$SWIFT_PACKAGE_SYNC_REPO" "release.yml"
+
+  log_info "Stage publish-swift complete"
+}
+
+stage_publish_kotlin() {
+  read_context
+
+  publish_package_sync_repo "kotlin" "$KOTLIN_PACKAGE_SYNC_REPO" "release.yml"
+
+  log_info "Stage publish-kotlin complete"
+}
+
+stage_publish_web() {
+  read_context
+
+  if [[ "$SKIP_WEB" != true ]]; then
+    publish_web_packages
+  fi
+
+  log_info "Stage publish-web complete"
+}
+
+stage_build_typescript_native() {
+  read_context
+
+  # Build step: compile TypeScript and prepare NAPI artifacts directory.
+  local ts_root="$WORK_REPO_ROOT/bindings/typescript"
+  if [[ -d "$ts_root" ]]; then
+    log_info "Compiling TypeScript"
+    (cd "$ts_root" && npm ci && npm run compile:ts)
+    log_info "Stage build-typescript-native complete"
+  else
+    log_warn "TypeScript directory not found; skipping build"
+  fi
+}
+
+stage_publish_typescript_workload() {
+  read_context
+
+  if [[ "$SKIP_WEB" != true ]]; then
+    publish_typescript_workload_package
+  fi
+
+  log_info "Stage publish-typescript-workload complete"
+}
+
+stage_publish_typescript() {
+  read_context
+
+  if [[ "$SKIP_WEB" != true ]]; then
+    publish_typescript_package
+  fi
+
+  log_info "Stage publish-typescript complete"
+}
+
+stage_report() {
+  read_context
+
+  # Report stage merges all per-stage state files.
+  # generate_report (called via on_exit trap) will handle the merge.
+  log_info "Stage report: collecting all stage results"
+
+  # List all stage state files found.
+  local stage_name
+  for stage_name in "${VALID_STAGES[@]}"; do
+    local sf
+    sf="$(stage_state_file "$stage_name")"
+    if [[ -f "$sf" ]]; then
+      log_info "  Found: $(basename "$sf")"
+    fi
+  done
+
+  log_info "Stage report complete"
+}
+
+# ---------------------------------------------------------------------------
+# Main entry: full pipeline or single stage
+# ---------------------------------------------------------------------------
+
 run_release_train() {
   if [[ "$PREPARE_ONLY" == true ]]; then
     update_versions
+    cargo update --workspace
+    cargo update --workspace --manifest-path bindings/web/Cargo.toml
+    npm install --package-lock-only --prefix bindings/typescript
+    cargo update --manifest-path bindings/typescript/Cargo.toml -p actr-protocol -p actr-framework -p actr-config -p actr-hyper
     run_validation_suite
     commit_release_prepare
     return
   fi
 
+  # Staged execution: run a single stage.
+  if [[ "$STAGE" != "all" ]]; then
+    "stage_${STAGE//-/_}"
+    return
+  fi
+
+  # Full sequential pipeline (--stage all or no --stage).
   if [[ "$DRY_RUN" == true ]]; then
     update_versions
   else
@@ -1236,6 +1769,7 @@ run_release_train() {
   fi
 
   if [[ "$SKIP_WEB" != true ]]; then
+    publish_typescript_workload_package
     publish_typescript_package
   fi
 }
@@ -1271,19 +1805,37 @@ main() {
   ensure_clean_worktree
   prepare_paths
   prepare_worktree
-  ensure_release_tag_absent
+  if stage_requires_absent_tag_check; then
+    ensure_release_tag_absent
+  else
+    FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"
+  fi
   resolve_package_sync_owner
 
-  if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]] && [[ "$DRY_RUN" == false && "$PREPARE_ONLY" == false ]]; then
-    fail "CARGO_REGISTRY_TOKEN must be set for publishing"
-  fi
-
-  # PYPI_API_TOKEN is optional: when unset, the Python package publish is
-  # skipped (see publish_python_package) and the train continues.
-
-  if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false && "$PREPARE_ONLY" == false ]]; then
-    fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
-  fi
+  # Stage-specific secret requirements.
+  case "$STAGE" in
+    all)
+      if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]] && [[ "$DRY_RUN" == false && "$PREPARE_ONLY" == false ]]; then
+        fail "CARGO_REGISTRY_TOKEN must be set for publishing"
+      fi
+      if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false && "$PREPARE_ONLY" == false ]]; then
+        fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for package-sync publishing"
+      fi
+      ;;
+    publish-rust)
+      if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
+        fail "CARGO_REGISTRY_TOKEN must be set for publish-rust stage"
+      fi
+      ;;
+    publish-swift|publish-kotlin)
+      if [[ -z "${PACKAGE_SYNC_GITHUB_TOKEN:-}" ]] && [[ "$DRY_RUN" == false ]]; then
+        fail "PACKAGE_SYNC_GITHUB_TOKEN must be set for ${STAGE} stage"
+      fi
+      ;;
+    publish-python)
+      # PYPI_API_TOKEN is optional: when unset, the Python package publish is skipped.
+      ;;
+  esac
 
   if [[ "$SKIP_PYTHON" == false ]]; then
     install_python_release_tools
