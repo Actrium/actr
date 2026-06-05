@@ -58,6 +58,7 @@ const RESPONSE_TIMEOUT_SECS: u64 = 15;
 const PING_INTERVAL_SECS: u64 = 5;
 const PONG_TIMEOUT_SECS: u64 = 10;
 const SIGNALING_SEND_TIMEOUT_SECS: u64 = 5;
+const CONCURRENT_CONNECT_WAIT_TIMEOUT_SECS: u64 = 3;
 const DISCONNECT_LOCK_TIMEOUT_SECS: u64 = 5;
 const DISCONNECT_CLOSE_TIMEOUT_SECS: u64 = 1;
 
@@ -1417,7 +1418,8 @@ impl WebSocketSignalingClient {
     /// Uses the broadcast channel to wait for a Connected event without recursion.
     async fn wait_for_connection_result(&self) -> NetworkResult<()> {
         let mut event_rx = self.event_tx.subscribe();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(CONCURRENT_CONNECT_WAIT_TIMEOUT_SECS);
 
         loop {
             tokio::select! {
@@ -1437,7 +1439,12 @@ impl WebSocketSignalingClient {
                             tracing::debug!("Connection established by another task");
                             return Ok(());
                         }
-                        Ok(_) => continue, // ConnectStart / Disconnected — keep waiting
+                        Ok(SignalingEvent::Disconnected { reason }) => {
+                            return Err(NetworkError::ConnectionError(format!(
+                                "Concurrent signaling connection failed: {reason:?}"
+                            )));
+                        }
+                        Ok(_) => continue, // ConnectStart — keep waiting
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!("Event receiver lagged by {n} events");
                             // Check current state after lag

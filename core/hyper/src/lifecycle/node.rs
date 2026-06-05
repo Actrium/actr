@@ -80,6 +80,9 @@ pub(crate) struct Inner {
     /// WebRTC coordinator (created after startup)
     pub(crate) webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
 
+    /// Peer transport manager (created after startup)
+    pub(crate) peer_transport: Option<Arc<crate::transport::PeerTransport>>,
+
     /// WebRTC Gate (created after startup)
     pub(crate) webrtc_gate: Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
 
@@ -881,6 +884,7 @@ impl Inner {
             actor_id: None,
             credential_state: None,
             webrtc_coordinator: None,
+            peer_transport: None,
             webrtc_gate: None,
             websocket_gate: None,
             shell_to_workload: Some(shell_to_workload),
@@ -1321,6 +1325,7 @@ impl Inner {
             // Create PeerTransport
             use crate::transport::PeerTransport;
             let transport_manager = Arc::new(PeerTransport::new(actor_id.clone(), wire_builder));
+            self.peer_transport = Some(transport_manager.clone());
 
             // Create PeerGate with WebRTC coordinator for MediaTrack support
             use crate::outbound::PeerGate;
@@ -1523,15 +1528,19 @@ impl Inner {
                 // If debounce config exists, use new_with_debounce
                 let event_processor =
                     if let Some(config) = self.network_event_debounce_config.clone() {
-                        Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
-                            self.signaling_client.clone(),
-                            self.webrtc_coordinator.clone(),
-                            config,
-                        ))
+                        Arc::new(
+                            DefaultNetworkEventProcessor::new_with_debounce_and_peer_transport(
+                                self.signaling_client.clone(),
+                                self.webrtc_coordinator.clone(),
+                                config,
+                                self.peer_transport.clone(),
+                            ),
+                        )
                     } else {
-                        Arc::new(DefaultNetworkEventProcessor::new(
+                        Arc::new(DefaultNetworkEventProcessor::new_with_peer_transport(
                             self.signaling_client.clone(),
                             self.webrtc_coordinator.clone(),
+                            self.peer_transport.clone(),
                         ))
                     };
 
@@ -1543,55 +1552,6 @@ impl Inner {
                 tracing::info!("network_event.node.loop_started");
             } else {
                 tracing::debug!("network_event.node.loop_not_started_no_handle");
-            }
-
-            if let Some(coordinator) = self.webrtc_coordinator.clone() {
-                let mut signaling_events = self.signaling_client.subscribe_events();
-                let shutdown = self.shutdown_token.clone();
-                let signaling_recovery_handle = tokio::spawn(async move {
-                    loop {
-                        tokio::select! {
-                            _ = shutdown.cancelled() => {
-                                tracing::debug!("network_event.signaling_bridge.stopped");
-                                break;
-                            }
-                            event = signaling_events.recv() => {
-                                match event {
-                                    Ok(crate::wire::webrtc::SignalingEvent::Connected) => {
-                                        tracing::info!(
-                                            "network_event.signaling_bridge.connected_resume_webrtc"
-                                        );
-                                        coordinator.restart_network_recovery_connections().await;
-                                    }
-                                    Ok(crate::wire::webrtc::SignalingEvent::Disconnected { reason }) => {
-                                        tracing::debug!(
-                                            reason = ?reason,
-                                            "network_event.signaling_bridge.disconnected"
-                                        );
-                                    }
-                                    Ok(crate::wire::webrtc::SignalingEvent::ConnectStart { attempt }) => {
-                                        tracing::debug!(
-                                            attempt,
-                                            "network_event.signaling_bridge.connect_start"
-                                        );
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                        tracing::warn!(
-                                            skipped,
-                                            "network_event.signaling_bridge.lagged"
-                                        );
-                                    }
-                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                        tracing::debug!("network_event.signaling_bridge.closed");
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                });
-                task_handles.push(signaling_recovery_handle);
-                tracing::info!("network_event.signaling_bridge.started");
             }
 
             {

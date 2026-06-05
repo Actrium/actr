@@ -72,6 +72,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use crate::transport::PeerTransport;
 use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -360,6 +361,7 @@ impl SignalingRecoveryState {
 pub struct DefaultNetworkEventProcessor {
     signaling_client: Arc<dyn SignalingClient>,
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
+    peer_transport: Option<Arc<PeerTransport>>,
     debounce_config: DebounceConfig,
     debounce_state: Arc<DebounceState>,
     recovery_state: Arc<SignalingRecoveryState>,
@@ -370,10 +372,11 @@ impl DefaultNetworkEventProcessor {
         signaling_client: Arc<dyn SignalingClient>,
         webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     ) -> Self {
-        Self::new_with_debounce(
+        Self::new_with_debounce_and_peer_transport(
             signaling_client,
             webrtc_coordinator,
             DebounceConfig::default(),
+            None,
         )
     }
 
@@ -382,9 +385,37 @@ impl DefaultNetworkEventProcessor {
         webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
         debounce_config: DebounceConfig,
     ) -> Self {
+        Self::new_with_debounce_and_peer_transport(
+            signaling_client,
+            webrtc_coordinator,
+            debounce_config,
+            None,
+        )
+    }
+
+    pub(crate) fn new_with_peer_transport(
+        signaling_client: Arc<dyn SignalingClient>,
+        webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
+        peer_transport: Option<Arc<PeerTransport>>,
+    ) -> Self {
+        Self::new_with_debounce_and_peer_transport(
+            signaling_client,
+            webrtc_coordinator,
+            DebounceConfig::default(),
+            peer_transport,
+        )
+    }
+
+    pub(crate) fn new_with_debounce_and_peer_transport(
+        signaling_client: Arc<dyn SignalingClient>,
+        webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
+        debounce_config: DebounceConfig,
+        peer_transport: Option<Arc<PeerTransport>>,
+    ) -> Self {
         Self {
             signaling_client,
             webrtc_coordinator,
+            peer_transport,
             debounce_config,
             debounce_state: Arc::new(DebounceState::new()),
             recovery_state: Arc::new(SignalingRecoveryState::new()),
@@ -628,8 +659,22 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         if let Some(ref coordinator) = self.webrtc_coordinator {
             tracing::info!("♻️  Clearing pending ICE restart attempts...");
             coordinator.clear_pending_restarts().await;
+        }
 
-            // Step 2: Close all WebRTC peer connections
+        // Step 2: Cancel PeerTransport singleflight and close established transports.
+        if let Some(ref peer_transport) = self.peer_transport {
+            tracing::info!("🔻 Closing all PeerTransport connections...");
+            if let Err(e) = peer_transport.close_all().await {
+                let err_msg = format!("Failed to close peer transports: {}", e);
+                tracing::warn!("⚠️  {}", err_msg);
+                // Do not fail the whole cleanup; continue releasing other resources.
+            } else {
+                tracing::info!("✅ All PeerTransport connections closed");
+            }
+        }
+
+        // Step 3: Close all WebRTC peer connections
+        if let Some(ref coordinator) = self.webrtc_coordinator {
             tracing::info!("🔻 Closing all WebRTC peer connections...");
             if let Err(e) = coordinator.close_all_peers().await {
                 let err_msg = format!("Failed to close all peers: {}", e);
@@ -640,7 +685,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             }
         }
 
-        // Step 3: Proactively disconnect the WebSocket.
+        // Step 4: Proactively disconnect the WebSocket.
         tracing::info!("🔌 Disconnecting WebSocket...");
         match self.signaling_client.disconnect().await {
             Ok(_) => {
