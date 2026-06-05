@@ -22,6 +22,9 @@ jobs:
       - name: Kotlin lint (ktlint)
         working-directory: bindings/kotlin
         run: ./gradlew ktlintCheck --no-daemon
+      - name: Run unit tests
+        working-directory: bindings/kotlin
+        run: ./gradlew :actr-kotlin:test --no-daemon
       - name: Build Kotlin binding
         working-directory: bindings/kotlin
         run: ./gradlew :actr-kotlin:build --no-daemon
