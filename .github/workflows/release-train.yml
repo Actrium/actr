@@ -51,8 +51,27 @@ env:
   PROTOC_VERSION: "29.3"
 
 jobs:
+  gate:
+    name: Gate on release commit
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Check if head commit is a release merge
+        id: check
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          elif echo "${{ github.event.head_commit.message }}" | grep -qE '^chore\(release\): basic train v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
     name: Run basic release train
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
