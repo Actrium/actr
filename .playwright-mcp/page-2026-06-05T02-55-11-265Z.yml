@@ -1,0 +1,472 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e4]:
+    - banner [ref=e5]:
+      - generic [ref=e6]:
+        - generic [ref=e7]:
+          - text: "skip to:"
+          - link "skip to content" [ref=e8] [cursor=pointer]:
+            - /url: "#main"
+            - text: content
+          - link "skip to package search" [ref=e9] [cursor=pointer]:
+            - /url: "#search"
+            - text: package search
+        - generic [ref=e10]:
+          - button "Light mode — click for dark" [ref=e11] [cursor=pointer]:
+            - img [ref=e12]
+          - navigation "Product Navigation" [ref=e14]:
+            - list [ref=e15]:
+              - listitem [ref=e16]:
+                - link "Pro" [ref=e17] [cursor=pointer]:
+                  - /url: /products/pro
+              - listitem [ref=e18]:
+                - link "Teams" [ref=e19] [cursor=pointer]:
+                  - /url: /products/teams
+              - listitem [ref=e20]:
+                - link "Pricing" [ref=e21] [cursor=pointer]:
+                  - /url: /products
+              - listitem [ref=e22]:
+                - link "Documentation" [ref=e23] [cursor=pointer]:
+                  - /url: https://docs.npmjs.com
+      - generic [ref=e25]:
+        - generic [ref=e26]: npm
+        - link "Npm" [ref=e28] [cursor=pointer]:
+          - /url: /
+          - img [ref=e29]
+        - generic [ref=e32]:
+          - generic [ref=e34]:
+            - img [ref=e36]
+            - combobox "Search packages" [ref=e42]
+          - button "Search" [ref=e44]
+        - navigation [ref=e46] [cursor=pointer]:
+          - button "Profile menu" [ref=e47]:
+            - generic [ref=e48]: Menu
+            - img [ref=e49]
+            - img [ref=e51]
+    - main [ref=e54]:
+      - generic [ref=e55]:
+        - generic [ref=e56]:
+          - heading "@actrium/actr TypeScript icon, indicating that this package has built-in type declarations" [level=1] [ref=e57]:
+            - generic [ref=e58]: "@actrium/actr"
+            - img "TypeScript icon, indicating that this package has built-in type declarations" [ref=e60]
+          - generic [ref=e61]: 0.2.1 •
+          - generic [ref=e62]: Public
+          - generic [ref=e63]:
+            - text: • Published
+            - time [ref=e64]: a day ago
+        - tablist [ref=e65]:
+          - tab "Readme" [selected] [ref=e66] [cursor=pointer]:
+            - generic [ref=e67]:
+              - img [ref=e68]
+              - text: Readme
+          - tab "Code Beta" [ref=e70] [cursor=pointer]:
+            - generic [ref=e71]:
+              - img [ref=e72]
+              - text: Code
+              - generic [ref=e75]: Beta
+          - tab "0 Dependencies" [ref=e76] [cursor=pointer]:
+            - generic [ref=e77]:
+              - img [ref=e78]
+              - text: 0 Dependencies
+          - tab "0 Dependents" [ref=e80] [cursor=pointer]:
+            - generic [ref=e81]:
+              - img [ref=e82]
+              - text: 0 Dependents
+          - tab "2 Versions" [ref=e84] [cursor=pointer]:
+            - generic [ref=e85]:
+              - img [ref=e86]
+              - text: 2 Versions
+          - tab "Settings" [ref=e88] [cursor=pointer]:
+            - generic [ref=e89]:
+              - img [ref=e90]
+              - text: Settings
+        - generic [ref=e93]:
+          - tabpanel "Readme" [ref=e94]:
+            - article [ref=e96]:
+              - generic [ref=e97]:
+                - generic [ref=e98]:
+                  - heading "actr-ts" [level=1] [ref=e99]
+                  - 'link "Permalink: actr-ts" [ref=e100] [cursor=pointer]':
+                    - /url: "#actr-ts"
+                - paragraph [ref=e101]:
+                  - link "中文" [ref=e102] [cursor=pointer]:
+                    - /url: https://github.com/Actrium/actr/blob/HEAD/README.zh-CN.md
+                  - text: "| English"
+                - paragraph [ref=e103]:
+                  - text: TypeScript/Node.js bindings for ACTR. The binding is now
+                  - code [ref=e104]: package-first
+                  - text: ": local source-defined workloads were removed."
+                  - code [ref=e105]: actr-ts
+                  - text: currently supports an
+                  - code [ref=e106]: ActrNode
+                  - text: wrapper booted from
+                  - code [ref=e107]: manifest.toml
+                  - text: plus a sibling
+                  - code [ref=e108]: actr.toml
+                  - text: ", then uses discovery plus explicit remote calls."
+                - generic [ref=e109]:
+                  - heading "Overview" [level=2] [ref=e110]
+                  - 'link "Permalink: Overview" [ref=e111] [cursor=pointer]':
+                    - /url: "#overview"
+                - paragraph [ref=e112]:
+                  - text: actr-ts provides native Node.js bindings for the ACTR framework through napi-rs, with a TypeScript API centered on
+                  - code [ref=e113]: ActrNode
+                  - text: and
+                  - code [ref=e114]: ActrRef
+                  - text: .
+                - generic [ref=e115]:
+                  - heading "Features" [level=2] [ref=e116]
+                  - 'link "Permalink: Features" [ref=e117] [cursor=pointer]':
+                    - /url: "#features"
+                - list [ref=e118]:
+                  - listitem [ref=e119]: Native performance through Rust and napi-rs
+                  - listitem [ref=e120]: Type-safe TypeScript API
+                  - listitem [ref=e121]: Built-in service discovery
+                  - listitem [ref=e122]: Remote RPC and one-way messaging
+                  - listitem [ref=e123]: Package-first runtime model
+                - generic [ref=e124]:
+                  - heading "Installation" [level=2] [ref=e125]
+                  - 'link "Permalink: Installation" [ref=e126] [cursor=pointer]':
+                    - /url: "#installation"
+                - generic [ref=e128]: npm install @actrium/actr
+                - generic [ref=e129]:
+                  - heading "Quick Start" [level=2] [ref=e130]
+                  - 'link "Permalink: Quick Start" [ref=e131] [cursor=pointer]':
+                    - /url: "#quick-start"
+                - generic [ref=e133]: "import { ActrNode, PayloadType } from '@actrium/actr'; async function main() { const node = await ActrNode.fromConfig('./manifest.toml'); const actorRef = await node.start(); const [serverId] = await actorRef.discover( { manufacturer: 'actrium', name: 'EchoService', version: '0.2.1-beta' }, 1, ); if (!serverId) { throw new Error('No EchoService target discovered'); } const response = await actorRef.call( serverId, 'echo.EchoService.Echo', PayloadType.RpcReliable, Buffer.from('hello'), 5000, ); console.log(response.toString()); await actorRef.stop(); } main().catch(console.error);"
+                - generic [ref=e134]:
+                  - heading "API" [level=2] [ref=e135]
+                  - 'link "Permalink: API" [ref=e136] [cursor=pointer]':
+                    - /url: "#api"
+                - list [ref=e137]:
+                  - listitem [ref=e138]:
+                    - code [ref=e139]: ActrNode.fromConfig(configPath)
+                    - text: boots an
+                    - code [ref=e140]: ActrNode
+                    - text: wrapper from
+                    - code [ref=e141]: manifest.toml
+                    - text: and auto-loads
+                    - code [ref=e142]: actr.toml
+                    - text: from the same directory.
+                  - listitem [ref=e143]:
+                    - code [ref=e144]: ActrRef.discover(targetType, count)
+                    - text: resolves remote actors.
+                  - listitem [ref=e145]:
+                    - code [ref=e146]: ActrRef.call(target, routeKey, payloadType, payload, timeoutMs)
+                    - text: sends a remote RPC.
+                  - listitem [ref=e147]:
+                    - code [ref=e148]: ActrRef.tell(target, routeKey, payloadType, payload)
+                    - text: sends a one-way remote message.
+                  - listitem [ref=e149]:
+                    - code [ref=e150]: ActrRef.stop()
+                    - text: shuts down the actor and waits for completion.
+                - generic [ref=e151]:
+                  - heading "Relationship to the Rust Node Typestate" [level=2] [ref=e152]
+                  - 'link "Permalink: Relationship to the Rust Node Typestate" [ref=e153] [cursor=pointer]':
+                    - /url: "#relationship-to-the-rust-node-typestate"
+                - paragraph [ref=e154]:
+                  - text: The Rust host exposes a typestate chain
+                  - code [ref=e155]: Node<Init> → Node<Attached> → Node<Registered> → ActrRef
+                  - text: (
+                  - code [ref=e156]: from_config_file
+                  - text: →
+                  - code [ref=e157]: attach_*
+                  - text: →
+                  - code [ref=e158]: register
+                  - text: →
+                  - code [ref=e159]: start
+                  - text: ) so system-level code can observe and customize each transition. The TypeScript binding deliberately collapses that pipeline into a single
+                  - code [ref=e160]: ActrNode.fromConfig(path).start()
+                  - text: "call: application developers rarely need the intermediate states, and the flatter surface is the simplest shape for the current TypeScript binding surface. If you need fine-grained control (custom"
+                  - code [ref=e161]: TrustProvider
+                  - text: ", pre-built"
+                  - code [ref=e162]: Hyper
+                  - text: ", workload hosting, etc.), drop down to the"
+                  - code [ref=e163]: "actr_hyper::{Hyper, Node}"
+                  - text: API in native Rust.
+                - generic [ref=e164]:
+                  - heading "Current Scope" [level=2] [ref=e165]
+                  - 'link "Permalink: Current Scope" [ref=e166] [cursor=pointer]':
+                    - /url: "#current-scope"
+                - list [ref=e167]:
+                  - listitem [ref=e168]: "Supported today: manifest bootstrap, discovery, remote RPC, and shutdown."
+                  - listitem [ref=e169]:
+                    - text: "Removed: source-defined local workloads,"
+                    - code [ref=e170]: ActrSystem
+                    - text: ","
+                    - code [ref=e171]: system.attach(...)
+                    - text: ","
+                    - code [ref=e172]: Workload
+                    - text: .
+                  - listitem [ref=e173]:
+                    - text: For service hosting, build a verified
+                    - code [ref=e174]: .actr
+                    - text: package and run it with Rust
+                    - code [ref=e175]: Node::attach(...)
+                    - text: (
+                    - code [ref=e176]: wasm
+                    - text: /
+                    - code [ref=e177]: dyn lib
+                    - text: ).
+                - generic [ref=e178]:
+                  - heading "Configuration" [level=2] [ref=e179]
+                  - 'link "Permalink: Configuration" [ref=e180] [cursor=pointer]':
+                    - /url: "#configuration"
+                - paragraph [ref=e181]:
+                  - text: Create a
+                  - code [ref=e182]: manifest.toml
+                  - text: file plus a sibling
+                  - code [ref=e183]: actr.toml
+                  - text: "runtime file:"
+                - generic [ref=e185]:
+                  - text: edition = 1 exports = [] [package] name =
+                  - generic [ref=e186]: "\"my-actor\""
+                  - text: description =
+                  - generic [ref=e187]: "\"My Actor\""
+                  - text: "[package.actor] manufacturer ="
+                  - generic [ref=e188]: "\"actr\""
+                  - text: name =
+                  - generic [ref=e189]: "\"my-actor\""
+                - generic [ref=e191]:
+                  - generic [ref=e192]: "# actr.toml"
+                  - text: edition = 1 [network] signaling_url =
+                  - generic [ref=e193]: "\"ws://localhost:8081/signaling/ws\""
+                  - text: ais_endpoint =
+                  - generic [ref=e194]: "\"http://localhost:8080\""
+                  - text: "[network.realm] realm_id = 1 [network.discovery] multicast_address ="
+                  - generic [ref=e195]: "\"239.255.42.99:4242\""
+                  - text: interface =
+                  - generic [ref=e196]: "\"0.0.0.0\""
+                  - text: "[system.observability] filter_level ="
+                  - generic [ref=e197]: "\"info\""
+                  - text: tracing_enabled = false
+                - generic [ref=e198]:
+                  - heading "Generated Code (Examples)" [level=2] [ref=e199]
+                  - 'link "Permalink: Generated Code (Examples)" [ref=e200] [cursor=pointer]':
+                    - /url: "#generated-code-examples"
+                - paragraph [ref=e201]:
+                  - text: The example clients use generated files under
+                  - code [ref=e202]: examples/**/generated
+                  - text: ", which are git-ignored. After cloning the repository, run the codegen script before running the examples."
+                - paragraph [ref=e203]: "Prerequisites:"
+                - list [ref=e204]:
+                  - listitem [ref=e205]:
+                    - code [ref=e206]: npm install
+                - paragraph [ref=e207]: "Generate for echo-client:"
+                - generic [ref=e209]: npm run codegen -- --config examples/echo-client/manifest.toml
+                - paragraph [ref=e210]: "Notes:"
+                - list [ref=e211]:
+                  - listitem [ref=e212]:
+                    - text: The generator reads
+                    - code [ref=e213]: manifest.lock.toml
+                    - text: first; ensure it includes the dependencies you want emitted.
+                  - listitem [ref=e214]:
+                    - text: Proto sources default to
+                    - code [ref=e215]: examples/echo-client/protos/remote
+                    - text: .
+                  - listitem [ref=e216]:
+                    - text: Outputs include protobuf codecs, route helpers, and
+                    - code [ref=e217]: local.actor.ts
+                    - text: .
+                - generic [ref=e218]:
+                  - heading "Build" [level=2] [ref=e219]
+                  - 'link "Permalink: Build" [ref=e220] [cursor=pointer]':
+                    - /url: "#build"
+                - generic [ref=e222]: npm install npm run build npm run compile:ts
+                - generic [ref=e223]:
+                  - heading "Publishing (Maintainers)" [level=2] [ref=e224]
+                  - 'link "Permalink: Publishing (Maintainers)" [ref=e225] [cursor=pointer]':
+                    - /url: "#publishing-maintainers"
+                - paragraph [ref=e226]:
+                  - text: TypeScript package releases are managed from this monorepo through the manual GitHub Actions workflow
+                  - code [ref=e227]: Publish TypeScript Package
+                  - text: .
+                - list [ref=e228]:
+                  - listitem [ref=e229]:
+                    - text: "Package name:"
+                    - code [ref=e230]: "@actrium/actr"
+                  - listitem [ref=e231]:
+                    - text: "Workflow file:"
+                    - code [ref=e232]: .github/workflows/publish-typescript.yml
+                  - listitem [ref=e233]: "Authentication: npm trusted publishing via GitHub Actions OIDC"
+                  - listitem [ref=e234]:
+                    - text: "Required workflow permission:"
+                    - code [ref=e235]: "id-token: write"
+                  - listitem [ref=e236]:
+                    - text: "Initial release requirement: publish"
+                    - code [ref=e237]: "@actrium/actr"
+                    - text: once manually before adding the npm trusted publisher for this workflow
+            - generic [ref=e238]:
+              - heading "Readme" [level=2] [ref=e239]
+              - heading "Keywords" [level=3] [ref=e240]
+              - list [ref=e241]:
+                - listitem [ref=e242]:
+                  - link "actor" [ref=e243] [cursor=pointer]:
+                    - /url: /search?q=keywords:actor
+                - listitem [ref=e244]:
+                  - link "webrtc" [ref=e245] [cursor=pointer]:
+                    - /url: /search?q=keywords:webrtc
+                - listitem [ref=e246]:
+                  - link "distributed-systems" [ref=e247] [cursor=pointer]:
+                    - /url: /search?q=keywords:distributed-systems
+                - listitem [ref=e248]:
+                  - link "napi-rs" [ref=e249] [cursor=pointer]:
+                    - /url: /search?q=keywords:napi-rs
+                - listitem [ref=e250]:
+                  - link "rust" [ref=e251] [cursor=pointer]:
+                    - /url: /search?q=keywords:rust
+                - listitem [ref=e252]:
+                  - link "typescript" [ref=e253] [cursor=pointer]:
+                    - /url: /search?q=keywords:typescript
+            - complementary [ref=e254]:
+              - heading "Provenance" [level=1] [ref=e255]
+              - img [ref=e258]
+              - link "Share feedback" [ref=e261] [cursor=pointer]:
+                - /url: " https://github.com/npm/feedback"
+          - tabpanel
+          - tabpanel "Settings"
+          - tabpanel "0 Dependencies"
+          - tabpanel "0 Dependents"
+          - tabpanel "2 Versions"
+        - complementary "Package sidebar" [ref=e262]:
+          - heading "Package Sidebar" [level=2] [ref=e263]
+          - heading "Install" [level=3] [ref=e264]
+          - generic [ref=e265]:
+            - img
+            - paragraph [ref=e266]:
+              - generic [ref=e267]:
+                - code [ref=e268]: npm i @actrium/actr
+                - button "Copy install command line" [ref=e269] [cursor=pointer]:
+                  - img
+          - generic [ref=e270]:
+            - heading "Repository" [level=3] [ref=e271]
+            - paragraph [ref=e272]:
+              - link "Repository github.com/Actrium/actr" [ref=e273] [cursor=pointer]:
+                - /url: https://github.com/Actrium/actr
+                - img [ref=e275]
+                - text: github.com/Actrium/actr
+          - generic [ref=e278]:
+            - heading "Homepage" [level=3] [ref=e279]
+            - paragraph [ref=e280]:
+              - link "Homepage github.com/Actrium/actr#readme" [ref=e281] [cursor=pointer]:
+                - /url: https://github.com/Actrium/actr#readme
+                - img [ref=e282]
+                - text: github.com/Actrium/actr#readme
+          - button "Showing weekly downloads" [ref=e284]:
+            - heading "Weekly Downloads" [level=3] [ref=e285]:
+              - img [ref=e286]
+              - text: Weekly Downloads
+            - generic [ref=e290]:
+              - img [ref=e291]
+              - paragraph [ref=e296]: "99"
+          - generic [ref=e297]:
+            - heading "Version" [level=3] [ref=e298]
+            - generic [ref=e299]:
+              - paragraph [ref=e300]: 0.2.1
+              - button "View more provenance details" [ref=e303]:
+                - img [ref=e304]
+          - generic [ref=e306]:
+            - heading "License" [level=3] [ref=e307]
+            - paragraph [ref=e308]: Apache-2.0
+          - generic [ref=e309]:
+            - heading "Last publish" [level=3] [ref=e310]
+            - paragraph [ref=e311]:
+              - time [ref=e312]: a day ago
+          - generic [ref=e313]:
+            - heading "Collaborators" [level=3] [ref=e314]
+            - list "Collaborators" [ref=e315]:
+              - listitem [ref=e316]:
+                - link "kaito2857" [ref=e318] [cursor=pointer]:
+                  - /url: /~kaito2857
+                  - img "kaito2857" [ref=e319]
+              - listitem [ref=e320]:
+                - link "kookyleo" [ref=e322] [cursor=pointer]:
+                  - /url: /~kookyleo
+                  - img "kookyleo" [ref=e323]
+              - listitem [ref=e324]:
+                - link "dbmf" [ref=e326] [cursor=pointer]:
+                  - /url: /~dbmf
+                  - img "dbmf" [ref=e327]
+              - listitem [ref=e328]:
+                - link "camel9527" [ref=e330] [cursor=pointer]:
+                  - /url: /~camel9527
+                  - img "camel9527" [ref=e331]
+              - listitem [ref=e332]:
+                - link "zhj-dev" [ref=e334] [cursor=pointer]:
+                  - /url: /~zhj-dev
+                  - img "zhj-dev" [ref=e335]
+          - generic [ref=e336]:
+            - link "Analyze security with Socket" [ref=e337] [cursor=pointer]:
+              - /url: https://socket.dev/npm/package/%40actrium%2Factr
+              - img [ref=e338]
+              - strong [ref=e340]: Analyze security
+              - text: with Socket
+            - link "Check bundle size" [ref=e341] [cursor=pointer]:
+              - /url: https://bundlephobia.com/package/%40actrium%2Factr
+              - img [ref=e342]
+              - strong [ref=e344]: Check bundle size
+            - link "View package health" [ref=e345] [cursor=pointer]:
+              - /url: https://snyk.io/advisor/npm-package/%40actrium%2Factr
+              - img [ref=e346]
+              - strong [ref=e348]: View package health
+            - link "Explore dependencies" [ref=e349] [cursor=pointer]:
+              - /url: https://npmgraph.js.org/?q=%40actrium%2Factr
+              - img [ref=e350]
+              - strong [ref=e352]: Explore dependencies
+          - link "Report malware" [ref=e354] [cursor=pointer]:
+            - /url: /support?inquire=security&security-inquire=malware&package=%40actrium%2Factr&version=0.2.1
+            - img [ref=e355]
+            - strong [ref=e357]: Report
+            - text: malware
+    - contentinfo [ref=e358]:
+      - heading "Footer" [level=2] [ref=e359]
+      - generic [ref=e360]:
+        - generic [ref=e361]:
+          - link "Visit npm GitHub page" [ref=e363] [cursor=pointer]:
+            - /url: https://github.com/npm
+            - img [ref=e364]
+          - link "GitHub" [ref=e368] [cursor=pointer]:
+            - /url: https://github.com
+            - img [ref=e369]
+        - generic [ref=e371]:
+          - heading "Support" [level=3] [ref=e372]
+          - list "Support" [ref=e373]:
+            - listitem [ref=e374]:
+              - link "Help" [ref=e375] [cursor=pointer]:
+                - /url: https://docs.npmjs.com
+            - listitem [ref=e376]:
+              - link "Advisories" [ref=e377] [cursor=pointer]:
+                - /url: https://github.com/advisories
+            - listitem [ref=e378]:
+              - link "Status" [ref=e379] [cursor=pointer]:
+                - /url: http://status.npmjs.org/
+            - listitem [ref=e380]:
+              - link "Contact npm" [ref=e381] [cursor=pointer]:
+                - /url: /support
+        - generic [ref=e382]:
+          - heading "Company" [level=3] [ref=e383]
+          - list "Company" [ref=e384]:
+            - listitem [ref=e385]:
+              - link "About" [ref=e386] [cursor=pointer]:
+                - /url: /about
+            - listitem [ref=e387]:
+              - link "Blog" [ref=e388] [cursor=pointer]:
+                - /url: https://github.blog/tag/npm/
+            - listitem [ref=e389]:
+              - link "Press" [ref=e390] [cursor=pointer]:
+                - /url: /press
+        - generic [ref=e391]:
+          - heading "Terms & Policies" [level=3] [ref=e392]
+          - list "Terms & Policies" [ref=e393]:
+            - listitem [ref=e394]:
+              - link "Policies" [ref=e395] [cursor=pointer]:
+                - /url: /policies/
+            - listitem [ref=e396]:
+              - link "Terms of Use" [ref=e397] [cursor=pointer]:
+                - /url: /policies/terms
+            - listitem [ref=e398]:
+              - link "Code of Conduct" [ref=e399] [cursor=pointer]:
+                - /url: /policies/conduct
+            - listitem [ref=e400]:
+              - link "Privacy" [ref=e401] [cursor=pointer]:
+                - /url: /policies/privacy
+  - generic [ref=e403]: Viewing @actrium/actr version 0.2.1
