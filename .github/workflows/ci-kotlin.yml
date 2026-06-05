@@ -19,6 +19,9 @@ jobs:
           java-version: "17"
           distribution: "temurin"
           cache: gradle
+      - name: Kotlin lint (ktlint)
+        working-directory: bindings/kotlin
+        run: ./gradlew ktlintCheck --no-daemon
       - name: Build Kotlin binding
         working-directory: bindings/kotlin
         run: ./gradlew :actr-kotlin:build --no-daemon
@@ -53,8 +56,6 @@ jobs:
         run: ./gradlew :demo:compileDebugKotlin --no-daemon
       - name: Build Kotlin protoc plugin
         working-directory: tools/protoc-gen/kotlin
-        run: |
-          gradle wrapper --gradle-version 8.10
-          ./gradlew protocPluginJar --no-daemon
+        run: ./gradlew protocPluginJar --no-daemon
       - name: Run Kotlin codegen integration tests
         run: cargo test -p actr-cli --test kotlin_echo --verbose

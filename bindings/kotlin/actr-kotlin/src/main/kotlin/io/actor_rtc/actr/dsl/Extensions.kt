@@ -26,13 +26,11 @@ import io.actor_rtc.actr.actrErrorRequiresDlq
  * ```
  */
 suspend fun ActrRef.call(
-        routeKey: String,
-        requestPayload: ByteArray,
-        payloadType: PayloadType = PayloadType.RPC_RELIABLE,
-        timeoutMs: Long = 30000L
-): ByteArray {
-    return call(routeKey, payloadType, requestPayload, timeoutMs)
-}
+    routeKey: String,
+    requestPayload: ByteArray,
+    payloadType: PayloadType = PayloadType.RPC_RELIABLE,
+    timeoutMs: Long = 30000L,
+): ByteArray = call(routeKey, payloadType, requestPayload, timeoutMs)
 
 /**
  * Send a one-way message via RPC proxy with default PayloadType.RPC_RELIABLE.
@@ -46,9 +44,9 @@ suspend fun ActrRef.call(
  * ```
  */
 suspend fun ActrRef.tell(
-        routeKey: String,
-        messagePayload: ByteArray,
-        payloadType: PayloadType = PayloadType.RPC_RELIABLE
+    routeKey: String,
+    messagePayload: ByteArray,
+    payloadType: PayloadType = PayloadType.RPC_RELIABLE,
 ) {
     tell(routeKey, payloadType, messagePayload)
 }
@@ -71,18 +69,17 @@ suspend fun ActrRef.tell(
  * ```
  */
 suspend fun ActrRef.callCatching(
-        routeKey: String,
-        requestPayload: ByteArray,
-        payloadType: PayloadType = PayloadType.RPC_RELIABLE,
-        timeoutMs: Long = 30000L
-): Result<ByteArray> {
-    return runCatching { call(routeKey, requestPayload, payloadType, timeoutMs) }
-}
+    routeKey: String,
+    requestPayload: ByteArray,
+    payloadType: PayloadType = PayloadType.RPC_RELIABLE,
+    timeoutMs: Long = 30000L,
+): Result<ByteArray> = runCatching { call(routeKey, requestPayload, payloadType, timeoutMs) }
 
 /** Discover actors and wrap the result. */
-suspend fun ActrRef.discoverCatching(typeString: String, count: UInt = 1u): Result<List<ActrId>> {
-    return runCatching { discover(typeString, count) }
-}
+suspend fun ActrRef.discoverCatching(
+    typeString: String,
+    count: UInt = 1u,
+): Result<List<ActrId>> = runCatching { discover(typeString, count) }
 
 // ============================================================================
 // NetworkEventHandle Extensions - For functional error handling
@@ -101,9 +98,7 @@ suspend fun ActrRef.discoverCatching(typeString: String, count: UInt = 1u): Resu
  * }
  * ```
  */
-suspend fun NetworkEventHandle.handleNetworkAvailableCatching(): Result<NetworkEventResult> {
-    return runCatching { handleNetworkAvailable() }
-}
+suspend fun NetworkEventHandle.handleNetworkAvailableCatching(): Result<NetworkEventResult> = runCatching { handleNetworkAvailable() }
 
 /**
  * Handle network lost event and wrap the result.
@@ -118,9 +113,7 @@ suspend fun NetworkEventHandle.handleNetworkAvailableCatching(): Result<NetworkE
  * }
  * ```
  */
-suspend fun NetworkEventHandle.handleNetworkLostCatching(): Result<NetworkEventResult> {
-    return runCatching { handleNetworkLost() }
-}
+suspend fun NetworkEventHandle.handleNetworkLostCatching(): Result<NetworkEventResult> = runCatching { handleNetworkLost() }
 
 /**
  * Handle network type changed event and wrap the result.
@@ -137,10 +130,8 @@ suspend fun NetworkEventHandle.handleNetworkLostCatching(): Result<NetworkEventR
  */
 suspend fun NetworkEventHandle.handleNetworkTypeChangedCatching(
     isWifi: Boolean,
-    isCellular: Boolean
-): Result<NetworkEventResult> {
-    return runCatching { handleNetworkTypeChanged(isWifi, isCellular) }
-}
+    isCellular: Boolean,
+): Result<NetworkEventResult> = runCatching { handleNetworkTypeChanged(isWifi, isCellular) }
 
 // ============================================================================
 // Exception Extensions
@@ -154,20 +145,20 @@ suspend fun NetworkEventHandle.handleNetworkTypeChangedCatching(
 /** Get a user-friendly error message for logs or UI. */
 val ActrException.userMessage: String
     get() =
-            when (this) {
-                is ActrException.Unavailable -> "Peer unavailable: $msg"
-                is ActrException.TimedOut -> "Request timed out"
-                is ActrException.NotFound -> "Not found: $msg"
-                is ActrException.PermissionDenied -> "Permission denied: $msg"
-                is ActrException.InvalidArgument -> "Invalid argument: $msg"
-                is ActrException.UnknownRoute -> "Unknown route: $msg"
-                is ActrException.DependencyNotFound ->
-                        "Dependency '$serviceName' not found: $detail"
-                is ActrException.DecodeFailure -> "Decode failure: $msg"
-                is ActrException.NotImplemented -> "Not implemented: $msg"
-                is ActrException.Internal -> "Internal error: $msg"
-                is ActrException.Config -> "Configuration error: $msg"
-            }
+        when (this) {
+            is ActrException.Unavailable -> "Peer unavailable: $msg"
+            is ActrException.TimedOut -> "Request timed out"
+            is ActrException.NotFound -> "Not found: $msg"
+            is ActrException.PermissionDenied -> "Permission denied: $msg"
+            is ActrException.InvalidArgument -> "Invalid argument: $msg"
+            is ActrException.UnknownRoute -> "Unknown route: $msg"
+            is ActrException.DependencyNotFound ->
+                "Dependency '$serviceName' not found: $detail"
+            is ActrException.DecodeFailure -> "Decode failure: $msg"
+            is ActrException.NotImplemented -> "Not implemented: $msg"
+            is ActrException.Internal -> "Internal error: $msg"
+            is ActrException.Config -> "Configuration error: $msg"
+        }
 
 /** Check if the exception is a timeout. */
 val ActrException.isTimeout: Boolean
@@ -213,10 +204,10 @@ val ActrException.requiresDlq: Boolean
 
 /** Retry configuration for operations. */
 data class RetryConfig(
-        val maxAttempts: Int = 3,
-        val initialDelayMs: Long = 1000,
-        val maxDelayMs: Long = 10000,
-        val factor: Double = 2.0
+    val maxAttempts: Int = 3,
+    val initialDelayMs: Long = 1000,
+    val maxDelayMs: Long = 10000,
+    val factor: Double = 2.0,
 )
 
 /**
@@ -230,12 +221,12 @@ data class RetryConfig(
  * ```
  */
 suspend fun <T> withRetry(
-        maxAttempts: Int = 3,
-        initialDelayMs: Long = 1000,
-        maxDelayMs: Long = 10000,
-        factor: Double = 2.0,
-        shouldRetry: (Exception) -> Boolean = { it is ActrException && it.isRecoverable },
-        block: suspend () -> T
+    maxAttempts: Int = 3,
+    initialDelayMs: Long = 1000,
+    maxDelayMs: Long = 10000,
+    factor: Double = 2.0,
+    shouldRetry: (Exception) -> Boolean = { it is ActrException && it.isRecoverable },
+    block: suspend () -> T,
 ): T {
     var currentDelay = initialDelayMs
     var lastException: Exception? = null
@@ -258,18 +249,18 @@ suspend fun <T> withRetry(
 
 /** Execute a suspending block with retry using RetryConfig. */
 suspend fun <T> withRetry(
-        config: RetryConfig,
-        shouldRetry: (Exception) -> Boolean = { it is ActrException && it.isRecoverable },
-        block: suspend () -> T
+    config: RetryConfig,
+    shouldRetry: (Exception) -> Boolean = { it is ActrException && it.isRecoverable },
+    block: suspend () -> T,
 ): T =
-        withRetry(
-                maxAttempts = config.maxAttempts,
-                initialDelayMs = config.initialDelayMs,
-                maxDelayMs = config.maxDelayMs,
-                factor = config.factor,
-                shouldRetry = shouldRetry,
-                block = block
-        )
+    withRetry(
+        maxAttempts = config.maxAttempts,
+        initialDelayMs = config.initialDelayMs,
+        maxDelayMs = config.maxDelayMs,
+        factor = config.factor,
+        shouldRetry = shouldRetry,
+        block = block,
+    )
 
 // ============================================================================
 // Scoped Resource Management

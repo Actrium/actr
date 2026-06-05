@@ -18,14 +18,13 @@ import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.dsl.*
 import io.actorrtc.demo.R
-import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class ClientActivity : AppCompatActivity() {
-
     companion object {
         private const val TAG = "ClientActivity"
     }
@@ -56,14 +55,14 @@ class ClientActivity : AppCompatActivity() {
 
     private fun initNetworkMonitoring() {
         networkMonitor =
-                NetworkMonitor.create(
-                        context = this,
-                        scope = lifecycleScope,
-                        getSystem = { clientSystem },
-                        onNetworkStatusLog = { message ->
-                            lifecycleScope.launch(Dispatchers.Main) { log(message) }
-                        }
-                )
+            NetworkMonitor.create(
+                context = this,
+                scope = lifecycleScope,
+                getSystem = { clientSystem },
+                onNetworkStatusLog = { message ->
+                    lifecycleScope.launch(Dispatchers.Main) { log(message) }
+                },
+            )
 
         networkMonitor.startMonitoring()
     }
@@ -111,7 +110,7 @@ class ClientActivity : AppCompatActivity() {
                 Log.i(TAG, "Config path: $configPath")
 
                 val actorType =
-                        ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
+                    ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
                 val workload = UnifiedWorkload(MyUnifiedHandler())
                 val system = linked(configPath, actorType, workload.toDynamicWorkload())
                 clientSystem = system
@@ -190,12 +189,12 @@ class ClientActivity : AppCompatActivity() {
             try {
                 val request = EchoRequest.newBuilder().setMessage(message).build()
                 val responsePayload =
-                        ref.call(
-                                "echo.EchoService.Echo",
-                                PayloadType.RPC_RELIABLE,
-                                request.toByteArray(),
-                                30000L
-                        )
+                    ref.call(
+                        "echo.EchoService.Echo",
+                        PayloadType.RPC_RELIABLE,
+                        request.toByteArray(),
+                        30000L,
+                    )
                 val response = EchoResponse.parseFrom(responsePayload)
                 Log.i(TAG, "📬 Echo Response: ${response.reply}")
 
@@ -219,24 +218,25 @@ class ClientActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val request =
-                        ClientStartStreamRequest.newBuilder()
-                                .setClientId("android-client")
-                                .setStreamId("stream-${System.currentTimeMillis()}")
-                                .setMessageCount(3)
-                                .build()
+                    ClientStartStreamRequest
+                        .newBuilder()
+                        .setClientId("android-client")
+                        .setStreamId("stream-${System.currentTimeMillis()}")
+                        .setMessageCount(3)
+                        .build()
 
                 val responsePayload =
-                        ref.call(
-                                "data_stream_peer.StreamClient.StartStream",
-                                PayloadType.RPC_RELIABLE,
-                                request.toByteArray(),
-                                60000L
-                        )
+                    ref.call(
+                        "data_stream_peer.StreamClient.StartStream",
+                        PayloadType.RPC_RELIABLE,
+                        request.toByteArray(),
+                        60000L,
+                    )
 
                 val response = ClientStartStreamResponse.parseFrom(responsePayload)
                 Log.i(
-                        TAG,
-                        "📬 StartStream Response: accepted=${response.accepted}, message=${response.message}"
+                    TAG,
+                    "📬 StartStream Response: accepted=${response.accepted}, message=${response.message}",
                 )
 
                 withContext(Dispatchers.Main) {
@@ -260,8 +260,9 @@ class ClientActivity : AppCompatActivity() {
 
     private fun log(message: String) {
         val currentTime =
-                java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                        .format(java.util.Date())
+            java.text
+                .SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                .format(java.util.Date())
         val logEntry = "[$currentTime] $message\n"
         logText.append(logEntry)
         scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }

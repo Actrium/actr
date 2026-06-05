@@ -8,7 +8,6 @@ import androidx.appcompat.app.AppCompatActivity
 import io.actorrtc.demo.R
 
 class MainActivity : AppCompatActivity() {
-
     private lateinit var signalingUrlInput: EditText
     private lateinit var serverButton: Button
     private lateinit var clientButton: Button
@@ -29,17 +28,17 @@ class MainActivity : AppCompatActivity() {
         // Set up button click listeners
         serverButton.setOnClickListener {
             val intent =
-                    Intent(this, ServerActivity::class.java).apply {
-                        putExtra("signalingUrl", signalingUrlInput.text.toString())
-                    }
+                Intent(this, ServerActivity::class.java).apply {
+                    putExtra("signalingUrl", signalingUrlInput.text.toString())
+                }
             startActivity(intent)
         }
 
         clientButton.setOnClickListener {
             val intent =
-                    Intent(this, ClientActivity::class.java).apply {
-                        putExtra("signalingUrl", signalingUrlInput.text.toString())
-                    }
+                Intent(this, ClientActivity::class.java).apply {
+                    putExtra("signalingUrl", signalingUrlInput.text.toString())
+                }
             startActivity(intent)
         }
     }
