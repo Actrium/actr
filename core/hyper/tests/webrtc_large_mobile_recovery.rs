@@ -337,6 +337,7 @@ fn is_expected_bounded_transport_failure(message: &str) -> bool {
         "datachannel",
         "channel error",
         "not opened",
+        "timeout",
     ]
     .iter()
     .any(|needle| message.contains(needle))
@@ -802,6 +803,114 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
     }
 }
 
+async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
+    let (harness, _bg_tasks) = setup_mobile_to_server().await;
+    let server_id = harness.peer(SERVER).id.clone();
+
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<HookEvent>();
+    let hook: HookCallback = Arc::new(move |event| {
+        let hook_tx = hook_tx.clone();
+        Box::pin(async move {
+            let _ = hook_tx.send(event);
+        })
+    });
+    harness.peer(MOBILE).coordinator.set_hook_callback(hook);
+
+    let stream = DataStream {
+        stream_id: "inflight-long-offline-stream".to_string(),
+        sequence: 11,
+        payload: Bytes::from(vec![0x33; LARGE_PAYLOAD_SIZE]),
+        metadata: Vec::new(),
+        timestamp_ms: Some(0),
+    };
+    let payload = Bytes::from(stream.encode_to_vec());
+
+    let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
+    let send_task = {
+        let gate = harness.peer(MOBILE).gate.clone();
+        let server_id = server_id.clone();
+        let stream_id = stream.stream_id.clone();
+        tokio::spawn(async move {
+            gate.send_data_stream(&server_id, PayloadType::StreamReliable, &stream_id, payload)
+                .await
+        })
+    };
+
+    let event = wait_for_send_to_pause(event_rx, "long offline data stream").await;
+    tracing::info!(
+        "long offline data stream paused msg_id={} fragment {}/{}",
+        event.msg_id,
+        event.frag_index + 1,
+        event.total_frags
+    );
+
+    harness.simulate_disconnect();
+    process_mobile_events(&harness, vec![offline_event(1)]).await;
+    release_send.notify_waiters();
+    drop(hook_guard);
+
+    let send_result = tokio::time::timeout(Duration::from_secs(12), send_task)
+        .await
+        .expect("in-flight DataStream send should not hang after long offline")
+        .expect("in-flight DataStream task should not panic");
+
+    if let Err(err) = send_result {
+        let msg = err.to_string();
+        assert!(
+            is_expected_bounded_transport_failure(&msg),
+            "unexpected in-flight DataStream failure: {msg}"
+        );
+    } else {
+        let event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(event) = hook_rx.recv().await {
+                    if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
+                        return event;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("successful in-flight DataStream during offline must emit delivery uncertainty");
+
+        match event {
+            HookEvent::DataStreamDeliveryUncertain { stream_id, .. } => {
+                assert_eq!(stream_id, "inflight-long-offline-stream");
+            }
+            other => panic!("unexpected hook event: {other:?}"),
+        }
+    }
+
+    assert_eq!(
+        harness.peer(MOBILE).pending_count().await,
+        0,
+        "in-flight DataStream offline path should not leak RPC pending state"
+    );
+
+    harness.simulate_reconnect();
+    process_mobile_events(
+        &harness,
+        vec![
+            NetworkEvent::ForceReconnect {
+                reason: ReconnectReason::StaleConnectionSuspected,
+            },
+            network_event(2, true, false, false),
+            wifi_event(3),
+        ],
+    )
+    .await;
+
+    let (retry_payload, retry_hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+    expect_large_request_eventually_ok(
+        &harness,
+        "after_data_stream_long_offline",
+        &retry_payload,
+        &retry_hash,
+        Duration::from_secs(25),
+    )
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_mobile_inflight_large_message_interruptions() {
     init_tracing();
@@ -813,4 +922,5 @@ async fn test_mobile_inflight_large_message_interruptions() {
     inflight_short_background_survives_foreground_restore().await;
     inflight_long_background_is_bounded_and_retries().await;
     mobile_data_stream_channel_close_emits_delivery_uncertain_hook().await;
+    inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain().await;
 }

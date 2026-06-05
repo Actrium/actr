@@ -910,6 +910,81 @@ async fn in_flight_duplicate_waits_for_original_result_and_times_out_without_com
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn request_timeout_then_late_old_response_does_not_complete_new_request() {
+    let target = make_actor_id(2);
+    let (gate, _lane, _stats) =
+        gate_with_lane(ScriptedLane::new(vec![Ok(()), Ok(())]), Duration::ZERO);
+
+    let old_request = {
+        let gate = gate.clone();
+        let target = target.clone();
+        tokio::spawn(async move {
+            gate.send_request(&target, envelope_with_timeout("rc25-old-request", 100))
+                .await
+        })
+    };
+
+    let old_error = tokio::time::timeout(Duration::from_secs(2), old_request)
+        .await
+        .expect("old request should finish within its deadline")
+        .expect("old request task should not panic")
+        .expect_err("old request should time out before any response arrives");
+    assert!(
+        old_error.to_string().contains("Request timeout"),
+        "old request should fail with explicit timeout, got: {old_error}"
+    );
+    assert_eq!(
+        gate.pending_count().await,
+        0,
+        "timed-out request must be removed from pending map"
+    );
+
+    let new_request = {
+        let gate = gate.clone();
+        let target = target.clone();
+        tokio::spawn(async move {
+            gate.send_request(&target, envelope_with_timeout("rc25-new-request", 5_000))
+                .await
+        })
+    };
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        gate.pending_count().await,
+        1,
+        "new request should be pending before responses are injected"
+    );
+
+    assert!(
+        !gate
+            .handle_response("rc25-old-request", Ok(Bytes::from_static(b"old-response")))
+            .await
+            .expect("late old response should be handled without error"),
+        "late old response must not complete any current request"
+    );
+    assert_eq!(
+        gate.pending_count().await,
+        1,
+        "late old response must leave the new request pending"
+    );
+
+    assert!(
+        gate.handle_response("rc25-new-request", Ok(Bytes::from_static(b"new-response")))
+            .await
+            .expect("new response should be handled"),
+        "new response should complete the new request"
+    );
+
+    let response = tokio::time::timeout(Duration::from_secs(2), new_request)
+        .await
+        .expect("new request should complete after its own response")
+        .expect("new request task should not panic")
+        .expect("new request should receive its own response");
+    assert_eq!(response, Bytes::from_static(b"new-response"));
+    assert_eq!(gate.pending_count().await, 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ambiguous_delivery_with_slow_handler_does_not_return_inflight_error() {
     let target = make_actor_id(2);
     let receiver_dedup = Arc::new(StdMutex::new(TestDedupState::new()));
