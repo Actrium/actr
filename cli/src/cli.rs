@@ -18,12 +18,12 @@ use clap::{CommandFactory, Parser, Subcommand};
 use owo_colors::OwoColorize;
 use url::Url;
 
+use crate::commands::discovery::StandaloneDiscoverConfig;
 use crate::commands::{
     BuildCommand, CheckCommand, CompletionCommand, ConfigCommand, DepsArgs, DlqArgs, DocCommand,
     GenCommand, InitCommand, LogsCommand, PkgArgs, PsCommand, RegistryArgs, RegistryCommand,
     RestartCommand, RmCommand, RunCommand, StartCommand, StopCommand, VersionCommand,
 };
-use crate::commands::discovery::StandaloneDiscoverConfig;
 use crate::core::{
     ActrCliError, Command, CommandContext, CommandResult, ConfigManager, ConsoleUI,
     ContainerBuilder, DefaultCacheManager, DefaultDependencyResolver, DefaultFingerprintValidator,
@@ -283,8 +283,7 @@ async fn build_container(
     container = container.register_cache_manager(Arc::new(DefaultCacheManager::new()));
 
     let config = manager.load_config(config_path).await?;
-    let effective_cli =
-        crate::config::resolver::resolve_effective_cli_config().unwrap_or_default();
+    let effective_cli = crate::config::resolver::resolve_effective_cli_config().unwrap_or_default();
 
     let signaling_url = Url::parse(&effective_cli.network.signaling_url).map_err(|e| {
         anyhow::anyhow!(
