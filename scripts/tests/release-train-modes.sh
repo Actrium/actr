@@ -552,11 +552,17 @@ test_publish_typescript_package_writes_native_and_main_state() {
   cat >"$temp_dir/bin/npm" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$NPM_CALL_LOG"
-if [[ "$1" == "run" && "$2" == "artifacts" ]]; then
+exit 0
+EOF
+  chmod +x "$temp_dir/bin/npm"
+
+  cat >"$temp_dir/bin/npx" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NPX_CALL_LOG"
+if [[ "$1" == "napi" && "$2" == "create-npm-dirs" ]]; then
   while IFS='|' read -r package dir artifact; do
     mkdir -p "npm/$dir"
     printf '{"name":"%s","version":"1.2.3"}\n' "$package" >"npm/$dir/package.json"
-    printf 'native\n' >"npm/$dir/$artifact"
   done <<'PACKAGES'
 @actrium/actr-darwin-x64|darwin-x64|actr.darwin-x64.node
 @actrium/actr-darwin-arm64|darwin-arm64|actr.darwin-arm64.node
@@ -567,13 +573,6 @@ if [[ "$1" == "run" && "$2" == "artifacts" ]]; then
 @actrium/actr-win32-x64-msvc|win32-x64-msvc|actr.win32-x64-msvc.node
 PACKAGES
 fi
-exit 0
-EOF
-  chmod +x "$temp_dir/bin/npm"
-
-  cat >"$temp_dir/bin/npx" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$NPX_CALL_LOG"
 exit 0
 EOF
   chmod +x "$temp_dir/bin/npx"
@@ -603,6 +602,12 @@ EOF
   publish_typescript_package
 
   PATH=$original_path
+
+  if grep -qx "run artifacts -- --output-dir artifacts" "$NPM_CALL_LOG"; then
+    printf 'TypeScript dry-run without native artifacts must not run npm run artifacts\n' >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
 
   local line_count
   line_count=$(wc -l <"$STATE_FILE" | tr -d ' ')

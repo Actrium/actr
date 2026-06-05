@@ -1168,20 +1168,46 @@ PY
     cd "$ts_root"
     npm run compile:ts
     npx napi create-npm-dirs
-    npm run artifacts -- --output-dir artifacts
+    if [[ -d artifacts ]]; then
+      npm run artifacts -- --output-dir artifacts
+    elif [[ "$DRY_RUN" == true ]]; then
+      log_info "No native artifacts directory; validating TypeScript package metadata only in dry-run"
+    else
+      fail "TypeScript native artifacts directory is required for publish"
+    fi
   )
 
   local descriptor package dir artifact
+  local missing_native_artifacts=false
   for descriptor in "${native_packages[@]}"; do
     IFS='|' read -r package dir artifact <<<"$descriptor"
-    test -f "$ts_root/npm/$dir/$artifact"
+    if [[ ! -f "$ts_root/npm/$dir/$artifact" ]]; then
+      missing_native_artifacts=true
+      if [[ "$DRY_RUN" != true ]]; then
+        fail "Missing TypeScript native artifact: npm/${dir}/${artifact}"
+      fi
+    fi
   done
 
   if [[ "$DRY_RUN" == true ]]; then
     log_info "TypeScript package dry-run validation"
     for descriptor in "${native_packages[@]}"; do
       IFS='|' read -r package dir artifact <<<"$descriptor"
-      (cd "$ts_root" && npm publish "./npm/$dir" --access public --dry-run)
+      if [[ "$missing_native_artifacts" == true ]]; then
+        node - "$ts_root/npm/$dir/package.json" "$package" "$ts_version" <<'NODE'
+const fs = require("node:fs");
+const [packageJsonPath, expectedName, expectedVersion] = process.argv.slice(2);
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+if (packageJson.name !== expectedName) {
+  throw new Error(`${packageJsonPath}: expected ${expectedName}, got ${packageJson.name}`);
+}
+if (packageJson.version !== expectedVersion) {
+  throw new Error(`${packageJsonPath}: expected ${expectedVersion}, got ${packageJson.version}`);
+}
+NODE
+      else
+        (cd "$ts_root" && npm publish "./npm/$dir" --access public --dry-run)
+      fi
       append_state "$package" "sdk" "npm" "success" "dry_run_validated" "$(npm_registry_url "$package")" "$RELEASE_SHA"
     done
     (cd "$ts_root" && npm publish --access public --dry-run --ignore-scripts)
