@@ -8,6 +8,43 @@ Official release artifacts are published from the package-sync repository:
 
 - Repository: `Actrium/actr-kotlin-package-sync`
 - Maven coordinate: `io.actrium:actr:<version>`
+- Native libraries: [GitHub Release assets](https://github.com/Actrium/actr-kotlin-package-sync/releases)
+  - `actr-kotlin-native.zip` — `jniLibs/` for arm64-v8a + x86_64
+
+### Release flow
+
+```
+[actr monorepo release-train.sh]
+  |
+  | dispatch workflow_dispatch
+  v
+[actr-kotlin-package-sync/.github/workflows/release.yml]
+  |
+  | 1. Checkout Actrium/actr @ v{version}
+  | 2. build-android.sh → jniLibs/{arm64-v8a,x86_64}/libactr.so
+  | 3. scripts/package-binary.sh → dist/actr-kotlin-native.zip
+  | 4. ./gradlew :actr-kotlin:publish → GitHub Packages (Maven)
+  | 5. softprops/action-gh-release → GitHub Release asset
+  v
+[GitHub Release: actr-kotlin-package-sync/releases/tag/vX.Y.Z]
+  + Maven artifact: io.actrium:actr:X.Y.Z @ GitHub Packages
+```
+
+Consumers add the Maven dependency:
+```kotlin
+repositories {
+    maven {
+        url = uri("https://maven.pkg.github.com/Actrium/actr-kotlin-package-sync")
+        credentials {
+            username = "<github-username>"
+            password = "<github-token>"
+        }
+    }
+}
+dependencies {
+    implementation("io.actrium:actr:<version>")
+}
+```
 
 ## Workspace Layout
 
