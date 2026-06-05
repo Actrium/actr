@@ -7,9 +7,6 @@ import Foundation
 // Depending on the consumer's build setup, the low-level FFI code
 // might be in a separate module, or it might be compiled inline into
 // this module. This is a bit of light hackery to work with both.
-#if canImport(actrFFI)
-    import actrFFI
-#endif
 #if canImport(ActrFFI)
 import ActrFFI
 #endif
@@ -4038,7 +4035,7 @@ fileprivate struct UniffiCallbackInterfaceCredentialObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceCredentialObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceCredentialObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceCredentialObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4194,7 +4191,7 @@ fileprivate struct UniffiCallbackInterfaceDataStreamCallback {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDataStreamCallback> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceDataStreamCallback> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceDataStreamCallback>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4346,7 +4343,7 @@ fileprivate struct UniffiCallbackInterfaceMailboxObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMailboxObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMailboxObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMailboxObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4502,7 +4499,7 @@ fileprivate struct UniffiCallbackInterfaceMediaTrackCallback {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMediaTrackCallback> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceMediaTrackCallback> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceMediaTrackCallback>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4736,7 +4733,7 @@ fileprivate struct UniffiCallbackInterfaceSignalingObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceSignalingObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceSignalingObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceSignalingObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -4976,7 +4973,7 @@ fileprivate struct UniffiCallbackInterfaceWebRtcObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebRtcObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebRtcObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWebRtcObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -5216,7 +5213,7 @@ fileprivate struct UniffiCallbackInterfaceWebSocketObserverBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebSocketObserverBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWebSocketObserverBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWebSocketObserverBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -5564,7 +5561,7 @@ fileprivate struct UniffiCallbackInterfaceWorkloadLifecycleBridge {
 
     // Rust stores this pointer for future callback invocations, so it must live
     // for the process lifetime (not just for the init function call).
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWorkloadLifecycleBridge> = {
+    static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceWorkloadLifecycleBridge> = {
         let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceWorkloadLifecycleBridge>.allocate(capacity: 1)
         ptr.initialize(to: vtable)
         return UnsafePointer(ptr)
@@ -5879,6 +5876,31 @@ fileprivate struct FfiConverterSequenceFloat: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeActrId: FfiConverterRustBuffer {
     typealias SwiftType = [ActrId]
 
@@ -5973,36 +5995,29 @@ fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: In
         print("uniffiFutureContinuationCallback invalid handle")
     }
 }
-private struct UniffiUnsafeSendable<T>: @unchecked Sendable {
-    let value: T
-
-    init(_ value: T) {
-        self.value = value
-    }
-}
-
 private func uniffiTraitInterfaceCallAsync<T>(
     makeCall: @escaping () async throws -> T,
     handleSuccess: @escaping (T) -> (),
     handleError: @escaping (Int8, RustBuffer) -> (),
     droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
 ) {
-    let makeCallSendable = UniffiUnsafeSendable(makeCall)
-    let handleSuccessSendable = UniffiUnsafeSendable(handleSuccess)
-    let handleErrorSendable = UniffiUnsafeSendable(handleError)
-
     let task = Task {
+        // Note: it's important we call either `handleSuccess` or `handleError` exactly once.  Each
+        // call consumes an Arc reference, which means there should be no possibility of a double
+        // call.  The following code is structured so that will will never call both `handleSuccess`
+        // and `handleError`, even in the face of weird errors.
+        //
+        // On platforms that need extra machinery to make C-ABI calls, like JNA or ctypes, it's
+        // possible that we fail to make either call.  However, it doesn't seem like this is
+        // possible on Swift since swift can just make the C call directly.
         var callResult: T
         do {
-            callResult = try await makeCallSendable.value()
+            callResult = try await makeCall()
         } catch {
-            handleErrorSendable.value(
-                CALL_UNEXPECTED_ERROR,
-                FfiConverterString.lower(String(describing: error))
-            )
+            handleError(CALL_UNEXPECTED_ERROR, FfiConverterString.lower(String(describing: error)))
             return
         }
-        handleSuccessSendable.value(callResult)
+        handleSuccess(callResult)
     }
     let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
     droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
@@ -6018,26 +6033,20 @@ private func uniffiTraitInterfaceCallAsyncWithError<T, E>(
     lowerError: @escaping (E) -> RustBuffer,
     droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
 ) {
-    let makeCallSendable = UniffiUnsafeSendable(makeCall)
-    let handleSuccessSendable = UniffiUnsafeSendable(handleSuccess)
-    let handleErrorSendable = UniffiUnsafeSendable(handleError)
-    let lowerErrorSendable = UniffiUnsafeSendable(lowerError)
-
     let task = Task {
+        // See the note in uniffiTraitInterfaceCallAsync for details on `handleSuccess` and
+        // `handleError`.
         var callResult: T
         do {
-            callResult = try await makeCallSendable.value()
+            callResult = try await makeCall()
         } catch let error as E {
-            handleErrorSendable.value(CALL_ERROR, lowerErrorSendable.value(error))
+            handleError(CALL_ERROR, lowerError(error))
             return
         } catch {
-            handleErrorSendable.value(
-                CALL_UNEXPECTED_ERROR,
-                FfiConverterString.lower(String(describing: error))
-            )
+            handleError(CALL_UNEXPECTED_ERROR, FfiConverterString.lower(String(describing: error)))
             return
         }
-        handleSuccessSendable.value(callResult)
+        handleSuccess(callResult)
     }
     let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
     droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
@@ -6106,6 +6115,52 @@ public func actrErrorRequiresDlq(err: ActrError) -> Bool  {
     )
 })
 }
+/**
+ * Resolve a dependency's ActrType from a manifest.toml file.
+ *
+ * Parses the manifest, looks up the dependency by alias, and returns its
+ * `actr_type` field as a structured `ActrType` record. This is the canonical
+ * way for linked-runtime hosts (iOS, Android) to discover which remote actor
+ * type a dependency resolves to, without hardcoding `"manufacturer:name:version"`
+ * strings in application code.
+ */
+public func resolveManifestDependency(manifestPath: String, dependencyAlias: String)throws  -> ActrType  {
+    return try  FfiConverterTypeActrType_lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
+    uniffi_actr_fn_func_resolve_manifest_dependency(
+        FfiConverterString.lower(manifestPath),
+        FfiConverterString.lower(dependencyAlias),$0
+    )
+})
+}
+/**
+ * List all dependency aliases from a manifest.toml file.
+ *
+ * Parses the manifest and returns the alias of every `[[dependency]]` entry.
+ * Linked-runtime hosts (iOS, Android) use this to discover which dependencies
+ * are declared in the manifest without hardcoding alias strings.
+ */
+public func resolveManifestDependencyAliasList(manifestPath: String)throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
+    uniffi_actr_fn_func_resolve_manifest_dependency_alias_list(
+        FfiConverterString.lower(manifestPath),$0
+    )
+})
+}
+/**
+ * Resolve the package's own ActrType from a manifest.toml file.
+ *
+ * Parses the manifest and returns the `[package]` block's actr_type fields
+ * as a structured `ActrType` record. Linked-runtime hosts (iOS, Android) use
+ * this to determine their own actor type without hardcoding
+ * `"manufacturer:name:version"` strings.
+ */
+public func resolveManifestPackageActrType(manifestPath: String)throws  -> ActrType  {
+    return try  FfiConverterTypeActrType_lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
+    uniffi_actr_fn_func_resolve_manifest_package_actr_type(
+        FfiConverterString.lower(manifestPath),$0
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -6122,160 +6177,169 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_actr_checksum_func_actr_error_is_retryable() != 53552) {
+    if (uniffi_actr_checksum_func_actr_error_is_retryable() != 34175) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_func_actr_error_kind() != 63189) {
+    if (uniffi_actr_checksum_func_actr_error_kind() != 40651) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_func_actr_error_requires_dlq() != 47593) {
+    if (uniffi_actr_checksum_func_actr_error_requires_dlq() != 62057) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 48586) {
+    if (uniffi_actr_checksum_func_resolve_manifest_dependency() != 20704) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrnode_start() != 52376) {
+    if (uniffi_actr_checksum_func_resolve_manifest_dependency_alias_list() != 45756) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 17890) {
+    if (uniffi_actr_checksum_func_resolve_manifest_package_actr_type() != 16114) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_call() != 32518) {
+    if (uniffi_actr_checksum_method_contextbridge_add_media_track() != 37665) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_discover() != 47615) {
+    if (uniffi_actr_checksum_method_contextbridge_call_raw() != 51062) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down() != 13002) {
+    if (uniffi_actr_checksum_method_contextbridge_discover() != 38410) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_shutdown() != 48752) {
+    if (uniffi_actr_checksum_method_contextbridge_register_media_track() != 43039) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_tell() != 54497) {
+    if (uniffi_actr_checksum_method_contextbridge_register_stream() != 21623) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 46357) {
+    if (uniffi_actr_checksum_method_contextbridge_remove_media_track() != 43937) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_add_media_track() != 62400) {
+    if (uniffi_actr_checksum_method_contextbridge_send_data_stream() != 33554) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_call_raw() != 32688) {
+    if (uniffi_actr_checksum_method_contextbridge_send_media_sample() != 63657) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_discover() != 16612) {
+    if (uniffi_actr_checksum_method_contextbridge_tell_raw() != 46175) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_register_media_track() != 44495) {
+    if (uniffi_actr_checksum_method_contextbridge_unregister_media_track() != 52187) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_register_stream() != 17477) {
+    if (uniffi_actr_checksum_method_contextbridge_unregister_stream() != 65290) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_remove_media_track() != 23065) {
+    if (uniffi_actr_checksum_method_opusencoder_encode() != 35920) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_send_data_stream() != 17067) {
+    if (uniffi_actr_checksum_method_opusencoder_frame_size() != 18284) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_send_media_sample() != 49083) {
+    if (uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 24690) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_tell_raw() != 35223) {
+    if (uniffi_actr_checksum_method_actrnode_start() != 22494) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_unregister_media_track() != 6533) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_actor_id() != 23881) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_contextbridge_unregister_stream() != 34010) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_call() != 24018) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 47196) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_discover() != 21192) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_force_reconnect() != 3807) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_is_shutting_down() != 50332) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_app_lifecycle_changed() != 8993) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_shutdown() != 60173) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_path_changed() != 13252) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_tell() != 38430) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_opusencoder_encode() != 30032) {
+    if (uniffi_actr_checksum_method_actrrefwrapper_wait_for_shutdown() != 12482) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_opusencoder_frame_size() != 61591) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 10838) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload() != 52954) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_force_reconnect() != 14546) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 23972) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_app_lifecycle_changed() != 7773) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_constructor_dynamicworkload_new() != 7106) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_path_changed() != 24952) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_constructor_opusencoder_new() != 55174) {
+    if (uniffi_actr_checksum_constructor_opusencoder_new() != 34824) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_credentialobserverbridge_on_renewed() != 61692) {
+    if (uniffi_actr_checksum_constructor_actrnode_new_from_linked_workload() != 10568) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_credentialobserverbridge_on_expiring() != 27892) {
+    if (uniffi_actr_checksum_constructor_actrnode_new_from_package_file() != 59585) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_datastreamcallback_on_stream() != 55109) {
+    if (uniffi_actr_checksum_constructor_dynamicworkload_new() != 1634) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_mailboxobserverbridge_on_backpressure() != 10936) {
+    if (uniffi_actr_checksum_method_datastreamcallback_on_stream() != 53144) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_mediatrackcallback_on_sample() != 21659) {
+    if (uniffi_actr_checksum_method_mediatrackcallback_on_sample() != 56040) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_signalingobserverbridge_on_connecting() != 34166) {
+    if (uniffi_actr_checksum_method_credentialobserverbridge_on_renewed() != 1839) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_signalingobserverbridge_on_connected() != 28379) {
+    if (uniffi_actr_checksum_method_credentialobserverbridge_on_expiring() != 44972) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_signalingobserverbridge_on_disconnected() != 51944) {
+    if (uniffi_actr_checksum_method_mailboxobserverbridge_on_backpressure() != 54800) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_connecting() != 22166) {
+    if (uniffi_actr_checksum_method_signalingobserverbridge_on_connecting() != 19209) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_connected() != 48349) {
+    if (uniffi_actr_checksum_method_signalingobserverbridge_on_connected() != 4846) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_disconnected() != 30516) {
+    if (uniffi_actr_checksum_method_signalingobserverbridge_on_disconnected() != 42197) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_websocketobserverbridge_on_connecting() != 42497) {
+    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_connecting() != 29294) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_websocketobserverbridge_on_connected() != 55245) {
+    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_connected() != 40934) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_websocketobserverbridge_on_disconnected() != 32252) {
+    if (uniffi_actr_checksum_method_webrtcobserverbridge_on_disconnected() != 44359) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_start() != 1932) {
+    if (uniffi_actr_checksum_method_websocketobserverbridge_on_connecting() != 31917) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_ready() != 16230) {
+    if (uniffi_actr_checksum_method_websocketobserverbridge_on_connected() != 11292) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_stop() != 46214) {
+    if (uniffi_actr_checksum_method_websocketobserverbridge_on_disconnected() != 4256) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_error() != 48035) {
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_start() != 17867) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_workloadlifecyclebridge_dispatch() != 17123) {
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_ready() != 46460) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_stop() != 64064) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_on_error() != 55342) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_workloadlifecyclebridge_dispatch() != 33960) {
         return InitializationResult.apiChecksumMismatch
     }
 

@@ -21,7 +21,7 @@ actr-config = { workspace = true, features = ["opentelemetry"] }
 actr-pack.workspace = true
 
 # UniFFI
-uniffi = { version = "0.30.0", features = ["tokio"] }
+uniffi = { version = "0.31.1", features = ["tokio"] }
 
 # Async runtime
 tokio = { version = "1.48", features = ["full", "rt-multi-thread"] }

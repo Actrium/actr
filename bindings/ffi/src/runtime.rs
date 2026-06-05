@@ -12,6 +12,89 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
+/// Resolve a dependency's ActrType from a manifest.toml file.
+///
+/// Parses the manifest, looks up the dependency by alias, and returns its
+/// `actr_type` field as a structured `ActrType` record. This is the canonical
+/// way for linked-runtime hosts (iOS, Android) to discover which remote actor
+/// type a dependency resolves to, without hardcoding `"manufacturer:name:version"`
+/// strings in application code.
+#[uniffi::export]
+pub fn resolve_manifest_dependency(
+    manifest_path: String,
+    dependency_alias: String,
+) -> ActrResult<ActrType> {
+    let manifest = actr_config::ConfigParser::from_manifest_file(&manifest_path).map_err(|e| {
+        ActrError::Config {
+            msg: format!("Failed to parse manifest '{}': {}", manifest_path, e),
+        }
+    })?;
+
+    let dep = manifest
+        .get_dependency(&dependency_alias)
+        .ok_or_else(|| ActrError::Config {
+            msg: format!(
+                "Dependency '{}' not found in manifest '{}'",
+                dependency_alias, manifest_path
+            ),
+        })?;
+
+    let proto_type = dep.actr_type.as_ref().ok_or_else(|| ActrError::Config {
+        msg: format!(
+            "Dependency '{}' in manifest '{}' has no actr_type",
+            dependency_alias, manifest_path
+        ),
+    })?;
+
+    Ok(ActrType {
+        manufacturer: proto_type.manufacturer.clone(),
+        name: proto_type.name.clone(),
+        version: proto_type.version.clone(),
+    })
+}
+
+/// Resolve the package's own ActrType from a manifest.toml file.
+///
+/// Parses the manifest and returns the `[package]` block's actr_type fields
+/// as a structured `ActrType` record. Linked-runtime hosts (iOS, Android) use
+/// this to determine their own actor type without hardcoding
+/// `"manufacturer:name:version"` strings.
+#[uniffi::export]
+pub fn resolve_manifest_package_actr_type(manifest_path: String) -> ActrResult<ActrType> {
+    let manifest = actr_config::ConfigParser::from_manifest_file(&manifest_path).map_err(|e| {
+        ActrError::Config {
+            msg: format!("Failed to parse manifest '{}': {}", manifest_path, e),
+        }
+    })?;
+
+    let proto_type = &manifest.package.actr_type;
+    Ok(ActrType {
+        manufacturer: proto_type.manufacturer.clone(),
+        name: proto_type.name.clone(),
+        version: proto_type.version.clone(),
+    })
+}
+
+/// List all dependency aliases from a manifest.toml file.
+///
+/// Parses the manifest and returns the alias of every `[[dependency]]` entry.
+/// Linked-runtime hosts (iOS, Android) use this to discover which dependencies
+/// are declared in the manifest without hardcoding alias strings.
+#[uniffi::export]
+pub fn resolve_manifest_dependency_alias_list(manifest_path: String) -> ActrResult<Vec<String>> {
+    let manifest = actr_config::ConfigParser::from_manifest_file(&manifest_path).map_err(|e| {
+        ActrError::Config {
+            msg: format!("Failed to parse manifest '{}': {}", manifest_path, e),
+        }
+    })?;
+
+    Ok(manifest
+        .dependencies
+        .iter()
+        .map(|d| d.alias.clone())
+        .collect())
+}
+
 /// Wrapper for a package-backed runtime before startup.
 #[derive(uniffi::Object)]
 pub struct ActrNode {
