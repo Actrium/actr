@@ -65,8 +65,24 @@ impl TestSignalingServer {
         self.inner.drop_next_ice_candidates_for(count, duration);
     }
 
+    pub fn delay_ice_candidates_for(&self, duration: std::time::Duration) {
+        self.inner.delay_ice_candidates_for(duration);
+    }
+
+    pub fn delayed_ice_candidate_count(&self) -> u32 {
+        self.inner.delayed_ice_candidate_count()
+    }
+
+    pub fn drop_next_offers(&self, count: u32) {
+        self.inner.drop_next_offers(count);
+    }
+
     pub fn message_count(&self) -> u32 {
         self.inner.message_count()
+    }
+
+    pub async fn received_messages(&self) -> Vec<actr_protocol::SignalingEnvelope> {
+        self.inner.received_messages().await
     }
 
     pub fn get_ice_restart_count(&self) -> u32 {

@@ -136,11 +136,35 @@ struct PeerState {
     /// Current connection state (for health check)
     current_state: RTCPeerConnectionState,
 
+    /// Whether this session has ever reached ICE/DTLS Connected.
+    ever_ice_connected: bool,
+
+    /// Whether this session has ever had an open DataChannel.
+    ever_data_channel_opened: bool,
+
     /// Session ID for this connection (matches WebRtcConnection.session_id())
     session_id: u64,
 
     /// Receive loop JoinHandles (one per PayloadType, aborted during cleanup)
     receive_handles: Vec<JoinHandle<()>>,
+}
+
+impl PeerState {
+    fn update_connection_state(&mut self, state: RTCPeerConnectionState) {
+        self.current_state = state;
+        self.last_state_change = std::time::Instant::now();
+        if matches!(state, RTCPeerConnectionState::Connected) {
+            self.ever_ice_connected = true;
+        }
+    }
+
+    fn mark_data_channel_opened(&mut self) {
+        self.ever_data_channel_opened = true;
+    }
+
+    fn is_network_recovery_eligible(&self) -> bool {
+        self.ever_ice_connected || self.ever_data_channel_opened
+    }
 }
 
 enum IceRestartWaitOutcome {
@@ -161,6 +185,7 @@ type RestartRetryWakeTarget = (ActrId, u64, Arc<tokio::sync::Notify>);
 type NetworkRecoveryRestartPlan = (
     Vec<RecoveryStatusTarget>,
     Vec<RestartRetryWakeTarget>,
+    Vec<RecoveryStatusTarget>,
     Vec<ActrId>,
 );
 
@@ -471,7 +496,19 @@ impl WebRtcCoordinator {
             let peers = self.peers.read().await;
             peers
                 .iter()
-                .map(|(peer_id, state)| (peer_id.clone(), state.session_id))
+                .filter_map(|(peer_id, state)| {
+                    if state.is_network_recovery_eligible() {
+                        Some((peer_id.clone(), state.session_id))
+                    } else {
+                        tracing::debug!(
+                            peer_id = ?peer_id,
+                            session_id = state.session_id,
+                            current_state = ?state.current_state,
+                            "⏭️ Skipping network recovery for never-ready session"
+                        );
+                        None
+                    }
+                })
                 .collect()
         };
 
@@ -728,7 +765,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target_filter: Option<&[ActrId]>,
     ) {
-        let (stale_answerers, wake_targets, targets): NetworkRecoveryRestartPlan = {
+        let (stale_answerers, wake_targets, ineligible_guards, targets): NetworkRecoveryRestartPlan = {
             let recovery_snapshot: Vec<RecoveryStatusTarget> = self
                 .network_recovering_peers
                 .read()
@@ -744,6 +781,7 @@ impl WebRtcCoordinator {
             let peers = self.peers.read().await;
             let mut stale_answerers = Vec::new();
             let mut wake_targets = Vec::new();
+            let mut ineligible_guards = Vec::new();
             let mut targets = Vec::new();
 
             for (peer_id, recovery_status) in recovery_snapshot.iter() {
@@ -758,6 +796,18 @@ impl WebRtcCoordinator {
                 };
                 let session_matches = state.session_id == recovery_status.session_id;
                 if !session_matches {
+                    continue;
+                }
+
+                if !state.is_network_recovery_eligible() {
+                    tracing::debug!(
+                        peer_id = ?peer_id,
+                        session_id = recovery_status.session_id,
+                        recovery_reason = recovery_status.reason.as_str(),
+                        current_state = ?state.current_state,
+                        "⏭️ Clearing network recovery guard for never-ready session"
+                    );
+                    ineligible_guards.push((peer_id.clone(), recovery_status.clone()));
                     continue;
                 }
 
@@ -790,8 +840,17 @@ impl WebRtcCoordinator {
                 }
             }
 
-            (stale_answerers, wake_targets, targets)
+            (stale_answerers, wake_targets, ineligible_guards, targets)
         };
+
+        for (target, recovery_status) in ineligible_guards {
+            self.clear_peer_recovering(
+                &target,
+                recovery_status.session_id,
+                "never-ready session is not eligible for network recovery",
+            )
+            .await;
+        }
 
         for (target, recovery_status) in stale_answerers {
             tracing::warn!(
@@ -911,6 +970,14 @@ impl WebRtcCoordinator {
                                     state: ConnectionState::Connected,
                                     ..
                                 } => {
+                                    {
+                                        let mut peers = coord.peers.write().await;
+                                        if let Some(state) = peers.get_mut(peer_id)
+                                            && state.session_id == *session_id
+                                        {
+                                            state.ever_ice_connected = true;
+                                        }
+                                    }
                                     coord
                                         .clear_peer_recovering(
                                             peer_id,
@@ -925,6 +992,14 @@ impl WebRtcCoordinator {
                                     payload_type: PayloadType::RpcReliable,
                                     ..
                                 } => {
+                                    {
+                                        let mut peers = coord.peers.write().await;
+                                        if let Some(state) = peers.get_mut(peer_id)
+                                            && state.session_id == *session_id
+                                        {
+                                            state.mark_data_channel_opened();
+                                        }
+                                    }
                                     coord
                                         .clear_peer_recovering(
                                             peer_id,
@@ -1928,6 +2003,8 @@ impl WebRtcCoordinator {
                     last_ice_restart_offer_at: None,
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
+                    ever_ice_connected: false,
+                    ever_data_channel_opened: false,
                     session_id: webrtc_conn.session_id(),
                     receive_handles: Vec::new(),
                 },
@@ -2188,6 +2265,8 @@ impl WebRtcCoordinator {
                     last_ice_restart_offer_at: None,
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
+                    ever_ice_connected: false,
+                    ever_data_channel_opened: false,
                     session_id: webrtc_conn.session_id(),
                     receive_handles: Vec::new(),
                 },
@@ -2217,8 +2296,7 @@ impl WebRtcCoordinator {
                         let mut peers = coord.peers.write().await;
                         if let Some(peer_state) = peers.get_mut(&peer_id) {
                             if peer_state.session_id == state_session_id {
-                                peer_state.current_state = state;
-                                peer_state.last_state_change = std::time::Instant::now();
+                                peer_state.update_connection_state(state);
                             } else {
                                 tracing::debug!(
                                     "⏭️ Ignoring stale answerer PeerConnection state for peer {}, session_id={}",
@@ -2562,6 +2640,7 @@ impl WebRtcCoordinator {
                 let mut peers_guard = peers.write().await;
                 if let Some(s) = peers_guard.get_mut(&from_id) {
                     if s.session_id == wait_session_id {
+                        s.mark_data_channel_opened();
                         completed_restart = s.ice_restart_inflight;
                         s.ice_restart_inflight = false;
                         s.ice_restart_attempts = 0;
@@ -4577,11 +4656,11 @@ impl WebRtcCoordinator {
                 .or_default()
                 .ready_tx = Some(tx);
 
-            // Prevent waiting indefinitely for offer: force re-negotiation after timeout
+            // If the offer is lost, keep waiting as answerer. RoleNegotiation broadcasts
+            // RoleAssignment to both peers, so retrying it here can make the original
+            // offerer start a duplicate connection attempt.
             let weak = Arc::downgrade(self);
             let peer_clone = peer.clone();
-            #[cfg(feature = "opentelemetry")]
-            let current_span = tracing::Span::current();
             tokio::spawn(async move {
                 tokio::time::sleep(ROLE_WAIT_TIMEOUT).await;
                 if let Some(coord) = weak.upgrade() {
@@ -4589,37 +4668,17 @@ impl WebRtcCoordinator {
                     if coord.peers.read().await.contains_key(&peer_clone) {
                         return;
                     }
-                    let pending = {
-                        let mut neg = coord.peer_negotiation.lock().await;
-                        neg.get_mut(&peer_clone).and_then(|s| s.ready_tx.take())
+                    let still_waiting = {
+                        let neg = coord.peer_negotiation.lock().await;
+                        neg.get(&peer_clone)
+                            .and_then(|s| s.ready_tx.as_ref())
+                            .is_some()
                     };
-                    if pending.is_none() {
-                        return;
-                    }
-                    tracing::warn!(
-                        "⏳ Waiting for offer from {} timed out, force acting as offerer",
-                        peer_clone
-                    );
-                    let start_offer_fut = coord.start_offer_connection(&peer_clone, true);
-                    #[cfg(feature = "opentelemetry")]
-                    let start_offer_fut = start_offer_fut.instrument(current_span);
-                    match start_offer_fut.await {
-                        Ok(ready_rx) => {
-                            coord
-                                .peer_negotiation
-                                .lock()
-                                .await
-                                .entry(peer_clone.clone())
-                                .or_default()
-                                .ready_rx = Some(ready_rx);
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "⚠️ Failed to start offer connection after timeout to {}: {}",
-                                peer_clone,
-                                e
-                            );
-                        }
+                    if still_waiting {
+                        tracing::warn!(
+                            "⏳ Waiting for offer from {} timed out; continuing to wait as answerer without role renegotiation",
+                            peer_clone
+                        );
                     }
                 }
             });
@@ -4681,8 +4740,7 @@ impl WebRtcCoordinator {
                         let mut peers = c.peers.write().await;
                         if let Some(peer_state) = peers.get_mut(&target) {
                             if peer_state.session_id == session_id {
-                                peer_state.current_state = state;
-                                peer_state.last_state_change = std::time::Instant::now();
+                                peer_state.update_connection_state(state);
                                 is_active_session = true;
                             } else {
                                 tracing::debug!(

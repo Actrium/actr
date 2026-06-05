@@ -255,8 +255,40 @@ impl MockActrixServer {
         });
     }
 
+    /// Delay ICE candidate forwarding for a bounded duration.
+    pub fn delay_ice_candidates_for(&self, duration: std::time::Duration) {
+        tracing::warn!(
+            "🧪 Delaying ICE candidate relay messages for {:?}",
+            duration
+        );
+        *self
+            .state
+            .ice_candidate_delay_until
+            .lock()
+            .expect("ICE candidate delay mutex poisoned") =
+            Some(std::time::Instant::now() + duration);
+    }
+
+    /// Number of ICE candidates delayed by `delay_ice_candidates_for`.
+    pub fn delayed_ice_candidate_count(&self) -> u32 {
+        self.state
+            .ice_candidate_delay_applied_count
+            .load(Ordering::SeqCst)
+    }
+
+    /// Drop the next N initial SDP offer relay messages.
+    pub fn drop_next_offers(&self, count: u32) {
+        tracing::warn!("🧪 Dropping the next {} SDP offer relay message(s)", count);
+        self.state.offer_drop_count.store(count, Ordering::SeqCst);
+    }
+
     pub fn message_count(&self) -> u32 {
         self.message_count.load(Ordering::Relaxed)
+    }
+
+    /// Snapshot all decoded signaling envelopes received by the server.
+    pub async fn received_messages(&self) -> Vec<actr_protocol::SignalingEnvelope> {
+        self.state.received_messages.lock().await.clone()
     }
 
     pub fn ice_restart_count(&self) -> u32 {
@@ -280,6 +312,7 @@ impl MockActrixServer {
         self.ice_restart_offer_count.store(0, Ordering::SeqCst);
         self.ice_restart_request_count.store(0, Ordering::SeqCst);
         self.ice_candidate_drop_count.store(0, Ordering::SeqCst);
+        self.state.offer_drop_count.store(0, Ordering::SeqCst);
         self.connection_count.store(0, Ordering::SeqCst);
         self.disconnection_count.store(0, Ordering::SeqCst);
     }
