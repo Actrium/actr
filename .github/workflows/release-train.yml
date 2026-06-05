@@ -1,4 +1,4 @@
-name: Release Train (Basic)
+name: Release Train (Staged)
 
 on:
   push:
@@ -40,7 +40,7 @@ on:
         default: false
 
 concurrency:
-  group: release-train-basic
+  group: release-train-staged
   cancel-in-progress: false
 
 permissions:
@@ -51,6 +51,7 @@ env:
   PROTOC_VERSION: "29.3"
 
 jobs:
+  # ── Gate ──────────────────────────────────────────────────────────────
   gate:
     name: Gate on release commit
     runs-on: ubuntu-latest
@@ -68,17 +69,44 @@ jobs:
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           fi
 
-  release:
-    name: Run basic release train
+  # ── Context ───────────────────────────────────────────────────────────
+  context:
+    name: Resolve release context
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      pre_release: ${{ steps.resolve.outputs.pre_release }}
+      skip_python: ${{ steps.resolve.outputs.skip_python }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Resolve version and flags
+        id: resolve
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            ver="${{ inputs.version }}"
+          else
+            ver=$(python3 -c "import tomllib;from pathlib import Path;d=tomllib.loads(Path('Cargo.toml').read_text());print(d['workspace']['package']['version'])")
+          fi
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "dry_run=${{ inputs.dry_run || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "pre_release=${{ inputs.pre_release || 'false' }}" >> "$GITHUB_OUTPUT"
+          echo "skip_python=${{ inputs.skip_python || 'false' }}" >> "$GITHUB_OUTPUT"
+
+  # ── Validate ──────────────────────────────────────────────────────────
+  validate:
+    name: Validate
+    needs: context
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-      PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v5
@@ -116,35 +144,645 @@ jobs:
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
 
-      - name: Run release train
+      - name: Run validate stage
         run: |
-          args=()
-          if [[ -n "${{ inputs.version }}" ]]; then
-            args+=(--version "${{ inputs.version }}")
+          args=(--stage validate --branch main)
+          if [[ -n "${{ needs.context.outputs.version }}" ]]; then
+            args+=(--version "${{ needs.context.outputs.version }}")
           fi
-          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
             args+=(--dry-run)
           fi
-          if [[ "${{ inputs.skip_python }}" == "true" ]]; then
+          if [[ "${{ needs.context.outputs.skip_python }}" == "true" ]]; then
             args+=(--skip-python)
           fi
-          if [[ "${{ inputs.pre_release }}" == "true" ]]; then
+          if [[ "${{ needs.context.outputs.pre_release }}" == "true" ]]; then
             args+=(--pre-release)
           fi
-          args+=(--branch main)
           scripts/release-train.sh "${args[@]}"
 
-      - name: Resolve report version
-        if: always()
-        id: report_version
-        run: |
-          ver=$(python3 -c "import tomllib;from pathlib import Path;d=tomllib.loads(Path('Cargo.toml').read_text());print(d['workspace']['package']['version'])")
-          echo "value=${ver}" >> "$GITHUB_OUTPUT"
-
-      - name: Upload release reports
+      - name: Upload validate artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: basic-release-train-report-${{ steps.report_version.outputs.value }}
-          path: release/reports/release-train-v${{ steps.report_version.outputs.value }}.*
+          name: validate-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.*
+          if-no-files-found: warn
+
+  # ── Create Tag ────────────────────────────────────────────────────────
+  create-tag:
+    name: Create release tag
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Download validate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validate-artifacts
+          path: release/reports
+
+      - name: Run create-tag stage
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          args=(--stage create-tag --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload create-tag artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: create-tag-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.*
+          if-no-files-found: warn
+
+  # ── Publish Rust ──────────────────────────────────────────────────────
+  publish-rust:
+    name: Publish Rust crates
+    needs: create-tag
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Download validate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validate-artifacts
+          path: release/reports
+
+      - name: Run publish-rust stage
+        run: |
+          args=(--stage publish-rust --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload publish-rust artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-rust-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-rust.state.tsv
+          if-no-files-found: warn
+
+  # ── Publish Python ────────────────────────────────────────────────────
+  publish-python:
+    name: Publish Python package
+    needs: create-tag
+    runs-on: ubuntu-latest
+    env:
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download validate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validate-artifacts
+          path: release/reports
+
+      - name: Run publish-python stage
+        run: |
+          args=(--stage publish-python --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload publish-python artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-python-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-python.state.tsv
+          if-no-files-found: warn
+
+  # ── Publish Swift ─────────────────────────────────────────────────────
+  publish-swift:
+    name: Publish Swift package
+    needs: create-tag
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Download validate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validate-artifacts
+          path: release/reports
+
+      - name: Run publish-swift stage
+        run: |
+          args=(--stage publish-swift --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload publish-swift artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-swift-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-swift.state.tsv
+          if-no-files-found: warn
+
+  # ── Publish Kotlin ────────────────────────────────────────────────────
+  publish-kotlin:
+    name: Publish Kotlin package
+    needs: create-tag
+    runs-on: ubuntu-latest
+    env:
+      PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Download validate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validate-artifacts
+          path: release/reports
+
+      - name: Run publish-kotlin stage
+        run: |
+          args=(--stage publish-kotlin --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload publish-kotlin artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-kotlin-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-kotlin.state.tsv
+          if-no-files-found: warn
+
+  # ── Publish Web ───────────────────────────────────────────────────────
+  publish-web:
+    name: Publish Web npm packages
+    needs: create-tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      - name: Download validate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validate-artifacts
+          path: release/reports
+
+      - name: Run publish-web stage
+        run: |
+          args=(--stage publish-web --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          if [[ "${{ needs.context.outputs.pre_release }}" == "true" ]]; then
+            args+=(--pre-release)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload publish-web artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-web-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-web.state.tsv
+          if-no-files-found: warn
+
+  # ── Build TypeScript Native ───────────────────────────────────────────
+  build-typescript-native:
+    name: Build TS native (${{ matrix.target }})
+    needs: create-tag
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: bindings/typescript
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            artifact: actr.darwin-x64.node
+            build_args: ""
+            use_zig: false
+          - target: aarch64-apple-darwin
+            os: macos-14
+            artifact: actr.darwin-arm64.node
+            build_args: ""
+            use_zig: false
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: actr.linux-x64-gnu.node
+            build_args: ""
+            use_zig: false
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact: actr.linux-x64-musl.node
+            build_args: "--cross-compile"
+            use_zig: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: actr.linux-arm64-gnu.node
+            build_args: "--cross-compile"
+            use_zig: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact: actr.linux-arm64-musl.node
+            build_args: "--cross-compile"
+            use_zig: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            artifact: actr.win32-x64-msvc.node
+            build_args: ""
+            use_zig: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: bindings/typescript/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Setup Zig
+        if: ${{ matrix.use_zig }}
+        uses: mlugg/setup-zig@v2
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build native package
+        shell: bash
+        run: npx napi build --platform --target ${{ matrix.target }} --release --output-dir artifacts ${{ matrix.build_args }}
+
+      - name: Verify native artifact
+        shell: bash
+        run: |
+          ls -la artifacts
+          test -f "artifacts/${{ matrix.artifact }}"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: bindings/typescript/artifacts/${{ matrix.artifact }}
           if-no-files-found: error
+
+  # ── Publish TypeScript Workload ───────────────────────────────────────
+  publish-typescript-workload:
+    name: Publish @actrium/actr-workload
+    needs: create-tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Download validate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validate-artifacts
+          path: release/reports
+
+      - name: Run publish-typescript-workload stage
+        run: |
+          args=(--stage publish-typescript-workload --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          if [[ "${{ needs.context.outputs.pre_release }}" == "true" ]]; then
+            args+=(--pre-release)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload publish-typescript-workload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-typescript-workload-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-typescript-workload.state.tsv
+          if-no-files-found: warn
+
+  # ── Publish TypeScript ────────────────────────────────────────────────
+  publish-typescript:
+    name: Publish @actrium/actr
+    needs:
+      - build-typescript-native
+      - publish-typescript-workload
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/typescript
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: bindings/typescript/package-lock.json
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Show Node.js and npm versions
+        run: |
+          node -v
+          npm -v
+
+      - name: Download validate artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: validate-artifacts
+          path: release/reports
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bindings/typescript/artifacts
+          merge-multiple: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate committed version
+        if: ${{ needs.context.outputs.dry_run != 'true' }}
+        run: |
+          node <<'EOF'
+          const fs = require('node:fs');
+          const expectedVersion = process.env.EXPECTED_VERSION;
+          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+          const cargoToml = fs.readFileSync('Cargo.toml', 'utf8');
+          const cargoVersionMatch = cargoToml.match(/^version = "([^"]+)"$/m);
+          if (!cargoVersionMatch) {
+            throw new Error('Failed to read Cargo.toml version');
+          }
+
+          if (packageJson.version !== cargoVersionMatch[1]) {
+            throw new Error(
+              `Version mismatch: package.json=${packageJson.version}, Cargo.toml=${cargoVersionMatch[1]}`,
+            );
+          }
+
+          if (packageJson.version !== expectedVersion) {
+            throw new Error(
+              `Expected version ${expectedVersion}, but repository version is ${packageJson.version}`,
+            );
+          }
+
+          console.log(`Publishing committed version ${expectedVersion}`);
+          EOF
+        env:
+          EXPECTED_VERSION: ${{ needs.context.outputs.version }}
+
+      - name: Prepare TypeScript package
+        run: |
+          npm run compile:ts
+          npx napi create-npm-dirs
+          npm run artifacts -- --output-dir artifacts
+
+      - name: Verify native package layout
+        run: |
+          set -euo pipefail
+          for item in \
+            "darwin-x64/actr.darwin-x64.node" \
+            "darwin-arm64/actr.darwin-arm64.node" \
+            "linux-x64-gnu/actr.linux-x64-gnu.node" \
+            "linux-x64-musl/actr.linux-x64-musl.node" \
+            "linux-arm64-gnu/actr.linux-arm64-gnu.node" \
+            "linux-arm64-musl/actr.linux-arm64-musl.node" \
+            "win32-x64-msvc/actr.win32-x64-msvc.node"
+          do
+            test -f "npm/$item"
+          done
+
+      - name: Dry run native + main package publish
+        if: ${{ needs.context.outputs.dry_run == 'true' }}
+        run: |
+          set -euo pipefail
+          for dir in npm/*; do
+            npm publish "./$dir" --access public --dry-run
+          done
+          npm publish --access public --dry-run --ignore-scripts
+
+      - name: Publish native + main packages (OIDC)
+        if: ${{ needs.context.outputs.dry_run != 'true' }}
+        env:
+          EXPECTED_VERSION: ${{ needs.context.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Prepare for npm Trusted Publishing (OIDC).
+          unset NODE_AUTH_TOKEN
+          unset NPM_CONFIG_USERCONFIG
+          npm config set registry https://registry.npmjs.org/
+
+          local_tag="latest"
+          if [[ "${{ needs.context.outputs.pre_release }}" == "true" ]]; then
+            local_tag="pre"
+          fi
+
+          # Publish native platform packages.
+          for dir in npm/*; do
+            package="$(node -p "require('./$dir/package.json').name")"
+            if npm view "$package@$EXPECTED_VERSION" version >/dev/null 2>&1; then
+              echo "$package@$EXPECTED_VERSION already exists; skipping"
+              continue
+            fi
+            npm publish "./$dir" --access public --tag "$local_tag"
+          done
+
+          # Publish main @actrium/actr package.
+          if npm view "@actrium/actr@$EXPECTED_VERSION" version >/dev/null 2>&1; then
+            echo "@actrium/actr@$EXPECTED_VERSION already exists; skipping"
+            exit 0
+          fi
+          npm publish --access public --tag "$local_tag" --ignore-scripts
+
+      - name: Verify npm package visibility
+        if: ${{ needs.context.outputs.dry_run != 'true' }}
+        run: |
+          set -euo pipefail
+          expected_version="${{ needs.context.outputs.version }}"
+          wait_for_version() {
+            local package="$1"
+            local expected="$2"
+            local attempt
+            for attempt in $(seq 1 20); do
+              if published_version="$(npm view "$package@$expected" version 2>/dev/null)" && [ "$published_version" = "$expected" ]; then
+                echo "$package@$expected is visible on npm"
+                return 0
+              fi
+              echo "Waiting for $package@$expected to become visible on npm (attempt $attempt/20)"
+              sleep 15
+            done
+
+            echo "Expected $package@$expected to be visible on npm"
+            exit 1
+          }
+
+          wait_for_version @actrium/actr "$expected_version"
+          for package in \
+            @actrium/actr-darwin-x64 \
+            @actrium/actr-darwin-arm64 \
+            @actrium/actr-linux-x64-gnu \
+            @actrium/actr-linux-x64-musl \
+            @actrium/actr-linux-arm64-gnu \
+            @actrium/actr-linux-arm64-musl \
+            @actrium/actr-win32-x64-msvc
+          do
+            wait_for_version "$package" "$expected_version"
+          done
+
+      - name: Upload publish-typescript artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-typescript-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-typescript.state.tsv
+          if-no-files-found: warn
+
+  # ── Collect Report ────────────────────────────────────────────────────
+  collect-report:
+    name: Collect release report
+    if: always()
+    needs:
+      - context
+      - validate
+      - create-tag
+      - publish-rust
+      - publish-python
+      - publish-swift
+      - publish-kotlin
+      - publish-web
+      - build-typescript-native
+      - publish-typescript-workload
+      - publish-typescript
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Download all stage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release/reports
+          merge-multiple: true
+
+      - name: Resolve report version
+        id: report_version
+        run: |
+          ver="${{ needs.context.outputs.version }}"
+          echo "value=${ver}" >> "$GITHUB_OUTPUT"
+
+      - name: Run report stage
+        run: |
+          scripts/release-train.sh --stage report --version "${{ needs.context.outputs.version }}"
+
+      - name: Upload consolidated release report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-train-report-${{ steps.report_version.outputs.value }}
+          path: |
+            release/reports/release-train-v${{ steps.report_version.outputs.value }}.state.tsv
+            release/reports/release-train-v${{ steps.report_version.outputs.value }}.md
+            release/reports/release-train-v${{ steps.report_version.outputs.value }}.json
+          if-no-files-found: warn
