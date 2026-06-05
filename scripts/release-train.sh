@@ -589,11 +589,30 @@ ensure_release_tag_absent() {
   fi
 }
 
+stage_requires_absent_tag_check() {
+  case "$STAGE" in
+    all|validate|create-tag)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 install_python_release_tools() {
   RELEASE_PYTHON_ENV=$(mktemp -d "${TMPDIR:-/tmp}/actr-release-python.XXXXXX")
   python3 -m venv "$RELEASE_PYTHON_ENV"
   RELEASE_PYTHON_BIN="${RELEASE_PYTHON_ENV}/bin/python"
   "$RELEASE_PYTHON_BIN" -m pip install --quiet --upgrade pip build twine
+}
+
+build_python_distribution() {
+  rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
+  (
+    cd tools/protoc-gen/python
+    "$RELEASE_PYTHON_BIN" -m build >/dev/null
+  )
 }
 
 update_versions() {
@@ -796,11 +815,7 @@ run_validation_suite() {
 
   if [[ "$SKIP_PYTHON" == false ]]; then
     log_info "Building Python package for validation"
-    rm -rf tools/protoc-gen/python/dist tools/protoc-gen/python/build tools/protoc-gen/python/*.egg-info
-    (
-      cd tools/protoc-gen/python
-      "$RELEASE_PYTHON_BIN" -m build >/dev/null
-    )
+    build_python_distribution
   else
     log_info "Skipping Python package validation"
   fi
@@ -959,7 +974,7 @@ publish_web_packages() {
     pnpm install --frozen-lockfile
   )
 
-  publish_args=(--skip-build)
+  publish_args=()
 
   if [[ "$DRY_RUN" == true ]]; then
     log_info "Web package dry-run validation"
@@ -1031,6 +1046,15 @@ publish_typescript_workload_package() {
 
   log_info "Installing TypeScript workload dependencies"
   (cd "$ts_workload_root" && npm ci)
+
+  log_info "Building TypeScript workload package"
+  (cd "$ts_workload_root" && npm run build)
+  (
+    cd "$ts_workload_root"
+    test -f dist/index.js
+    test -f dist/index.d.ts
+    test -f dist/cli.js
+  )
 
   ts_version=$(node -p "require('${ts_workload_root}/package.json').version")
 
@@ -1414,6 +1438,9 @@ publish_python_package() {
     return
   fi
 
+  log_info "Building Python package for publishing"
+  build_python_distribution
+
   local upload_log
   upload_log=$(mktemp)
   (
@@ -1714,7 +1741,11 @@ main() {
   ensure_clean_worktree
   prepare_paths
   prepare_worktree
-  ensure_release_tag_absent
+  if stage_requires_absent_tag_check; then
+    ensure_release_tag_absent
+  else
+    FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"
+  fi
   resolve_package_sync_owner
 
   # Stage-specific secret requirements.

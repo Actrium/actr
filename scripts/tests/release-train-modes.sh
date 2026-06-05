@@ -21,38 +21,64 @@ fail() {
 # Save original function definitions so tests can restore after stubbing.
 _original_update_versions=$(declare -f update_versions)
 _original_run_validation_suite=$(declare -f run_validation_suite)
+_original_ensure_clean_worktree=$(declare -f ensure_clean_worktree)
+_original_prepare_paths=$(declare -f prepare_paths)
+_original_prepare_worktree=$(declare -f prepare_worktree)
+_original_ensure_release_tag_absent=$(declare -f ensure_release_tag_absent)
+_original_resolve_package_sync_owner=$(declare -f resolve_package_sync_owner)
+_original_install_python_release_tools=$(declare -f install_python_release_tools)
+_original_build_python_distribution=$(declare -f build_python_distribution)
 _original_ensure_versions_prepared=$(declare -f ensure_versions_prepared)
 _original_ensure_publish_worktree_clean=$(declare -f ensure_publish_worktree_clean)
 _original_commit_release_prepare=$(declare -f commit_release_prepare)
 _original_append_skipped_components=$(declare -f append_skipped_components)
+_original_append_state=$(declare -f append_state)
 _original_set_release_sha=$(declare -f set_release_sha)
 _original_publish_rust_package=$(declare -f publish_rust_package)
 _original_publish_python_package=$(declare -f publish_python_package)
+_original_python_version_visible=$(declare -f python_version_visible)
+_original_wait_for_visibility=$(declare -f wait_for_visibility)
 _original_skip_python_package=$(declare -f skip_python_package)
 _original_create_final_tag=$(declare -f create_final_tag)
 _original_publish_package_sync_repo=$(declare -f publish_package_sync_repo)
 _original_publish_web_packages=$(declare -f publish_web_packages)
 _original_publish_typescript_workload_package=$(declare -f publish_typescript_workload_package)
 _original_publish_typescript_package=$(declare -f publish_typescript_package)
+_original_stage_validate=$(declare -f stage_validate)
+_original_stage_create_tag=$(declare -f stage_create_tag)
+_original_stage_publish_rust=$(declare -f stage_publish_rust)
 _original_write_context=$(declare -f write_context)
 _original_read_context=$(declare -f read_context)
 
 restore_all_functions() {
   eval "$_original_update_versions"
   eval "$_original_run_validation_suite"
+  eval "$_original_ensure_clean_worktree"
+  eval "$_original_prepare_paths"
+  eval "$_original_prepare_worktree"
+  eval "$_original_ensure_release_tag_absent"
+  eval "$_original_resolve_package_sync_owner"
+  eval "$_original_install_python_release_tools"
+  eval "$_original_build_python_distribution"
   eval "$_original_ensure_versions_prepared"
   eval "$_original_ensure_publish_worktree_clean"
   eval "$_original_commit_release_prepare"
   eval "$_original_append_skipped_components"
+  eval "$_original_append_state"
   eval "$_original_set_release_sha"
   eval "$_original_publish_rust_package"
   eval "$_original_publish_python_package"
+  eval "$_original_python_version_visible"
+  eval "$_original_wait_for_visibility"
   eval "$_original_skip_python_package"
   eval "$_original_create_final_tag"
   eval "$_original_publish_package_sync_repo"
   eval "$_original_publish_web_packages"
   eval "$_original_publish_typescript_workload_package"
   eval "$_original_publish_typescript_package"
+  eval "$_original_stage_validate"
+  eval "$_original_stage_create_tag"
+  eval "$_original_stage_publish_rust"
   eval "$_original_write_context"
   eval "$_original_read_context"
 }
@@ -376,6 +402,145 @@ test_create_tag_dry_run_does_not_push() {
   fi
 }
 
+test_main_publish_stage_skips_absent_tag_check() {
+  reset_release_train_state
+
+  local calls=()
+  ensure_clean_worktree() { calls+=("ensure_clean_worktree"); }
+  prepare_paths() { calls+=("prepare_paths"); }
+  prepare_worktree() { calls+=("prepare_worktree"); }
+  ensure_release_tag_absent() { calls+=("ensure_release_tag_absent"); }
+  resolve_package_sync_owner() { calls+=("resolve_package_sync_owner"); }
+  install_python_release_tools() { calls+=("install_python_release_tools"); }
+  stage_publish_rust() { calls+=("stage_publish_rust"); }
+
+  main --version 1.2.3 --stage publish-rust --dry-run --skip-python
+
+  local joined
+  joined=$(printf '%s\n' "${calls[@]}")
+
+  if grep -qx "ensure_release_tag_absent" <<<"$joined"; then
+    printf 'publish-rust stage must not check that the final tag is absent\n' >&2
+    exit 1
+  fi
+
+  if ! grep -qx "stage_publish_rust" <<<"$joined"; then
+    printf 'publish-rust stage must still run through main\n' >&2
+    exit 1
+  fi
+
+  assert_eq "v1.2.3" "$FINAL_TAG" "publish stage FINAL_TAG"
+}
+
+test_main_validate_and_create_tag_check_absent_tag() {
+  local stage expected_stage_call
+  for stage in validate create-tag; do
+    reset_release_train_state
+
+    local calls=()
+    ensure_clean_worktree() { calls+=("ensure_clean_worktree"); }
+    prepare_paths() { calls+=("prepare_paths"); }
+    prepare_worktree() { calls+=("prepare_worktree"); }
+    ensure_release_tag_absent() { calls+=("ensure_release_tag_absent"); FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"; }
+    resolve_package_sync_owner() { calls+=("resolve_package_sync_owner"); }
+    install_python_release_tools() { calls+=("install_python_release_tools"); }
+    stage_validate() { calls+=("stage_validate"); }
+    stage_create_tag() { calls+=("stage_create_tag"); }
+
+    main --version 1.2.3 --stage "$stage" --dry-run --skip-python
+
+    local joined
+    joined=$(printf '%s\n' "${calls[@]}")
+    if ! grep -qx "ensure_release_tag_absent" <<<"$joined"; then
+      printf '%s stage must check that the final tag is absent\n' "$stage" >&2
+      exit 1
+    fi
+
+    expected_stage_call="stage_${stage//-/_}"
+    if ! grep -qx "$expected_stage_call" <<<"$joined"; then
+      printf '%s must still run through main\n' "$stage" >&2
+      exit 1
+    fi
+  done
+}
+
+test_publish_python_package_builds_distribution_before_upload() {
+  reset_release_train_state
+
+  local calls=()
+  python_version_visible() { calls+=("python_version_visible"); return 1; }
+  build_python_distribution() { calls+=("build_python_distribution"); }
+  wait_for_visibility() { calls+=("wait_for_visibility:$1:$2"); return 0; }
+  append_state() { calls+=("append_state:$1:$5"); }
+
+  VERSION="1.2.3"
+  DRY_RUN=false
+  PYPI_API_TOKEN="test-token"
+  RELEASE_PYTHON_BIN=$(command -v true)
+  RELEASE_SHA="abc123"
+
+  publish_python_package
+
+  local joined
+  joined=$(printf '%s\n' "${calls[@]}")
+  if ! grep -qx "build_python_distribution" <<<"$joined"; then
+    printf 'publish_python_package must rebuild dist before upload\n' >&2
+    exit 1
+  fi
+}
+
+test_publish_typescript_workload_builds_before_publish() {
+  reset_release_train_state
+
+  local temp_dir original_path
+  temp_dir=$(mktemp -d)
+  original_path=$PATH
+  mkdir -p "$temp_dir/bin" "$temp_dir/bindings/typescript/actr-workload"
+
+  cat >"$temp_dir/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NPM_CALL_LOG"
+if [[ "$1" == "run" && "$2" == "build" ]]; then
+  mkdir -p dist
+  printf 'console.log("ok");\n' >dist/index.js
+  printf 'export {};\n' >dist/index.d.ts
+  printf '#!/usr/bin/env node\n' >dist/cli.js
+fi
+exit 0
+EOF
+  chmod +x "$temp_dir/bin/npm"
+
+  cat >"$temp_dir/bindings/typescript/actr-workload/package.json" <<'EOF'
+{
+  "name": "@actrium/actr-workload",
+  "version": "1.2.3",
+  "scripts": {
+    "build": "echo build"
+  }
+}
+EOF
+
+  export NPM_CALL_LOG="$temp_dir/npm-calls.log"
+  PATH="$temp_dir/bin:$PATH"
+  WORK_REPO_ROOT="$temp_dir"
+  DRY_RUN=true
+  VERSION="1.2.3"
+  RELEASE_SHA="abc123"
+  append_state() { :; }
+
+  publish_typescript_workload_package
+
+  PATH=$original_path
+
+  if ! grep -qx "run build" "$NPM_CALL_LOG"; then
+    printf 'publish_typescript_workload_package must run npm run build\n' >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  rm -rf "$temp_dir"
+}
+
 test_report_stage_merges_state_files() {
   reset_release_train_state
 
@@ -528,5 +693,9 @@ test_publish_mode_uses_prepared_versions_without_mutating
 test_prepare_only_updates_validates_and_commits_without_publishing
 test_staged_validate_does_not_publish
 test_create_tag_dry_run_does_not_push
+test_main_publish_stage_skips_absent_tag_check
+test_main_validate_and_create_tag_check_absent_tag
+test_publish_python_package_builds_distribution_before_upload
+test_publish_typescript_workload_builds_before_publish
 test_report_stage_merges_state_files
 test_update_versions_syncs_optional_dependencies

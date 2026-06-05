@@ -172,7 +172,9 @@ jobs:
   # ── Create Tag ────────────────────────────────────────────────────────
   create-tag:
     name: Create release tag
-    needs: validate
+    needs:
+      - context
+      - validate
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main
@@ -208,7 +210,9 @@ jobs:
   # ── Publish Rust ──────────────────────────────────────────────────────
   publish-rust:
     name: Publish Rust crates
-    needs: create-tag
+    needs:
+      - context
+      - create-tag
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
@@ -259,7 +263,9 @@ jobs:
   # ── Publish Python ────────────────────────────────────────────────────
   publish-python:
     name: Publish Python package
-    needs: create-tag
+    needs:
+      - context
+      - create-tag
     runs-on: ubuntu-latest
     env:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
@@ -300,7 +306,9 @@ jobs:
   # ── Publish Swift ─────────────────────────────────────────────────────
   publish-swift:
     name: Publish Swift package
-    needs: create-tag
+    needs:
+      - context
+      - create-tag
     runs-on: ubuntu-latest
     env:
       PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
@@ -336,7 +344,9 @@ jobs:
   # ── Publish Kotlin ────────────────────────────────────────────────────
   publish-kotlin:
     name: Publish Kotlin package
-    needs: create-tag
+    needs:
+      - context
+      - create-tag
     runs-on: ubuntu-latest
     env:
       PACKAGE_SYNC_GITHUB_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
@@ -372,7 +382,9 @@ jobs:
   # ── Publish Web ───────────────────────────────────────────────────────
   publish-web:
     name: Publish Web npm packages
-    needs: create-tag
+    needs:
+      - context
+      - create-tag
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main
@@ -421,7 +433,9 @@ jobs:
   # ── Build TypeScript Native ───────────────────────────────────────────
   build-typescript-native:
     name: Build TS native (${{ matrix.target }})
-    needs: create-tag
+    needs:
+      - context
+      - create-tag
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -513,7 +527,9 @@ jobs:
   # ── Publish TypeScript Workload ───────────────────────────────────────
   publish-typescript-workload:
     name: Publish @actrium/actr-workload
-    needs: create-tag
+    needs:
+      - context
+      - create-tag
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main
@@ -557,6 +573,7 @@ jobs:
   publish-typescript:
     name: Publish @actrium/actr
     needs:
+      - context
       - build-typescript-native
       - publish-typescript-workload
     runs-on: ubuntu-latest
