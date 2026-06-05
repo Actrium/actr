@@ -407,6 +407,16 @@ fn test_l0_documented_event_action_matrix() {
             expected: NetworkRecoveryAction::CleanupOnly,
         },
         Case {
+            case_id: "L0-13 background alone noops",
+            events: vec![background_event()],
+            expected: NetworkRecoveryAction::Noop,
+        },
+        Case {
+            case_id: "L0-14 short foreground probes",
+            events: vec![foreground_event(5_000)],
+            expected: NetworkRecoveryAction::Probe,
+        },
+        Case {
             case_id: "L0-15 latest sequence wins after flapping",
             events: vec![
                 offline_event(1),
@@ -466,6 +476,62 @@ fn test_l0_documented_event_action_matrix() {
             ))],
             expected: NetworkRecoveryAction::Restore,
         },
+        Case {
+            case_id: "L0-21 long foreground forces reconnect",
+            events: vec![foreground_event(60_000)],
+            expected: NetworkRecoveryAction::ForceReconnect,
+        },
+        Case {
+            case_id: "L0-22 long foreground and online forces reconnect",
+            events: vec![foreground_event(60_000), cellular_event(2)],
+            expected: NetworkRecoveryAction::ForceReconnect,
+        },
+        Case {
+            case_id: "L0-23 force reconnect with online path",
+            events: vec![
+                NetworkEvent::ForceReconnect {
+                    reason: ReconnectReason::ManualReconnect,
+                },
+                online_event(1),
+            ],
+            expected: NetworkRecoveryAction::ForceReconnect,
+        },
+        Case {
+            case_id: "L0-24 offline suppresses force reconnect",
+            events: vec![
+                NetworkEvent::ForceReconnect {
+                    reason: ReconnectReason::ManualReconnect,
+                },
+                offline_event(1),
+            ],
+            expected: NetworkRecoveryAction::Offline,
+        },
+        Case {
+            case_id: "L0-25 app terminating cleanup",
+            events: vec![NetworkEvent::CleanupConnections {
+                reason: CleanupReason::AppTerminating,
+            }],
+            expected: NetworkRecoveryAction::CleanupOnly,
+        },
+        Case {
+            case_id: "L0-26 older unavailable snapshot is ignored",
+            events: vec![
+                path_event(snapshot(
+                    2,
+                    NetworkAvailability::Available,
+                    true,
+                    false,
+                    true,
+                )),
+                offline_event(1),
+            ],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            case_id: "L0-27 long foreground stays offline with offline path",
+            events: vec![foreground_event(60_000), offline_event(1)],
+            expected: NetworkRecoveryAction::Offline,
+        },
     ];
 
     for case in cases {
@@ -473,6 +539,13 @@ fn test_l0_documented_event_action_matrix() {
             select_network_recovery_action(&case.events),
             case.expected,
             "{} selected unexpected action for {:?}",
+            case.case_id,
+            case.events
+        );
+        assert_eq!(
+            ConnectionSupervisor::select_action(&case.events),
+            case.expected,
+            "{} supervisor selected unexpected action for {:?}",
             case.case_id,
             case.events
         );
@@ -492,30 +565,64 @@ async fn test_l0_duplicate_path_storms_execute_one_settled_action() {
         },
     ));
 
-    let repeated_available = (1..=10).map(online_event).collect::<Vec<_>>();
-    let results = process_network_event_batch(repeated_available, processor.clone()).await;
-    assert_eq!(results.len(), 10);
-    assert!(results.iter().all(|result| result.success));
-    assert_eq!(
-        client.probe_calls(),
-        1,
-        "duplicate available storm should probe once after batch reconciliation"
-    );
-    assert_eq!(
-        client.get_stats().connections,
-        1,
-        "duplicate available storm should keep the healthy signaling socket"
-    );
+    struct Case {
+        name: &'static str,
+        events: Vec<NetworkEvent>,
+        expected_probe_calls: u64,
+        expected_connections: u64,
+        expected_disconnections: u64,
+    }
 
-    let repeated_offline = (11..=20).map(offline_event).collect::<Vec<_>>();
-    let results = process_network_event_batch(repeated_offline, processor).await;
-    assert_eq!(results.len(), 10);
-    assert!(results.iter().all(|result| result.success));
-    assert_eq!(
-        client.get_stats().disconnections,
-        1,
-        "duplicate unavailable storm should execute one offline action"
-    );
+    let cases = vec![
+        Case {
+            name: "duplicate_available",
+            events: (1..=10).map(online_event).collect(),
+            expected_probe_calls: 1,
+            expected_connections: 1,
+            expected_disconnections: 0,
+        },
+        Case {
+            name: "duplicate_unavailable",
+            events: (11..=20).map(offline_event).collect(),
+            expected_probe_calls: 1,
+            expected_connections: 1,
+            expected_disconnections: 1,
+        },
+    ];
+
+    for case in cases {
+        let expected_len = case.events.len();
+        let results = process_network_event_batch(case.events, processor.clone()).await;
+        assert_eq!(
+            results.len(),
+            expected_len,
+            "{} should return one result per event",
+            case.name
+        );
+        assert!(
+            results.iter().all(|result| result.success),
+            "{} results should all succeed: {results:?}",
+            case.name
+        );
+        assert_eq!(
+            client.probe_calls(),
+            case.expected_probe_calls,
+            "{} should have expected probe count",
+            case.name
+        );
+
+        let stats = client.get_stats();
+        assert_eq!(
+            stats.connections, case.expected_connections,
+            "{} should have expected connection count",
+            case.name
+        );
+        assert_eq!(
+            stats.disconnections, case.expected_disconnections,
+            "{} should have expected disconnection count",
+            case.name
+        );
+    }
 }
 
 #[tokio::test]
@@ -906,259 +1013,218 @@ fn test_batch_action_uses_latest_network_state_event() {
 }
 
 #[test]
-fn test_connection_supervisor_converges_mobile_facts_to_action() {
-    let mut supervisor = ConnectionSupervisor::new();
+fn test_connection_supervisor_fact_matrix() {
+    struct Case {
+        name: &'static str,
+        facts: Vec<ConnectionFact>,
+        expected: NetworkRecoveryAction,
+    }
 
-    supervisor.submit_event(&background_event());
-    assert_eq!(
-        supervisor.reconcile(),
-        NetworkRecoveryAction::Noop,
-        "background/inactive lifecycle facts should not clean up or reconnect by themselves"
-    );
-
-    supervisor.submit_event(&foreground_event(5_000));
-    assert_eq!(
-        supervisor.reconcile(),
-        NetworkRecoveryAction::Probe,
-        "short foreground return should only probe when no network fact is known"
-    );
-
-    supervisor.submit_event(&online_event(1));
-    assert_eq!(
-        supervisor.reconcile(),
-        NetworkRecoveryAction::Restore,
-        "online network fact should restore connections"
-    );
-}
-
-#[test]
-fn test_connection_supervisor_cleanup_fact_suppresses_later_restore() {
-    let mut supervisor = ConnectionSupervisor::new();
-
-    supervisor.submit_fact(ConnectionFact::CleanupRequested(CleanupReason::UserLogout));
-    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
-        1,
-        NetworkAvailability::Available,
-        true,
-        false,
-        false,
-    )));
-
-    assert_eq!(
-        supervisor.reconcile(),
-        NetworkRecoveryAction::CleanupOnly,
-        "cleanup-only facts should not be converted into restore by later online/path facts"
-    );
-}
-
-#[test]
-fn test_connection_supervisor_uses_latest_snapshot_sequence() {
-    let mut supervisor = ConnectionSupervisor::new();
-
-    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
-        2,
-        NetworkAvailability::Available,
-        true,
-        false,
-        true,
-    )));
-    supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
-        1,
-        NetworkAvailability::Unavailable,
-        false,
-        false,
-        false,
-    )));
-
-    assert_eq!(
-        supervisor.reconcile(),
-        NetworkRecoveryAction::Restore,
-        "older offline snapshots should not override newer online snapshots"
-    );
-}
-
-#[test]
-fn test_connection_supervisor_selector_matches_public_selector() {
-    let events = vec![
-        foreground_event(60_000),
-        NetworkEvent::NetworkPathChanged {
-            snapshot: snapshot(2, NetworkAvailability::Available, false, true, false),
+    let cases = vec![
+        Case {
+            name: "background_only",
+            facts: vec![ConnectionFact::AppEnteredBackground],
+            expected: NetworkRecoveryAction::Noop,
+        },
+        Case {
+            name: "short_foreground_without_network_fact",
+            facts: vec![ConnectionFact::AppEnteredForeground {
+                background_duration_ms: 5_000,
+            }],
+            expected: NetworkRecoveryAction::Probe,
+        },
+        Case {
+            name: "foreground_then_online",
+            facts: vec![
+                ConnectionFact::AppEnteredBackground,
+                ConnectionFact::AppEnteredForeground {
+                    background_duration_ms: 5_000,
+                },
+                ConnectionFact::NetworkSnapshotChanged(snapshot(
+                    1,
+                    NetworkAvailability::Available,
+                    true,
+                    false,
+                    false,
+                )),
+            ],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            name: "cleanup_suppresses_later_restore",
+            facts: vec![
+                ConnectionFact::CleanupRequested(CleanupReason::UserLogout),
+                ConnectionFact::NetworkSnapshotChanged(snapshot(
+                    1,
+                    NetworkAvailability::Available,
+                    true,
+                    false,
+                    false,
+                )),
+            ],
+            expected: NetworkRecoveryAction::CleanupOnly,
+        },
+        Case {
+            name: "latest_snapshot_sequence_wins",
+            facts: vec![
+                ConnectionFact::NetworkSnapshotChanged(snapshot(
+                    2,
+                    NetworkAvailability::Available,
+                    true,
+                    false,
+                    true,
+                )),
+                ConnectionFact::NetworkSnapshotChanged(snapshot(
+                    1,
+                    NetworkAvailability::Unavailable,
+                    false,
+                    false,
+                    false,
+                )),
+            ],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            name: "offline_suppresses_forced_reconnect",
+            facts: vec![
+                ConnectionFact::ForceReconnectRequested(ReconnectReason::ManualReconnect),
+                ConnectionFact::NetworkSnapshotChanged(snapshot(
+                    1,
+                    NetworkAvailability::Unavailable,
+                    false,
+                    false,
+                    false,
+                )),
+            ],
+            expected: NetworkRecoveryAction::Offline,
         },
     ];
 
-    assert_eq!(
-        ConnectionSupervisor::select_action(&events),
-        select_network_recovery_action(&events)
-    );
-    assert_eq!(
-        ConnectionSupervisor::select_action(&events),
-        NetworkRecoveryAction::ForceReconnect,
-        "long background foreground return should force a rebuild when network is available"
-    );
-}
-
-#[test]
-fn test_snapshot_and_lifecycle_events_select_expected_actions() {
-    let offline_snapshot = snapshot(1, NetworkAvailability::Unavailable, false, false, false);
-    assert_eq!(
-        select_network_recovery_action(&[NetworkEvent::NetworkPathChanged {
-            snapshot: offline_snapshot,
-        }]),
-        NetworkRecoveryAction::Offline
-    );
-
-    let vpn_snapshot = snapshot(2, NetworkAvailability::Available, true, false, true);
-    assert_eq!(
-        select_network_recovery_action(&[NetworkEvent::NetworkPathChanged {
-            snapshot: vpn_snapshot,
-        }]),
-        NetworkRecoveryAction::Restore
-    );
-
-    assert_eq!(
-        select_network_recovery_action(&[foreground_event(5_000)]),
-        NetworkRecoveryAction::Probe
-    );
-    assert_eq!(
-        select_network_recovery_action(&[foreground_event(60_000)]),
-        NetworkRecoveryAction::ForceReconnect
-    );
-    assert_eq!(
-        select_network_recovery_action(&[NetworkEvent::CleanupConnections {
-            reason: CleanupReason::AppTerminating
-        }]),
-        NetworkRecoveryAction::CleanupOnly
-    );
-}
-
-#[test]
-fn test_action_priority_cleanup_offline_and_force_reconnect() {
-    let cleanup_and_online = vec![
-        NetworkEvent::CleanupConnections {
-            reason: CleanupReason::ManualReset,
-        },
-        online_event(1),
-    ];
-    assert_eq!(
-        select_network_recovery_action(&cleanup_and_online),
-        NetworkRecoveryAction::CleanupOnly,
-        "cleanup-only requests must not be turned into reconnects by later online events"
-    );
-
-    let force_reconnect = vec![
-        NetworkEvent::ForceReconnect {
-            reason: ReconnectReason::ManualReconnect,
-        },
-        online_event(1),
-    ];
-    assert_eq!(
-        select_network_recovery_action(&force_reconnect),
-        NetworkRecoveryAction::ForceReconnect
-    );
-
-    let offline_wins = vec![
-        NetworkEvent::ForceReconnect {
-            reason: ReconnectReason::ManualReconnect,
-        },
-        offline_event(1),
-    ];
-    assert_eq!(
-        select_network_recovery_action(&offline_wins),
-        NetworkRecoveryAction::Offline,
-        "offline fact should suppress forced reconnect in the same settled batch"
-    );
+    for case in cases {
+        let mut supervisor = ConnectionSupervisor::new();
+        for fact in case.facts {
+            supervisor.submit_fact(fact);
+        }
+        assert_eq!(
+            supervisor.reconcile(),
+            case.expected,
+            "{} selected unexpected action",
+            case.name
+        );
+    }
 }
 
 #[tokio::test]
-async fn test_batch_cleanup_connections_wins_without_implicit_reconnect() {
-    let client = Arc::new(FakeSignalingClient::new());
-    client.connect().await.expect("initial connect");
+async fn test_cleanup_batches_disconnect_without_reconnect() {
+    struct Case {
+        name: &'static str,
+        events: Vec<NetworkEvent>,
+        delayed_connect: bool,
+        timeout: Option<Duration>,
+    }
 
-    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
-        client.clone(),
-        None,
-        DebounceConfig {
-            window: Duration::from_millis(500),
+    let cases = vec![
+        Case {
+            name: "cleanup_with_available_and_wifi",
+            events: vec![
+                NetworkEvent::CleanupConnections {
+                    reason: CleanupReason::ManualReset,
+                },
+                online_event(1),
+                wifi_event(2),
+            ],
+            delayed_connect: false,
+            timeout: None,
         },
-    ));
-
-    let events = vec![
-        NetworkEvent::CleanupConnections {
-            reason: CleanupReason::ManualReset,
+        Case {
+            name: "cleanup_with_available_does_not_enter_reconnect_backoff",
+            events: vec![
+                NetworkEvent::CleanupConnections {
+                    reason: CleanupReason::ManualReset,
+                },
+                online_event(1),
+            ],
+            delayed_connect: true,
+            timeout: Some(Duration::from_millis(250)),
         },
-        online_event(1),
-        wifi_event(2),
     ];
-    assert_eq!(
-        select_network_recovery_action(&events),
-        NetworkRecoveryAction::CleanupOnly
-    );
 
-    let results = process_network_event_batch(events, processor).await;
+    for case in cases {
+        let client = if case.delayed_connect {
+            let client = Arc::new(FakeSignalingClient::new_with_delays(
+                Duration::from_secs(5),
+                Duration::ZERO,
+            ));
+            client.publish_connected();
+            client
+        } else {
+            let client = Arc::new(FakeSignalingClient::new());
+            client.connect().await.expect("initial connect");
+            client
+        };
 
-    assert_eq!(results.len(), 3, "each merged request should get a result");
-    assert!(results.iter().all(|result| result.success));
-    assert!(!client.is_connected(), "cleanup only should not reconnect");
+        let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+            client.clone(),
+            None,
+            DebounceConfig {
+                window: Duration::from_millis(500),
+            },
+        ));
 
-    let stats = client.get_stats();
-    assert_eq!(
-        stats.connections, 1,
-        "cleanup only should not reconnect after the initial connection"
-    );
-    assert_eq!(
-        stats.disconnections, 1,
-        "cleanup only should preserve exactly one signaling disconnect"
-    );
-    assert_eq!(client.probe_calls(), 0, "cleanup only should not probe");
-}
+        assert_eq!(
+            select_network_recovery_action(&case.events),
+            NetworkRecoveryAction::CleanupOnly,
+            "{} should select cleanup only",
+            case.name
+        );
 
-#[tokio::test]
-async fn test_cleanup_available_batch_does_not_reconnect() {
-    let client = Arc::new(FakeSignalingClient::new_with_delays(
-        Duration::from_secs(5),
-        Duration::ZERO,
-    ));
-    client.publish_connected();
+        let expected_len = case.events.len();
+        let results = match case.timeout {
+            Some(timeout) => {
+                tokio::time::timeout(timeout, process_network_event_batch(case.events, processor))
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!(
+                            "{} must not be blocked by the regular reconnect backoff path",
+                            case.name
+                        )
+                    })
+            }
+            None => process_network_event_batch(case.events, processor).await,
+        };
 
-    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
-        client.clone(),
-        None,
-        DebounceConfig {
-            window: Duration::from_millis(500),
-        },
-    ));
+        assert_eq!(
+            results.len(),
+            expected_len,
+            "{} should return one result per merged request",
+            case.name
+        );
+        assert!(
+            results.iter().all(|result| result.success),
+            "{} results should all succeed: {results:?}",
+            case.name
+        );
+        assert!(!client.is_connected(), "{} should not reconnect", case.name);
+        assert_eq!(
+            client.connect_once_calls(),
+            0,
+            "{} should not connect_once",
+            case.name
+        );
+        assert_eq!(client.probe_calls(), 0, "{} should not probe", case.name);
 
-    let events = vec![
-        NetworkEvent::CleanupConnections {
-            reason: CleanupReason::ManualReset,
-        },
-        online_event(1),
-    ];
-    assert_eq!(
-        select_network_recovery_action(&events),
-        NetworkRecoveryAction::CleanupOnly
-    );
-
-    let results = tokio::time::timeout(
-        Duration::from_millis(250),
-        process_network_event_batch(events, processor),
-    )
-    .await
-    .expect("network recovery must not be blocked by the regular reconnect backoff path");
-
-    assert_eq!(results.len(), 2, "each merged request should get a result");
-    assert!(results.iter().all(|result| result.success));
-    assert!(!client.is_connected(), "cleanup only should not reconnect");
-    assert_eq!(
-        client.connect_once_calls(),
-        0,
-        "cleanup only should not connect"
-    );
-
-    let stats = client.get_stats();
-    assert_eq!(stats.connections, 1);
-    assert_eq!(stats.disconnections, 1);
-    assert_eq!(client.probe_calls(), 0);
+        let stats = client.get_stats();
+        assert_eq!(
+            stats.connections, 1,
+            "{} initial connection only",
+            case.name
+        );
+        assert_eq!(
+            stats.disconnections, 1,
+            "{} should preserve exactly one signaling disconnect",
+            case.name
+        );
+    }
 }
 
 #[tokio::test]

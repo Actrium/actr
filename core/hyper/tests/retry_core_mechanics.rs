@@ -385,6 +385,41 @@ fn transport_with_paused_builder() -> PausedBuilderFixture {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CreateCancelAction {
+    Cleanup,
+    Shutdown,
+}
+
+impl CreateCancelAction {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Cleanup => "cleanup",
+            Self::Shutdown => "shutdown",
+        }
+    }
+
+    fn payload(self) -> &'static [u8] {
+        match self {
+            Self::Cleanup => b"cleanup-race",
+            Self::Shutdown => b"shutdown-race",
+        }
+    }
+
+    async fn close(self, transport: &PeerTransport, dest: &Dest) {
+        match self {
+            Self::Cleanup => transport
+                .close_transport(dest)
+                .await
+                .expect("cleanup close should be idempotent"),
+            Self::Shutdown => transport
+                .close_all()
+                .await
+                .expect("shutdown close_all should be idempotent"),
+        }
+    }
+}
+
 fn envelope(request_id: &str) -> RpcEnvelope {
     envelope_with_timeout(request_id, 30_000)
 }
@@ -1255,111 +1290,65 @@ async fn continuous_requests_during_mobile_event_storm_complete_without_pending_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn create_transport_cancelled_by_cleanup_does_not_leave_stale_dest() {
-    let f = transport_with_paused_builder();
-    let transport = f.transport;
-    let stats = f.stats;
-    let started = f.started;
-    let release = f.release;
-    let target = make_actor_id(2);
-    let dest = Dest::actor(target);
+async fn create_transport_cancelled_by_close_action_does_not_leave_stale_dest() {
+    for action in [CreateCancelAction::Cleanup, CreateCancelAction::Shutdown] {
+        let f = transport_with_paused_builder();
+        let transport = f.transport;
+        let stats = f.stats;
+        let started = f.started;
+        let release = f.release;
+        let target = make_actor_id(2);
+        let dest = Dest::actor(target);
 
-    let send_task = tokio::spawn({
-        let transport = transport.clone();
-        let dest = dest.clone();
-        async move {
-            transport
-                .send(&dest, PayloadType::RpcReliable, b"cleanup-race")
-                .await
-        }
-    });
+        let send_task = tokio::spawn({
+            let transport = transport.clone();
+            let dest = dest.clone();
+            async move {
+                transport
+                    .send(&dest, PayloadType::RpcReliable, action.payload())
+                    .await
+            }
+        });
 
-    tokio::time::timeout(Duration::from_secs(1), started.notified())
-        .await
-        .expect("connection creation should start");
-    assert!(
-        transport.is_connecting(&dest).await,
-        "destination should be in Connecting state before cleanup"
-    );
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("connection creation should start");
+        assert!(
+            transport.is_connecting(&dest).await,
+            "destination should be in Connecting state before {}",
+            action.name()
+        );
 
-    transport
-        .close_transport(&dest)
-        .await
-        .expect("cleanup close should be idempotent");
+        action.close(&transport, &dest).await;
 
-    let err = tokio::time::timeout(Duration::from_secs(1), send_task)
-        .await
-        .expect("cancelled create should finish promptly")
-        .expect("send task should not panic")
-        .expect_err("send should fail after cleanup cancels connection creation");
-    assert!(
-        err.to_string().contains("cancelled") || err.to_string().contains("closed"),
-        "unexpected create cancellation error: {err}"
-    );
+        let result = tokio::time::timeout(Duration::from_secs(1), send_task)
+            .await
+            .unwrap_or_else(|_| panic!("{}-cancelled create should finish promptly", action.name()))
+            .expect("send task should not panic");
+        let err = match result {
+            Ok(_) => panic!(
+                "send should fail after {} cancels connection creation",
+                action.name()
+            ),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("cancelled") || err.to_string().contains("closed"),
+            "unexpected {} cancellation error: {err}",
+            action.name()
+        );
 
-    release.notify_waiters();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+        release.notify_waiters();
+        tokio::time::sleep(Duration::from_millis(50)).await;
 
-    assert_eq!(
-        transport.dest_count().await,
-        0,
-        "cleanup during connection creation must not leave a stale DestTransport"
-    );
-    assert_eq!(stats.create_calls.load(Ordering::SeqCst), 1);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn create_transport_cancelled_by_shutdown_does_not_leave_stale_dest() {
-    let f = transport_with_paused_builder();
-    let transport = f.transport;
-    let stats = f.stats;
-    let started = f.started;
-    let release = f.release;
-    let target = make_actor_id(2);
-    let dest = Dest::actor(target);
-
-    let send_task = tokio::spawn({
-        let transport = transport.clone();
-        let dest = dest.clone();
-        async move {
-            transport
-                .send(&dest, PayloadType::RpcReliable, b"shutdown-race")
-                .await
-        }
-    });
-
-    tokio::time::timeout(Duration::from_secs(1), started.notified())
-        .await
-        .expect("connection creation should start");
-    assert!(
-        transport.is_connecting(&dest).await,
-        "destination should be in Connecting state before shutdown"
-    );
-
-    transport
-        .close_all()
-        .await
-        .expect("shutdown close_all should be idempotent");
-
-    let err = tokio::time::timeout(Duration::from_secs(1), send_task)
-        .await
-        .expect("shutdown-cancelled create should finish promptly")
-        .expect("send task should not panic")
-        .expect_err("send should fail after shutdown cancels connection creation");
-    assert!(
-        err.to_string().contains("cancelled") || err.to_string().contains("closed"),
-        "unexpected shutdown cancellation error: {err}"
-    );
-
-    release.notify_waiters();
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    assert_eq!(
-        transport.dest_count().await,
-        0,
-        "shutdown during connection creation must not leave a stale DestTransport"
-    );
-    assert_eq!(stats.create_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            transport.dest_count().await,
+            0,
+            "{} during connection creation must not leave a stale DestTransport",
+            action.name()
+        );
+        assert_eq!(stats.create_calls.load(Ordering::SeqCst), 1);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

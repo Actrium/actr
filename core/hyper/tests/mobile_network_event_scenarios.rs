@@ -700,93 +700,109 @@ fn test_ios_documented_network_scenarios() {
 }
 
 #[test]
-fn test_mobile_replay_ignores_late_old_snapshot_sequences() {
-    let android_old_lost_late = vec![
-        network_event(10, true, false, true),
-        wifi_event(11),
-        offline_event(9),
+fn test_mobile_replay_cases_select_expected_actions() {
+    struct Case {
+        name: &'static str,
+        events: Vec<NetworkEvent>,
+        expected: NetworkRecoveryAction,
+    }
+
+    let cases = vec![
+        Case {
+            name: "android_old_lost_late",
+            events: vec![
+                network_event(10, true, false, true),
+                wifi_event(11),
+                offline_event(9),
+            ],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            name: "ios_unsatisfied_gap_restored",
+            events: vec![
+                offline_event(20),
+                network_event(21, true, false, true),
+                wifi_event(22),
+            ],
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            name: "short_foreground_online",
+            events: materialize_events(&[FS, A, TW]),
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            name: "long_foreground_online",
+            events: materialize_events(&[FL, A, TW]),
+            expected: NetworkRecoveryAction::ForceReconnect,
+        },
+        Case {
+            name: "long_foreground_offline",
+            events: materialize_events(&[FL, L]),
+            expected: NetworkRecoveryAction::Offline,
+        },
+        Case {
+            name: "cleanup_path_force",
+            events: materialize_events(&[CC, A, FR]),
+            expected: NetworkRecoveryAction::CleanupOnly,
+        },
     ];
-    assert_eq!(
-        select_network_recovery_action(&android_old_lost_late),
-        NetworkRecoveryAction::Restore,
-        "late old Android lost callback must not override a newer available snapshot"
-    );
 
-    let ios_unsatisfied_gap_restored = vec![
-        offline_event(20),
-        network_event(21, true, false, true),
-        wifi_event(22),
-    ];
-    assert_eq!(
-        select_network_recovery_action(&ios_unsatisfied_gap_restored),
-        NetworkRecoveryAction::Restore,
-        "iOS unsatisfied gap should restore when the latest sequence is available"
-    );
-}
-
-#[test]
-fn test_mobile_replay_lifecycle_and_path_batch_priority() {
-    let short_foreground_online = materialize_events(&[FS, A, TW]);
-    assert_eq!(
-        select_network_recovery_action(&short_foreground_online),
-        NetworkRecoveryAction::Restore,
-        "short foreground plus online path should restore without force reconnect"
-    );
-
-    let long_foreground_online = materialize_events(&[FL, A, TW]);
-    assert_eq!(
-        select_network_recovery_action(&long_foreground_online),
-        NetworkRecoveryAction::ForceReconnect,
-        "long foreground plus online path should force cleanup and reconnect"
-    );
-
-    let long_foreground_offline = materialize_events(&[FL, L]);
-    assert_eq!(
-        select_network_recovery_action(&long_foreground_offline),
-        NetworkRecoveryAction::Offline,
-        "offline path must suppress long-background force reconnect in the same batch"
-    );
-
-    let cleanup_path_force = materialize_events(&[CC, A, FR]);
-    assert_eq!(
-        select_network_recovery_action(&cleanup_path_force),
-        NetworkRecoveryAction::CleanupOnly,
-        "cleanup-only commands must not become reconnects because a path or force event is nearby"
-    );
+    for case in cases {
+        assert_eq!(
+            select_network_recovery_action(&case.events),
+            case.expected,
+            "{} selected unexpected action for {:?}",
+            case.name,
+            case.events
+        );
+    }
 }
 
 #[test]
 fn test_mobile_jsonl_replay_maps_real_log_shape_to_recovery_actions() {
-    let android_old_lost_late = r#"
+    struct Case {
+        name: &'static str,
+        jsonl: &'static str,
+        expected: NetworkRecoveryAction,
+    }
+
+    let cases = [
+        Case {
+            name: "android_old_lost_late",
+            jsonl: r#"
 {"case_id":"L3-A06","platform":"android","t_ms":1,"network_snapshot":{"sequence":10,"availability":"Available","transport":{"cellular":true}}}
 {"case_id":"L3-A06","platform":"android","t_ms":2,"network_snapshot":{"sequence":11,"availability":"Available","transport":{"wifi":true}}}
 {"case_id":"L3-A06","platform":"android","t_ms":3,"network_snapshot":{"sequence":9,"availability":"Unavailable","transport":{}}}
-"#;
-    assert_eq!(
-        select_network_recovery_action(&parse_mobile_jsonl_events(android_old_lost_late)),
-        NetworkRecoveryAction::Restore,
-        "old Android lost callback in JSONL must not override a newer available snapshot"
-    );
-
-    let ios_long_foreground_online = r#"
+"#,
+            expected: NetworkRecoveryAction::Restore,
+        },
+        Case {
+            name: "ios_long_foreground_online",
+            jsonl: r#"
 {"case_id":"L3-I14","platform":"ios","t_ms":1,"lifecycle_event":{"state":"Foreground","background_duration_ms":65000}}
 {"case_id":"L3-I14","platform":"ios","t_ms":2,"network_snapshot":{"sequence":22,"availability":"Available","transport":{"wifi":true},"is_expensive":false,"is_constrained":false}}
-"#;
-    assert_eq!(
-        select_network_recovery_action(&parse_mobile_jsonl_events(ios_long_foreground_online)),
-        NetworkRecoveryAction::ForceReconnect,
-        "long foreground plus online JSONL should force cleanup and reconnect"
-    );
-
-    let cleanup_suppresses_delayed_path = r#"
+"#,
+            expected: NetworkRecoveryAction::ForceReconnect,
+        },
+        Case {
+            name: "cleanup_suppresses_delayed_path",
+            jsonl: r#"
 {"case_id":"RC-27","platform":"ios","t_ms":1,"cleanup_command":{"reason":"UserLogout"}}
 {"case_id":"RC-27","platform":"ios","t_ms":2,"network_snapshot":{"sequence":30,"availability":"Available","transport":{"wifi":true}}}
-"#;
-    assert_eq!(
-        select_network_recovery_action(&parse_mobile_jsonl_events(cleanup_suppresses_delayed_path)),
-        NetworkRecoveryAction::CleanupOnly,
-        "cleanup command from JSONL should suppress delayed path callbacks in the same batch"
-    );
+"#,
+            expected: NetworkRecoveryAction::CleanupOnly,
+        },
+    ];
+
+    for case in cases {
+        assert_eq!(
+            select_network_recovery_action(&parse_mobile_jsonl_events(case.jsonl)),
+            case.expected,
+            "{} JSONL selected unexpected action",
+            case.name
+        );
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

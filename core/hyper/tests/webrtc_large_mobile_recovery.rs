@@ -849,7 +849,9 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
     release_send.notify_waiters();
     drop(hook_guard);
 
-    let send_result = tokio::time::timeout(Duration::from_secs(12), send_task)
+    // PeerGate bounds DataStream sends at 15s; the assertion window must allow
+    // the production timeout to fire instead of racing it with a shorter test timeout.
+    let send_result = tokio::time::timeout(Duration::from_secs(20), send_task)
         .await
         .expect("in-flight DataStream send should not hang after long offline")
         .expect("in-flight DataStream task should not panic");

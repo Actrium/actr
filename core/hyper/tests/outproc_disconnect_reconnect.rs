@@ -432,6 +432,105 @@ async fn force_reconnect_and_wait_for_new_session(
     }
 }
 
+#[derive(Clone, Copy)]
+enum LateOldSessionEvent {
+    Failed,
+    Closed,
+    Ready,
+}
+
+impl LateOldSessionEvent {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Failed => "old_failed",
+            Self::Closed => "old_closed",
+            Self::Ready => "old_ready",
+        }
+    }
+
+    fn reconnect_prefix(self) -> &'static str {
+        match self {
+            Self::Failed => "rc09_force_reconnect",
+            Self::Closed => "rc10_force_reconnect",
+            Self::Ready => "rc11_force_reconnect",
+        }
+    }
+
+    fn verification_prefix(self) -> &'static str {
+        match self {
+            Self::Failed => "rc09_late_failed_new_session_still_usable",
+            Self::Closed => "rc10_late_closed_new_session_still_usable",
+            Self::Ready => "rc11_late_ready_new_session_still_usable",
+        }
+    }
+
+    fn settle_delay(self) -> Duration {
+        match self {
+            Self::Closed => Duration::from_millis(300),
+            Self::Failed | Self::Ready => Duration::from_millis(150),
+        }
+    }
+
+    fn inject(self, harness: &TestHarness, peer_serial: u64, target_id: &ActrId, session_id: u64) {
+        match self {
+            Self::Failed => {
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::StateChanged {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        state: ConnectionState::Failed,
+                    });
+            }
+            Self::Closed => {
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::DataChannelClosed {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        payload_type: PayloadType::RpcReliable,
+                    });
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::StateChanged {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        state: ConnectionState::Closed,
+                    });
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::ConnectionClosed {
+                        peer_id: target_id.clone(),
+                        session_id,
+                    });
+            }
+            Self::Ready => {
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::DataChannelOpened {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        payload_type: PayloadType::RpcReliable,
+                    });
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::IceRestartCompleted {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        success: true,
+                    });
+                harness
+                    .peer(peer_serial)
+                    .send_event(ConnectionEvent::StateChanged {
+                        peer_id: target_id.clone(),
+                        session_id,
+                        state: ConnectionState::Connected,
+                    });
+            }
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_unreachable_peer_request_fails_bounded_and_clears_pending() {
     init_tracing();
@@ -479,6 +578,14 @@ async fn test_l2_signaling_unreachable_e2e_fails_bounded_without_pending_leak() 
     harness.connect(100, 200).await;
 
     harness.simulate_disconnect();
+    for serial in [100, 200] {
+        harness
+            .peer(serial)
+            .signaling_client
+            .disconnect()
+            .await
+            .expect("test should explicitly disconnect signaling before server shutdown");
+    }
     harness.server.shutdown().await;
     harness
         .vnet
@@ -888,198 +995,69 @@ async fn test_duplicate_network_recovery_same_session_is_coalesced() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_old_failed_event_late_does_not_reblock_new_session() {
+async fn test_late_old_session_events_do_not_affect_new_session() {
     init_tracing();
 
-    let mut harness = TestHarness::new().await;
-    harness.add_peer(100).await;
-    harness.add_peer(200).await;
-    harness.connect(100, 200).await;
+    for case in [
+        LateOldSessionEvent::Failed,
+        LateOldSessionEvent::Closed,
+        LateOldSessionEvent::Ready,
+    ] {
+        let mut harness = TestHarness::new().await;
+        harness.add_peer(100).await;
+        harness.add_peer(200).await;
+        harness.connect(100, 200).await;
 
-    let target_id = harness.peer(200).id.clone();
-    let old_session_id = harness
-        .peer(100)
-        .coordinator
-        .get_peer_session_id(&target_id)
-        .await
-        .expect("initial session should exist");
-
-    let new_session_id = force_reconnect_and_wait_for_new_session(
-        &harness,
-        100,
-        200,
-        old_session_id,
-        "rc09_force_reconnect",
-    )
-    .await;
-
-    harness.peer(100).send_event(ConnectionEvent::StateChanged {
-        peer_id: target_id.clone(),
-        session_id: old_session_id,
-        state: ConnectionState::Failed,
-    });
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    assert_eq!(
-        harness
+        let target_id = harness.peer(200).id.clone();
+        let old_session_id = harness
             .peer(100)
             .coordinator
             .get_peer_session_id(&target_id)
-            .await,
-        Some(new_session_id),
-        "late old failed event must not replace the active session"
-    );
+            .await
+            .expect("initial session should exist");
 
-    let response = expect_request_eventually_ok(
-        &harness,
-        100,
-        200,
-        "rc09_late_failed_new_session_still_usable",
-        Duration::from_secs(10),
-        2_000,
-    )
-    .await;
-    assert!(!response.is_empty());
-}
+        let new_session_id = force_reconnect_and_wait_for_new_session(
+            &harness,
+            100,
+            200,
+            old_session_id,
+            case.reconnect_prefix(),
+        )
+        .await;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_old_closed_event_late_does_not_close_new_session() {
-    init_tracing();
+        case.inject(&harness, 100, &target_id, old_session_id);
+        tokio::time::sleep(case.settle_delay()).await;
 
-    let mut harness = TestHarness::new().await;
-    harness.add_peer(100).await;
-    harness.add_peer(200).await;
-    harness.connect(100, 200).await;
+        assert_eq!(
+            harness
+                .peer(100)
+                .coordinator
+                .get_peer_session_id(&target_id)
+                .await,
+            Some(new_session_id),
+            "{} late old event must not replace or close the active session",
+            case.name()
+        );
 
-    let target_id = harness.peer(200).id.clone();
-    let old_session_id = harness
-        .peer(100)
-        .coordinator
-        .get_peer_session_id(&target_id)
-        .await
-        .expect("initial session should exist");
+        if matches!(case, LateOldSessionEvent::Closed) {
+            assert!(
+                harness.peer(100).transport_manager.dest_count().await >= 1,
+                "{} late old event must not remove the current DestTransport",
+                case.name()
+            );
+        }
 
-    let new_session_id = force_reconnect_and_wait_for_new_session(
-        &harness,
-        100,
-        200,
-        old_session_id,
-        "rc10_force_reconnect",
-    )
-    .await;
-    harness
-        .peer(100)
-        .send_event(ConnectionEvent::DataChannelClosed {
-            peer_id: target_id.clone(),
-            session_id: old_session_id,
-            payload_type: PayloadType::RpcReliable,
-        });
-    harness.peer(100).send_event(ConnectionEvent::StateChanged {
-        peer_id: target_id.clone(),
-        session_id: old_session_id,
-        state: ConnectionState::Closed,
-    });
-    harness
-        .peer(100)
-        .send_event(ConnectionEvent::ConnectionClosed {
-            peer_id: target_id.clone(),
-            session_id: old_session_id,
-        });
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    assert_eq!(
-        harness
-            .peer(100)
-            .coordinator
-            .get_peer_session_id(&target_id)
-            .await,
-        Some(new_session_id),
-        "late old closed event must not close the active session"
-    );
-    assert!(
-        harness.peer(100).transport_manager.dest_count().await >= 1,
-        "late old closed event must not remove the current DestTransport"
-    );
-
-    let response = expect_request_eventually_ok(
-        &harness,
-        100,
-        200,
-        "rc10_late_closed_new_session_still_usable",
-        Duration::from_secs(10),
-        2_000,
-    )
-    .await;
-    assert!(!response.is_empty());
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_old_ready_event_late_does_not_switch_back_to_old_transport() {
-    init_tracing();
-
-    let mut harness = TestHarness::new().await;
-    harness.add_peer(100).await;
-    harness.add_peer(200).await;
-    harness.connect(100, 200).await;
-
-    let target_id = harness.peer(200).id.clone();
-    let old_session_id = harness
-        .peer(100)
-        .coordinator
-        .get_peer_session_id(&target_id)
-        .await
-        .expect("initial session should exist");
-
-    let new_session_id = force_reconnect_and_wait_for_new_session(
-        &harness,
-        100,
-        200,
-        old_session_id,
-        "rc11_force_reconnect",
-    )
-    .await;
-
-    harness
-        .peer(100)
-        .send_event(ConnectionEvent::DataChannelOpened {
-            peer_id: target_id.clone(),
-            session_id: old_session_id,
-            payload_type: PayloadType::RpcReliable,
-        });
-    harness
-        .peer(100)
-        .send_event(ConnectionEvent::IceRestartCompleted {
-            peer_id: target_id.clone(),
-            session_id: old_session_id,
-            success: true,
-        });
-    harness.peer(100).send_event(ConnectionEvent::StateChanged {
-        peer_id: target_id.clone(),
-        session_id: old_session_id,
-        state: ConnectionState::Connected,
-    });
-    tokio::time::sleep(Duration::from_millis(150)).await;
-
-    assert_eq!(
-        harness
-            .peer(100)
-            .coordinator
-            .get_peer_session_id(&target_id)
-            .await,
-        Some(new_session_id),
-        "late old ready events must not switch back to old session"
-    );
-
-    let response = expect_request_eventually_ok(
-        &harness,
-        100,
-        200,
-        "rc11_late_ready_new_session_still_usable",
-        Duration::from_secs(10),
-        2_000,
-    )
-    .await;
-    assert!(!response.is_empty());
+        let response = expect_request_eventually_ok(
+            &harness,
+            100,
+            200,
+            case.verification_prefix(),
+            Duration::from_secs(10),
+            2_000,
+        )
+        .await;
+        assert!(!response.is_empty(), "{} should remain usable", case.name());
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
