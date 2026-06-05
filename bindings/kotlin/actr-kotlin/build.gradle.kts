@@ -5,27 +5,32 @@ plugins {
     id("maven-publish")
 }
 
-group = providers
-    .gradleProperty("actrGroup")
-    .orElse("io.actrium")
-    .get()
+group =
+    providers
+        .gradleProperty("actrGroup")
+        .orElse("io.actrium")
+        .get()
 
-version = providers
-    .gradleProperty("actrVersion")
-    .orElse("0.0.0-dev")
-    .get()
+version =
+    providers
+        .gradleProperty("actrVersion")
+        .orElse("0.0.0-dev")
+        .get()
 
-val publishUrl = providers
-    .gradleProperty("actrPublishUrl")
-    .orElse("https://maven.pkg.github.com/Actrium/actr-kotlin-package-sync")
+val publishUrl =
+    providers
+        .gradleProperty("actrPublishUrl")
+        .orElse("https://maven.pkg.github.com/Actrium/actr-kotlin-package-sync")
 
-val githubPackagesUsername = providers
-    .gradleProperty("gpr.user")
-    .orElse(providers.environmentVariable("GITHUB_ACTOR"))
+val githubPackagesUsername =
+    providers
+        .gradleProperty("gpr.user")
+        .orElse(providers.environmentVariable("GITHUB_ACTOR"))
 
-val githubPackagesToken = providers
-    .gradleProperty("gpr.key")
-    .orElse(providers.environmentVariable("GITHUB_TOKEN"))
+val githubPackagesToken =
+    providers
+        .gradleProperty("gpr.key")
+        .orElse(providers.environmentVariable("GITHUB_TOKEN"))
 
 android {
     namespace = "io.actorrtc.actr"

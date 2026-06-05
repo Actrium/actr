@@ -34,14 +34,14 @@ import io.actor_rtc.actr.RpcEnvelopeBridge
 interface StreamClientHandler {
     /** RPC method: PrepareClientStream */
     suspend fun prepare_client_stream(
-            request: PrepareClientStreamRequest,
-            ctx: ContextBridge
+        request: PrepareClientStreamRequest,
+        ctx: ContextBridge,
     ): PrepareStreamResponse
 
     /** RPC method: StartStream */
     suspend fun start_stream(
-            request: ClientStartStreamRequest,
-            ctx: ContextBridge
+        request: ClientStartStreamRequest,
+        ctx: ContextBridge,
     ): ClientStartStreamResponse
 }
 
@@ -61,11 +61,11 @@ object StreamClientDispatcher {
      * @return The serialized response bytes
      */
     suspend fun dispatch(
-            handler: StreamClientHandler,
-            ctx: ContextBridge,
-            envelope: RpcEnvelopeBridge
-    ): ByteArray {
-        return when (envelope.routeKey) {
+        handler: StreamClientHandler,
+        ctx: ContextBridge,
+        envelope: RpcEnvelopeBridge,
+    ): ByteArray =
+        when (envelope.routeKey) {
             "data_stream_peer.StreamClient.PrepareClientStream" -> {
                 val request = PrepareClientStreamRequest.parseFrom(envelope.payload)
                 val response = handler.prepare_client_stream(request, ctx)
@@ -78,5 +78,4 @@ object StreamClientDispatcher {
             }
             else -> throw IllegalArgumentException("Unknown route key: ${envelope.routeKey}")
         }
-    }
 }

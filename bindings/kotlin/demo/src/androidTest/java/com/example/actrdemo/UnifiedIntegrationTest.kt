@@ -19,25 +19,24 @@ import androidx.test.platform.app.InstrumentationRegistry
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
 import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
 import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.dsl.*
-import java.io.File
+import io.actor_rtc.actr.dsl.ActrRef
+import io.actor_rtc.actr.dsl.awaitShutdown
+import io.actor_rtc.actr.dsl.createActrNode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 
 @RunWith(AndroidJUnit4::class)
 class UnifiedIntegrationTest {
-
     companion object {
         private const val TAG = "UnifiedIntegrationTest"
     }
 
-    private fun getContext(): Context {
-        return InstrumentationRegistry.getInstrumentation().targetContext
-    }
+    private fun getContext(): Context = InstrumentationRegistry.getInstrumentation().targetContext
 
     private fun copyAssetToInternalStorage(assetName: String): String {
         // Source: Test Assets (src/androidTest/assets)
@@ -58,11 +57,11 @@ class UnifiedIntegrationTest {
     private fun copyFirstPackageAssetToInternalStorage(): String {
         val sourceContext = InstrumentationRegistry.getInstrumentation().context
         val packageName =
-                sourceContext
-                        .assets
-                        .list("")!!
-                        .firstOrNull { it.endsWith(".actr") }
-                        ?: error("No .actr package found in androidTest assets")
+            sourceContext
+                .assets
+                .list("")!!
+                .firstOrNull { it.endsWith(".actr") }
+                ?: error("No .actr package found in androidTest assets")
         return copyAssetToInternalStorage(packageName)
     }
 
@@ -116,94 +115,96 @@ class UnifiedIntegrationTest {
      * ```
      */
     @Test
-    fun testUnifiedWorkloadWithEchoAndDataStream(): Unit = runBlocking {
-        Log.i(TAG, "=== Starting Unified Integration Test ===")
-        Log.i(TAG, "This test combines Echo RPC and DataStream transfer")
-        val clientConfigPath = copyAssetToInternalStorage("actr.toml")
-        // manifest.lock.toml is required by the runtime now
-        copyAssetToInternalStorage("manifest.lock.toml")
-        val packagePath = copyFirstPackageAssetToInternalStorage()
-        var clientRef: ActrRef? = null
+    fun testUnifiedWorkloadWithEchoAndDataStream(): Unit =
+        runBlocking {
+            Log.i(TAG, "=== Starting Unified Integration Test ===")
+            Log.i(TAG, "This test combines Echo RPC and DataStream transfer")
+            val clientConfigPath = copyAssetToInternalStorage("actr.toml")
+            // manifest.lock.toml is required by the runtime now
+            copyAssetToInternalStorage("manifest.lock.toml")
+            val packagePath = copyFirstPackageAssetToInternalStorage()
+            var clientRef: ActrRef? = null
 
-        try {
-            val clientSystem = createActrNode(clientConfigPath, packagePath)
-            clientRef = clientSystem.start()
-            Log.i(TAG, "Client started: ${clientRef.actorId().serialNumber}")
-
-            // Wait for onStart to complete (auto-discover all remote services)
-            delay(2000)
-
-            // ==================== Part 1: Test Echo RPC ====================
-            Log.i(TAG, "")
-            Log.i(TAG, "==================== Part 1: Echo RPC ====================")
-            val testMessage = "Hello from Android Unified Test!"
-            val expectedResponse = "Echo: $testMessage"
-
-            Log.i(TAG, "📞 Sending RPC to EchoService via UnifiedDispatcher...")
-            val echoRequestPayload = encodeEchoRequest(testMessage)
-
-            val echoResponsePayload =
-                    clientRef.call(
-                            "echo.EchoService.Echo",
-                            PayloadType.RPC_RELIABLE,
-                            echoRequestPayload,
-                            30000L
-                    )
-
-            val echoResponse = decodeEchoResponse(echoResponsePayload)
-            Log.i(TAG, "📬 Echo Response: $echoResponse")
-
-            assertEquals("Echo mismatch", expectedResponse, echoResponse)
-            Log.i(TAG, "✅ Echo RPC Test PASSED")
-
-            // ==================== Part 2: Test DataStream Transfer ====================
-            Log.i(TAG, "")
-            Log.i(TAG, "==================== Part 2: DataStream Transfer ====================")
-
-            Log.i(TAG, "📞 Calling StartStream via UnifiedDispatcher (local service)...")
-            val startStreamRequest =
-                    ClientStartStreamRequest.newBuilder()
-                            .setClientId("android-test-client")
-                            .setStreamId("test-stream-${System.currentTimeMillis()}")
-                            .setMessageCount(3)
-                            .build()
-
-            val startStreamResponsePayload =
-                    clientRef.call(
-                            "data_stream_peer.StreamClient.StartStream",
-                            PayloadType.RPC_RELIABLE,
-                            startStreamRequest.toByteArray(),
-                            30000L
-                    )
-
-            val startStreamResponse =
-                    ClientStartStreamResponse.parseFrom(startStreamResponsePayload)
-            Log.i(
-                    TAG,
-                    "📬 StartStream Response: accepted=${startStreamResponse.accepted}, message=${startStreamResponse.message}"
-            )
-
-            assertTrue("Stream transfer should be accepted", startStreamResponse.accepted)
-            Log.i(TAG, "✅ DataStream StartStream Test PASSED")
-
-            // Wait for data stream messages to be sent (3 messages * 1 second each)
-            Log.i(TAG, "⏳ Waiting for data stream messages to be sent...")
-            delay(4000)
-
-            // ==================== Summary ====================
-            Log.i(TAG, "")
-            Log.i(TAG, "==================== Test Summary ====================")
-            Log.i(TAG, "✅ Part 1: Echo RPC - PASSED")
-            Log.i(TAG, "✅ Part 2: DataStream Transfer - PASSED")
-            Log.i(TAG, "")
-            Log.i(TAG, "=== Unified Integration Test PASSED ===")
-        } finally {
             try {
-                clientRef?.shutdown()
-                clientRef?.awaitShutdown()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error during shutdown: ${e.message}")
+                val clientSystem = createActrNode(clientConfigPath, packagePath)
+                clientRef = clientSystem.start()
+                Log.i(TAG, "Client started: ${clientRef.actorId().serialNumber}")
+
+                // Wait for onStart to complete (auto-discover all remote services)
+                delay(2000)
+
+                // ==================== Part 1: Test Echo RPC ====================
+                Log.i(TAG, "")
+                Log.i(TAG, "==================== Part 1: Echo RPC ====================")
+                val testMessage = "Hello from Android Unified Test!"
+                val expectedResponse = "Echo: $testMessage"
+
+                Log.i(TAG, "📞 Sending RPC to EchoService via UnifiedDispatcher...")
+                val echoRequestPayload = encodeEchoRequest(testMessage)
+
+                val echoResponsePayload =
+                    clientRef.call(
+                        "echo.EchoService.Echo",
+                        PayloadType.RPC_RELIABLE,
+                        echoRequestPayload,
+                        30000L,
+                    )
+
+                val echoResponse = decodeEchoResponse(echoResponsePayload)
+                Log.i(TAG, "📬 Echo Response: $echoResponse")
+
+                assertEquals("Echo mismatch", expectedResponse, echoResponse)
+                Log.i(TAG, "✅ Echo RPC Test PASSED")
+
+                // ==================== Part 2: Test DataStream Transfer ====================
+                Log.i(TAG, "")
+                Log.i(TAG, "==================== Part 2: DataStream Transfer ====================")
+
+                Log.i(TAG, "📞 Calling StartStream via UnifiedDispatcher (local service)...")
+                val startStreamRequest =
+                    ClientStartStreamRequest
+                        .newBuilder()
+                        .setClientId("android-test-client")
+                        .setStreamId("test-stream-${System.currentTimeMillis()}")
+                        .setMessageCount(3)
+                        .build()
+
+                val startStreamResponsePayload =
+                    clientRef.call(
+                        "data_stream_peer.StreamClient.StartStream",
+                        PayloadType.RPC_RELIABLE,
+                        startStreamRequest.toByteArray(),
+                        30000L,
+                    )
+
+                val startStreamResponse =
+                    ClientStartStreamResponse.parseFrom(startStreamResponsePayload)
+                Log.i(
+                    TAG,
+                    "📬 StartStream Response: accepted=${startStreamResponse.accepted}, message=${startStreamResponse.message}",
+                )
+
+                assertTrue("Stream transfer should be accepted", startStreamResponse.accepted)
+                Log.i(TAG, "✅ DataStream StartStream Test PASSED")
+
+                // Wait for data stream messages to be sent (3 messages * 1 second each)
+                Log.i(TAG, "⏳ Waiting for data stream messages to be sent...")
+                delay(4000)
+
+                // ==================== Summary ====================
+                Log.i(TAG, "")
+                Log.i(TAG, "==================== Test Summary ====================")
+                Log.i(TAG, "✅ Part 1: Echo RPC - PASSED")
+                Log.i(TAG, "✅ Part 2: DataStream Transfer - PASSED")
+                Log.i(TAG, "")
+                Log.i(TAG, "=== Unified Integration Test PASSED ===")
+            } finally {
+                try {
+                    clientRef?.shutdown()
+                    clientRef?.awaitShutdown()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error during shutdown: ${e.message}")
+                }
             }
         }
-    }
 }

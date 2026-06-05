@@ -21,13 +21,12 @@ import io.actor_rtc.actr.dsl.awaitShutdown
 import io.actor_rtc.actr.dsl.dynamicWorkload
 import io.actor_rtc.actr.dsl.linked
 import io.actorrtc.demo.R
-import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class ServerActivity : AppCompatActivity() {
-
     companion object {
         private const val TAG = "ServerActivity"
     }
@@ -58,7 +57,7 @@ class ServerActivity : AppCompatActivity() {
             try {
                 val configPath = copyAssetToInternalStorage("actr.toml")
                 val actorType =
-                        ActrType(manufacturer = "acme", name = "EchoService", version = "1.0.0")
+                    ActrType(manufacturer = "acme", name = "EchoService", version = "1.0.0")
                 val workload = dynamicWorkload(EchoServerWorkload())
                 val system = linked(configPath, actorType, workload)
                 val ref = system.start()
@@ -111,7 +110,9 @@ class ServerActivity : AppCompatActivity() {
         return outputFile.absolutePath
     }
 
-    private class EchoServerWorkload : WorkloadLifecycleBridge, EchoServiceHandler {
+    private class EchoServerWorkload :
+        WorkloadLifecycleBridge,
+        EchoServiceHandler {
         override suspend fun onStart(ctx: ContextBridge) {
             Log.i(TAG, "EchoServerWorkload.onStart")
         }
@@ -124,17 +125,22 @@ class ServerActivity : AppCompatActivity() {
             Log.i(TAG, "EchoServerWorkload.onStop")
         }
 
-        override suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge) {
+        override suspend fun onError(
+            ctx: ContextBridge,
+            event: ErrorEventBridge,
+        ) {
             Log.e(TAG, "EchoServerWorkload.onError: $event")
         }
 
-        override suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray {
-            return EchoServiceDispatcher.dispatch(this, ctx, envelope)
-        }
+        override suspend fun dispatch(
+            ctx: ContextBridge,
+            envelope: RpcEnvelopeBridge,
+        ): ByteArray = EchoServiceDispatcher.dispatch(this, ctx, envelope)
 
-        override suspend fun echo(request: EchoRequest, ctx: ContextBridge): EchoResponse {
-            return EchoResponse.newBuilder().setReply("Echo: ${request.message}").build()
-        }
+        override suspend fun echo(
+            request: EchoRequest,
+            ctx: ContextBridge,
+        ): EchoResponse = EchoResponse.newBuilder().setReply("Echo: ${request.message}").build()
     }
 
     override fun onDestroy() {
