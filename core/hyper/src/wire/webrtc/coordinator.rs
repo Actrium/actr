@@ -39,7 +39,7 @@ use actr_protocol::{
 use std::collections::{HashMap, hash_map::Entry};
 use std::{
     sync::{
-        Arc,
+        Arc, RwLock as StdRwLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -189,7 +189,7 @@ impl NetworkRecoveryStatus {
 /// WebRTC signaling coordinator
 pub struct WebRtcCoordinator {
     /// Local Actor ID
-    local_id: ActrId,
+    local_id: Arc<StdRwLock<ActrId>>,
 
     /// Local credentials
     credential_state: CredentialState,
@@ -267,7 +267,7 @@ impl WebRtcCoordinator {
         let negotiator = WebRtcNegotiator::new(webrtc_config, credential_state.clone());
 
         Self {
-            local_id,
+            local_id: Arc::new(StdRwLock::new(local_id)),
             credential_state,
             signaling_client,
             negotiator,
@@ -285,6 +285,26 @@ impl WebRtcCoordinator {
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    fn local_id_snapshot(&self) -> ActrId {
+        self.local_id
+            .read()
+            .expect("WebRtcCoordinator local_id lock poisoned")
+            .clone()
+    }
+
+    /// Update the local Actor ID after AIS re-registration assigns a new identity.
+    pub async fn set_local_id(&self, actor_id: ActrId) {
+        *self
+            .local_id
+            .write()
+            .expect("WebRtcCoordinator local_id lock poisoned") = actor_id;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local_id_for_test(&self) -> ActrId {
+        self.local_id_snapshot()
     }
 
     /// Enter a cleanup window. While any guard is alive, outbound sends wait
@@ -1405,13 +1425,14 @@ impl WebRtcCoordinator {
                         }
                     },
                     Some(actr_relay::Payload::RoleAssignment(assign)) => {
+                        let local_id = self.local_id_snapshot();
                         tracing::info!(
                             "🎭 Received RoleAssignment from {:?}, is_offerer={} (source peer), local_id={}",
                             source,
                             assign.is_offerer,
-                            self.local_id,
+                            local_id,
                         );
-                        let peer = if source == self.local_id {
+                        let peer = if source == local_id {
                             target.clone()
                         } else {
                             source.clone()
@@ -1515,7 +1536,7 @@ impl WebRtcCoordinator {
     ) -> ActorResult<()> {
         let credential = self.credential_state.credential().await;
         let relay = ActrRelay {
-            source: self.local_id.clone(),
+            source: self.local_id_snapshot(),
             credential,
             target: target.clone(),
             payload: Some(payload),
@@ -1549,7 +1570,7 @@ impl WebRtcCoordinator {
     /// Acts as the initiator, sending a WebRTC connection request to the target peer
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id, target_id = %target))
+        tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
     pub async fn initiate_connection(
         self: &Arc<Self>,
@@ -1595,7 +1616,7 @@ impl WebRtcCoordinator {
     /// This method includes retry logic for initial connection failures.
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = %target))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
     async fn start_offer_connection(
         self: &Arc<Self>,
@@ -2124,7 +2145,7 @@ impl WebRtcCoordinator {
     /// Supports both initial negotiation and renegotiation.
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id, remote_id = %from))
+        tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id_snapshot(), remote_id = %from))
     )]
     async fn handle_offer(self: &Arc<Self>, from: &ActrId, offer_sdp: String) -> ActorResult<()> {
         // ========== PrepareForIncomingOffer: Clean up existing connection if any ==========
@@ -2799,7 +2820,7 @@ impl WebRtcCoordinator {
     /// Supports retry with exponential backoff on transient errors.
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = %target))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
     pub(crate) async fn send_message(
         self: &Arc<Self>,
@@ -3031,7 +3052,7 @@ impl WebRtcCoordinator {
     /// - `Err`: WebRTC only supports Actor targets, connection cancelled, or connection establishment failed
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = ?dest.as_actor_id().map(|id| id)))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = ?dest.as_actor_id().map(|id| id)))
     )]
     pub(crate) async fn create_connection(
         self: &Arc<Self>,
@@ -3540,7 +3561,7 @@ impl WebRtcCoordinator {
         let target_clone = target.clone();
         let peers_arc = Arc::clone(&self.peers);
         let negotiator = self.negotiator.clone();
-        let local_id = self.local_id.clone();
+        let local_id = self.local_id_snapshot();
         let credential_state = self.credential_state.clone();
         let signaling_client = Arc::clone(&self.signaling_client);
         let coordinator_weak = Arc::downgrade(self);
@@ -4442,7 +4463,7 @@ impl WebRtcCoordinator {
     /// Handle role assignment result
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, peer_id = %peer))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), peer_id = %peer))
     )]
     async fn handle_role_assignment(self: &Arc<Self>, assign: RoleAssignment, peer: ActrId) {
         tracing::debug!(?assign, ?peer, "handle_role_assignment");
@@ -4629,7 +4650,7 @@ impl WebRtcCoordinator {
     /// Initiate role negotiation and await assignment
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = %target))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
     async fn negotiate_role(&self, target: &ActrId) -> ActorResult<bool> {
         let (tx, rx) = oneshot::channel();
@@ -4641,10 +4662,11 @@ impl WebRtcCoordinator {
             .or_default()
             .role_tx = Some(tx);
 
+        let local_id = self.local_id_snapshot();
         let payload = actr_relay::Payload::RoleNegotiation(RoleNegotiation {
-            from: self.local_id.clone(),
+            from: local_id.clone(),
             to: target.clone(),
-            realm_id: self.local_id.realm.realm_id,
+            realm_id: local_id.realm.realm_id,
         });
 
         tracing::debug!("🔄 Sending role negotiation to serial={}", target);
@@ -4742,6 +4764,187 @@ impl WebRtcCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actr_protocol::{
+        AIdCredential, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
+        RouteCandidatesResponse, ServiceAvailabilityState, UnregisterResponse,
+    };
+    use tokio::sync::broadcast;
+
+    fn test_actor_id(serial_number: u64) -> ActrId {
+        ActrId {
+            realm: actr_protocol::Realm { realm_id: 1 },
+            serial_number,
+            r#type: actr_protocol::ActrType {
+                manufacturer: "acme".to_string(),
+                name: "node".to_string(),
+                version: "1.0.0".to_string(),
+            },
+        }
+    }
+
+    fn test_credential() -> AIdCredential {
+        AIdCredential {
+            key_id: 7,
+            claims: Bytes::from_static(b"claims"),
+            signature: Bytes::from(vec![0u8; 64]),
+        }
+    }
+
+    struct CapturingSignalingClient {
+        sent: Mutex<Vec<SignalingEnvelope>>,
+        event_tx: broadcast::Sender<super::super::SignalingEvent>,
+    }
+
+    impl CapturingSignalingClient {
+        fn new() -> Self {
+            let (event_tx, _rx) = broadcast::channel(16);
+            Self {
+                sent: Mutex::new(Vec::new()),
+                event_tx,
+            }
+        }
+
+        async fn last_relay_source(&self) -> ActrId {
+            let sent = self.sent.lock().await;
+            let envelope = sent.last().expect("relay envelope should be sent");
+            let Some(signaling_envelope::Flow::ActrRelay(relay)) = &envelope.flow else {
+                panic!("expected ActrRelay envelope");
+            };
+            relay.source.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SignalingClient for CapturingSignalingClient {
+        async fn connect(&self) -> crate::transport::NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn connect_once(&self) -> crate::transport::NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> crate::transport::NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn send_register_request(
+            &self,
+            _request: RegisterRequest,
+        ) -> crate::transport::NetworkResult<RegisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_unregister_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _reason: Option<String>,
+        ) -> crate::transport::NetworkResult<UnregisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _availability: ServiceAvailabilityState,
+            _power_reserve: f32,
+            _mailbox_backlog: f32,
+        ) -> crate::transport::NetworkResult<Pong> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_route_candidates_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _request: RouteCandidatesRequest,
+        ) -> crate::transport::NetworkResult<RouteCandidatesResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn get_signing_key(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _key_id: u32,
+        ) -> crate::transport::NetworkResult<(u32, Vec<u8>)> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_credential_update_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+        ) -> crate::transport::NetworkResult<RegisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_envelope(
+            &self,
+            envelope: SignalingEnvelope,
+        ) -> crate::transport::NetworkResult<()> {
+            self.sent.lock().await.push(envelope);
+            Ok(())
+        }
+
+        async fn receive_envelope(
+            &self,
+        ) -> crate::transport::NetworkResult<Option<SignalingEnvelope>> {
+            Ok(None)
+        }
+
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn get_stats(&self) -> super::super::SignalingStats {
+            super::super::SignalingStats::default()
+        }
+
+        fn subscribe_events(&self) -> broadcast::Receiver<super::super::SignalingEvent> {
+            self.event_tx.subscribe()
+        }
+
+        async fn set_actor_id(&self, _actor_id: ActrId) {}
+
+        async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+        async fn clear_identity(&self) {}
+    }
+
+    #[tokio::test]
+    async fn relay_source_uses_updated_local_id_after_re_registration() {
+        let initial_id = test_actor_id(1);
+        let renewed_id = test_actor_id(2);
+        let target_id = test_actor_id(99);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let signaling_client = Arc::new(CapturingSignalingClient::new());
+        let coordinator = WebRtcCoordinator::new(
+            initial_id,
+            credential_state,
+            signaling_client.clone(),
+            WebRtcConfig::default(),
+            Arc::new(MediaFrameRegistry::new()),
+        );
+
+        coordinator.set_local_id(renewed_id.clone()).await;
+        coordinator
+            .send_actr_relay(
+                &target_id,
+                actr_relay::Payload::IceCandidate(actr_protocol::IceCandidate {
+                    candidate: "candidate:0 1 UDP 1 127.0.0.1 9 typ host".to_string(),
+                    sdp_mid: None,
+                    sdp_mline_index: None,
+                    username_fragment: None,
+                }),
+            )
+            .await
+            .expect("relay should be sent");
+
+        assert_eq!(signaling_client.last_relay_source().await, renewed_id);
+    }
 
     #[test]
     fn test_exponential_backoff_basic() {

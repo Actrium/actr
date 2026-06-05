@@ -1491,6 +1491,8 @@ impl Inner {
                 let credential_state_for_heartbeat = credential_state.clone();
                 let mailbox_for_heartbeat = self.mailbox.clone();
                 let register_request_for_heartbeat = register_request.clone();
+                let webrtc_coordinator_for_heartbeat = self.webrtc_coordinator.clone();
+                let webrtc_gate_for_heartbeat = self.webrtc_gate.clone();
 
                 // Use interval from registration response, default to 30s
                 let heartbeat_interval_secs = register_ok.signaling_heartbeat_interval_secs;
@@ -1510,6 +1512,8 @@ impl Inner {
                     register_request_for_heartbeat,
                     ais_endpoint_for_heartbeat,
                     node_hook_callback.clone(),
+                    webrtc_coordinator_for_heartbeat,
+                    webrtc_gate_for_heartbeat,
                 ));
                 task_handles.push(heartbeat_handle);
             }

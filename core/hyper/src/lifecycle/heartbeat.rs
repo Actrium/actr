@@ -6,8 +6,8 @@
 use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
 use crate::transport::NetworkError;
-use crate::wire::webrtc::SignalingClient;
-use crate::wire::webrtc::{HookCallback, HookEvent};
+use crate::wire::webrtc::gate::WebRtcGate;
+use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
 use actr_protocol::{ActrId, RegisterRequest, ServiceAvailabilityState};
 use actr_runtime_mailbox::Mailbox;
 use std::sync::Arc;
@@ -118,6 +118,8 @@ async fn send_heartbeat_and_handle_response(
     consecutive_failures: &mut u64,
     ais_endpoint: &str,
     hook_callback: Option<&HookCallback>,
+    webrtc_coordinator: Option<&Arc<WebRtcCoordinator>>,
+    webrtc_gate: Option<&Arc<WebRtcGate>>,
 ) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -175,6 +177,18 @@ async fn send_heartbeat_and_handle_response(
 
             // Return updated ActrId only if it actually changed
             if &new_actor_id != actor_id {
+                if let Some(coordinator) = webrtc_coordinator {
+                    coordinator.set_local_id(new_actor_id.clone()).await;
+                    if let Err(e) = coordinator.close_all_peers().await {
+                        tracing::warn!(
+                            "⚠️ Failed to close WebRTC peers after re-registration: {}",
+                            e
+                        );
+                    }
+                }
+                if let Some(gate) = webrtc_gate {
+                    gate.set_local_id(new_actor_id.clone()).await;
+                }
                 return Some(new_actor_id);
             }
             return None;
@@ -289,6 +303,8 @@ pub async fn heartbeat_task(
     register_request: RegisterRequest,
     ais_endpoint: String,
     hook_callback: Option<HookCallback>,
+    webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
+    webrtc_gate: Option<Arc<WebRtcGate>>,
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
     let mut actor_id = actor_id;
@@ -311,6 +327,8 @@ pub async fn heartbeat_task(
                     &mut consecutive_failures,
                     &ais_endpoint,
                     hook_callback.as_ref(),
+                    webrtc_coordinator.as_ref(),
+                    webrtc_gate.as_ref(),
                 )
                 .await {
                     tracing::info!(
@@ -501,5 +519,253 @@ async fn re_register_task(
             tracing::error!("❌ AIS re-registration response missing result");
             actor_id
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inbound::MediaFrameRegistry;
+    use crate::transport::{NetworkError, NetworkResult};
+    use crate::wire::webrtc::{DisconnectReason, SignalingEvent, SignalingStats, WebRtcConfig};
+    use actr_protocol::prost::Message as _;
+    use actr_protocol::{
+        AIdCredential, ActrType, Pong, Realm, RegisterResponse, RouteCandidatesRequest,
+        RouteCandidatesResponse, SignalingEnvelope, TurnCredential, UnregisterResponse,
+        register_response,
+    };
+    use actr_runtime_mailbox::{MailboxStats, MessagePriority, MessageRecord};
+    use std::collections::HashMap;
+    use tokio::sync::broadcast;
+    use uuid::Uuid;
+
+    fn test_actor_id(serial_number: u64) -> ActrId {
+        ActrId {
+            realm: Realm { realm_id: 1 },
+            serial_number,
+            r#type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "node".to_string(),
+                version: "1.0.0".to_string(),
+            },
+        }
+    }
+
+    fn test_credential() -> AIdCredential {
+        AIdCredential {
+            key_id: 7,
+            claims: bytes::Bytes::from_static(b"claims"),
+            signature: bytes::Bytes::from(vec![0u8; 64]),
+        }
+    }
+
+    struct EmptyMailbox;
+
+    #[async_trait::async_trait]
+    impl Mailbox for EmptyMailbox {
+        async fn enqueue(
+            &self,
+            _from: Vec<u8>,
+            _payload: Vec<u8>,
+            _priority: MessagePriority,
+        ) -> actr_runtime_mailbox::StorageResult<Uuid> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn dequeue(&self) -> actr_runtime_mailbox::StorageResult<Vec<MessageRecord>> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn ack(&self, _message_id: Uuid) -> actr_runtime_mailbox::StorageResult<()> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn status(&self) -> actr_runtime_mailbox::StorageResult<MailboxStats> {
+            Ok(MailboxStats {
+                queued_messages: 0,
+                inflight_messages: 0,
+                queued_by_priority: HashMap::new(),
+            })
+        }
+    }
+
+    struct ExpiredHeartbeatSignalingClient {
+        event_tx: broadcast::Sender<SignalingEvent>,
+    }
+
+    impl ExpiredHeartbeatSignalingClient {
+        fn new() -> Self {
+            let (event_tx, _rx) = broadcast::channel(16);
+            Self { event_tx }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SignalingClient for ExpiredHeartbeatSignalingClient {
+        async fn connect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn connect_once(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> NetworkResult<()> {
+            let _ = self.event_tx.send(SignalingEvent::Disconnected {
+                reason: DisconnectReason::Manual,
+            });
+            Ok(())
+        }
+
+        async fn send_register_request(
+            &self,
+            _request: RegisterRequest,
+        ) -> NetworkResult<RegisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_unregister_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _reason: Option<String>,
+        ) -> NetworkResult<UnregisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _availability: ServiceAvailabilityState,
+            _power_reserve: f32,
+            _mailbox_backlog: f32,
+        ) -> NetworkResult<Pong> {
+            Err(NetworkError::CredentialExpired(
+                "Credential validation failed: Invalid credential format".to_string(),
+            ))
+        }
+
+        async fn send_route_candidates_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _request: RouteCandidatesRequest,
+        ) -> NetworkResult<RouteCandidatesResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn get_signing_key(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _key_id: u32,
+        ) -> NetworkResult<(u32, Vec<u8>)> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_credential_update_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+        ) -> NetworkResult<RegisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+            Ok(None)
+        }
+
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn get_stats(&self) -> SignalingStats {
+            SignalingStats::default()
+        }
+
+        fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+            self.event_tx.subscribe()
+        }
+
+        async fn set_actor_id(&self, _actor_id: ActrId) {}
+
+        async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+        async fn clear_identity(&self) {}
+    }
+
+    #[tokio::test]
+    async fn re_registration_updates_webrtc_coordinator_local_id() {
+        let initial_id = test_actor_id(1);
+        let renewed_id = test_actor_id(2);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let signaling_client = Arc::new(ExpiredHeartbeatSignalingClient::new());
+        let coordinator = Arc::new(WebRtcCoordinator::new(
+            initial_id.clone(),
+            credential_state.clone(),
+            signaling_client.clone(),
+            WebRtcConfig::default(),
+            Arc::new(MediaFrameRegistry::new()),
+        ));
+
+        let register_response = RegisterResponse {
+            result: Some(register_response::Result::Success(
+                register_response::RegisterOk {
+                    actr_id: renewed_id.clone(),
+                    credential: test_credential(),
+                    turn_credential: TurnCredential {
+                        username: "1000:actor".to_string(),
+                        password: "password".to_string(),
+                        expires_at: 1000,
+                    },
+                    credential_expires_at: Some(prost_types::Timestamp {
+                        seconds: 1000,
+                        nanos: 0,
+                    }),
+                    signaling_heartbeat_interval_secs: 30,
+                    signing_pubkey: vec![0u8; 32].into(),
+                    signing_key_id: 7,
+                    psk: None,
+                    psk_expires_at: None,
+                },
+            )),
+        };
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/register")
+            .with_status(200)
+            .with_header("content-type", "application/x-protobuf")
+            .with_body(register_response.encode_to_vec())
+            .create_async()
+            .await;
+
+        let mut consecutive_failures = 0;
+        let updated_id = send_heartbeat_and_handle_response(
+            &(signaling_client as Arc<dyn SignalingClient>),
+            &initial_id,
+            &credential_state,
+            &(Arc::new(EmptyMailbox) as Arc<dyn Mailbox>),
+            Duration::from_secs(30),
+            &RegisterRequest {
+                actr_type: renewed_id.r#type.clone(),
+                realm: renewed_id.realm,
+                ..Default::default()
+            },
+            &mut consecutive_failures,
+            &server.url(),
+            None,
+            Some(&coordinator),
+            None,
+        )
+        .await;
+
+        assert_eq!(updated_id, Some(renewed_id.clone()));
+        assert_eq!(coordinator.local_id_for_test(), renewed_id);
     }
 }
