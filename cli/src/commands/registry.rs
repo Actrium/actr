@@ -55,14 +55,9 @@ impl Command for RegistryArgs {
 
     fn required_components(&self) -> Vec<ComponentType> {
         match &self.command {
-            RegistryCommand::Discover(_) => vec![
-                ComponentType::ServiceDiscovery,
-                ComponentType::UserInterface,
-                ComponentType::ConfigManager,
-                ComponentType::DependencyResolver,
-                ComponentType::NetworkValidator,
-                ComponentType::FingerprintValidator,
-            ],
+            RegistryCommand::Discover(cmd) => {
+                DiscoveryCommand::from_args(cmd).required_components()
+            }
             RegistryCommand::Fingerprint(_) | RegistryCommand::Publish(_) => vec![],
         }
     }
