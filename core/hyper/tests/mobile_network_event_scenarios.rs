@@ -509,6 +509,126 @@ fn materialize_events(specs: &[EventSpec]) -> Vec<NetworkEvent> {
         .collect()
 }
 
+fn parse_cleanup_reason(value: &str) -> CleanupReason {
+    match value {
+        "AppTerminating" => CleanupReason::AppTerminating,
+        "UserLogout" => CleanupReason::UserLogout,
+        "StaleConnectionSuspected" => CleanupReason::StaleConnectionSuspected,
+        "ManualReset" => CleanupReason::ManualReset,
+        other => panic!("unsupported cleanup reason in mobile JSONL: {other}"),
+    }
+}
+
+fn parse_reconnect_reason(value: &str) -> actr_hyper::lifecycle::ReconnectReason {
+    match value {
+        "NetworkPathChanged" => actr_hyper::lifecycle::ReconnectReason::NetworkPathChanged,
+        "LongBackground" => actr_hyper::lifecycle::ReconnectReason::LongBackground,
+        "ProbeFailed" => actr_hyper::lifecycle::ReconnectReason::ProbeFailed,
+        "ManualReconnect" => actr_hyper::lifecycle::ReconnectReason::ManualReconnect,
+        "StaleConnectionSuspected" => {
+            actr_hyper::lifecycle::ReconnectReason::StaleConnectionSuspected
+        }
+        other => panic!("unsupported reconnect reason in mobile JSONL: {other}"),
+    }
+}
+
+fn parse_mobile_jsonl_events(jsonl: &str) -> Vec<NetworkEvent> {
+    let mut events = Vec::new();
+
+    for line in jsonl.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let value: serde_json::Value =
+            serde_json::from_str(line).expect("mobile JSONL line should be valid JSON");
+
+        if let Some(snapshot) = value.get("network_snapshot") {
+            let sequence = snapshot
+                .get("sequence")
+                .and_then(serde_json::Value::as_u64)
+                .expect("network_snapshot.sequence is required");
+            let availability = match snapshot
+                .get("availability")
+                .and_then(serde_json::Value::as_str)
+                .expect("network_snapshot.availability is required")
+            {
+                "Available" | "available" => NetworkAvailability::Available,
+                "Unavailable" | "unavailable" => NetworkAvailability::Unavailable,
+                "Unknown" | "unknown" => NetworkAvailability::Unknown,
+                other => panic!("unsupported network availability in mobile JSONL: {other}"),
+            };
+            let transport = snapshot
+                .get("transport")
+                .unwrap_or(&serde_json::Value::Null);
+            let flag = |name: &str| {
+                transport
+                    .get(name)
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            };
+
+            events.push(NetworkEvent::NetworkPathChanged {
+                snapshot: NetworkSnapshot {
+                    sequence,
+                    availability,
+                    transport: NetworkTransportFlags {
+                        wifi: flag("wifi"),
+                        cellular: flag("cellular"),
+                        ethernet: flag("ethernet"),
+                        vpn: flag("vpn"),
+                        other: flag("other"),
+                    },
+                    is_expensive: snapshot
+                        .get("is_expensive")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                    is_constrained: snapshot
+                        .get("is_constrained")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                },
+            });
+        }
+
+        if let Some(lifecycle) = value.get("lifecycle_event") {
+            let state = match lifecycle
+                .get("state")
+                .and_then(serde_json::Value::as_str)
+                .expect("lifecycle_event.state is required")
+            {
+                "Background" | "background" => actr_hyper::lifecycle::AppLifecycleState::Background,
+                "Foreground" | "foreground" => {
+                    actr_hyper::lifecycle::AppLifecycleState::Foreground {
+                        background_duration_ms: lifecycle
+                            .get("background_duration_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0),
+                    }
+                }
+                other => panic!("unsupported lifecycle state in mobile JSONL: {other}"),
+            };
+            events.push(NetworkEvent::AppLifecycleChanged { state });
+        }
+
+        if let Some(command) = value.get("cleanup_command") {
+            let reason = command
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .map(parse_cleanup_reason)
+                .unwrap_or(CleanupReason::ManualReset);
+            events.push(NetworkEvent::CleanupConnections { reason });
+        }
+
+        if let Some(command) = value.get("reconnect_command") {
+            let reason = command
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .map(parse_reconnect_reason)
+                .unwrap_or(actr_hyper::lifecycle::ReconnectReason::ManualReconnect);
+            events.push(NetworkEvent::ForceReconnect { reason });
+        }
+    }
+
+    events
+}
+
 async fn expect_request_ok(harness: &TestHarness, request_id: &str, timeout: Duration) {
     let deadline = tokio::time::Instant::now() + timeout;
     let mut attempt = 0;
@@ -632,6 +752,40 @@ fn test_mobile_replay_lifecycle_and_path_batch_priority() {
         select_network_recovery_action(&cleanup_path_force),
         NetworkRecoveryAction::CleanupOnly,
         "cleanup-only commands must not become reconnects because a path or force event is nearby"
+    );
+}
+
+#[test]
+fn test_mobile_jsonl_replay_maps_real_log_shape_to_recovery_actions() {
+    let android_old_lost_late = r#"
+{"case_id":"L3-A06","platform":"android","t_ms":1,"network_snapshot":{"sequence":10,"availability":"Available","transport":{"cellular":true}}}
+{"case_id":"L3-A06","platform":"android","t_ms":2,"network_snapshot":{"sequence":11,"availability":"Available","transport":{"wifi":true}}}
+{"case_id":"L3-A06","platform":"android","t_ms":3,"network_snapshot":{"sequence":9,"availability":"Unavailable","transport":{}}}
+"#;
+    assert_eq!(
+        select_network_recovery_action(&parse_mobile_jsonl_events(android_old_lost_late)),
+        NetworkRecoveryAction::Restore,
+        "old Android lost callback in JSONL must not override a newer available snapshot"
+    );
+
+    let ios_long_foreground_online = r#"
+{"case_id":"L3-I14","platform":"ios","t_ms":1,"lifecycle_event":{"state":"Foreground","background_duration_ms":65000}}
+{"case_id":"L3-I14","platform":"ios","t_ms":2,"network_snapshot":{"sequence":22,"availability":"Available","transport":{"wifi":true},"is_expensive":false,"is_constrained":false}}
+"#;
+    assert_eq!(
+        select_network_recovery_action(&parse_mobile_jsonl_events(ios_long_foreground_online)),
+        NetworkRecoveryAction::ForceReconnect,
+        "long foreground plus online JSONL should force cleanup and reconnect"
+    );
+
+    let cleanup_suppresses_delayed_path = r#"
+{"case_id":"RC-27","platform":"ios","t_ms":1,"cleanup_command":{"reason":"UserLogout"}}
+{"case_id":"RC-27","platform":"ios","t_ms":2,"network_snapshot":{"sequence":30,"availability":"Available","transport":{"wifi":true}}}
+"#;
+    assert_eq!(
+        select_network_recovery_action(&parse_mobile_jsonl_events(cleanup_suppresses_delayed_path)),
+        NetworkRecoveryAction::CleanupOnly,
+        "cleanup command from JSONL should suppress delayed path callbacks in the same batch"
     );
 }
 

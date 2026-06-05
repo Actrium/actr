@@ -413,3 +413,254 @@ impl ActrRefWrapper {
         self.inner.app_context().await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::ContextBridge;
+    use crate::workload::{ErrorEventBridge, RpcEnvelopeBridge, WorkloadLifecycleBridge};
+    use actr_mock_actrix::MockActrixServer;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
+
+    #[derive(Default)]
+    struct TestLifecycleBridge {
+        starts: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkloadLifecycleBridge for TestLifecycleBridge {
+        async fn on_start(&self, _ctx: Arc<ContextBridge>) -> ActrResult<()> {
+            self.starts.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn on_ready(&self, _ctx: Arc<ContextBridge>) -> ActrResult<()> {
+            Ok(())
+        }
+
+        async fn on_stop(&self, _ctx: Arc<ContextBridge>) -> ActrResult<()> {
+            Ok(())
+        }
+
+        async fn on_error(
+            &self,
+            _ctx: Arc<ContextBridge>,
+            _event: ErrorEventBridge,
+        ) -> ActrResult<()> {
+            Ok(())
+        }
+
+        async fn dispatch(
+            &self,
+            _ctx: Arc<ContextBridge>,
+            _envelope: RpcEnvelopeBridge,
+        ) -> ActrResult<Vec<u8>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn consumed_node_wrapper_for_test() -> Arc<ActrNode> {
+        Arc::new(ActrNode {
+            inner: Mutex::new(None),
+            network_event_handle: Mutex::new(None),
+        })
+    }
+
+    fn write_test_config(dir: &std::path::Path, server: &MockActrixServer) -> std::path::PathBuf {
+        let config_path = dir.join("actr.toml");
+        let data_dir = dir.display().to_string().replace('\\', "/");
+        std::fs::write(
+            &config_path,
+            format!(
+                "edition = 1\n\
+                 [signaling]\n\
+                 url = \"{}\"\n\
+                 [ais_endpoint]\n\
+                 url = \"{}/ais\"\n\
+                 [deployment]\n\
+                 realm_id = 1\n\
+                 [hyper]\n\
+                 data_dir = \"{}\"\n\
+                 [hyper.trust]\n\
+                 kind = \"dev_only\"\n",
+                server.ws_url(),
+                server.http_url(),
+                data_dir,
+            ),
+        )
+        .expect("write actr.toml");
+        config_path
+    }
+
+    async fn linked_node_for_test(config_path: &std::path::Path) -> ActrResult<Arc<ActrNode>> {
+        let workload = DynamicWorkload::new(
+            Box::new(TestLifecycleBridge::default()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        ActrNode::new_from_linked_workload(
+            config_path.display().to_string(),
+            ActrType {
+                manufacturer: "acme".to_string(),
+                name: "RuntimeNetworkEventProbe".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            workload,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn start_after_node_consumed_fails_fast() {
+        let node = consumed_node_wrapper_for_test();
+
+        let err = match node.start().await {
+            Ok(_) => panic!("second start should fail"),
+            Err(err) => err,
+        };
+        match err {
+            ActrError::Internal { msg } => {
+                assert!(
+                    msg.contains("already started"),
+                    "unexpected start error: {msg}"
+                );
+            }
+            other => panic!("unexpected start error variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_network_event_handle_after_node_consumed_fails_fast() {
+        let node = consumed_node_wrapper_for_test();
+
+        let err = match node.create_network_event_handle() {
+            Ok(_) => panic!("old node should not create a new network event handle"),
+            Err(err) => err,
+        };
+        match err {
+            ActrError::Internal { msg } => {
+                assert!(
+                    msg.contains("no longer available"),
+                    "unexpected handle error: {msg}"
+                );
+            }
+            other => panic!("unexpected handle error variant: {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_create_network_event_handle_and_start_is_bounded() {
+        let mut server = MockActrixServer::start()
+            .await
+            .expect("mock actrix server should start");
+        let temp = tempdir().expect("temp dir");
+        let config_path = write_test_config(temp.path(), &server);
+        let node = linked_node_for_test(&config_path)
+            .await
+            .expect("linked workload node should be created");
+
+        let create_node = node.clone();
+        let create_task =
+            tokio::task::spawn_blocking(move || create_node.create_network_event_handle());
+        let start_task = tokio::spawn(node.clone().start());
+
+        let (create_result, start_result) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                tokio::join!(create_task, start_task)
+            })
+            .await
+            .expect("concurrent create/start should not hang");
+
+        let create_result = create_result.expect("create task should not panic");
+        let actr_ref = start_result
+            .expect("start task should not panic")
+            .expect("start should succeed");
+
+        match create_result {
+            Ok(_) => {}
+            Err(ActrError::Internal { msg }) => {
+                assert!(
+                    msg.contains("no longer available"),
+                    "unexpected create/start race error: {msg}"
+                );
+            }
+            Err(other) => panic!("unexpected create/start race error: {other:?}"),
+        }
+
+        actr_ref.shutdown();
+        actr_ref.wait_for_shutdown().await;
+        server.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn repeated_create_network_event_handle_reuses_cached_channel_until_start() {
+        let mut server = MockActrixServer::start()
+            .await
+            .expect("mock actrix server should start");
+        let temp = tempdir().expect("temp dir");
+        let config_path = write_test_config(temp.path(), &server);
+        let node = linked_node_for_test(&config_path)
+            .await
+            .expect("linked workload node should be created");
+
+        let mut create_tasks = Vec::new();
+        for _ in 0..8 {
+            let node = node.clone();
+            create_tasks.push(tokio::task::spawn_blocking(move || {
+                node.create_network_event_handle()
+            }));
+        }
+
+        let mut handles = Vec::new();
+        for task in create_tasks {
+            handles.push(
+                task.await
+                    .expect("create task should not panic")
+                    .expect("repeated create should reuse cached handle"),
+            );
+        }
+
+        let actr_ref = node
+            .start()
+            .await
+            .expect("node should start after handle reuse");
+
+        let mut event_tasks = Vec::new();
+        for (idx, handle) in handles.into_iter().enumerate() {
+            event_tasks.push(tokio::spawn(async move {
+                handle
+                    .handle_network_path_changed(NetworkSnapshot {
+                        sequence: idx as u64 + 1,
+                        availability: crate::types::NetworkAvailability::Available,
+                        transport: crate::types::NetworkTransportFlags {
+                            wifi: true,
+                            cellular: false,
+                            ethernet: false,
+                            vpn: false,
+                            other: false,
+                        },
+                        is_expensive: false,
+                        is_constrained: false,
+                    })
+                    .await
+            }));
+        }
+
+        for task in event_tasks {
+            let result = task
+                .await
+                .expect("event task should not panic")
+                .expect("cached handle event should complete after start");
+            assert!(result.success, "event failed: {:?}", result.error);
+        }
+
+        actr_ref.shutdown();
+        actr_ref.wait_for_shutdown().await;
+        server.shutdown().await;
+    }
+}

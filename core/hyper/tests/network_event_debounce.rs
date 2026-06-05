@@ -1639,6 +1639,59 @@ async fn test_reconciler_ignores_cancelled_network_event_callers() {
 }
 
 #[tokio::test]
+async fn test_l1_handle_drop_while_event_pending_does_not_poison_reconciler() {
+    let client = Arc::new(FakeSignalingClient::new());
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client,
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(10),
+        },
+    ));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let pending_handle =
+        NetworkEventHandle::new_with_result_timeout(event_tx.clone(), Duration::from_secs(1));
+    let live_handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+
+    let pending_call = tokio::spawn(async move {
+        pending_handle
+            .handle_network_path_changed(match online_event(1) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    pending_call.abort();
+    let _ = pending_call.await;
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let result = live_handle
+        .handle_network_path_changed(match offline_event(2) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
+        .await
+        .expect("new event should complete after old handle was dropped while pending");
+    assert!(result.success);
+    assert!(matches!(
+        result.event,
+        NetworkEvent::NetworkPathChanged { .. }
+    ));
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
 async fn test_network_event_handle_preserves_per_request_result_correlation() {
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<NetworkEventRequest>(10);
     let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(1));
@@ -1695,4 +1748,90 @@ async fn test_network_event_handle_preserves_per_request_result_correlation() {
         lost_result.event,
         NetworkEvent::NetworkPathChanged { .. }
     ));
+}
+
+#[tokio::test]
+async fn test_l1_cloned_handles_mixed_concurrent_calls_complete_without_crossed_results() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(50),
+        },
+    ));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let network = {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            handle
+                .handle_network_path_changed(match online_event(1) {
+                    NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                    _ => unreachable!(),
+                })
+                .await
+        })
+    };
+    let lifecycle = {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            handle
+                .handle_app_lifecycle_changed(AppLifecycleState::Foreground {
+                    background_duration_ms: 5_000,
+                })
+                .await
+        })
+    };
+    let reconnect = {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            handle
+                .force_reconnect(ReconnectReason::ManualReconnect)
+                .await
+        })
+    };
+
+    let network = network
+        .await
+        .expect("network task should not panic")
+        .expect("network event should complete");
+    let lifecycle = lifecycle
+        .await
+        .expect("lifecycle task should not panic")
+        .expect("lifecycle event should complete");
+    let reconnect = reconnect
+        .await
+        .expect("reconnect task should not panic")
+        .expect("reconnect command should complete");
+
+    assert!(matches!(
+        network.event,
+        NetworkEvent::NetworkPathChanged { .. }
+    ));
+    assert!(matches!(
+        lifecycle.event,
+        NetworkEvent::AppLifecycleChanged {
+            state: AppLifecycleState::Foreground { .. }
+        }
+    ));
+    assert!(matches!(
+        reconnect.event,
+        NetworkEvent::ForceReconnect {
+            reason: ReconnectReason::ManualReconnect
+        }
+    ));
+    assert!(network.success && lifecycle.success && reconnect.success);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
 }
