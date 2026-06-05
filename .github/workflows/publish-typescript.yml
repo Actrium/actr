@@ -116,6 +116,108 @@ jobs:
           path: bindings/typescript/artifacts/${{ matrix.artifact }}
           if-no-files-found: error
 
+  publish-typescript-workload:
+    name: Publish bindings/typescript/actr-workload
+    needs: preflight
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bindings/typescript/actr-workload
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: bindings/typescript/actr-workload/package-lock.json
+          registry-url: "https://registry.npmjs.org"
+          scope: "@actrium"
+
+      - name: Show Node.js and npm versions
+        run: |
+          node -v
+          npm -v
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate package name
+        run: |
+          actual_name="$(node -p "require('./package.json').name")"
+          if [ "$actual_name" != "@actrium/actr-workload" ]; then
+            echo "Expected package name @actrium/actr-workload, got $actual_name"
+            exit 1
+          fi
+
+      - name: Validate committed version
+        run: |
+          actual_version="$(node -p "require('./package.json').version")"
+          if [ "$actual_version" != "$EXPECTED_VERSION" ]; then
+            echo "Expected version $EXPECTED_VERSION, but repository version is $actual_version"
+            exit 1
+          fi
+          echo "Publishing committed version $EXPECTED_VERSION"
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+
+      - name: Verify TypeScript workload WIT drift
+        run: cmp ../../../core/framework/wit/actr-workload.wit src/wit/actr-workload.wit
+
+      - name: Build and test package
+        run: |
+          npm run build
+          npm test
+          node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
+
+      - name: Dry run package publish
+        if: ${{ inputs.dry_run }}
+        run: npm publish --access public --dry-run
+
+      - name: Validate npm token
+        if: ${{ !inputs.dry_run }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is required when dry_run is false."
+            exit 1
+          fi
+          npm whoami
+
+      - name: Publish to npm
+        if: ${{ !inputs.dry_run }}
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if npm view "@actrium/actr-workload@$EXPECTED_VERSION" version >/dev/null 2>&1; then
+            echo "@actrium/actr-workload@$EXPECTED_VERSION already exists; skipping"
+            exit 0
+          fi
+          npm publish --access public
+
+      - name: Verify npm package version
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          expected_version="${{ inputs.expected_version }}"
+          for attempt in $(seq 1 20); do
+            if published_version="$(npm view "@actrium/actr-workload@$expected_version" version 2>/dev/null)" && [ "$published_version" = "$expected_version" ]; then
+              echo "@actrium/actr-workload@$expected_version is visible on npm"
+              exit 0
+            fi
+            echo "Waiting for @actrium/actr-workload@$expected_version to become visible on npm (attempt $attempt/20)"
+            sleep 15
+          done
+
+          echo "Expected @actrium/actr-workload@$expected_version to be visible on npm"
+          exit 1
+
   publish-typescript:
     name: Publish bindings/typescript
     needs:
@@ -198,6 +300,19 @@ jobs:
           echo "package.json version: $(node -p "require('./package.json').version")"
           echo "Cargo.toml version: $(grep '^version = ' Cargo.toml | head -n 1)"
 
+      - name: Validate npm token
+        if: ${{ !inputs.dry_run }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN secret is required when dry_run is false."
+            exit 1
+          fi
+          npm whoami
+
+
       - name: Download native artifacts
         uses: actions/download-artifact@v4
         with:
@@ -241,6 +356,7 @@ jobs:
         if: ${{ !inputs.dry_run }}
         env:
           EXPECTED_VERSION: ${{ inputs.expected_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           for dir in npm/*; do
@@ -254,17 +370,40 @@ jobs:
 
       - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        run: npm publish --access public --ignore-scripts
+        env:
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if npm view "@actrium/actr@$EXPECTED_VERSION" version >/dev/null 2>&1; then
+            echo "@actrium/actr@$EXPECTED_VERSION already exists; skipping"
+            exit 0
+          fi
+          npm publish --access public --ignore-scripts
 
       - name: Verify npm package version
         if: ${{ !inputs.dry_run }}
         run: |
+          set -euo pipefail
           expected_version="${{ inputs.expected_version }}"
-          published_version="$(npm view @actrium/actr version)"
-          if [ "$published_version" != "$expected_version" ]; then
-            echo "Expected published version $expected_version, got $published_version"
+          wait_for_version() {
+            local package="$1"
+            local expected="$2"
+            local attempt
+            for attempt in $(seq 1 20); do
+              if published_version="$(npm view "$package@$expected" version 2>/dev/null)" && [ "$published_version" = "$expected" ]; then
+                echo "$package@$expected is visible on npm"
+                return 0
+              fi
+              echo "Waiting for $package@$expected to become visible on npm (attempt $attempt/20)"
+              sleep 15
+            done
+
+            echo "Expected $package@$expected to be visible on npm"
             exit 1
-          fi
+          }
+
+          wait_for_version @actrium/actr "$expected_version"
           for package in \
             @actrium/actr-darwin-x64 \
             @actrium/actr-darwin-arm64 \
@@ -274,9 +413,5 @@ jobs:
             @actrium/actr-linux-arm64-musl \
             @actrium/actr-win32-x64-msvc
           do
-            native_version="$(npm view "$package" version)"
-            if [ "$native_version" != "$expected_version" ]; then
-              echo "Expected $package version $expected_version, got $native_version"
-              exit 1
-            fi
+            wait_for_version "$package" "$expected_version"
           done

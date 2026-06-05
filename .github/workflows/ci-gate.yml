@@ -181,6 +181,7 @@ jobs:
           npm run build
           npm test
           node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
+          npm pack --dry-run
       - name: Build TypeScript EchoService workload
         working-directory: examples/typescript/echo-workload
         run: |
@@ -347,12 +348,14 @@ jobs:
           ACTR_BINDINGS_PATH=dist/ActrBindings \
           ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
           swift build
+      - name: Pre-build mock-actrix
+        run: cargo build -p actr-mock-actrix --bin mock-actrix
       - name: Test Swift bindings package
         working-directory: bindings/swift
         env:
           ACTR_SWIFT_E2E: "1"
         run: |
-          cargo run -p actr-mock-actrix --bin mock-actrix -- --port 8081 > "$RUNNER_TEMP/mock-actrix.log" 2>&1 &
+          ../../target/debug/mock-actrix --port 8081 > "$RUNNER_TEMP/mock-actrix.log" 2>&1 &
           mock_pid="$!"
           trap 'kill "$mock_pid" || true' EXIT
           for _ in {1..60}; do
@@ -381,20 +384,7 @@ jobs:
     name: Kotlin
     needs: determine
     if: needs.determine.outputs.kotlin_binding == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
-      - name: Build Kotlin binding
-        working-directory: bindings/kotlin
-        run: ./gradlew :actr-kotlin:build --no-daemon
+    uses: ./.github/workflows/ci-kotlin.yml
 
   web:
     name: Web

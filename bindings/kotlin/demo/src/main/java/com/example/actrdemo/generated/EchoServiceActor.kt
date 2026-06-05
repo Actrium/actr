@@ -16,7 +16,10 @@ import io.actor_rtc.actr.RpcEnvelopeBridge
  */
 interface EchoServiceHandler {
     /** RPC method: Echo */
-    suspend fun echo(request: EchoRequest, ctx: ContextBridge): EchoResponse
+    suspend fun echo(
+        request: EchoRequest,
+        ctx: ContextBridge,
+    ): EchoResponse
 }
 
 /**
@@ -34,11 +37,11 @@ object EchoServiceDispatcher {
      * @return The serialized response bytes
      */
     suspend fun dispatch(
-            handler: EchoServiceHandler,
-            ctx: ContextBridge,
-            envelope: RpcEnvelopeBridge
-    ): ByteArray {
-        return when (envelope.routeKey) {
+        handler: EchoServiceHandler,
+        ctx: ContextBridge,
+        envelope: RpcEnvelopeBridge,
+    ): ByteArray =
+        when (envelope.routeKey) {
             "echo.EchoService.Echo" -> {
                 val request = EchoRequest.parseFrom(envelope.payload)
                 val response = handler.echo(request, ctx)
@@ -46,5 +49,4 @@ object EchoServiceDispatcher {
             }
             else -> throw IllegalArgumentException("Unknown route key: ${envelope.routeKey}")
         }
-    }
 }

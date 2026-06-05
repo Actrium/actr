@@ -39,9 +39,7 @@ fun String.toActrType(): ActrType {
  * }
  * ```
  */
-inline fun actrType(builder: ActrTypeBuilder.() -> Unit): ActrType {
-    return ActrTypeBuilder().apply(builder).build()
-}
+inline fun actrType(builder: ActrTypeBuilder.() -> Unit): ActrType = ActrTypeBuilder().apply(builder).build()
 
 /**
  * Create an ActrType from manufacturer, name, and version.
@@ -51,9 +49,11 @@ inline fun actrType(builder: ActrTypeBuilder.() -> Unit): ActrType {
  * val type = actrType("acme", "EchoService", "1.0.0")
  * ```
  */
-fun actrType(manufacturer: String, name: String, version: String): ActrType {
-    return ActrType(manufacturer = manufacturer, name = name, version = version)
-}
+fun actrType(
+    manufacturer: String,
+    name: String,
+    version: String,
+): ActrType = ActrType(manufacturer = manufacturer, name = name, version = version)
 
 /** Builder for ActrType. */
 class ActrTypeBuilder {
@@ -98,9 +98,7 @@ fun ActrType.matches(typeString: String): Boolean {
  * }
  * ```
  */
-inline fun actrId(builder: ActrIdBuilder.() -> Unit): ActrId {
-    return ActrIdBuilder().apply(builder).build()
-}
+inline fun actrId(builder: ActrIdBuilder.() -> Unit): ActrId = ActrIdBuilder().apply(builder).build()
 
 /** Builder for ActrId. */
 class ActrIdBuilder {
@@ -121,7 +119,11 @@ class ActrIdBuilder {
     }
 
     /** Set the actor type with manufacturer, name, and version. */
-    fun type(manufacturer: String, name: String, version: String) {
+    fun type(
+        manufacturer: String,
+        name: String,
+        version: String,
+    ) {
         _type = ActrType(manufacturer = manufacturer, name = name, version = version)
     }
 
@@ -141,14 +143,10 @@ val ActrId.realmId: UInt
     get() = realm.realmId
 
 /** Get a short string representation. */
-fun ActrId.toShortString(): String {
-    return "${type.manufacturer}:${type.name}@${serialNumber.toString(16)}"
-}
+fun ActrId.toShortString(): String = "${type.manufacturer}:${type.name}@${serialNumber.toString(16)}"
 
 /** Get a full string representation. */
-fun ActrId.toFullString(): String {
-    return "${type.manufacturer}:${type.name}@${serialNumber.toString(16)}:${realm.realmId}"
-}
+fun ActrId.toFullString(): String = "${type.manufacturer}:${type.name}@${serialNumber.toString(16)}:${realm.realmId}"
 
 // ============================================================================
 // DataStream Builders
@@ -171,9 +169,7 @@ fun ActrId.toFullString(): String {
  * }
  * ```
  */
-inline fun dataStream(builder: DataStreamBuilder.() -> Unit): DataStream {
-    return DataStreamBuilder().apply(builder).build()
-}
+inline fun dataStream(builder: DataStreamBuilder.() -> Unit): DataStream = DataStreamBuilder().apply(builder).build()
 
 /** Builder for DataStream. */
 class DataStreamBuilder {
@@ -199,23 +195,29 @@ class DataStreamBuilder {
     }
 
     /** Add a single metadata entry. */
-    fun addMetadata(key: String, value: String) {
+    fun addMetadata(
+        key: String,
+        value: String,
+    ) {
         metadataEntries.add(MetadataEntry(key = key, value = value))
     }
 
     /** Set payload from a string. */
-    fun payload(text: String, charset: java.nio.charset.Charset = Charsets.UTF_8) {
+    fun payload(
+        text: String,
+        charset: java.nio.charset.Charset = Charsets.UTF_8,
+    ) {
         payload = text.toByteArray(charset)
     }
 
     fun build(): DataStream {
         require(streamId.isNotBlank()) { "streamId must not be blank" }
         return DataStream(
-                streamId = streamId,
-                sequence = sequence,
-                payload = payload,
-                metadata = metadataEntries.toList(),
-                timestampMs = timestamp
+            streamId = streamId,
+            sequence = sequence,
+            payload = payload,
+            metadata = metadataEntries.toList(),
+            timestampMs = timestamp,
         )
     }
 }
@@ -235,19 +237,13 @@ class MetadataBuilder {
 // ============================================================================
 
 /** Get a metadata value by key. */
-fun DataStream.getMetadata(key: String): String? {
-    return metadata.find { it.key == key }?.value
-}
+fun DataStream.getMetadata(key: String): String? = metadata.find { it.key == key }?.value
 
 /** Check if metadata contains a key. */
-fun DataStream.hasMetadata(key: String): Boolean {
-    return metadata.any { it.key == key }
-}
+fun DataStream.hasMetadata(key: String): Boolean = metadata.any { it.key == key }
 
 /** Get metadata as a Map. */
-fun DataStream.metadataMap(): Map<String, String> {
-    return metadata.associate { it.key to it.value }
-}
+fun DataStream.metadataMap(): Map<String, String> = metadata.associate { it.key to it.value }
 
 // ============================================================================
 // Realm Builders

@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Basic release train for the monorepo-managed foundations, tools, SDKs, and CLI.
 
-readonly FINAL_TAG_PREFIX="release-train-v"
+readonly FINAL_TAG_PREFIX="v"
+readonly LEGACY_FINAL_TAG_PREFIX="release-train-v"
 readonly PYTHON_PACKAGE_NAME="framework_codegen_python"
 readonly CRATES_IO_API="https://crates.io/api/v1/crates"
 readonly PYPI_API="https://pypi.org/pypi"
@@ -225,10 +226,10 @@ PY
 
 detect_conventional_bump() {
   local last_tag
-  last_tag=$(git -C "$ORIGINAL_REPO_ROOT" describe --tags --match "${FINAL_TAG_PREFIX}*" --abbrev=0 2>/dev/null || echo "")
+  last_tag=$(latest_release_tag)
 
   if [[ -z "$last_tag" ]]; then
-    log_info "No prior release-train tag found; defaulting to minor bump" >&2
+    log_info "No prior release tag found; defaulting to minor bump" >&2
     echo "minor"
     return
   fi
@@ -250,6 +251,14 @@ detect_conventional_bump() {
   done < <(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --pretty=format:"%s")
 
   echo "$highest"
+}
+
+latest_release_tag() {
+  git -C "$ORIGINAL_REPO_ROOT" describe \
+    --tags \
+    --match "${FINAL_TAG_PREFIX}[0-9]*" \
+    --match "${LEGACY_FINAL_TAG_PREFIX}[0-9]*" \
+    --abbrev=0 2>/dev/null || echo ""
 }
 
 calculate_next_version() {
@@ -328,6 +337,9 @@ validate_version() {
 }
 
 ensure_clean_worktree() {
+  if [[ "$DRY_RUN" == true ]] || [[ "$PREPARE_ONLY" == true ]]; then
+    return
+  fi
   if [[ -n "$(git -C "$ORIGINAL_REPO_ROOT" status --porcelain)" ]]; then
     fail "Working tree must be clean before running the release train"
   fi
@@ -377,6 +389,22 @@ append_state() {
   local mode=$5
   local registry_url=$6
   local git_sha=$7
+
+  name=${name//$'\t'/ }
+  stage=${stage//$'\t'/ }
+  kind=${kind//$'\t'/ }
+  status=${status//$'\t'/ }
+  mode=${mode//$'\t'/ }
+  registry_url=${registry_url//$'\t'/ }
+  git_sha=${git_sha//$'\t'/ }
+
+  name=${name//$'\n'/ }
+  stage=${stage//$'\n'/ }
+  kind=${kind//$'\n'/ }
+  status=${status//$'\n'/ }
+  mode=${mode//$'\n'/ }
+  registry_url=${registry_url//$'\n'/ }
+  git_sha=${git_sha//$'\n'/ }
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$name" \
@@ -752,7 +780,7 @@ wait_for_package_sync_workflow() {
     if [[ -n "${run_id}" ]]; then
       break
     fi
-    log_info "Waiting for ${repo} workflow run creation (${attempt}/30)"
+    log_info "Waiting for ${repo} workflow run creation (${attempt}/30)" >&2
     sleep 10
   done
 
@@ -783,7 +811,7 @@ wait_for_package_sync_workflow() {
       return 1
     fi
 
-    log_info "Waiting for ${repo} workflow completion (${attempt}/120)"
+    log_info "Waiting for ${repo} workflow completion (${attempt}/120)" >&2
     sleep 15
   done
 
@@ -966,13 +994,16 @@ stage_release_version_files() {
     bindings/web/packages/web-react/package.json \
     bindings/typescript/Cargo.toml \
     bindings/typescript/package.json \
+    bindings/typescript/package-lock.json \
     bindings/web/crates/actr-web-abi/Cargo.toml \
     bindings/web/crates/common/Cargo.toml \
     bindings/web/crates/sw-host/Cargo.toml \
     bindings/web/crates/dom-bridge/Cargo.toml \
     bindings/web/crates/mailbox-web/Cargo.toml \
     bindings/web/crates/platform-web/Cargo.toml \
-    bindings/web/crates/framework-web-entry-smoke/Cargo.toml
+    bindings/web/crates/framework-web-entry-smoke/Cargo.toml \
+    bindings/web/Cargo.lock \
+    bindings/typescript/Cargo.lock
 }
 
 commit_release_prepare() {
@@ -1015,8 +1046,7 @@ ensure_publish_worktree_clean() {
       ":(exclude)release/reports/release-train-v${VERSION}.state.tsv" \
       ":(exclude)release/reports/release-train-v${VERSION}.md" \
       ":(exclude)release/reports/release-train-v${VERSION}.json" \
-      ":(exclude)cli/assets/web-runtime/" \
-      ":(exclude)bindings/web/Cargo.lock"
+      ":(exclude)cli/assets/web-runtime/"
   )
   if [[ -n "$dirty_files" ]]; then
     printf '%s\n' "$dirty_files" >&2
@@ -1103,9 +1133,13 @@ publish_rust_package() {
       return
     fi
 
-    rm -f "$publish_log"
-    append_state "$package" "$stage" "crate" "failure" "publish_failed" "$registry_url" "$RELEASE_SHA"
-    fail "cargo publish failed for ${package}"
+    if grep -qiE "Uploaded[[:space:]]+${package} v${VERSION}" "$publish_log"; then
+      log_warn "cargo publish uploaded ${package} ${VERSION} but returned non-zero while waiting for registry visibility"
+    else
+      rm -f "$publish_log"
+      append_state "$package" "$stage" "crate" "failure" "publish_failed" "$registry_url" "$RELEASE_SHA"
+      fail "cargo publish failed for ${package}"
+    fi
   fi
 
   rm -f "$publish_log"
@@ -1187,6 +1221,10 @@ create_final_tag() {
 run_release_train() {
   if [[ "$PREPARE_ONLY" == true ]]; then
     update_versions
+    cargo update --workspace
+    cargo update --workspace --manifest-path bindings/web/Cargo.toml
+    npm install --package-lock-only --prefix bindings/typescript
+    cargo update --manifest-path bindings/typescript/Cargo.toml -p actr-protocol -p actr-framework -p actr-config -p actr-hyper
     run_validation_suite
     commit_release_prepare
     return

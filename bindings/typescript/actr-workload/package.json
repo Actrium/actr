@@ -1,12 +1,12 @@
 {
   "name": "@actrium/actr-workload",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "TypeScript workload authoring and component build tools for ACTR",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "actr-workload-ts": "./dist/cli.js"
+    "actr-workload-ts": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -40,7 +40,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Actrium/actr.git",
+    "url": "git+https://github.com/Actrium/actr.git",
     "directory": "bindings/typescript/actr-workload"
   },
   "keywords": [

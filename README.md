@@ -125,7 +125,7 @@ shared stable version.
 
 The release train publishes all components in a single run:
   1. Foundation crates → protoc-gen crates → Python (optional) → SDK → CLI
-  2. Final Git tag created
+  2. Final Git tag created (`vX.Y.Z`)
   3. Swift package-sync dispatched (`Actrium/actr-swift-package-sync`)
   4. Kotlin package-sync dispatched (`Actrium/actr-kotlin-package-sync`)
   5. TypeScript npm package published (`@actrium/actr` from `bindings/typescript/`)

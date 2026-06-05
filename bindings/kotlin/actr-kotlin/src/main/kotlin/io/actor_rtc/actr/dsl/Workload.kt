@@ -4,15 +4,39 @@ package io.actor_rtc.actr.dsl
 import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.ContextBridge
+import io.actor_rtc.actr.CredentialObserverBridge
 import io.actor_rtc.actr.DataStream
 import io.actor_rtc.actr.ErrorEventBridge
+import io.actor_rtc.actr.MailboxObserverBridge
 import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.Realm
 import io.actor_rtc.actr.RpcEnvelopeBridge
+import io.actor_rtc.actr.SignalingObserverBridge
+import io.actor_rtc.actr.WebRtcObserverBridge
+import io.actor_rtc.actr.WebSocketObserverBridge
 import io.actor_rtc.actr.WorkloadLifecycleBridge
-import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicReference
+import io.actor_rtc.actr.DynamicWorkload as DynamicWorkloadGenerated
+
+typealias DynamicWorkload = DynamicWorkloadGenerated
+
+fun dynamicWorkload(
+    lifecycle: WorkloadLifecycleBridge,
+    signaling: SignalingObserverBridge? = null,
+    websocket: WebSocketObserverBridge? = null,
+    webrtc: WebRtcObserverBridge? = null,
+    credential: CredentialObserverBridge? = null,
+    mailbox: MailboxObserverBridge? = null,
+): DynamicWorkload =
+    DynamicWorkloadGenerated(
+        lifecycle = lifecycle,
+        signaling = signaling,
+        websocket = websocket,
+        webrtc = webrtc,
+        credential = credential,
+        mailbox = mailbox,
+    )
 
 /**
  * Simple workload implementation that only needs type information.
@@ -38,17 +62,19 @@ import kotlinx.coroutines.launch
  * ```
  */
 open class SimpleWorkload(
-        private val realmId: UInt,
-        private val type: ActrType,
-        private val onStartHandler: suspend (ContextBridge) -> Unit = {},
-        private val onStopHandler: suspend (ContextBridge) -> Unit = {}
+    private val realmId: UInt,
+    private val type: ActrType,
+    private val onStartHandler: suspend (ContextBridge) -> Unit = {},
+    private val onStopHandler: suspend (ContextBridge) -> Unit = {},
 ) : WorkloadLifecycleBridge {
-
     /** Channel for sending DataStream requests from UI to workload. */
     private val dataStreamChannel = Channel<DataStreamRequest>(Channel.UNLIMITED)
 
     /** Data class for DataStream requests. */
-    data class DataStreamRequest(val target: ActrId, val dataStream: DataStream)
+    data class DataStreamRequest(
+        val target: ActrId,
+        val dataStream: DataStream,
+    )
 
     /**
      * The target server ID for RPC calls. Must be set before making RPC calls via
@@ -63,25 +89,25 @@ open class SimpleWorkload(
      * @param typeString Actor type in "manufacturer:name:version" format
      */
     constructor(
-            realmId: UInt,
-            typeString: String,
-            onStartHandler: suspend (ContextBridge) -> Unit = {},
-            onStopHandler: suspend (ContextBridge) -> Unit = {}
+        realmId: UInt,
+        typeString: String,
+        onStartHandler: suspend (ContextBridge) -> Unit = {},
+        onStopHandler: suspend (ContextBridge) -> Unit = {},
     ) : this(realmId, typeString.toActrType(), onStartHandler, onStopHandler)
 
     /** Create a SimpleWorkload with named parameters. */
     constructor(
-            realm: UInt,
-            manufacturer: String,
-            name: String,
-            version: String,
-            onStartHandler: suspend (ContextBridge) -> Unit = {},
-            onStopHandler: suspend (ContextBridge) -> Unit = {}
+        realm: UInt,
+        manufacturer: String,
+        name: String,
+        version: String,
+        onStartHandler: suspend (ContextBridge) -> Unit = {},
+        onStopHandler: suspend (ContextBridge) -> Unit = {},
     ) : this(
-            realm,
-            ActrType(manufacturer = manufacturer, name = name, version = version),
-            onStartHandler,
-            onStopHandler
+        realm,
+        ActrType(manufacturer = manufacturer, name = name, version = version),
+        onStartHandler,
+        onStopHandler,
     )
 
     /**
@@ -97,15 +123,16 @@ open class SimpleWorkload(
     }
 
     /** Get the current target server ID, or null if not set. */
-    fun getTargetServerId(): ActrId? {
-        return targetServerId.get()
-    }
+    fun getTargetServerId(): ActrId? = targetServerId.get()
 
     /**
      * Send a DataStream through the workload's context. This method is thread-safe and can be
      * called from UI threads.
      */
-    suspend fun sendDataStream(target: ActrId, dataStream: DataStream) {
+    suspend fun sendDataStream(
+        target: ActrId,
+        dataStream: DataStream,
+    ) {
         dataStreamChannel.send(DataStreamRequest(target, dataStream))
     }
 
@@ -138,7 +165,10 @@ open class SimpleWorkload(
         onStopHandler(ctx)
     }
 
-    override suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge) {
+    override suspend fun onError(
+        ctx: ContextBridge,
+        event: ErrorEventBridge,
+    ) {
         // Default: do nothing
     }
 
@@ -157,11 +187,13 @@ open class SimpleWorkload(
      * @return Response bytes (protobuf encoded)
      * @throws IllegalStateException if dispatch is not implemented
      */
-    override suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray {
+    override suspend fun dispatch(
+        ctx: ContextBridge,
+        envelope: RpcEnvelopeBridge,
+    ): ByteArray =
         throw IllegalStateException(
-                "dispatch() must be implemented by subclass or use a custom WorkloadLifecycleBridge"
+            "dispatch() must be implemented by subclass or use a custom WorkloadLifecycleBridge",
         )
-    }
 }
 
 /**
@@ -183,9 +215,7 @@ open class SimpleWorkload(
  * }
  * ```
  */
-inline fun workload(builder: WorkloadBuilder.() -> Unit): SimpleWorkload {
-    return WorkloadBuilder().apply(builder).build()
-}
+inline fun workload(builder: WorkloadBuilder.() -> Unit): SimpleWorkload = WorkloadBuilder().apply(builder).build()
 
 /** Builder for creating workloads. */
 class WorkloadBuilder {
@@ -207,7 +237,11 @@ class WorkloadBuilder {
     }
 
     /** Set the actor type with manufacturer, name, and version. */
-    fun type(manufacturer: String, name: String, version: String) {
+    fun type(
+        manufacturer: String,
+        name: String,
+        version: String,
+    ) {
         _type = ActrType(manufacturer = manufacturer, name = name, version = version)
     }
 
@@ -262,9 +296,10 @@ class WorkloadBuilder {
  * }
  * ```
  */
-abstract class RoutedWorkload(private val realmId: UInt, private val type: ActrType) :
-        WorkloadLifecycleBridge {
-
+abstract class RoutedWorkload(
+    private val realmId: UInt,
+    private val type: ActrType,
+) : WorkloadLifecycleBridge {
     constructor(realmId: UInt, typeString: String) : this(realmId, typeString.toActrType())
 
     /**
@@ -285,9 +320,7 @@ abstract class RoutedWorkload(private val realmId: UInt, private val type: ActrT
     }
 
     /** Get the current target server ID, or null if not set. */
-    fun getTargetServerId(): ActrId? {
-        return targetServerId.get()
-    }
+    fun getTargetServerId(): ActrId? = targetServerId.get()
 
     /** Called when the workload starts. Override to add custom logic. */
     override suspend fun onStart(ctx: ContextBridge) {
@@ -305,7 +338,10 @@ abstract class RoutedWorkload(private val realmId: UInt, private val type: ActrT
     }
 
     /** Called when the runtime reports a workload error. Override to add custom logic. */
-    override suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge) {
+    override suspend fun onError(
+        ctx: ContextBridge,
+        event: ErrorEventBridge,
+    ) {
         // Default: do nothing
     }
 
@@ -320,7 +356,8 @@ abstract class RoutedWorkload(private val realmId: UInt, private val type: ActrT
      * @return Response bytes (protobuf encoded)
      * @throws IllegalStateException if dispatch is not implemented
      */
-    override suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray {
-        throw IllegalStateException("dispatch() must be overridden in subclass")
-    }
+    override suspend fun dispatch(
+        ctx: ContextBridge,
+        envelope: RpcEnvelopeBridge,
+    ): ByteArray = throw IllegalStateException("dispatch() must be overridden in subclass")
 }

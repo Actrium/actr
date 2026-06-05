@@ -1,0 +1,7 @@
+[*.kt]
+# Package name contains underscore (io.actor_rtc.actr) — required by UniFFI binding conventions
+ktlint_standard_package-name = disabled
+# actr.kt, package-info.kt are generated/naming convention files
+ktlint_standard_filename = disabled
+# Allow wildcard imports for generated code
+ktlint_standard_no-wildcard-imports = disabled

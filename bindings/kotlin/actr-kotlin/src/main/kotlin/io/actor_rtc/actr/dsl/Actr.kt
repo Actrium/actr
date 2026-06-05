@@ -32,11 +32,11 @@ package io.actor_rtc.actr.dsl
 
 import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrNode as ActrNodeGenerated
 import io.actor_rtc.actr.ActrRefWrapper
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.NetworkEventHandleWrapper
 import io.actor_rtc.actr.WorkloadLifecycleBridge
+import io.actor_rtc.actr.ActrNode as ActrNodeGenerated
 
 // ============================================================================
 // Type Aliases - Provide DSL-friendly names
@@ -89,10 +89,8 @@ typealias Workload = WorkloadLifecycleBridge
  */
 suspend fun ActrNodeGenerated.Companion.fromPackageFile(
     configPath: String,
-    packagePath: String
-): ActrNode {
-    return ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
-}
+    packagePath: String,
+): ActrNode = ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
 
 /**
  * Create an ActrNode from a config file and package file (top-level function).
@@ -107,9 +105,30 @@ suspend fun ActrNodeGenerated.Companion.fromPackageFile(
  * @return A new ActrNode instance
  * @throws ActrException.Config if the config file is invalid
  */
-suspend fun createActrNode(configPath: String, packagePath: String): ActrNode {
-    return ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
-}
+suspend fun createActrNode(
+    configPath: String,
+    packagePath: String,
+): ActrNode = ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
+
+/**
+ * Create an ActrNode backed by a linked dynamic workload.
+ *
+ * Use this when workload logic lives in Kotlin instead of a packaged `.actr` guest.
+ */
+suspend fun ActrNodeGenerated.Companion.linked(
+    configPath: String,
+    actorType: ActrType,
+    workload: DynamicWorkload,
+): ActrNode = ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
+
+/**
+ * Create an ActrNode backed by a linked dynamic workload.
+ */
+suspend fun linked(
+    configPath: String,
+    actorType: ActrType,
+    workload: DynamicWorkload,
+): ActrNode = ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
 
 // ============================================================================
 // ActrNode Extensions
@@ -133,9 +152,7 @@ suspend fun createActrNode(configPath: String, packagePath: String): ActrNode {
  * @return A new NetworkEventHandle instance
  * @throws ActrException if the handle cannot be created
  */
-suspend fun ActrNode.createNetworkEventHandle(): NetworkEventHandle {
-    return createNetworkEventHandle()
-}
+suspend fun ActrNode.createNetworkEventHandle(): NetworkEventHandle = createNetworkEventHandle()
 
 // ============================================================================
 // ActrRef Extensions
@@ -148,9 +165,10 @@ suspend fun ActrNode.createNetworkEventHandle(): NetworkEventHandle {
  * @param count Maximum number of candidates to return (default: 1)
  * @return List of discovered actor IDs
  */
-suspend fun ActrRef.discover(typeString: String, count: UInt = 1u): List<ActrId> {
-    return discover(typeString.toActrType(), count)
-}
+suspend fun ActrRef.discover(
+    typeString: String,
+    count: UInt = 1u,
+): List<ActrId> = discover(typeString.toActrType(), count)
 
 /**
  * Discover a single actor of the specified type.
@@ -158,9 +176,7 @@ suspend fun ActrRef.discover(typeString: String, count: UInt = 1u): List<ActrId>
  * @param typeString Actor type in "manufacturer:name:version" format
  * @return The first discovered actor ID, or null if none found
  */
-suspend fun ActrRef.discoverOne(typeString: String): ActrId? {
-    return discover(typeString, 1u).firstOrNull()
-}
+suspend fun ActrRef.discoverOne(typeString: String): ActrId? = discover(typeString, 1u).firstOrNull()
 
 /**
  * Discover a single actor of the specified type.
@@ -168,9 +184,7 @@ suspend fun ActrRef.discoverOne(typeString: String): ActrId? {
  * @param type Actor type
  * @return The first discovered actor ID, or null if none found
  */
-suspend fun ActrRef.discoverOne(type: ActrType): ActrId? {
-    return discover(type, 1u).firstOrNull()
-}
+suspend fun ActrRef.discoverOne(type: ActrType): ActrId? = discover(type, 1u).firstOrNull()
 
 /**
  * Send a DataStream built with DSL syntax.
@@ -188,7 +202,10 @@ suspend fun ActrRef.discoverOne(type: ActrType): ActrId? {
  * }
  * ```
  */
-suspend fun SimpleWorkload.sendStream(target: ActrId, builder: DataStreamBuilder.() -> Unit) {
+suspend fun SimpleWorkload.sendStream(
+    target: ActrId,
+    builder: DataStreamBuilder.() -> Unit,
+) {
     val dataStream = DataStreamBuilder().apply(builder).build()
     sendDataStream(target, dataStream)
 }
