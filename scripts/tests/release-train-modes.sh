@@ -541,6 +541,106 @@ EOF
   rm -rf "$temp_dir"
 }
 
+test_publish_typescript_package_writes_native_and_main_state() {
+  reset_release_train_state
+
+  local temp_dir original_path
+  temp_dir=$(mktemp -d)
+  original_path=$PATH
+  mkdir -p "$temp_dir/bin" "$temp_dir/bindings/typescript"
+
+  cat >"$temp_dir/bin/npm" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NPM_CALL_LOG"
+if [[ "$1" == "run" && "$2" == "artifacts" ]]; then
+  while IFS='|' read -r package dir artifact; do
+    mkdir -p "npm/$dir"
+    printf '{"name":"%s","version":"1.2.3"}\n' "$package" >"npm/$dir/package.json"
+    printf 'native\n' >"npm/$dir/$artifact"
+  done <<'PACKAGES'
+@actrium/actr-darwin-x64|darwin-x64|actr.darwin-x64.node
+@actrium/actr-darwin-arm64|darwin-arm64|actr.darwin-arm64.node
+@actrium/actr-linux-x64-gnu|linux-x64-gnu|actr.linux-x64-gnu.node
+@actrium/actr-linux-x64-musl|linux-x64-musl|actr.linux-x64-musl.node
+@actrium/actr-linux-arm64-gnu|linux-arm64-gnu|actr.linux-arm64-gnu.node
+@actrium/actr-linux-arm64-musl|linux-arm64-musl|actr.linux-arm64-musl.node
+@actrium/actr-win32-x64-msvc|win32-x64-msvc|actr.win32-x64-msvc.node
+PACKAGES
+fi
+exit 0
+EOF
+  chmod +x "$temp_dir/bin/npm"
+
+  cat >"$temp_dir/bin/npx" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NPX_CALL_LOG"
+exit 0
+EOF
+  chmod +x "$temp_dir/bin/npx"
+
+  cat >"$temp_dir/bindings/typescript/package.json" <<'EOF'
+{
+  "name": "@actrium/actr",
+  "version": "1.2.3",
+  "scripts": {
+    "compile:ts": "echo compile",
+    "artifacts": "echo artifacts"
+  }
+}
+EOF
+  printf '[package]\nversion = "1.2.3"\n' >"$temp_dir/bindings/typescript/Cargo.toml"
+
+  export NPM_CALL_LOG="$temp_dir/npm-calls.log"
+  export NPX_CALL_LOG="$temp_dir/npx-calls.log"
+  PATH="$temp_dir/bin:$PATH"
+  WORK_REPO_ROOT="$temp_dir"
+  DRY_RUN=true
+  VERSION="1.2.3"
+  RELEASE_SHA="abc123"
+  STATE_FILE="$temp_dir/state.tsv"
+  : >"$STATE_FILE"
+
+  publish_typescript_package
+
+  PATH=$original_path
+
+  local line_count
+  line_count=$(wc -l <"$STATE_FILE" | tr -d ' ')
+  assert_eq "8" "$line_count" "TypeScript package state rows"
+
+  for package in \
+    @actrium/actr \
+    @actrium/actr-darwin-x64 \
+    @actrium/actr-darwin-arm64 \
+    @actrium/actr-linux-x64-gnu \
+    @actrium/actr-linux-x64-musl \
+    @actrium/actr-linux-arm64-gnu \
+    @actrium/actr-linux-arm64-musl \
+    @actrium/actr-win32-x64-msvc; do
+    if ! grep -Fq "${package}"$'\t'"sdk"$'\t'"npm"$'\t'"1.2.3"$'\t'"success"$'\t'"dry_run_validated" "$STATE_FILE"; then
+      printf 'missing TypeScript package state row for %s\n' "$package" >&2
+      rm -rf "$temp_dir"
+      exit 1
+    fi
+  done
+
+  rm -rf "$temp_dir"
+}
+
+test_release_train_workflow_publish_typescript_uses_script_stage() {
+  reset_release_train_state
+
+  if ! grep -q 'args=(--stage publish-typescript --branch main --version' .github/workflows/release-train.yml; then
+    printf 'publish-typescript workflow job must call scripts/release-train.sh --stage publish-typescript\n' >&2
+    exit 1
+  fi
+
+  if grep -q 'Publish native + main packages\|Dry run native + main package publish' .github/workflows/release-train.yml; then
+    printf 'publish-typescript workflow job must not inline npm publish logic\n' >&2
+    exit 1
+  fi
+}
+
 test_report_stage_merges_state_files() {
   reset_release_train_state
 
@@ -697,5 +797,7 @@ test_main_publish_stage_skips_absent_tag_check
 test_main_validate_and_create_tag_check_absent_tag
 test_publish_python_package_builds_distribution_before_upload
 test_publish_typescript_workload_builds_before_publish
+test_publish_typescript_package_writes_native_and_main_state
+test_release_train_workflow_publish_typescript_uses_script_stage
 test_report_stage_merges_state_files
 test_update_versions_syncs_optional_dependencies

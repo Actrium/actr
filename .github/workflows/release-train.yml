@@ -577,9 +577,6 @@ jobs:
       - build-typescript-native
       - publish-typescript-workload
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: bindings/typescript
     env:
       CARGO_TERM_COLOR: always
     steps:
@@ -614,137 +611,16 @@ jobs:
           path: bindings/typescript/artifacts
           merge-multiple: true
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Validate committed version
-        if: ${{ needs.context.outputs.dry_run != 'true' }}
+      - name: Run publish-typescript stage
         run: |
-          node <<'EOF'
-          const fs = require('node:fs');
-          const expectedVersion = process.env.EXPECTED_VERSION;
-          const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const cargoToml = fs.readFileSync('Cargo.toml', 'utf8');
-          const cargoVersionMatch = cargoToml.match(/^version = "([^"]+)"$/m);
-          if (!cargoVersionMatch) {
-            throw new Error('Failed to read Cargo.toml version');
-          }
-
-          if (packageJson.version !== cargoVersionMatch[1]) {
-            throw new Error(
-              `Version mismatch: package.json=${packageJson.version}, Cargo.toml=${cargoVersionMatch[1]}`,
-            );
-          }
-
-          if (packageJson.version !== expectedVersion) {
-            throw new Error(
-              `Expected version ${expectedVersion}, but repository version is ${packageJson.version}`,
-            );
-          }
-
-          console.log(`Publishing committed version ${expectedVersion}`);
-          EOF
-        env:
-          EXPECTED_VERSION: ${{ needs.context.outputs.version }}
-
-      - name: Prepare TypeScript package
-        run: |
-          npm run compile:ts
-          npx napi create-npm-dirs
-          npm run artifacts -- --output-dir artifacts
-
-      - name: Verify native package layout
-        run: |
-          set -euo pipefail
-          for item in \
-            "darwin-x64/actr.darwin-x64.node" \
-            "darwin-arm64/actr.darwin-arm64.node" \
-            "linux-x64-gnu/actr.linux-x64-gnu.node" \
-            "linux-x64-musl/actr.linux-x64-musl.node" \
-            "linux-arm64-gnu/actr.linux-arm64-gnu.node" \
-            "linux-arm64-musl/actr.linux-arm64-musl.node" \
-            "win32-x64-msvc/actr.win32-x64-msvc.node"
-          do
-            test -f "npm/$item"
-          done
-
-      - name: Dry run native + main package publish
-        if: ${{ needs.context.outputs.dry_run == 'true' }}
-        run: |
-          set -euo pipefail
-          for dir in npm/*; do
-            npm publish "./$dir" --access public --dry-run
-          done
-          npm publish --access public --dry-run --ignore-scripts
-
-      - name: Publish native + main packages (OIDC)
-        if: ${{ needs.context.outputs.dry_run != 'true' }}
-        env:
-          EXPECTED_VERSION: ${{ needs.context.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          # Prepare for npm Trusted Publishing (OIDC).
-          unset NODE_AUTH_TOKEN
-          unset NPM_CONFIG_USERCONFIG
-          npm config set registry https://registry.npmjs.org/
-
-          local_tag="latest"
+          args=(--stage publish-typescript --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
           if [[ "${{ needs.context.outputs.pre_release }}" == "true" ]]; then
-            local_tag="pre"
+            args+=(--pre-release)
           fi
-
-          # Publish native platform packages.
-          for dir in npm/*; do
-            package="$(node -p "require('./$dir/package.json').name")"
-            if npm view "$package@$EXPECTED_VERSION" version >/dev/null 2>&1; then
-              echo "$package@$EXPECTED_VERSION already exists; skipping"
-              continue
-            fi
-            npm publish "./$dir" --access public --tag "$local_tag"
-          done
-
-          # Publish main @actrium/actr package.
-          if npm view "@actrium/actr@$EXPECTED_VERSION" version >/dev/null 2>&1; then
-            echo "@actrium/actr@$EXPECTED_VERSION already exists; skipping"
-            exit 0
-          fi
-          npm publish --access public --tag "$local_tag" --ignore-scripts
-
-      - name: Verify npm package visibility
-        if: ${{ needs.context.outputs.dry_run != 'true' }}
-        run: |
-          set -euo pipefail
-          expected_version="${{ needs.context.outputs.version }}"
-          wait_for_version() {
-            local package="$1"
-            local expected="$2"
-            local attempt
-            for attempt in $(seq 1 20); do
-              if published_version="$(npm view "$package@$expected" version 2>/dev/null)" && [ "$published_version" = "$expected" ]; then
-                echo "$package@$expected is visible on npm"
-                return 0
-              fi
-              echo "Waiting for $package@$expected to become visible on npm (attempt $attempt/20)"
-              sleep 15
-            done
-
-            echo "Expected $package@$expected to be visible on npm"
-            exit 1
-          }
-
-          wait_for_version @actrium/actr "$expected_version"
-          for package in \
-            @actrium/actr-darwin-x64 \
-            @actrium/actr-darwin-arm64 \
-            @actrium/actr-linux-x64-gnu \
-            @actrium/actr-linux-x64-musl \
-            @actrium/actr-linux-arm64-gnu \
-            @actrium/actr-linux-arm64-musl \
-            @actrium/actr-win32-x64-msvc
-          do
-            wait_for_version "$package" "$expected_version"
-          done
+          scripts/release-train.sh "${args[@]}"
 
       - name: Upload publish-typescript artifacts
         if: always()

@@ -87,13 +87,14 @@ impl DiscoveryCommand {
 #[async_trait]
 impl Command for DiscoveryCommand {
     async fn execute(&self, context: &CommandContext) -> Result<CommandResult> {
-        // Get reusable components
-        let (service_discovery, user_interface, config_manager) = {
+        // Get reusable components needed for all paths (discovery + display).
+        // ConfigManager is only required for export/add-config actions;
+        // --list-only and pure discovery work without it.
+        let (service_discovery, user_interface) = {
             let container = context.container.lock().unwrap();
             (
                 container.get_service_discovery()?,
                 container.get_user_interface()?,
-                container.get_config_manager()?,
             )
         };
 
@@ -177,7 +178,11 @@ impl Command for DiscoveryCommand {
                 ))
             }
             1 => {
-                // Export proto files
+                // Export proto files — requires ConfigManager
+                let config_manager = {
+                    let container = context.container.lock().unwrap();
+                    container.get_config_manager()?
+                };
                 self.export_proto_files(selected_service, &service_discovery, &config_manager)
                     .await?;
                 Ok(CommandResult::Success("Proto files exported".to_string()))
@@ -192,14 +197,12 @@ impl Command for DiscoveryCommand {
     }
 
     fn required_components(&self) -> Vec<ComponentType> {
-        // Components needed for Discovery command
+        // Minimal components for discovery + display.
+        // ConfigManager and validators are only needed for export/add-config
+        // actions and are obtained lazily from the container when required.
         vec![
             ComponentType::ServiceDiscovery, // Core service discovery
             ComponentType::UserInterface,    // User interface
-            ComponentType::ConfigManager,    // Configuration management
-            ComponentType::DependencyResolver,
-            ComponentType::NetworkValidator,
-            ComponentType::FingerprintValidator,
         ]
     }
 
@@ -823,14 +826,13 @@ mod tests {
         let cmd = DiscoveryCommand::default();
         let components = cmd.required_components();
 
-        // Discovery command requires validation components for check-first flow.
+        // Discovery requires only ServiceDiscovery + UserInterface up front.
+        // ConfigManager and validators are obtained lazily when needed.
         assert!(components.contains(&ComponentType::ServiceDiscovery));
         assert!(components.contains(&ComponentType::UserInterface));
-        assert!(components.contains(&ComponentType::ConfigManager));
-        assert!(components.contains(&ComponentType::DependencyResolver));
-        assert!(components.contains(&ComponentType::NetworkValidator));
-        assert!(components.contains(&ComponentType::FingerprintValidator));
-        assert!(!components.contains(&ComponentType::CacheManager));
-        assert!(!components.contains(&ComponentType::ProtoProcessor));
+        assert!(!components.contains(&ComponentType::ConfigManager));
+        assert!(!components.contains(&ComponentType::DependencyResolver));
+        assert!(!components.contains(&ComponentType::NetworkValidator));
+        assert!(!components.contains(&ComponentType::FingerprintValidator));
     }
 }

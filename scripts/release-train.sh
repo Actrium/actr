@@ -1111,66 +1111,108 @@ publish_typescript_workload_package() {
 
 publish_typescript_package() {
   local ts_root="$WORK_REPO_ROOT/bindings/typescript"
-  local ts_version
+  local ts_version main_package cargo_version npm_tag
+  local native_packages=(
+    "@actrium/actr-darwin-x64|darwin-x64|actr.darwin-x64.node"
+    "@actrium/actr-darwin-arm64|darwin-arm64|actr.darwin-arm64.node"
+    "@actrium/actr-linux-x64-gnu|linux-x64-gnu|actr.linux-x64-gnu.node"
+    "@actrium/actr-linux-x64-musl|linux-x64-musl|actr.linux-x64-musl.node"
+    "@actrium/actr-linux-arm64-gnu|linux-arm64-gnu|actr.linux-arm64-gnu.node"
+    "@actrium/actr-linux-arm64-musl|linux-arm64-musl|actr.linux-arm64-musl.node"
+    "@actrium/actr-win32-x64-msvc|win32-x64-msvc|actr.win32-x64-msvc.node"
+  )
 
   if [[ ! -d "$ts_root" ]]; then
     log_warn "TypeScript package directory not found; skipping"
-    append_state "actr-ts" "sdk" "npm" "skipped" "directory_missing" "-" "$RELEASE_SHA"
+    append_state "@actrium/actr" "sdk" "npm" "skipped" "directory_missing" "-" "$RELEASE_SHA"
     return
   fi
 
   if ! command -v npm >/dev/null 2>&1; then
     log_warn "npm not found; skipping TypeScript package"
-    append_state "actr-ts" "sdk" "npm" "skipped" "toolchain_missing" "-" "$RELEASE_SHA"
+    append_state "@actrium/actr" "sdk" "npm" "skipped" "toolchain_missing" "-" "$RELEASE_SHA"
     return
   fi
 
   log_info "Installing TypeScript dependencies"
   (cd "$ts_root" && npm ci)
 
+  ts_version=$(node -p "require('${ts_root}/package.json').version")
+  main_package=$(node -p "require('${ts_root}/package.json').name")
+  if [[ "$main_package" != "@actrium/actr" ]]; then
+    fail "Expected package name @actrium/actr, got ${main_package}"
+  fi
+
+  cargo_version=$(python3 - "$ts_root/Cargo.toml" <<'PY'
+from __future__ import annotations
+import re
+import sys
+
+content = open(sys.argv[1], encoding="utf-8").read()
+match = re.search(r'^version = "([^"]+)"$', content, re.M)
+if not match:
+    raise SystemExit("failed to read Cargo.toml version")
+print(match.group(1))
+PY
+)
+  if [[ "$ts_version" != "$cargo_version" ]]; then
+    fail "Version mismatch: package.json=${ts_version}, Cargo.toml=${cargo_version}"
+  fi
+
+  if [[ "$DRY_RUN" != true && "$ts_version" != "$VERSION" ]]; then
+    fail "Expected TypeScript version ${VERSION}, but repository version is ${ts_version}"
+  fi
+
+  log_info "Preparing TypeScript native package layout"
+  (
+    cd "$ts_root"
+    npm run compile:ts
+    npx napi create-npm-dirs
+    npm run artifacts -- --output-dir artifacts
+  )
+
+  local descriptor package dir artifact
+  for descriptor in "${native_packages[@]}"; do
+    IFS='|' read -r package dir artifact <<<"$descriptor"
+    test -f "$ts_root/npm/$dir/$artifact"
+  done
+
   if [[ "$DRY_RUN" == true ]]; then
     log_info "TypeScript package dry-run validation"
-    ts_version=$(node -p "require('${ts_root}/package.json').version")
-    # Validate metadata without contacting npm
-    # (npm publish --dry-run rejects already-published versions)
-    local pkg_name
-    pkg_name=$(node -p "require('${ts_root}/package.json').name")
-    if [[ "$pkg_name" != "@actrium/actr" ]]; then
-      fail "Expected package name @actrium/actr, got ${pkg_name}"
-    fi
-    log_info "  OK ${pkg_name}@${ts_version}"
-    append_state "actr-ts" "sdk" "npm" "success" "dry_run_validated" "https://www.npmjs.com/package/@actrium/actr" "$RELEASE_SHA"
+    for descriptor in "${native_packages[@]}"; do
+      IFS='|' read -r package dir artifact <<<"$descriptor"
+      (cd "$ts_root" && npm publish "./npm/$dir" --access public --dry-run)
+      append_state "$package" "sdk" "npm" "success" "dry_run_validated" "$(npm_registry_url "$package")" "$RELEASE_SHA"
+    done
+    (cd "$ts_root" && npm publish --access public --dry-run --ignore-scripts)
+    append_state "@actrium/actr" "sdk" "npm" "success" "dry_run_validated" "$(npm_registry_url "@actrium/actr")" "$RELEASE_SHA"
     return
   fi
 
-  log_info "Publishing TypeScript package to npm"
+  log_info "Publishing TypeScript packages to npm"
 
   # Prepare for npm Trusted Publishing (OIDC).
   rm -f "${NPM_CONFIG_USERCONFIG:-}"
   unset NPM_CONFIG_USERCONFIG NODE_AUTH_TOKEN
   npm config set registry https://registry.npmjs.org/
 
-  local npm_tag="latest"
+  npm_tag="latest"
   if [[ "$PRE_RELEASE" == true ]]; then
     npm_tag="pre"
   fi
 
-  ts_version=$(node -p "require('${ts_root}/package.json').version")
-
   # Publish native platform packages first, then the main package.
   log_info "Publishing native platform packages"
-  local dir
-  for dir in "$ts_root"/npm/*; do
-    if [[ ! -d "$dir" ]]; then
-      continue
-    fi
-    local package
-    package=$(node -p "require('${dir}/package.json').name")
+  local publish_results=()
+  for descriptor in "${native_packages[@]}"; do
+    IFS='|' read -r package dir artifact <<<"$descriptor"
     if npm view "${package}@${ts_version}" version >/dev/null 2>&1; then
       log_info "${package}@${ts_version} already exists; skipping"
+      publish_results+=("$package|already_published")
       continue
     fi
-    (cd "$ts_root" && npm publish "./$(basename "$dir")" --access public --tag "$npm_tag")
+    (cd "$ts_root" && npm publish "./npm/$dir" --access public --tag "$npm_tag")
+    publish_results+=("$package|published")
   done
 
   # Publish the main @actrium/actr package.
@@ -1178,38 +1220,30 @@ publish_typescript_package() {
 
   if npm view "@actrium/actr@${ts_version}" version >/dev/null 2>&1; then
     log_info "@actrium/actr@${ts_version} already exists; skipping"
+    publish_results+=("@actrium/actr|already_published")
   else
     (cd "$ts_root" && npm publish --access public --tag "$npm_tag" --ignore-scripts)
+    publish_results+=("@actrium/actr|published")
   fi
 
   # Visibility verification for all 8 packages.
-  local all_packages=(
-    "@actrium/actr"
-    "@actrium/actr-darwin-x64"
-    "@actrium/actr-darwin-arm64"
-    "@actrium/actr-linux-x64-gnu"
-    "@actrium/actr-linux-x64-musl"
-    "@actrium/actr-linux-arm64-gnu"
-    "@actrium/actr-linux-arm64-musl"
-    "@actrium/actr-win32-x64-msvc"
-  )
-  local pkg attempt
-  for pkg in "${all_packages[@]}"; do
+  local result pkg mode attempt
+  for result in "${publish_results[@]}"; do
+    IFS='|' read -r pkg mode <<<"$result"
     for attempt in $(seq 1 20); do
       if npm view "${pkg}@${ts_version}" version >/dev/null 2>&1; then
         log_info "${pkg}@${ts_version} is visible on npm"
+        append_state "$pkg" "sdk" "npm" "success" "$mode" "$(npm_registry_url "$pkg")" "$RELEASE_SHA"
         break
       fi
       if [[ "$attempt" -eq 20 ]]; then
-        append_state "actr-ts" "sdk" "npm" "failure" "visibility_timeout" "https://www.npmjs.com/package/@actrium/actr" "$RELEASE_SHA"
+        append_state "$pkg" "sdk" "npm" "failure" "visibility_timeout" "$(npm_registry_url "$pkg")" "$RELEASE_SHA"
         fail "Timed out waiting for ${pkg}@${ts_version} to become visible on npm"
       fi
       log_info "Waiting for ${pkg}@${ts_version} visibility (${attempt}/20)"
       sleep 15
     done
   done
-
-  append_state "actr-ts" "sdk" "npm" "success" "published" "https://www.npmjs.com/package/@actrium/actr" "$RELEASE_SHA"
 }
 
 publish_package_sync_repo() {
@@ -1325,6 +1359,10 @@ crate_registry_url() {
 
 python_registry_url() {
   printf 'https://pypi.org/project/%s/%s/' "$PYTHON_PACKAGE_NAME" "$VERSION"
+}
+
+npm_registry_url() {
+  printf 'https://www.npmjs.com/package/%s' "$1"
 }
 
 registry_user_agent() {

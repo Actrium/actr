@@ -41,15 +41,7 @@ impl Command for RegistryArgs {
                 let command = DiscoveryCommand::from_args(cmd);
                 {
                     let container = ctx.container.lock().unwrap();
-                    if command.standalone_config().is_some() {
-                        // Standalone mode: only need ServiceDiscovery + basic UI
-                        container.validate(&[
-                            ComponentType::ServiceDiscovery,
-                            ComponentType::UserInterface,
-                        ])?;
-                    } else {
-                        container.validate(&command.required_components())?;
-                    }
+                    container.validate(&command.required_components())?;
                 }
                 command.execute(ctx).await
             }
@@ -63,14 +55,9 @@ impl Command for RegistryArgs {
 
     fn required_components(&self) -> Vec<ComponentType> {
         match &self.command {
-            RegistryCommand::Discover(_) => vec![
-                ComponentType::ServiceDiscovery,
-                ComponentType::UserInterface,
-                ComponentType::ConfigManager,
-                ComponentType::DependencyResolver,
-                ComponentType::NetworkValidator,
-                ComponentType::FingerprintValidator,
-            ],
+            RegistryCommand::Discover(cmd) => {
+                DiscoveryCommand::from_args(cmd).required_components()
+            }
             RegistryCommand::Fingerprint(_) | RegistryCommand::Publish(_) => vec![],
         }
     }
