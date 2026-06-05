@@ -26,7 +26,7 @@ type PendingRequestsMap =
 /// DataStream has no caller-provided request deadline like RPC envelopes, so
 /// this prevents a stalled WebRTC DataChannel send from holding the mobile
 /// caller forever during unrecoverable network loss.
-const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(8);
+const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// PeerGate - Outproc transport adapter (outbound)
 ///
