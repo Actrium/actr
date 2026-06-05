@@ -1251,6 +1251,71 @@ async fn test_signaling_restore_wakes_existing_restart_without_duplicate_offer()
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_default_network_processor_mobile_restore_wakes_existing_restart_retry() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establish connection with peer 100 as offerer");
+    harness.connect(100, 200).await;
+    harness.reset_counters();
+
+    let offerer_signaling = harness.peer(100).signaling_client.clone();
+    let offerer_coordinator = harness.peer(100).coordinator.clone();
+    let network_processor = harness.peer(100).network_processor();
+
+    tracing::info!("Step 2: Start network recovery while offerer signaling is disconnected");
+    offerer_signaling
+        .disconnect()
+        .await
+        .expect("test should disconnect offerer signaling");
+    offerer_coordinator
+        .begin_network_recovery("NetworkLost")
+        .await;
+    offerer_coordinator
+        .restart_network_recovery_connections()
+        .await;
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        0,
+        "ICE restart must not send an offer while signaling is disconnected"
+    );
+
+    tracing::info!("Step 3: Restore through the real DefaultNetworkEventProcessor");
+    let events = vec![offline_event(1), online_event(2), wifi_event(3)];
+    assert_eq!(
+        select_network_recovery_action(&events),
+        NetworkRecoveryAction::Restore
+    );
+
+    let started = Instant::now();
+    let results = process_network_event_batch(events, network_processor).await;
+    assert!(
+        results.iter().all(|result| result.success),
+        "DefaultNetworkEventProcessor restore should succeed: {results:?}"
+    );
+
+    harness
+        .wait_for_ice_restart_count(1, Duration::from_secs(3))
+        .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "mobile restore should wake the existing ICE restart retry before the 5s backoff expires"
+    );
+
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        1,
+        "DefaultNetworkEventProcessor restore should wake the existing restart task, not send duplicate offers"
+    );
+}
+
 #[tokio::test]
 async fn test_network_recovery_guard_times_out_after_6s_and_closes_transport() {
     init_tracing();
