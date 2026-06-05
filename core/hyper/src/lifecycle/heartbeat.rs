@@ -533,12 +533,9 @@ async fn re_register_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    // ── HEAD helpers ──
     use crate::inbound::MediaFrameRegistry;
     use crate::transport::{NetworkError, NetworkResult};
-    use crate::wire::webrtc::{
-        DisconnectReason, SignalingEvent, SignalingStats, WebRtcConfig,
-    };
+    use crate::wire::webrtc::{DisconnectReason, SignalingEvent, SignalingStats, WebRtcConfig};
     use actr_protocol::prost::Message as _;
     use actr_protocol::{
         AIdCredential, ActrType, Pong, Realm, RegisterResponse, RouteCandidatesRequest,
@@ -570,7 +567,6 @@ mod tests {
         }
     }
 
-    // ── Mock mailbox ──
     struct EmptyMailbox;
 
     #[async_trait::async_trait]
@@ -601,7 +597,6 @@ mod tests {
         }
     }
 
-    // ── HEAD: signaling client that returns CredentialExpired on heartbeat ──
     struct ExpiredHeartbeatSignalingClient {
         event_tx: broadcast::Sender<SignalingEvent>,
     }
@@ -712,7 +707,6 @@ mod tests {
         async fn clear_identity(&self) {}
     }
 
-    // ── HEAD test ──
     #[tokio::test]
     async fn re_registration_updates_webrtc_coordinator_local_id() {
         let initial_id = test_actor_id(1);
@@ -774,6 +768,7 @@ mod tests {
             &mut consecutive_failures,
             &server.url(),
             None,
+            None,
             Some(&coordinator),
             None,
         )
@@ -782,8 +777,6 @@ mod tests {
         assert_eq!(updated_id, Some(renewed_id.clone()));
         assert_eq!(coordinator.local_id_for_test(), renewed_id);
     }
-
-    // ── feat branch helpers ──────────────────────────────────
 
     use actr_protocol::RegisterAuthMode;
     use std::sync::Mutex;
@@ -808,7 +801,6 @@ mod tests {
         }
     }
 
-    // ── feat branch: minimal signaling client ──
     #[derive(Default)]
     struct FakeSignalingClient {
         actor_id: Mutex<Option<ActrId>>,
@@ -911,7 +903,6 @@ mod tests {
         async fn clear_identity(&self) {}
     }
 
-    // ── feat branch test ──
     #[tokio::test]
     async fn re_registration_sends_realm_secret_to_ais() {
         let mut server = mockito::Server::new_async().await;
