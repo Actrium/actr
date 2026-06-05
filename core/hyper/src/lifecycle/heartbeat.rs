@@ -117,6 +117,7 @@ async fn send_heartbeat_and_handle_response(
     register_request: &RegisterRequest,
     consecutive_failures: &mut u64,
     ais_endpoint: &str,
+    realm_secret: Option<&str>,
     hook_callback: Option<&HookCallback>,
     webrtc_coordinator: Option<&Arc<WebRtcCoordinator>>,
     webrtc_gate: Option<&Arc<WebRtcGate>>,
@@ -171,6 +172,7 @@ async fn send_heartbeat_and_handle_response(
                 register_request.clone(),
                 credential_state.clone(),
                 ais_endpoint.to_string(),
+                realm_secret.map(str::to_string),
                 hook_callback.cloned(),
             )
             .await;
@@ -302,6 +304,7 @@ pub async fn heartbeat_task(
     heartbeat_interval: Duration,
     register_request: RegisterRequest,
     ais_endpoint: String,
+    realm_secret: Option<String>,
     hook_callback: Option<HookCallback>,
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     webrtc_gate: Option<Arc<WebRtcGate>>,
@@ -326,6 +329,7 @@ pub async fn heartbeat_task(
                     &register_request,
                     &mut consecutive_failures,
                     &ais_endpoint,
+                    realm_secret.as_deref(),
                     hook_callback.as_ref(),
                     webrtc_coordinator.as_ref(),
                     webrtc_gate.as_ref(),
@@ -434,6 +438,7 @@ async fn re_register_task(
     register_request: RegisterRequest,
     credential_state: CredentialState,
     ais_endpoint: String,
+    realm_secret: Option<String>,
     hook_callback: Option<HookCallback>,
 ) -> ActrId {
     tracing::info!(
@@ -444,7 +449,10 @@ async fn re_register_task(
     );
 
     // Step 1: Register via AIS HTTP to get new credential
-    let ais = AisClient::new(&ais_endpoint);
+    let mut ais = AisClient::new(&ais_endpoint);
+    if let Some(secret) = realm_secret {
+        ais = ais.with_realm_secret(secret);
+    }
     let resp = match ais.register_with_manifest(register_request.clone()).await {
         Ok(resp) => resp,
         Err(e) => {
@@ -525,9 +533,12 @@ async fn re_register_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // ── HEAD helpers ──
     use crate::inbound::MediaFrameRegistry;
     use crate::transport::{NetworkError, NetworkResult};
-    use crate::wire::webrtc::{DisconnectReason, SignalingEvent, SignalingStats, WebRtcConfig};
+    use crate::wire::webrtc::{
+        DisconnectReason, SignalingEvent, SignalingStats, WebRtcConfig,
+    };
     use actr_protocol::prost::Message as _;
     use actr_protocol::{
         AIdCredential, ActrType, Pong, Realm, RegisterResponse, RouteCandidatesRequest,
@@ -559,6 +570,7 @@ mod tests {
         }
     }
 
+    // ── Mock mailbox ──
     struct EmptyMailbox;
 
     #[async_trait::async_trait]
@@ -589,6 +601,7 @@ mod tests {
         }
     }
 
+    // ── HEAD: signaling client that returns CredentialExpired on heartbeat ──
     struct ExpiredHeartbeatSignalingClient {
         event_tx: broadcast::Sender<SignalingEvent>,
     }
@@ -699,6 +712,7 @@ mod tests {
         async fn clear_identity(&self) {}
     }
 
+    // ── HEAD test ──
     #[tokio::test]
     async fn re_registration_updates_webrtc_coordinator_local_id() {
         let initial_id = test_actor_id(1);
@@ -767,5 +781,199 @@ mod tests {
 
         assert_eq!(updated_id, Some(renewed_id.clone()));
         assert_eq!(coordinator.local_id_for_test(), renewed_id);
+    }
+
+    // ── feat branch helpers ──────────────────────────────────
+
+    use actr_protocol::RegisterAuthMode;
+    use std::sync::Mutex;
+
+    fn test_realm_secret_actor_id(serial_number: u64) -> ActrId {
+        ActrId {
+            realm: Realm { realm_id: 7 },
+            serial_number,
+            r#type: ActrType {
+                manufacturer: "demo2".to_string(),
+                name: "DuplexStreamService".to_string(),
+                version: "1.0.0".to_string(),
+            },
+        }
+    }
+
+    fn test_realm_secret_credential(key_id: u32) -> AIdCredential {
+        AIdCredential {
+            key_id,
+            claims: bytes::Bytes::from_static(b"claims"),
+            signature: bytes::Bytes::from_static(&[7; 64]),
+        }
+    }
+
+    // ── feat branch: minimal signaling client ──
+    #[derive(Default)]
+    struct FakeSignalingClient {
+        actor_id: Mutex<Option<ActrId>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SignalingClient for FakeSignalingClient {
+        async fn connect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn connect_once(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn send_register_request(
+            &self,
+            _request: RegisterRequest,
+        ) -> NetworkResult<RegisterResponse> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_unregister_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _reason: Option<String>,
+        ) -> NetworkResult<UnregisterResponse> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _availability: ServiceAvailabilityState,
+            _power_reserve: f32,
+            _mailbox_backlog: f32,
+        ) -> NetworkResult<Pong> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_route_candidates_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _request: RouteCandidatesRequest,
+        ) -> NetworkResult<RouteCandidatesResponse> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn get_signing_key(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _key_id: u32,
+        ) -> NetworkResult<(u32, Vec<u8>)> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_credential_update_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+        ) -> NetworkResult<RegisterResponse> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+            Ok(None)
+        }
+
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn get_stats(&self) -> SignalingStats {
+            SignalingStats::default()
+        }
+
+        fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+            let (_tx, rx) = broadcast::channel(1);
+            rx
+        }
+
+        async fn set_actor_id(&self, actor_id: ActrId) {
+            *self.actor_id.lock().expect("actor_id mutex poisoned") = Some(actor_id);
+        }
+
+        async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+        async fn clear_identity(&self) {}
+    }
+
+    // ── feat branch test ──
+    #[tokio::test]
+    async fn re_registration_sends_realm_secret_to_ais() {
+        let mut server = mockito::Server::new_async().await;
+        let new_actor_id = test_realm_secret_actor_id(42);
+        let register_response = RegisterResponse {
+            result: Some(register_response::Result::Success(
+                register_response::RegisterOk {
+                    actr_id: new_actor_id.clone(),
+                    credential: test_realm_secret_credential(2),
+                    turn_credential: TurnCredential {
+                        username: "turn-user".to_string(),
+                        password: "turn-password".to_string(),
+                        expires_at: 123,
+                    },
+                    credential_expires_at: Some(prost_types::Timestamp {
+                        seconds: 456,
+                        nanos: 0,
+                    }),
+                    signaling_heartbeat_interval_secs: 30,
+                    signing_pubkey: bytes::Bytes::from_static(&[1; 32]),
+                    signing_key_id: 2,
+                    psk: None,
+                    psk_expires_at: None,
+                },
+            )),
+        };
+        let _mock = server
+            .mock("POST", "/register")
+            .match_header("x-actrix-realm-secret", "rs_test_secret")
+            .with_status(200)
+            .with_body(register_response.encode_to_vec())
+            .create_async()
+            .await;
+
+        let old_actor_id = test_realm_secret_actor_id(1);
+        let credential_state = CredentialState::new(
+            test_realm_secret_credential(1),
+            Some(prost_types::Timestamp {
+                seconds: 123,
+                nanos: 0,
+            }),
+            None,
+        );
+        let register_request = RegisterRequest {
+            actr_type: old_actor_id.r#type.clone(),
+            realm: old_actor_id.realm,
+            auth_mode: Some(RegisterAuthMode::Linked as i32),
+            ..Default::default()
+        };
+        let client = Arc::new(FakeSignalingClient::default());
+
+        let returned_actor_id = re_register_task(
+            client,
+            old_actor_id,
+            register_request,
+            credential_state,
+            server.url(),
+            Some("rs_test_secret".to_string()),
+            None,
+        )
+        .await;
+
+        assert_eq!(returned_actor_id, new_actor_id);
     }
 }
