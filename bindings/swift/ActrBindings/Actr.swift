@@ -1644,24 +1644,24 @@ public func FfiConverterTypeDynamicWorkload_lower(_ value: DynamicWorkload) -> U
 public protocol NetworkEventHandleWrapperProtocol: AnyObject, Sendable {
     
     /**
-     * Cleanup all connections.
+     * Cleanup all connections without reconnecting.
      */
-    func cleanupConnections() async throws  -> NetworkEventResult
+    func cleanupConnections(reason: CleanupReason) async throws  -> NetworkEventResult
     
     /**
-     * Handle network available event.
+     * Force cleanup and reconnect.
      */
-    func handleNetworkAvailable() async throws  -> NetworkEventResult
+    func forceReconnect(reason: ReconnectReason) async throws  -> NetworkEventResult
     
     /**
-     * Handle network lost event.
+     * Handle an app lifecycle change.
      */
-    func handleNetworkLost() async throws  -> NetworkEventResult
+    func handleAppLifecycleChanged(state: AppLifecycleState) async throws  -> NetworkEventResult
     
     /**
-     * Handle network type changed event.
+     * Handle a full network path change.
      */
-    func handleNetworkTypeChanged(isWifi: Bool, isCellular: Bool) async throws  -> NetworkEventResult
+    func handleNetworkPathChanged(snapshot: NetworkSnapshot) async throws  -> NetworkEventResult
     
 }
 /**
@@ -1721,75 +1721,75 @@ open class NetworkEventHandleWrapper: NetworkEventHandleWrapperProtocol, @unchec
 
     
     /**
-     * Cleanup all connections.
+     * Cleanup all connections without reconnecting.
      */
-open func cleanupConnections()async throws  -> NetworkEventResult  {
+open func cleanupConnections(reason: CleanupReason)async throws  -> NetworkEventResult  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_actr_fn_method_networkeventhandlewrapper_cleanup_connections(
-                    self.uniffiCloneHandle()
-                    
-                )
-            },
-            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
-            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
-            freeFunc: ffi_actr_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeNetworkEventResult_lift,
-            errorHandler: FfiConverterTypeActrError_lift
-        )
-}
-    
-    /**
-     * Handle network available event.
-     */
-open func handleNetworkAvailable()async throws  -> NetworkEventResult  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_available(
-                    self.uniffiCloneHandle()
-                    
-                )
-            },
-            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
-            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
-            freeFunc: ffi_actr_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeNetworkEventResult_lift,
-            errorHandler: FfiConverterTypeActrError_lift
-        )
-}
-    
-    /**
-     * Handle network lost event.
-     */
-open func handleNetworkLost()async throws  -> NetworkEventResult  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_lost(
-                    self.uniffiCloneHandle()
-                    
-                )
-            },
-            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
-            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
-            freeFunc: ffi_actr_rust_future_free_rust_buffer,
-            liftFunc: FfiConverterTypeNetworkEventResult_lift,
-            errorHandler: FfiConverterTypeActrError_lift
-        )
-}
-    
-    /**
-     * Handle network type changed event.
-     */
-open func handleNetworkTypeChanged(isWifi: Bool, isCellular: Bool)async throws  -> NetworkEventResult  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_type_changed(
                     self.uniffiCloneHandle(),
-                    FfiConverterBool.lower(isWifi),FfiConverterBool.lower(isCellular)
+                    FfiConverterTypeCleanupReason_lower(reason)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
+            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
+            freeFunc: ffi_actr_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeNetworkEventResult_lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
+     * Force cleanup and reconnect.
+     */
+open func forceReconnect(reason: ReconnectReason)async throws  -> NetworkEventResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_networkeventhandlewrapper_force_reconnect(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeReconnectReason_lower(reason)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
+            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
+            freeFunc: ffi_actr_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeNetworkEventResult_lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
+     * Handle an app lifecycle change.
+     */
+open func handleAppLifecycleChanged(state: AppLifecycleState)async throws  -> NetworkEventResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_networkeventhandlewrapper_handle_app_lifecycle_changed(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeAppLifecycleState_lower(state)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
+            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
+            freeFunc: ffi_actr_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeNetworkEventResult_lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
+     * Handle a full network path change.
+     */
+open func handleNetworkPathChanged(snapshot: NetworkSnapshot)async throws  -> NetworkEventResult  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_networkeventhandlewrapper_handle_network_path_changed(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeNetworkSnapshot_lower(snapshot)
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_rust_buffer,
@@ -2622,6 +2622,138 @@ public func FfiConverterTypeNetworkEventResult_lower(_ value: NetworkEventResult
 }
 
 
+public struct NetworkSnapshot: Equatable, Hashable {
+    public var sequence: UInt64
+    public var availability: NetworkAvailability
+    public var transport: NetworkTransportFlags
+    public var isExpensive: Bool
+    public var isConstrained: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(sequence: UInt64, availability: NetworkAvailability, transport: NetworkTransportFlags, isExpensive: Bool, isConstrained: Bool) {
+        self.sequence = sequence
+        self.availability = availability
+        self.transport = transport
+        self.isExpensive = isExpensive
+        self.isConstrained = isConstrained
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NetworkSnapshot: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNetworkSnapshot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkSnapshot {
+        return
+            try NetworkSnapshot(
+                sequence: FfiConverterUInt64.read(from: &buf), 
+                availability: FfiConverterTypeNetworkAvailability.read(from: &buf), 
+                transport: FfiConverterTypeNetworkTransportFlags.read(from: &buf), 
+                isExpensive: FfiConverterBool.read(from: &buf), 
+                isConstrained: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NetworkSnapshot, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.sequence, into: &buf)
+        FfiConverterTypeNetworkAvailability.write(value.availability, into: &buf)
+        FfiConverterTypeNetworkTransportFlags.write(value.transport, into: &buf)
+        FfiConverterBool.write(value.isExpensive, into: &buf)
+        FfiConverterBool.write(value.isConstrained, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkSnapshot_lift(_ buf: RustBuffer) throws -> NetworkSnapshot {
+    return try FfiConverterTypeNetworkSnapshot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkSnapshot_lower(_ value: NetworkSnapshot) -> RustBuffer {
+    return FfiConverterTypeNetworkSnapshot.lower(value)
+}
+
+
+public struct NetworkTransportFlags: Equatable, Hashable {
+    public var wifi: Bool
+    public var cellular: Bool
+    public var ethernet: Bool
+    public var vpn: Bool
+    public var other: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(wifi: Bool, cellular: Bool, ethernet: Bool, vpn: Bool, other: Bool) {
+        self.wifi = wifi
+        self.cellular = cellular
+        self.ethernet = ethernet
+        self.vpn = vpn
+        self.other = other
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NetworkTransportFlags: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNetworkTransportFlags: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkTransportFlags {
+        return
+            try NetworkTransportFlags(
+                wifi: FfiConverterBool.read(from: &buf), 
+                cellular: FfiConverterBool.read(from: &buf), 
+                ethernet: FfiConverterBool.read(from: &buf), 
+                vpn: FfiConverterBool.read(from: &buf), 
+                other: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NetworkTransportFlags, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.wifi, into: &buf)
+        FfiConverterBool.write(value.cellular, into: &buf)
+        FfiConverterBool.write(value.ethernet, into: &buf)
+        FfiConverterBool.write(value.vpn, into: &buf)
+        FfiConverterBool.write(value.other, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkTransportFlags_lift(_ buf: RustBuffer) throws -> NetworkTransportFlags {
+    return try FfiConverterTypeNetworkTransportFlags.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkTransportFlags_lower(_ value: NetworkTransportFlags) -> RustBuffer {
+    return FfiConverterTypeNetworkTransportFlags.lower(value)
+}
+
+
 /**
  * Peer-scoped event payload (WebSocket / WebRTC).
  */
@@ -3014,6 +3146,157 @@ public func FfiConverterTypeActrError_lower(_ value: ActrError) -> RustBuffer {
 
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum AppLifecycleState: Equatable, Hashable {
+    
+    case background
+    case foreground(backgroundDurationMs: UInt64
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AppLifecycleState: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAppLifecycleState: FfiConverterRustBuffer {
+    typealias SwiftType = AppLifecycleState
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AppLifecycleState {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .background
+        
+        case 2: return .foreground(backgroundDurationMs: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AppLifecycleState, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .background:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .foreground(backgroundDurationMs):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt64.write(backgroundDurationMs, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAppLifecycleState_lift(_ buf: RustBuffer) throws -> AppLifecycleState {
+    return try FfiConverterTypeAppLifecycleState.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAppLifecycleState_lower(_ value: AppLifecycleState) -> RustBuffer {
+    return FfiConverterTypeAppLifecycleState.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum CleanupReason: Equatable, Hashable {
+    
+    case appTerminating
+    case userLogout
+    case staleConnectionSuspected
+    case manualReset
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CleanupReason: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCleanupReason: FfiConverterRustBuffer {
+    typealias SwiftType = CleanupReason
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CleanupReason {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .appTerminating
+        
+        case 2: return .userLogout
+        
+        case 3: return .staleConnectionSuspected
+        
+        case 4: return .manualReset
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: CleanupReason, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .appTerminating:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .userLogout:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .staleConnectionSuspected:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .manualReset:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCleanupReason_lift(_ buf: RustBuffer) throws -> CleanupReason {
+    return try FfiConverterTypeCleanupReason.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCleanupReason_lower(_ value: CleanupReason) -> RustBuffer {
+    return FfiConverterTypeCleanupReason.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 /**
  * Coarse error-event classification mirror of
  * [`actr_framework::ErrorCategory`].
@@ -3280,13 +3563,90 @@ public func FfiConverterTypeMediaType_lower(_ value: MediaType) -> RustBuffer {
  * Network event types for runtime lifecycle callbacks
  */
 
+public enum NetworkAvailability: Equatable, Hashable {
+    
+    case unknown
+    case available
+    case unavailable
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension NetworkAvailability: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNetworkAvailability: FfiConverterRustBuffer {
+    typealias SwiftType = NetworkAvailability
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NetworkAvailability {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .unknown
+        
+        case 2: return .available
+        
+        case 3: return .unavailable
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: NetworkAvailability, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .unknown:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .available:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .unavailable:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkAvailability_lift(_ buf: RustBuffer) throws -> NetworkAvailability {
+    return try FfiConverterTypeNetworkAvailability.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNetworkAvailability_lower(_ value: NetworkAvailability) -> RustBuffer {
+    return FfiConverterTypeNetworkAvailability.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
 public enum NetworkEvent: Equatable, Hashable {
     
-    case available
-    case lost
-    case typeChanged(isWifi: Bool, isCellular: Bool
+    case networkPathChanged(snapshot: NetworkSnapshot
     )
-    case cleanupConnections
+    case appLifecycleChanged(state: AppLifecycleState
+    )
+    case cleanupConnections(reason: CleanupReason
+    )
+    case forceReconnect(reason: ReconnectReason
+    )
 
 
 
@@ -3308,14 +3668,17 @@ public struct FfiConverterTypeNetworkEvent: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
         
-        case 1: return .available
-        
-        case 2: return .lost
-        
-        case 3: return .typeChanged(isWifi: try FfiConverterBool.read(from: &buf), isCellular: try FfiConverterBool.read(from: &buf)
+        case 1: return .networkPathChanged(snapshot: try FfiConverterTypeNetworkSnapshot.read(from: &buf)
         )
         
-        case 4: return .cleanupConnections
+        case 2: return .appLifecycleChanged(state: try FfiConverterTypeAppLifecycleState.read(from: &buf)
+        )
+        
+        case 3: return .cleanupConnections(reason: try FfiConverterTypeCleanupReason.read(from: &buf)
+        )
+        
+        case 4: return .forceReconnect(reason: try FfiConverterTypeReconnectReason.read(from: &buf)
+        )
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -3325,23 +3688,25 @@ public struct FfiConverterTypeNetworkEvent: FfiConverterRustBuffer {
         switch value {
         
         
-        case .available:
+        case let .networkPathChanged(snapshot):
             writeInt(&buf, Int32(1))
-        
-        
-        case .lost:
-            writeInt(&buf, Int32(2))
-        
-        
-        case let .typeChanged(isWifi,isCellular):
-            writeInt(&buf, Int32(3))
-            FfiConverterBool.write(isWifi, into: &buf)
-            FfiConverterBool.write(isCellular, into: &buf)
+            FfiConverterTypeNetworkSnapshot.write(snapshot, into: &buf)
             
         
-        case .cleanupConnections:
-            writeInt(&buf, Int32(4))
+        case let .appLifecycleChanged(state):
+            writeInt(&buf, Int32(2))
+            FfiConverterTypeAppLifecycleState.write(state, into: &buf)
+            
         
+        case let .cleanupConnections(reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeCleanupReason.write(reason, into: &buf)
+            
+        
+        case let .forceReconnect(reason):
+            writeInt(&buf, Int32(4))
+            FfiConverterTypeReconnectReason.write(reason, into: &buf)
+            
         }
     }
 }
@@ -3457,6 +3822,94 @@ public func FfiConverterTypePayloadType_lift(_ buf: RustBuffer) throws -> Payloa
 #endif
 public func FfiConverterTypePayloadType_lower(_ value: PayloadType) -> RustBuffer {
     return FfiConverterTypePayloadType.lower(value)
+}
+
+
+// Note that we don't yet support `indirect` for enums.
+// See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
+
+public enum ReconnectReason: Equatable, Hashable {
+    
+    case networkPathChanged
+    case longBackground
+    case probeFailed
+    case manualReconnect
+    case staleConnectionSuspected
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ReconnectReason: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeReconnectReason: FfiConverterRustBuffer {
+    typealias SwiftType = ReconnectReason
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ReconnectReason {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .networkPathChanged
+        
+        case 2: return .longBackground
+        
+        case 3: return .probeFailed
+        
+        case 4: return .manualReconnect
+        
+        case 5: return .staleConnectionSuspected
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ReconnectReason, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .networkPathChanged:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .longBackground:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .probeFailed:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .manualReconnect:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .staleConnectionSuspected:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeReconnectReason_lift(_ buf: RustBuffer) throws -> ReconnectReason {
+    return try FfiConverterTypeReconnectReason.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeReconnectReason_lower(_ value: ReconnectReason) -> RustBuffer {
+    return FfiConverterTypeReconnectReason.lower(value)
 }
 
 
@@ -5738,16 +6191,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_contextbridge_unregister_stream() != 34010) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 59476) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_cleanup_connections() != 47196) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_available() != 47199) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_force_reconnect() != 3807) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_lost() != 64926) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_app_lifecycle_changed() != 8993) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_type_changed() != 30538) {
+    if (uniffi_actr_checksum_method_networkeventhandlewrapper_handle_network_path_changed() != 13252) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_opusencoder_encode() != 30032) {
