@@ -4,6 +4,7 @@
 
 use crate::lifecycle::CredentialState;
 use crate::transport::NetworkResult;
+use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
@@ -475,24 +476,17 @@ impl WebRtcNegotiator {
     ///
     /// # Arguments
     /// - `peer_connection`: PeerConnection
-    /// - `candidate`: ICE Candidate string
+    /// - `candidate`: ICE Candidate init
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "trace", skip_all, fields(candidate_len = candidate.len()))
+        tracing::instrument(level = "trace", skip_all, fields(candidate_len = candidate.candidate.len()))
     )]
     pub async fn add_ice_candidate(
         &self,
         peer_connection: &RTCPeerConnection,
-        candidate: String,
+        candidate: RTCIceCandidateInit,
     ) -> NetworkResult<()> {
-        use webrtc::ice_transport::ice_candidate::RTCIceCandidateInit;
-
-        let ice_candidate = RTCIceCandidateInit {
-            candidate,
-            ..Default::default()
-        };
-
-        peer_connection.add_ice_candidate(ice_candidate).await?;
+        peer_connection.add_ice_candidate(candidate).await?;
 
         tracing::trace!("✅ add ICE Candidate");
 

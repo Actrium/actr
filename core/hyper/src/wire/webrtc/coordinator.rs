@@ -20,6 +20,8 @@ fn is_ipv4_candidate_allowed(cand: &str) -> bool {
 // - Create and cache WebRtcConnection instances
 // - Aggregate messages from all peers
 
+mod sdp_transaction;
+
 use super::connection::WebRtcConnection;
 use super::negotiator::WebRtcNegotiator;
 #[cfg(feature = "opentelemetry")]
@@ -33,8 +35,9 @@ use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActorResult, ActrError};
 use actr_protocol::{
-    ActrId, ActrRelay, IceRestartRequest, PayloadType, RoleAssignment, RoleNegotiation,
-    SignalingEnvelope, actr_relay, session_description::Type as SdpType, signaling_envelope,
+    ActrId, ActrRelay, IceCandidate, IceRestartRequest, PayloadType, RoleAssignment,
+    RoleNegotiation, SessionDescription, SignalingEnvelope, actr_relay,
+    session_description::Type as SdpType, signaling_envelope,
 };
 use std::collections::{HashMap, hash_map::Entry};
 use std::{
@@ -51,7 +54,7 @@ use tracing::Instrument;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
+use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
 use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
 use webrtc::track::track_local::TrackLocalWriter;
@@ -106,6 +109,18 @@ struct PeerState {
 
     /// Whether we are the offerer for the current session (affects ICE restart handling)
     is_offerer: bool,
+
+    /// Current SDP transaction id for the active offer/answer exchange.
+    negotiation_id: Option<String>,
+
+    /// Monotonic offer version for the active offer/answer exchange.
+    offer_version: Option<u64>,
+
+    /// ICE ufrag from the local SDP for the active exchange.
+    local_ice_ufrag: Option<String>,
+
+    /// ICE ufrag from the remote SDP for the active exchange.
+    remote_ice_ufrag: Option<String>,
 
     /// Whether ICE restart is in progress (controls buffering and retries)
     ice_restart_inflight: bool,
@@ -229,8 +244,8 @@ pub struct WebRtcCoordinator {
     peers: Arc<RwLock<HashMap<ActrId, PeerState>>>,
 
     /// Pending ICE candidates (received before remote description is set)
-    /// ActrId → Vec<candidate_string>
-    pending_candidates: Arc<RwLock<HashMap<ActrId, Vec<String>>>>,
+    /// ActrId → Vec<IceCandidate>
+    pending_candidates: Arc<RwLock<HashMap<ActrId, Vec<IceCandidate>>>>,
 
     /// Message receive channel (aggregated from all peers)
     /// (from: ActrId bytes, data: Bytes)
@@ -244,6 +259,12 @@ pub struct WebRtcCoordinator {
     /// Per-peer negotiation state (role, ready signals, restart tasks)
     /// Single lock consolidating pending_role, pending_ready, pending_ready_wait, and in_flight_restarts
     peer_negotiation: Arc<Mutex<HashMap<ActrId, PeerNegotiationState>>>,
+
+    /// Monotonic local offer versions keyed by remote peer.
+    local_offer_versions: Arc<RwLock<HashMap<ActrId, u64>>>,
+
+    /// Last accepted remote offer version keyed by remote peer.
+    remote_offer_versions: Arc<RwLock<HashMap<ActrId, u64>>>,
 
     /// Connection event broadcaster for notifying all layers
     event_broadcaster: ConnectionEventBroadcaster,
@@ -302,6 +323,8 @@ impl WebRtcCoordinator {
             message_tx,
             media_frame_registry,
             peer_negotiation: Arc::new(Mutex::new(HashMap::new())),
+            local_offer_versions: Arc::new(RwLock::new(HashMap::new())),
+            remote_offer_versions: Arc::new(RwLock::new(HashMap::new())),
             event_broadcaster: ConnectionEventBroadcaster::new(),
             network_recovering_peers: Arc::new(RwLock::new(HashMap::new())),
             hook_callback: std::sync::OnceLock::new(),
@@ -1308,6 +1331,150 @@ impl WebRtcCoordinator {
             .is_some_and(|state| state.session_id == session_id)
     }
 
+    fn non_empty(value: Option<String>) -> Option<String> {
+        value.and_then(|value| if value.is_empty() { None } else { Some(value) })
+    }
+
+    async fn build_local_ice_candidate(
+        &self,
+        peer_id: &ActrId,
+        expected_session_id: u64,
+        candidate: RTCIceCandidateInit,
+    ) -> Option<IceCandidate> {
+        let (negotiation_id, offer_version, state_ufrag, peer_connection) = {
+            let peers = self.peers.read().await;
+            let Some(state) = peers.get(peer_id) else {
+                tracing::debug!(
+                    "⏭️ Ignoring ICE Candidate for missing peer state: peer={}",
+                    peer_id
+                );
+                return None;
+            };
+            if state.session_id != expected_session_id {
+                tracing::debug!(
+                    "⏭️ Ignoring ICE Candidate from stale local session: peer={}, session_id={}",
+                    peer_id,
+                    expected_session_id
+                );
+                return None;
+            }
+
+            (
+                state.negotiation_id.clone(),
+                state.offer_version,
+                state.local_ice_ufrag.clone(),
+                state.peer_connection.clone(),
+            )
+        };
+
+        let local_description_ufrag = if state_ufrag.is_none() {
+            peer_connection
+                .local_description()
+                .await
+                .and_then(|description| Self::extract_ice_ufrag(&description.sdp))
+        } else {
+            None
+        };
+
+        Some(IceCandidate {
+            candidate: candidate.candidate,
+            sdp_mid: candidate.sdp_mid,
+            sdp_mline_index: candidate.sdp_mline_index.map(u32::from),
+            username_fragment: Self::non_empty(candidate.username_fragment)
+                .or(state_ufrag)
+                .or(local_description_ufrag),
+            negotiation_id,
+            offer_version,
+        })
+    }
+
+    fn rtc_ice_candidate_init(candidate: &IceCandidate) -> RTCIceCandidateInit {
+        RTCIceCandidateInit {
+            candidate: candidate.candidate.clone(),
+            sdp_mid: candidate.sdp_mid.clone(),
+            sdp_mline_index: candidate
+                .sdp_mline_index
+                .and_then(|index| u16::try_from(index).ok()),
+            username_fragment: Self::non_empty(candidate.username_fragment.clone()),
+        }
+    }
+
+    async fn ice_candidate_matches_active_peer(
+        &self,
+        peer_id: &ActrId,
+        candidate: &IceCandidate,
+    ) -> bool {
+        let peers = self.peers.read().await;
+        let Some(state) = peers.get(peer_id) else {
+            return true;
+        };
+
+        if let (Some(expected), Some(actual)) = (
+            state.negotiation_id.as_ref(),
+            candidate.negotiation_id.as_ref(),
+        ) && expected != actual
+        {
+            tracing::debug!(
+                "⏭️ Dropping stale ICE candidate from {}: negotiation_id mismatch, expected={}, actual={}",
+                peer_id,
+                expected,
+                actual
+            );
+            return false;
+        }
+
+        if let Some(expected_version) = state.offer_version {
+            match candidate.offer_version {
+                Some(actual_version) if expected_version == actual_version => {}
+                Some(actual_version) => {
+                    tracing::debug!(
+                        "⏭️ Dropping stale ICE candidate from {}: offer_version mismatch, expected={}, actual={}",
+                        peer_id,
+                        expected_version,
+                        actual_version
+                    );
+                    return false;
+                }
+                None => {
+                    tracing::debug!(
+                        "⏭️ Dropping ICE candidate from {}: missing offer_version, expected={}",
+                        peer_id,
+                        expected_version
+                    );
+                    return false;
+                }
+            }
+        }
+
+        if let Some(expected_ufrag) = state.remote_ice_ufrag.as_ref()
+            && let Some(actual_ufrag) = candidate
+                .username_fragment
+                .as_deref()
+                .filter(|ufrag| !ufrag.is_empty())
+            && expected_ufrag != actual_ufrag
+        {
+            tracing::debug!(
+                "⏭️ Dropping stale ICE candidate from {}: username_fragment mismatch, expected={}, actual={}",
+                peer_id,
+                expected_ufrag,
+                actual_ufrag
+            );
+            return false;
+        }
+
+        true
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub async fn candidate_matches_active_peer_for_test(
+        &self,
+        peer_id: &ActrId,
+        candidate: &IceCandidate,
+    ) -> bool {
+        self.ice_candidate_matches_active_peer(peer_id, candidate)
+            .await
+    }
+
     /// Start health check task to clean up stale connections
     ///
     /// Periodically checks peer connection states and cleans up:
@@ -1476,25 +1643,25 @@ impl WebRtcCoordinator {
                     Some(actr_relay::Payload::SessionDescription(sd)) => match sd.r#type() {
                         SdpType::Offer => {
                             tracing::info!("📥 Received Offer from {}", source);
-                            if let Err(e) = self.handle_offer(&source, sd.sdp).await {
+                            if let Err(e) = self.handle_offer(&source, sd).await {
                                 tracing::error!("❌ Failed to handle Offer: {}", e);
                             }
                         }
                         SdpType::Answer => {
                             tracing::info!("📥 Received Answer from {}", source);
-                            if let Err(e) = self.handle_answer(&source, sd.sdp).await {
+                            if let Err(e) = self.handle_answer(&source, sd).await {
                                 tracing::error!("❌ Failed to handle Answer: {}", e);
                             }
                         }
                         SdpType::RenegotiationOffer => {
                             tracing::info!("📥 Received RenegotiationOffer from {:?}", source);
-                            if let Err(e) = self.handle_renegotiation_offer(&source, sd.sdp).await {
+                            if let Err(e) = self.handle_renegotiation_offer(&source, sd).await {
                                 tracing::error!("❌ Failed to handle RenegotiationOffer: {}", e);
                             }
                         }
                         SdpType::IceRestartOffer => {
                             tracing::info!("♻️ Received ICE Restart Offer from {:?}", source);
-                            if let Err(e) = self.handle_ice_restart_offer(&source, sd.sdp).await {
+                            if let Err(e) = self.handle_ice_restart_offer(&source, sd).await {
                                 tracing::error!("❌ Failed to handle ICE Restart Offer: {}", e);
                             }
                         }
@@ -1516,7 +1683,7 @@ impl WebRtcCoordinator {
                     }
                     Some(actr_relay::Payload::IceCandidate(ice)) => {
                         tracing::debug!("📥 Received ICE Candidate from {:?}", source);
-                        if let Err(e) = self.handle_ice_candidate(&source, ice.candidate).await {
+                        if let Err(e) = self.handle_ice_candidate(&source, ice).await {
                             tracing::error!("❌ Failed to handle ICE Candidate: {}", e);
                         }
                     }
@@ -2016,6 +2183,10 @@ impl WebRtcCoordinator {
                     webrtc_conn: webrtc_conn.clone(),
                     ready_tx: Some(ready_tx),
                     is_offerer: true,
+                    negotiation_id: None,
+                    offer_version: None,
+                    local_ice_ufrag: None,
+                    remote_ice_ufrag: None,
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
@@ -2135,19 +2306,23 @@ impl WebRtcCoordinator {
                                 return;
                             }
 
-                            let candidate_json = match cand.to_json() {
-                                Ok(json) => json.candidate,
+                            let candidate_init = match cand.to_json() {
+                                Ok(json) => json,
                                 Err(e) => {
                                     tracing::error!("❌ ICE Candidate serialization failed: {}", e);
                                     return;
                                 }
                             };
 
-                            let ice_candidate = actr_protocol::IceCandidate {
-                                candidate: candidate_json,
-                                sdp_mid: None,
-                                sdp_mline_index: None,
-                                username_fragment: None,
+                            let Some(ice_candidate) = coord
+                                .build_local_ice_candidate(
+                                    &target_id,
+                                    candidate_session_id,
+                                    candidate_init,
+                                )
+                                .await
+                            else {
+                                return;
                             };
 
                             let payload = actr_relay::Payload::IceCandidate(ice_candidate);
@@ -2188,13 +2363,22 @@ impl WebRtcCoordinator {
         ));
 
         // 6. Create Offer
+        let offer_transaction = self
+            .begin_local_offer_transaction(target, Some(webrtc_conn.session_id()))
+            .await?;
         let offer_sdp = self.negotiator.create_offer(&peer_connection_arc).await?;
+        let offer_transaction = self
+            .complete_local_offer_transaction(
+                target,
+                Some(webrtc_conn.session_id()),
+                &offer_transaction,
+                &offer_sdp,
+            )
+            .await?;
 
         // 8. Send Offer via signaling server
-        let session_desc = actr_protocol::SessionDescription {
-            r#type: SdpType::Offer as i32,
-            sdp: offer_sdp,
-        };
+        let session_desc =
+            Self::build_session_description(SdpType::Offer, offer_sdp, &offer_transaction);
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(target, payload).await?;
 
@@ -2224,7 +2408,18 @@ impl WebRtcCoordinator {
         feature = "opentelemetry",
         tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id_snapshot(), remote_id = %from))
     )]
-    async fn handle_offer(self: &Arc<Self>, from: &ActrId, offer_sdp: String) -> ActorResult<()> {
+    async fn handle_offer(
+        self: &Arc<Self>,
+        from: &ActrId,
+        offer: SessionDescription,
+    ) -> ActorResult<()> {
+        if self.is_stale_remote_offer(from, &offer).await {
+            return Ok(());
+        }
+
+        let offer_metadata = Self::metadata_from_session_description(&offer);
+        let offer_sdp = offer.sdp.clone();
+
         // ========== PrepareForIncomingOffer: Clean up existing connection if any ==========
         let existing_peer = {
             let peers = self.peers.read().await;
@@ -2278,6 +2473,10 @@ impl WebRtcCoordinator {
                     webrtc_conn: webrtc_conn.clone(),
                     ready_tx: None,
                     is_offerer: false,
+                    negotiation_id: offer_metadata.negotiation_id.clone(),
+                    offer_version: offer_metadata.offer_version,
+                    local_ice_ufrag: None,
+                    remote_ice_ufrag: offer_metadata.ice_ufrag.clone(),
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
@@ -2500,20 +2699,23 @@ impl WebRtcCoordinator {
                                 return;
                             }
 
-                            // Convert RTCIceCandidate to JSON string (webrtc crate's standard method)
-                            let candidate_json = match cand.to_json() {
-                                Ok(json) => json.candidate,
+                            let candidate_init = match cand.to_json() {
+                                Ok(json) => json,
                                 Err(e) => {
                                     tracing::error!("❌ ICE Candidate serialization failed: {}", e);
                                     return;
                                 }
                             };
 
-                            let ice_candidate = actr_protocol::IceCandidate {
-                                candidate: candidate_json,
-                                sdp_mid: None,
-                                sdp_mline_index: None,
-                                username_fragment: None,
+                            let Some(ice_candidate) = coord
+                                .build_local_ice_candidate(
+                                    &target_id,
+                                    candidate_session_id,
+                                    candidate_init,
+                                )
+                                .await
+                            else {
+                                return;
                             };
 
                             let payload = actr_relay::Payload::IceCandidate(ice_candidate);
@@ -2558,14 +2760,24 @@ impl WebRtcCoordinator {
             .negotiator
             .create_answer(&peer_connection_arc, offer_sdp)
             .await?;
+        let mut answer_metadata = offer_metadata.clone();
+        answer_metadata.ice_ufrag = Self::extract_ice_ufrag(&answer_sdp);
+
+        {
+            let mut peers = self.peers.write().await;
+            if let Some(state) = peers.get_mut(from)
+                && state.session_id == webrtc_conn.session_id()
+            {
+                state.local_ice_ufrag = answer_metadata.ice_ufrag.clone();
+            }
+        }
 
         // 7. Send Answer via signaling server
-        let session_desc = actr_protocol::SessionDescription {
-            r#type: SdpType::Answer as i32,
-            sdp: answer_sdp,
-        };
+        let session_desc =
+            Self::build_session_description(SdpType::Answer, answer_sdp, &answer_metadata);
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(from, payload).await?;
+        self.record_remote_offer_version(from, &offer).await;
 
         tracing::info!("✅ Sent Answer to {}", from);
 
@@ -2589,11 +2801,18 @@ impl WebRtcCoordinator {
             skip_all,
             fields(
                 remote.id = %from,
-                answer_len = answer_sdp.len()
+                answer_len = answer.sdp.len()
             )
         )
     )]
-    async fn handle_answer(self: &Arc<Self>, from: &ActrId, answer_sdp: String) -> ActorResult<()> {
+    async fn handle_answer(
+        self: &Arc<Self>,
+        from: &ActrId,
+        answer: SessionDescription,
+    ) -> ActorResult<()> {
+        let answer_metadata = Self::metadata_from_session_description(&answer);
+        let answer_sdp = answer.sdp.clone();
+
         // Get corresponding PeerConnection and ready_tx
         let (peer_connection, ready_tx, webrtc_conn, is_renegotiation) = {
             let mut peers = self.peers.write().await;
@@ -2608,6 +2827,12 @@ impl WebRtcCoordinator {
             let state = peers.get_mut(from).ok_or_else(|| {
                 ActrError::Internal(format!("Peer not found: {}", from.to_string_repr()))
             })?;
+
+            if !Self::answer_matches_current_offer(state, &answer) {
+                return Ok(());
+            }
+
+            state.remote_ice_ufrag = answer_metadata.ice_ufrag.clone();
 
             let pc = state.peer_connection.clone();
             let tx = state.ready_tx.take();
@@ -2713,9 +2938,15 @@ impl WebRtcCoordinator {
             );
 
             for candidate in candidates {
+                if !self
+                    .ice_candidate_matches_active_peer(peer_id, &candidate)
+                    .await
+                {
+                    continue;
+                }
                 if let Err(e) = self
                     .negotiator
-                    .add_ice_candidate(peer_connection, candidate)
+                    .add_ice_candidate(peer_connection, Self::rtc_ice_candidate_init(&candidate))
                     .await
                 {
                     tracing::warn!("⚠️ Failed to add buffered ICE candidate: {}", e);
@@ -2734,20 +2965,20 @@ impl WebRtcCoordinator {
             skip_all,
             fields(
                 remote.id = %from,
-                candidate_len = candidate.len()
+                candidate_len = candidate.candidate.len()
             )
         )
     )]
     async fn handle_ice_candidate(
         self: &Arc<Self>,
         from: &ActrId,
-        candidate: String,
+        candidate: IceCandidate,
     ) -> ActorResult<()> {
         tracing::trace!("📥 Received ICE Candidate from {}", from);
 
         // DEBUG: Temporarily disable candidate filtering for local testing
         // TODO: Re-enable proper filtering for production
-        // if !is_ipv4_candidate_allowed(&candidate) {
+        // if !is_ipv4_candidate_allowed(&candidate.candidate) {
         //     tracing::debug!("🚫 Ignoring ICE candidate from {:?}: {}", from, candidate);
         //     return Ok(());
         // }
@@ -2760,11 +2991,21 @@ impl WebRtcCoordinator {
 
         match peer_opt {
             Some(peer_connection) => {
+                if !self
+                    .ice_candidate_matches_active_peer(from, &candidate)
+                    .await
+                {
+                    return Ok(());
+                }
+
                 // Check if remote description is set
                 if peer_connection.remote_description().await.is_some() {
                     // Can add candidate immediately
                     self.negotiator
-                        .add_ice_candidate(&peer_connection, candidate)
+                        .add_ice_candidate(
+                            &peer_connection,
+                            Self::rtc_ice_candidate_init(&candidate),
+                        )
                         .await?;
                     tracing::trace!("✅ Added ICE Candidate from {}", from);
                 } else {
@@ -3598,6 +3839,8 @@ impl WebRtcCoordinator {
     ) -> ActorResult<()> {
         tracing::info!("🔄 Starting SDP renegotiation with {}", target);
 
+        let offer_transaction = self.begin_local_offer_transaction(target, None).await?;
+
         // 1. Create new Offer (includes all tracks: old + new)
         let offer = peer_connection.create_offer(None).await.map_err(|e| {
             ActrError::Internal(format!("Failed to create renegotiation offer: {e}"))
@@ -3614,12 +3857,16 @@ impl WebRtcCoordinator {
             "📝 Created renegotiation Offer (SDP length: {})",
             offer_sdp.len()
         );
+        let offer_transaction = self
+            .complete_local_offer_transaction(target, None, &offer_transaction, &offer_sdp)
+            .await?;
 
         // 3. Send Offer via signaling server
-        let session_desc = actr_protocol::SessionDescription {
-            r#type: SdpType::RenegotiationOffer as i32,
-            sdp: offer_sdp,
-        };
+        let session_desc = Self::build_session_description(
+            SdpType::RenegotiationOffer,
+            offer_sdp,
+            &offer_transaction,
+        );
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(target, payload).await?;
 
@@ -3639,6 +3886,7 @@ impl WebRtcCoordinator {
         // Prepare all clones needed for the spawned task
         let target_clone = target.clone();
         let peers_arc = Arc::clone(&self.peers);
+        let local_offer_versions = Arc::clone(&self.local_offer_versions);
         let negotiator = self.negotiator.clone();
         let local_id = self.local_id_snapshot();
         let credential_state = self.credential_state.clone();
@@ -3734,6 +3982,7 @@ impl WebRtcCoordinator {
                     peer_connection,
                     &negotiator,
                     &local_id,
+                    &local_offer_versions,
                     credential_state,
                     &signaling_client,
                     restart_wake,
@@ -3954,6 +4203,7 @@ impl WebRtcCoordinator {
         peer_connection: Arc<RTCPeerConnection>,
         negotiator: &WebRtcNegotiator,
         local_id: &ActrId,
+        local_offer_versions: &Arc<RwLock<HashMap<ActrId, u64>>>,
         credential_state: CredentialState,
         signaling_client: &Arc<dyn SignalingClient>,
         restart_wake: Arc<tokio::sync::Notify>,
@@ -4141,10 +4391,26 @@ impl WebRtcCoordinator {
                 state.ice_restart_attempts
             }; // lock released here
 
+            let offer_transaction = Self::begin_local_offer_transaction_inner(
+                peers,
+                local_offer_versions,
+                target,
+                Some(restart_session_id),
+            )
+            .await?;
+
             // Phase 2: outside lock — create the offer (may trigger ICE callbacks).
             let offer_sdp = negotiator
                 .create_ice_restart_offer(&peer_connection)
                 .await?;
+            let offer_transaction = Self::complete_local_offer_transaction_for_peer(
+                peers,
+                target,
+                Some(restart_session_id),
+                &offer_transaction,
+                &offer_sdp,
+            )
+            .await?;
 
             // Phase 3: re-acquire lock — verify peer/session is still current.
             {
@@ -4177,10 +4443,11 @@ impl WebRtcCoordinator {
                 credential: credential_state.credential().await,
                 target: target.clone(),
                 payload: Some(actr_relay::Payload::SessionDescription(
-                    actr_protocol::SessionDescription {
-                        r#type: SdpType::IceRestartOffer as i32,
-                        sdp: offer_sdp,
-                    },
+                    Self::build_session_description(
+                        SdpType::IceRestartOffer,
+                        offer_sdp,
+                        &offer_transaction,
+                    ),
                 )),
             };
 
@@ -4423,21 +4690,30 @@ impl WebRtcCoordinator {
     async fn handle_renegotiation_offer(
         &self,
         from: &ActrId,
-        offer_sdp: String,
+        offer: SessionDescription,
     ) -> ActorResult<()> {
+        if self.is_stale_remote_offer(from, &offer).await {
+            return Ok(());
+        }
+
+        let offer_metadata = Self::metadata_from_session_description(&offer);
+        let offer_sdp = offer.sdp.clone();
         tracing::info!("🔄 Processing renegotiation Offer from {}", from);
 
         // 1. Get existing peer connection
         let peer_connection = {
-            let peers = self.peers.read().await;
-            let state = peers.get(from).ok_or_else(|| {
+            let mut peers = self.peers.write().await;
+            let state = peers.get_mut(from).ok_or_else(|| {
                 ActrError::Internal("Peer state not found for renegotiation".to_string())
             })?;
+            state.negotiation_id = offer_metadata.negotiation_id.clone();
+            state.offer_version = offer_metadata.offer_version.or(state.offer_version);
+            state.remote_ice_ufrag = offer_metadata.ice_ufrag.clone();
             state.peer_connection.clone()
         };
 
         // 2. Set remote description (new Offer)
-        let offer =
+        let rtc_offer =
             webrtc::peer_connection::sdp::session_description::RTCSessionDescription::offer(
                 offer_sdp,
             )
@@ -4445,7 +4721,7 @@ impl WebRtcCoordinator {
                 ActrError::Internal(format!("Failed to parse renegotiation offer: {e}"))
             })?;
         peer_connection
-            .set_remote_description(offer)
+            .set_remote_description(rtc_offer)
             .await
             .map_err(|e| ActrError::Internal(format!("Failed to set remote description: {e}")))?;
 
@@ -4467,14 +4743,22 @@ impl WebRtcCoordinator {
             "✅ Created renegotiation Answer (SDP length: {})",
             answer_sdp.len()
         );
+        let mut answer_metadata = offer_metadata.clone();
+        answer_metadata.ice_ufrag = Self::extract_ice_ufrag(&answer_sdp);
+
+        {
+            let mut peers = self.peers.write().await;
+            if let Some(state) = peers.get_mut(from) {
+                state.local_ice_ufrag = answer_metadata.ice_ufrag.clone();
+            }
+        }
 
         // 5. Send Answer via signaling server
-        let session_desc = actr_protocol::SessionDescription {
-            r#type: SdpType::Answer as i32,
-            sdp: answer_sdp,
-        };
+        let session_desc =
+            Self::build_session_description(SdpType::Answer, answer_sdp, &answer_metadata);
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(from, payload).await?;
+        self.record_remote_offer_version(from, &offer).await;
 
         tracing::info!("✅ Sent renegotiation Answer to {}", from);
 
@@ -4489,14 +4773,24 @@ impl WebRtcCoordinator {
     async fn handle_ice_restart_offer(
         self: &Arc<Self>,
         from: &ActrId,
-        offer_sdp: String,
+        offer: SessionDescription,
     ) -> ActorResult<()> {
+        if self.is_stale_remote_offer(from, &offer).await {
+            return Ok(());
+        }
+
+        let offer_metadata = Self::metadata_from_session_description(&offer);
+        let offer_sdp = offer.sdp.clone();
+
         // Locate peer state and ensure we are not the offerer
         let (peer_connection, is_offerer, session_id) = {
-            let peers = self.peers.read().await;
-            let state = peers.get(from).ok_or_else(|| {
+            let mut peers = self.peers.write().await;
+            let state = peers.get_mut(from).ok_or_else(|| {
                 ActrError::Internal("ICE restart offer received for unknown peer".to_string())
             })?;
+            state.negotiation_id = offer_metadata.negotiation_id.clone();
+            state.offer_version = offer_metadata.offer_version.or(state.offer_version);
+            state.remote_ice_ufrag = offer_metadata.ice_ufrag.clone();
             (
                 state.peer_connection.clone(),
                 state.is_offerer,
@@ -4517,14 +4811,24 @@ impl WebRtcCoordinator {
             .negotiator
             .create_answer(&peer_connection, offer_sdp)
             .await?;
+        let mut answer_metadata = offer_metadata.clone();
+        answer_metadata.ice_ufrag = Self::extract_ice_ufrag(&answer_sdp);
+
+        {
+            let mut peers = self.peers.write().await;
+            if let Some(state) = peers.get_mut(from)
+                && state.session_id == session_id
+            {
+                state.local_ice_ufrag = answer_metadata.ice_ufrag.clone();
+            }
+        }
 
         // Send restart answer back
-        let session_desc = actr_protocol::SessionDescription {
-            r#type: SdpType::Answer as i32,
-            sdp: answer_sdp,
-        };
+        let session_desc =
+            Self::build_session_description(SdpType::Answer, answer_sdp, &answer_metadata);
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(from, payload).await?;
+        self.record_remote_offer_version(from, &offer).await;
 
         // Flush any buffered ICE candidates collected before remote description was set
         self.flush_pending_candidates(from, &peer_connection)
@@ -4996,6 +5300,8 @@ mod tests {
                     sdp_mid: None,
                     sdp_mline_index: None,
                     username_fragment: None,
+                    negotiation_id: None,
+                    offer_version: None,
                 }),
             )
             .await

@@ -484,6 +484,13 @@ const P2P_CONNECTION_MAX_RETRIES: u32 = 3;
 const P2P_RETRY_INITIAL_DELAY_MS: u64 = 3000;
 const P2P_RETRY_MAX_DELAY_MS: u64 = 15000;
 
+#[derive(Clone, Debug, Default)]
+struct WebSdpTransactionMetadata {
+    negotiation_id: Option<String>,
+    offer_version: Option<u64>,
+    ice_ufrag: Option<String>,
+}
+
 struct SwRuntime {
     /// Unique client identifier (one per browser tab)
     client_id: String,
@@ -513,6 +520,10 @@ struct SwRuntime {
     pending_channel_data: HashMap<String, Vec<Vec<u8>>>,
     role_negotiated: HashSet<String>,
     role_assignments: HashMap<String, bool>,
+    /// Monotonic local offer versions keyed by peer id.
+    local_offer_versions: HashMap<String, u64>,
+    /// Active SDP transaction metadata keyed by peer id.
+    sdp_transactions: HashMap<String, WebSdpTransactionMetadata>,
     /// ICE restart: tracks whether an ICE restart is in-flight for each peer
     ice_restart_inflight: HashMap<String, bool>,
     /// ICE restart: retry attempt count per peer
@@ -606,6 +617,8 @@ impl SwRuntime {
             pending_channel_data: HashMap::new(),
             role_negotiated: HashSet::new(),
             role_assignments: HashMap::new(),
+            local_offer_versions: HashMap::new(),
+            sdp_transactions: HashMap::new(),
             ice_restart_inflight: HashMap::new(),
             ice_restart_attempts: HashMap::new(),
             peer_connection_states: HashMap::new(),
@@ -1053,6 +1066,8 @@ impl SwRuntime {
         self.pending_channel_data.clear();
         self.role_negotiated.clear();
         self.role_assignments.clear();
+        self.local_offer_versions.clear();
+        self.sdp_transactions.clear();
         self.ice_restart_inflight.clear();
         self.ice_restart_attempts.clear();
         self.peer_connection_states.clear();
@@ -1621,6 +1636,97 @@ impl SwRuntime {
         Ok(())
     }
 
+    fn non_empty(value: Option<String>) -> Option<String> {
+        value.and_then(|value| if value.is_empty() { None } else { Some(value) })
+    }
+
+    fn extract_ice_ufrag(sdp: &str) -> Option<String> {
+        sdp.lines().find_map(|line| {
+            let line = line.trim();
+            let ufrag = line.strip_prefix("a=ice-ufrag:")?.trim();
+            (!ufrag.is_empty()).then(|| ufrag.to_owned())
+        })
+    }
+
+    fn metadata_from_session_description(sd: &SessionDescription) -> WebSdpTransactionMetadata {
+        WebSdpTransactionMetadata {
+            negotiation_id: sd.negotiation_id.clone(),
+            offer_version: sd.offer_version,
+            ice_ufrag: sd
+                .ice_ufrag
+                .clone()
+                .or_else(|| Self::extract_ice_ufrag(&sd.sdp)),
+        }
+    }
+
+    fn build_session_description(
+        sdp_type: session_description::Type,
+        sdp: String,
+        metadata: &WebSdpTransactionMetadata,
+    ) -> SessionDescription {
+        SessionDescription {
+            r#type: sdp_type as i32,
+            sdp,
+            negotiation_id: metadata.negotiation_id.clone(),
+            offer_version: metadata.offer_version,
+            ice_ufrag: metadata.ice_ufrag.clone(),
+        }
+    }
+
+    fn begin_local_offer_transaction(&mut self, peer_id: &str) -> WebSdpTransactionMetadata {
+        let version = self
+            .local_offer_versions
+            .entry(peer_id.to_string())
+            .or_insert(0);
+        *version = version.saturating_add(1);
+
+        let metadata = WebSdpTransactionMetadata {
+            negotiation_id: Some(uuid::Uuid::new_v4().to_string()),
+            offer_version: Some(*version),
+            ice_ufrag: None,
+        };
+        self.sdp_transactions
+            .insert(peer_id.to_string(), metadata.clone());
+        metadata
+    }
+
+    fn active_local_offer_transaction(&mut self, peer_id: &str) -> WebSdpTransactionMetadata {
+        if let Some(metadata) = self.sdp_transactions.get(peer_id)
+            && metadata.negotiation_id.is_some()
+            && metadata.offer_version.is_some()
+            && metadata.ice_ufrag.is_none()
+        {
+            return metadata.clone();
+        }
+        self.begin_local_offer_transaction(peer_id)
+    }
+
+    fn complete_local_description_transaction(
+        &mut self,
+        peer_id: &str,
+        sdp_type: session_description::Type,
+        sdp: &str,
+    ) -> WebSdpTransactionMetadata {
+        let mut metadata = match sdp_type {
+            session_description::Type::Offer => self.active_local_offer_transaction(peer_id),
+            session_description::Type::Answer => self
+                .sdp_transactions
+                .get(peer_id)
+                .cloned()
+                .unwrap_or_default(),
+            _ => WebSdpTransactionMetadata::default(),
+        };
+        metadata.ice_ufrag = Self::extract_ice_ufrag(sdp);
+        self.sdp_transactions
+            .insert(peer_id.to_string(), metadata.clone());
+        metadata
+    }
+
+    fn clear_peer_sdp_transaction(&mut self, peer_id: &str) {
+        self.sdp_transactions.remove(peer_id);
+        self.local_offer_versions.remove(peer_id);
+    }
+
     fn handle_actr_relay(&mut self, relay: actr_protocol::ActrRelay) -> Result<(), JsValue> {
         let peer_id = relay.source.to_string_repr();
         match relay.payload {
@@ -1633,6 +1739,7 @@ impl SwRuntime {
 
                 // Check if this is an ICE restart offer (type=3)
                 let is_ice_restart = sd.r#type == session_description::Type::IceRestartOffer as i32;
+                let is_remote_offer = matches!(sd.r#type, 0 | 2 | 3);
 
                 let sdp_type = match sd.r#type {
                     0 => "offer",  // OFFER
@@ -1646,6 +1753,12 @@ impl SwRuntime {
                 if !self.known_peers.contains(&peer_id) {
                     self.send_webrtc_command("create_peer", &peer_id, JsValue::NULL)?;
                     self.known_peers.insert(peer_id.clone());
+                }
+
+                if is_remote_offer {
+                    let mut metadata = Self::metadata_from_session_description(&sd);
+                    metadata.ice_ufrag = None;
+                    self.sdp_transactions.insert(peer_id.clone(), metadata);
                 }
 
                 let sdp_obj = Object::new();
@@ -1749,6 +1862,7 @@ impl SwRuntime {
                     self.known_peers.insert(remote_peer_id.clone());
                 }
                 if assign.is_offerer {
+                    self.begin_local_offer_transaction(&remote_peer_id);
                     self.send_webrtc_command("create_offer", &remote_peer_id, JsValue::NULL)?;
                 }
             }
@@ -1791,14 +1905,17 @@ impl SwRuntime {
                 let target = resolve_target(&event.data)?;
 
                 let sd_type = match data.sdp.sdp_type.as_str() {
-                    "offer" => session_description::Type::Offer as i32,
-                    "answer" => session_description::Type::Answer as i32,
-                    _ => session_description::Type::Offer as i32,
+                    "offer" => session_description::Type::Offer,
+                    "answer" => session_description::Type::Answer,
+                    _ => session_description::Type::Offer,
                 };
-                let sd = SessionDescription {
-                    r#type: sd_type,
-                    sdp: data.sdp.sdp,
-                };
+                let target_peer_id = target.to_string_repr();
+                let metadata = self.complete_local_description_transaction(
+                    &target_peer_id,
+                    sd_type,
+                    &data.sdp.sdp,
+                );
+                let sd = Self::build_session_description(sd_type, data.sdp.sdp, &metadata);
                 let relay = actr_protocol::ActrRelay {
                     source: actor_id,
                     credential,
@@ -1821,12 +1938,21 @@ impl SwRuntime {
                     .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
                 let target = resolve_target(&event.data)?;
+                let target_peer_id = target.to_string_repr();
+                let metadata = self
+                    .sdp_transactions
+                    .get(&target_peer_id)
+                    .cloned()
+                    .unwrap_or_default();
 
                 let ice = IceCandidate {
                     candidate: data.candidate.candidate,
                     sdp_mid: data.candidate.sdp_mid,
                     sdp_mline_index: data.candidate.sdp_mline_index,
-                    username_fragment: data.candidate.username_fragment,
+                    username_fragment: Self::non_empty(data.candidate.username_fragment)
+                        .or(metadata.ice_ufrag.clone()),
+                    negotiation_id: metadata.negotiation_id,
+                    offer_version: metadata.offer_version,
                 };
                 let relay = actr_protocol::ActrRelay {
                     source: actor_id,
@@ -1967,6 +2093,7 @@ impl SwRuntime {
                         self.role_negotiated.remove(&data.peer_id);
                         self.role_assignments.remove(&data.peer_id);
                         self.peer_connection_states.remove(&data.peer_id);
+                        self.clear_peer_sdp_transaction(&data.peer_id);
                         // Invalidate any discovered-target cache entry that resolved
                         // to this peer, so the next outbound RPC runs a fresh AIS
                         // discovery instead of re-using a broken ActrId.
@@ -2008,6 +2135,7 @@ impl SwRuntime {
                         self.role_negotiated.remove(&data.peer_id);
                         self.role_assignments.remove(&data.peer_id);
                         self.peer_connection_states.remove(&data.peer_id);
+                        self.clear_peer_sdp_transaction(&data.peer_id);
                         // Force re-discovery on next outbound RPC targeting this peer.
                         self.invalidate_discovered_target(&data.peer_id);
                     }
@@ -2023,11 +2151,17 @@ impl SwRuntime {
 
                 log::info!("[SW] Sending ICE restart offer to peer={}", target);
 
-                // Use ICE_RESTART_OFFER type (3) for the session description
-                let sd = SessionDescription {
-                    r#type: session_description::Type::IceRestartOffer as i32,
-                    sdp: data.sdp.sdp,
-                };
+                let target_peer_id = target.to_string_repr();
+                let metadata = self.complete_local_description_transaction(
+                    &target_peer_id,
+                    session_description::Type::Offer,
+                    &data.sdp.sdp,
+                );
+                let sd = Self::build_session_description(
+                    session_description::Type::IceRestartOffer,
+                    data.sdp.sdp,
+                    &metadata,
+                );
                 let relay = actr_protocol::ActrRelay {
                     source: actor_id,
                     credential,
@@ -2195,6 +2329,7 @@ impl SwRuntime {
         self.peer_connection_states.remove(peer_id);
         self.ice_restart_inflight.remove(peer_id);
         self.ice_restart_attempts.remove(peer_id);
+        self.clear_peer_sdp_transaction(peer_id);
     }
 
     async fn handle_stale_peer_failure(
@@ -2368,6 +2503,7 @@ impl SwRuntime {
             self.peer_connection_states.remove(peer_id);
             self.role_negotiated.remove(peer_id);
             self.role_assignments.remove(peer_id);
+            self.clear_peer_sdp_transaction(peer_id);
             // Force re-discovery on next outbound RPC targeting this peer.
             self.invalidate_discovered_target(peer_id);
             // Fail-fast: reject all pending RPCs immediately
@@ -2378,6 +2514,7 @@ impl SwRuntime {
         *attempts += 1;
         let attempt = *attempts;
         self.ice_restart_inflight.insert(peer_id.to_string(), true);
+        self.begin_local_offer_transaction(peer_id);
 
         log::info!(
             "[SW] ICE restart: initiating for peer={} (attempt {}/{})",
