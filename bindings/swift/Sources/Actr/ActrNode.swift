@@ -24,7 +24,7 @@ public final class ActrNode: Sendable {
         )
         let handle = try wrapper.createNetworkEventHandle()
         let monitor = NetworkEventMonitor(handle: handle)
-        let lifecycleMonitor = AppLifecycleMonitor(handle: handle)
+        let lifecycleMonitor = AppLifecycleMonitor(handle: handle, networkEventMonitor: monitor)
         return ActrNode(
             inner: wrapper,
             networkEventMonitor: monitor,
@@ -53,7 +53,7 @@ public final class ActrNode: Sendable {
         )
         let handle = try wrapper.createNetworkEventHandle()
         let monitor = NetworkEventMonitor(handle: handle)
-        let lifecycleMonitor = AppLifecycleMonitor(handle: handle)
+        let lifecycleMonitor = AppLifecycleMonitor(handle: handle, networkEventMonitor: monitor)
         return ActrNode(
             inner: wrapper,
             networkEventMonitor: monitor,
@@ -95,15 +95,17 @@ private final class NetworkEventMonitor: @unchecked Sendable {
     private let handle: NetworkEventHandleWrapper
     private var hasProcessedInitialPath = false
     private var lastStatus: NWPath.Status?
-    private var lastIsWifi: Bool?
-    private var lastIsCellular: Bool?
+    private var lastTransport: NetworkTransportFlags?
+    private var lastIsExpensive: Bool?
+    private var lastIsConstrained: Bool?
+    private var nextSequence: UInt64 = 1
 
     init(handle: NetworkEventHandleWrapper) {
         self.handle = handle
         monitor = NWPathMonitor()
         queue = DispatchQueue(label: "actr.network.monitor")
         monitor.pathUpdateHandler = { [weak self] path in
-            self?.process(path: path)
+            self?.process(path: path, forceNotify: false)
         }
         monitor.start(queue: queue)
     }
@@ -112,79 +114,87 @@ private final class NetworkEventMonitor: @unchecked Sendable {
         monitor.cancel()
     }
 
-    private func process(path: NWPath) {
+    func notifyCurrentPath() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.process(path: self.monitor.currentPath, forceNotify: true)
+        }
+    }
+
+    private func process(path: NWPath, forceNotify: Bool) {
         let status = path.status
-        let isSatisfied = status == .satisfied
-        let isWifi = path.usesInterfaceType(.wifi)
-        let isCellular = path.usesInterfaceType(.cellular)
+        let transport = transportFlags(for: path)
+        let snapshot = makeSnapshot(for: path, transport: transport)
         let timestamp = formattedTimestamp()
 
-        print("Network path update: time=\(timestamp), status=\(status), satisfied=\(isSatisfied), wifi=\(isWifi), cellular=\(isCellular)")
+        print("Network path update: time=\(timestamp), status=\(status), availability=\(snapshot.availability), wifi=\(transport.wifi), cellular=\(transport.cellular), ethernet=\(transport.ethernet), vpn=\(transport.vpn), other=\(transport.other), expensive=\(snapshot.isExpensive), constrained=\(snapshot.isConstrained)")
 
         if !hasProcessedInitialPath {
-            print("Network initial path captured: time=\(timestamp), suppressing notify")
+            print("Network initial path captured: time=\(timestamp), forceNotify=\(forceNotify)")
             hasProcessedInitialPath = true
             lastStatus = status
-            if isSatisfied {
-                lastIsWifi = isWifi
-                lastIsCellular = isCellular
-            } else {
-                lastIsWifi = nil
-                lastIsCellular = nil
+            lastTransport = transport
+            lastIsExpensive = snapshot.isExpensive
+            lastIsConstrained = snapshot.isConstrained
+            if !forceNotify {
+                return
             }
+        }
+
+        let pathChanged = forceNotify
+            || lastStatus != status
+            || lastTransport != transport
+            || lastIsExpensive != snapshot.isExpensive
+            || lastIsConstrained != snapshot.isConstrained
+        guard pathChanged else {
             return
         }
 
-        if lastStatus != status {
-            print("Network status changed: time=\(timestamp), \(lastStatus.map { String(describing: $0) } ?? "nil") -> \(status)")
-            lastStatus = status
-
-            if isSatisfied {
-                lastIsWifi = isWifi
-                lastIsCellular = isCellular
-                print("📱 Network available: time=\(timestamp)")
-                notifyAvailable()
-                return
-            }
-
-            print("📱 Network lost: time=\(timestamp)")
-            notifyLost()
-            lastIsWifi = nil
-            lastIsCellular = nil
-            return
-        }
-
-        if isSatisfied {
-            if lastIsWifi == nil || lastIsCellular == nil || lastIsWifi != isWifi || lastIsCellular != isCellular {
-                lastIsWifi = isWifi
-                lastIsCellular = isCellular
-                print("📱 Network type changed: time=\(timestamp), WiFi=\(isWifi), Cellular=\(isCellular)")
-                notifyTypeChanged(isWifi: isWifi, isCellular: isCellular)
-                return
-            }
-        } else {
-            lastIsWifi = nil
-            lastIsCellular = nil
-        }
-
+        print("Network path changed: time=\(timestamp), sequence=\(snapshot.sequence), availability=\(snapshot.availability)")
         lastStatus = status
+        lastTransport = transport
+        lastIsExpensive = snapshot.isExpensive
+        lastIsConstrained = snapshot.isConstrained
+        notifyPathChanged(snapshot: snapshot)
     }
 
-    private func notifyAvailable() {
-        Task { [handle] in
-            _ = try? await handle.handleNetworkAvailable()
+    private func makeSnapshot(for path: NWPath, transport: NetworkTransportFlags) -> NetworkSnapshot {
+        defer { nextSequence += 1 }
+        return NetworkSnapshot(
+            sequence: nextSequence,
+            availability: availability(for: path.status),
+            transport: transport,
+            isExpensive: path.isExpensive,
+            isConstrained: path.isConstrained
+        )
+    }
+
+    private func availability(for status: NWPath.Status) -> NetworkAvailability {
+        switch status {
+        case .satisfied:
+            return .available
+        case .unsatisfied:
+            return .unavailable
+        case .requiresConnection:
+            return .unknown
+        @unknown default:
+            return .unknown
         }
     }
 
-    private func notifyLost() {
-        Task { [handle] in
-            _ = try? await handle.handleNetworkLost()
-        }
+    private func transportFlags(for path: NWPath) -> NetworkTransportFlags {
+        NetworkTransportFlags(
+            wifi: path.usesInterfaceType(.wifi),
+            cellular: path.usesInterfaceType(.cellular),
+            ethernet: path.usesInterfaceType(.wiredEthernet),
+            vpn: false,
+            other: path.usesInterfaceType(.other) || path.usesInterfaceType(.loopback)
+        )
     }
 
-    private func notifyTypeChanged(isWifi: Bool, isCellular: Bool) {
+    private func notifyPathChanged(snapshot: NetworkSnapshot) {
         Task { [handle] in
-            _ = try? await handle.handleNetworkTypeChanged(isWifi: isWifi, isCellular: isCellular)
+            _ = try? await handle.handleNetworkPathChanged(snapshot: snapshot)
         }
     }
 
@@ -197,16 +207,16 @@ private final class NetworkEventMonitor: @unchecked Sendable {
 
 private final class AppLifecycleMonitor: @unchecked Sendable {
     private let handle: NetworkEventHandleWrapper
+    private weak var networkEventMonitor: NetworkEventMonitor?
     private let queue: DispatchQueue
-    private let threshold: TimeInterval
     private var observers: [NSObjectProtocol] = []
     private var backgroundedAt: Date?
 
-    init(handle: NetworkEventHandleWrapper, threshold: TimeInterval = 30) {
+    init(handle: NetworkEventHandleWrapper, networkEventMonitor: NetworkEventMonitor) {
         self.handle = handle
+        self.networkEventMonitor = networkEventMonitor
         self.queue = DispatchQueue(label: "actr.lifecycle.monitor")
-        self.threshold = threshold
-        print("AppLifecycleMonitor initialized: time=\(formattedTimestamp()), threshold=\(threshold)s")
+        print("AppLifecycleMonitor initialized: time=\(formattedTimestamp())")
         registerObservers()
     }
 
@@ -256,6 +266,7 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
         if backgroundedAt == nil {
             backgroundedAt = Date()
             print("🔵 App entered background: time=\(timestamp)")
+            notifyLifecycleChanged(state: .background)
         } else {
             print("⚠️ App entered background (already backgrounded): time=\(timestamp)")
         }
@@ -265,25 +276,22 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
         let timestamp = formattedTimestamp()
         guard let backgroundedAt else {
             print("🟢 App entered foreground (no background timestamp): time=\(timestamp)")
+            notifyLifecycleChanged(state: .foreground(backgroundDurationMs: 0))
+            networkEventMonitor?.notifyCurrentPath()
             return
         }
 
         self.backgroundedAt = nil
         let duration = Date().timeIntervalSince(backgroundedAt)
-        print("🟢 App entered foreground: time=\(timestamp), backgroundDuration=\(String(format: "%.2f", duration))s, threshold=\(threshold)s")
+        let durationMs = UInt64(max(0, duration * 1000).rounded())
+        print("🟢 App entered foreground: time=\(timestamp), backgroundDurationMs=\(durationMs)")
+        notifyLifecycleChanged(state: .foreground(backgroundDurationMs: durationMs))
+        networkEventMonitor?.notifyCurrentPath()
+    }
 
-        if duration > threshold {
-            print("🧹 Triggering connection cleanup: time=\(timestamp), reason=exceeded_threshold")
-            Task { [handle] in
-                do {
-                    let result = try await handle.cleanupConnections()
-                    print("✅ Connection cleanup completed: time=\(self.formattedTimestamp()), result=\(result)")
-                } catch {
-                    print("❌ Connection cleanup failed: time=\(self.formattedTimestamp()), error=\(error)")
-                }
-            }
-        } else {
-            print("⏭️ Skipping connection cleanup: time=\(timestamp), reason=below_threshold")
+    private func notifyLifecycleChanged(state: AppLifecycleState) {
+        Task { [handle] in
+            _ = try? await handle.handleAppLifecycleChanged(state: state)
         }
     }
 

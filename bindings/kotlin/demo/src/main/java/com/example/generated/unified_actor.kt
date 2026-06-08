@@ -14,8 +14,8 @@ package com.example.generated
 // Import protobuf message types
 // Local service
 
-import data_stream_peer.DataStreamPeer.*
-import data_stream_peer.StreamClientOuterClass.*
+import local.DataStreamPeer.*
+import local.StreamClientOuterClass.*
 import echo.Echo.*
 import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrType
@@ -41,13 +41,13 @@ object RemoteServiceRegistry {
     /** Map of route key prefix to actor type for remote services */
     val remoteRoutes: Map<String, ActrType> =
         mapOf(
-            "data_stream_peer.StreamServer" to
+            "local.DuplexStreamService" to
                 ActrType(
-                    manufacturer = "acme",
-                    name = "DataStreamConcurrentServer",
-                    version = "1.0.0",
+                    manufacturer = "actrium",
+                    name = "DuplexStreamService",
+                    version = "0.1.0",
                 ),
-            "echo.Echo" to ActrType(manufacturer = "acme", name = "EchoService", version = "1.0.0"),
+            "echo.Echo" to ActrType(manufacturer = "actrium", name = "EchoService", version = "1.0.0"),
         )
 
     /** Check if a route key belongs to a remote service */

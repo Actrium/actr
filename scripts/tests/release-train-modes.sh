@@ -28,6 +28,7 @@ _original_ensure_release_tag_absent=$(declare -f ensure_release_tag_absent)
 _original_resolve_package_sync_owner=$(declare -f resolve_package_sync_owner)
 _original_install_python_release_tools=$(declare -f install_python_release_tools)
 _original_build_python_distribution=$(declare -f build_python_distribution)
+_original_prepare_cli_publish_assets=$(declare -f prepare_cli_publish_assets)
 _original_ensure_versions_prepared=$(declare -f ensure_versions_prepared)
 _original_ensure_publish_worktree_clean=$(declare -f ensure_publish_worktree_clean)
 _original_commit_release_prepare=$(declare -f commit_release_prepare)
@@ -60,6 +61,7 @@ restore_all_functions() {
   eval "$_original_resolve_package_sync_owner"
   eval "$_original_install_python_release_tools"
   eval "$_original_build_python_distribution"
+  eval "$_original_prepare_cli_publish_assets"
   eval "$_original_ensure_versions_prepared"
   eval "$_original_ensure_publish_worktree_clean"
   eval "$_original_commit_release_prepare"
@@ -254,6 +256,45 @@ test_latest_release_tag_accepts_legacy_release_train_prefix() {
   ORIGINAL_REPO_ROOT=$temp_repo
 
   assert_eq "release-train-v0.3.1" "$(latest_release_tag)" "latest legacy release tag"
+
+  ORIGINAL_REPO_ROOT=$previous_root
+  rm -rf "$temp_repo"
+}
+
+test_release_prepare_skips_release_commit_head() {
+  reset_release_train_state
+
+  local temp_repo previous_root
+  temp_repo=$(mktemp -d)
+  previous_root=$ORIGINAL_REPO_ROOT
+
+  git -C "$temp_repo" init -q
+  printf 'tracked\n' >"$temp_repo/tracked.txt"
+  git -C "$temp_repo" add tracked.txt
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "init"
+  printf 'release\n' >"$temp_repo/tracked.txt"
+  git -C "$temp_repo" add tracked.txt
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "chore(release): basic train v1.2.3"
+
+  ORIGINAL_REPO_ROOT=$temp_repo
+
+  if ! release_prepare_should_skip_current_head; then
+    printf 'auto release prepare must skip release commits\n' >&2
+    ORIGINAL_REPO_ROOT=$previous_root
+    rm -rf "$temp_repo"
+    exit 1
+  fi
+
+  printf 'fix\n' >"$temp_repo/tracked.txt"
+  git -C "$temp_repo" add tracked.txt
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "fix(runtime): repair mailbox state"
+
+  if release_prepare_should_skip_current_head; then
+    printf 'auto release prepare must not skip normal conventional commits\n' >&2
+    ORIGINAL_REPO_ROOT=$previous_root
+    rm -rf "$temp_repo"
+    exit 1
+  fi
 
   ORIGINAL_REPO_ROOT=$previous_root
   rm -rf "$temp_repo"
@@ -489,6 +530,66 @@ test_publish_python_package_builds_distribution_before_upload() {
   fi
 }
 
+test_publish_rust_package_prepares_cli_web_assets_before_publish() {
+  reset_release_train_state
+
+  local temp_dir original_path call_log
+  temp_dir=$(mktemp -d)
+  original_path=$PATH
+  call_log="$temp_dir/calls.log"
+  mkdir -p "$temp_dir/bin"
+
+  cat >"$temp_dir/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+printf 'cargo:%s\n' "$*" >>"$RELEASE_TEST_CALL_LOG"
+exit 0
+EOF
+  chmod +x "$temp_dir/bin/cargo"
+
+  prepare_cli_publish_assets() {
+    printf 'prepare_cli_publish_assets\n' >>"$RELEASE_TEST_CALL_LOG"
+  }
+  crate_version_visible() { return 1; }
+  wait_for_visibility() { return 0; }
+  append_state() { :; }
+
+  export RELEASE_TEST_CALL_LOG="$call_log"
+  PATH="$temp_dir/bin:$PATH"
+  WORK_REPO_ROOT="$temp_dir"
+  VERSION="1.2.3"
+  DRY_RUN=false
+  RELEASE_SHA="abc123"
+
+  publish_rust_package actr-cli cli
+
+  PATH=$original_path
+
+  local expected
+  expected=$'prepare_cli_publish_assets\ncargo:publish -p actr-cli --locked --allow-dirty'
+  if [[ "$(cat "$call_log")" != "$expected" ]]; then
+    printf 'actr-cli publish must prepare web runtime assets before cargo publish\n' >&2
+    cat "$call_log" >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  : >"$call_log"
+  PATH="$temp_dir/bin:$PATH"
+
+  publish_rust_package actr-protocol foundation
+
+  PATH=$original_path
+
+  if grep -q "prepare_cli_publish_assets" "$call_log"; then
+    printf 'non-cli rust package publish must not prepare CLI web runtime assets\n' >&2
+    cat "$call_log" >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  rm -rf "$temp_dir"
+}
+
 test_publish_typescript_workload_builds_before_publish() {
   reset_release_train_state
 
@@ -646,6 +747,24 @@ test_release_train_workflow_publish_typescript_uses_script_stage() {
   fi
 }
 
+test_release_train_workflow_downloads_only_typescript_native_artifacts() {
+  reset_release_train_state
+
+  if ! grep -q 'pattern: actr.*.node' .github/workflows/release-train.yml; then
+    printf 'publish-typescript workflow must download only native .node artifacts\n' >&2
+    exit 1
+  fi
+}
+
+test_release_prepare_workflow_skips_release_commits() {
+  reset_release_train_state
+
+  if ! grep -q "contains(github.event.head_commit.message, 'chore(release):')" .github/workflows/release-prepare.yml; then
+    printf 'release prepare workflow must skip chore(release) commits\n' >&2
+    exit 1
+  fi
+}
+
 test_report_stage_merges_state_files() {
   reset_release_train_state
 
@@ -794,6 +913,7 @@ test_publish_clean_check_rejects_untracked_files
 test_publish_clean_check_allows_current_report_artifacts
 test_final_tag_uses_conventional_v_prefix
 test_latest_release_tag_accepts_legacy_release_train_prefix
+test_release_prepare_skips_release_commit_head
 test_publish_mode_uses_prepared_versions_without_mutating
 test_prepare_only_updates_validates_and_commits_without_publishing
 test_staged_validate_does_not_publish
@@ -801,8 +921,11 @@ test_create_tag_dry_run_does_not_push
 test_main_publish_stage_skips_absent_tag_check
 test_main_validate_and_create_tag_check_absent_tag
 test_publish_python_package_builds_distribution_before_upload
+test_publish_rust_package_prepares_cli_web_assets_before_publish
 test_publish_typescript_workload_builds_before_publish
 test_publish_typescript_package_writes_native_and_main_state
 test_release_train_workflow_publish_typescript_uses_script_stage
+test_release_train_workflow_downloads_only_typescript_native_artifacts
+test_release_prepare_workflow_skips_release_commits
 test_report_stage_merges_state_files
 test_update_versions_syncs_optional_dependencies

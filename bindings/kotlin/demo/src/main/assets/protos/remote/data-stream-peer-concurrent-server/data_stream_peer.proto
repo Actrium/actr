@@ -1,38 +1,40 @@
 syntax = "proto3";
+package local;
 
-package data_stream_peer;
-
-message StartStreamRequest {
-  string client_id = 1;
-  string stream_id = 2;
-  uint32 message_count = 3;
+enum StreamPayloadMode {
+  STREAM_RELIABLE = 0;
+  STREAM_LATENCY_FIRST = 1;
 }
 
-message StartStreamResponse {
-  bool accepted = 1;
-  string message = 2;
+message StartDuplexStreamRequest {
+  string session_id = 1;
+  string client_to_service_stream_id = 2;
+  uint32 client_chunk_count = 3;
+  StreamPayloadMode payload_mode = 4;
+  string note = 5;
 }
 
-message PrepareClientStreamRequest {
-  string stream_id = 1;
-  uint32 expected_count = 2;
+message StartDuplexStreamResponse {
+  string session_id = 1;
+  string accepted_client_to_service_stream_id = 2;
+  string service_to_client_stream_id = 3;
+  string status = 4;
 }
 
-message PrepareServerStreamRequest {
-  string stream_id = 1;
-  uint32 expected_count = 2;
+message FinishDuplexStreamRequest {
+  string session_id = 1;
+  string client_to_service_stream_id = 2;
+  string service_to_client_stream_id = 3;
 }
 
-message PrepareStreamResponse {
-  bool ready = 1;
-  string message = 2;
+message FinishDuplexStreamResponse {
+  string session_id = 1;
+  uint32 client_chunks_received = 2;
+  uint32 service_chunks_sent = 3;
+  string status = 4;
 }
 
-service StreamClient {
-  rpc StartStream(StartStreamRequest) returns (StartStreamResponse);
-  rpc PrepareClientStream(PrepareClientStreamRequest) returns (PrepareStreamResponse);
-}
-
-service StreamServer {
-  rpc PrepareStream(PrepareServerStreamRequest) returns (PrepareStreamResponse);
+service DuplexStreamService {
+  rpc StartDuplexStream(StartDuplexStreamRequest) returns (StartDuplexStreamResponse);
+  rpc FinishDuplexStream(FinishDuplexStreamRequest) returns (FinishDuplexStreamResponse);
 }

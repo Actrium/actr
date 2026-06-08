@@ -1,18 +1,7 @@
-/**
- * Unified Handler Implementation
- *
- * This file implements StreamClientHandler following the Rust client implementation in
- * data-stream-peer-concurrent/client.
- */
 package com.example
 
 import android.util.Log
 import com.example.generated.UnifiedHandler
-import data_stream_peer.DataStreamPeer.PrepareServerStreamRequest
-import data_stream_peer.DataStreamPeer.PrepareStreamResponse
-import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
-import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
-import data_stream_peer.StreamClientOuterClass.PrepareClientStreamRequest
 import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrType
 import io.actor_rtc.actr.ContextBridge
@@ -27,9 +16,10 @@ import kotlinx.coroutines.launch
 /**
  * Implementation of UnifiedHandler (StreamClientHandler)
  *
- * This class implements the StreamClient service following the Rust client pattern:
- * - prepare_client_stream: Called by server to prepare client for receiving data stream
- * - start_stream: Called locally to initiate a stream transfer to the server
+ * Implements the DuplexStreamService client protocol:
+ * 1. Call StartDuplexStream RPC on the server
+ * 2. Send DataStream chunks to the server
+ * 3. Optionally receive return stream from the server
  */
 class MyUnifiedHandler : UnifiedHandler {
     companion object {
@@ -37,84 +27,22 @@ class MyUnifiedHandler : UnifiedHandler {
     }
 
     private val serverType =
-        ActrType(manufacturer = "acme", name = "DataStreamConcurrentServer", version = "1.0.0")
+        ActrType(manufacturer = "actrium", name = "DuplexStreamService", version = "0.1.0")
 
-    // ===== StreamClient methods =====
-
-    /**
-     * PrepareClientStream - Called by the server to prepare client for receiving data stream
-     *
-     * This registers a DataStream handler to receive messages from the server.
-     */
-    override suspend fun prepare_client_stream(
-        request: PrepareClientStreamRequest,
-        ctx: ContextBridge,
-    ): PrepareStreamResponse {
-        val streamId = request.streamId
-        val expectedCount = request.expectedCount
-        Log.i(
-            TAG,
-            "prepare_client_stream: stream_id=$streamId, expected_count=$expectedCount",
-        )
-
-        try {
-            // Register DataStream callback to receive server's data stream
-            ctx.registerStream(
-                streamId,
-                object : DataStreamCallback {
-                    override suspend fun onStream(
-                        chunk: DataStream,
-                        sender: ActrId,
-                    ) {
-                        val text = String(chunk.payload, Charsets.UTF_8)
-                        Log.i(
-                            TAG,
-                            "client received ${chunk.sequence}/$expectedCount from ${sender.serialNumber}: $text",
-                        )
-                    }
-                },
-            )
-
-            Log.i(TAG, "✅ Registered stream handler for: $streamId")
-            return PrepareStreamResponse
-                .newBuilder()
-                .setReady(true)
-                .setMessage(
-                    "client ready to receive $expectedCount messages on $streamId",
-                ).build()
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to register stream handler: ${e.message}", e)
-            return PrepareStreamResponse
-                .newBuilder()
-                .setReady(false)
-                .setMessage("Failed to register stream: ${e.message}")
-                .build()
-        }
-    }
-
-    /**
-     * StartStream - Called locally to initiate a stream transfer
-     *
-     * This follows the Rust client implementation:
-     * 1. Discover the server
-     * 2. Call PrepareServerStream RPC on the server
-     * 3. Spawn a coroutine to send DataStream chunks
-     */
     override suspend fun start_stream(
-        request: ClientStartStreamRequest,
+        request: local.StreamClientOuterClass.ClientStartStreamRequest,
         ctx: ContextBridge,
-    ): ClientStartStreamResponse {
+    ): local.StreamClientOuterClass.ClientStartStreamResponse {
         val clientId = request.clientId
-        val streamId = request.streamId
+        val sessionId = request.sessionId
         val messageCount = request.messageCount
 
         Log.i(
             TAG,
-            "start_stream: client_id=$clientId, stream_id=$streamId, message_count=$messageCount",
+            "start_stream: client_id=$clientId, session_id=$sessionId, message_count=$messageCount",
         )
 
         try {
-            // Discover the server
             Log.i(
                 TAG,
                 "🌐 discovering server type: ${serverType.manufacturer}/${serverType.name}",
@@ -122,42 +50,64 @@ class MyUnifiedHandler : UnifiedHandler {
             val serverId = ctx.discover(serverType)
             Log.i(TAG, "🎯 discovered server: ${serverId.serialNumber}")
 
-            // Call PrepareServerStream RPC on the server
-            val prepareReq =
-                PrepareServerStreamRequest
+            // Step 1: Call StartDuplexStream RPC on the server
+            val clientStreamId = "client-$sessionId"
+            val startReq =
+                local.DataStreamPeer.StartDuplexStreamRequest
                     .newBuilder()
-                    .setStreamId(streamId)
-                    .setExpectedCount(messageCount)
+                    .setSessionId(sessionId)
+                    .setClientToServiceStreamId(clientStreamId)
+                    .setClientChunkCount(messageCount.toInt())
+                    .setPayloadMode(local.DataStreamPeer.StreamPayloadMode.STREAM_RELIABLE)
+                    .setNote("Android duplex stream test")
                     .build()
 
-            val prepareRespPayload =
+            val startRespPayload =
                 ctx.callRaw(
                     serverId,
-                    "data_stream_peer.StreamServer.PrepareStream",
+                    "local.DuplexStreamService.StartDuplexStream",
                     PayloadType.RPC_RELIABLE,
-                    prepareReq.toByteArray(),
+                    startReq.toByteArray(),
                     30000L,
                 )
-            val prepareResp = PrepareStreamResponse.parseFrom(prepareRespPayload)
+            val startResp = local.DataStreamPeer.StartDuplexStreamResponse.parseFrom(startRespPayload)
+            Log.i(
+                TAG,
+                "StartDuplexStream response: session=${startResp.sessionId}, " +
+                    "accepted_stream=${startResp.acceptedClientToServiceStreamId}, " +
+                    "return_stream=${startResp.serviceToClientStreamId}, status=${startResp.status}",
+            )
 
-            if (!prepareResp.ready) {
-                return ClientStartStreamResponse
-                    .newBuilder()
-                    .setAccepted(false)
-                    .setMessage(prepareResp.message)
-                    .build()
+            // Step 2: Register callback for the server's return stream (if any)
+            val serverStreamId = startResp.serviceToClientStreamId
+            if (serverStreamId.isNotBlank()) {
+                ctx.registerStream(
+                    serverStreamId,
+                    object : DataStreamCallback {
+                        override suspend fun onStream(
+                            chunk: DataStream,
+                            sender: ActrId,
+                        ) {
+                            val text = String(chunk.payload, Charsets.UTF_8)
+                            Log.i(
+                                TAG,
+                                "client received ${chunk.sequence} from ${sender.serialNumber}: $text",
+                            )
+                        }
+                    },
+                )
+                Log.i(TAG, "✅ Registered stream handler for server return stream: $serverStreamId")
             }
 
-            // Spawn a coroutine to send DataStream chunks (like tokio::spawn in Rust)
+            // Step 3: Send DataStream chunks to the server
             CoroutineScope(Dispatchers.IO).launch {
                 for (i in 1..messageCount) {
                     val message = "[client $clientId] message $i"
                     val dataStream =
                         DataStream(
-                            streamId = streamId,
+                            streamId = clientStreamId,
                             sequence = i.toULong(),
-                            payload =
-                                message.toByteArray(Charsets.UTF_8),
+                            payload = message.toByteArray(Charsets.UTF_8),
                             metadata = emptyList(),
                             timestampMs = System.currentTimeMillis(),
                         )
@@ -170,24 +120,48 @@ class MyUnifiedHandler : UnifiedHandler {
                             PayloadType.STREAM_RELIABLE,
                         )
                     } catch (e: Exception) {
-                        Log.e(
-                            TAG,
-                            "client send_data_stream error: ${e.message}",
-                        )
+                        Log.e(TAG, "client send_data_stream error: ${e.message}")
                     }
-                    delay(1000) // Match Rust client's 1 second delay
+                    delay(1000)
+                }
+
+                // Step 4: Call FinishDuplexStream
+                try {
+                    val finishReq =
+                        local.DataStreamPeer.FinishDuplexStreamRequest
+                            .newBuilder()
+                            .setSessionId(sessionId)
+                            .setClientToServiceStreamId(clientStreamId)
+                            .setServiceToClientStreamId(serverStreamId)
+                            .build()
+                    val finishRespPayload =
+                        ctx.callRaw(
+                            serverId,
+                            "local.DuplexStreamService.FinishDuplexStream",
+                            PayloadType.RPC_RELIABLE,
+                            finishReq.toByteArray(),
+                            30000L,
+                        )
+                    val finishResp =
+                        local.DataStreamPeer.FinishDuplexStreamResponse.parseFrom(finishRespPayload)
+                    Log.i(
+                        TAG,
+                        "FinishDuplexStream: recv=${finishResp.clientChunksReceived}, " +
+                            "sent=${finishResp.serviceChunksSent}, status=${finishResp.status}",
+                    )
+                } catch (e: Exception) {
+                    Log.e(TAG, "FinishDuplexStream error: ${e.message}")
                 }
             }
 
-            return ClientStartStreamResponse
+            return local.StreamClientOuterClass.ClientStartStreamResponse
                 .newBuilder()
                 .setAccepted(true)
-                .setMessage(
-                    "started sending $messageCount messages to ${serverId.serialNumber}",
-                ).build()
+                .setMessage("started duplex stream: $sessionId")
+                .build()
         } catch (e: Exception) {
             Log.e(TAG, "❌ start_stream failed: ${e.message}", e)
-            return ClientStartStreamResponse
+            return local.StreamClientOuterClass.ClientStartStreamResponse
                 .newBuilder()
                 .setAccepted(false)
                 .setMessage("Failed to start stream: ${e.message}")

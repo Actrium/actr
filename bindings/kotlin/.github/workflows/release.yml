@@ -7,6 +7,14 @@ on:
         description: "Version to release (e.g. 0.2.0)"
         required: true
         type: string
+      source_sha:
+        description: "Source commit SHA from the actr monorepo"
+        required: true
+        type: string
+      source_tag:
+        description: "Source tag from the actr monorepo (e.g. v0.2.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -16,61 +24,105 @@ jobs:
   build-and-release:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate package-sync repository
+        run: |
+          test -f README.md
+          test -f .github/workflows/release.yml
+
       - name: Checkout actr source
-        uses: actions/checkout@v4
-        with:
-          repository: Actrium/actr
-          ref: v${{ inputs.version }}
-          submodules: recursive
+        env:
+          SOURCE_REPOSITORY: https://github.com/Actrium/actr
+        run: |
+          rm -rf source-checkout
+          git clone --depth 1 --branch "${{ inputs.source_tag }}" "${SOURCE_REPOSITORY}" source-checkout
+          actual_sha=$(git -C source-checkout rev-parse HEAD)
+          test "${actual_sha}" = "${{ inputs.source_sha }}"
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: gradle
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
 
-      - name: Install protoc
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Setup Android SDK & NDK
-        uses: android-actions/setup-android@v3
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
         with:
-          packages: 'platforms;android-34 ndk;25.2.9519653 build-tools;34.0.0'
+          repo-token: ${{ github.token }}
+
+      - name: Install UniFFI bindgen
+        run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;25.2.9519653"
 
       - name: Build native libraries
-        working-directory: bindings/kotlin
-        run: |
-          export ANDROID_SDK_ROOT=$ANDROID_HOME
-          export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/25.2.9519653
-          bash build-android.sh
+        working-directory: source-checkout/bindings/kotlin
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        run: ./build-android.sh
 
       - name: Package native binaries
-        working-directory: bindings/kotlin
+        working-directory: source-checkout/bindings/kotlin
         run: bash scripts/package-binary.sh v${{ inputs.version }}
 
       - name: Publish Maven artifact
-        working-directory: bindings/kotlin
+        working-directory: source-checkout/bindings/kotlin
         env:
           GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          ./gradlew :actr-kotlin:publish --no-daemon \
+          ./gradlew :actr-kotlin:assembleRelease :actr-kotlin:publish \
+            --no-daemon \
+            -PactrGroup=io.actrium \
             -PactrVersion=${{ inputs.version }} \
-            -Pgpr.user=${{ github.actor }} \
-            -Pgpr.key=${{ secrets.GITHUB_TOKEN }}
+            -PactrPublishUrl=https://maven.pkg.github.com/${{ github.repository }}
+
+      - name: Write release metadata
+        run: |
+          python3 - "${{ inputs.version }}" "${{ inputs.source_tag }}" "${{ inputs.source_sha }}" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          payload = {
+              "version": sys.argv[1],
+              "source_repository": "https://github.com/Actrium/actr",
+              "source_tag": sys.argv[2],
+              "source_sha": sys.argv[3],
+              "coordinate": f"io.actrium:actr:{sys.argv[1]}",
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+          }
+          Path("release-metadata.json").write_text(json.dumps(payload, indent=2) + "\n")
+          PY
+
+      - name: Commit release metadata
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release-metadata.json
+          git commit -m "chore(release): publish v${{ inputs.version }}" || exit 0
+          git push origin main
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: v${{ inputs.version }}
-          files: bindings/kotlin/dist/actr-kotlin-native.zip
+          body_path: release-metadata.json
+          files: source-checkout/bindings/kotlin/dist/actr-kotlin-native.zip
           generate_release_notes: true
           fail_on_unmatched_files: true
 
@@ -85,5 +137,5 @@ jobs:
             echo "- Version: \`${{ inputs.version }}\`"
             echo ""
             echo "### Native libraries"
-            cat bindings/kotlin/dist/release.txt
+            cat source-checkout/bindings/kotlin/dist/release.txt
           } >> "$GITHUB_STEP_SUMMARY"

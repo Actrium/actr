@@ -40,7 +40,7 @@ type = "acme:DataStreamConcurrentServer:1.0.0"
 
 [[acl.rules]]
 permission = "allow"
-type = "acme:UnifiedActor:1.0.0"
+type = "acme:EchoApp:1.0.0"
 
 [observability]
 filter_level = "info"
