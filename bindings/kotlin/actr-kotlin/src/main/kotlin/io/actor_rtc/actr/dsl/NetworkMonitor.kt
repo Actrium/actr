@@ -7,63 +7,72 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.util.Log
+import io.actor_rtc.actr.AppLifecycleState
+import io.actor_rtc.actr.CleanupReason
+import io.actor_rtc.actr.NetworkAvailability
+import io.actor_rtc.actr.NetworkSnapshot
+import io.actor_rtc.actr.NetworkTransportFlags
+import io.actor_rtc.actr.ReconnectReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * NetworkMonitor - Independent network state monitor
  *
  * Features:
  * - Monitor WiFi, mobile network, Ethernet, and VPN connection state changes
- * - Detailed logging of all network events including availability/loss and type changes
- * - Support network type change callbacks (WiFi/Cellular/VPN switching)
- * - Support network connection state change callbacks (available/unavailable)
+ * - Builds full NetworkSnapshot from Android system APIs and reports via
+ *   handleNetworkPathChanged
+ * - Supports app lifecycle callbacks (background/foreground) via
+ *   handleAppLifecycleChanged
+ * - Supports cleanupConnections and forceReconnect for explicit lifecycle ops
  * - Auto-detect initial network state
  * - Support manual network state checks
  *
- * Callback descriptions:
- * - onNetworkTypeChanged: Called when network type changes (WiFi/mobile/VPN switching)
- * - onNetworkAvailable: Called when network becomes available
- * - onNetworkLost: Called when network becomes unavailable
- *
  * Logging output examples:
- * - Network available/lost events (actual connection state changes)
- * - Network capability changes (WiFi/mobile/VPN status)
- * - Network type switching events
+ * - Network path change events (full NetworkSnapshot)
+ * - App lifecycle change events (background/foreground with duration)
  * - Current network status summary
  *
  * Usage:
- * 1. Create instance: NetworkMonitor(context, scope, onNetworkTypeChanged, onNetworkAvailable, onNetworkLost)
+ * 1. Create instance: NetworkMonitor(context, scope, onNetworkPathChanged, onAppLifecycleChanged)
  * 2. Start monitoring: startMonitoring()
  * 3. Stop monitoring: stopMonitoring() (usually called in Activity.onDestroy)
  * 4. Manual check: triggerNetworkCheck()
  * 5. Get status: getCurrentNetworkStatus()
+ * 6. Cleanup/reconnect: cleanupConnections(), forceReconnect()
  *
  * Integration with ActrNode:
  * ```kotlin
  * val networkMonitor = NetworkMonitor.create(context, lifecycleScope) { system }
  * networkMonitor.startMonitoring()
  * ```
+ *
+ * Background threshold: 30 seconds. Under 30s triggers a connection probe;
+ * 30s or more triggers force reconnect on return to foreground.
  */
-class NetworkMonitor(
+class NetworkMonitor
+    (
     private val context: Context,
     private val scope: CoroutineScope,
-    private val onNetworkTypeChanged:
-        suspend (isWifi: Boolean, isCellular: Boolean, isVpn: Boolean) -> Unit =
-        { _, _, _ ->
-        },
-    private val onNetworkAvailable: (suspend () -> Unit)? = null,
-    private val onNetworkLost: (suspend () -> Unit)? = null,
+    private val onNetworkPathChanged: (suspend (NetworkSnapshot) -> Unit)? = null,
+    private val onAppLifecycleChanged: (suspend (AppLifecycleState) -> Unit)? = null,
+    private val onCleanupConnections: (suspend (CleanupReason) -> Unit)? = null,
+    private val onForceReconnect: (suspend (ReconnectReason) -> Unit)? = null,
 ) {
     companion object {
         private const val TAG = "NetworkMonitor"
 
+        /** Background duration threshold in milliseconds (30 seconds). */
+        private const val BACKGROUND_THRESHOLD_MS: Long = 30_000
+
         /**
          * Create a NetworkMonitor integrated with ActrNode
          *
-         * This factory method automatically forwards network events to ActrNode's NetworkEventHandle,
-         * so users don't need to handle network events manually.
+         * This factory method automatically forwards network events to ActrNode's
+         * NetworkEventHandle, so users don't need to handle network events manually.
          *
          * @param context Android Context
          * @param scope CoroutineScope, typically use lifecycleScope
@@ -92,25 +101,25 @@ class NetworkMonitor(
             NetworkMonitor(
                 context = context,
                 scope = scope,
-                onNetworkTypeChanged = { isWifi, isCellular, isVpn ->
-                    handleNetworkTypeChangedInternal(
-                        getSystem,
-                        isWifi,
-                        isCellular,
-                        isVpn,
-                        onNetworkStatusLog,
-                    )
+                onNetworkPathChanged = { snapshot ->
+                    handleNetworkPathChangedInternal(getSystem, snapshot, onNetworkStatusLog)
                 },
-                onNetworkAvailable = {
-                    handleNetworkAvailableInternal(getSystem, onNetworkStatusLog)
+                onAppLifecycleChanged = { state ->
+                    handleAppLifecycleChangedInternal(getSystem, state, onNetworkStatusLog)
                 },
-                onNetworkLost = { handleNetworkLostInternal(getSystem, onNetworkStatusLog) },
+                onCleanupConnections = { reason ->
+                    handleCleanupConnectionsInternal(getSystem, reason, onNetworkStatusLog)
+                },
+                onForceReconnect = { reason ->
+                    handleForceReconnectInternal(getSystem, reason, onNetworkStatusLog)
+                },
             )
 
         /**
          * Create a NetworkMonitor integrated with NetworkEventHandle
          *
-         * This factory method automatically forwards network events to the specified NetworkEventHandle.
+         * This factory method automatically forwards network events to the specified
+         * NetworkEventHandle.
          *
          * @param context Android Context
          * @param scope CoroutineScope, typically use lifecycleScope
@@ -127,191 +136,271 @@ class NetworkMonitor(
             NetworkMonitor(
                 context = context,
                 scope = scope,
-                onNetworkTypeChanged = { isWifi, isCellular, isVpn ->
-                    handleNetworkTypeChangedWithHandle(
-                        getHandle,
-                        isWifi,
-                        isCellular,
-                        onNetworkStatusLog,
-                    )
+                onNetworkPathChanged = { snapshot ->
+                    handleNetworkPathChangedWithHandle(getHandle, snapshot, onNetworkStatusLog)
                 },
-                onNetworkAvailable = {
-                    handleNetworkAvailableWithHandle(getHandle, onNetworkStatusLog)
+                onAppLifecycleChanged = { state ->
+                    handleAppLifecycleChangedWithHandle(getHandle, state, onNetworkStatusLog)
                 },
-                onNetworkLost = { handleNetworkLostWithHandle(getHandle, onNetworkStatusLog) },
+                onCleanupConnections = { reason ->
+                    handleCleanupConnectionsWithHandle(getHandle, reason, onNetworkStatusLog)
+                },
+                onForceReconnect = { reason ->
+                    handleForceReconnectWithHandle(getHandle, reason, onNetworkStatusLog)
+                },
             )
 
-        private suspend fun handleNetworkTypeChangedInternal(
+        private suspend fun handleNetworkPathChangedInternal(
             getSystem: () -> ActrNode?,
-            isWifi: Boolean,
-            isCellular: Boolean,
-            @Suppress("UNUSED_PARAMETER") isVpn: Boolean,
+            snapshot: NetworkSnapshot,
             onLog: ((String) -> Unit)?,
         ) {
             val system = getSystem()
             if (system == null) {
-                Log.d(TAG, "ActrNode not available, skipping network type changed event")
+                Log.d(TAG, "ActrNode not available, skipping network path changed event")
                 return
             }
 
             try {
                 val handle = system.createNetworkEventHandle()
-                val result = handle.handleNetworkTypeChangedCatching(isWifi, isCellular)
+                val result = handle.handleNetworkPathChangedCatching(snapshot)
                 result
                     .onSuccess { eventResult ->
                         Log.i(
                             TAG,
-                            "Network type changed event handled successfully: $eventResult",
+                            "Network path changed event handled successfully: $eventResult",
                         )
                         onLog?.invoke(
-                            "🌐 Network type changed - WiFi: $isWifi, Cellular: $isCellular",
+                            "🌐 Network path changed - " +
+                                "avail=${snapshot.availability}, " +
+                                "wifi=${snapshot.transport.wifi}, " +
+                                "cell=${snapshot.transport.cellular}, " +
+                                "vpn=${snapshot.transport.vpn}",
                         )
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle network type changed event", error)
-                        onLog?.invoke("❌ Network type changed event failed: ${error.message}")
+                        Log.e(TAG, "Failed to handle network path changed event", error)
+                        onLog?.invoke("❌ Network path changed event failed: ${error.message}")
                     }
             } catch (e: Exception) {
-                Log.e(TAG, "Error handling network type changed", e)
-                onLog?.invoke("❌ Network type changed error: ${e.message}")
+                Log.e(TAG, "Error handling network path changed", e)
+                onLog?.invoke("❌ Network path changed error: ${e.message}")
             }
         }
 
-        private suspend fun handleNetworkAvailableInternal(
+        private suspend fun handleAppLifecycleChangedInternal(
             getSystem: () -> ActrNode?,
+            state: AppLifecycleState,
             onLog: ((String) -> Unit)?,
         ) {
             val system = getSystem()
             if (system == null) {
-                Log.d(TAG, "ActrNode not available, skipping network available event")
+                Log.d(TAG, "ActrNode not available, skipping app lifecycle event")
                 return
             }
 
             try {
                 val handle = system.createNetworkEventHandle()
-                val result = handle.handleNetworkAvailableCatching()
-                result
-                    .onSuccess { eventResult ->
-                        Log.i(TAG, "Network available event handled successfully: $eventResult")
-                        onLog?.invoke("🌐 Network available - handled successfully")
-                    }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle network available event", error)
-                        onLog?.invoke("❌ Network available event failed: ${error.message}")
-                    }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error handling network available", e)
-                onLog?.invoke("❌ Network available error: ${e.message}")
-            }
-        }
-
-        private suspend fun handleNetworkLostInternal(
-            getSystem: () -> ActrNode?,
-            onLog: ((String) -> Unit)?,
-        ) {
-            val system = getSystem()
-            if (system == null) {
-                Log.d(TAG, "ActrNode not available, skipping network lost event")
-                return
-            }
-
-            try {
-                val handle = system.createNetworkEventHandle()
-                val result = handle.handleNetworkLostCatching()
-                result
-                    .onSuccess { eventResult ->
-                        Log.i(TAG, "Network lost event handled successfully: $eventResult")
-                        onLog?.invoke("🌐 Network lost - handled successfully")
-                    }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle network lost event", error)
-                        onLog?.invoke("❌ Network lost event failed: ${error.message}")
-                    }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error handling network lost", e)
-                onLog?.invoke("❌ Network lost error: ${e.message}")
-            }
-        }
-
-        private suspend fun handleNetworkTypeChangedWithHandle(
-            getHandle: () -> NetworkEventHandle?,
-            isWifi: Boolean,
-            isCellular: Boolean,
-            onLog: ((String) -> Unit)?,
-        ) {
-            val handle = getHandle()
-            if (handle == null) {
-                Log.d(TAG, "NetworkEventHandle not available, skipping network type changed event")
-                return
-            }
-
-            try {
-                val result = handle.handleNetworkTypeChangedCatching(isWifi, isCellular)
+                val result = handle.handleAppLifecycleChangedCatching(state)
                 result
                     .onSuccess { eventResult ->
                         Log.i(
                             TAG,
-                            "Network type changed event handled successfully: $eventResult",
+                            "App lifecycle event handled successfully: $eventResult",
+                        )
+                        val label = when (state) {
+                            is AppLifecycleState.Background -> "Background"
+                            is AppLifecycleState.Foreground ->
+                                "Foreground (bg_duration=${state.backgroundDurationMs}ms)"
+                        }
+                        onLog?.invoke("📱 App lifecycle: $label")
+                    }.onFailure { error ->
+                        Log.e(TAG, "Failed to handle app lifecycle event", error)
+                        onLog?.invoke("❌ App lifecycle event failed: ${error.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error handling app lifecycle", e)
+                onLog?.invoke("❌ App lifecycle error: ${e.message}")
+            }
+        }
+
+        private suspend fun handleCleanupConnectionsInternal(
+            getSystem: () -> ActrNode?,
+            reason: CleanupReason,
+            onLog: ((String) -> Unit)?,
+        ) {
+            val system = getSystem()
+            if (system == null) {
+                Log.d(TAG, "ActrNode not available, skipping cleanup connections")
+                return
+            }
+
+            try {
+                val handle = system.createNetworkEventHandle()
+                val result = handle.cleanupConnectionsCatching(reason)
+                result
+                    .onSuccess { eventResult ->
+                        Log.i(TAG, "Cleanup connections handled successfully: $eventResult")
+                        onLog?.invoke("🧹 Cleanup connections: $reason")
+                    }.onFailure { error ->
+                        Log.e(TAG, "Failed to cleanup connections", error)
+                        onLog?.invoke("❌ Cleanup connections failed: ${error.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error cleaning up connections", e)
+                onLog?.invoke("❌ Cleanup connections error: ${e.message}")
+            }
+        }
+
+        private suspend fun handleForceReconnectInternal(
+            getSystem: () -> ActrNode?,
+            reason: ReconnectReason,
+            onLog: ((String) -> Unit)?,
+        ) {
+            val system = getSystem()
+            if (system == null) {
+                Log.d(TAG, "ActrNode not available, skipping force reconnect")
+                return
+            }
+
+            try {
+                val handle = system.createNetworkEventHandle()
+                val result = handle.forceReconnectCatching(reason)
+                result
+                    .onSuccess { eventResult ->
+                        Log.i(TAG, "Force reconnect handled successfully: $eventResult")
+                        onLog?.invoke("🔄 Force reconnect: $reason")
+                    }.onFailure { error ->
+                        Log.e(TAG, "Failed to force reconnect", error)
+                        onLog?.invoke("❌ Force reconnect failed: ${error.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error force reconnecting", e)
+                onLog?.invoke("❌ Force reconnect error: ${e.message}")
+            }
+        }
+
+        // ---- Handle-based variants ----
+
+        private suspend fun handleNetworkPathChangedWithHandle(
+            getHandle: () -> NetworkEventHandle?,
+            snapshot: NetworkSnapshot,
+            onLog: ((String) -> Unit)?,
+        ) {
+            val handle = getHandle()
+            if (handle == null) {
+                Log.d(
+                    TAG,
+                    "NetworkEventHandle not available, skipping network path changed event",
+                )
+                return
+            }
+
+            try {
+                val result = handle.handleNetworkPathChangedCatching(snapshot)
+                result
+                    .onSuccess { eventResult ->
+                        Log.i(
+                            TAG,
+                            "Network path changed event handled successfully: $eventResult",
                         )
                         onLog?.invoke(
-                            "🌐 Network type changed - WiFi: $isWifi, Cellular: $isCellular",
+                            "🌐 Network path changed - " +
+                                "avail=${snapshot.availability}, " +
+                                "wifi=${snapshot.transport.wifi}",
                         )
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle network type changed event", error)
-                        onLog?.invoke("❌ Network type changed event failed: ${error.message}")
+                        Log.e(TAG, "Failed to handle network path changed event", error)
+                        onLog?.invoke("❌ Network path changed event failed: ${error.message}")
                     }
             } catch (e: Exception) {
-                Log.e(TAG, "Error handling network type changed", e)
-                onLog?.invoke("❌ Network type changed error: ${e.message}")
+                Log.e(TAG, "Error handling network path changed", e)
+                onLog?.invoke("❌ Network path changed error: ${e.message}")
             }
         }
 
-        private suspend fun handleNetworkAvailableWithHandle(
+        private suspend fun handleAppLifecycleChangedWithHandle(
             getHandle: () -> NetworkEventHandle?,
+            state: AppLifecycleState,
             onLog: ((String) -> Unit)?,
         ) {
             val handle = getHandle()
             if (handle == null) {
-                Log.d(TAG, "NetworkEventHandle not available, skipping network available event")
+                Log.d(TAG, "NetworkEventHandle not available, skipping app lifecycle event")
                 return
             }
 
             try {
-                val result = handle.handleNetworkAvailableCatching()
+                val result = handle.handleAppLifecycleChangedCatching(state)
                 result
                     .onSuccess { eventResult ->
-                        Log.i(TAG, "Network available event handled successfully: $eventResult")
-                        onLog?.invoke("🌐 Network available - handled successfully")
+                        Log.i(TAG, "App lifecycle event handled successfully: $eventResult")
+                        val label = when (state) {
+                            is AppLifecycleState.Background -> "Background"
+                            is AppLifecycleState.Foreground ->
+                                "Foreground (bg_duration=${state.backgroundDurationMs}ms)"
+                        }
+                        onLog?.invoke("📱 App lifecycle: $label")
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle network available event", error)
-                        onLog?.invoke("❌ Network available event failed: ${error.message}")
+                        Log.e(TAG, "Failed to handle app lifecycle event", error)
+                        onLog?.invoke("❌ App lifecycle event failed: ${error.message}")
                     }
             } catch (e: Exception) {
-                Log.e(TAG, "Error handling network available", e)
-                onLog?.invoke("❌ Network available error: ${e.message}")
+                Log.e(TAG, "Error handling app lifecycle", e)
+                onLog?.invoke("❌ App lifecycle error: ${e.message}")
             }
         }
 
-        private suspend fun handleNetworkLostWithHandle(
+        private suspend fun handleCleanupConnectionsWithHandle(
             getHandle: () -> NetworkEventHandle?,
+            reason: CleanupReason,
             onLog: ((String) -> Unit)?,
         ) {
             val handle = getHandle()
             if (handle == null) {
-                Log.d(TAG, "NetworkEventHandle not available, skipping network lost event")
+                Log.d(TAG, "NetworkEventHandle not available, skipping cleanup connections")
                 return
             }
 
             try {
-                val result = handle.handleNetworkLostCatching()
+                val result = handle.cleanupConnectionsCatching(reason)
                 result
                     .onSuccess { eventResult ->
-                        Log.i(TAG, "Network lost event handled successfully: $eventResult")
-                        onLog?.invoke("🌐 Network lost - handled successfully")
+                        Log.i(TAG, "Cleanup connections handled successfully: $eventResult")
+                        onLog?.invoke("🧹 Cleanup connections: $reason")
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle network lost event", error)
-                        onLog?.invoke("❌ Network lost event failed: ${error.message}")
+                        Log.e(TAG, "Failed to cleanup connections", error)
+                        onLog?.invoke("❌ Cleanup connections failed: ${error.message}")
                     }
             } catch (e: Exception) {
-                Log.e(TAG, "Error handling network lost", e)
-                onLog?.invoke("❌ Network lost error: ${e.message}")
+                Log.e(TAG, "Error cleaning up connections", e)
+                onLog?.invoke("❌ Cleanup connections error: ${e.message}")
+            }
+        }
+
+        private suspend fun handleForceReconnectWithHandle(
+            getHandle: () -> NetworkEventHandle?,
+            reason: ReconnectReason,
+            onLog: ((String) -> Unit)?,
+        ) {
+            val handle = getHandle()
+            if (handle == null) {
+                Log.d(TAG, "NetworkEventHandle not available, skipping force reconnect")
+                return
+            }
+
+            try {
+                val result = handle.forceReconnectCatching(reason)
+                result
+                    .onSuccess { eventResult ->
+                        Log.i(TAG, "Force reconnect handled successfully: $eventResult")
+                        onLog?.invoke("🔄 Force reconnect: $reason")
+                    }.onFailure { error ->
+                        Log.e(TAG, "Failed to force reconnect", error)
+                        onLog?.invoke("❌ Force reconnect failed: ${error.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error force reconnecting", e)
+                onLog?.invoke("❌ Force reconnect error: ${e.message}")
             }
         }
     }
@@ -320,11 +409,21 @@ class NetworkMonitor(
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var isMonitoring = false
 
+    // Monotonically incrementing sequence number for NetworkSnapshot
+    private val sequenceCounter = AtomicLong(0)
+
+    // Time when the app entered background (epoch millis), null if in foreground
+    @Volatile
+    private var backgroundEnteredAtMs: Long? = null
+
     // Current network state
     private var isNetworkAvailable = false
     private var isWifiConnected = false
     private var isCellularConnected = false
     private var isVpnConnected = false
+    private var isEthernetConnected = false
+    private var isExpensive = false
+    private var isConstrained = false
 
     /** Start network monitoring */
     fun startMonitoring() {
@@ -369,6 +468,117 @@ class NetworkMonitor(
         }
     }
 
+    // ---- App Lifecycle Methods ----
+
+    /**
+     * Call this from Activity.onPause / onStop when the app goes to background.
+     *
+     * This records the background entry time and notifies the runtime.
+     */
+    fun onAppBackground() {
+        backgroundEnteredAtMs = System.currentTimeMillis()
+        Log.i(TAG, "App entered background at $backgroundEnteredAtMs")
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                onAppLifecycleChanged?.invoke(AppLifecycleState.Background)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to handle app background: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * Call this from Activity.onResume / onStart when the app returns to foreground.
+     *
+     * This computes the background duration, notifies the runtime, and reports
+     * the current NetworkSnapshot.
+     */
+    fun onAppForeground() {
+        val backgroundDurationMs =
+            backgroundEnteredAtMs?.let { start ->
+                (System.currentTimeMillis() - start).coerceAtLeast(0)
+            } ?: 0L
+
+        backgroundEnteredAtMs = null
+
+        Log.i(TAG, "App returned to foreground, background duration: ${backgroundDurationMs}ms")
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                onAppLifecycleChanged?.invoke(
+                    AppLifecycleState.Foreground(
+                        backgroundDurationMs = backgroundDurationMs.toULong(),
+                    ),
+                )
+
+                // After returning to foreground, also report current network snapshot
+                val snapshot = buildCurrentNetworkSnapshot()
+                if (snapshot != null) {
+                    onNetworkPathChanged?.invoke(snapshot)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to handle app foreground: ${e.message}", e)
+            }
+        }
+    }
+
+    /**
+     * Check whether the background duration exceeded the threshold.
+     * Under 30s: connection probe. 30s or more: force reconnect.
+     */
+    fun isLongBackground(): Boolean {
+        val start = backgroundEnteredAtMs ?: return false
+        return (System.currentTimeMillis() - start) >= BACKGROUND_THRESHOLD_MS
+    }
+
+    /** Cleanup connections without reconnecting (e.g. app terminating, user logout). */
+    fun cleanupConnections(reason: CleanupReason = CleanupReason.MANUAL_RESET) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                onCleanupConnections?.invoke(reason)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to cleanup connections: ${e.message}", e)
+            }
+        }
+    }
+
+    /** Force cleanup and reconnect (e.g. manual reconnect, long background). */
+    fun forceReconnect(reason: ReconnectReason = ReconnectReason.MANUAL_RECONNECT) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                onForceReconnect?.invoke(reason)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to force reconnect: ${e.message}", e)
+            }
+        }
+    }
+
+    // ---- NetworkSnapshot Construction ----
+
+    /** Build a NetworkSnapshot from the current network state. */
+    private fun buildCurrentNetworkSnapshot(): NetworkSnapshot? {
+        return NetworkSnapshot(
+            sequence = sequenceCounter.incrementAndGet().toULong(),
+            availability =
+                if (isNetworkAvailable) {
+                    NetworkAvailability.AVAILABLE
+                } else {
+                    NetworkAvailability.UNAVAILABLE
+                },
+            transport =
+                NetworkTransportFlags(
+                    wifi = isWifiConnected,
+                    cellular = isCellularConnected,
+                    ethernet = isEthernetConnected,
+                    vpn = isVpnConnected,
+                    other = false,
+                ),
+            isExpensive = isExpensive,
+            isConstrained = isConstrained,
+        )
+    }
+
     /** Setup network callback */
     private fun setupNetworkCallback() {
         val networkRequest =
@@ -389,68 +599,41 @@ class NetworkMonitor(
                     super.onAvailable(network)
                     Log.i(TAG, "Network available: $network")
 
-                    // Save previous network type state
                     val wasNetworkAvailable = isNetworkAvailable
                     val wasWifiConnected = isWifiConnected
                     val wasCellularConnected = isCellularConnected
                     val wasVpnConnected = isVpnConnected
+                    val wasEthernetConnected = isEthernetConnected
 
-                    updateNetworkState()
+                    updateNetworkState(network)
 
-                    // Check if network type changed (also check in network available event)
+                    // Detect network path change
                     if (wasWifiConnected != isWifiConnected ||
                         wasCellularConnected != isCellularConnected ||
-                        wasVpnConnected != isVpnConnected
+                        wasVpnConnected != isVpnConnected ||
+                        wasEthernetConnected != isEthernetConnected ||
+                        !wasNetworkAvailable && isNetworkAvailable
                     ) {
-                        val networkType =
-                            when {
-                                isVpnConnected -> "VPN"
-                                isWifiConnected -> "WiFi"
-                                isCellularConnected -> "Cellular"
-                                else -> "Unknown"
-                            }
-
-                        Log.i(
-                            TAG,
-                            "Network type changed (onAvailable): $networkType (WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected)",
+                        notifyNetworkPathChanged(
+                            reason = "onAvailable (wasAvail=$wasNetworkAvailable nowAvail=$isNetworkAvailable)",
                         )
-
-                        // Notify listener - use Dispatchers.IO to avoid blocking main thread
-                        // Network event handling may require waiting for WebSocket reconnect
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                onNetworkTypeChanged(
-                                    isWifiConnected,
-                                    isCellularConnected,
-                                    isVpnConnected,
-                                )
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to handle network type change: ${e.message}", e)
-                            }
-                        }
                     }
 
-                    // Only trigger network available event when transitioning from unavailable to available
-                    if (!wasNetworkAvailable && isNetworkAvailable) {
-                        Log.i(TAG, "Network connection state changed: unavailable -> available")
-                        // Use Dispatchers.IO to avoid blocking main thread
-                        scope.launch(Dispatchers.IO) { onNetworkAvailable?.invoke() }
-                    }
+                    // Only notify pure availability transitions already handled above
                 }
 
                 override fun onLost(network: Network) {
                     super.onLost(network)
                     Log.w(TAG, "Network lost: $network")
 
-                    // Check if it's a real network connection state change
                     val wasNetworkAvailable = isNetworkAvailable
-                    updateNetworkState()
+                    updateNetworkState(null)
 
-                    // Only trigger network lost event when transitioning from available to unavailable
                     if (wasNetworkAvailable && !isNetworkAvailable) {
-                        Log.w(TAG, "Network connection state changed: available -> unavailable")
-                        // Use Dispatchers.IO to avoid blocking main thread
-                        scope.launch(Dispatchers.IO) { onNetworkLost?.invoke() }
+                        notifyNetworkPathChanged(reason = "onLost (avail→unavail)")
+                    } else if (wasNetworkAvailable) {
+                        // Still have other networks, but path may have changed
+                        notifyNetworkPathChanged(reason = "onLost partial")
                     }
                 }
 
@@ -463,53 +646,34 @@ class NetworkMonitor(
                     val wasWifiConnected = isWifiConnected
                     val wasCellularConnected = isCellularConnected
                     val wasVpnConnected = isVpnConnected
+                    val wasEthernetConnected = isEthernetConnected
+                    val wasExpensive = isExpensive
+                    val wasConstrained = isConstrained
 
-                    isWifiConnected =
-                        networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                    isCellularConnected =
-                        networkCapabilities.hasTransport(
-                            NetworkCapabilities.TRANSPORT_CELLULAR,
-                        )
-                    isVpnConnected =
-                        networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    readCapabilities(networkCapabilities)
 
                     Log.d(
                         TAG,
-                        "Network capability changed - WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected",
+                        "Network capability changed - " +
+                            "WiFi: $isWifiConnected, Cellular: $isCellularConnected, " +
+                            "VPN: $isVpnConnected, Ethernet: $isEthernetConnected, " +
+                            "Expensive: $isExpensive, Constrained: $isConstrained",
                     )
-                    Log.d(TAG, "Network capability details: $networkCapabilities")
 
-                    // Check if network type changed
                     if (wasWifiConnected != isWifiConnected ||
                         wasCellularConnected != isCellularConnected ||
-                        wasVpnConnected != isVpnConnected
+                        wasVpnConnected != isVpnConnected ||
+                        wasEthernetConnected != isEthernetConnected ||
+                        wasExpensive != isExpensive ||
+                        wasConstrained != isConstrained
                     ) {
-                        val networkType =
-                            when {
-                                isVpnConnected -> "VPN"
-                                isWifiConnected -> "WiFi"
-                                isCellularConnected -> "Cellular"
-                                else -> "Unknown"
-                            }
-
+                        val networkType = getNetworkTypeLabel()
                         Log.i(
                             TAG,
-                            "Network type changed: $networkType (WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected)",
+                            "Network type/capability changed: $networkType",
                         )
 
-                        // Notify listener - use Dispatchers.IO to avoid blocking main thread
-                        // Network event handling may require waiting for WebSocket reconnect
-                        scope.launch(Dispatchers.IO) {
-                            try {
-                                onNetworkTypeChanged(
-                                    isWifiConnected,
-                                    isCellularConnected,
-                                    isVpnConnected,
-                                )
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to handle network type change: ${e.message}", e)
-                            }
-                        }
+                        notifyNetworkPathChanged(reason = "capabilitiesChanged → $networkType")
                     }
                 }
 
@@ -525,22 +689,44 @@ class NetworkMonitor(
         connectivityManager?.registerNetworkCallback(networkRequest, networkCallback!!)
     }
 
-    /** Update network state */
-    private fun updateNetworkState() {
-        val activeNetwork = connectivityManager?.activeNetwork
-        val capabilities = activeNetwork?.let { connectivityManager?.getNetworkCapabilities(it) }
+    /** Notify the upper layer about a network path change via the unified callback. */
+    private fun notifyNetworkPathChanged(reason: String) {
+        val snapshot = buildCurrentNetworkSnapshot() ?: return
+        Log.i(
+            TAG,
+            "Network path changed ($reason): seq=${snapshot.sequence}, " +
+                "avail=${snapshot.availability}, " +
+                "wifi=${snapshot.transport.wifi}, cell=${snapshot.transport.cellular}, " +
+                "eth=${snapshot.transport.ethernet}, vpn=${snapshot.transport.vpn}, " +
+                "expensive=${snapshot.isExpensive}, constrained=${snapshot.isConstrained}",
+        )
+
+        scope.launch(Dispatchers.IO) {
+            try {
+                onNetworkPathChanged?.invoke(snapshot)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to handle network path change: ${e.message}", e)
+            }
+        }
+    }
+
+    /** Update network state from capabilities */
+    private fun updateNetworkState(activeNetwork: Network?) {
+        val capabilities =
+            activeNetwork?.let { connectivityManager?.getNetworkCapabilities(it) }
 
         val wasNetworkAvailable = isNetworkAvailable
         isNetworkAvailable = activeNetwork != null && capabilities != null
 
         if (capabilities != null) {
-            isWifiConnected = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-            isCellularConnected = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
-            isVpnConnected = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+            readCapabilities(capabilities)
         } else {
             isWifiConnected = false
             isCellularConnected = false
+            isEthernetConnected = false
             isVpnConnected = false
+            isExpensive = false
+            isConstrained = false
         }
 
         val availabilityChange =
@@ -552,9 +738,41 @@ class NetworkMonitor(
 
         Log.d(
             TAG,
-            "Network state updated - Available: $isNetworkAvailable $availabilityChange, WiFi: $isWifiConnected, Cellular: $isCellularConnected, VPN: $isVpnConnected",
+            "Network state updated - Available: $isNetworkAvailable $availabilityChange, " +
+                "WiFi: $isWifiConnected, Cellular: $isCellularConnected, " +
+                "Ethernet: $isEthernetConnected, VPN: $isVpnConnected",
         )
     }
+
+    /** Read transport and capability flags from NetworkCapabilities. */
+    private fun readCapabilities(capabilities: NetworkCapabilities) {
+        isWifiConnected = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        isCellularConnected = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+        isEthernetConnected = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        isVpnConnected = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+
+        // Metered/expensive: NET_CAPABILITY_NOT_METERED means NOT expensive
+        isExpensive =
+            !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+
+        // Constrained: NET_CAPABILITY_NOT_CONGESTED means NOT constrained (inverse)
+        isConstrained =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED)
+            } else {
+                false
+            }
+    }
+
+    /** Get a human-readable network type label. */
+    private fun getNetworkTypeLabel(): String =
+        when {
+            isVpnConnected -> "VPN"
+            isWifiConnected -> "WiFi"
+            isCellularConnected -> "Cellular"
+            isEthernetConnected -> "Ethernet"
+            else -> "Unknown"
+        }
 
     /** Log current network state */
     private fun logCurrentNetworkState(context: String = "") {
@@ -609,8 +827,14 @@ class NetworkMonitor(
     /** Manually trigger network state check */
     fun triggerNetworkCheck() {
         Log.i(TAG, "Manually triggering network state check")
-        updateNetworkState()
+        val activeNetwork = connectivityManager?.activeNetwork
+        updateNetworkState(activeNetwork)
         logCurrentNetworkState("manual check")
+
+        val snapshot = buildCurrentNetworkSnapshot()
+        if (snapshot != null) {
+            notifyNetworkPathChanged(reason = "manual check")
+        }
     }
 
     /** Check if currently have network connection */
@@ -624,4 +848,13 @@ class NetworkMonitor(
 
     /** Check if currently connected via VPN */
     fun isVpn(): Boolean = isVpnConnected
+
+    /** Check if currently connected via Ethernet */
+    fun isEthernet(): Boolean = isEthernetConnected
+
+    /** Check if current network is metered/expensive */
+    fun isNetworkExpensive(): Boolean = isExpensive
+
+    /** Check if current network is constrained/congested */
+    fun isNetworkConstrained(): Boolean = isConstrained
 }
