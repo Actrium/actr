@@ -1,31 +1,24 @@
 edition = 1
-exports = []
 
 [package]
-name = "echo-client-app"
+name = "EchoApp"
 manufacturer = "acme"
-description = "Android Echo Client"
-authors = []
-license = "Apache-2.0"
-tags = ["dev", "example", "android"]
+version = "0.1.0"
+description = "Actor-RTC EchoApp — Android linked runtime"
 
 [dependencies]
-EchoService = { actr_type = "acme:EchoService:1.0.0" }
+echo = { actr_type = "actrium:EchoService:1.0.0" }
+stream = { actr_type = "actrium:DuplexStreamService:0.1.0" }
 
 [signaling]
-url = "ws://124.71.231.251:9080/signaling/ws"
+url = "ws://192.168.212.112:8080/signaling/ws"
 
 [ais_endpoint]
-url = "http://124.71.231.251:9080/ais"
-
-[webrtc]
-stun_urls = ["stun:124.71.231.251:3487"]
-turn_urls = ["turn:124.71.231.251:3487"]
-force_relay = false
+url = "http://192.168.212.112:8080/ais"
 
 [deployment]
-realm_id = 33554432
-realm_secret = "rs_QYhdcomiuyqcF6mb_o3oWain2QAm0QNj"
+realm_id = 1001
+realm_secret = "rs_TI1u7FdVIrp1giKCd580-Ap42mE7-kmx"
 
 [discovery]
 visible = true
@@ -34,21 +27,29 @@ visible = true
 filter_level = "info"
 tracing_enabled = false
 
+[webrtc]
+force_relay = false
+stun_urls = ["stun:192.168.212.112:3478"]
+turn_urls = ["turn:192.168.212.112:3478"]
+
 [hyper]
 data_dir = "/data/data/io.actorrtc.demo/files/hyper"
 
 [hyper.trust]
 kind = "dev_only"
 
-# ACL configuration
 [acl]
 
 [[acl.rules]]
 permission = "allow"
-type = "acme:EchoService:1.0.0"
+type = "acme:EchoApp:0.1.0"
 
 [[acl.rules]]
 permission = "allow"
-type = "acme:UnifiedActor:1.0.0"
+type = "actrium:EchoService:1.0.0"
+
+[[acl.rules]]
+permission = "allow"
+type = "actrium:DuplexStreamService:0.1.0"
 
 [scripts]

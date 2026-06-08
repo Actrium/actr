@@ -10,8 +10,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.MyUnifiedHandler
 import com.example.UnifiedWorkload
-import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
-import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
 import io.actor_rtc.actr.ActrType
@@ -22,6 +20,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import local.StreamClientOuterClass.ClientStartStreamRequest
+import local.StreamClientOuterClass.ClientStartStreamResponse
 import java.io.File
 
 class ClientActivity : AppCompatActivity() {
@@ -41,6 +41,35 @@ class ClientActivity : AppCompatActivity() {
     private var clientRef: ActrRef? = null
     private var clientSystem: ActrNode? = null
     private lateinit var networkMonitor: NetworkMonitor
+
+    /** Parse ActrType from the [package] section of an actr.toml config file. */
+    private fun parseActrTypeFromConfig(configPath: String): ActrType {
+        val lines = java.io.File(configPath).readLines()
+        var inPackage = false
+        var name = ""
+        var manufacturer = ""
+        var version = ""
+
+        for (line in lines) {
+            val trimmed = line.trim()
+            when {
+                trimmed.startsWith("[package]") -> inPackage = true
+                trimmed.startsWith("[") && inPackage -> break
+                inPackage && trimmed.startsWith("name") ->
+                    name = trimmed.substringAfter("=").trim().removeSurrounding("\"")
+                inPackage && trimmed.startsWith("manufacturer") ->
+                    manufacturer = trimmed.substringAfter("=").trim().removeSurrounding("\"")
+                inPackage && trimmed.startsWith("version") ->
+                    version = trimmed.substringAfter("=").trim().removeSurrounding("\"")
+            }
+        }
+
+        require(manufacturer.isNotBlank() && name.isNotBlank() && version.isNotBlank()) {
+            "Failed to parse [package] section from actr.toml"
+        }
+
+        return ActrType(manufacturer = manufacturer, name = name, version = version)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,8 +138,8 @@ class ClientActivity : AppCompatActivity() {
                 val configPath = copyAssetToInternalStorage("actr.toml")
                 Log.i(TAG, "Config path: $configPath")
 
-                val actorType =
-                    ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
+                val actorType = parseActrTypeFromConfig(configPath)
+                Log.i(TAG, "Actor type from config: ${actorType.manufacturer}:${actorType.name}:${actorType.version}")
                 val workload = UnifiedWorkload(MyUnifiedHandler())
                 val system = linked(configPath, actorType, workload.toDynamicWorkload())
                 clientSystem = system
@@ -221,7 +250,7 @@ class ClientActivity : AppCompatActivity() {
                     ClientStartStreamRequest
                         .newBuilder()
                         .setClientId("android-client")
-                        .setStreamId("stream-${System.currentTimeMillis()}")
+                        .setSessionId("session-${System.currentTimeMillis()}")
                         .setMessageCount(3)
                         .build()
 
