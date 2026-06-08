@@ -187,6 +187,21 @@ pub enum NetworkRecoveryAction {
     ForceReconnect,
 }
 
+fn network_event_needs_lifecycle_barrier(event: &NetworkEvent) -> bool {
+    match event {
+        NetworkEvent::NetworkPathChanged { snapshot } => {
+            snapshot.is_offline() || snapshot.should_restore()
+        }
+        NetworkEvent::AppLifecycleChanged { state } => match state {
+            AppLifecycleState::Background => false,
+            AppLifecycleState::Foreground {
+                background_duration_ms,
+            } => *background_duration_ms >= LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
+        },
+        NetworkEvent::CleanupConnections { .. } | NetworkEvent::ForceReconnect { .. } => true,
+    }
+}
+
 /// Network event processing result
 #[derive(Debug, Clone)]
 pub struct NetworkEventResult {
@@ -434,6 +449,14 @@ impl DefaultNetworkEventProcessor {
         }
     }
 
+    fn lifecycle_barrier(&self) -> Option<NetworkEventBarrier> {
+        self.webrtc_coordinator
+            .as_ref()
+            .map(|coordinator| NetworkEventBarrier {
+                _cleanup_guard: coordinator.cleanup_guard(),
+            })
+    }
+
     /// Check whether an event should be filtered by debounce
     ///
     /// # Returns
@@ -555,6 +578,7 @@ impl DefaultNetworkEventProcessor {
     }
 
     async fn restore_signaling_and_webrtc(&self, reason: &str) -> Result<(), String> {
+        let _cleanup_guard = self.lifecycle_barrier();
         let recovery_targets = if let Some(coordinator) = self.webrtc_coordinator.clone() {
             coordinator.begin_network_recovery(reason).await
         } else {
@@ -592,6 +616,7 @@ impl DefaultNetworkEventProcessor {
     }
 
     async fn process_offline(&self) -> Result<(), String> {
+        let _cleanup_guard = self.lifecycle_barrier();
         tracing::info!("📱 Processing: Network offline");
 
         if let Some(ref coordinator) = self.webrtc_coordinator {
@@ -610,17 +635,10 @@ impl DefaultNetworkEventProcessor {
 #[async_trait::async_trait]
 impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     fn begin_network_event_barrier(&self, event: &NetworkEvent) -> Option<NetworkEventBarrier> {
-        match event {
-            NetworkEvent::NetworkPathChanged { .. }
-            | NetworkEvent::AppLifecycleChanged { .. }
-            | NetworkEvent::CleanupConnections { .. }
-            | NetworkEvent::ForceReconnect { .. } => {
-                self.webrtc_coordinator
-                    .as_ref()
-                    .map(|coordinator| NetworkEventBarrier {
-                        _cleanup_guard: coordinator.cleanup_guard(),
-                    })
-            }
+        if network_event_needs_lifecycle_barrier(event) {
+            self.lifecycle_barrier()
+        } else {
+            None
         }
     }
 
@@ -675,10 +693,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     /// - No debounce check (proactive calls always execute)
     /// - Intended for app lifecycle management, not network event response
     async fn cleanup_connections(&self) -> Result<(), String> {
-        let _cleanup_guard = self
-            .webrtc_coordinator
-            .as_ref()
-            .map(|coordinator| coordinator.cleanup_guard());
+        let _cleanup_guard = self.lifecycle_barrier();
 
         tracing::info!("🧹 Manually cleaning up all connections...");
 
@@ -1051,6 +1066,87 @@ impl Clone for NetworkEventHandle {
         Self {
             event_tx: self.event_tx.clone(),
             result_timeout: self.result_timeout,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(sequence: u64, availability: NetworkAvailability) -> NetworkSnapshot {
+        NetworkSnapshot {
+            sequence,
+            availability,
+            transport: NetworkTransportFlags::default(),
+            is_expensive: false,
+            is_constrained: false,
+        }
+    }
+
+    #[test]
+    fn lifecycle_barrier_is_scoped_to_events_that_change_connections() {
+        let cases = [
+            (
+                NetworkEvent::NetworkPathChanged {
+                    snapshot: snapshot(1, NetworkAvailability::Unavailable),
+                },
+                true,
+            ),
+            (
+                NetworkEvent::NetworkPathChanged {
+                    snapshot: snapshot(2, NetworkAvailability::Available),
+                },
+                true,
+            ),
+            (
+                NetworkEvent::NetworkPathChanged {
+                    snapshot: snapshot(3, NetworkAvailability::Unknown),
+                },
+                false,
+            ),
+            (
+                NetworkEvent::AppLifecycleChanged {
+                    state: AppLifecycleState::Background,
+                },
+                false,
+            ),
+            (
+                NetworkEvent::AppLifecycleChanged {
+                    state: AppLifecycleState::Foreground {
+                        background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS - 1,
+                    },
+                },
+                false,
+            ),
+            (
+                NetworkEvent::AppLifecycleChanged {
+                    state: AppLifecycleState::Foreground {
+                        background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
+                    },
+                },
+                true,
+            ),
+            (
+                NetworkEvent::CleanupConnections {
+                    reason: CleanupReason::ManualReset,
+                },
+                true,
+            ),
+            (
+                NetworkEvent::ForceReconnect {
+                    reason: ReconnectReason::ManualReconnect,
+                },
+                true,
+            ),
+        ];
+
+        for (event, expected) in cases {
+            assert_eq!(
+                network_event_needs_lifecycle_barrier(&event),
+                expected,
+                "{event:?}"
+            );
         }
     }
 }
