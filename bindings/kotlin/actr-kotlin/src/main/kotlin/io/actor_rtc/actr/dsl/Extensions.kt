@@ -3,9 +3,13 @@ package io.actor_rtc.actr.dsl
 
 import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.ActrId
+import io.actor_rtc.actr.AppLifecycleState
+import io.actor_rtc.actr.CleanupReason
 import io.actor_rtc.actr.ErrorKind
 import io.actor_rtc.actr.NetworkEventResult
+import io.actor_rtc.actr.NetworkSnapshot
 import io.actor_rtc.actr.PayloadType
+import io.actor_rtc.actr.ReconnectReason
 import io.actor_rtc.actr.actrErrorIsRetryable
 import io.actor_rtc.actr.actrErrorKind
 import io.actor_rtc.actr.actrErrorRequiresDlq
@@ -86,52 +90,72 @@ suspend fun ActrRef.discoverCatching(
 // ============================================================================
 
 /**
- * Handle network available event and wrap the result.
+ * Handle network path changed event and wrap the result.
  *
  * Example:
  * ```kotlin
- * val result = networkHandle.handleNetworkAvailableCatching()
+ * val result = networkHandle.handleNetworkPathChangedCatching(snapshot)
  * result.onSuccess { eventResult ->
- *     println("Network available handled: $eventResult")
+ *     println("Network path changed handled: $eventResult")
  * }.onFailure { error ->
- *     println("Failed to handle network available: $error")
+ *     println("Failed to handle network path changed: $error")
  * }
  * ```
  */
-suspend fun NetworkEventHandle.handleNetworkAvailableCatching(): Result<NetworkEventResult> = runCatching { handleNetworkAvailable() }
+suspend fun NetworkEventHandle.handleNetworkPathChangedCatching(
+    snapshot: NetworkSnapshot,
+): Result<NetworkEventResult> = runCatching { handleNetworkPathChanged(snapshot) }
 
 /**
- * Handle network lost event and wrap the result.
+ * Handle app lifecycle changed event and wrap the result.
  *
  * Example:
  * ```kotlin
- * val result = networkHandle.handleNetworkLostCatching()
+ * val result = networkHandle.handleAppLifecycleChangedCatching(state)
  * result.onSuccess { eventResult ->
- *     println("Network lost handled: $eventResult")
+ *     println("App lifecycle changed handled: $eventResult")
  * }.onFailure { error ->
- *     println("Failed to handle network lost: $error")
+ *     println("Failed to handle app lifecycle changed: $error")
  * }
  * ```
  */
-suspend fun NetworkEventHandle.handleNetworkLostCatching(): Result<NetworkEventResult> = runCatching { handleNetworkLost() }
+suspend fun NetworkEventHandle.handleAppLifecycleChangedCatching(
+    state: AppLifecycleState,
+): Result<NetworkEventResult> = runCatching { handleAppLifecycleChanged(state) }
 
 /**
- * Handle network type changed event and wrap the result.
+ * Cleanup all connections and wrap the result.
  *
  * Example:
  * ```kotlin
- * val result = networkHandle.handleNetworkTypeChangedCatching(true, false)
+ * val result = networkHandle.cleanupConnectionsCatching(reason)
  * result.onSuccess { eventResult ->
- *     println("Network type changed handled: $eventResult")
+ *     println("Cleanup connections handled: $eventResult")
  * }.onFailure { error ->
- *     println("Failed to handle network type changed: $error")
+ *     println("Failed to cleanup connections: $error")
  * }
  * ```
  */
-suspend fun NetworkEventHandle.handleNetworkTypeChangedCatching(
-    isWifi: Boolean,
-    isCellular: Boolean,
-): Result<NetworkEventResult> = runCatching { handleNetworkTypeChanged(isWifi, isCellular) }
+suspend fun NetworkEventHandle.cleanupConnectionsCatching(
+    reason: CleanupReason,
+): Result<NetworkEventResult> = runCatching { cleanupConnections(reason) }
+
+/**
+ * Force reconnect and wrap the result.
+ *
+ * Example:
+ * ```kotlin
+ * val result = networkHandle.forceReconnectCatching(reason)
+ * result.onSuccess { eventResult ->
+ *     println("Force reconnect handled: $eventResult")
+ * }.onFailure { error ->
+ *     println("Failed to force reconnect: $error")
+ * }
+ * ```
+ */
+suspend fun NetworkEventHandle.forceReconnectCatching(
+    reason: ReconnectReason,
+): Result<NetworkEventResult> = runCatching { forceReconnect(reason) }
 
 // ============================================================================
 // Exception Extensions

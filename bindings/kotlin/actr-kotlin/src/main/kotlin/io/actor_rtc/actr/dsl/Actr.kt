@@ -34,7 +34,15 @@ import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrRefWrapper
 import io.actor_rtc.actr.ActrType
+import io.actor_rtc.actr.AppLifecycleState
+import io.actor_rtc.actr.CleanupReason
+import io.actor_rtc.actr.NetworkAvailability
+import io.actor_rtc.actr.NetworkEvent
 import io.actor_rtc.actr.NetworkEventHandleWrapper
+import io.actor_rtc.actr.NetworkEventResult
+import io.actor_rtc.actr.NetworkSnapshot
+import io.actor_rtc.actr.NetworkTransportFlags
+import io.actor_rtc.actr.ReconnectReason
 import io.actor_rtc.actr.WorkloadLifecycleBridge
 import io.actor_rtc.actr.ActrNode as ActrNodeGenerated
 
@@ -137,16 +145,24 @@ suspend fun linked(
 /**
  * Create a network event handle for platform callbacks.
  *
- * This handle is used to notify the actor runtime about network state changes,
- * which is important for WebRTC connection management on mobile platforms.
+ * This handle is used to notify the actor runtime about network path changes,
+ * app lifecycle transitions, and connection management, which are important
+ * for WebRTC connection management on mobile platforms.
  *
  * Example:
  * ```kotlin
  * val node = createActrNode("config.toml", "dist/app.actr")
  * val networkHandle = node.createNetworkEventHandle()
  *
- * // Notify when network becomes available
- * networkHandle.handleNetworkAvailable()
+ * // Notify when network path changes
+ * val snapshot = NetworkSnapshot(
+ *     sequence = 1uL,
+ *     availability = NetworkAvailability.AVAILABLE,
+ *     transport = NetworkTransportFlags(wifi = true, cellular = false, ethernet = false, vpn = false, other = false),
+ *     isExpensive = false,
+ *     isConstrained = false,
+ * )
+ * networkHandle.handleNetworkPathChanged(snapshot)
  * ```
  *
  * @return A new NetworkEventHandle instance
