@@ -293,6 +293,12 @@ detect_conventional_bump() {
   echo "$highest"
 }
 
+release_prepare_should_skip_current_head() {
+  local message
+  message=$(git -C "$ORIGINAL_REPO_ROOT" log -1 --pretty=%B)
+  grep -qE '(^|[[:space:]])chore\(release\):' <<<"$message"
+}
+
 latest_release_tag() {
   git -C "$ORIGINAL_REPO_ROOT" describe \
     --tags \
@@ -819,6 +825,11 @@ run_validation_suite() {
   else
     log_info "Skipping Python package validation"
   fi
+}
+
+prepare_cli_publish_assets() {
+  log_info "Generating CLI web runtime assets for actr-cli publish"
+  (cd "$WORK_REPO_ROOT" && bash bindings/web/scripts/sync-cli-assets.sh --build)
 }
 
 append_skipped_components() {
@@ -1445,6 +1456,10 @@ publish_rust_package() {
     return
   fi
 
+  if [[ "$package" == "actr-cli" ]]; then
+    prepare_cli_publish_assets
+  fi
+
   local publish_log
   publish_log=$(mktemp)
   if ! (
@@ -1783,6 +1798,11 @@ main() {
   parse_args "$@"
 
   ORIGINAL_REPO_ROOT=$(git rev-parse --show-toplevel)
+
+  if [[ "$AUTO_VERSION" == true && "$PREPARE_ONLY" == true ]] && release_prepare_should_skip_current_head; then
+    log_info "Current HEAD is a release commit; skipping automatic release prepare"
+    exit 0
+  fi
 
   if [[ "$AUTO_VERSION" == true ]]; then
     if [[ "$PREPARE_ONLY" == true ]]; then
