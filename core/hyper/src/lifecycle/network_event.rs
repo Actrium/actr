@@ -73,7 +73,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::transport::PeerTransport;
-use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
+use crate::wire::webrtc::{CleanupGuard, SignalingClient, WebRtcCoordinator};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -84,6 +84,12 @@ const NETWORK_EVENT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNALING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(super) const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
 static NEXT_NETWORK_EVENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Keeps outbound sends behind a network-event lifecycle barrier while the
+/// reconciler settles and processes a queued batch.
+pub struct NetworkEventBarrier {
+    _cleanup_guard: CleanupGuard,
+}
 
 /// Mobile network path snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -222,6 +228,12 @@ impl NetworkEventResult {
 /// Defines the processing logic for network events; can be custom-implemented by users
 #[async_trait::async_trait]
 pub trait NetworkEventProcessor: Send + Sync {
+    /// Enter a lifecycle barrier as soon as a queued event is observed by the
+    /// reconciler. The default is no barrier for custom processors.
+    fn begin_network_event_barrier(&self, _event: &NetworkEvent) -> Option<NetworkEventBarrier> {
+        None
+    }
+
     /// Process network available event
     ///
     /// # Returns
@@ -597,6 +609,21 @@ impl DefaultNetworkEventProcessor {
 
 #[async_trait::async_trait]
 impl NetworkEventProcessor for DefaultNetworkEventProcessor {
+    fn begin_network_event_barrier(&self, event: &NetworkEvent) -> Option<NetworkEventBarrier> {
+        match event {
+            NetworkEvent::NetworkPathChanged { .. }
+            | NetworkEvent::AppLifecycleChanged { .. }
+            | NetworkEvent::CleanupConnections { .. }
+            | NetworkEvent::ForceReconnect { .. } => {
+                self.webrtc_coordinator
+                    .as_ref()
+                    .map(|coordinator| NetworkEventBarrier {
+                        _cleanup_guard: coordinator.cleanup_guard(),
+                    })
+            }
+        }
+    }
+
     /// Process network available event
     async fn process_network_available(&self) -> Result<(), String> {
         // Debounce check
@@ -800,6 +827,10 @@ pub async fn run_network_event_reconciler(
                     event = ?first_request.event,
                     "network_event.reconciler.received"
                 );
+                let mut event_barriers = Vec::new();
+                if let Some(barrier) = processor.begin_network_event_barrier(&first_request.event) {
+                    event_barriers.push(barrier);
+                }
                 let mut requests = vec![first_request];
                 let settle = tokio::time::sleep(NETWORK_EVENT_SETTLE_WINDOW);
                 tokio::pin!(settle);
@@ -811,6 +842,9 @@ pub async fn run_network_event_reconciler(
                                 event = ?next_request.event,
                                 "network_event.reconciler.coalesced"
                             );
+                            if let Some(barrier) = processor.begin_network_event_barrier(&next_request.event) {
+                                event_barriers.push(barrier);
+                            }
                             requests.push(next_request);
                         }
                         _ = &mut settle => {
@@ -831,6 +865,9 @@ pub async fn run_network_event_reconciler(
                         event = ?next_request.event,
                         "network_event.reconciler.coalesced"
                     );
+                    if let Some(barrier) = processor.begin_network_event_barrier(&next_request.event) {
+                        event_barriers.push(barrier);
+                    }
                     requests.push(next_request);
                 }
 
@@ -853,6 +890,7 @@ pub async fn run_network_event_reconciler(
                 );
 
                 let results = process_network_event_batch(events, processor.clone()).await;
+                drop(event_barriers);
 
                 for (request, result) in requests.into_iter().zip(results) {
                     if request.result_tx.send(result).is_err() {

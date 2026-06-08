@@ -17,13 +17,16 @@
 //!   → sends IceRestartRequest → Offerer receives → wakes backoff → immediate retry
 
 use actr_hyper::lifecycle::{
-    DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent, NetworkEventProcessor,
-    NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags, ReconnectReason,
-    process_network_event_batch, select_network_recovery_action,
+    CleanupReason, DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent,
+    NetworkEventProcessor, NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags,
+    ReconnectReason, process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::test_support::TestHarness;
 use actr_hyper::transport::{ConnectionEvent, ConnectionState, Dest};
-use actr_protocol::{ActrId, PayloadType};
+use actr_protocol::{
+    ActrId, PayloadType, SignalingEnvelope, actr_relay, session_description::Type as SdpType,
+    signaling_envelope,
+};
 use std::time::{Duration, Instant};
 
 /// Initialize tracing for test output
@@ -274,6 +277,60 @@ async fn wait_for_peer_state(
                 );
             }
         }
+    }
+}
+
+fn count_sdp_relays(
+    messages: &[SignalingEnvelope],
+    source_id: &ActrId,
+    target_id: &ActrId,
+    sdp_type: SdpType,
+) -> usize {
+    messages
+        .iter()
+        .filter(|envelope| {
+            let Some(signaling_envelope::Flow::ActrRelay(relay)) = envelope.flow.as_ref() else {
+                return false;
+            };
+            if &relay.source != source_id || &relay.target != target_id {
+                return false;
+            }
+            let Some(actr_relay::Payload::SessionDescription(sd)) = relay.payload.as_ref() else {
+                return false;
+            };
+            sd.r#type() == sdp_type
+        })
+        .count()
+}
+
+async fn wait_for_sdp_relay_count(
+    harness: &TestHarness,
+    source_id: &ActrId,
+    target_id: &ActrId,
+    sdp_type: SdpType,
+    min_count: usize,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+
+    loop {
+        let messages = harness.server.received_messages().await;
+        let count = count_sdp_relays(&messages, source_id, target_id, sdp_type);
+        if count >= min_count {
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {:?} SDP relays from {} to {}; count={}, expected>={}",
+            sdp_type,
+            source_id,
+            target_id,
+            count,
+            min_count
+        );
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
@@ -529,6 +586,272 @@ impl LateOldSessionEvent {
             }
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_answerer_wait_timeout_does_not_force_local_offer() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(3100).await;
+    harness.add_peer(3200).await;
+    harness.server.drop_next_offers(1);
+
+    let offerer_id = harness.peer(3100).id.clone();
+    let answerer_id = harness.peer(3200).id.clone();
+
+    let offerer = harness.peer(3100).coordinator.clone();
+    let answerer_for_task = answerer_id.clone();
+    let initiate_handle =
+        tokio::spawn(async move { offerer.initiate_connection(&answerer_for_task).await });
+
+    tokio::time::sleep(Duration::from_secs(12)).await;
+    initiate_handle.abort();
+
+    let messages = harness.server.received_messages().await;
+    let offerer_offers = count_sdp_relays(&messages, &offerer_id, &answerer_id, SdpType::Offer);
+    assert_eq!(
+        offerer_offers, 1,
+        "dropped initial offer should be the only offer sent by the assigned offerer"
+    );
+
+    let answerer_offers = count_sdp_relays(&messages, &answerer_id, &offerer_id, SdpType::Offer);
+    assert_eq!(
+        answerer_offers, 0,
+        "answerer must not locally flip to offerer after wait timeout"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_restore_batch_does_not_restart_never_ready_initial_session() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    let source_id = harness.peer(100).id.clone();
+    let target_id = harness.peer(200).id.clone();
+    let _echo = harness
+        .peer(200)
+        .start_echo_responder("restore_initial_session_echo");
+    let _recv = harness
+        .peer(100)
+        .start_response_receiver("restore_initial_session_recv");
+
+    harness
+        .server
+        .delay_ice_candidates_for(Duration::from_millis(800));
+    let request = harness
+        .peer(100)
+        .spawn_request(200, "restore-while-initial-connecting", 12_000);
+
+    wait_for_sdp_relay_count(
+        &harness,
+        &source_id,
+        &target_id,
+        SdpType::Offer,
+        1,
+        Duration::from_secs(2),
+    )
+    .await;
+    harness.reset_counters();
+
+    let results = process_network_event_batch(
+        vec![online_event(1), wifi_event(2)],
+        harness.peer(100).network_processor(),
+    )
+    .await;
+    assert_eq!(results.len(), 2);
+    assert!(results.iter().all(|result| result.success));
+
+    assert!(
+        harness
+            .peer(100)
+            .coordinator
+            .peer_recovery_status(&target_id)
+            .await
+            .is_none(),
+        "network restore must not guard a session that has never reached ICE/DataChannel ready"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        0,
+        "network restore must not send an ICE restart offer for a never-ready initial session"
+    );
+
+    let response = tokio::time::timeout(Duration::from_secs(12), request)
+        .await
+        .expect("initial request should complete once delayed ICE candidates arrive")
+        .expect("initial request task should not panic")
+        .expect("initial request should succeed without recovery restart");
+    assert_eq!(&response[..], b"pong");
+    assert!(
+        harness.server.delayed_ice_candidate_count() > 0,
+        "test must delay at least one ICE candidate"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_lost_then_restore_does_not_restart_never_ready_initial_session() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    let source_id = harness.peer(100).id.clone();
+    let target_id = harness.peer(200).id.clone();
+    let _echo = harness
+        .peer(200)
+        .start_echo_responder("lost_initial_session_echo");
+    let _recv = harness
+        .peer(100)
+        .start_response_receiver("lost_initial_session_recv");
+
+    harness
+        .server
+        .delay_ice_candidates_for(Duration::from_millis(800));
+    let request = harness
+        .peer(100)
+        .spawn_request(200, "lost-while-initial-connecting", 12_000);
+
+    wait_for_sdp_relay_count(
+        &harness,
+        &source_id,
+        &target_id,
+        SdpType::Offer,
+        1,
+        Duration::from_secs(2),
+    )
+    .await;
+    harness.reset_counters();
+
+    let lost_results = process_network_event_batch(
+        vec![offline_event(1)],
+        harness.peer(100).network_processor(),
+    )
+    .await;
+    assert_eq!(lost_results.len(), 1);
+    assert!(lost_results.iter().all(|result| result.success));
+
+    let restore_results =
+        process_network_event_batch(vec![online_event(2)], harness.peer(100).network_processor())
+            .await;
+    assert_eq!(restore_results.len(), 1);
+    assert!(restore_results.iter().all(|result| result.success));
+
+    assert!(
+        harness
+            .peer(100)
+            .coordinator
+            .peer_recovery_status(&target_id)
+            .await
+            .is_none(),
+        "Lost/Available must not leave a recovery guard on a never-ready initial session"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        0,
+        "Lost/Available must not trigger ICE restart for a never-ready initial session"
+    );
+
+    let response = tokio::time::timeout(Duration::from_secs(12), request)
+        .await
+        .expect("initial request should complete once delayed ICE candidates arrive")
+        .expect("initial request task should not panic")
+        .expect("initial request should succeed without recovery restart");
+    assert_eq!(&response[..], b"pong");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_cleanup_then_restore_does_not_restart_fresh_initial_session() {
+    init_tracing();
+
+    let mut harness = TestHarness::new().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+
+    tracing::info!("Step 1: Establish and then cleanup the old mature connection");
+    harness.connect(100, 200).await;
+    let source_id = harness.peer(100).id.clone();
+    let target_id = harness.peer(200).id.clone();
+    let old_offer_count = count_sdp_relays(
+        &harness.server.received_messages().await,
+        &source_id,
+        &target_id,
+        SdpType::Offer,
+    );
+
+    let cleanup_results = process_network_event_batch(
+        vec![NetworkEvent::CleanupConnections {
+            reason: CleanupReason::ManualReset,
+        }],
+        harness.peer(100).network_processor(),
+    )
+    .await;
+    assert_eq!(cleanup_results.len(), 1);
+    assert!(cleanup_results.iter().all(|result| result.success));
+    harness
+        .peer(100)
+        .signaling_client
+        .connect_once()
+        .await
+        .expect("source signaling should reconnect after cleanup");
+
+    tracing::info!("Step 2: Start a fresh initial connection after cleanup");
+    harness
+        .server
+        .delay_ice_candidates_for(Duration::from_millis(800));
+    let request =
+        harness
+            .peer(100)
+            .spawn_request(200, "cleanup-then-restore-fresh-initial", 12_000);
+
+    wait_for_sdp_relay_count(
+        &harness,
+        &source_id,
+        &target_id,
+        SdpType::Offer,
+        old_offer_count + 1,
+        Duration::from_secs(2),
+    )
+    .await;
+    harness.reset_counters();
+
+    tracing::info!("Step 3: A delayed restore batch must not ICE-restart the fresh session");
+    let restore_results = process_network_event_batch(
+        vec![online_event(1), wifi_event(2)],
+        harness.peer(100).network_processor(),
+    )
+    .await;
+    assert_eq!(restore_results.len(), 2);
+    assert!(restore_results.iter().all(|result| result.success));
+
+    assert!(
+        harness
+            .peer(100)
+            .coordinator
+            .peer_recovery_status(&target_id)
+            .await
+            .is_none(),
+        "restore after cleanup must not guard the fresh never-ready session"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        harness.ice_restart_count(),
+        0,
+        "restore after cleanup must not send an ICE restart offer for the fresh initial session"
+    );
+
+    let response = tokio::time::timeout(Duration::from_secs(12), request)
+        .await
+        .expect("fresh request should complete once delayed ICE candidates arrive")
+        .expect("fresh request task should not panic")
+        .expect("fresh request should succeed without recovery restart");
+    assert_eq!(&response[..], b"pong");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
