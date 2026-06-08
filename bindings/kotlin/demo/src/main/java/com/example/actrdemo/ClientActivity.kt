@@ -10,8 +10,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.MyUnifiedHandler
 import com.example.UnifiedWorkload
-import local.StreamClientOuterClass.ClientStartStreamRequest
-import local.StreamClientOuterClass.ClientStartStreamResponse
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
 import io.actor_rtc.actr.ActrType
@@ -22,6 +20,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import local.StreamClientOuterClass.ClientStartStreamRequest
+import local.StreamClientOuterClass.ClientStartStreamResponse
 import java.io.File
 
 class ClientActivity : AppCompatActivity() {

@@ -51,22 +51,25 @@ class MyUnifiedHandler : UnifiedHandler {
             Log.i(TAG, "🎯 discovered server: ${serverId.serialNumber}")
 
             // Step 1: Call StartDuplexStream RPC on the server
-            val clientStreamId = "client-${sessionId}"
-            val startReq = local.DataStreamPeer.StartDuplexStreamRequest.newBuilder()
-                .setSessionId(sessionId)
-                .setClientToServiceStreamId(clientStreamId)
-                .setClientChunkCount(messageCount.toInt())
-                .setPayloadMode(local.DataStreamPeer.StreamPayloadMode.STREAM_RELIABLE)
-                .setNote("Android duplex stream test")
-                .build()
+            val clientStreamId = "client-$sessionId"
+            val startReq =
+                local.DataStreamPeer.StartDuplexStreamRequest
+                    .newBuilder()
+                    .setSessionId(sessionId)
+                    .setClientToServiceStreamId(clientStreamId)
+                    .setClientChunkCount(messageCount.toInt())
+                    .setPayloadMode(local.DataStreamPeer.StreamPayloadMode.STREAM_RELIABLE)
+                    .setNote("Android duplex stream test")
+                    .build()
 
-            val startRespPayload = ctx.callRaw(
-                serverId,
-                "local.DuplexStreamService.StartDuplexStream",
-                PayloadType.RPC_RELIABLE,
-                startReq.toByteArray(),
-                30000L,
-            )
+            val startRespPayload =
+                ctx.callRaw(
+                    serverId,
+                    "local.DuplexStreamService.StartDuplexStream",
+                    PayloadType.RPC_RELIABLE,
+                    startReq.toByteArray(),
+                    30000L,
+                )
             val startResp = local.DataStreamPeer.StartDuplexStreamResponse.parseFrom(startRespPayload)
             Log.i(
                 TAG,
@@ -100,13 +103,14 @@ class MyUnifiedHandler : UnifiedHandler {
             CoroutineScope(Dispatchers.IO).launch {
                 for (i in 1..messageCount) {
                     val message = "[client $clientId] message $i"
-                    val dataStream = DataStream(
-                        streamId = clientStreamId,
-                        sequence = i.toULong(),
-                        payload = message.toByteArray(Charsets.UTF_8),
-                        metadata = emptyList(),
-                        timestampMs = System.currentTimeMillis(),
-                    )
+                    val dataStream =
+                        DataStream(
+                            streamId = clientStreamId,
+                            sequence = i.toULong(),
+                            payload = message.toByteArray(Charsets.UTF_8),
+                            metadata = emptyList(),
+                            timestampMs = System.currentTimeMillis(),
+                        )
 
                     Log.i(TAG, "client sending $i/$messageCount: $message")
                     try {
@@ -123,18 +127,21 @@ class MyUnifiedHandler : UnifiedHandler {
 
                 // Step 4: Call FinishDuplexStream
                 try {
-                    val finishReq = local.DataStreamPeer.FinishDuplexStreamRequest.newBuilder()
-                        .setSessionId(sessionId)
-                        .setClientToServiceStreamId(clientStreamId)
-                        .setServiceToClientStreamId(serverStreamId)
-                        .build()
-                    val finishRespPayload = ctx.callRaw(
-                        serverId,
-                        "local.DuplexStreamService.FinishDuplexStream",
-                        PayloadType.RPC_RELIABLE,
-                        finishReq.toByteArray(),
-                        30000L,
-                    )
+                    val finishReq =
+                        local.DataStreamPeer.FinishDuplexStreamRequest
+                            .newBuilder()
+                            .setSessionId(sessionId)
+                            .setClientToServiceStreamId(clientStreamId)
+                            .setServiceToClientStreamId(serverStreamId)
+                            .build()
+                    val finishRespPayload =
+                        ctx.callRaw(
+                            serverId,
+                            "local.DuplexStreamService.FinishDuplexStream",
+                            PayloadType.RPC_RELIABLE,
+                            finishReq.toByteArray(),
+                            30000L,
+                        )
                     val finishResp =
                         local.DataStreamPeer.FinishDuplexStreamResponse.parseFrom(finishRespPayload)
                     Log.i(
@@ -147,13 +154,15 @@ class MyUnifiedHandler : UnifiedHandler {
                 }
             }
 
-            return local.StreamClientOuterClass.ClientStartStreamResponse.newBuilder()
+            return local.StreamClientOuterClass.ClientStartStreamResponse
+                .newBuilder()
                 .setAccepted(true)
                 .setMessage("started duplex stream: $sessionId")
                 .build()
         } catch (e: Exception) {
             Log.e(TAG, "❌ start_stream failed: ${e.message}", e)
-            return local.StreamClientOuterClass.ClientStartStreamResponse.newBuilder()
+            return local.StreamClientOuterClass.ClientStartStreamResponse
+                .newBuilder()
                 .setAccepted(false)
                 .setMessage("Failed to start stream: ${e.message}")
                 .build()
