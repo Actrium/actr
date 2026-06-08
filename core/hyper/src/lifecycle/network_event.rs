@@ -827,10 +827,7 @@ pub async fn run_network_event_reconciler(
                     event = ?first_request.event,
                     "network_event.reconciler.received"
                 );
-                let mut event_barriers = Vec::new();
-                if let Some(barrier) = processor.begin_network_event_barrier(&first_request.event) {
-                    event_barriers.push(barrier);
-                }
+                let mut event_barrier = processor.begin_network_event_barrier(&first_request.event);
                 let mut requests = vec![first_request];
                 let settle = tokio::time::sleep(NETWORK_EVENT_SETTLE_WINDOW);
                 tokio::pin!(settle);
@@ -842,8 +839,8 @@ pub async fn run_network_event_reconciler(
                                 event = ?next_request.event,
                                 "network_event.reconciler.coalesced"
                             );
-                            if let Some(barrier) = processor.begin_network_event_barrier(&next_request.event) {
-                                event_barriers.push(barrier);
+                            if event_barrier.is_none() {
+                                event_barrier = processor.begin_network_event_barrier(&next_request.event);
                             }
                             requests.push(next_request);
                         }
@@ -865,8 +862,8 @@ pub async fn run_network_event_reconciler(
                         event = ?next_request.event,
                         "network_event.reconciler.coalesced"
                     );
-                    if let Some(barrier) = processor.begin_network_event_barrier(&next_request.event) {
-                        event_barriers.push(barrier);
+                    if event_barrier.is_none() {
+                        event_barrier = processor.begin_network_event_barrier(&next_request.event);
                     }
                     requests.push(next_request);
                 }
@@ -890,7 +887,7 @@ pub async fn run_network_event_reconciler(
                 );
 
                 let results = process_network_event_batch(events, processor.clone()).await;
-                drop(event_barriers);
+                drop(event_barrier);
 
                 for (request, result) in requests.into_iter().zip(results) {
                     if request.result_tx.send(result).is_err() {
