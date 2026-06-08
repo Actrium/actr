@@ -138,15 +138,33 @@ suspend fun linked(
  * Create a network event handle for platform callbacks.
  *
  * This handle is used to notify the actor runtime about network state changes,
- * which is important for WebRTC connection management on mobile platforms.
+ * app lifecycle transitions, and explicit cleanup/reconnect operations, which
+ * are important for WebRTC connection management on mobile platforms.
  *
  * Example:
  * ```kotlin
  * val node = createActrNode("config.toml", "dist/app.actr")
  * val networkHandle = node.createNetworkEventHandle()
  *
- * // Notify when network becomes available
- * networkHandle.handleNetworkAvailable()
+ * // Notify full network path change (replaces old handleNetworkAvailable/Lost/TypeChanged)
+ * networkHandle.handleNetworkPathChanged(
+ *     NetworkSnapshot(
+ *         sequence = 1uL,
+ *         availability = NetworkAvailability.AVAILABLE,
+ *         transport = NetworkTransportFlags(wifi = true, cellular = false, ethernet = false, vpn = false, other = false),
+ *         isExpensive = false,
+ *         isConstrained = false,
+ *     )
+ * )
+ *
+ * // Notify app lifecycle (background/foreground)
+ * networkHandle.handleAppLifecycleChanged(AppLifecycleState.Background)
+ *
+ * // Cleanup connections (no reconnect)
+ * networkHandle.cleanupConnections(CleanupReason.APP_TERMINATING)
+ *
+ * // Force reconnect
+ * networkHandle.forceReconnect(ReconnectReason.MANUAL_RECONNECT)
  * ```
  *
  * @return A new NetworkEventHandle instance

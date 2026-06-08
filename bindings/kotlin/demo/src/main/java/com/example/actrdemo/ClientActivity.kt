@@ -13,6 +13,7 @@ import com.example.UnifiedWorkload
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
 import io.actor_rtc.actr.ActrType
+import io.actor_rtc.actr.CleanupReason
 import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.dsl.*
 import io.actorrtc.demo.R
@@ -297,10 +298,25 @@ class ClientActivity : AppCompatActivity() {
         scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::networkMonitor.isInitialized) {
+            networkMonitor.onAppForeground()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (::networkMonitor.isInitialized) {
+            networkMonitor.onAppBackground()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
 
         if (::networkMonitor.isInitialized) {
+            networkMonitor.cleanupConnections(CleanupReason.APP_TERMINATING)
             networkMonitor.stopMonitoring()
         }
 
