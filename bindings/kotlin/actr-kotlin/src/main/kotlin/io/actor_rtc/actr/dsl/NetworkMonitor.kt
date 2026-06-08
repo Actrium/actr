@@ -514,9 +514,7 @@ class NetworkMonitor
 
                 // After returning to foreground, also report current network snapshot
                 val snapshot = buildCurrentNetworkSnapshot()
-                if (snapshot != null) {
-                    onNetworkPathChanged?.invoke(snapshot)
-                }
+                onNetworkPathChanged?.invoke(snapshot)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to handle app foreground: ${e.message}", e)
             }
@@ -557,8 +555,8 @@ class NetworkMonitor
     // ---- NetworkSnapshot Construction ----
 
     /** Build a NetworkSnapshot from the current network state. */
-    private fun buildCurrentNetworkSnapshot(): NetworkSnapshot? {
-        return NetworkSnapshot(
+    private fun buildCurrentNetworkSnapshot(): NetworkSnapshot =
+        NetworkSnapshot(
             sequence = sequenceCounter.incrementAndGet().toULong(),
             availability =
                 if (isNetworkAvailable) {
@@ -577,7 +575,6 @@ class NetworkMonitor
             isExpensive = isExpensive,
             isConstrained = isConstrained,
         )
-    }
 
     /** Setup network callback */
     private fun setupNetworkCallback() {
@@ -605,7 +602,7 @@ class NetworkMonitor
                     val wasVpnConnected = isVpnConnected
                     val wasEthernetConnected = isEthernetConnected
 
-                    updateNetworkState(network)
+                    updateNetworkState()
 
                     // Detect network path change
                     if (wasWifiConnected != isWifiConnected ||
@@ -627,7 +624,7 @@ class NetworkMonitor
                     Log.w(TAG, "Network lost: $network")
 
                     val wasNetworkAvailable = isNetworkAvailable
-                    updateNetworkState(null)
+                    updateNetworkState()
 
                     if (wasNetworkAvailable && !isNetworkAvailable) {
                         notifyNetworkPathChanged(reason = "onLost (avail→unavail)")
@@ -691,7 +688,7 @@ class NetworkMonitor
 
     /** Notify the upper layer about a network path change via the unified callback. */
     private fun notifyNetworkPathChanged(reason: String) {
-        val snapshot = buildCurrentNetworkSnapshot() ?: return
+        val snapshot = buildCurrentNetworkSnapshot()
         Log.i(
             TAG,
             "Network path changed ($reason): seq=${snapshot.sequence}, " +
@@ -710,8 +707,9 @@ class NetworkMonitor
         }
     }
 
-    /** Update network state from capabilities */
-    private fun updateNetworkState(activeNetwork: Network?) {
+    /** Update network state from current active network */
+    private fun updateNetworkState() {
+        val activeNetwork = connectivityManager?.activeNetwork
         val capabilities =
             activeNetwork?.let { connectivityManager?.getNetworkCapabilities(it) }
 
@@ -827,14 +825,10 @@ class NetworkMonitor
     /** Manually trigger network state check */
     fun triggerNetworkCheck() {
         Log.i(TAG, "Manually triggering network state check")
-        val activeNetwork = connectivityManager?.activeNetwork
-        updateNetworkState(activeNetwork)
+        updateNetworkState()
         logCurrentNetworkState("manual check")
 
-        val snapshot = buildCurrentNetworkSnapshot()
-        if (snapshot != null) {
-            notifyNetworkPathChanged(reason = "manual check")
-        }
+        notifyNetworkPathChanged(reason = "manual check")
     }
 
     /** Check if currently have network connection */
