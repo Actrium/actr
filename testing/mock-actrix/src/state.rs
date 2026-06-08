@@ -4,8 +4,9 @@
 //! persistence would only add brittleness.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Instant;
 
 use actr_protocol::{ActrId, ActrType, ServiceSpec, SignalingEnvelope};
 use axum::extract::ws;
@@ -104,6 +105,9 @@ pub struct MockState {
     pub ice_restart_request_count: Arc<AtomicU32>,
     pub pause_forwarding: Arc<AtomicBool>,
     pub ice_candidate_drop_count: Arc<AtomicU32>,
+    pub offer_drop_count: Arc<AtomicU32>,
+    pub ice_candidate_delay_until: Arc<StdMutex<Option<Instant>>>,
+    pub ice_candidate_delay_applied_count: Arc<AtomicU32>,
     pub blackhole_websocket_generation: Arc<AtomicU32>,
     pub websocket_generation: Arc<AtomicU32>,
     pub connection_count: Arc<AtomicU32>,
@@ -136,6 +140,9 @@ impl MockState {
             ice_restart_request_count: Arc::new(AtomicU32::new(0)),
             pause_forwarding: Arc::new(AtomicBool::new(false)),
             ice_candidate_drop_count: Arc::new(AtomicU32::new(0)),
+            offer_drop_count: Arc::new(AtomicU32::new(0)),
+            ice_candidate_delay_until: Arc::new(StdMutex::new(None)),
+            ice_candidate_delay_applied_count: Arc::new(AtomicU32::new(0)),
             blackhole_websocket_generation: Arc::new(AtomicU32::new(0)),
             websocket_generation: Arc::new(AtomicU32::new(0)),
             connection_count: Arc::new(AtomicU32::new(0)),

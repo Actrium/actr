@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
@@ -564,6 +565,40 @@ async fn handle_actr_relay(
         return;
     }
 
+    if let Some(actr_relay::Payload::IceCandidate(_)) = relay.payload.as_ref() {
+        let delay = {
+            let delay_until = *state
+                .ice_candidate_delay_until
+                .lock()
+                .expect("ICE candidate delay mutex poisoned");
+            delay_until.and_then(|deadline| deadline.checked_duration_since(Instant::now()))
+        };
+
+        if let Some(delay) = delay
+            && delay > Duration::ZERO
+        {
+            state
+                .ice_candidate_delay_applied_count
+                .fetch_add(1, Ordering::SeqCst);
+            tracing::warn!("🧪 Delaying test ICE candidate relay by {:?}", delay);
+            let delayed_envelope = envelope.clone();
+            let delayed_relay = relay.clone();
+            let delayed_sender_id = sender_id.to_string();
+            let delayed_state = Arc::clone(state);
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                forward_relay_to_target(
+                    &delayed_envelope,
+                    &delayed_relay,
+                    &delayed_sender_id,
+                    &delayed_state,
+                )
+                .await;
+            });
+            return;
+        }
+    }
+
     if let Some(actr_relay::Payload::IceCandidate(_)) = relay.payload.as_ref()
         && state
             .ice_candidate_drop_count
@@ -573,6 +608,19 @@ async fn handle_actr_relay(
             .is_ok()
     {
         tracing::warn!("🧪 Dropping test ICE candidate relay");
+        return;
+    }
+
+    if let Some(actr_relay::Payload::SessionDescription(sd)) = relay.payload.as_ref()
+        && sd.r#type == actr_protocol::session_description::Type::Offer as i32
+        && state
+            .offer_drop_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                if count > 0 { Some(count - 1) } else { None }
+            })
+            .is_ok()
+    {
+        tracing::warn!("🧪 Dropping test SDP offer relay");
         return;
     }
 
@@ -647,6 +695,15 @@ async fn handle_actr_relay(
         return;
     }
 
+    forward_relay_to_target(envelope, relay, sender_id, state).await;
+}
+
+async fn forward_relay_to_target(
+    envelope: &SignalingEnvelope,
+    relay: &ActrRelay,
+    sender_id: &str,
+    state: &Arc<MockState>,
+) {
     // Forward relay to target by ActrId lookup.
     let target_id = &relay.target;
     let client_map = state.client_to_actr_id.read().await;

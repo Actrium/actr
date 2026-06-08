@@ -39,7 +39,7 @@ use actr_protocol::{
 use std::collections::{HashMap, hash_map::Entry};
 use std::{
     sync::{
-        Arc,
+        Arc, RwLock as StdRwLock,
         atomic::{AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
@@ -136,11 +136,35 @@ struct PeerState {
     /// Current connection state (for health check)
     current_state: RTCPeerConnectionState,
 
+    /// Whether this session has ever reached ICE/DTLS Connected.
+    ever_ice_connected: bool,
+
+    /// Whether this session has ever had an open DataChannel.
+    ever_data_channel_opened: bool,
+
     /// Session ID for this connection (matches WebRtcConnection.session_id())
     session_id: u64,
 
     /// Receive loop JoinHandles (one per PayloadType, aborted during cleanup)
     receive_handles: Vec<JoinHandle<()>>,
+}
+
+impl PeerState {
+    fn update_connection_state(&mut self, state: RTCPeerConnectionState) {
+        self.current_state = state;
+        self.last_state_change = std::time::Instant::now();
+        if matches!(state, RTCPeerConnectionState::Connected) {
+            self.ever_ice_connected = true;
+        }
+    }
+
+    fn mark_data_channel_opened(&mut self) {
+        self.ever_data_channel_opened = true;
+    }
+
+    fn is_network_recovery_eligible(&self) -> bool {
+        self.ever_ice_connected || self.ever_data_channel_opened
+    }
 }
 
 enum IceRestartWaitOutcome {
@@ -161,6 +185,7 @@ type RestartRetryWakeTarget = (ActrId, u64, Arc<tokio::sync::Notify>);
 type NetworkRecoveryRestartPlan = (
     Vec<RecoveryStatusTarget>,
     Vec<RestartRetryWakeTarget>,
+    Vec<RecoveryStatusTarget>,
     Vec<ActrId>,
 );
 
@@ -189,7 +214,7 @@ impl NetworkRecoveryStatus {
 /// WebRTC signaling coordinator
 pub struct WebRtcCoordinator {
     /// Local Actor ID
-    local_id: ActrId,
+    local_id: Arc<StdRwLock<ActrId>>,
 
     /// Local credentials
     credential_state: CredentialState,
@@ -267,7 +292,7 @@ impl WebRtcCoordinator {
         let negotiator = WebRtcNegotiator::new(webrtc_config, credential_state.clone());
 
         Self {
-            local_id,
+            local_id: Arc::new(StdRwLock::new(local_id)),
             credential_state,
             signaling_client,
             negotiator,
@@ -285,6 +310,26 @@ impl WebRtcCoordinator {
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    fn local_id_snapshot(&self) -> ActrId {
+        self.local_id
+            .read()
+            .expect("WebRtcCoordinator local_id lock poisoned")
+            .clone()
+    }
+
+    /// Update the local Actor ID after AIS re-registration assigns a new identity.
+    pub async fn set_local_id(&self, actor_id: ActrId) {
+        *self
+            .local_id
+            .write()
+            .expect("WebRtcCoordinator local_id lock poisoned") = actor_id;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local_id_for_test(&self) -> ActrId {
+        self.local_id_snapshot()
     }
 
     /// Enter a cleanup window. While any guard is alive, outbound sends wait
@@ -471,7 +516,19 @@ impl WebRtcCoordinator {
             let peers = self.peers.read().await;
             peers
                 .iter()
-                .map(|(peer_id, state)| (peer_id.clone(), state.session_id))
+                .filter_map(|(peer_id, state)| {
+                    if state.is_network_recovery_eligible() {
+                        Some((peer_id.clone(), state.session_id))
+                    } else {
+                        tracing::debug!(
+                            peer_id = ?peer_id,
+                            session_id = state.session_id,
+                            current_state = ?state.current_state,
+                            "⏭️ Skipping network recovery for never-ready session"
+                        );
+                        None
+                    }
+                })
                 .collect()
         };
 
@@ -728,7 +785,7 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target_filter: Option<&[ActrId]>,
     ) {
-        let (stale_answerers, wake_targets, targets): NetworkRecoveryRestartPlan = {
+        let (stale_answerers, wake_targets, ineligible_guards, targets): NetworkRecoveryRestartPlan = {
             let recovery_snapshot: Vec<RecoveryStatusTarget> = self
                 .network_recovering_peers
                 .read()
@@ -744,6 +801,7 @@ impl WebRtcCoordinator {
             let peers = self.peers.read().await;
             let mut stale_answerers = Vec::new();
             let mut wake_targets = Vec::new();
+            let mut ineligible_guards = Vec::new();
             let mut targets = Vec::new();
 
             for (peer_id, recovery_status) in recovery_snapshot.iter() {
@@ -758,6 +816,18 @@ impl WebRtcCoordinator {
                 };
                 let session_matches = state.session_id == recovery_status.session_id;
                 if !session_matches {
+                    continue;
+                }
+
+                if !state.is_network_recovery_eligible() {
+                    tracing::debug!(
+                        peer_id = ?peer_id,
+                        session_id = recovery_status.session_id,
+                        recovery_reason = recovery_status.reason.as_str(),
+                        current_state = ?state.current_state,
+                        "⏭️ Clearing network recovery guard for never-ready session"
+                    );
+                    ineligible_guards.push((peer_id.clone(), recovery_status.clone()));
                     continue;
                 }
 
@@ -790,8 +860,17 @@ impl WebRtcCoordinator {
                 }
             }
 
-            (stale_answerers, wake_targets, targets)
+            (stale_answerers, wake_targets, ineligible_guards, targets)
         };
+
+        for (target, recovery_status) in ineligible_guards {
+            self.clear_peer_recovering(
+                &target,
+                recovery_status.session_id,
+                "never-ready session is not eligible for network recovery",
+            )
+            .await;
+        }
 
         for (target, recovery_status) in stale_answerers {
             tracing::warn!(
@@ -911,6 +990,14 @@ impl WebRtcCoordinator {
                                     state: ConnectionState::Connected,
                                     ..
                                 } => {
+                                    {
+                                        let mut peers = coord.peers.write().await;
+                                        if let Some(state) = peers.get_mut(peer_id)
+                                            && state.session_id == *session_id
+                                        {
+                                            state.ever_ice_connected = true;
+                                        }
+                                    }
                                     coord
                                         .clear_peer_recovering(
                                             peer_id,
@@ -925,6 +1012,14 @@ impl WebRtcCoordinator {
                                     payload_type: PayloadType::RpcReliable,
                                     ..
                                 } => {
+                                    {
+                                        let mut peers = coord.peers.write().await;
+                                        if let Some(state) = peers.get_mut(peer_id)
+                                            && state.session_id == *session_id
+                                        {
+                                            state.mark_data_channel_opened();
+                                        }
+                                    }
                                     coord
                                         .clear_peer_recovering(
                                             peer_id,
@@ -1405,13 +1500,14 @@ impl WebRtcCoordinator {
                         }
                     },
                     Some(actr_relay::Payload::RoleAssignment(assign)) => {
+                        let local_id = self.local_id_snapshot();
                         tracing::info!(
                             "🎭 Received RoleAssignment from {:?}, is_offerer={} (source peer), local_id={}",
                             source,
                             assign.is_offerer,
-                            self.local_id,
+                            local_id,
                         );
-                        let peer = if source == self.local_id {
+                        let peer = if source == local_id {
                             target.clone()
                         } else {
                             source.clone()
@@ -1515,7 +1611,7 @@ impl WebRtcCoordinator {
     ) -> ActorResult<()> {
         let credential = self.credential_state.credential().await;
         let relay = ActrRelay {
-            source: self.local_id.clone(),
+            source: self.local_id_snapshot(),
             credential,
             target: target.clone(),
             payload: Some(payload),
@@ -1549,7 +1645,7 @@ impl WebRtcCoordinator {
     /// Acts as the initiator, sending a WebRTC connection request to the target peer
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id, target_id = %target))
+        tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
     pub async fn initiate_connection(
         self: &Arc<Self>,
@@ -1595,7 +1691,7 @@ impl WebRtcCoordinator {
     /// This method includes retry logic for initial connection failures.
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = %target))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
     async fn start_offer_connection(
         self: &Arc<Self>,
@@ -1928,6 +2024,8 @@ impl WebRtcCoordinator {
                     last_ice_restart_offer_at: None,
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
+                    ever_ice_connected: false,
+                    ever_data_channel_opened: false,
                     session_id: webrtc_conn.session_id(),
                     receive_handles: Vec::new(),
                 },
@@ -2124,7 +2222,7 @@ impl WebRtcCoordinator {
     /// Supports both initial negotiation and renegotiation.
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id, remote_id = %from))
+        tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id_snapshot(), remote_id = %from))
     )]
     async fn handle_offer(self: &Arc<Self>, from: &ActrId, offer_sdp: String) -> ActorResult<()> {
         // ========== PrepareForIncomingOffer: Clean up existing connection if any ==========
@@ -2188,6 +2286,8 @@ impl WebRtcCoordinator {
                     last_ice_restart_offer_at: None,
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
+                    ever_ice_connected: false,
+                    ever_data_channel_opened: false,
                     session_id: webrtc_conn.session_id(),
                     receive_handles: Vec::new(),
                 },
@@ -2217,8 +2317,7 @@ impl WebRtcCoordinator {
                         let mut peers = coord.peers.write().await;
                         if let Some(peer_state) = peers.get_mut(&peer_id) {
                             if peer_state.session_id == state_session_id {
-                                peer_state.current_state = state;
-                                peer_state.last_state_change = std::time::Instant::now();
+                                peer_state.update_connection_state(state);
                             } else {
                                 tracing::debug!(
                                     "⏭️ Ignoring stale answerer PeerConnection state for peer {}, session_id={}",
@@ -2562,6 +2661,7 @@ impl WebRtcCoordinator {
                 let mut peers_guard = peers.write().await;
                 if let Some(s) = peers_guard.get_mut(&from_id) {
                     if s.session_id == wait_session_id {
+                        s.mark_data_channel_opened();
                         completed_restart = s.ice_restart_inflight;
                         s.ice_restart_inflight = false;
                         s.ice_restart_attempts = 0;
@@ -2799,7 +2899,7 @@ impl WebRtcCoordinator {
     /// Supports retry with exponential backoff on transient errors.
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = %target))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
     pub(crate) async fn send_message(
         self: &Arc<Self>,
@@ -3031,7 +3131,7 @@ impl WebRtcCoordinator {
     /// - `Err`: WebRTC only supports Actor targets, connection cancelled, or connection establishment failed
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = ?dest.as_actor_id().map(|id| id)))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = ?dest.as_actor_id().map(|id| id)))
     )]
     pub(crate) async fn create_connection(
         self: &Arc<Self>,
@@ -3540,7 +3640,7 @@ impl WebRtcCoordinator {
         let target_clone = target.clone();
         let peers_arc = Arc::clone(&self.peers);
         let negotiator = self.negotiator.clone();
-        let local_id = self.local_id.clone();
+        let local_id = self.local_id_snapshot();
         let credential_state = self.credential_state.clone();
         let signaling_client = Arc::clone(&self.signaling_client);
         let coordinator_weak = Arc::downgrade(self);
@@ -4442,7 +4542,7 @@ impl WebRtcCoordinator {
     /// Handle role assignment result
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, peer_id = %peer))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), peer_id = %peer))
     )]
     async fn handle_role_assignment(self: &Arc<Self>, assign: RoleAssignment, peer: ActrId) {
         tracing::debug!(?assign, ?peer, "handle_role_assignment");
@@ -4577,11 +4677,11 @@ impl WebRtcCoordinator {
                 .or_default()
                 .ready_tx = Some(tx);
 
-            // Prevent waiting indefinitely for offer: force re-negotiation after timeout
+            // If the offer is lost, keep waiting as answerer. RoleNegotiation broadcasts
+            // RoleAssignment to both peers, so retrying it here can make the original
+            // offerer start a duplicate connection attempt.
             let weak = Arc::downgrade(self);
             let peer_clone = peer.clone();
-            #[cfg(feature = "opentelemetry")]
-            let current_span = tracing::Span::current();
             tokio::spawn(async move {
                 tokio::time::sleep(ROLE_WAIT_TIMEOUT).await;
                 if let Some(coord) = weak.upgrade() {
@@ -4589,37 +4689,17 @@ impl WebRtcCoordinator {
                     if coord.peers.read().await.contains_key(&peer_clone) {
                         return;
                     }
-                    let pending = {
-                        let mut neg = coord.peer_negotiation.lock().await;
-                        neg.get_mut(&peer_clone).and_then(|s| s.ready_tx.take())
+                    let still_waiting = {
+                        let neg = coord.peer_negotiation.lock().await;
+                        neg.get(&peer_clone)
+                            .and_then(|s| s.ready_tx.as_ref())
+                            .is_some()
                     };
-                    if pending.is_none() {
-                        return;
-                    }
-                    tracing::warn!(
-                        "⏳ Waiting for offer from {} timed out, force acting as offerer",
-                        peer_clone
-                    );
-                    let start_offer_fut = coord.start_offer_connection(&peer_clone, true);
-                    #[cfg(feature = "opentelemetry")]
-                    let start_offer_fut = start_offer_fut.instrument(current_span);
-                    match start_offer_fut.await {
-                        Ok(ready_rx) => {
-                            coord
-                                .peer_negotiation
-                                .lock()
-                                .await
-                                .entry(peer_clone.clone())
-                                .or_default()
-                                .ready_rx = Some(ready_rx);
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "⚠️ Failed to start offer connection after timeout to {}: {}",
-                                peer_clone,
-                                e
-                            );
-                        }
+                    if still_waiting {
+                        tracing::warn!(
+                            "⏳ Waiting for offer from {} timed out; continuing to wait as answerer without role renegotiation",
+                            peer_clone
+                        );
                     }
                 }
             });
@@ -4629,7 +4709,7 @@ impl WebRtcCoordinator {
     /// Initiate role negotiation and await assignment
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(skip_all, fields(actr_id = %self.local_id, target_id = %target))
+        tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
     async fn negotiate_role(&self, target: &ActrId) -> ActorResult<bool> {
         let (tx, rx) = oneshot::channel();
@@ -4641,10 +4721,11 @@ impl WebRtcCoordinator {
             .or_default()
             .role_tx = Some(tx);
 
+        let local_id = self.local_id_snapshot();
         let payload = actr_relay::Payload::RoleNegotiation(RoleNegotiation {
-            from: self.local_id.clone(),
+            from: local_id.clone(),
             to: target.clone(),
-            realm_id: self.local_id.realm.realm_id,
+            realm_id: local_id.realm.realm_id,
         });
 
         tracing::debug!("🔄 Sending role negotiation to serial={}", target);
@@ -4681,8 +4762,7 @@ impl WebRtcCoordinator {
                         let mut peers = c.peers.write().await;
                         if let Some(peer_state) = peers.get_mut(&target) {
                             if peer_state.session_id == session_id {
-                                peer_state.current_state = state;
-                                peer_state.last_state_change = std::time::Instant::now();
+                                peer_state.update_connection_state(state);
                                 is_active_session = true;
                             } else {
                                 tracing::debug!(
@@ -4742,6 +4822,187 @@ impl WebRtcCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actr_protocol::{
+        AIdCredential, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
+        RouteCandidatesResponse, ServiceAvailabilityState, UnregisterResponse,
+    };
+    use tokio::sync::broadcast;
+
+    fn test_actor_id(serial_number: u64) -> ActrId {
+        ActrId {
+            realm: actr_protocol::Realm { realm_id: 1 },
+            serial_number,
+            r#type: actr_protocol::ActrType {
+                manufacturer: "acme".to_string(),
+                name: "node".to_string(),
+                version: "1.0.0".to_string(),
+            },
+        }
+    }
+
+    fn test_credential() -> AIdCredential {
+        AIdCredential {
+            key_id: 7,
+            claims: Bytes::from_static(b"claims"),
+            signature: Bytes::from(vec![0u8; 64]),
+        }
+    }
+
+    struct CapturingSignalingClient {
+        sent: Mutex<Vec<SignalingEnvelope>>,
+        event_tx: broadcast::Sender<super::super::SignalingEvent>,
+    }
+
+    impl CapturingSignalingClient {
+        fn new() -> Self {
+            let (event_tx, _rx) = broadcast::channel(16);
+            Self {
+                sent: Mutex::new(Vec::new()),
+                event_tx,
+            }
+        }
+
+        async fn last_relay_source(&self) -> ActrId {
+            let sent = self.sent.lock().await;
+            let envelope = sent.last().expect("relay envelope should be sent");
+            let Some(signaling_envelope::Flow::ActrRelay(relay)) = &envelope.flow else {
+                panic!("expected ActrRelay envelope");
+            };
+            relay.source.clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SignalingClient for CapturingSignalingClient {
+        async fn connect(&self) -> crate::transport::NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn connect_once(&self) -> crate::transport::NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn disconnect(&self) -> crate::transport::NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn send_register_request(
+            &self,
+            _request: RegisterRequest,
+        ) -> crate::transport::NetworkResult<RegisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_unregister_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _reason: Option<String>,
+        ) -> crate::transport::NetworkResult<UnregisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _availability: ServiceAvailabilityState,
+            _power_reserve: f32,
+            _mailbox_backlog: f32,
+        ) -> crate::transport::NetworkResult<Pong> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_route_candidates_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _request: RouteCandidatesRequest,
+        ) -> crate::transport::NetworkResult<RouteCandidatesResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn get_signing_key(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _key_id: u32,
+        ) -> crate::transport::NetworkResult<(u32, Vec<u8>)> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_credential_update_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+        ) -> crate::transport::NetworkResult<RegisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_envelope(
+            &self,
+            envelope: SignalingEnvelope,
+        ) -> crate::transport::NetworkResult<()> {
+            self.sent.lock().await.push(envelope);
+            Ok(())
+        }
+
+        async fn receive_envelope(
+            &self,
+        ) -> crate::transport::NetworkResult<Option<SignalingEnvelope>> {
+            Ok(None)
+        }
+
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        fn get_stats(&self) -> super::super::SignalingStats {
+            super::super::SignalingStats::default()
+        }
+
+        fn subscribe_events(&self) -> broadcast::Receiver<super::super::SignalingEvent> {
+            self.event_tx.subscribe()
+        }
+
+        async fn set_actor_id(&self, _actor_id: ActrId) {}
+
+        async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+        async fn clear_identity(&self) {}
+    }
+
+    #[tokio::test]
+    async fn relay_source_uses_updated_local_id_after_re_registration() {
+        let initial_id = test_actor_id(1);
+        let renewed_id = test_actor_id(2);
+        let target_id = test_actor_id(99);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let signaling_client = Arc::new(CapturingSignalingClient::new());
+        let coordinator = WebRtcCoordinator::new(
+            initial_id,
+            credential_state,
+            signaling_client.clone(),
+            WebRtcConfig::default(),
+            Arc::new(MediaFrameRegistry::new()),
+        );
+
+        coordinator.set_local_id(renewed_id.clone()).await;
+        coordinator
+            .send_actr_relay(
+                &target_id,
+                actr_relay::Payload::IceCandidate(actr_protocol::IceCandidate {
+                    candidate: "candidate:0 1 UDP 1 127.0.0.1 9 typ host".to_string(),
+                    sdp_mid: None,
+                    sdp_mline_index: None,
+                    username_fragment: None,
+                }),
+            )
+            .await
+            .expect("relay should be sent");
+
+        assert_eq!(signaling_client.last_relay_source().await, renewed_id);
+    }
 
     #[test]
     fn test_exponential_backoff_basic() {
