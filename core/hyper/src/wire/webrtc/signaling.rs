@@ -736,6 +736,35 @@ impl WebSocketSignalingClient {
         }
     }
 
+    async fn route_received_envelope(
+        envelope: SignalingEnvelope,
+        pending: &Arc<tokio::sync::Mutex<HashMap<String, oneshot::Sender<SignalingEnvelope>>>>,
+        inbound_tx: &mpsc::UnboundedSender<SignalingEnvelope>,
+        stats: &Arc<AtomicSignalingStats>,
+    ) {
+        // ActrRelay `reply_for` is an application-level SDP Answer -> Offer
+        // correlation and must remain visible to the WebRTC coordinator.
+        let can_complete_reply_waiter =
+            !matches!(&envelope.flow, Some(signaling_envelope::Flow::ActrRelay(_)));
+
+        if can_complete_reply_waiter
+            && let Some(reply_for) = envelope.reply_for.clone()
+            && let Some(sender) = pending.lock().await.remove(&reply_for)
+        {
+            if let Err(e) = sender.send(envelope) {
+                stats.errors.fetch_add(1, Ordering::Relaxed);
+                tracing::warn!("Failed to send reply envelope to waiter: {e:?}");
+            }
+            return;
+        }
+
+        tracing::debug!("Unmatched or push message -> forward to inbound channel");
+        if let Err(e) = inbound_tx.send(envelope) {
+            stats.errors.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!("Failed to send envelope to inbound channel: {e:?}");
+        }
+    }
+
     async fn drop_pending_pongs(&self, reason: &'static str) {
         let dropped = {
             let mut pending = self.pending_pongs.lock().await;
@@ -1037,29 +1066,15 @@ impl WebSocketSignalingClient {
 
                                 stats.messages_received.fetch_add(1, Ordering::Relaxed);
                                 tracing::debug!("Received message: {:?}", envelope);
-                                if let Some(reply_for) = envelope.reply_for.clone() {
-                                    if let Some(sender) = pending.lock().await.remove(&reply_for) {
-                                        #[cfg(feature = "opentelemetry")]
-                                        let _ = span.enter();
-                                        if let Err(e) = sender.send(envelope) {
-                                            stats.errors.fetch_add(1, Ordering::Relaxed);
-                                            tracing::warn!(
-                                                "Failed to send reply envelope to waiter: {e:?}",
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                }
-                                tracing::debug!(
-                                    "Unmatched or push message -> forward to inbound channel"
-                                );
-                                // Unmatched or push message -> forward to inbound channel
-                                if let Err(e) = inbound_tx.send(envelope) {
-                                    stats.errors.fetch_add(1, Ordering::Relaxed);
-                                    tracing::warn!(
-                                        "Failed to send envelope to inbound channel: {e:?}"
-                                    );
-                                }
+                                #[cfg(feature = "opentelemetry")]
+                                let _ = span.enter();
+                                Self::route_received_envelope(
+                                    envelope,
+                                    &pending,
+                                    &inbound_tx,
+                                    &stats,
+                                )
+                                .await;
                             }
                             Err(e) => {
                                 stats.errors.fetch_add(1, Ordering::Relaxed);
@@ -2098,6 +2113,9 @@ fn current_unix_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use actr_protocol::{
+        ActrRelay, SessionDescription, actr_relay, session_description::Type as SdpType,
+    };
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicUsize, Ordering as UsizeOrdering};
@@ -2735,6 +2753,60 @@ mod tests {
             result.is_err(),
             "old messages should not be visible in the new channel after reset"
         );
+    }
+
+    #[tokio::test]
+    async fn test_actr_relay_with_reply_for_is_forwarded_to_inbound() {
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        pending_replies
+            .lock()
+            .await
+            .insert("offer-env".to_string(), reply_tx);
+
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel();
+        let stats = Arc::new(AtomicSignalingStats::default());
+        let envelope = SignalingEnvelope {
+            envelope_version: 1,
+            envelope_id: "answer-env".to_string(),
+            reply_for: Some("offer-env".to_string()),
+            timestamp: prost_types::Timestamp::default(),
+            traceparent: None,
+            tracestate: None,
+            flow: Some(signaling_envelope::Flow::ActrRelay(ActrRelay {
+                source: ActrId::default(),
+                credential: AIdCredential::default(),
+                target: ActrId::default(),
+                payload: Some(actr_relay::Payload::SessionDescription(
+                    SessionDescription {
+                        r#type: SdpType::Answer as i32,
+                        sdp: "answer-sdp".to_string(),
+                    },
+                )),
+            })),
+        };
+
+        WebSocketSignalingClient::route_received_envelope(
+            envelope,
+            &pending_replies,
+            &inbound_tx,
+            &stats,
+        )
+        .await;
+
+        assert!(
+            pending_replies.lock().await.contains_key("offer-env"),
+            "ActrRelay reply_for must not consume server-response waiters"
+        );
+
+        let forwarded = inbound_rx
+            .try_recv()
+            .expect("ActrRelay reply_for should be forwarded to inbound channel");
+        assert_eq!(forwarded.reply_for.as_deref(), Some("offer-env"));
+        assert!(matches!(
+            forwarded.flow,
+            Some(signaling_envelope::Flow::ActrRelay(_))
+        ));
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
