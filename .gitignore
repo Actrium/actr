@@ -1,3 +1,11 @@
+# Dotfiles and dot-directories
+**/.*
+!/.github/
+!/.github/**
+/.github/**/.*
+!/.gitignore
+!/.rustfmt.toml
+!/.swiftlint.yml
 
 # Build outputs
 target/
@@ -8,20 +16,12 @@ logs/
 *.log
 
 # IDE files
-.vscode/
-.idea/
-.serena/
-.claude/
 *.swp
 *.swo
 *~
 
 # OS files
-.DS_Store
 Thumbs.db
-
-# Runtime files
-.status
 
 # Generated proto files
 *.pb.go
@@ -42,9 +42,6 @@ ACTRIX*.md
 **/manifest.lock.toml
 !examples/typescript/generated-echo-workload/manifest.lock.toml
 
-# Demo logs
-.demo_logs/
-
 # WASM guest built artifacts (compiled binaries, not source)
 examples/rust/wasm-echo/guest/built/
 examples/rust/dynclib-echo/guest/target/
@@ -62,16 +59,11 @@ examples/rust/echo-actr/dist/
 __pycache__/
 *.py[cod]
 *$py.class
-.venv/
 venv/
 env/
-.env/
 
 # Release train reports
 release/reports/
-
-# Git worktrees
-.worktrees/
 
 # Standalone smoke / codegen-test crates ([workspace] of their own — lockfile not tracked)
 bindings/web/crates/framework-web-entry-smoke/Cargo.lock
@@ -82,5 +74,4 @@ coverage/
 coverage-html/
 coverage.lcov
 
-# Playwright MCP artifacts
-.playwright-mcp/
+bindings/typescript/package-lock.json
