@@ -22,7 +22,7 @@ jobs:
         with:
           node-version: "24"
           cache: "npm"
-          cache-dependency-path: bindings/typescript/package-lock.json
+          cache-dependency-path: bindings/typescript/package.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -36,7 +36,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: bindings/typescript
-        run: npm ci
+        run: npm install
 
       - name: Check formatting
         working-directory: bindings/typescript

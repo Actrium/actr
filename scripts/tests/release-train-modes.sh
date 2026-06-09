@@ -929,3 +929,107 @@ test_release_train_workflow_downloads_only_typescript_native_artifacts
 test_release_prepare_workflow_skips_release_commits
 test_report_stage_merges_state_files
 test_update_versions_syncs_optional_dependencies
+
+test_publish_web_packages_skips_puppeteer_download() {
+  reset_release_train_state
+
+  local temp_dir pnpm_env_log
+  temp_dir=$(mktemp -d)
+  pnpm_env_log="$temp_dir/pnpm-env.log"
+  mkdir -p "$temp_dir/bin" "$temp_dir/bindings/web/scripts"
+
+  # Fake pnpm that records its environment.
+  cat >"$temp_dir/bin/pnpm" <<'EOF'
+#!/usr/bin/env bash
+printf 'PUPPETEER_SKIP_DOWNLOAD=%s\n' "${PUPPETEER_SKIP_DOWNLOAD:-unset}" >>"${PNPM_ENV_LOG}"
+printf 'PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=%s\n' "${PUPPETEER_SKIP_CHROMIUM_DOWNLOAD:-unset}" >>"${PNPM_ENV_LOG}"
+printf 'ARGS=%s\n' "$*" >>"${PNPM_ENV_LOG}"
+exit 0
+EOF
+  chmod +x "$temp_dir/bin/pnpm"
+
+  # Fake publish.sh so it succeeds.
+  cat >"$temp_dir/bindings/web/scripts/publish.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$temp_dir/bindings/web/scripts/publish.sh"
+
+  # Fake node for version read.
+  mkdir -p "$temp_dir/bindings/web/packages/actr-dom" \
+    "$temp_dir/bindings/web/packages/web-sdk" \
+    "$temp_dir/bindings/web/packages/web-react"
+  printf '{"name":"@actrium/actr-dom","version":"1.2.3","publishConfig":{"access":"public"}}\n' >"$temp_dir/bindings/web/packages/actr-dom/package.json"
+  printf '{"name":"@actrium/actr-web","version":"1.2.3","publishConfig":{"access":"public"}}\n' >"$temp_dir/bindings/web/packages/web-sdk/package.json"
+  printf '{"name":"@actrium/actr-web-react","version":"1.2.3","publishConfig":{"access":"public"}}\n' >"$temp_dir/bindings/web/packages/web-react/package.json"
+
+  local original_path=$PATH
+  PATH="$temp_dir/bin:$PATH"
+  export PNPM_ENV_LOG="$pnpm_env_log"
+  WORK_REPO_ROOT="$temp_dir"
+  VERSION="1.2.3"
+  DRY_RUN=true
+  RELEASE_SHA="abc123"
+  append_state() { :; }
+  log_info() { :; }
+  log_warn() { :; }
+
+  publish_web_packages
+
+  PATH=$original_path
+
+  # Assert both Puppeteer skip env vars are set to "true".
+  local skip_download skip_chromium
+  skip_download=$(grep '^PUPPETEER_SKIP_DOWNLOAD=' "$pnpm_env_log" | head -1 | cut -d= -f2)
+  skip_chromium=$(grep '^PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=' "$pnpm_env_log" | head -1 | cut -d= -f2)
+
+  assert_eq "true" "$skip_download" "PUPPETEER_SKIP_DOWNLOAD"
+  assert_eq "true" "$skip_chromium" "PUPPETEER_SKIP_CHROMIUM_DOWNLOAD"
+
+  # Assert --frozen-lockfile is used.
+  if ! grep -q 'install --frozen-lockfile' "$pnpm_env_log"; then
+    printf 'publish_web_packages must use pnpm install --frozen-lockfile\n' >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  rm -rf "$temp_dir"
+}
+
+test_publish_web_workflow_has_timeout() {
+  reset_release_train_state
+
+  if ! grep -q 'timeout-minutes: 20' .github/workflows/release-train.yml; then
+    printf 'publish-web job must have timeout-minutes: 20\n' >&2
+    exit 1
+  fi
+}
+
+test_parse_prepare_only_mode
+test_parse_stage_argument
+test_parse_stage_publish_rust
+test_parse_stage_all_is_default
+test_parse_stage_rejects_unknown
+test_append_skipped_components_allows_empty_list
+test_publish_clean_check_rejects_untracked_files
+test_publish_clean_check_allows_current_report_artifacts
+test_final_tag_uses_conventional_v_prefix
+test_latest_release_tag_accepts_legacy_release_train_prefix
+test_release_prepare_skips_release_commit_head
+test_publish_mode_uses_prepared_versions_without_mutating
+test_prepare_only_updates_validates_and_commits_without_publishing
+test_staged_validate_does_not_publish
+test_create_tag_dry_run_does_not_push
+test_main_publish_stage_skips_absent_tag_check
+test_main_validate_and_create_tag_check_absent_tag
+test_publish_python_package_builds_distribution_before_upload
+test_publish_rust_package_prepares_cli_web_assets_before_publish
+test_publish_typescript_workload_builds_before_publish
+test_publish_typescript_package_writes_native_and_main_state
+test_release_train_workflow_publish_typescript_uses_script_stage
+test_release_train_workflow_downloads_only_typescript_native_artifacts
+test_release_prepare_workflow_skips_release_commits
+test_report_stage_merges_state_files
+test_update_versions_syncs_optional_dependencies
+test_publish_web_packages_skips_puppeteer_download
+test_publish_web_workflow_has_timeout

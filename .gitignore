@@ -84,3 +84,5 @@ coverage.lcov
 
 # Playwright MCP artifacts
 .playwright-mcp/
+bindings/typescript/package-lock.json
+

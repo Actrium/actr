@@ -7,6 +7,6 @@
         "test:auto": "node test-auto.js"
     },
     "devDependencies": {
-        "puppeteer": "^24.6.1"
+        "puppeteer": "24.39.0"
     }
 }

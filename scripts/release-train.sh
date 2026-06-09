@@ -979,9 +979,11 @@ publish_web_packages() {
     return
   fi
 
-  log_info "Installing web dependencies"
+  log_info "Installing web dependencies (skipping Puppeteer browser download)"
   (
     cd "$web_root"
+    PUPPETEER_SKIP_DOWNLOAD=true \
+    PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     pnpm install --frozen-lockfile
   )
 
@@ -1146,7 +1148,7 @@ publish_typescript_package() {
   fi
 
   log_info "Installing TypeScript dependencies"
-  (cd "$ts_root" && npm ci)
+  (cd "$ts_root" && npm install)
 
   ts_version=$(node -p "require('${ts_root}/package.json').version")
   main_package=$(node -p "require('${ts_root}/package.json').name")
@@ -1330,7 +1332,6 @@ stage_release_version_files() {
     bindings/web/packages/web-react/package.json \
     bindings/typescript/Cargo.toml \
     bindings/typescript/package.json \
-    bindings/typescript/package-lock.json \
     bindings/typescript/actr-workload/package.json \
     bindings/web/crates/actr-web-abi/Cargo.toml \
     bindings/web/crates/common/Cargo.toml \
@@ -1673,7 +1674,7 @@ stage_build_typescript_native() {
   local ts_root="$WORK_REPO_ROOT/bindings/typescript"
   if [[ -d "$ts_root" ]]; then
     log_info "Compiling TypeScript"
-    (cd "$ts_root" && npm ci && npm run compile:ts)
+    (cd "$ts_root" && npm install && npm run compile:ts)
     log_info "Stage build-typescript-native complete"
   else
     log_warn "TypeScript directory not found; skipping build"
@@ -1729,7 +1730,6 @@ run_release_train() {
     update_versions
     cargo update --workspace
     cargo update --workspace --manifest-path bindings/web/Cargo.toml
-    npm install --package-lock-only --prefix bindings/typescript
     cargo update --manifest-path bindings/typescript/Cargo.toml -p actr-protocol -p actr-framework -p actr-config -p actr-hyper
     run_validation_suite
     commit_release_prepare
