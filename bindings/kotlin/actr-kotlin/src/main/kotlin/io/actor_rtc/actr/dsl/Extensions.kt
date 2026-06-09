@@ -292,33 +292,3 @@ suspend fun <T> withRetry(
         shouldRetry = shouldRetry,
         block = block,
     )
-
-// ============================================================================
-// Scoped Resource Management
-// ============================================================================
-
-/**
- * Execute a block with a started package-backed actor, ensuring proper cleanup.
- *
- * Example:
- * ```kotlin
- * node.withStartedActor { ref ->
- *     val target = ref.discoverOne("acme:EchoService")
- *     ref.call("echo.EchoService.Echo", payload)
- * }
- * // Actor is automatically shut down after the block
- * ```
- */
-suspend fun <T> ActrNode.withStartedActor(block: suspend (ActrRef) -> T): T {
-    val ref = start()
-    return try {
-        block(ref)
-    } finally {
-        try {
-            ref.shutdown()
-            ref.awaitShutdown()
-        } catch (_: Exception) {
-            // Ignore cleanup errors
-        }
-    }
-}

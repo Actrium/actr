@@ -114,7 +114,7 @@ open class SimpleWorkload(
      * Set the target server ID for RPC calls.
      *
      * This must be called after discovering the server and before making RPC calls. The server ID
-     * is obtained from [ActrRefWrapper.discoverOne] or [ActrRefWrapper.discover].
+     * is obtained from [ActrRef.discoverOne] or [ActrRef.discover].
      *
      * @param serverId The target server's ActrId
      */
