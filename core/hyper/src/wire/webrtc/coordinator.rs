@@ -93,12 +93,6 @@ use actr_framework::ExponentialBackoff;
 /// Type alias for message receiver (from all peers)
 type MessageRx = Arc<Mutex<mpsc::UnboundedReceiver<(Vec<u8>, Bytes, PayloadType)>>>;
 
-#[derive(Clone, Debug)]
-struct PendingLocalOffer {
-    session_id: u64,
-    sdp_exchange_id: String,
-}
-
 /// Peer connection state
 struct PeerState {
     /// RTCPeerConnection (for receiving ICE candidates)
@@ -113,9 +107,9 @@ struct PeerState {
     /// Whether we are the offerer for the current session (affects ICE restart handling)
     is_offerer: bool,
 
-    /// Current local SDP offer awaiting an Answer. Only the latest generated
-    /// SDP exchange is accepted; older Answers are treated as stale.
-    pending_local_offer: Option<PendingLocalOffer>,
+    /// Current local SDP exchange awaiting an Answer. Only the latest generated
+    /// exchange id is accepted; older Answers are treated as stale.
+    pending_local_sdp_exchange_id: Option<String>,
 
     /// Whether ICE restart is in progress (controls buffering and retries)
     ice_restart_inflight: bool,
@@ -976,7 +970,7 @@ impl WebRtcCoordinator {
                 }
                 state.ice_restart_inflight = false;
                 state.ice_restart_attempts = 0;
-                state.pending_local_offer = None;
+                state.pending_local_sdp_exchange_id = None;
             }
         }
     }
@@ -1665,10 +1659,7 @@ impl WebRtcCoordinator {
             return false;
         }
 
-        state.pending_local_offer = Some(PendingLocalOffer {
-            session_id,
-            sdp_exchange_id,
-        });
+        state.pending_local_sdp_exchange_id = Some(sdp_exchange_id);
         true
     }
 
@@ -1692,11 +1683,11 @@ impl WebRtcCoordinator {
         if let Some(state) = peers.get_mut(target) {
             let should_clear = state.session_id == session_id
                 && state
-                    .pending_local_offer
+                    .pending_local_sdp_exchange_id
                     .as_ref()
-                    .is_some_and(|pending| pending.sdp_exchange_id == sdp_exchange_id);
+                    .is_some_and(|pending| pending == sdp_exchange_id);
             if should_clear {
-                state.pending_local_offer = None;
+                state.pending_local_sdp_exchange_id = None;
             }
         }
     }
@@ -2114,7 +2105,7 @@ impl WebRtcCoordinator {
                     webrtc_conn: webrtc_conn.clone(),
                     ready_tx: Some(ready_tx),
                     is_offerer: true,
-                    pending_local_offer: None,
+                    pending_local_sdp_exchange_id: None,
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
@@ -2398,7 +2389,7 @@ impl WebRtcCoordinator {
                     webrtc_conn: webrtc_conn.clone(),
                     ready_tx: None,
                     is_offerer: false,
-                    pending_local_offer: None,
+                    pending_local_sdp_exchange_id: None,
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
@@ -2746,7 +2737,7 @@ impl WebRtcCoordinator {
                 ActrError::Internal(format!("Peer not found: {}", from.to_string_repr()))
             })?;
 
-            let Some(pending_offer) = state.pending_local_offer.as_ref() else {
+            let Some(pending_sdp_exchange_id) = state.pending_local_sdp_exchange_id.as_ref() else {
                 tracing::warn!(
                     "🚫 Ignoring Answer from {} because no local Offer is pending",
                     from
@@ -2754,8 +2745,7 @@ impl WebRtcCoordinator {
                 return Ok(());
             };
 
-            let pending_sdp_exchange_id = pending_offer.sdp_exchange_id.clone();
-            let pending_session_id = pending_offer.session_id;
+            let pending_sdp_exchange_id = pending_sdp_exchange_id.clone();
 
             if pending_sdp_exchange_id != sdp_exchange_id {
                 tracing::warn!(
@@ -2763,16 +2753,6 @@ impl WebRtcCoordinator {
                     from,
                     sdp_exchange_id,
                     pending_sdp_exchange_id
-                );
-                return Ok(());
-            }
-
-            if pending_session_id != state.session_id {
-                tracing::warn!(
-                    "🚫 Ignoring Answer from {} for stale session: answer_session={} active_session={}",
-                    from,
-                    pending_session_id,
-                    state.session_id
                 );
                 return Ok(());
             }
@@ -4498,11 +4478,11 @@ impl WebRtcCoordinator {
                         Some(state) if state.session_id == restart_session_id => {
                             state.ice_restart_inflight = false;
                             if state
-                                .pending_local_offer
+                                .pending_local_sdp_exchange_id
                                 .as_ref()
-                                .is_some_and(|pending| pending.sdp_exchange_id == sdp_exchange_id)
+                                .is_some_and(|pending| pending == &sdp_exchange_id)
                             {
-                                state.pending_local_offer = None;
+                                state.pending_local_sdp_exchange_id = None;
                             }
                         }
                         Some(state) => {
@@ -4534,11 +4514,11 @@ impl WebRtcCoordinator {
                     Some(state) if state.session_id == restart_session_id => {
                         state.ice_restart_inflight = false;
                         if state
-                            .pending_local_offer
+                            .pending_local_sdp_exchange_id
                             .as_ref()
-                            .is_some_and(|pending| pending.sdp_exchange_id == sdp_exchange_id)
+                            .is_some_and(|pending| pending == &sdp_exchange_id)
                         {
-                            state.pending_local_offer = None;
+                            state.pending_local_sdp_exchange_id = None;
                         }
                     }
                     Some(state) => {
@@ -5135,10 +5115,7 @@ mod tests {
                 webrtc_conn,
                 ready_tx: Some(ready_tx),
                 is_offerer: true,
-                pending_local_offer: Some(PendingLocalOffer {
-                    session_id,
-                    sdp_exchange_id: sdp_exchange_id.to_string(),
-                }),
+                pending_local_sdp_exchange_id: Some(sdp_exchange_id.to_string()),
                 ice_restart_inflight: false,
                 ice_restart_attempts: 0,
                 restart_task_handle: None,
@@ -5370,8 +5347,7 @@ mod tests {
             Arc::new(MediaFrameRegistry::new()),
         ));
 
-        let session_id =
-            insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
 
         coordinator
             .handle_answer(
@@ -5389,11 +5365,10 @@ mod tests {
             "stale Answer must not consume the initial connection ready signal"
         );
         let pending = state
-            .pending_local_offer
-            .as_ref()
+            .pending_local_sdp_exchange_id
+            .as_deref()
             .expect("stale Answer must not clear the active pending offer");
-        assert_eq!(pending.session_id, session_id);
-        assert_eq!(pending.sdp_exchange_id, "current-exchange");
+        assert_eq!(pending, "current-exchange");
     }
 
     #[tokio::test]
@@ -5423,7 +5398,7 @@ mod tests {
         let peers = coordinator.peers.read().await;
         let state = peers.get(&target_id).expect("peer should remain");
         assert!(
-            state.pending_local_offer.is_none(),
+            state.pending_local_sdp_exchange_id.is_none(),
             "aborted ICE restart must not leave a stale pending SDP exchange"
         );
         assert!(!state.ice_restart_inflight);

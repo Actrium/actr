@@ -371,6 +371,7 @@
                 this.rpcPorts = new Map();
                 this.fragmentCounters = new Map();
                 this.reassembly = new Map();
+                this.commandQueues = new Map();
                 this.turnCred = null;
                 this.FRAGMENT_HEADER_SIZE = 8;
                 this.DC_MAX_MESSAGE_SIZE = 65535;
@@ -385,11 +386,19 @@
                 ];
                 this.labelToId = new Map(this.lanes.map(l => [l.label, l.id]));
                 bridge.onMessage(m => {
-                    if (m.type === 'webrtc_command') this._handle(m.payload);
+                    if (m.type === 'webrtc_command') this._enqueue(m.payload);
                     else if (m.type === 'update_turn_credential') {
                         this.turnCred = { username: m.payload.username, credential: m.payload.password };
                     }
                 });
+            }
+            _enqueue(cmd) {
+                const previous = this.commandQueues.get(cmd.peerId) || Promise.resolve();
+                const next = previous.catch(() => undefined).then(() => this._handle(cmd));
+                this.commandQueues.set(cmd.peerId, next);
+                next.finally(() => {
+                    if (this.commandQueues.get(cmd.peerId) === next) this.commandQueues.delete(cmd.peerId);
+                }).catch(() => undefined);
             }
             _canBindRpcPort(peer, ch) {
                 return !!(peer
@@ -425,7 +434,7 @@
                         case 'add_ice_candidate': return await this._addIce(peerId, cmd.payload.candidate);
                         case 'create_offer': await this._ensureChannels(peerId); return await this._createOffer(peerId);
                         case 'create_ice_restart_offer': return await this._iceRestart(peerId);
-                        case 'create_answer': return await this._createAnswer(peerId);
+                        case 'create_answer': return await this._createAnswer(peerId, cmd.payload && cmd.payload.sdpExchangeId);
                         case 'close_peer': return this._close(peerId);
                         case 'send_data': return this._send(peerId, cmd.payload.channelId, cmd.payload.data);
                     }
@@ -469,7 +478,12 @@
             async _setLocal(pid, sdp) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); await p.connection.setLocalDescription(sdp); }
             async _createOffer(pid) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); const o = await p.connection.createOffer(); await p.connection.setLocalDescription(o); this._notify('local_description', { peerId: pid, sdp: o }); }
             async _iceRestart(pid) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); const o = await p.connection.createOffer({ iceRestart: true }); await p.connection.setLocalDescription(o); this._notify('ice_restart_local_description', { peerId: pid, sdp: o }); }
-            async _createAnswer(pid) { const p = this.peers.get(pid); if (!p) throw new Error('no peer'); const a = await p.connection.createAnswer(); await p.connection.setLocalDescription(a); this._notify('local_description', { peerId: pid, sdp: a }); }
+            async _createAnswer(pid, sdpExchangeId) {
+                const p = this.peers.get(pid); if (!p) throw new Error('no peer');
+                const a = await p.connection.createAnswer();
+                await p.connection.setLocalDescription(a);
+                this._notify('local_description', { peerId: pid, sdp: a, ...(sdpExchangeId ? { sdpExchangeId } : {}) });
+            }
             async _addIce(pid, cand) {
                 const p = this.peers.get(pid); if (!p) throw new Error('no peer');
                 if (!cand || typeof cand !== 'object') return;

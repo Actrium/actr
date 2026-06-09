@@ -516,7 +516,7 @@ struct SwRuntime {
     role_negotiated: HashSet<String>,
     role_assignments: HashMap<String, bool>,
     pending_local_sdp_exchanges: HashMap<String, String>,
-    pending_remote_sdp_exchanges: HashMap<String, HashSet<String>>,
+    pending_remote_sdp_exchanges: HashMap<String, String>,
     /// ICE restart: tracks whether an ICE restart is in-flight for each peer
     ice_restart_inflight: HashMap<String, bool>,
     /// ICE restart: retry attempt count per peer
@@ -1694,10 +1694,19 @@ impl SwRuntime {
                         );
                         return Ok(());
                     };
-                    self.pending_remote_sdp_exchanges
-                        .entry(peer_id.clone())
-                        .or_default()
-                        .insert(exchange_id.clone());
+                    if let Some(previous_exchange_id) = self
+                        .pending_remote_sdp_exchanges
+                        .insert(peer_id.clone(), exchange_id.clone())
+                    {
+                        if previous_exchange_id != exchange_id {
+                            log::warn!(
+                                "[SW] Replacing pending remote SDP exchange for peer={} previous={} current={}",
+                                peer_id,
+                                previous_exchange_id,
+                                exchange_id
+                            );
+                        }
+                    }
                     Some(exchange_id)
                 } else {
                     None
@@ -1879,21 +1888,18 @@ impl SwRuntime {
                         );
                         return Ok(());
                     };
-                    let remove_peer_entry = match self
-                        .pending_remote_sdp_exchanges
-                        .get_mut(&data.peer_id)
-                    {
-                        Some(pending) => {
-                            if pending.remove(&exchange_id) {
-                                pending.is_empty()
-                            } else {
-                                log::warn!(
-                                    "[SW] Not sending stale SDP answer to peer={} exchange_id={}",
-                                    data.peer_id,
-                                    exchange_id
-                                );
-                                return Ok(());
-                            }
+                    match self.pending_remote_sdp_exchanges.get(&data.peer_id) {
+                        Some(current) if current == &exchange_id => {
+                            self.pending_remote_sdp_exchanges.remove(&data.peer_id);
+                        }
+                        Some(current) => {
+                            log::warn!(
+                                "[SW] Not sending stale SDP answer to peer={} exchange_id={} current={}",
+                                data.peer_id,
+                                exchange_id,
+                                current
+                            );
+                            return Ok(());
                         }
                         None => {
                             log::warn!(
@@ -1902,9 +1908,6 @@ impl SwRuntime {
                             );
                             return Ok(());
                         }
-                    };
-                    if remove_peer_entry {
-                        self.pending_remote_sdp_exchanges.remove(&data.peer_id);
                     }
                     exchange_id
                 } else {
