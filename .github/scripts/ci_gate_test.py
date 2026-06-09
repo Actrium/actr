@@ -45,7 +45,17 @@ def test_scheduled_e2e_runs_root_level_browser_and_stream_e2e() -> None:
     assert "bash e2e/web-browser/run.sh" in workflow
 
 
+def test_pr_gate_swift_uses_macos_only_xcframework() -> None:
+    workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
+    swift_job = _job(workflow, "swift", "kotlin")
+
+    assert "ACTR_XCFRAMEWORK_TARGETS: macos" in swift_job
+    assert "targets: aarch64-apple-darwin" in swift_job
+    assert "targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin" not in swift_job
+
+
 if __name__ == "__main__":
     test_rust_gate_avoids_slow_workspace_tests_and_unused_prewarm()
     test_pr_gate_excludes_heavy_root_e2e_jobs()
     test_scheduled_e2e_runs_root_level_browser_and_stream_e2e()
+    test_pr_gate_swift_uses_macos_only_xcframework()
