@@ -105,10 +105,10 @@ impl WebRtcGate {
         if let Some((target, response_tx)) = pending.remove(&request_id) {
             // Response - Wake up waiting caller (bypassing disk, fast path)
             drop(pending); // Release lock
-            tracing::debug!(
-                "📬 Received RPC Response: request_id={}, target={}",
-                request_id,
-                target
+            tracing::info!(
+                request_id = %request_id,
+                target = %target.to_string_repr(),
+                "rpc.response.matched"
             );
 
             // Convert envelope to result
@@ -122,7 +122,11 @@ impl WebRtcGate {
                     "Invalid RpcEnvelope: payload and error fields inconsistent".to_string(),
                 )),
             };
-            let _ = response_tx.send(result);
+            if response_tx.send(result).is_ok() {
+                tracing::info!(request_id = %request_id, "rpc.response.delivered");
+            } else {
+                tracing::warn!(request_id = %request_id, "rpc.response.receiver_dropped");
+            }
         } else {
             // Request - Enqueue to Mailbox (pass raw bytes, zero overhead)
             drop(pending); // Release lock
@@ -316,11 +320,18 @@ impl WebRtcGate {
             .map_err(|e| ActrError::Internal(format!("Failed to encode response: {e}")))?;
 
         // Send
+        tracing::info!(
+            request_id = %response_envelope.request_id,
+            target = %target.to_string_repr(),
+            bytes = buf.len(),
+            "rpc.response.send"
+        );
         self.coordinator.send_message(target, &buf).await?;
-        tracing::debug!(
-            "📤 Sent response: request_id={}, {} bytes",
-            response_envelope.request_id,
-            buf.len()
+        tracing::info!(
+            request_id = %response_envelope.request_id,
+            target = %target.to_string_repr(),
+            bytes = buf.len(),
+            "rpc.response.sent"
         );
         Ok(())
     }

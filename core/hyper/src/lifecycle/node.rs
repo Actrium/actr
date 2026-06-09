@@ -2142,11 +2142,21 @@ impl Inner {
 
                                                 match handle_incoming_fut.await {
                                                     Ok(response_bytes) => {
+                                                        tracing::info!(
+                                                            request_id = %request_id,
+                                                            response_bytes = response_bytes.len(),
+                                                            "rpc.mailbox.dispatch.completed"
+                                                        );
                                                         // Send response (reuse request_id)
                                                         if let Some(ref gate) = gate {
                                                             // Use already decoded caller_id
                                                             match caller_id_result {
                                                                 Ok(caller) => {
+                                                                    tracing::info!(
+                                                                        request_id = %request_id,
+                                                                        caller = %caller.to_string_repr(),
+                                                                        "rpc.mailbox.response.send"
+                                                                    );
                                                                     // Construct response RpcEnvelope (reuse request_id!)
                                                                     #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
                                                                     let mut response_envelope = RpcEnvelope {
@@ -2174,6 +2184,11 @@ impl Inner {
                                                                             "❌ Failed to send response: {:?}",
                                                                             e
                                                                         );
+                                                                    } else {
+                                                                        tracing::info!(
+                                                                            request_id = %envelope.request_id,
+                                                                            "rpc.mailbox.response.sent"
+                                                                        );
                                                                     }
                                                                 }
                                                                 Err(e) => {
@@ -2186,6 +2201,13 @@ impl Inner {
                                                                     );
                                                                 }
                                                             }
+                                                        } else {
+                                                            tracing::error!(
+                                                                severity = 8,
+                                                                error_category = "transport_error",
+                                                                request_id = %envelope.request_id,
+                                                                "❌ Cannot send response: WebRtcGate is not initialized"
+                                                            );
                                                         }
 
                                                         // ACK message

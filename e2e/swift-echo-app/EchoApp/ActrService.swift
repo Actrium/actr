@@ -63,9 +63,15 @@ final class ActrService: ObservableObject {
             throw EchoAppError.actorUnavailable
         }
 
-        var request = Echoapp_LocalEchoRequest()
-        request.message = input
-        let response: Echoapp_LocalEchoResponse = try await actorRef.call(request)
+        let forwardedMessage = "swift-local:\(input)"
+        let targetType = try ActrType.fromStringRepr("actrium:EchoService:1.0.0")
+        guard let target = try await actorRef.discover(targetType: targetType, count: 1).first else {
+            throw EchoAppError.remoteActorUnavailable
+        }
+
+        var request = Echo_EchoRequest()
+        request.message = forwardedMessage
+        let response: Echo_EchoResponse = try await actorRef.callRemote(target: target, request)
         autoMarkSent()
         return response.reply
     }
@@ -114,6 +120,7 @@ final class ActrService: ObservableObject {
 private enum EchoAppError: Error {
     case missingConfigTemplate
     case actorUnavailable
+    case remoteActorUnavailable
 }
 
 /// Safe: no mutable state. All fields are value types or immutable references.

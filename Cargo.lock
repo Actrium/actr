@@ -2758,6 +2758,7 @@ dependencies = [
  "android_logger",
  "async-trait",
  "audiopus_sys",
+ "base64",
  "bytes",
  "futures-util",
  "log",

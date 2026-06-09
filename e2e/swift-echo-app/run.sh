@@ -610,9 +610,9 @@ tail_app_logs() {
 wait_for_echo_result() {
     section "⏳ Waiting for echo result"
     local timeout="${CLIENT_TIMEOUT_SECONDS:-120}"
-    local attempt=0
+    local elapsed=0
 
-    while [ $attempt -lt "$timeout" ]; do
+    while [ $elapsed -lt "$timeout" ]; do
         if grep_app_logs -q "ACTR_E2E_RESULT:"; then
             local result
             result="$(grep_app_logs "ACTR_E2E_RESULT:" | tail -1)"
@@ -626,7 +626,7 @@ wait_for_echo_result() {
         fi
 
         sleep 2
-        attempt=$((attempt + 1))
+        elapsed=$((elapsed + 2))
     done
 
     echo ""

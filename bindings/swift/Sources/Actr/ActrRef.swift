@@ -63,13 +63,22 @@ public final class ActrRef: Sendable {
         timeoutMs: Int64 = 30000
     ) async throws -> Req.Response {
         let requestData = try message.serializedData()
-        let responseData = try await inner.call(
-            routeKey: Req.routeKey,
-            payloadType: payloadType,
-            requestPayload: requestData,
-            timeoutMs: timeoutMs
+        let responseData = try await decodeBase64Response(
+            try await inner.callAsBase64(
+                routeKey: Req.routeKey,
+                payloadType: payloadType,
+                requestPayload: requestData,
+                timeoutMs: timeoutMs
+            )
         )
         return try Req.Response(serializedBytes: responseData)
+    }
+
+    private func decodeBase64Response(_ encoded: String) throws -> Data {
+        guard let data = Data(base64Encoded: encoded) else {
+            throw ActrError.DecodeFailure(msg: "Invalid base64 RPC response")
+        }
+        return data
     }
 
     /// Performs a raw local RPC call.
@@ -79,11 +88,52 @@ public final class ActrRef: Sendable {
         requestPayload: Data,
         timeoutMs: Int64 = 30000
     ) async throws -> Data {
-        try await inner.call(
-            routeKey: routeKey,
-            payloadType: payloadType,
-            requestPayload: requestPayload,
-            timeoutMs: timeoutMs
+        try await decodeBase64Response(
+            try await inner.callAsBase64(
+                routeKey: routeKey,
+                payloadType: payloadType,
+                requestPayload: requestPayload,
+                timeoutMs: timeoutMs
+            )
+        )
+    }
+
+    /// Performs a type-safe RPC call against a remote actor.
+    public func callRemote<Req: RpcRequest>(
+        target: ActrId,
+        _ message: Req,
+        payloadType: PayloadType = .rpcReliable,
+        timeoutMs: Int64 = 30000
+    ) async throws -> Req.Response {
+        let requestData = try message.serializedData()
+        let responseData = try await decodeBase64Response(
+            try await inner.callRemoteAsBase64(
+                target: target,
+                routeKey: Req.routeKey,
+                payloadType: payloadType,
+                requestPayload: requestData,
+                timeoutMs: timeoutMs
+            )
+        )
+        return try Req.Response(serializedBytes: responseData)
+    }
+
+    /// Performs a raw RPC call against a remote actor.
+    public func callRemote(
+        target: ActrId,
+        routeKey: String,
+        payloadType: PayloadType,
+        requestPayload: Data,
+        timeoutMs: Int64 = 30000
+    ) async throws -> Data {
+        try await decodeBase64Response(
+            try await inner.callRemoteAsBase64(
+                target: target,
+                routeKey: routeKey,
+                payloadType: payloadType,
+                requestPayload: requestPayload,
+                timeoutMs: timeoutMs
+            )
         )
     }
 

@@ -8,6 +8,7 @@ use crate::types::{
 use crate::workload::DynamicWorkload;
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
+use base64::Engine as _;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -358,7 +359,71 @@ impl ActrRefWrapper {
             )
             .await?;
 
+        tracing::info!(response_bytes = response_bytes.len(), "ffi.call.completed");
         Ok(response_bytes.to_vec())
+    }
+
+    /// Call the local guest workload via RPC and return base64-encoded response bytes.
+    ///
+    /// This avoids the Swift UniFFI async RustBuffer return path for raw byte responses.
+    pub async fn call_as_base64(
+        &self,
+        route_key: String,
+        payload_type: PayloadType,
+        request_payload: Vec<u8>,
+        timeout_ms: i64,
+    ) -> ActrResult<String> {
+        let response_bytes = self
+            .call(route_key, payload_type, request_payload, timeout_ms)
+            .await?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(response_bytes))
+    }
+
+    /// Call a remote actor via RPC.
+    pub async fn call_remote(
+        &self,
+        target: ActrId,
+        route_key: String,
+        payload_type: PayloadType,
+        request_payload: Vec<u8>,
+        timeout_ms: i64,
+    ) -> ActrResult<Vec<u8>> {
+        let proto_payload_type: actr_protocol::PayloadType = payload_type.into();
+        let target_id: actr_protocol::ActrId = target.into();
+        let ctx = self.inner.app_context().await;
+
+        let response_bytes = ctx
+            .call_raw(
+                &Dest::Actor(target_id),
+                route_key,
+                proto_payload_type,
+                Bytes::from(request_payload),
+                timeout_ms,
+            )
+            .await?;
+
+        tracing::info!(
+            response_bytes = response_bytes.len(),
+            "ffi.call_remote.completed"
+        );
+        Ok(response_bytes.to_vec())
+    }
+
+    /// Call a remote actor via RPC and return base64-encoded response bytes.
+    ///
+    /// This avoids the Swift UniFFI async RustBuffer return path for raw byte responses.
+    pub async fn call_remote_as_base64(
+        &self,
+        target: ActrId,
+        route_key: String,
+        payload_type: PayloadType,
+        request_payload: Vec<u8>,
+        timeout_ms: i64,
+    ) -> ActrResult<String> {
+        let response_bytes = self
+            .call_remote(target, route_key, payload_type, request_payload, timeout_ms)
+            .await?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(response_bytes))
     }
 
     /// Send a one-way message to the local guest workload.
