@@ -148,11 +148,11 @@ write_public_key() {
 
 write_rust_protoc_plugin_config() {
   local project="$1"
-  cat >"$project/.protoc-plugin.toml" <<'EOF_PROTOC_PLUGIN'
+  cat >"$project/.protoc-plugin.toml" <<EOF_PROTOC_PLUGIN
 version = 1
 
 [plugins]
-protoc-gen-actrframework = "0.2.0"
+protoc-gen-actrframework = "$ACTR_CRATE_VERSION"
 EOF_PROTOC_PLUGIN
 }
 
@@ -375,8 +375,8 @@ default = ["cdylib"]
 cdylib = ["actr-framework/cdylib"]
 
 [dependencies]
-actr-framework = "0.2"
-actr-protocol = "0.2"
+actr-framework = "=$ACTR_CRATE_VERSION"
+actr-protocol = "=$ACTR_CRATE_VERSION"
 async-trait = "0.1"
 prost = "0.14"
 prost-types = "0.14"
@@ -717,16 +717,16 @@ host = [
 ]
 
 [dependencies]
-actr-framework = "0.2"
-actr-protocol = "0.2"
+actr-framework = "=$ACTR_CRATE_VERSION"
+actr-protocol = "=$ACTR_CRATE_VERSION"
 async-trait = "0.1"
 bytes = "1"
 prost = "0.14"
 prost-types = "0.14"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-actr-config = { version = "0.2", optional = true }
-actr-hyper = { version = "0.2", features = ["dynclib-engine"], optional = true }
+actr-config = { version = "=$ACTR_CRATE_VERSION", optional = true }
+actr-hyper = { version = "=$ACTR_CRATE_VERSION", features = ["dynclib-engine"], optional = true }
 anyhow = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 serde_json = { version = "1", optional = true }
@@ -1000,6 +1000,16 @@ require_tool curl
 require_tool npm
 require_tool node
 require_tool protoc
+
+ACTR_CRATE_VERSION="${ACTR_CRATE_VERSION:-$(awk -F'"' '
+  /^\[package\]$/ { in_package = 1; next }
+  /^\[/ && in_package { exit }
+  in_package && /^version = "/ { print $2; exit }
+' "$REPO_ROOT/Cargo.toml")}"
+if [ -z "$ACTR_CRATE_VERSION" ]; then
+  echo "Unable to determine actr crate version from $REPO_ROOT/Cargo.toml" >&2
+  exit 1
+fi
 
 mkdir -p "$LOG_DIR"
 
