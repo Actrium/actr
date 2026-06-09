@@ -1,10 +1,11 @@
 //! Mobile full-disconnect recovery tests.
 //!
-//! The mobile peer is intentionally the WebRTC answerer. A short semantic
-//! recovery window should keep the old WebRTC session and recover via ICE
-//! restart; a stale recovery window should close the old session and let the
-//! next RPC rebuild it. Both cases keep the old WebSocket half-open until the
-//! restore path probes and rebuilds signaling.
+//! The mobile peer is exercised as both WebRTC offerer and answerer. A short
+//! semantic recovery window should keep the old WebRTC session and recover via
+//! ICE restart. A stale answerer recovery window should close the old session
+//! and let the next RPC rebuild it; a stale offerer recovery window should keep
+//! using the offerer-driven ICE restart path. Both cases keep the old WebSocket
+//! half-open until the restore path probes and rebuilds signaling.
 
 use std::time::{Duration, Instant};
 
@@ -15,12 +16,36 @@ use actr_hyper::lifecycle::{
 use actr_hyper::test_support::TestHarness;
 use actr_protocol::ActrId;
 
-const MOBILE: u64 = 200;
-const SERVER: u64 = 100;
 const ICE_RESTART_SEMANTIC_ELAPSED: Duration = Duration::from_secs(15);
 const REBUILD_SEMANTIC_ELAPSED: Duration = Duration::from_secs(65);
 const HALF_OPEN_SETTLE: Duration = Duration::from_millis(100);
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy)]
+struct RoleCase {
+    name: &'static str,
+    mobile_serial: u64,
+    server_serial: u64,
+}
+
+impl RoleCase {
+    fn mobile_is_offerer(self) -> bool {
+        self.mobile_serial < self.server_serial
+    }
+}
+
+const ROLE_CASES: [RoleCase; 2] = [
+    RoleCase {
+        name: "mobile_offerer",
+        mobile_serial: 100,
+        server_serial: 200,
+    },
+    RoleCase {
+        name: "mobile_answerer",
+        mobile_serial: 200,
+        server_serial: 100,
+    },
+];
 
 fn init_tracing() {
     tracing_subscriber::fmt()
@@ -54,23 +79,29 @@ fn network_event(sequence: u64, available: bool, wifi: bool, cellular: bool) -> 
     }
 }
 
-async fn setup_mobile_server_harness() -> TestHarness {
+async fn setup_mobile_server_harness(case: RoleCase) -> TestHarness {
     let mut harness = TestHarness::with_vnet().await;
-    harness.add_peer(MOBILE).await;
-    harness.add_peer(SERVER).await;
-    harness.connect(MOBILE, SERVER).await;
+    for serial in [
+        case.mobile_serial.min(case.server_serial),
+        case.mobile_serial.max(case.server_serial),
+    ] {
+        harness.add_peer(serial).await;
+    }
+    harness
+        .connect(case.mobile_serial, case.server_serial)
+        .await;
     harness
 }
 
-fn server_id(harness: &TestHarness) -> ActrId {
-    harness.peer(SERVER).id.clone()
+fn server_id(harness: &TestHarness, case: RoleCase) -> ActrId {
+    harness.peer(case.server_serial).id.clone()
 }
 
-async fn mobile_peer_session_id(harness: &TestHarness) -> Option<u64> {
+async fn mobile_peer_session_id(harness: &TestHarness, case: RoleCase) -> Option<u64> {
     harness
-        .peer(MOBILE)
+        .peer(case.mobile_serial)
         .coordinator
-        .peer_session_id_for_test(&server_id(harness))
+        .peer_session_id_for_test(&server_id(harness, case))
         .await
 }
 
@@ -89,13 +120,15 @@ fn assert_event_batch_action(
 
 async fn process_mobile_events(
     harness: &TestHarness,
+    case: RoleCase,
     label: &str,
     events: Vec<NetworkEvent>,
     expected: NetworkRecoveryAction,
 ) {
     assert_event_batch_action(label, &events, expected);
     let results =
-        process_network_event_batch(events, harness.peer(MOBILE).network_processor()).await;
+        process_network_event_batch(events, harness.peer(case.mobile_serial).network_processor())
+            .await;
     assert!(
         results.iter().all(|result| result.success),
         "{label} network event processing failed: {:?}",
@@ -103,12 +136,19 @@ async fn process_mobile_events(
     );
 }
 
-async fn expect_mobile_request_ok(harness: &TestHarness, request_id: &str) -> usize {
+async fn expect_mobile_request_ok(
+    harness: &TestHarness,
+    case: RoleCase,
+    request_id: &str,
+) -> usize {
     let started = Instant::now();
     let mut attempts = 0u32;
     loop {
         attempts += 1;
-        let handle = harness.peer(MOBILE).spawn_request(SERVER, request_id, 1000);
+        let handle =
+            harness
+                .peer(case.mobile_serial)
+                .spawn_request(case.server_serial, request_id, 1000);
         match handle.await {
             Ok(Ok(response)) => {
                 tracing::info!(
@@ -144,13 +184,13 @@ async fn expect_mobile_request_ok(harness: &TestHarness, request_id: &str) -> us
     }
 }
 
-async fn wait_for_mobile_recovery_cleared(harness: &TestHarness, label: &str) {
-    let peer_id = server_id(harness);
+async fn wait_for_mobile_recovery_cleared(harness: &TestHarness, case: RoleCase, label: &str) {
+    let peer_id = server_id(harness, case);
     let deadline = tokio::time::Instant::now() + RECOVERY_TIMEOUT;
 
     loop {
         if harness
-            .peer(MOBILE)
+            .peer(case.mobile_serial)
             .coordinator
             .peer_recovery_status(&peer_id)
             .await
@@ -170,6 +210,7 @@ async fn wait_for_mobile_recovery_cleared(harness: &TestHarness, label: &str) {
 
 async fn enter_half_open_recovery_window(
     harness: &TestHarness,
+    case: RoleCase,
     label: &str,
     semantic_elapsed: Duration,
 ) {
@@ -177,8 +218,8 @@ async fn enter_half_open_recovery_window(
         .vnet
         .as_ref()
         .expect("half-open recovery test requires VNet");
-    let mobile = harness.peer(MOBILE);
-    let peer_id = server_id(harness);
+    let mobile = harness.peer(case.mobile_serial);
+    let peer_id = server_id(harness, case);
 
     vnet.block_network();
     harness.server.pause_forwarding();
@@ -207,6 +248,7 @@ async fn enter_half_open_recovery_window(
 
 async fn restore_half_open_and_process_network_available(
     harness: &TestHarness,
+    case: RoleCase,
     label: &str,
 ) -> Duration {
     let started = Instant::now();
@@ -216,6 +258,7 @@ async fn restore_half_open_and_process_network_available(
 
     process_mobile_events(
         harness,
+        case,
         label,
         vec![
             network_event(1, true, false, false),
@@ -248,73 +291,99 @@ async fn restore_half_open_and_process_network_available(
 async fn test_mobile_half_open_15s_semantics_recovers_with_ice_restart() {
     init_tracing();
 
-    let harness = setup_mobile_server_harness().await;
-    harness.reset_counters();
+    for case in ROLE_CASES {
+        let label = format!("{}_half_open_15s_ice_restart", case.name);
+        let verify_id = format!("{label}_verify");
+        let harness = setup_mobile_server_harness(case).await;
+        harness.reset_counters();
 
-    let old_session = mobile_peer_session_id(&harness)
-        .await
-        .expect("mobile should have an initial WebRTC session");
+        let old_session = mobile_peer_session_id(&harness, case)
+            .await
+            .expect("mobile should have an initial WebRTC session");
 
-    enter_half_open_recovery_window(
-        &harness,
-        "half_open_15s_ice_restart",
-        ICE_RESTART_SEMANTIC_ELAPSED,
-    )
-    .await;
-    restore_half_open_and_process_network_available(&harness, "half_open_15s_ice_restart").await;
+        enter_half_open_recovery_window(&harness, case, &label, ICE_RESTART_SEMANTIC_ELAPSED).await;
+        restore_half_open_and_process_network_available(&harness, case, &label).await;
 
-    harness
-        .wait_for_ice_restart_request_count(1, Duration::from_secs(3))
-        .await;
+        if case.mobile_is_offerer() {
+            harness
+                .wait_for_ice_restart_count(1, Duration::from_secs(3))
+                .await;
+        } else {
+            harness
+                .wait_for_ice_restart_request_count(1, Duration::from_secs(3))
+                .await;
+        }
 
-    wait_for_mobile_recovery_cleared(&harness, "half_open_15s_ice_restart").await;
+        wait_for_mobile_recovery_cleared(&harness, case, &label).await;
 
-    let response_len = expect_mobile_request_ok(&harness, "half_open_15s_ice_restart_verify").await;
-    let recovered_session = mobile_peer_session_id(&harness)
-        .await
-        .expect("mobile should still have a WebRTC session after ICE restart");
+        let response_len = expect_mobile_request_ok(&harness, case, &verify_id).await;
+        let recovered_session = mobile_peer_session_id(&harness, case)
+            .await
+            .expect("mobile should still have a WebRTC session after ICE restart");
 
-    assert_eq!(
-        recovered_session, old_session,
-        "15s semantic recovery should keep the existing WebRTC session"
-    );
-    assert!(response_len > 0);
+        assert_eq!(
+            recovered_session, old_session,
+            "{label} should keep the existing WebRTC session"
+        );
+        assert!(response_len > 0);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_mobile_half_open_65s_semantics_rebuilds_webrtc() {
     init_tracing();
 
-    let harness = setup_mobile_server_harness().await;
-    harness.reset_counters();
+    for case in ROLE_CASES {
+        let label = format!("{}_half_open_65s_rebuild", case.name);
+        let verify_id = format!("{label}_verify");
+        let harness = setup_mobile_server_harness(case).await;
+        harness.reset_counters();
 
-    let old_session = mobile_peer_session_id(&harness)
-        .await
-        .expect("mobile should have an initial WebRTC session");
+        let old_session = mobile_peer_session_id(&harness, case)
+            .await
+            .expect("mobile should have an initial WebRTC session");
 
-    enter_half_open_recovery_window(&harness, "half_open_65s_rebuild", REBUILD_SEMANTIC_ELAPSED)
-        .await;
-    restore_half_open_and_process_network_available(&harness, "half_open_65s_rebuild").await;
+        enter_half_open_recovery_window(&harness, case, &label, REBUILD_SEMANTIC_ELAPSED).await;
+        restore_half_open_and_process_network_available(&harness, case, &label).await;
 
-    assert_eq!(
-        mobile_peer_session_id(&harness).await,
-        None,
-        "65s semantic recovery should close the stale answerer session before new sends"
-    );
-    assert_eq!(
-        harness.server.get_ice_restart_request_count(),
-        0,
-        "stale answerer recovery should rebuild instead of requesting ICE restart"
-    );
+        if case.mobile_is_offerer() {
+            harness
+                .wait_for_ice_restart_count(1, Duration::from_secs(3))
+                .await;
+            wait_for_mobile_recovery_cleared(&harness, case, &label).await;
 
-    let response_len = expect_mobile_request_ok(&harness, "half_open_65s_rebuild_verify").await;
-    let rebuilt_session = mobile_peer_session_id(&harness)
-        .await
-        .expect("mobile should rebuild a WebRTC session after the next RPC");
+            let response_len = expect_mobile_request_ok(&harness, case, &verify_id).await;
+            let recovered_session = mobile_peer_session_id(&harness, case)
+                .await
+                .expect("mobile offerer should keep a WebRTC session after ICE restart");
 
-    assert_ne!(
-        rebuilt_session, old_session,
-        "65s semantic recovery should rebuild with a new WebRTC session"
-    );
-    assert!(response_len > 0);
+            assert_eq!(
+                recovered_session, old_session,
+                "{label} should keep the offerer session and recover via ICE restart"
+            );
+            assert!(response_len > 0);
+        } else {
+            assert_eq!(
+                mobile_peer_session_id(&harness, case).await,
+                None,
+                "{label} should close the stale answerer session before new sends"
+            );
+            assert_eq!(
+                harness.server.get_ice_restart_request_count(),
+                0,
+                "{label} should rebuild instead of requesting ICE restart"
+            );
+
+            let response_len = expect_mobile_request_ok(&harness, case, &verify_id).await;
+            let rebuilt_session = mobile_peer_session_id(&harness, case)
+                .await
+                .expect("mobile answerer should rebuild a WebRTC session after the next RPC");
+
+            assert_ne!(
+                rebuilt_session, old_session,
+                "{label} should rebuild with a new WebRTC session"
+            );
+            assert!(response_len > 0);
+        }
+    }
 }

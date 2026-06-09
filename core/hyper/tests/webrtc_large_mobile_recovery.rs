@@ -22,9 +22,27 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc, oneshot};
 
-const SERVER: u64 = 100;
-const MOBILE: u64 = 200;
 const LARGE_PAYLOAD_SIZE: usize = 200 * 1024;
+
+#[derive(Clone, Copy)]
+struct RoleCase {
+    name: &'static str,
+    mobile_serial: u64,
+    server_serial: u64,
+}
+
+const ROLE_CASES: [RoleCase; 2] = [
+    RoleCase {
+        name: "mobile_offerer",
+        mobile_serial: 100,
+        server_serial: 200,
+    },
+    RoleCase {
+        name: "mobile_answerer",
+        mobile_serial: 200,
+        server_serial: 100,
+    },
+];
 
 struct BackgroundTasks {
     handles: Vec<tokio::task::JoinHandle<()>>,
@@ -139,10 +157,6 @@ fn spawn_data_echo_responder(
             }
         }
     })
-}
-
-async fn setup_mobile_to_server() -> (TestHarness, BackgroundTasks) {
-    setup_mobile_to_server_with_serials(MOBILE, SERVER).await
 }
 
 async fn setup_mobile_to_server_with_serials(
@@ -260,14 +274,15 @@ fn assert_payload_integrity(label: &str, response: &Bytes, data: &[u8], expected
 
 async fn expect_large_request_ok(
     harness: &TestHarness,
+    case: RoleCase,
     request_id: &str,
     data: &[u8],
     expected_hash: &[u8; 32],
     timeout: Duration,
 ) {
     let handle = spawn_large_request(
-        harness.peer(MOBILE).gate.clone(),
-        harness.peer(SERVER).id.clone(),
+        harness.peer(case.mobile_serial).gate.clone(),
+        harness.peer(case.server_serial).id.clone(),
         request_id,
         data.to_vec(),
         timeout.as_millis() as i64,
@@ -281,7 +296,7 @@ async fn expect_large_request_ok(
 
     assert_payload_integrity(request_id, &response, data, expected_hash);
     assert_eq!(
-        harness.peer(MOBILE).pending_count().await,
+        harness.peer(case.mobile_serial).pending_count().await,
         0,
         "{} should leave no pending request",
         request_id
@@ -290,6 +305,7 @@ async fn expect_large_request_ok(
 
 async fn expect_large_request_eventually_ok(
     harness: &TestHarness,
+    case: RoleCase,
     request_id: &str,
     data: &[u8],
     expected_hash: &[u8; 32],
@@ -297,8 +313,8 @@ async fn expect_large_request_eventually_ok(
 ) {
     expect_large_request_eventually_ok_between(
         harness,
-        MOBILE,
-        SERVER,
+        case.mobile_serial,
+        case.server_serial,
         request_id,
         data,
         expected_hash,
@@ -481,8 +497,8 @@ async fn expect_bounded_completion(
     }
 }
 
-async fn process_mobile_events(harness: &TestHarness, events: Vec<NetworkEvent>) {
-    process_mobile_events_for(harness, MOBILE, events).await;
+async fn process_mobile_events(harness: &TestHarness, case: RoleCase, events: Vec<NetworkEvent>) {
+    process_mobile_events_for(harness, case.mobile_serial, events).await;
 }
 
 async fn process_mobile_events_for(
@@ -525,20 +541,22 @@ fn spawn_mobile_event_storm(
     })
 }
 
-async fn inflight_short_offline_recovers_original_request() {
-    let (harness, _bg_tasks) = setup_mobile_to_server().await;
+async fn inflight_short_offline_recovers_original_request(case: RoleCase) {
+    let (harness, _bg_tasks) =
+        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
     let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+    let request_id = format!("{}_inflight_short_offline", case.name);
 
     let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
     let request = spawn_large_request(
-        harness.peer(MOBILE).gate.clone(),
-        harness.peer(SERVER).id.clone(),
-        "inflight_short_offline",
+        harness.peer(case.mobile_serial).gate.clone(),
+        harness.peer(case.server_serial).id.clone(),
+        &request_id,
         data.clone(),
         30_000,
     );
 
-    let event = wait_for_send_to_pause(event_rx, "short offline").await;
+    let event = wait_for_send_to_pause(event_rx, &request_id).await;
     tracing::info!(
         "short offline paused msg_id={} fragment {}/{}",
         event.msg_id,
@@ -558,24 +576,26 @@ async fn inflight_short_offline_recovers_original_request() {
         .expect("short offline request task panicked")
         .expect("short offline request should recover");
 
-    assert_payload_integrity("short offline", &response, &data, &hash);
-    assert_eq!(harness.peer(MOBILE).pending_count().await, 0);
+    assert_payload_integrity(&request_id, &response, &data, &hash);
+    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
 }
 
-async fn inflight_network_type_switch_recovers_original_request() {
-    let (harness, _bg_tasks) = setup_mobile_to_server().await;
+async fn inflight_network_type_switch_recovers_original_request(case: RoleCase) {
+    let (harness, _bg_tasks) =
+        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
     let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+    let request_id = format!("{}_inflight_network_type_switch", case.name);
 
     let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
     let request = spawn_large_request(
-        harness.peer(MOBILE).gate.clone(),
-        harness.peer(SERVER).id.clone(),
-        "inflight_network_type_switch",
+        harness.peer(case.mobile_serial).gate.clone(),
+        harness.peer(case.server_serial).id.clone(),
+        &request_id,
         data.clone(),
         30_000,
     );
 
-    let event = wait_for_send_to_pause(event_rx, "network type switch").await;
+    let event = wait_for_send_to_pause(event_rx, &request_id).await;
     tracing::info!(
         "network type switch paused msg_id={} fragment {}/{}",
         event.msg_id,
@@ -588,7 +608,7 @@ async fn inflight_network_type_switch_recovers_original_request() {
         select_network_recovery_action(&events),
         NetworkRecoveryAction::Restore
     );
-    process_mobile_events(&harness, events).await;
+    process_mobile_events(&harness, case, events).await;
 
     release_send.notify_waiters();
     drop(hook_guard);
@@ -599,24 +619,27 @@ async fn inflight_network_type_switch_recovers_original_request() {
         .expect("network type switch request task panicked")
         .expect("network type switch request should recover");
 
-    assert_payload_integrity("network type switch", &response, &data, &hash);
-    assert_eq!(harness.peer(MOBILE).pending_count().await, 0);
+    assert_payload_integrity(&request_id, &response, &data, &hash);
+    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
 }
 
-async fn inflight_long_offline_fails_bounded_then_retries() {
-    let (harness, _bg_tasks) = setup_mobile_to_server().await;
+async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
+    let (harness, _bg_tasks) =
+        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
     let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+    let request_id = format!("{}_inflight_long_offline", case.name);
+    let retry_id = format!("{}_long_offline_retry", case.name);
 
     let (hook_guard, event_rx, _release_send) = pause_next_multifragment_send_after(1);
     let request = spawn_large_request(
-        harness.peer(MOBILE).gate.clone(),
-        harness.peer(SERVER).id.clone(),
-        "inflight_long_offline",
+        harness.peer(case.mobile_serial).gate.clone(),
+        harness.peer(case.server_serial).id.clone(),
+        &request_id,
         data.clone(),
         2_000,
     );
 
-    let event = wait_for_send_to_pause(event_rx, "long offline").await;
+    let event = wait_for_send_to_pause(event_rx, &request_id).await;
     tracing::info!(
         "long offline paused msg_id={} fragment {}/{}",
         event.msg_id,
@@ -625,31 +648,28 @@ async fn inflight_long_offline_fails_bounded_then_retries() {
     );
 
     harness.simulate_disconnect();
-    process_mobile_events(&harness, vec![offline_event(1)]).await;
+    process_mobile_events(&harness, case, vec![offline_event(1)]).await;
 
-    let err = expect_bounded_failure(
-        request,
-        "long offline original request",
-        Duration::from_secs(5),
-    )
-    .await;
+    let err = expect_bounded_failure(request, &request_id, Duration::from_secs(5)).await;
     assert!(
         err.contains("Request timeout"),
         "long offline should time out the in-flight request, got: {err}"
     );
-    assert_eq!(harness.peer(MOBILE).pending_count().await, 0);
+    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
     drop(hook_guard);
 
     harness.simulate_reconnect();
     process_mobile_events(
         &harness,
+        case,
         vec![network_event(2, true, false, false), cellular_event(3)],
     )
     .await;
 
     expect_large_request_eventually_ok(
         &harness,
-        "long_offline_retry",
+        case,
+        &retry_id,
         &data,
         &hash,
         Duration::from_secs(25),
@@ -657,20 +677,22 @@ async fn inflight_long_offline_fails_bounded_then_retries() {
     .await;
 }
 
-async fn inflight_short_background_survives_foreground_restore() {
-    let (harness, _bg_tasks) = setup_mobile_to_server().await;
+async fn inflight_short_background_survives_foreground_restore(case: RoleCase) {
+    let (harness, _bg_tasks) =
+        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
     let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+    let request_id = format!("{}_inflight_short_background", case.name);
 
     let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
     let request = spawn_large_request(
-        harness.peer(MOBILE).gate.clone(),
-        harness.peer(SERVER).id.clone(),
-        "inflight_short_background",
+        harness.peer(case.mobile_serial).gate.clone(),
+        harness.peer(case.server_serial).id.clone(),
+        &request_id,
         data.clone(),
         30_000,
     );
 
-    let event = wait_for_send_to_pause(event_rx, "short background").await;
+    let event = wait_for_send_to_pause(event_rx, &request_id).await;
     tracing::info!(
         "short background paused msg_id={} fragment {}/{}",
         event.msg_id,
@@ -684,7 +706,7 @@ async fn inflight_short_background_survives_foreground_restore() {
         select_network_recovery_action(&events),
         NetworkRecoveryAction::Restore
     );
-    process_mobile_events(&harness, events).await;
+    process_mobile_events(&harness, case, events).await;
 
     release_send.notify_waiters();
     drop(hook_guard);
@@ -695,24 +717,27 @@ async fn inflight_short_background_survives_foreground_restore() {
         .expect("short background request task panicked")
         .expect("short background request should complete");
 
-    assert_payload_integrity("short background", &response, &data, &hash);
-    assert_eq!(harness.peer(MOBILE).pending_count().await, 0);
+    assert_payload_integrity(&request_id, &response, &data, &hash);
+    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
 }
 
-async fn inflight_long_background_is_bounded_and_retries() {
-    let (harness, _bg_tasks) = setup_mobile_to_server().await;
+async fn inflight_long_background_is_bounded_and_retries(case: RoleCase) {
+    let (harness, _bg_tasks) =
+        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
     let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+    let request_id = format!("{}_inflight_long_background", case.name);
+    let retry_id = format!("{}_long_background_retry", case.name);
 
     let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
     let request = spawn_large_request(
-        harness.peer(MOBILE).gate.clone(),
-        harness.peer(SERVER).id.clone(),
-        "inflight_long_background",
+        harness.peer(case.mobile_serial).gate.clone(),
+        harness.peer(case.server_serial).id.clone(),
+        &request_id,
         data.clone(),
         8_000,
     );
 
-    let event = wait_for_send_to_pause(event_rx, "long background").await;
+    let event = wait_for_send_to_pause(event_rx, &request_id).await;
     tracing::info!(
         "long background paused msg_id={} fragment {}/{}",
         event.msg_id,
@@ -731,24 +756,18 @@ async fn inflight_long_background_is_bounded_and_retries() {
         select_network_recovery_action(&events),
         NetworkRecoveryAction::ForceReconnect
     );
-    process_mobile_events(&harness, events).await;
+    process_mobile_events(&harness, case, events).await;
 
     release_send.notify_waiters();
     drop(hook_guard);
 
-    expect_bounded_completion(
-        request,
-        "long background original request",
-        &data,
-        &hash,
-        Duration::from_secs(12),
-    )
-    .await;
-    assert_eq!(harness.peer(MOBILE).pending_count().await, 0);
+    expect_bounded_completion(request, &request_id, &data, &hash, Duration::from_secs(12)).await;
+    assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
 
     expect_large_request_eventually_ok(
         &harness,
-        "long_background_retry",
+        case,
+        &retry_id,
         &data,
         &hash,
         Duration::from_secs(25),
@@ -756,13 +775,16 @@ async fn inflight_long_background_is_bounded_and_retries() {
     .await;
 }
 
-async fn mobile_large_message_baseline_after_recovery() {
-    let (harness, _bg_tasks) = setup_mobile_to_server().await;
+async fn mobile_large_message_baseline_after_recovery(case: RoleCase) {
+    let (harness, _bg_tasks) =
+        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
     let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+    let request_id = format!("{}_mobile_large_baseline", case.name);
 
     expect_large_request_ok(
         &harness,
-        "mobile_large_baseline",
+        case,
+        &request_id,
         &data,
         &hash,
         Duration::from_secs(30),
@@ -770,9 +792,10 @@ async fn mobile_large_message_baseline_after_recovery() {
     .await;
 }
 
-async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
-    let (harness, _bg_tasks) = setup_mobile_to_server().await;
-    let server_id = harness.peer(SERVER).id.clone();
+async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case: RoleCase) {
+    let (harness, _bg_tasks) =
+        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+    let server_id = harness.peer(case.server_serial).id.clone();
 
     let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<HookEvent>();
     let hook: HookCallback = Arc::new(move |event| {
@@ -781,10 +804,13 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
             let _ = hook_tx.send(event);
         })
     });
-    harness.peer(MOBILE).coordinator.set_hook_callback(hook);
+    harness
+        .peer(case.mobile_serial)
+        .coordinator
+        .set_hook_callback(hook);
 
     let stream = DataStream {
-        stream_id: "mobile-large-data-stream".to_string(),
+        stream_id: format!("{}-mobile-large-data-stream", case.name),
         sequence: 7,
         payload: Bytes::from(vec![0x5a; LARGE_PAYLOAD_SIZE]),
         metadata: Vec::new(),
@@ -793,7 +819,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
     let payload = Bytes::from(stream.encode_to_vec());
 
     harness
-        .peer(MOBILE)
+        .peer(case.mobile_serial)
         .gate
         .send_data_stream(
             &server_id,
@@ -805,7 +831,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
         .expect("mobile data stream send should reach transport");
 
     let session_id = harness
-        .peer(MOBILE)
+        .peer(case.mobile_serial)
         .coordinator
         .get_peer_session_id(&server_id)
         .await
@@ -813,7 +839,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
 
     for state in [ConnectionState::Disconnected, ConnectionState::Failed] {
         harness
-            .peer(MOBILE)
+            .peer(case.mobile_serial)
             .send_event(ConnectionEvent::StateChanged {
                 peer_id: server_id.clone(),
                 session_id,
@@ -821,7 +847,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
             });
     }
     harness
-        .peer(MOBILE)
+        .peer(case.mobile_serial)
         .send_event(ConnectionEvent::IceRestartStarted {
             peer_id: server_id.clone(),
             session_id,
@@ -843,7 +869,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
     );
 
     harness
-        .peer(MOBILE)
+        .peer(case.mobile_serial)
         .send_event(ConnectionEvent::DataChannelClosed {
             peer_id: server_id.clone(),
             session_id,
@@ -868,7 +894,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
             session_id: got_session_id,
             reason,
         } => {
-            assert_eq!(stream_id, "mobile-large-data-stream");
+            assert_eq!(stream_id, stream.stream_id);
             assert_eq!(got_session_id, session_id);
             assert_eq!(reason, "data channel closed");
         }
@@ -876,9 +902,10 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook() {
     }
 }
 
-async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
-    let (harness, _bg_tasks) = setup_mobile_to_server().await;
-    let server_id = harness.peer(SERVER).id.clone();
+async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case: RoleCase) {
+    let (harness, _bg_tasks) =
+        setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
+    let server_id = harness.peer(case.server_serial).id.clone();
 
     let (hook_tx, mut hook_rx) = mpsc::unbounded_channel::<HookEvent>();
     let hook: HookCallback = Arc::new(move |event| {
@@ -887,10 +914,13 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
             let _ = hook_tx.send(event);
         })
     });
-    harness.peer(MOBILE).coordinator.set_hook_callback(hook);
+    harness
+        .peer(case.mobile_serial)
+        .coordinator
+        .set_hook_callback(hook);
 
     let stream = DataStream {
-        stream_id: "inflight-long-offline-stream".to_string(),
+        stream_id: format!("{}-inflight-long-offline-stream", case.name),
         sequence: 11,
         payload: Bytes::from(vec![0x33; LARGE_PAYLOAD_SIZE]),
         metadata: Vec::new(),
@@ -900,7 +930,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
 
     let (hook_guard, event_rx, release_send) = pause_next_multifragment_send_after(1);
     let send_task = {
-        let gate = harness.peer(MOBILE).gate.clone();
+        let gate = harness.peer(case.mobile_serial).gate.clone();
         let server_id = server_id.clone();
         let stream_id = stream.stream_id.clone();
         tokio::spawn(async move {
@@ -918,7 +948,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
     );
 
     harness.simulate_disconnect();
-    process_mobile_events(&harness, vec![offline_event(1)]).await;
+    process_mobile_events(&harness, case, vec![offline_event(1)]).await;
     release_send.notify_waiters();
     drop(hook_guard);
 
@@ -950,14 +980,14 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
 
         match event {
             HookEvent::DataStreamDeliveryUncertain { stream_id, .. } => {
-                assert_eq!(stream_id, "inflight-long-offline-stream");
+                assert_eq!(stream_id, stream.stream_id);
             }
             other => panic!("unexpected hook event: {other:?}"),
         }
     }
 
     assert_eq!(
-        harness.peer(MOBILE).pending_count().await,
+        harness.peer(case.mobile_serial).pending_count().await,
         0,
         "in-flight DataStream offline path should not leak RPC pending state"
     );
@@ -965,6 +995,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
     harness.simulate_reconnect();
     process_mobile_events(
         &harness,
+        case,
         vec![
             NetworkEvent::ForceReconnect {
                 reason: ReconnectReason::StaleConnectionSuspected,
@@ -976,9 +1007,11 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
     .await;
 
     let (retry_payload, retry_hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+    let retry_id = format!("{}_after_data_stream_long_offline", case.name);
     expect_large_request_eventually_ok(
         &harness,
-        "after_data_stream_long_offline",
+        case,
+        &retry_id,
         &retry_payload,
         &retry_hash,
         Duration::from_secs(25),
@@ -990,26 +1023,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain() {
 async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
     init_tracing();
 
-    struct RoleCase {
-        name: &'static str,
-        mobile_serial: u64,
-        server_serial: u64,
-    }
-
-    let cases = [
-        RoleCase {
-            name: "mobile_offerer",
-            mobile_serial: 100,
-            server_serial: 200,
-        },
-        RoleCase {
-            name: "mobile_answerer",
-            mobile_serial: 200,
-            server_serial: 100,
-        },
-    ];
-
-    for case in cases {
+    for case in ROLE_CASES {
         let (harness, _bg_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let server_id = harness.peer(case.server_serial).id.clone();
@@ -1102,12 +1116,14 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
 async fn test_mobile_inflight_large_message_interruptions() {
     init_tracing();
 
-    mobile_large_message_baseline_after_recovery().await;
-    inflight_network_type_switch_recovers_original_request().await;
-    inflight_short_offline_recovers_original_request().await;
-    inflight_long_offline_fails_bounded_then_retries().await;
-    inflight_short_background_survives_foreground_restore().await;
-    inflight_long_background_is_bounded_and_retries().await;
-    mobile_data_stream_channel_close_emits_delivery_uncertain_hook().await;
-    inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain().await;
+    for case in ROLE_CASES {
+        mobile_large_message_baseline_after_recovery(case).await;
+        inflight_network_type_switch_recovers_original_request(case).await;
+        inflight_short_offline_recovers_original_request(case).await;
+        inflight_long_offline_fails_bounded_then_retries(case).await;
+        inflight_short_background_survives_foreground_restore(case).await;
+        inflight_long_background_is_bounded_and_retries(case).await;
+        mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case).await;
+        inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case).await;
+    }
 }
