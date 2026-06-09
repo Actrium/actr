@@ -125,7 +125,7 @@ jobs:
           xcode-version: latest-stable
       - name: Install macOS e2e dependencies
         run: |
-          brew install xcodegen jq sqlite libssh2
+          brew install xcodegen jq sqlite libssh2 pkg-config
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:

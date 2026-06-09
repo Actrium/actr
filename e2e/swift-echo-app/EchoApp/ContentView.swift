@@ -61,10 +61,15 @@ struct ContentView: View {
         defer { isSending = false }
         do {
             output = try await actrService.sendEcho(input)
-            print("ACTR_E2E_RESULT:\(output)")
+            emitE2EResult(output)
         } catch {
             output = "Echo failed: \(error)"
-            print("ACTR_E2E_RESULT:\(output)")
+            emitE2EResult(output)
         }
+    }
+
+    private func emitE2EResult(_ result: String) {
+        print("ACTR_E2E_RESULT:\(result)")
+        FileHandle.standardError.write(Data("ACTR_E2E_RESULT:\(result)\n".utf8))
     }
 }
