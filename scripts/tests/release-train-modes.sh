@@ -903,33 +903,6 @@ EOF
   rm -rf "$temp_dir"
 }
 
-test_parse_prepare_only_mode
-test_parse_stage_argument
-test_parse_stage_publish_rust
-test_parse_stage_all_is_default
-test_parse_stage_rejects_unknown
-test_append_skipped_components_allows_empty_list
-test_publish_clean_check_rejects_untracked_files
-test_publish_clean_check_allows_current_report_artifacts
-test_final_tag_uses_conventional_v_prefix
-test_latest_release_tag_accepts_legacy_release_train_prefix
-test_release_prepare_skips_release_commit_head
-test_publish_mode_uses_prepared_versions_without_mutating
-test_prepare_only_updates_validates_and_commits_without_publishing
-test_staged_validate_does_not_publish
-test_create_tag_dry_run_does_not_push
-test_main_publish_stage_skips_absent_tag_check
-test_main_validate_and_create_tag_check_absent_tag
-test_publish_python_package_builds_distribution_before_upload
-test_publish_rust_package_prepares_cli_web_assets_before_publish
-test_publish_typescript_workload_builds_before_publish
-test_publish_typescript_package_writes_native_and_main_state
-test_release_train_workflow_publish_typescript_uses_script_stage
-test_release_train_workflow_downloads_only_typescript_native_artifacts
-test_release_prepare_workflow_skips_release_commits
-test_report_stage_merges_state_files
-test_update_versions_syncs_optional_dependencies
-
 test_publish_web_packages_skips_puppeteer_download() {
   reset_release_train_state
 
@@ -1005,6 +978,63 @@ test_publish_web_workflow_has_timeout() {
   fi
 }
 
+test_release_prepare_workflow_rejects_stale_runs() {
+  reset_release_train_state
+
+  if ! grep -q 'cancel-in-progress: true' .github/workflows/release-prepare.yml; then
+    printf 'release prepare workflow must cancel superseded runs\n' >&2
+    exit 1
+  fi
+
+  if ! grep -q 'ref: \${{ github.sha }}' .github/workflows/release-prepare.yml; then
+    printf 'release prepare workflow must checkout the triggering commit\n' >&2
+    exit 1
+  fi
+
+  if ! grep -q 'git rev-parse origin/main' .github/workflows/release-prepare.yml; then
+    printf 'release prepare workflow must compare against the latest origin/main\n' >&2
+    exit 1
+  fi
+
+  if ! grep -q 'steps.freshness.outputs.stale' .github/workflows/release-prepare.yml; then
+    printf 'release prepare workflow must block stale branch pushes\n' >&2
+    exit 1
+  fi
+}
+
+test_release_prepare_workflow_closes_superseded_prs() {
+  reset_release_train_state
+
+  if ! grep -q 'startswith(\\"release-prepare/\\")' .github/workflows/release-prepare.yml; then
+    printf 'release prepare workflow must identify open release prepare PRs\n' >&2
+    exit 1
+  fi
+
+  if ! grep -q 'Superseded by release PR' .github/workflows/release-prepare.yml; then
+    printf 'release prepare workflow must explain why older release PRs are closed\n' >&2
+    exit 1
+  fi
+
+  if ! grep -q 'gh pr close' .github/workflows/release-prepare.yml; then
+    printf 'release prepare workflow must close superseded release PRs\n' >&2
+    exit 1
+  fi
+}
+
+test_typescript_dry_run_uses_pack_without_registry_publish() {
+  reset_release_train_state
+
+  if ! grep -q 'npm pack --dry-run --ignore-scripts' scripts/release-train.sh; then
+    printf 'TypeScript dry-run must validate the package with npm pack\n' >&2
+    exit 1
+  fi
+
+  if grep -q 'npm publish --access public --dry-run --ignore-scripts' scripts/release-train.sh; then
+    printf 'TypeScript dry-run must not contact the registry through npm publish\n' >&2
+    exit 1
+  fi
+}
+
 test_parse_prepare_only_mode
 test_parse_stage_argument
 test_parse_stage_publish_rust
@@ -1033,3 +1063,6 @@ test_report_stage_merges_state_files
 test_update_versions_syncs_optional_dependencies
 test_publish_web_packages_skips_puppeteer_download
 test_publish_web_workflow_has_timeout
+test_release_prepare_workflow_rejects_stale_runs
+test_release_prepare_workflow_closes_superseded_prs
+test_typescript_dry_run_uses_pack_without_registry_publish

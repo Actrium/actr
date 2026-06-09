@@ -1219,7 +1219,7 @@ if (packageJson.version !== expectedVersion) {
 }
 NODE
       else
-        (cd "$ts_root/npm/$dir" && npm pack --dry-run >/dev/null)
+        (cd "$ts_root" && npm pack "./npm/$dir" --dry-run >/dev/null)
       fi
       append_state "$package" "sdk" "npm" "success" "dry_run_validated" "$(npm_registry_url "$package")" "$RELEASE_SHA"
     done
