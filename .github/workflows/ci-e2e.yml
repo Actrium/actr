@@ -103,12 +103,19 @@ jobs:
   swift-echo-app-e2e:
     name: Swift EchoApp E2E
     runs-on: macos-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     permissions:
       contents: read
       actions: read
     steps:
       - uses: actions/checkout@v5
+      - name: Cache SPM packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('e2e/swift-echo-app/project.yml') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
       - name: Configure git for private Actrix checkout
         shell: bash
         env:
