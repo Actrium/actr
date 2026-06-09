@@ -126,6 +126,7 @@ jobs:
       - name: Install macOS e2e dependencies
         run: |
           brew install xcodegen jq sqlite libssh2 pkg-config
+          brew link libssh2
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
