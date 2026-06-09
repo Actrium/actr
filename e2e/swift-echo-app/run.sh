@@ -17,9 +17,6 @@ ACTR_CLI_MANIFEST="$REPO_ROOT/cli/Cargo.toml"
 E2E_TARGET_ROOT="$REPO_ROOT/target/e2e-cache/swift-echo-app"
 ACTR_TARGET_DIR="$E2E_TARGET_ROOT/actr-cli"
 TEMP_SERVICE_TARGET_DIR="$E2E_TARGET_ROOT/temp-service"
-SWIFT_PACKAGE_DIR="$REPO_ROOT/bindings/swift"
-SWIFT_BINDINGS_PATH=".build/e2e/ActrBindings"
-SWIFT_XCFRAMEWORK_PATH=".build/e2e/ActrFFI.xcframework"
 DEFAULT_MESSAGE="e2e-test-message"
 
 TEST_INPUT="$DEFAULT_MESSAGE"
@@ -109,8 +106,23 @@ run_actr() {
 build_local_actr_cli() {
     section "🔧 Building local actr CLI"
     local cargo_env=()
+    local libssh2_configured=0
 
-    if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libssh2; then
+    if command -v brew >/dev/null 2>&1; then
+        local libssh2_prefix
+        libssh2_prefix="$(brew --prefix libssh2 2>/dev/null || true)"
+        if [ -n "$libssh2_prefix" ]; then
+            cargo_env+=(
+                "LIBSSH2_SYS_USE_PKG_CONFIG=1"
+                "PKG_CONFIG_PATH=${libssh2_prefix}/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+                "CFLAGS=-I${libssh2_prefix}/include${CFLAGS:+ $CFLAGS}"
+                "LDFLAGS=-L${libssh2_prefix}/lib${LDFLAGS:+ $LDFLAGS}"
+            )
+            libssh2_configured=1
+        fi
+    fi
+
+    if [ "$libssh2_configured" -eq 0 ] && command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libssh2; then
         cargo_env+=(LIBSSH2_SYS_USE_PKG_CONFIG=1)
     fi
 
@@ -468,26 +480,6 @@ render_echoapp_config() {
 
 # ──── iOS Simulator ────
 
-build_local_swift_package_assets() {
-    section "🧩 Building local Swift FFI package assets"
-
-    require_cmd uniffi-bindgen
-    if ! (
-        cd "$SWIFT_PACKAGE_DIR"
-        ACTR_BUILD_PROFILE="${ACTR_BUILD_PROFILE:-debug}" \
-            ACTR_BINDINGS_PATH="$SWIFT_BINDINGS_PATH" \
-            ACTR_BINARY_PATH="$SWIFT_XCFRAMEWORK_PATH" \
-            ./build-xcframework.sh >"$LOG_DIR/swift-xcframework.log" 2>&1
-    ); then
-        tail -120 "$LOG_DIR/swift-xcframework.log" >&2 || true
-        fail "Swift FFI XCFramework build failed"
-    fi
-
-    [ -f "$SWIFT_PACKAGE_DIR/$SWIFT_BINDINGS_PATH/Actr.swift" ] || fail "Swift bindings missing"
-    [ -d "$SWIFT_PACKAGE_DIR/$SWIFT_XCFRAMEWORK_PATH" ] || fail "Swift XCFramework missing"
-    success "Local Swift FFI package assets ready"
-}
-
 setup_ios_simulator() {
     section "📱 Setting up iOS Simulator"
 
@@ -546,7 +538,6 @@ build_and_run_app() {
     section "🔨 Building EchoApp with XcodeGen"
 
     require_cmd xcodegen
-    build_local_swift_package_assets
     cd "$SCRIPT_DIR"
 
     # Generate Xcode project from project.yml
@@ -557,8 +548,6 @@ build_and_run_app() {
     section "🏗️  Building EchoApp for iOS Simulator"
 
     local derived_data="$RUN_DIR/DerivedData"
-    ACTR_BINDINGS_PATH="$SWIFT_BINDINGS_PATH" \
-    ACTR_BINARY_PATH="$SWIFT_XCFRAMEWORK_PATH" \
     xcodebuild \
         -project EchoApp.xcodeproj \
         -scheme EchoApp \
