@@ -117,6 +117,8 @@ jobs:
           git config --global url."https://x-access-token:${ACTRIX_READ_TOKEN}@github.com/Actrium/actrix".insteadOf "https://github.com/Actrium/actrix"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
@@ -128,6 +130,10 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
       - uses: Swatinem/rust-cache@v2
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Run Swift EchoApp e2e
         run: bash e2e/swift-echo-app/run.sh
