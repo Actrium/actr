@@ -20,4 +20,7 @@ message SessionDescription {
   }
   required Type type = 1;
   required string sdp = 2;
+  // End-to-end correlation id for one SDP offer/answer exchange.
+  // Offer-like messages create it; the Answer echoes the same id.
+  optional string sdp_exchange_id = 3;
 }

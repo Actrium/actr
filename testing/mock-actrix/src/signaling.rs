@@ -719,7 +719,16 @@ async fn forward_relay_to_target(
 
     if let Some(target_cid) = target_client_id {
         if let Some(tx) = clients.get(&target_cid) {
-            let encoded = envelope.encode_to_vec();
+            let forwarded = SignalingEnvelope {
+                envelope_version: 1,
+                envelope_id: uuid::Uuid::new_v4().to_string(),
+                reply_for: None,
+                timestamp: now_timestamp(),
+                flow: Some(signaling_envelope::Flow::ActrRelay(relay.clone())),
+                traceparent: envelope.traceparent.clone(),
+                tracestate: envelope.tracestate.clone(),
+            };
+            let encoded = forwarded.encode_to_vec();
             let _ = tx.send(Message::Binary(Bytes::from(encoded)));
         } else {
             tracing::warn!(
@@ -844,10 +853,22 @@ fn parse_actor_id(s: &str) -> Option<ActrId> {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_reachable_route_candidates, resolve_role_negotiation_targets};
-    use crate::state::RegisteredActor;
-    use actr_protocol::{ActrId, ActrType, Realm};
+    use super::{
+        collect_reachable_route_candidates, forward_relay_to_target, now_timestamp,
+        resolve_role_negotiation_targets,
+    };
+    use crate::state::{MockState, RegisteredActor};
+    use actr_protocol::prost::Message as ProstMessage;
+    use actr_protocol::{
+        AIdCredential, ActrId, ActrRelay, ActrType, Realm, SessionDescription, SignalingEnvelope,
+        actr_relay, session_description::Type as SdpType, signaling_envelope,
+    };
+    use axum::extract::ws::Message;
+    use ed25519_dalek::SigningKey;
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio_util::sync::CancellationToken;
 
     fn actor(serial: u64, name: &str) -> ActrId {
         ActrId {
@@ -873,6 +894,15 @@ mod tests {
             ws_address: Some(format!("ws://example.invalid/{serial}")),
             service_spec: None,
         }
+    }
+
+    fn test_state() -> Arc<MockState> {
+        Arc::new(MockState::new(
+            SigningKey::from_bytes(&[42u8; 32]),
+            7,
+            SigningKey::from_bytes(&[43u8; 32]),
+            CancellationToken::new(),
+        ))
     }
 
     #[test]
@@ -930,5 +960,65 @@ mod tests {
         assert_eq!(ws_address_map.len(), 1);
         assert_eq!(ws_address_map[0].candidate_id, actor(4, "EchoService"));
         assert_eq!(skipped_unbound, 2);
+    }
+
+    #[tokio::test]
+    async fn relay_forwarding_re_envelopes_but_preserves_sdp_exchange_id() {
+        let state = test_state();
+        let source = actor(1, "client");
+        let target = actor(2, "service");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        state
+            .client_to_actr_id
+            .write()
+            .await
+            .insert("target-ws".to_string(), target.clone());
+        state
+            .clients
+            .write()
+            .await
+            .insert("target-ws".to_string(), tx);
+
+        let relay = ActrRelay {
+            source: source.clone(),
+            credential: AIdCredential::default(),
+            target: target.clone(),
+            payload: Some(actr_relay::Payload::SessionDescription(
+                SessionDescription {
+                    r#type: SdpType::Answer as i32,
+                    sdp: "answer-sdp".to_string(),
+                    sdp_exchange_id: Some("exchange-1".to_string()),
+                },
+            )),
+        };
+        let original = SignalingEnvelope {
+            envelope_version: 1,
+            envelope_id: "original-envelope".to_string(),
+            reply_for: Some("hop-local-reply".to_string()),
+            timestamp: now_timestamp(),
+            traceparent: None,
+            tracestate: None,
+            flow: Some(signaling_envelope::Flow::ActrRelay(relay.clone())),
+        };
+
+        forward_relay_to_target(&original, &relay, "source-ws", &state).await;
+
+        let msg = rx.recv().await.expect("target should receive relay");
+        let Message::Binary(bytes) = msg else {
+            panic!("expected binary signaling envelope");
+        };
+        let forwarded =
+            SignalingEnvelope::decode(bytes.as_ref()).expect("forwarded envelope should decode");
+
+        assert_ne!(forwarded.envelope_id, "original-envelope");
+        assert!(forwarded.reply_for.is_none());
+        let Some(signaling_envelope::Flow::ActrRelay(forwarded_relay)) = forwarded.flow else {
+            panic!("expected forwarded ActrRelay");
+        };
+        let Some(actr_relay::Payload::SessionDescription(sd)) = forwarded_relay.payload else {
+            panic!("expected forwarded SessionDescription");
+        };
+        assert_eq!(sd.sdp_exchange_id.as_deref(), Some("exchange-1"));
     }
 }

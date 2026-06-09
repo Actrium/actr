@@ -107,6 +107,10 @@ struct PeerState {
     /// Whether we are the offerer for the current session (affects ICE restart handling)
     is_offerer: bool,
 
+    /// Current local SDP exchange awaiting an Answer. Only the latest generated
+    /// exchange id is accepted; older Answers are treated as stale.
+    pending_local_sdp_exchange_id: Option<String>,
+
     /// Whether ICE restart is in progress (controls buffering and retries)
     ice_restart_inflight: bool,
 
@@ -966,6 +970,7 @@ impl WebRtcCoordinator {
                 }
                 state.ice_restart_inflight = false;
                 state.ice_restart_attempts = 0;
+                state.pending_local_sdp_exchange_id = None;
             }
         }
     }
@@ -1476,25 +1481,36 @@ impl WebRtcCoordinator {
                     Some(actr_relay::Payload::SessionDescription(sd)) => match sd.r#type() {
                         SdpType::Offer => {
                             tracing::info!("📥 Received Offer from {}", source);
-                            if let Err(e) = self.handle_offer(&source, sd.sdp).await {
+                            if let Err(e) =
+                                self.handle_offer(&source, sd.sdp, sd.sdp_exchange_id).await
+                            {
                                 tracing::error!("❌ Failed to handle Offer: {}", e);
                             }
                         }
                         SdpType::Answer => {
                             tracing::info!("📥 Received Answer from {}", source);
-                            if let Err(e) = self.handle_answer(&source, sd.sdp).await {
+                            if let Err(e) = self
+                                .handle_answer(&source, sd.sdp, sd.sdp_exchange_id)
+                                .await
+                            {
                                 tracing::error!("❌ Failed to handle Answer: {}", e);
                             }
                         }
                         SdpType::RenegotiationOffer => {
                             tracing::info!("📥 Received RenegotiationOffer from {:?}", source);
-                            if let Err(e) = self.handle_renegotiation_offer(&source, sd.sdp).await {
+                            if let Err(e) = self
+                                .handle_renegotiation_offer(&source, sd.sdp, sd.sdp_exchange_id)
+                                .await
+                            {
                                 tracing::error!("❌ Failed to handle RenegotiationOffer: {}", e);
                             }
                         }
                         SdpType::IceRestartOffer => {
                             tracing::info!("♻️ Received ICE Restart Offer from {:?}", source);
-                            if let Err(e) = self.handle_ice_restart_offer(&source, sd.sdp).await {
+                            if let Err(e) = self
+                                .handle_ice_restart_offer(&source, sd.sdp, sd.sdp_exchange_id)
+                                .await
+                            {
                                 tracing::error!("❌ Failed to handle ICE Restart Offer: {}", e);
                             }
                         }
@@ -1603,6 +1619,79 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
+    fn new_envelope_id() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
+    async fn record_pending_local_offer(
+        &self,
+        target: &ActrId,
+        session_id: u64,
+        sdp_exchange_id: String,
+    ) -> ActorResult<()> {
+        if Self::record_pending_local_offer_for_peer(
+            &self.peers,
+            target,
+            session_id,
+            sdp_exchange_id,
+        )
+        .await
+        {
+            Ok(())
+        } else {
+            Err(ActrError::Internal(format!(
+                "Peer state not found while recording pending offer: {target:?}"
+            )))
+        }
+    }
+
+    async fn record_pending_local_offer_for_peer(
+        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
+        target: &ActrId,
+        session_id: u64,
+        sdp_exchange_id: String,
+    ) -> bool {
+        let mut peers = peers.write().await;
+        let Some(state) = peers.get_mut(target) else {
+            return false;
+        };
+        if state.session_id != session_id {
+            return false;
+        }
+
+        state.pending_local_sdp_exchange_id = Some(sdp_exchange_id);
+        true
+    }
+
+    async fn clear_pending_local_offer(
+        &self,
+        target: &ActrId,
+        session_id: u64,
+        sdp_exchange_id: &str,
+    ) {
+        Self::clear_pending_local_offer_for_peer(&self.peers, target, session_id, sdp_exchange_id)
+            .await;
+    }
+
+    async fn clear_pending_local_offer_for_peer(
+        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
+        target: &ActrId,
+        session_id: u64,
+        sdp_exchange_id: &str,
+    ) {
+        let mut peers = peers.write().await;
+        if let Some(state) = peers.get_mut(target) {
+            let should_clear = state.session_id == session_id
+                && state
+                    .pending_local_sdp_exchange_id
+                    .as_ref()
+                    .is_some_and(|pending| pending == sdp_exchange_id);
+            if should_clear {
+                state.pending_local_sdp_exchange_id = None;
+            }
+        }
+    }
+
     /// Send ActrRelay message (internal helper method)
     async fn send_actr_relay(
         &self,
@@ -1621,7 +1710,7 @@ impl WebRtcCoordinator {
 
         let envelope = SignalingEnvelope {
             envelope_version: 1,
-            envelope_id: uuid::Uuid::new_v4().to_string(),
+            envelope_id: Self::new_envelope_id(),
             reply_for: None,
             timestamp: prost_types::Timestamp {
                 seconds: chrono::Utc::now().timestamp(),
@@ -2016,6 +2105,7 @@ impl WebRtcCoordinator {
                     webrtc_conn: webrtc_conn.clone(),
                     ready_tx: Some(ready_tx),
                     is_offerer: true,
+                    pending_local_sdp_exchange_id: None,
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
@@ -2189,14 +2279,22 @@ impl WebRtcCoordinator {
 
         // 6. Create Offer
         let offer_sdp = self.negotiator.create_offer(&peer_connection_arc).await?;
+        let sdp_exchange_id = Self::new_envelope_id();
+        self.record_pending_local_offer(target, webrtc_conn.session_id(), sdp_exchange_id.clone())
+            .await?;
 
         // 8. Send Offer via signaling server
         let session_desc = actr_protocol::SessionDescription {
             r#type: SdpType::Offer as i32,
             sdp: offer_sdp,
+            sdp_exchange_id: Some(sdp_exchange_id.clone()),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
-        self.send_actr_relay(target, payload).await?;
+        if let Err(e) = self.send_actr_relay(target, payload).await {
+            self.clear_pending_local_offer(target, webrtc_conn.session_id(), &sdp_exchange_id)
+                .await;
+            return Err(e);
+        }
 
         tracing::info!("✅ Sent Offer to {}", target);
 
@@ -2224,7 +2322,20 @@ impl WebRtcCoordinator {
         feature = "opentelemetry",
         tracing::instrument(level = "info", skip_all, fields(actr_id = %self.local_id_snapshot(), remote_id = %from))
     )]
-    async fn handle_offer(self: &Arc<Self>, from: &ActrId, offer_sdp: String) -> ActorResult<()> {
+    async fn handle_offer(
+        self: &Arc<Self>,
+        from: &ActrId,
+        offer_sdp: String,
+        sdp_exchange_id: Option<String>,
+    ) -> ActorResult<()> {
+        let Some(sdp_exchange_id) = sdp_exchange_id else {
+            tracing::warn!(
+                "🚫 Ignoring Offer from {} without sdp_exchange_id correlation",
+                from
+            );
+            return Ok(());
+        };
+
         // ========== PrepareForIncomingOffer: Clean up existing connection if any ==========
         let existing_peer = {
             let peers = self.peers.read().await;
@@ -2278,6 +2389,7 @@ impl WebRtcCoordinator {
                     webrtc_conn: webrtc_conn.clone(),
                     ready_tx: None,
                     is_offerer: false,
+                    pending_local_sdp_exchange_id: None,
                     ice_restart_inflight: false,
                     ice_restart_attempts: 0,
                     restart_task_handle: None,
@@ -2563,6 +2675,7 @@ impl WebRtcCoordinator {
         let session_desc = actr_protocol::SessionDescription {
             r#type: SdpType::Answer as i32,
             sdp: answer_sdp,
+            sdp_exchange_id: Some(sdp_exchange_id),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(from, payload).await?;
@@ -2593,9 +2706,24 @@ impl WebRtcCoordinator {
             )
         )
     )]
-    async fn handle_answer(self: &Arc<Self>, from: &ActrId, answer_sdp: String) -> ActorResult<()> {
-        // Get corresponding PeerConnection and ready_tx
-        let (peer_connection, ready_tx, webrtc_conn, is_renegotiation) = {
+    async fn handle_answer(
+        self: &Arc<Self>,
+        from: &ActrId,
+        answer_sdp: String,
+        sdp_exchange_id: Option<String>,
+    ) -> ActorResult<()> {
+        let Some(sdp_exchange_id) = sdp_exchange_id.as_deref() else {
+            tracing::warn!(
+                "🚫 Ignoring Answer from {} without sdp_exchange_id correlation",
+                from
+            );
+            return Ok(());
+        };
+
+        // Get corresponding PeerConnection and ready_tx only after the Answer
+        // is proven to belong to the current local Offer. A stale Answer must
+        // not consume ready_tx or mutate the PeerConnection.
+        let (peer_connection, ready_tx, webrtc_conn, is_renegotiation, session_id, offer_id) = {
             let mut peers = self.peers.write().await;
             tracing::info!(
                 "🔍 [LOOKUP] Searching for: id={}, total peers={}",
@@ -2609,11 +2737,38 @@ impl WebRtcCoordinator {
                 ActrError::Internal(format!("Peer not found: {}", from.to_string_repr()))
             })?;
 
+            let Some(pending_sdp_exchange_id) = state.pending_local_sdp_exchange_id.as_ref() else {
+                tracing::warn!(
+                    "🚫 Ignoring Answer from {} because no local Offer is pending",
+                    from
+                );
+                return Ok(());
+            };
+
+            let pending_sdp_exchange_id = pending_sdp_exchange_id.clone();
+
+            if pending_sdp_exchange_id != sdp_exchange_id {
+                tracing::warn!(
+                    "🚫 Ignoring stale Answer from {}: sdp_exchange_id={} current_exchange={}",
+                    from,
+                    sdp_exchange_id,
+                    pending_sdp_exchange_id
+                );
+                return Ok(());
+            }
+
             let pc = state.peer_connection.clone();
             let tx = state.ready_tx.take();
             let wc = state.webrtc_conn.clone();
             let is_reneg = tx.is_none(); // If ready_tx already taken, this is renegotiation
-            (pc, tx, wc, is_reneg)
+            (
+                pc,
+                tx,
+                wc,
+                is_reneg,
+                state.session_id,
+                pending_sdp_exchange_id,
+            )
         };
 
         if is_renegotiation {
@@ -2623,9 +2778,18 @@ impl WebRtcCoordinator {
         }
 
         // Handle Answer (set remote SDP)
-        self.negotiator
+        if let Err(e) = self
+            .negotiator
             .handle_answer(&peer_connection, answer_sdp)
-            .await?;
+            .await
+        {
+            self.clear_pending_local_offer(from, session_id, &offer_id)
+                .await;
+            return Err(e.into());
+        }
+
+        self.clear_pending_local_offer(from, session_id, &offer_id)
+            .await;
 
         // Flush any buffered ICE candidates (remote description is now set)
         self.flush_pending_candidates(from, &peer_connection)
@@ -3615,13 +3779,31 @@ impl WebRtcCoordinator {
             offer_sdp.len()
         );
 
+        let session_id = {
+            let peers = self.peers.read().await;
+            let state = peers.get(target).ok_or_else(|| {
+                ActrError::Internal(format!(
+                    "Peer state not found for renegotiation: {target:?}"
+                ))
+            })?;
+            state.session_id
+        };
+        let sdp_exchange_id = Self::new_envelope_id();
+        self.record_pending_local_offer(target, session_id, sdp_exchange_id.clone())
+            .await?;
+
         // 3. Send Offer via signaling server
         let session_desc = actr_protocol::SessionDescription {
             r#type: SdpType::RenegotiationOffer as i32,
             sdp: offer_sdp,
+            sdp_exchange_id: Some(sdp_exchange_id.clone()),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
-        self.send_actr_relay(target, payload).await?;
+        if let Err(e) = self.send_actr_relay(target, payload).await {
+            self.clear_pending_local_offer(target, session_id, &sdp_exchange_id)
+                .await;
+            return Err(e);
+        }
 
         tracing::info!("✅ Sent renegotiation Offer to {}", target);
 
@@ -4172,6 +4354,23 @@ impl WebRtcCoordinator {
             }
 
             // Send ICE restart offer
+            let sdp_exchange_id = Self::new_envelope_id();
+            if !Self::record_pending_local_offer_for_peer(
+                peers,
+                target,
+                restart_session_id,
+                sdp_exchange_id.clone(),
+            )
+            .await
+            {
+                tracing::debug!(
+                    "⏭️ Stopping stale ICE restart before send for serial={}, session_id={}",
+                    target,
+                    restart_session_id
+                );
+                return Ok(true);
+            }
+
             let relay = ActrRelay {
                 source: local_id.clone(),
                 credential: credential_state.credential().await,
@@ -4180,13 +4379,14 @@ impl WebRtcCoordinator {
                     actr_protocol::SessionDescription {
                         r#type: SdpType::IceRestartOffer as i32,
                         sdp: offer_sdp,
+                        sdp_exchange_id: Some(sdp_exchange_id.clone()),
                     },
                 )),
             };
 
             let envelope = SignalingEnvelope {
                 envelope_version: 1,
-                envelope_id: uuid::Uuid::new_v4().to_string(),
+                envelope_id: Self::new_envelope_id(),
                 reply_for: None,
                 timestamp: prost_types::Timestamp {
                     seconds: chrono::Utc::now().timestamp(),
@@ -4203,6 +4403,13 @@ impl WebRtcCoordinator {
                     target,
                     e
                 );
+                Self::clear_pending_local_offer_for_peer(
+                    peers,
+                    target,
+                    restart_session_id,
+                    &sdp_exchange_id,
+                )
+                .await;
                 // Mark inflight as false and continue to next retry
                 let mut peers_guard = peers.write().await;
                 match peers_guard.get_mut(target) {
@@ -4270,6 +4477,13 @@ impl WebRtcCoordinator {
                     match peers_guard.get_mut(target) {
                         Some(state) if state.session_id == restart_session_id => {
                             state.ice_restart_inflight = false;
+                            if state
+                                .pending_local_sdp_exchange_id
+                                .as_ref()
+                                .is_some_and(|pending| pending == &sdp_exchange_id)
+                            {
+                                state.pending_local_sdp_exchange_id = None;
+                            }
                         }
                         Some(state) => {
                             tracing::debug!(
@@ -4299,6 +4513,13 @@ impl WebRtcCoordinator {
                 match peers_guard.get_mut(target) {
                     Some(state) if state.session_id == restart_session_id => {
                         state.ice_restart_inflight = false;
+                        if state
+                            .pending_local_sdp_exchange_id
+                            .as_ref()
+                            .is_some_and(|pending| pending == &sdp_exchange_id)
+                        {
+                            state.pending_local_sdp_exchange_id = None;
+                        }
                     }
                     Some(state) => {
                         tracing::debug!(
@@ -4312,7 +4533,6 @@ impl WebRtcCoordinator {
                     None => return Ok(true),
                 }
             }
-
             // Exponential backoff before retrying (can be interrupted by restart_wake)
             tracing::info!(
                 "⏳ Waiting {:?} before next ICE restart attempt to serial={}",
@@ -4424,7 +4644,16 @@ impl WebRtcCoordinator {
         &self,
         from: &ActrId,
         offer_sdp: String,
+        sdp_exchange_id: Option<String>,
     ) -> ActorResult<()> {
+        let Some(sdp_exchange_id) = sdp_exchange_id else {
+            tracing::warn!(
+                "🚫 Ignoring renegotiation Offer from {} without sdp_exchange_id correlation",
+                from
+            );
+            return Ok(());
+        };
+
         tracing::info!("🔄 Processing renegotiation Offer from {}", from);
 
         // 1. Get existing peer connection
@@ -4472,6 +4701,7 @@ impl WebRtcCoordinator {
         let session_desc = actr_protocol::SessionDescription {
             r#type: SdpType::Answer as i32,
             sdp: answer_sdp,
+            sdp_exchange_id: Some(sdp_exchange_id),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(from, payload).await?;
@@ -4490,7 +4720,16 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         from: &ActrId,
         offer_sdp: String,
+        sdp_exchange_id: Option<String>,
     ) -> ActorResult<()> {
+        let Some(sdp_exchange_id) = sdp_exchange_id else {
+            tracing::warn!(
+                "🚫 Ignoring ICE Restart Offer from {} without sdp_exchange_id correlation",
+                from
+            );
+            return Ok(());
+        };
+
         // Locate peer state and ensure we are not the offerer
         let (peer_connection, is_offerer, session_id) = {
             let peers = self.peers.read().await;
@@ -4522,6 +4761,7 @@ impl WebRtcCoordinator {
         let session_desc = actr_protocol::SessionDescription {
             r#type: SdpType::Answer as i32,
             sdp: answer_sdp,
+            sdp_exchange_id: Some(sdp_exchange_id),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(from, payload).await?;
@@ -4848,6 +5088,52 @@ mod tests {
         }
     }
 
+    async fn insert_pending_offer_peer(
+        coordinator: &Arc<WebRtcCoordinator>,
+        peer_id: ActrId,
+        sdp_exchange_id: &str,
+    ) -> u64 {
+        let api = webrtc::api::APIBuilder::new().build();
+        let peer_connection = Arc::new(
+            api.new_peer_connection(Default::default())
+                .await
+                .expect("test peer connection should be created"),
+        );
+        let webrtc_conn = WebRtcConnection::new(
+            peer_id.clone(),
+            peer_connection.clone(),
+            coordinator.event_broadcaster.sender(),
+            None,
+        );
+        let session_id = webrtc_conn.session_id();
+        let (ready_tx, _ready_rx) = oneshot::channel();
+
+        coordinator.peers.write().await.insert(
+            peer_id,
+            PeerState {
+                peer_connection,
+                webrtc_conn,
+                ready_tx: Some(ready_tx),
+                is_offerer: true,
+                pending_local_sdp_exchange_id: Some(sdp_exchange_id.to_string()),
+                ice_restart_inflight: false,
+                ice_restart_attempts: 0,
+                restart_task_handle: None,
+                restart_wake: Arc::new(tokio::sync::Notify::new()),
+                restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
+                last_ice_restart_offer_at: None,
+                last_state_change: std::time::Instant::now(),
+                current_state: RTCPeerConnectionState::New,
+                ever_ice_connected: false,
+                ever_data_channel_opened: false,
+                session_id,
+                receive_handles: Vec::new(),
+            },
+        );
+
+        session_id
+    }
+
     struct CapturingSignalingClient {
         sent: Mutex<Vec<SignalingEnvelope>>,
         event_tx: broadcast::Sender<super::super::SignalingEvent>,
@@ -4869,6 +5155,10 @@ mod tests {
                 panic!("expected ActrRelay envelope");
             };
             relay.source.clone()
+        }
+
+        async fn sent_envelopes(&self) -> Vec<SignalingEnvelope> {
+            self.sent.lock().await.clone()
         }
     }
 
@@ -5002,6 +5292,117 @@ mod tests {
             .expect("relay should be sent");
 
         assert_eq!(signaling_client.last_relay_source().await, renewed_id);
+    }
+
+    #[tokio::test]
+    async fn actr_relay_answer_can_carry_sdp_exchange_id() {
+        let local_id = test_actor_id(1);
+        let target_id = test_actor_id(99);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let signaling_client = Arc::new(CapturingSignalingClient::new());
+        let coordinator = WebRtcCoordinator::new(
+            local_id,
+            credential_state,
+            signaling_client.clone(),
+            WebRtcConfig::default(),
+            Arc::new(MediaFrameRegistry::new()),
+        );
+
+        let payload = actr_relay::Payload::SessionDescription(actr_protocol::SessionDescription {
+            r#type: SdpType::Answer as i32,
+            sdp: "answer-sdp".to_string(),
+            sdp_exchange_id: Some("exchange-1".to_string()),
+        });
+        coordinator
+            .send_actr_relay(&target_id, payload)
+            .await
+            .expect("relay answer should be sent");
+
+        let sent = signaling_client.sent_envelopes().await;
+        assert_eq!(sent.len(), 1);
+        let envelope = &sent[0];
+        assert!(envelope.reply_for.is_none());
+        let Some(signaling_envelope::Flow::ActrRelay(relay)) = &envelope.flow else {
+            panic!("expected ActrRelay envelope");
+        };
+        let Some(actr_relay::Payload::SessionDescription(sd)) = relay.payload.as_ref() else {
+            panic!("expected SessionDescription payload");
+        };
+        assert_eq!(sd.r#type(), SdpType::Answer);
+        assert_eq!(sd.sdp, "answer-sdp");
+        assert_eq!(sd.sdp_exchange_id.as_deref(), Some("exchange-1"));
+    }
+
+    #[tokio::test]
+    async fn stale_answer_sdp_exchange_id_does_not_consume_pending_offer() {
+        let local_id = test_actor_id(1);
+        let target_id = test_actor_id(99);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let signaling_client = Arc::new(CapturingSignalingClient::new());
+        let coordinator = Arc::new(WebRtcCoordinator::new(
+            local_id,
+            credential_state,
+            signaling_client,
+            WebRtcConfig::default(),
+            Arc::new(MediaFrameRegistry::new()),
+        ));
+
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
+
+        coordinator
+            .handle_answer(
+                &target_id,
+                "stale-answer-sdp".to_string(),
+                Some("old-exchange".to_string()),
+            )
+            .await
+            .expect("stale answer should be ignored without error");
+
+        let peers = coordinator.peers.read().await;
+        let state = peers.get(&target_id).expect("peer should remain");
+        assert!(
+            state.ready_tx.is_some(),
+            "stale Answer must not consume the initial connection ready signal"
+        );
+        let pending = state
+            .pending_local_sdp_exchange_id
+            .as_deref()
+            .expect("stale Answer must not clear the active pending offer");
+        assert_eq!(pending, "current-exchange");
+    }
+
+    #[tokio::test]
+    async fn clear_pending_restarts_clears_pending_sdp_exchange() {
+        let local_id = test_actor_id(1);
+        let target_id = test_actor_id(99);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let signaling_client = Arc::new(CapturingSignalingClient::new());
+        let coordinator = Arc::new(WebRtcCoordinator::new(
+            local_id,
+            credential_state,
+            signaling_client,
+            WebRtcConfig::default(),
+            Arc::new(MediaFrameRegistry::new()),
+        ));
+
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+        {
+            let mut peers = coordinator.peers.write().await;
+            let state = peers.get_mut(&target_id).expect("peer should exist");
+            state.ice_restart_inflight = true;
+            state.ice_restart_attempts = 1;
+        }
+
+        coordinator.clear_pending_restarts().await;
+
+        let peers = coordinator.peers.read().await;
+        let state = peers.get(&target_id).expect("peer should remain");
+        assert!(
+            state.pending_local_sdp_exchange_id.is_none(),
+            "aborted ICE restart must not leave a stale pending SDP exchange"
+        );
+        assert!(!state.ice_restart_inflight);
+        assert_eq!(state.ice_restart_attempts, 0);
     }
 
     #[test]

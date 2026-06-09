@@ -38,13 +38,13 @@ export type WebRtcCommandPayload =
   | {
       action: 'set_remote_description';
       peerId: string;
-      payload: { sdp: RTCSessionDescriptionInit };
+      payload: { sdp: RTCSessionDescriptionInit; sdpExchangeId?: string };
     }
   | { action: 'set_local_description'; peerId: string; payload: { sdp: RTCSessionDescriptionInit } }
   | { action: 'add_ice_candidate'; peerId: string; payload: { candidate: RTCIceCandidateInit } }
   | { action: 'create_offer'; peerId: string; payload?: never }
   | { action: 'create_ice_restart_offer'; peerId: string; payload?: never }
-  | { action: 'create_answer'; peerId: string; payload?: never }
+  | { action: 'create_answer'; peerId: string; payload?: { sdpExchangeId?: string } }
   | { action: 'close_peer'; peerId: string; payload?: never }
   | { action: 'send_data'; peerId: string; payload: { channelId: number; data: Uint8Array } };
 
@@ -80,7 +80,10 @@ export type WebRtcEventPayload =
     }
   | { eventType: 'datachannel_open'; data: { peerId: string; channelId: number; label: string } }
   | { eventType: 'datachannel_close'; data: { peerId: string; channelId: number } }
-  | { eventType: 'local_description'; data: { peerId: string; sdp: RTCSessionDescriptionInit } }
+  | {
+      eventType: 'local_description';
+      data: { peerId: string; sdp: RTCSessionDescriptionInit; sdpExchangeId?: string };
+    }
   | {
       eventType: 'ice_restart_local_description';
       data: { peerId: string; sdp: RTCSessionDescriptionInit };

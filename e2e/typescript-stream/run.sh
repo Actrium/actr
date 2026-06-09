@@ -17,6 +17,35 @@ MOCK_PID=""
 ECHO_PID=""
 RELAY_PID=""
 
+dump_log_tail() {
+  local file="$1"
+  local lines="${2:-300}"
+  if [ ! -f "$file" ]; then
+    printf '\n--- %s missing ---\n' "$file" >&2
+    return
+  fi
+
+  printf '\n--- %s (last %s lines) ---\n' "$file" "$lines" >&2
+  tail -n "$lines" "$file" | REALM_SECRET="$REALM_SECRET" python3 -c '
+import os
+import sys
+
+secret = os.environ.get("REALM_SECRET", "")
+data = sys.stdin.read()
+if secret:
+    data = data.replace(secret, "[redacted]")
+sys.stderr.write(data)
+' || true
+}
+
+dump_failure_logs() {
+  echo "E2E failed. Logs are in: $LOG_DIR" >&2
+  dump_log_tail "$LOG_DIR/mock-actrix.log" 300
+  dump_log_tail "$LOG_DIR/echo-run.log" 400
+  dump_log_tail "$LOG_DIR/relay-run.log" 400
+  dump_log_tail "$LOG_DIR/client-run.log" 400
+}
+
 cleanup() {
   local status=$?
   for pid in "$ECHO_PID" "$RELAY_PID" "$MOCK_PID"; do
@@ -26,7 +55,7 @@ cleanup() {
   done
   wait "$ECHO_PID" "$RELAY_PID" "$MOCK_PID" 2>/dev/null || true
   if [ "$status" -ne 0 ]; then
-    echo "E2E failed. Logs are in: $LOG_DIR" >&2
+    dump_failure_logs
   fi
 }
 trap cleanup EXIT
@@ -148,11 +177,11 @@ write_public_key() {
 
 write_rust_protoc_plugin_config() {
   local project="$1"
-  cat >"$project/.protoc-plugin.toml" <<'EOF_PROTOC_PLUGIN'
+  cat >"$project/.protoc-plugin.toml" <<EOF_PROTOC_PLUGIN
 version = 1
 
 [plugins]
-protoc-gen-actrframework = "0.2.0"
+protoc-gen-actrframework = "$ACTR_CRATE_VERSION"
 EOF_PROTOC_PLUGIN
 }
 
@@ -199,6 +228,7 @@ function toUint8Array(payload: ArrayBuffer | ArrayLike<number>): Uint8Array {
 
 class EchoServiceHandlerImpl implements EchoServiceHandler {
   echo(request: EchoRequest): EchoResponse {
+    console.log(`typescript echo: echo ${request.message}`);
     return create(EchoResponseSchema, {
       reply: `echo: ${request.message}`,
       timestamp: BigInt(Date.now()),
@@ -211,9 +241,13 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
     const inboundStreamId = request.inboundStreamId;
     const replyStreamId = request.replyStreamId;
     const replyMessage = request.replyMessage;
+    console.log(
+      `typescript echo: prepare ${inboundStreamId} -> ${replyStreamId}`,
+    );
 
     await registerStream(inboundStreamId, async (chunk, sender) => {
       const incoming = textDecoder.decode(toUint8Array(chunk.payload));
+      console.log(`typescript echo: stream ${inboundStreamId} ${incoming}`);
       await sendDataStream(
         { actor: sender },
         {
@@ -236,6 +270,7 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
   async releaseStream(
     request: StreamReleaseRequest,
   ): Promise<StreamReleaseResponse> {
+    console.log(`typescript echo: release ${request.streamId}`);
     await unregisterStream(request.streamId);
     return create(StreamReleaseResponseSchema, {
       status: `unregistered:${request.streamId}`,
@@ -375,8 +410,8 @@ default = ["cdylib"]
 cdylib = ["actr-framework/cdylib"]
 
 [dependencies]
-actr-framework = "0.2"
-actr-protocol = "0.2"
+actr-framework = "=$ACTR_CRATE_VERSION"
+actr-protocol = "=$ACTR_CRATE_VERSION"
 async-trait = "0.1"
 prost = "0.14"
 prost-types = "0.14"
@@ -496,20 +531,25 @@ impl RelayServiceHandler for RelayServiceImpl {
         req: RelayRequest,
         ctx: &C,
     ) -> ActorResult<RelayResponse> {
+        eprintln!("relay: process {}", req.message);
         let echo_type = echo_type();
         let echo_actor = ctx.discover_route_candidate(&echo_type).await?;
+        eprintln!("relay: discovered echo actor {echo_actor:?}");
 
         if req.message == "check-stream" {
+            eprintln!("relay: checking stream results");
             let reliable = check_stream_result("reliable", "hello-stream-reliable")?;
             let latency_first = check_stream_result("latency", "hello-stream-latency")?;
             release_echo_stream(ctx, echo_actor.clone(), "reliable").await?;
             release_echo_stream(ctx, echo_actor, "latency").await?;
+            eprintln!("relay: stream check complete");
             return Ok(RelayResponse {
                 reply: format!("relay: echo: hello; stream: {reliable}, {latency_first}"),
             });
         }
 
         clear_stream_results()?;
+        eprintln!("relay: calling echo");
         let echo_response: EchoResponse = ctx
             .call(
                 &Dest::Actor(echo_actor.clone()),
@@ -518,6 +558,7 @@ impl RelayServiceHandler for RelayServiceImpl {
                 },
             )
             .await?;
+        eprintln!("relay: echo replied {}", echo_response.reply);
         start_stream_round_trip(
             ctx,
             echo_actor.clone(),
@@ -526,6 +567,7 @@ impl RelayServiceHandler for RelayServiceImpl {
             "hello-stream-reliable",
         )
         .await?;
+        eprintln!("relay: reliable stream started");
         start_stream_round_trip(
             ctx,
             echo_actor,
@@ -534,6 +576,7 @@ impl RelayServiceHandler for RelayServiceImpl {
             "hello-stream-latency",
         )
         .await?;
+        eprintln!("relay: latency stream started");
 
         Ok(RelayResponse {
             reply: format!("relay: {}; stream: started", echo_response.reply),
@@ -717,16 +760,16 @@ host = [
 ]
 
 [dependencies]
-actr-framework = "0.2"
-actr-protocol = "0.2"
+actr-framework = "=$ACTR_CRATE_VERSION"
+actr-protocol = "=$ACTR_CRATE_VERSION"
 async-trait = "0.1"
 bytes = "1"
 prost = "0.14"
 prost-types = "0.14"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-actr-config = { version = "0.2", optional = true }
-actr-hyper = { version = "0.2", features = ["dynclib-engine"], optional = true }
+actr-config = { version = "=$ACTR_CRATE_VERSION", optional = true }
+actr-hyper = { version = "=$ACTR_CRATE_VERSION", features = ["dynclib-engine"], optional = true }
 anyhow = { version = "1", optional = true }
 base64 = { version = "0.22", optional = true }
 serde_json = { version = "1", optional = true }
@@ -1000,6 +1043,17 @@ require_tool curl
 require_tool npm
 require_tool node
 require_tool protoc
+require_tool python3
+
+ACTR_CRATE_VERSION="${ACTR_CRATE_VERSION:-$(awk -F'"' '
+  /^\[package\]$/ { in_package = 1; next }
+  /^\[/ && in_package { exit }
+  in_package && /^version = "/ { print $2; exit }
+' "$REPO_ROOT/Cargo.toml")}"
+if [ -z "$ACTR_CRATE_VERSION" ]; then
+  echo "Unable to determine actr crate version from $REPO_ROOT/Cargo.toml" >&2
+  exit 1
+fi
 
 mkdir -p "$LOG_DIR"
 

@@ -1217,11 +1217,14 @@ if (packageJson.version !== expectedVersion) {
 }
 NODE
       else
-        (cd "$ts_root" && npm publish "./npm/$dir" --access public --dry-run)
+        (cd "$ts_root/npm/$dir" && npm pack --dry-run >/dev/null)
       fi
       append_state "$package" "sdk" "npm" "success" "dry_run_validated" "$(npm_registry_url "$package")" "$RELEASE_SHA"
     done
-    (cd "$ts_root" && npm publish --access public --dry-run --ignore-scripts)
+    # Validate the package locally without contacting npm. `npm publish --dry-run`
+    # rejects versions that are already published, which makes PR verification
+    # fail for the current workspace version even though no publish would occur.
+    (cd "$ts_root" && npm pack --dry-run --ignore-scripts >/dev/null)
     append_state "@actrium/actr" "sdk" "npm" "success" "dry_run_validated" "$(npm_registry_url "@actrium/actr")" "$RELEASE_SHA"
     return
   fi
