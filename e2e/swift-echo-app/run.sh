@@ -548,6 +548,18 @@ build_and_run_app() {
     section "🏗️  Building EchoApp for iOS Simulator"
 
     local derived_data="$RUN_DIR/DerivedData"
+
+    # Resolve SPM dependencies first (visible progress)
+    echo "Resolving SPM packages..."
+    xcodebuild \
+        -project EchoApp.xcodeproj \
+        -scheme EchoApp \
+        -destination "id=$DEVICE_UDID" \
+        -derivedDataPath "$derived_data" \
+        -resolvePackageDependencies \
+        2>&1 | tee -a "$LOG_DIR/xcodebuild.log"
+    echo "SPM resolve complete, building..."
+
     xcodebuild \
         -project EchoApp.xcodeproj \
         -scheme EchoApp \
@@ -555,7 +567,7 @@ build_and_run_app() {
         -derivedDataPath "$derived_data" \
         -configuration Debug \
         build \
-        2>&1 | tee "$LOG_DIR/xcodebuild.log"
+        2>&1 | tee -a "$LOG_DIR/xcodebuild.log"
 
     # Find built .app
     APP_PATH="$(find "$derived_data/Build/Products" -name "EchoApp.app" -type d | head -1)"
