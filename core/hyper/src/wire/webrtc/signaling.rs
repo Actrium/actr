@@ -62,6 +62,38 @@ const CONCURRENT_CONNECT_WAIT_TIMEOUT_SECS: u64 = 5;
 const DISCONNECT_LOCK_TIMEOUT_SECS: u64 = 5;
 const DISCONNECT_CLOSE_TIMEOUT_SECS: u64 = 1;
 
+async fn connect_signaling_socket(
+    url: String,
+    config: WebSocketConfig,
+    timeout_secs: u64,
+) -> NetworkResult<WebSocketStream<MaybeTlsStream<TcpStream>>> {
+    let connect_task = tokio::spawn(async move {
+        let connect_result = if timeout_secs == 0 {
+            connect_async_with_config(url.as_str(), Some(config), false).await
+        } else {
+            let timeout_duration = std::time::Duration::from_secs(timeout_secs);
+            tokio::time::timeout(
+                timeout_duration,
+                connect_async_with_config(url.as_str(), Some(config), false),
+            )
+            .await
+            .map_err(|_| {
+                NetworkError::ConnectionError(format!(
+                    "Signaling connect timeout after {}s",
+                    timeout_secs
+                ))
+            })?
+        }?;
+
+        let (ws_stream, _) = connect_result;
+        Ok(ws_stream)
+    });
+
+    connect_task.await.map_err(|err| {
+        NetworkError::ConnectionError(format!("Signaling connect task failed: {err}"))
+    })?
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // configurationType
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -845,25 +877,7 @@ impl WebSocketSignalingClient {
         );
         // After disconnection, data written to the buffer will continue to be sent once the network recovers
         let config = WebSocketConfig::default().write_buffer_size(0);
-        // Connect with an optional timeout. A timeout of 0 means "no timeout".
-        let connect_result = if timeout_secs == 0 {
-            connect_async_with_config(url.as_str(), Some(config), false).await
-        } else {
-            let timeout_duration = std::time::Duration::from_secs(timeout_secs);
-            tokio::time::timeout(
-                timeout_duration,
-                connect_async_with_config(url.as_str(), Some(config), false),
-            )
-            .await
-            .map_err(|_| {
-                NetworkError::ConnectionError(format!(
-                    "Signaling connect timeout after {}s",
-                    timeout_secs
-                ))
-            })?
-        }?;
-
-        let (ws_stream, _) = connect_result;
+        let ws_stream = connect_signaling_socket(url.to_string(), config, timeout_secs).await?;
 
         // Split read/write halves and initialize client state
         let (sink, stream) = ws_stream.split();

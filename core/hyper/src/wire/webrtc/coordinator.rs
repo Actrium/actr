@@ -2328,13 +2328,12 @@ impl WebRtcCoordinator {
         offer_sdp: String,
         sdp_exchange_id: Option<String>,
     ) -> ActorResult<()> {
-        let Some(sdp_exchange_id) = sdp_exchange_id else {
+        if sdp_exchange_id.is_none() {
             tracing::warn!(
-                "🚫 Ignoring Offer from {} without sdp_exchange_id correlation",
+                "⚠️ Handling initial Offer from {} without sdp_exchange_id correlation",
                 from
             );
-            return Ok(());
-        };
+        }
 
         // ========== PrepareForIncomingOffer: Clean up existing connection if any ==========
         let existing_peer = {
@@ -2675,7 +2674,7 @@ impl WebRtcCoordinator {
         let session_desc = actr_protocol::SessionDescription {
             r#type: SdpType::Answer as i32,
             sdp: answer_sdp,
-            sdp_exchange_id: Some(sdp_exchange_id),
+            sdp_exchange_id,
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(from, payload).await?;
@@ -2712,14 +2711,6 @@ impl WebRtcCoordinator {
         answer_sdp: String,
         sdp_exchange_id: Option<String>,
     ) -> ActorResult<()> {
-        let Some(sdp_exchange_id) = sdp_exchange_id.as_deref() else {
-            tracing::warn!(
-                "🚫 Ignoring Answer from {} without sdp_exchange_id correlation",
-                from
-            );
-            return Ok(());
-        };
-
         // Get corresponding PeerConnection and ready_tx only after the Answer
         // is proven to belong to the current local Offer. A stale Answer must
         // not consume ready_tx or mutate the PeerConnection.
@@ -2747,14 +2738,30 @@ impl WebRtcCoordinator {
 
             let pending_sdp_exchange_id = pending_sdp_exchange_id.clone();
 
-            if pending_sdp_exchange_id != sdp_exchange_id {
-                tracing::warn!(
-                    "🚫 Ignoring stale Answer from {}: sdp_exchange_id={} current_exchange={}",
-                    from,
-                    sdp_exchange_id,
-                    pending_sdp_exchange_id
-                );
-                return Ok(());
+            match sdp_exchange_id.as_deref() {
+                Some(answer_exchange_id) if pending_sdp_exchange_id != answer_exchange_id => {
+                    tracing::warn!(
+                        "🚫 Ignoring stale Answer from {}: sdp_exchange_id={} current_exchange={}",
+                        from,
+                        answer_exchange_id,
+                        pending_sdp_exchange_id
+                    );
+                    return Ok(());
+                }
+                Some(_) => {}
+                None if state.ready_tx.is_none() => {
+                    tracing::warn!(
+                        "🚫 Ignoring renegotiation Answer from {} without sdp_exchange_id correlation",
+                        from
+                    );
+                    return Ok(());
+                }
+                None => {
+                    tracing::warn!(
+                        "⚠️ Handling initial Answer from {} without sdp_exchange_id correlation",
+                        from
+                    );
+                }
             }
 
             let pc = state.peer_connection.clone();

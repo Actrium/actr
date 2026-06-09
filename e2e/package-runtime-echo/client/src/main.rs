@@ -14,11 +14,11 @@ use actr_hyper::{
     Hyper, HyperConfig, RegistryTrust, StaticTrust, TrustProvider, WorkloadPackage,
     init_observability,
 };
-use std::sync::Arc;
 use actr_protocol::RpcRequest;
 use anyhow::{Context, Result, anyhow, ensure};
 use base64::Engine;
 use serde_json::Value;
+use std::sync::Arc;
 use tracing::{error, info};
 
 use crate::echo::{EchoRequest, EchoResponse};
@@ -39,8 +39,9 @@ fn package_path() -> PathBuf {
     env::var("CLIENT_GUEST_PACKAGE_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../client-guest/dist/actrium-pkg-runtime-echo-client-guest-0.1.0-cdylib.actr")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+                "../client-guest/dist/actrium-pkg-runtime-echo-client-guest-0.1.0-cdylib.actr",
+            )
         })
 }
 

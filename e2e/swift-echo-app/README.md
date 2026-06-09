@@ -95,10 +95,10 @@ e2e/swift-echo-app/
 
 ## Verification Mechanism
 
-EchoApp runs with `ACTR_ECHOAPP_AUTO_SEND=1` (set in Xcode scheme via `project.yml`). This triggers:
+EchoApp runs with `ACTR_ECHOAPP_AUTO_SEND=1` and `ACTR_ECHOAPP_TEST_INPUT=<message>` passed by `run.sh` through `SIMCTL_CHILD_*` launch environment variables. This triggers:
 
 1. `ActrService.startIfNeeded()` — connects to actrix, discovers EchoService
-2. `ContentView.sendEcho("e2e-test-message")` — RPC call through LocalEchoService → EchoService
+2. `ContentView.sendEcho("<message>")` — RPC call through LocalEchoService → EchoService
 3. `print("ACTR_E2E_RESULT:\(output)")` — stdout marker captured by `run.sh`
 
 `run.sh` greps the Simulator console log for `ACTR_E2E_RESULT:` and asserts the reply contains the test message.

@@ -17,6 +17,9 @@ ACTR_CLI_MANIFEST="$REPO_ROOT/cli/Cargo.toml"
 E2E_TARGET_ROOT="$REPO_ROOT/target/e2e-cache/swift-echo-app"
 ACTR_TARGET_DIR="$E2E_TARGET_ROOT/actr-cli"
 TEMP_SERVICE_TARGET_DIR="$E2E_TARGET_ROOT/temp-service"
+SWIFT_PACKAGE_DIR="$REPO_ROOT/bindings/swift"
+SWIFT_BINDINGS_PATH=".build/e2e/ActrBindings"
+SWIFT_XCFRAMEWORK_PATH=".build/e2e/ActrFFI.xcframework"
 DEFAULT_MESSAGE="e2e-test-message"
 
 TEST_INPUT="$DEFAULT_MESSAGE"
@@ -47,28 +50,38 @@ DIST_DIR="$RUN_DIR/dist"
 TMP_SERVICE_ROOT="$RUN_DIR/workspace"
 TMP_SERVICE_DIR="$TMP_SERVICE_ROOT/echo-actr-$RANDOM"
 ACTRIX_CONFIG_PATH="$RUN_DIR/actrix.toml"
+SERVER_RUNTIME_PATH="$RUN_DIR/server-runtime.toml"
 SERVICE_KEYCHAIN="$TMP_SERVICE_DIR/packaging/keys/mfr.keychain.json"
 SERVICE_PUBLIC_KEY="$TMP_SERVICE_DIR/public-key.json"
 PROVISIONED_KEYCHAIN="$RUN_DIR/mfr.keychain.json"
 PROVISIONED_PUBLIC_KEY="$RUN_DIR/mfr-public-key.json"
 ECHOAPP_ACTRIX_CONFIG="$SCRIPT_DIR/actr.toml"
+HOST_TARGET="$(rustc -vV | awk '/host:/ {print $2}')"
+ECHOAPP_PACKAGE_MANIFEST="$RUN_DIR/echoapp-package-manifest.toml"
+ECHOAPP_MARKER_BINARY="$RUN_DIR/echoapp-linked-identity.bin"
+ECHOAPP_PACKAGE="$DIST_DIR/${MANUFACTURER}-EchoApp-0.1.0-${HOST_TARGET}.actr"
+APP_STDOUT_LOG="$LOG_DIR/app.stdout.log"
+APP_STDERR_LOG="$LOG_DIR/app.stderr.log"
 
 mkdir -p "$SQLITE_DIR" "$LOG_DIR" "$DIST_DIR" "$TMP_SERVICE_ROOT" "$E2E_TARGET_ROOT"
 
 ACTRIX_PID=""
+SERVER_PID=""
 ACTR_CLI_BIN=""
 ADMIN_TOKEN=""
 SERVICE_PACKAGE=""
 SERVICE_VERSION=""
 REALM_SECRET=""
-HOST_TARGET="$(rustc -vV | awk '/host:/ {print $2}')"
-IOS_APP_PID=""
+DEVICE_UDID=""
 
 cleanup() {
     local status=$?
 
-    if [ -n "$IOS_APP_PID" ] && kill -0 "$IOS_APP_PID" 2>/dev/null; then
-        kill "$IOS_APP_PID" 2>/dev/null || true
+    if [ -n "$DEVICE_UDID" ]; then
+        xcrun simctl terminate "$DEVICE_UDID" com.actrium.EchoApp 2>/dev/null || true
+    fi
+    if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
+        kill "$SERVER_PID" 2>/dev/null || true
     fi
     if [ -n "$ACTRIX_PID" ] && kill -0 "$ACTRIX_PID" 2>/dev/null; then
         kill "$ACTRIX_PID" 2>/dev/null || true
@@ -95,7 +108,13 @@ run_actr() {
 
 build_local_actr_cli() {
     section "🔧 Building local actr CLI"
-    CARGO_TARGET_DIR="$ACTR_TARGET_DIR" cargo build --manifest-path "$ACTR_CLI_MANIFEST" --bin actr >/dev/null
+    local cargo_env=()
+
+    if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libssh2; then
+        cargo_env+=(LIBSSH2_SYS_USE_PKG_CONFIG=1)
+    fi
+
+    env "${cargo_env[@]}" CARGO_TARGET_DIR="$ACTR_TARGET_DIR" cargo build --manifest-path "$ACTR_CLI_MANIFEST" --bin actr >/dev/null
     ACTR_CLI_BIN="$ACTR_TARGET_DIR/debug/actr"
     [ -x "$ACTR_CLI_BIN" ] || fail "actr CLI binary missing at $ACTR_CLI_BIN"
     success "actr CLI ready: $ACTR_CLI_BIN"
@@ -198,13 +217,16 @@ EOF
 
 [patch.crates-io]
 actr = { path = "$repo_path" }
+actr-config = { path = "$repo_path/core/config" }
 actr-protocol = { path = "$repo_path/core/protocol" }
 actr-framework = { path = "$repo_path/core/framework" }
 actr-hyper = { path = "$repo_path/core/hyper" }
+actr-pack = { path = "$repo_path/core/pack" }
+actr-platform-native = { path = "$repo_path/core/platform-native" }
+actr-platform-traits = { path = "$repo_path/core/platform-traits" }
 actr-runtime = { path = "$repo_path/core/runtime" }
-actr-config = { path = "$repo_path/core/config" }
-actr-service-compat = { path = "$repo_path/core/service-compat" }
 actr-runtime-mailbox = { path = "$repo_path/core/runtime-mailbox" }
+actr-service-compat = { path = "$repo_path/core/service-compat" }
 EOF
 }
 
@@ -327,6 +349,108 @@ build_service_package() {
     success "Server package published"
 }
 
+publish_echoapp_package_identity() {
+    section "📦 Publishing EchoApp package identity"
+
+    # Linked EchoApp does not load this package. It is a registry marker for
+    # actrix versions that still require the actor type to be package-registered.
+    printf 'linked EchoApp identity marker\n' >"$ECHOAPP_MARKER_BINARY"
+    cat >"$ECHOAPP_PACKAGE_MANIFEST" <<EOF
+edition = 1
+
+[package]
+name = "EchoApp"
+manufacturer = "${MANUFACTURER}"
+version = "0.1.0"
+description = "Actor-RTC EchoApp linked runtime identity marker"
+
+[binary]
+path = "${ECHOAPP_MARKER_BINARY}"
+target = "${HOST_TARGET}"
+EOF
+
+    run_actr build \
+        --no-compile \
+        --manifest-path "$ECHOAPP_PACKAGE_MANIFEST" \
+        --key "$PROVISIONED_KEYCHAIN" \
+        --output "$ECHOAPP_PACKAGE"
+
+    run_actr pkg verify --pubkey "$PROVISIONED_PUBLIC_KEY" --package "$ECHOAPP_PACKAGE" >/dev/null
+    run_actr registry publish \
+        --package "$ECHOAPP_PACKAGE" \
+        --keychain "$PROVISIONED_KEYCHAIN" \
+        --endpoint "http://127.0.0.1:${HTTP_PORT}"
+
+    success "EchoApp package identity published"
+}
+
+run_server_host() {
+    section "🚀 Starting package-backed server host"
+
+    cat >"$SERVER_RUNTIME_PATH" <<EOF
+edition = 1
+
+[package]
+path = "${SERVICE_PACKAGE}"
+
+[signaling]
+url = "ws://127.0.0.1:${HTTP_PORT}/signaling/ws"
+
+[ais_endpoint]
+url = "http://127.0.0.1:${HTTP_PORT}/ais"
+
+[deployment]
+realm_id = ${REALM_ID}
+realm_secret = "${REALM_SECRET}"
+
+[[trust]]
+kind = "registry"
+endpoint = "http://127.0.0.1:${HTTP_PORT}/ais"
+
+[discovery]
+visible = true
+
+[observability]
+filter_level = "info"
+tracing_enabled = false
+tracing_endpoint = "http://localhost:4317"
+tracing_service_name = "swift-echo-app-server"
+
+[webrtc]
+force_relay = false
+stun_urls = ["stun:127.0.0.1:${ICE_PORT}"]
+turn_urls = ["turn:127.0.0.1:${ICE_PORT}"]
+
+[acl]
+
+[[acl.rules]]
+permission = "allow"
+type = "${MANUFACTURER}:EchoApp:0.1.0"
+EOF
+
+    RUST_LOG="${RUST_LOG:-info}" \
+        run_actr run -c "$SERVER_RUNTIME_PATH" >"$LOG_DIR/server.log" 2>&1 &
+    SERVER_PID=$!
+
+    local attempt=0
+    while [ $attempt -lt 30 ]; do
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            cat "$LOG_DIR/server.log" >&2 || true
+            fail "Server host exited early"
+        fi
+
+        if grep -q "Echo Host fully started\|ActrNode started" "$LOG_DIR/server.log" 2>/dev/null; then
+            success "Server host is running"
+            return 0
+        fi
+
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+
+    warn "Server host readiness log not observed, continuing"
+}
+
 # ──── EchoApp config ────
 
 render_echoapp_config() {
@@ -343,6 +467,26 @@ render_echoapp_config() {
 }
 
 # ──── iOS Simulator ────
+
+build_local_swift_package_assets() {
+    section "🧩 Building local Swift FFI package assets"
+
+    require_cmd uniffi-bindgen
+    if ! (
+        cd "$SWIFT_PACKAGE_DIR"
+        ACTR_BUILD_PROFILE="${ACTR_BUILD_PROFILE:-debug}" \
+            ACTR_BINDINGS_PATH="$SWIFT_BINDINGS_PATH" \
+            ACTR_BINARY_PATH="$SWIFT_XCFRAMEWORK_PATH" \
+            ./build-xcframework.sh >"$LOG_DIR/swift-xcframework.log" 2>&1
+    ); then
+        tail -120 "$LOG_DIR/swift-xcframework.log" >&2 || true
+        fail "Swift FFI XCFramework build failed"
+    fi
+
+    [ -f "$SWIFT_PACKAGE_DIR/$SWIFT_BINDINGS_PATH/Actr.swift" ] || fail "Swift bindings missing"
+    [ -d "$SWIFT_PACKAGE_DIR/$SWIFT_XCFRAMEWORK_PATH" ] || fail "Swift XCFramework missing"
+    success "Local Swift FFI package assets ready"
+}
 
 setup_ios_simulator() {
     section "📱 Setting up iOS Simulator"
@@ -373,7 +517,13 @@ setup_ios_simulator() {
     fi
 
     xcrun simctl boot "$DEVICE_UDID" 2>/dev/null || true
-    # Wait for boot
+    if xcrun simctl bootstatus "$DEVICE_UDID" -b >/dev/null 2>&1; then
+        success "Simulator booted"
+        export DEVICE_UDID
+        return 0
+    fi
+
+    # Fall back to polling the device state when bootstatus is unavailable or flaky.
     local attempt=0
     while [ $attempt -lt 60 ]; do
         local boot_status
@@ -387,6 +537,8 @@ setup_ios_simulator() {
         attempt=$((attempt + 1))
     done
 
+    fail "Simulator did not boot: $DEVICE_UDID"
+
     export DEVICE_UDID
 }
 
@@ -394,16 +546,19 @@ build_and_run_app() {
     section "🔨 Building EchoApp with XcodeGen"
 
     require_cmd xcodegen
+    build_local_swift_package_assets
     cd "$SCRIPT_DIR"
 
     # Generate Xcode project from project.yml
-    xcodegen generate --spec project.yml --project EchoApp.xcodeproj \
-        >"$LOG_DIR/xcodegen.log" 2>&1
+    rm -rf EchoApp.xcodeproj
+    xcodegen generate --spec project.yml --project "$SCRIPT_DIR" >"$LOG_DIR/xcodegen.log" 2>&1
     success "XcodeGen project generated"
 
     section "🏗️  Building EchoApp for iOS Simulator"
 
     local derived_data="$RUN_DIR/DerivedData"
+    ACTR_BINDINGS_PATH="$SWIFT_BINDINGS_PATH" \
+    ACTR_BINARY_PATH="$SWIFT_XCFRAMEWORK_PATH" \
     xcodebuild \
         -project EchoApp.xcodeproj \
         -scheme EchoApp \
@@ -411,7 +566,7 @@ build_and_run_app() {
         -derivedDataPath "$derived_data" \
         -configuration Debug \
         build \
-        >"$LOG_DIR/xcodebuild.log" 2>&1
+        2>&1 | tee "$LOG_DIR/xcodebuild.log"
 
     # Find built .app
     APP_PATH="$(find "$derived_data/Build/Products" -name "EchoApp.app" -type d | head -1)"
@@ -424,15 +579,32 @@ build_and_run_app() {
     section "📲 Installing and launching EchoApp"
     xcrun simctl install "$DEVICE_UDID" "$APP_PATH"
 
-    # Launch with console output capture
-    # ACTR_ECHOAPP_AUTO_SEND=1 is set in the Run scheme (project.yml)
-    xcrun simctl launch --console \
+    # Launch with direct stdout/stderr redirection. `simctl launch --console`
+    # may return before the app exits when detached from the terminal, so do not
+    # treat the wrapper process as the app lifetime.
+    SIMCTL_CHILD_ACTR_ECHOAPP_AUTO_SEND=1 \
+    SIMCTL_CHILD_ACTR_ECHOAPP_TEST_INPUT="$TEST_INPUT" \
+    xcrun simctl launch \
+        --terminate-running-process \
+        --stdout="$APP_STDOUT_LOG" \
+        --stderr="$APP_STDERR_LOG" \
         "$DEVICE_UDID" \
         "com.actrium.EchoApp" \
-        >"$LOG_DIR/app.log" 2>&1 &
-    IOS_APP_PID=$!
+        >"$LOG_DIR/app.launch.log" 2>&1
 
     success "App launched, waiting for echo result"
+}
+
+grep_app_logs() {
+    grep -h "$@" "$APP_STDOUT_LOG" "$APP_STDERR_LOG" 2>/dev/null
+}
+
+tail_app_logs() {
+    local lines="$1"
+    echo "App stdout log tail:"
+    tail -n "$lines" "$APP_STDOUT_LOG" >&2 2>/dev/null || true
+    echo "App stderr log tail:"
+    tail -n "$lines" "$APP_STDERR_LOG" >&2 2>/dev/null || true
 }
 
 wait_for_echo_result() {
@@ -441,9 +613,9 @@ wait_for_echo_result() {
     local attempt=0
 
     while [ $attempt -lt "$timeout" ]; do
-        if grep -q "ACTR_E2E_RESULT:" "$LOG_DIR/app.log" 2>/dev/null; then
+        if grep_app_logs -q "ACTR_E2E_RESULT:"; then
             local result
-            result="$(grep "ACTR_E2E_RESULT:" "$LOG_DIR/app.log" | tail -1)"
+            result="$(grep_app_logs "ACTR_E2E_RESULT:" | tail -1)"
             echo "Echo result: $result"
             if echo "$result" | grep -q "$TEST_INPUT"; then
                 success "End-to-end echo succeeded"
@@ -453,25 +625,12 @@ wait_for_echo_result() {
             return 1
         fi
 
-        # Check if the app is still running
-        if [ -n "$IOS_APP_PID" ] && ! kill -0 "$IOS_APP_PID" 2>/dev/null; then
-            # App process ended — check if we already have the result
-            if grep -q "ACTR_E2E_RESULT:" "$LOG_DIR/app.log" 2>/dev/null; then
-                continue
-            fi
-            warn "EchoApp process exited before echo result was captured"
-            echo "App log tail:"
-            tail -50 "$LOG_DIR/app.log" >&2 || true
-            return 1
-        fi
-
         sleep 2
         attempt=$((attempt + 1))
     done
 
     echo ""
-    echo "App log tail:"
-    tail -80 "$LOG_DIR/app.log" >&2 || true
+    tail_app_logs 80
     fail "Timed out waiting for echo result after ${timeout}s"
 }
 
@@ -492,6 +651,8 @@ ensure_realm
 provision_mfr_keychain
 scaffold_service_guest
 build_service_package
+publish_echoapp_package_identity
+run_server_host
 
 render_echoapp_config
 setup_ios_simulator

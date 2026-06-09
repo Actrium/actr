@@ -1,12 +1,11 @@
-# manifest.toml — EchoApp Linked Runtime 配置
+# actr.toml - EchoApp linked runtime configuration
 #
-# 设计意图:
-#   EchoApp 是 linked 模式 (ActrNode.linked), 不走 actr build。
-#   此文件直接由 ActrNode.linked() 读取作为运行时配置,
-#   不需要 [package]/[binary]/[build] 等打包段。
+# EchoApp uses linked mode through ActrNode.linked() and does not use
+# `actr build`. This file is read directly as runtime configuration, so
+# package, binary, and build sections are intentionally omitted.
 #
-#   actr type 在 Swift 代码中定义:
-#     ActrType(manufacturer: "acme", name: "EchoApp", version: "0.1.0")
+# The actor type is defined in Swift code:
+#     ActrType(manufacturer: "actrium", name: "EchoApp", version: "0.1.0")
 
 [signaling]
 url = "ws://__HOST__:__HTTP_PORT__/signaling/ws"

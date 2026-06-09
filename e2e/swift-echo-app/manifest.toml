@@ -1,14 +1,13 @@
-# manifest.toml — EchoApp 包声明 + 依赖关系
+# manifest.toml - EchoApp package declaration and dependencies
 #
-# EchoApp 是 linked runtime，不走 actr build。此文件仅用于声明:
-#   - 包身份 (package)
-#   - 服务依赖 (dependencies) — 远程 EchoService 的 ActrType
+# EchoApp uses the linked runtime and is not built through `actr build`.
+# This file declares the package identity and remote EchoService dependency.
 
 edition = 1
 
 [package]
 name = "EchoApp"
-manufacturer = "acme"
+manufacturer = "actrium"
 version = "0.1.0"
 description = "Actor-RTC EchoApp — iOS linked runtime"
 

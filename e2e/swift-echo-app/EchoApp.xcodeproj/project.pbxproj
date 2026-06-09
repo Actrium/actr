@@ -23,6 +23,7 @@
 
 /* Begin PBXFileReference section */
 		039B9876E24683F49338746F /* local_echo.actor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = local_echo.actor.swift; sourceTree = "<group>"; };
+		136504857085460B67EA6952 /* swift */ = {isa = PBXFileReference; lastKnownFileType = folder; name = swift; path = ../../bindings/swift; sourceTree = SOURCE_ROOT; };
 		397CC9BA582965117290965D /* local_echo.pb.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = local_echo.pb.swift; sourceTree = "<group>"; };
 		3B355D26B7A704237F7ACEEF /* EchoApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = EchoApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		43EB44115877066F6CB59748 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -64,8 +65,17 @@
 				F6548FAB001DD58641BC9998 /* actr.toml */,
 				ECACC975AD8F559C49999427 /* manifest.toml */,
 				ADF7C998197E1E00F52BBACE /* EchoApp */,
+				999217ABF61827B9BFBF7F22 /* Packages */,
 				290D02D64F0CB90A283D9880 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		999217ABF61827B9BFBF7F22 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				136504857085460B67EA6952 /* swift */,
+			);
+			name = Packages;
 			sourceTree = "<group>";
 		};
 		A7567AEBC0F090CF314DD287 /* Generated */ = {
@@ -140,8 +150,8 @@
 			mainGroup = 7FAD8E9B6523B82CFD5D0E0D;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				33D956F5F62D3146E1DDF437 /* XCRemoteSwiftPackageReference "actr-swift-package-sync" */,
 				0D36F7B22BAC9F7DB9E5C087 /* XCRemoteSwiftPackageReference "swift-protobuf" */,
+				432AA9B58FF2762EAC9BA4CA /* XCLocalSwiftPackageReference "../../bindings/swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			projectDirPath = "";
@@ -365,6 +375,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		432AA9B58FF2762EAC9BA4CA /* XCLocalSwiftPackageReference "../../bindings/swift" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../bindings/swift;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		0D36F7B22BAC9F7DB9E5C087 /* XCRemoteSwiftPackageReference "swift-protobuf" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -374,20 +391,11 @@
 				minimumVersion = 1.32.0;
 			};
 		};
-		33D956F5F62D3146E1DDF437 /* XCRemoteSwiftPackageReference "actr-swift-package-sync" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Actrium/actr-swift-package-sync";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.3.1;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		2324D5CF66901570ECA64901 /* Actr */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 33D956F5F62D3146E1DDF437 /* XCRemoteSwiftPackageReference "actr-swift-package-sync" */;
 			productName = Actr;
 		};
 		EFF534FD30BEB6ABF141C33B /* SwiftProtobuf */ = {

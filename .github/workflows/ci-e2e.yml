@@ -103,7 +103,7 @@ jobs:
   swift-echo-app-e2e:
     name: Swift EchoApp E2E
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: read
       actions: read

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var actrService = ActrService()
-    @State private var input = "hello"
+    @State private var input = ProcessInfo.processInfo.environment["ACTR_ECHOAPP_TEST_INPUT"] ?? "hello"
     @State private var output = ""
     @State private var isSending = false
 

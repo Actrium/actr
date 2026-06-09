@@ -8,8 +8,7 @@ settings:
     SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 packages:
   actr-swift:
-    url: https://github.com/Actrium/actr-swift-package-sync
-    from: 0.3.3
+    path: ../../bindings/swift
   swift-protobuf:
     url: https://github.com/apple/swift-protobuf.git
     from: 1.32.0
@@ -20,9 +19,6 @@ schemes:
         EchoApp: all
     run:
       config: Debug
-      environmentVariables:
-        - variable: "ACTR_ECHOAPP_AUTO_SEND"
-          value: "1"
 
 
 targets:

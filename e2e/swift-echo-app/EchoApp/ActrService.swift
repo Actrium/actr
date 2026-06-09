@@ -28,8 +28,8 @@ final class ActrService: ObservableObject {
 
         do {
             let configURL = try materializeRuntimeConfig()
-            let echoServiceTarget = try readEchoServiceTarget()
-            let actorType = ActrType(manufacturer: "acme", name: "EchoApp", version: "0.1.0")
+            let echoServiceTarget = "actrium:EchoService:1.0.0"
+            let actorType = ActrType(manufacturer: "actrium", name: "EchoApp", version: "0.1.0")
 
             let workload = DynamicWorkload(
                 lifecycle: LocalEchoServiceLifecycleAdapter(targetType: echoServiceTarget),
@@ -109,22 +109,10 @@ final class ActrService: ObservableObject {
         return configURL
     }
 
-    /// 从 bundled manifest.toml 中解析 echo 依赖的 ActrType（通过 actr FFI）
-    private func readEchoServiceTarget() throws -> String {
-        guard let url = Bundle.main.url(forResource: "manifest", withExtension: "toml") else {
-            throw EchoAppError.missingManifest
-        }
-        let actrType = try ActrNode.resolveManifestDependency(
-            manifestPath: url.path,
-            dependencyAlias: "echo"
-        )
-        return actrType.toStringRepr()
-    }
 }
 
 private enum EchoAppError: Error {
     case missingConfigTemplate
-    case missingManifest
     case actorUnavailable
 }
 
