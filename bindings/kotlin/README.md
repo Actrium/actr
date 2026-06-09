@@ -59,18 +59,6 @@ actr/
 └── core/                     # Rust crates required by libactr
 ```
 
-The package-sync repository owns its own workflow definitions.
-The monorepo release train only dispatches that external release workflow with `version`, `source_sha`, and `source_tag`.
-
-## 🎯 Overview
-
-ACTR Kotlin provides seamless integration between the ACTR framework and Android/Kotlin applications. It enables developers to:
-
-- Build distributed actor-based applications
-- Leverage WebRTC for real-time communication
-- Use type-safe Kotlin APIs with automatic code generation
-- Integrate with existing Android applications
-
 ## Relationship to the Rust Node Typestate
 
 The native host exposes a typestate chain
@@ -80,43 +68,27 @@ system code can hook into each transition. The Kotlin API collapses the
 pipeline into a one-shot `ActrNode.fromPackageFile(...)` followed by
 `start()`: Android/Kotlin app developers only see the node and the live
 `ActrRef`. The `Node<S>` typestate is intentionally Rust-layer
-power-user territory — bindings do not re-export it. When fine-grained
-control is required (custom `TrustProvider`, pre-built `Hyper`,
-attaching a Rust `Workload`, etc.), use the `actr_hyper::{Hyper, Node}`
-API directly from native Rust.
+power-user territory — bindings do not re-export it.
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 actr-kotlin/
-├── actr-kotlin/              # 📚 ACTR Kotlin Library Module
-│   ├── src/main/kotlin/io/actor_rtc/actr/
-│   │   ├── ActrClient.kt     # Main client API
-│   │   ├── Types.kt          # Core types (ActrId, ActrType, etc.)
-│   │   └── generated/        # Auto-generated code from UniFFI
-│   └── src/main/AndroidManifest.xml
-├── demo/                     # 📱 Android Demo Application
-│   ├── src/main/kotlin/com/example/actrdemo/
-│   │   ├── MainActivity.kt   # Main app entry point
-│   │   ├── ClientActivity.kt # Client demo
-│   │   ├── ServerActivity.kt # Server demo
-│   │   └── EchoIntegrationTest.kt # Integration tests
-│   └── src/androidTest/      # Android instrumentation tests
-├── proto/                    # 🔧 Protocol Buffer Definitions
-│   └── local_file.proto      # File transfer service
-├── build-android.sh          # 📦 Native library build script
-└── build.gradle.kts          # Root build configuration
+├── actr-kotlin/              # Library module
+│   └── src/main/kotlin/io/actor_rtc/actr/
+│       ├── actr.kt           # UniFFI-generated bindings (raw FFI layer)
+│       └── dsl/              # High-level Kotlin-idiomatic API
+│           ├── Actr.kt       # ActrNode/ActrRef wrapper classes + factory fns
+│           ├── Types.kt      # Type builders (ActrType, ActrId, DataStream)
+│           ├── Extensions.kt # Error handling, retry, context helpers
+│           ├── RpcRequest.kt # Type-safe RPC protocol
+│           ├── Workload.kt   # Workload abstractions (SimpleWorkload, etc.)
+│           └── NetworkMonitor.kt  # Android network/lifecycle monitoring
+├── demo/                     # Android demo app
+└── scripts/                  # Build & packaging helpers
 ```
 
-## 🔧 Key Technologies
-
-- **UniFFI**: Type-safe Rust-to-Kotlin bindings
-- **WebRTC**: Real-time communication protocol
-- **Protocol Buffers**: Structured data serialization
-- **Actor Model**: Distributed computing paradigm
-- **Coroutines**: Asynchronous programming in Kotlin
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -125,26 +97,7 @@ actr-kotlin/
 - **Rust**: 1.88+ with Android targets
 - **protoc**: Protocol buffer compiler
 
-### 1. Clone and Setup
-
-```bash
-git clone <repository-url>
-cd actr/bindings/kotlin
-```
-
-### 2. Build Native Libraries
-
-```bash
-# Build Rust native libraries for Android (requires Android NDK)
-./build-android.sh
-
-# This will:
-# - Build libactr for aarch64-linux-android (arm64-v8a)
-# - Build libactr for x86_64-linux-android (x86_64)
-# - Copy .so files to demo/src/main/jniLibs/
-```
-
-### 3. Build the Project
+### Build
 
 ```bash
 # Build everything
@@ -157,234 +110,155 @@ cd actr/bindings/kotlin
 ./gradlew :demo:assembleDebug
 ```
 
-### 4. Run Tests
-
-```bash
-# Run unit tests
-./gradlew test
-
-# Run Android instrumentation tests (requires device/emulator)
-./gradlew connectedDebugAndroidTest
-```
-
-## 📖 Usage
-
-### Basic Setup
-
-```kotlin
-import io.actorrtc.actr.*
-
-// 1. Create configuration
-val config = ActrConfig(
-    signalingUrl = "ws://10.0.2.2:8081/signaling/ws", // For Android emulator
-    actrType = ActrType("acme", "my.android.app"),
-    realmId = 2281844430u
-)
-
-// 2. Initialize client
-val client = ActrClient(config)
-
-// 3. Connect to signaling server
-val localActorId = client.connect()
-
-// 4. Use the client for communication
-// ... (see examples below)
-```
-
-### Package-backed Runtime Example
-
-```kotlin
-import io.actor_rtc.actr.dsl.createActrNode
-import local_file.File.*
-
-val node = createActrNode("actr.toml", "dist/app.actr")
-val actorRef = node.start()
-
-val request = SendFileRequest.newBuilder()
-    .setFilename("example.txt")
-    .build()
-
-val response = actorRef.call(
-    "local_file.LocalFileService.SendFile",
-    request.toByteArray(),
-    timeoutMs = 60000L
-)
-
-val sendResponse = SendFileResponse.parseFrom(response)
-```
-
-### Service Discovery
-
-```kotlin
-// Discover available services
-client.discoverRouteCandidates(
-    targetType = ActrType("acme", "FileTransferService"),
-    count = 5
-) { result ->
-    result.onSuccess { candidates ->
-        if (candidates.isNotEmpty()) {
-            val targetService = candidates.first()
-            // Connect to discovered service
-            performFileTransfer(targetService)
-        }
-    }
-    result.onFailure { error ->
-        Log.e(TAG, "Discovery failed: ${error.message}")
-    }
-}
-```
-
-## 🧪 Testing
-
-### Key Test Cases
-
-- **`testDataStreamToFileTransferReceiver`**: ✅ **PASSED**
-  - Validates file transfer functionality
-  - Tests data streaming capabilities
-  - Confirms protobuf message handling
-
-- **`testRpcCallToEchoServer`**: Requires external echo server
-  - Tests RPC communication
-  - Validates service discovery
-
-### Running Tests
+### Run Tests
 
 ```bash
 # Unit tests
-./gradlew :actr-kotlin:test
+./gradlew test
 
-# Integration tests (requires signaling server)
-./gradlew :demo:connectedDebugAndroidTest
+# Android instrumentation tests (requires device/emulator)
+./gradlew connectedDebugAndroidTest
 ```
 
-## 🔧 Development
+## API Reference
 
-### Code Generation
+Detailed API documentation: **[docs/api.md](docs/api.md)**
 
-The project uses automatic code generation for:
-
-1. **UniFFI Bindings**: Rust → Kotlin
-2. **Protocol Buffers**: .proto → Kotlin/Java
-
-### Building from Source
-
-```bash
-# 1. Build Rust library with Android targets and refresh UniFFI bindings
-./build-android.sh
-
-# 2. Build Android project
-./gradlew :actr-kotlin:generateUniFFIBindings
-./gradlew build
-```
-
-### Project Structure Details
-
-- **`actr-kotlin/`**: Main library module
-  - Contains UniFFI-generated bindings
-  - Core ACTR types and APIs
-  - Android-specific integrations
-
-- **`demo/`**: Sample Android application
-  - Demonstrates library usage
-  - Contains integration tests
-  - UI for testing features
-  - **Network Monitoring**: Automatically monitors network state changes and calls `NetworkEventHandle` methods when connected
-
-- **`proto/`**: Protocol definitions
-  - Shared between Rust and Kotlin
-  - Defines service interfaces
-  - Message formats
-
-## 📋 API Reference
-
-### Core Classes
-
-#### `ActrClient`
-Main entry point for ACTR communication.
+### Package-backed Node
 
 ```kotlin
-class ActrClient(config: ActrConfig) {
-    fun connect(): ActrId
-    fun disconnect()
-    fun discoverRouteCandidates(type: ActrType, count: Int): Result<List<ActrId>>
+import io.actor_rtc.actr.dsl.*
+
+// Create a node from config + package file
+val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
+
+// Or with URL overloads
+val node = ActrNode.fromPackageFile(configFileUrl, packageFileUrl)
+
+// Start and get a running actor reference
+val ref = node.start()
+
+// RPC call with convenience defaults
+val bytes = ref.call("echo.EchoService.Echo", requestPayload)
+
+// Type-safe RPC with RpcRequest protocol
+object EchoRpc : RpcRequest<EchoRequest, EchoResponse> {
+    override val routeKey = "echo.EchoService.Echo"
+    override fun serializeRequest(r: EchoRequest) = r.toByteArray()
+    override fun deserializeResponse(b: ByteArray) = EchoResponse.parseFrom(b)
 }
+val response: EchoResponse = ref.call(EchoRpc, request)
+
+// Discovery
+val server = ref.discoverOne("acme:EchoService:1.0.0")
+
+// Clean shutdown
+ref.stop()
 ```
 
-#### `ActrId`
-Unique actor identifier.
+### Linked (Kotlin-native) Workload
 
 ```kotlin
-data class ActrId(
-    val actrType: ActrType,
-    val serialNumber: Long,
-    val realmId: UInt
-) {
-    fun toString(): String
-}
-```
-
-#### `ActrType`
-Actor type classification.
-
-```kotlin
-data class ActrType(
-    val manufacturer: String,
-    val name: String,
-    val version: String
-) {
-    fun toString(): String // Returns "manufacturer:name:version"
-}
-```
-
-#### `NetworkEventHandle`
-Handles network state changes for platform integration.
-
-```kotlin
-// Create network event handler
-val networkHandle = system.createNetworkEventHandle()
-
-// Handle network availability
-val result = networkHandle.handleNetworkAvailableCatching()
-result.onSuccess { eventResult ->
-    println("Network became available")
-}.onFailure { error ->
-    println("Failed to handle network available: $error")
-}
-
-// Handle network loss
-networkHandle.handleNetworkLostCatching().onSuccess {
-    println("Network connection lost")
-}
-
-// Handle network type changes
-networkHandle.handleNetworkTypeChangedCatching(isWifi = true, isCellular = false)
-    .onSuccess { eventResult ->
-        println("Network type changed to WiFi")
+// Implement your workload
+class MyWorkload : WorkloadLifecycleBridge {
+    override suspend fun onStart(ctx: ContextBridge) { /* init */ }
+    override suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray {
+        // Handle incoming RPC
     }
+    override suspend fun onStop(ctx: ContextBridge) { /* cleanup */ }
+}
+
+// Create and start
+val workload = dynamicWorkload(MyWorkload())
+val node = ActrNode.linked("config.toml", myActrType, workload)
+val ref = node.start()
+
+// Or with URL
+val node = ActrNode.linked(configFileUrl, myActrType, workload)
 ```
 
-**Note**: The demo application automatically monitors network state changes and calls these methods when connected to an ACTR system.
+### Network Monitoring (Android)
 
-## 🤝 Contributing
+```kotlin
+// One-shot setup — monitor is wired to the node and auto-started
+val monitor = node.createNetworkMonitor(this, lifecycleScope) { msg ->
+    Log.d("App", msg)
+}
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Ensure `./gradlew build` passes
-6. Submit a pull request
+// Or lazy setup (node created after monitor)
+var system: ActrNode? = null
+val monitor = NetworkMonitor.create(this, lifecycleScope, { system }) { msg ->
+    Log.d("App", msg)
+}
+monitor.startMonitoring()
+system = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
+```
 
-## 📄 License
+### Error Handling & Retry
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+```kotlin
+// Query error properties
+when {
+    ex.isTimeout -> println("Timed out")
+    ex.isRecoverable -> println("Transient — retry")
+    ex.requiresDlq -> println("Route to dead-letter queue")
+}
+println(ex.userMessage)
 
-## 🔗 Related Projects
+// Retry with exponential backoff
+val result = withRetry(maxAttempts = 5) {
+    ref.call("echo.EchoService.Echo", payload)
+}
+
+// Scoped actor lifecycle (auto-shutdown)
+node.withStartedActor { ref ->
+    val target = ref.discoverOne("acme:EchoService:1.0.0")
+    val response = ref.call("echo.EchoService.Echo", payload)
+}
+```
+
+### DSL Builders
+
+```kotlin
+// ActrType
+val type = actrType("acme", "EchoService", "1.0.0")
+val type = actrType { manufacturer = "acme"; name = "EchoService"; version = "1.0.0" }
+
+// ActrId
+val id = actrId { realm = 2281844430u; serialNumber = 1uL; type = "acme:EchoService:1.0.0" }
+
+// DataStream
+val stream = dataStream {
+    streamId = "file-001"; sequence = 0uL; payload = data
+    metadata { "content-type" to "application/octet-stream" }
+}
+
+// Workload
+val wl = workload {
+    realm = 2281844430u; type = "acme:my-service"
+    onStart { ctx -> /* setup */ }
+    onStop { ctx -> /* teardown */ }
+}
+```
+
+### Key Types
+
+| Type | Description |
+|------|-------------|
+| `ActrNode` | High-level node wrapper — creates and starts actors |
+| `ActrRef` | Running actor reference — RPC, discovery, lifecycle |
+| `ContextBridge` | Workload context — call/discover/send from within a workload |
+| `RpcRequest<Req, Resp>` | Type-safe RPC contract (route + serialize/deserialize) |
+| `DynamicWorkload` | Composite workload with lifecycle + optional observers |
+| `NetworkEventHandle` | Platform network/lifecycle event callbacks |
+| `PayloadType` | RPC/stream/media routing: RPC_RELIABLE, RPC_SIGNAL, STREAM_RELIABLE, etc. |
+| `ActrException` | 11 error variants: Unavailable, TimedOut, NotFound, etc. |
+
+## License
+
+Licensed under the Apache License, Version 2.0.
+
+## Related Projects
 
 - [ACTR Framework](https://github.com/actor-rtc/actr) - Core Rust implementation
-- [libactr](https://github.com/actor-rtc/libactr) - Rust FFI library (included as submodule)
 - [ACTR Examples](https://github.com/actor-rtc/actr-examples) - Usage examples
-- [ACTR CLI](https://github.com/actor-rtc/actr-cli) - Code generation tools
-
----
-
-**Built with ❤️ by the Actor-RTC team**

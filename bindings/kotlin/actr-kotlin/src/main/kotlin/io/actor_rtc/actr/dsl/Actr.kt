@@ -10,8 +10,8 @@
  * val ref = node.start()
  *
  * // Discover and call remote services
- * val echoService = ref.discover("acme:EchoService").firstOrNull()
- * val response = ref.call(echoService, "echo.EchoService.Echo", request)
+ * val echoService = ref.discoverOne("acme:EchoService:1.0.0")
+ * val response = ref.call("echo.EchoService.Echo", request)
  *
  * // Send data stream
  * ref.sendStream(target) {
@@ -24,8 +24,7 @@
  * }
  *
  * // Clean shutdown
- * ref.shutdown()
- * ref.awaitShutdown()
+ * ref.stop()
  * ```
  */
 package io.actor_rtc.actr.dsl
@@ -34,35 +33,16 @@ import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.ActrId
 import io.actor_rtc.actr.ActrRefWrapper
 import io.actor_rtc.actr.ActrType
+import io.actor_rtc.actr.DynamicWorkload
 import io.actor_rtc.actr.NetworkEventHandleWrapper
+import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.WorkloadLifecycleBridge
 import io.actor_rtc.actr.ActrNode as ActrNodeGenerated
+import java.net.URL
 
 // ============================================================================
-// Type Aliases - Provide DSL-friendly names
+// Type Aliases — provide DSL-friendly names for remaining generated types
 // ============================================================================
-
-/**
- * Entry point for creating actors. Use [ActrNode.fromPackageFile] to create an instance.
- *
- * This aliases the UniFFI-generated `io.actor_rtc.actr.ActrNode` class into the DSL
- * package so callers can write `import io.actor_rtc.actr.dsl.ActrNode` alongside the
- * other DSL helpers.
- */
-typealias ActrNode = ActrNodeGenerated
-
-/**
- * Reference to a running actor. Provides methods for:
- * - [ActrRef.call]
- * - RPC calls to remote actors
- * - [ActrRef.discover]
- * - Service discovery
- * - [ActrRef.sendDataStream]
- * - Send data streams
- * - [ActrRef.shutdown]
- * - Graceful shutdown
- */
-typealias ActrRef = ActrRefWrapper
 
 /** Handle for network event callbacks. Used for platform integration. */
 typealias NetworkEventHandle = NetworkEventHandleWrapper
@@ -71,26 +51,289 @@ typealias NetworkEventHandle = NetworkEventHandleWrapper
 typealias Workload = WorkloadLifecycleBridge
 
 // ============================================================================
-// ActrNode Factory Functions
+// ActrNode — high-level wrapper with workload retention
 // ============================================================================
 
 /**
- * Create an ActrNode from a config file and package file.
+ * Entry point for creating and starting ACTR nodes.
  *
- * Example:
- * ```kotlin
- * val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
- * ```
+ * This is a high-level wrapper around the UniFFI-generated [ActrNodeGenerated]
+ * that manages workload lifecycle and retains references to prevent premature
+ * garbage collection.
  *
- * @param configPath Path to the TOML configuration file
- * @param packagePath Path to the `.actr` package file
- * @return A new ActrNode instance
- * @throws ActrException.Config if the config file is invalid
+ * Use [ActrNode.fromPackageFile] or [ActrNode.linked] to create an instance.
  */
-suspend fun ActrNodeGenerated.Companion.fromPackageFile(
-    configPath: String,
-    packagePath: String,
-): ActrNode = ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
+class ActrNode private constructor(
+    private val inner: ActrNodeGenerated,
+    private val retainedWorkload: DynamicWorkload? = null,
+) : AutoCloseable {
+    /** Close the underlying node, releasing native resources. */
+    override fun close() = inner.close()
+
+    companion object {
+        /**
+         * Create a package-backed node from config and package file paths.
+         *
+         * Example:
+         * ```kotlin
+         * val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
+         * val ref = node.start()
+         * ```
+         *
+         * @param configPath Path to the TOML configuration file
+         * @param packagePath Path to the `.actr` package file
+         * @return A new ActrNode instance
+         * @throws ActrException.Config if the config file is invalid
+         */
+        suspend fun fromPackageFile(
+            configPath: String,
+            packagePath: String,
+        ): ActrNode {
+            val inner = ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
+            return ActrNode(inner, null)
+        }
+
+        /**
+         * Create a linked/static node from config, explicit actor identity, and a
+         * Kotlin-provided workload.
+         *
+         * Use this when workload logic lives in Kotlin instead of a packaged `.actr`
+         * guest. The returned [ActrNode] retains the [workload] reference to prevent
+         * premature garbage collection.
+         *
+         * Example:
+         * ```kotlin
+         * val workload = dynamicWorkload(myLifecycle)
+         * val node = ActrNode.linked("config.toml", myType, workload)
+         * val ref = node.start()
+         * ```
+         *
+         * @param configPath Path to the TOML configuration file
+         * @param actorType The actor's type identity
+         * @param workload The composed workload (lifecycle + optional observers)
+         * @return A new ActrNode instance that retains the workload
+         * @throws ActrException.Config if the config file is invalid
+         */
+        suspend fun linked(
+            configPath: String,
+            actorType: ActrType,
+            workload: DynamicWorkload,
+        ): ActrNode {
+            val inner = ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
+            return ActrNode(inner, workload)
+        }
+
+        /**
+         * Create a package-backed node from config and package file URLs.
+         *
+         * Validates that both URLs are file URLs before delegating to
+         * [fromPackageFile] with the URL paths.
+         *
+         * @param configURL File URL to the TOML configuration file
+         * @param packageURL File URL to the `.actr` package file
+         * @return A new ActrNode instance
+         * @throws IllegalArgumentException if either URL is not a file URL
+         */
+        suspend fun fromPackageFile(
+            configURL: URL,
+            packageURL: URL,
+        ): ActrNode {
+            require(configURL.protocol == "file") {
+                "configURL must be a file URL, got: $configURL"
+            }
+            require(packageURL.protocol == "file") {
+                "packageURL must be a file URL, got: $packageURL"
+            }
+            return fromPackageFile(configURL.path, packageURL.path)
+        }
+
+        /**
+         * Create a linked node from a config file URL.
+         *
+         * @param configURL File URL to the TOML configuration file
+         * @param actorType The actor's type identity
+         * @param workload The composed workload
+         * @return A new ActrNode instance that retains the workload
+         * @throws IllegalArgumentException if the URL is not a file URL
+         */
+        suspend fun linked(
+            configURL: URL,
+            actorType: ActrType,
+            workload: DynamicWorkload,
+        ): ActrNode {
+            require(configURL.protocol == "file") {
+                "config URL must be a file URL, got: $configURL"
+            }
+            return linked(configURL.path, actorType, workload)
+        }
+    }
+
+    /**
+     * Create a network event handle for platform callbacks.
+     *
+     * This handle is used to notify the actor runtime about network state changes,
+     * app lifecycle transitions, and explicit cleanup/reconnect operations, which
+     * are important for WebRTC connection management on mobile platforms.
+     *
+     * Example:
+     * ```kotlin
+     * val networkHandle = node.createNetworkEventHandle()
+     *
+     * // Notify full network path change
+     * networkHandle.handleNetworkPathChanged(
+     *     NetworkSnapshot(
+     *         sequence = 1uL,
+     *         availability = NetworkAvailability.AVAILABLE,
+     *         transport = NetworkTransportFlags(wifi = true, cellular = false, ethernet = false, vpn = false, other = false),
+     *         isExpensive = false,
+     *         isConstrained = false,
+     *     )
+     * )
+     * ```
+     *
+     * @return A new NetworkEventHandle instance
+     * @throws ActrException if the handle cannot be created
+     */
+    suspend fun createNetworkEventHandle(): NetworkEventHandle = inner.createNetworkEventHandle()
+
+    /**
+     * Start the actor and return a running reference.
+     *
+     * The returned [ActrRef] retains the workload (if any) to prevent premature
+     * garbage collection.
+     *
+     * @return A running [ActrRef] instance
+     * @throws ActrException if startup fails
+     */
+    suspend fun start(): ActrRef {
+        val ref = inner.start()
+        return ActrRef(ref, retainedWorkload)
+    }
+
+    /**
+     * Execute a block with a started actor, ensuring proper cleanup.
+     *
+     * The actor is automatically shut down after the block completes, even if
+     * an exception is thrown.
+     *
+     * Example:
+     * ```kotlin
+     * node.withStartedActor { ref ->
+     *     val target = ref.discoverOne("acme:EchoService:1.0.0")
+     *     val response = ref.call("echo.EchoService.Echo", payload)
+     * }
+     * // Actor is automatically shut down after the block
+     * ```
+     */
+    suspend fun <T> withStartedActor(block: suspend (ActrRef) -> T): T {
+        val ref = start()
+        return try {
+            block(ref)
+        } finally {
+            try {
+                ref.shutdown()
+                ref.waitForShutdown()
+            } catch (_: Exception) {
+                // Ignore cleanup errors
+            }
+        }
+    }
+}
+
+// ============================================================================
+// ActrRef — high-level wrapper with workload retention
+// ============================================================================
+
+/**
+ * Reference to a running actor.
+ *
+ * This is a high-level wrapper around the UniFFI-generated [ActrRefWrapper]
+ * that provides:
+ * - Convenience methods with default parameters
+ * - Workload retention to prevent premature garbage collection
+ * - Scoped lifecycle helpers
+ *
+ * Methods:
+ * - [call] / [tell] — RPC communication
+ * - [discover] / [discoverOne] — Service discovery
+ * - [stop] / [shutdown] — Graceful shutdown
+ */
+class ActrRef internal constructor(
+    private val inner: ActrRefWrapper,
+    internal val retainedWorkload: DynamicWorkload? = null,
+) : AutoCloseable {
+    /** Close the underlying reference, releasing native resources. */
+    override fun close() = inner.close()
+
+    /** Get the actor's unique identifier. */
+    fun actorId(): ActrId = inner.actorId()
+
+    /**
+     * Perform an RPC call with explicit parameters.
+     *
+     * For most use cases, prefer the convenience overload:
+     * ```kotlin
+     * ref.call("echo.EchoService.Echo", requestPayload)
+     * ```
+     */
+    suspend fun call(
+        routeKey: String,
+        payloadType: PayloadType,
+        requestPayload: ByteArray,
+        timeoutMs: Long,
+    ): ByteArray = inner.call(routeKey, payloadType, requestPayload, timeoutMs)
+
+    /**
+     * Send a one-way message (fire-and-forget) with explicit parameters.
+     *
+     * For most use cases, prefer the convenience overload:
+     * ```kotlin
+     * ref.tell("echo.EchoService.Notify", messagePayload)
+     * ```
+     */
+    suspend fun tell(
+        routeKey: String,
+        payloadType: PayloadType,
+        messagePayload: ByteArray,
+    ) = inner.tell(routeKey, payloadType, messagePayload)
+
+    /** Discover actors of the specified type. */
+    suspend fun discover(
+        targetType: ActrType,
+        count: UInt,
+    ): List<ActrId> = inner.discover(targetType, count)
+
+    /** Check if the actor is shutting down. */
+    fun isShuttingDown(): Boolean = inner.isShuttingDown()
+
+    /** Whether this actor reference is still valid (not destroyed). */
+    val isActive: Boolean
+        get() = !isShuttingDown()
+
+    /** Trigger shutdown. */
+    fun shutdown() = inner.shutdown()
+
+    /** Wait for shutdown to complete. */
+    suspend fun waitForShutdown() = inner.waitForShutdown()
+
+    /**
+     * Shut down the actor and wait for it to terminate.
+     *
+     * This is the recommended way to stop an actor. Equivalent to:
+     * ```kotlin
+     * ref.shutdown()
+     * ref.waitForShutdown()
+     * ```
+     */
+    suspend fun stop() {
+        shutdown()
+        waitForShutdown()
+    }
+}
+
+// ============================================================================
+// Top-Level Convenience Functions
+// ============================================================================
 
 /**
  * Create an ActrNode from a config file and package file (top-level function).
@@ -108,69 +351,21 @@ suspend fun ActrNodeGenerated.Companion.fromPackageFile(
 suspend fun createActrNode(
     configPath: String,
     packagePath: String,
-): ActrNode = ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
+): ActrNode = ActrNode.fromPackageFile(configPath, packagePath)
 
 /**
- * Create an ActrNode backed by a linked dynamic workload.
+ * Create an ActrNode backed by a linked dynamic workload (top-level function).
  *
- * Use this when workload logic lives in Kotlin instead of a packaged `.actr` guest.
- */
-suspend fun ActrNodeGenerated.Companion.linked(
-    configPath: String,
-    actorType: ActrType,
-    workload: DynamicWorkload,
-): ActrNode = ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
-
-/**
- * Create an ActrNode backed by a linked dynamic workload.
+ * @param configPath Path to the TOML configuration file
+ * @param actorType The actor's type identity
+ * @param workload The composed workload
+ * @return A new ActrNode instance that retains the workload
  */
 suspend fun linked(
     configPath: String,
     actorType: ActrType,
     workload: DynamicWorkload,
-): ActrNode = ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
-
-// ============================================================================
-// ActrNode Extensions
-// ============================================================================
-
-/**
- * Create a network event handle for platform callbacks.
- *
- * This handle is used to notify the actor runtime about network state changes,
- * app lifecycle transitions, and explicit cleanup/reconnect operations, which
- * are important for WebRTC connection management on mobile platforms.
- *
- * Example:
- * ```kotlin
- * val node = createActrNode("config.toml", "dist/app.actr")
- * val networkHandle = node.createNetworkEventHandle()
- *
- * // Notify full network path change (replaces old handleNetworkAvailable/Lost/TypeChanged)
- * networkHandle.handleNetworkPathChanged(
- *     NetworkSnapshot(
- *         sequence = 1uL,
- *         availability = NetworkAvailability.AVAILABLE,
- *         transport = NetworkTransportFlags(wifi = true, cellular = false, ethernet = false, vpn = false, other = false),
- *         isExpensive = false,
- *         isConstrained = false,
- *     )
- * )
- *
- * // Notify app lifecycle (background/foreground)
- * networkHandle.handleAppLifecycleChanged(AppLifecycleState.Background)
- *
- * // Cleanup connections (no reconnect)
- * networkHandle.cleanupConnections(CleanupReason.APP_TERMINATING)
- *
- * // Force reconnect
- * networkHandle.forceReconnect(ReconnectReason.MANUAL_RECONNECT)
- * ```
- *
- * @return A new NetworkEventHandle instance
- * @throws ActrException if the handle cannot be created
- */
-suspend fun ActrNode.createNetworkEventHandle(): NetworkEventHandle = createNetworkEventHandle()
+): ActrNode = ActrNode.linked(configPath, actorType, workload)
 
 // ============================================================================
 // ActrRef Extensions
@@ -204,6 +399,15 @@ suspend fun ActrRef.discoverOne(typeString: String): ActrId? = discover(typeStri
  */
 suspend fun ActrRef.discoverOne(type: ActrType): ActrId? = discover(type, 1u).firstOrNull()
 
+/** Await shutdown completion. Alias for [ActrRef.waitForShutdown]. */
+suspend fun ActrRef.awaitShutdown() {
+    waitForShutdown()
+}
+
+// ============================================================================
+// SimpleWorkload Extensions
+// ============================================================================
+
 /**
  * Send a DataStream built with DSL syntax.
  *
@@ -227,12 +431,3 @@ suspend fun SimpleWorkload.sendStream(
     val dataStream = DataStreamBuilder().apply(builder).build()
     sendDataStream(target, dataStream)
 }
-
-/** Await shutdown completion. Alias for [waitForShutdown]. */
-suspend fun ActrRef.awaitShutdown() {
-    waitForShutdown()
-}
-
-/** Check if this actor reference is still valid (not destroyed). */
-val ActrRef.isActive: Boolean
-    get() = !isShuttingDown()
