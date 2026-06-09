@@ -976,6 +976,7 @@ impl WebRtcCoordinator {
                 }
                 state.ice_restart_inflight = false;
                 state.ice_restart_attempts = 0;
+                state.pending_local_offer = None;
             }
         }
     }
@@ -4496,6 +4497,13 @@ impl WebRtcCoordinator {
                     match peers_guard.get_mut(target) {
                         Some(state) if state.session_id == restart_session_id => {
                             state.ice_restart_inflight = false;
+                            if state
+                                .pending_local_offer
+                                .as_ref()
+                                .is_some_and(|pending| pending.sdp_exchange_id == sdp_exchange_id)
+                            {
+                                state.pending_local_offer = None;
+                            }
                         }
                         Some(state) => {
                             tracing::debug!(
@@ -4525,6 +4533,13 @@ impl WebRtcCoordinator {
                 match peers_guard.get_mut(target) {
                     Some(state) if state.session_id == restart_session_id => {
                         state.ice_restart_inflight = false;
+                        if state
+                            .pending_local_offer
+                            .as_ref()
+                            .is_some_and(|pending| pending.sdp_exchange_id == sdp_exchange_id)
+                        {
+                            state.pending_local_offer = None;
+                        }
                     }
                     Some(state) => {
                         tracing::debug!(
@@ -4538,7 +4553,6 @@ impl WebRtcCoordinator {
                     None => return Ok(true),
                 }
             }
-
             // Exponential backoff before retrying (can be interrupted by restart_wake)
             tracing::info!(
                 "⏳ Waiting {:?} before next ICE restart attempt to serial={}",
@@ -5380,6 +5394,40 @@ mod tests {
             .expect("stale Answer must not clear the active pending offer");
         assert_eq!(pending.session_id, session_id);
         assert_eq!(pending.sdp_exchange_id, "current-exchange");
+    }
+
+    #[tokio::test]
+    async fn clear_pending_restarts_clears_pending_sdp_exchange() {
+        let local_id = test_actor_id(1);
+        let target_id = test_actor_id(99);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let signaling_client = Arc::new(CapturingSignalingClient::new());
+        let coordinator = Arc::new(WebRtcCoordinator::new(
+            local_id,
+            credential_state,
+            signaling_client,
+            WebRtcConfig::default(),
+            Arc::new(MediaFrameRegistry::new()),
+        ));
+
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+        {
+            let mut peers = coordinator.peers.write().await;
+            let state = peers.get_mut(&target_id).expect("peer should exist");
+            state.ice_restart_inflight = true;
+            state.ice_restart_attempts = 1;
+        }
+
+        coordinator.clear_pending_restarts().await;
+
+        let peers = coordinator.peers.read().await;
+        let state = peers.get(&target_id).expect("peer should remain");
+        assert!(
+            state.pending_local_offer.is_none(),
+            "aborted ICE restart must not leave a stale pending SDP exchange"
+        );
+        assert!(!state.ice_restart_inflight);
+        assert_eq!(state.ice_restart_attempts, 0);
     }
 
     #[test]

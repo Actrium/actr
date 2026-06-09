@@ -417,6 +417,8 @@ struct LocalDescriptionEvent {
     #[serde(rename = "peerId")]
     peer_id: String,
     sdp: SdpInit,
+    #[serde(rename = "sdpExchangeId")]
+    sdp_exchange_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -514,7 +516,7 @@ struct SwRuntime {
     role_negotiated: HashSet<String>,
     role_assignments: HashMap<String, bool>,
     pending_local_sdp_exchanges: HashMap<String, String>,
-    pending_remote_sdp_exchanges: HashMap<String, String>,
+    pending_remote_sdp_exchanges: HashMap<String, HashSet<String>>,
     /// ICE restart: tracks whether an ICE restart is in-flight for each peer
     ice_restart_inflight: HashMap<String, bool>,
     /// ICE restart: retry attempt count per peer
@@ -1652,7 +1654,9 @@ impl SwRuntime {
                     _ => "offer",
                 };
 
-                if sd.r#type == session_description::Type::Answer as i32 {
+                let remote_sdp_exchange_id = if sd.r#type
+                    == session_description::Type::Answer as i32
+                {
                     let Some(exchange_id) = sd.sdp_exchange_id.as_deref() else {
                         log::warn!(
                             "[SW] Ignoring SDP answer from={} without sdp_exchange_id",
@@ -1681,6 +1685,7 @@ impl SwRuntime {
                             return Ok(());
                         }
                     }
+                    None
                 } else if sdp_type == "offer" {
                     let Some(exchange_id) = sd.sdp_exchange_id.clone() else {
                         log::warn!(
@@ -1690,8 +1695,13 @@ impl SwRuntime {
                         return Ok(());
                     };
                     self.pending_remote_sdp_exchanges
-                        .insert(peer_id.clone(), exchange_id);
-                }
+                        .entry(peer_id.clone())
+                        .or_default()
+                        .insert(exchange_id.clone());
+                    Some(exchange_id)
+                } else {
+                    None
+                };
 
                 // Ensure peer exists before setting remote description
                 if !self.known_peers.contains(&peer_id) {
@@ -1713,6 +1723,13 @@ impl SwRuntime {
 
                 let payload = Object::new();
                 Reflect::set(&payload, &JsValue::from_str("sdp"), &sdp_obj)?;
+                if let Some(exchange_id) = remote_sdp_exchange_id.as_deref() {
+                    Reflect::set(
+                        &payload,
+                        &JsValue::from_str("sdpExchangeId"),
+                        &JsValue::from_str(exchange_id),
+                    )?;
+                }
 
                 self.send_webrtc_command("set_remote_description", &peer_id, payload.into())?;
 
@@ -1723,7 +1740,15 @@ impl SwRuntime {
                             peer_id
                         );
                     }
-                    self.send_webrtc_command("create_answer", &peer_id, JsValue::NULL)?;
+                    let answer_payload = Object::new();
+                    if let Some(exchange_id) = remote_sdp_exchange_id.as_deref() {
+                        Reflect::set(
+                            &answer_payload,
+                            &JsValue::from_str("sdpExchangeId"),
+                            &JsValue::from_str(exchange_id),
+                        )?;
+                    }
+                    self.send_webrtc_command("create_answer", &peer_id, answer_payload.into())?;
                 }
 
                 // If we received an answer during ICE restart, mark restart as complete
@@ -1847,14 +1872,40 @@ impl SwRuntime {
                     _ => session_description::Type::Offer as i32,
                 };
                 let sdp_exchange_id = if sd_type == session_description::Type::Answer as i32 {
-                    let Some(exchange_id) = self.pending_remote_sdp_exchanges.remove(&data.peer_id)
-                    else {
+                    let Some(exchange_id) = data.sdp_exchange_id.clone() else {
                         log::warn!(
-                            "[SW] Not sending SDP answer to peer={} without pending remote exchange",
+                            "[SW] Not sending SDP answer to peer={} without sdp_exchange_id",
                             data.peer_id
                         );
                         return Ok(());
                     };
+                    let remove_peer_entry = match self
+                        .pending_remote_sdp_exchanges
+                        .get_mut(&data.peer_id)
+                    {
+                        Some(pending) => {
+                            if pending.remove(&exchange_id) {
+                                pending.is_empty()
+                            } else {
+                                log::warn!(
+                                    "[SW] Not sending stale SDP answer to peer={} exchange_id={}",
+                                    data.peer_id,
+                                    exchange_id
+                                );
+                                return Ok(());
+                            }
+                        }
+                        None => {
+                            log::warn!(
+                                "[SW] Not sending SDP answer to peer={} without pending remote exchange",
+                                data.peer_id
+                            );
+                            return Ok(());
+                        }
+                    };
+                    if remove_peer_entry {
+                        self.pending_remote_sdp_exchanges.remove(&data.peer_id);
+                    }
                     exchange_id
                 } else {
                     let exchange_id = self.new_sdp_exchange_id();
