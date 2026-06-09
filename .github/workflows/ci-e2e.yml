@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/ci-e2e.yml"
       - "e2e/typescript-stream/**"
+      - "e2e/web-browser/**"
   schedule:
     # GitHub Actions cron uses UTC. 18:00 UTC = 02:00 UTC+8 next day.
     - cron: "0 18 * * *"
@@ -105,6 +106,62 @@ jobs:
           cargo build --release -p actr-mock-actrix --bin mock-actrix
       - name: Run TypeScript stream e2e
         run: bash e2e/typescript-stream/run.sh
+
+  web-browser-e2e:
+    name: Web Browser E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2,wasm32-unknown-unknown
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install Linux e2e dependencies
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome*
+          sudo apt-get update
+          sudo apt-get install -y lsof
+          google-chrome --version || google-chrome-stable --version || true
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install wasm Component Model toolchain
+        run: |
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.247.0 --locked
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - uses: Swatinem/rust-cache@v2
+      - name: Install web binding root deps (puppeteer)
+        working-directory: bindings/web
+        env:
+          PUPPETEER_SKIP_DOWNLOAD: "true"
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+          pnpm install --frozen-lockfile
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Pre-build actr CLI and mock-actrix
+        run: |
+          cargo build --release -p actr-cli --bin actr --features wasm-engine
+          cargo build --release -p actr-mock-actrix --bin mock-actrix
+      - name: Run web browser e2e
+        env:
+          ACTR_CMD: ${{ github.workspace }}/target/release/actr
+          ACTR_E2E_ACTR_BIN: ${{ github.workspace }}/target/release/actr
+          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
+          SUITES: BasicFunction
+        run: bash e2e/web-browser/run.sh
 
   swift-e2e:
     name: Swift E2E

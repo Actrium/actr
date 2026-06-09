@@ -76,7 +76,7 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             targets["rust_core"] = True
             targets["ts_workload"] = True
             targets["web_binding"] = True
-            reasons.append(f"typescript_workload_web_e2e:{path}")
+            reasons.append(f"generated_typescript_web_e2e_source:{path}")
             continue
 
         if path.startswith("core/"):
@@ -150,8 +150,7 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
 
         if path.startswith("examples/typescript/echo-workload/"):
             targets["ts_workload"] = True
-            targets["web_binding"] = True
-            reasons.append(f"typescript_workload_web_e2e:{path}")
+            reasons.append(f"typescript_workload:{path}")
             continue
 
         if path.startswith("e2e/typescript-stream/"):

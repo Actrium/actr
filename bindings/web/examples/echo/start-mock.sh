@@ -388,6 +388,9 @@ elif [ "$TEST_EXIT_CODE" -eq -1 ]; then
     wait
 else
     echo -e "${RED}Automated test FAILED (exit code: $TEST_EXIT_CODE)${NC}"
+    if [ "${CI:-}" = "true" ]; then
+        exit "$TEST_EXIT_CODE"
+    fi
     echo "Services still running for manual debugging. Press Ctrl+C to stop."
     wait
 fi
