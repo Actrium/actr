@@ -1,12 +1,6 @@
 name: CI (E2E)
 
 on:
-  push:
-    branches:
-      - codex/harry-e2e-nightly
-    paths:
-      - ".github/workflows/ci-e2e.yml"
-      - "e2e/typescript-stream/**"
   schedule:
     # GitHub Actions cron uses UTC. 18:00 UTC = 02:00 UTC+8 next day.
     - cron: "0 18 * * *"
@@ -106,12 +100,8 @@ jobs:
       - name: Run TypeScript stream e2e
         run: bash e2e/typescript-stream/run.sh
 
-  swift-e2e:
-    name: Swift E2E
-    # Pending mock-actrix migration of LocalActrix usage in
-    # cli/tests/e2e_swift_echo.rs. Re-enable once the test no longer
-    # needs the private Actrix repo.
-    if: ${{ vars.ENABLE_SWIFT_E2E == 'true' }}
+  swift-echo-app-e2e:
+    name: Swift EchoApp E2E
     runs-on: macos-latest
     timeout-minutes: 120
     permissions:
@@ -127,10 +117,17 @@ jobs:
           git config --global url."https://x-access-token:${ACTRIX_READ_TOKEN}@github.com/Actrium/actrix".insteadOf "https://github.com/Actrium/actrix"
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
       - name: Install macOS e2e dependencies
-        run: brew install protobuf xcodegen opus jq sqlite
-      - name: Install UniFFI bindgen
-        run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
+        run: |
+          brew install xcodegen jq sqlite
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Run Swift echo e2e
-        run: cargo test -p actr-cli --test e2e_swift_echo -- --ignored --test-threads=1
+      - name: Run Swift EchoApp e2e
+        run: bash e2e/swift-echo-app/run.sh
