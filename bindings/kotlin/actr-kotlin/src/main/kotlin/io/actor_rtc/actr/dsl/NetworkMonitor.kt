@@ -852,3 +852,39 @@ class NetworkMonitor
     /** Check if current network is constrained/congested */
     fun isNetworkConstrained(): Boolean = isConstrained
 }
+
+// ============================================================================
+// ActrNode Integration — one-shot monitor setup
+// ============================================================================
+
+/**
+ * Create and start a [NetworkMonitor] wired to this [ActrNode].
+ *
+ * The returned monitor is already started. The node reference is captured
+ * immediately, so you don't need a lazy lambda.
+ *
+ * Example:
+ * ```kotlin
+ * val system = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
+ * val monitor = system.createNetworkMonitor(this, lifecycleScope) { Log.d("App", it) }
+ * ```
+ *
+ * @param context Android Context (for ConnectivityManager)
+ * @param scope CoroutineScope (typically lifecycleScope)
+ * @param onNetworkStatusLog Optional callback for network status messages
+ * @return A started [NetworkMonitor] instance
+ */
+fun ActrNode.createNetworkMonitor(
+    context: android.content.Context,
+    scope: kotlinx.coroutines.CoroutineScope,
+    onNetworkStatusLog: ((String) -> Unit)? = null,
+): NetworkMonitor {
+    val monitor = NetworkMonitor.create(
+        context = context,
+        scope = scope,
+        getSystem = { this },
+        onNetworkStatusLog = onNetworkStatusLog,
+    )
+    monitor.startMonitoring()
+    return monitor
+}

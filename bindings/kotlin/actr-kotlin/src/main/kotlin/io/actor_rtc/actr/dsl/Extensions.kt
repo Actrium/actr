@@ -3,6 +3,7 @@ package io.actor_rtc.actr.dsl
 
 import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.ActrId
+import io.actor_rtc.actr.ContextBridge
 import io.actor_rtc.actr.ErrorKind
 import io.actor_rtc.actr.AppLifecycleState
 import io.actor_rtc.actr.CleanupReason
@@ -84,6 +85,33 @@ suspend fun ActrRef.discoverCatching(
     typeString: String,
     count: UInt = 1u,
 ): Result<List<ActrId>> = runCatching { discover(typeString, count) }
+
+// ============================================================================
+// ContextBridge Extensions — convenience wrappers with default parameters
+// ============================================================================
+
+/**
+ * Convenience wrapper around [ContextBridge.callRaw] with default parameters.
+ *
+ * Equivalent to:
+ * ```kotlin
+ * ctx.callRaw(target, routeKey, PayloadType.RPC_RELIABLE, payload, 30000L)
+ * ```
+ *
+ * @param target Target actor ID (obtained via [ContextBridge.discover])
+ * @param routeKey RPC route key (e.g., "echo.EchoService.Echo")
+ * @param payload Serialized request payload
+ * @param payloadType Transmission type (default: RPC_RELIABLE)
+ * @param timeoutMs Timeout in milliseconds (default: 30000)
+ * @return Response bytes
+ */
+suspend fun ContextBridge.call(
+    target: ActrId,
+    routeKey: String,
+    payload: ByteArray,
+    payloadType: PayloadType = PayloadType.RPC_RELIABLE,
+    timeoutMs: Long = 30000L,
+): ByteArray = callRaw(target, routeKey, payloadType, payload, timeoutMs)
 
 // ============================================================================
 // NetworkEventHandle Extensions - For functional error handling

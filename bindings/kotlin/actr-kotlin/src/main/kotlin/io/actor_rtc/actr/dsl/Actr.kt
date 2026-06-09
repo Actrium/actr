@@ -38,6 +38,7 @@ import io.actor_rtc.actr.NetworkEventHandleWrapper
 import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.WorkloadLifecycleBridge
 import io.actor_rtc.actr.ActrNode as ActrNodeGenerated
+import java.net.URL
 
 // ============================================================================
 // Type Aliases — provide DSL-friendly names for remaining generated types
@@ -120,6 +121,50 @@ class ActrNode private constructor(
         ): ActrNode {
             val inner = ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
             return ActrNode(inner, workload)
+        }
+
+        /**
+         * Create a package-backed node from config and package file URLs.
+         *
+         * Validates that both URLs are file URLs before delegating to
+         * [fromPackageFile] with the URL paths.
+         *
+         * @param configURL File URL to the TOML configuration file
+         * @param packageURL File URL to the `.actr` package file
+         * @return A new ActrNode instance
+         * @throws IllegalArgumentException if either URL is not a file URL
+         */
+        suspend fun fromPackageFile(
+            configURL: URL,
+            packageURL: URL,
+        ): ActrNode {
+            require(configURL.protocol == "file") {
+                "configURL must be a file URL, got: $configURL"
+            }
+            require(packageURL.protocol == "file") {
+                "packageURL must be a file URL, got: $packageURL"
+            }
+            return fromPackageFile(configURL.path, packageURL.path)
+        }
+
+        /**
+         * Create a linked node from a config file URL.
+         *
+         * @param configURL File URL to the TOML configuration file
+         * @param actorType The actor's type identity
+         * @param workload The composed workload
+         * @return A new ActrNode instance that retains the workload
+         * @throws IllegalArgumentException if the URL is not a file URL
+         */
+        suspend fun linked(
+            configURL: URL,
+            actorType: ActrType,
+            workload: DynamicWorkload,
+        ): ActrNode {
+            require(configURL.protocol == "file") {
+                "config URL must be a file URL, got: $configURL"
+            }
+            return linked(configURL.path, actorType, workload)
         }
     }
 
