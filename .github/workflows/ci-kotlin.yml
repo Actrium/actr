@@ -8,6 +8,14 @@ permissions:
   contents: read
 
 jobs:
+  script-check:
+    name: Kotlin Android Script Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate Android build script
+        run: scripts/tests/kotlin-android-build-script.sh
+
   test:
     name: Kotlin Binding Test
     runs-on: ubuntu-latest

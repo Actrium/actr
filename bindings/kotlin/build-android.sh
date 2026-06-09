@@ -15,6 +15,11 @@ NDK_VERSION="${NDK_VERSION:-25.2.9519653}"
 ANDROID_API_LEVEL="${ANDROID_API_LEVEL:-21}"
 PROTOC_PATH="${PROTOC:-$(command -v protoc || true)}"
 HOST_TARGET="$(rustc -vV | awk -F': ' '/^host:/{print $2}')"
+ACTR_ANDROID_TARGETS="${ACTR_ANDROID_TARGETS:-aarch64-linux-android x86_64-linux-android}"
+ACTR_BUILD_ANDROID_NATIVE="${ACTR_BUILD_ANDROID_NATIVE:-true}"
+ACTR_BUILD_HOST_LIBRARY="${ACTR_BUILD_HOST_LIBRARY:-true}"
+ACTR_GENERATE_KOTLIN_BINDINGS="${ACTR_GENERATE_KOTLIN_BINDINGS:-true}"
+ACTR_COPY_DEMO_JNILIBS="${ACTR_COPY_DEMO_JNILIBS:-true}"
 
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -99,33 +104,60 @@ host_library_path() {
     printf '%s/%s/debug/libactr.%s\n' "${TARGET_DIR}" "${HOST_TARGET}" "${ext}"
 }
 
-copy_if_dir_exists() {
+target_upper_for() {
+    case "$1" in
+        aarch64-linux-android) printf 'aarch64\n' ;;
+        x86_64-linux-android) printf 'x86_64\n' ;;
+        *) echo "error: unsupported Android target: $1" >&2; exit 1 ;;
+    esac
+}
+
+target_abi_for() {
+    case "$1" in
+        aarch64-linux-android) printf 'arm64-v8a\n' ;;
+        x86_64-linux-android) printf 'x86_64\n' ;;
+        *) echo "error: unsupported Android target: $1" >&2; exit 1 ;;
+    esac
+}
+
+target_enabled() {
+    local target=$1
+    local enabled_target
+    for enabled_target in ${ACTR_ANDROID_TARGETS}; do
+        if [[ "${enabled_target}" == "${target}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+copy_target_if_dir_exists() {
     local source_dir=$1
     local target_dir=$2
-    if [[ -d "${source_dir}" ]]; then
-        mkdir -p "${target_dir}/arm64-v8a" "${target_dir}/x86_64"
-        cp "${TARGET_DIR}/aarch64-linux-android/release/libactr.so" "${target_dir}/arm64-v8a/"
+    local target=$3
+    local abi
+    abi=$(target_abi_for "${target}")
 
-        # Also copy libopus.so (DT_NEEDED dependency of libactr.so)
-        local opus_so
-        opus_so=$(find "${TARGET_DIR}/aarch64-linux-android/release/build" \
-            -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
-        if [[ -n "${opus_so}" && -f "${opus_so}/out/lib/libopus.so" ]]; then
-            cp "${opus_so}/out/lib/libopus.so" "${target_dir}/arm64-v8a/"
-        fi
+    if [[ ! -d "${source_dir}" ]]; then
+        return 0
+    fi
 
-        cp "${TARGET_DIR}/x86_64-linux-android/release/libactr.so" "${target_dir}/x86_64/"
-        opus_so=$(find "${TARGET_DIR}/x86_64-linux-android/release/build" \
-            -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
-        if [[ -n "${opus_so}" && -f "${opus_so}/out/lib/libopus.so" ]]; then
-            cp "${opus_so}/out/lib/libopus.so" "${target_dir}/x86_64/"
-        fi
+    mkdir -p "${target_dir}/${abi}"
+    cp "${TARGET_DIR}/${target}/release/libactr.so" "${target_dir}/${abi}/"
+
+    local opus_so
+    opus_so=$(find "${TARGET_DIR}/${target}/release/build" \
+        -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+    if [[ -n "${opus_so}" && -f "${opus_so}/out/lib/libopus.so" ]]; then
+        cp "${opus_so}/out/lib/libopus.so" "${target_dir}/${abi}/"
     fi
 }
 
 require_cmd cargo
 require_cmd rustc
-require_cmd uniffi-bindgen
+if [[ "${ACTR_GENERATE_KOTLIN_BINDINGS}" == true ]]; then
+    require_cmd uniffi-bindgen
+fi
 require_cmd protoc
 require_dir "${CRATE_DIR}"
 require_dir "${MODULE_DIR}"
@@ -137,29 +169,36 @@ if [[ -z "${PROTOC_PATH}" ]]; then
     exit 1
 fi
 
-ANDROID_SDK_ROOT="$(resolve_android_sdk_root)" || {
-    echo "error: Android SDK not found. Set ANDROID_SDK_ROOT or ANDROID_HOME." >&2
-    exit 1
-}
-NDK_PATH="$(resolve_ndk_path "${ANDROID_SDK_ROOT}")" || {
-    echo "error: Android NDK not found. Expected version ${NDK_VERSION} under ${ANDROID_SDK_ROOT}/ndk." >&2
-    exit 1
-}
-TOOLCHAIN_PATH="$(resolve_toolchain_path "${NDK_PATH}")" || {
-    echo "error: Android NDK LLVM toolchain not found under ${NDK_PATH}" >&2
-    exit 1
-}
-
 export PROTOC="${PROTOC_PATH}"
-export PATH="${TOOLCHAIN_PATH}/bin:${PATH}"
-export CC_aarch64_linux_android="${TOOLCHAIN_PATH}/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
-export AR_aarch64_linux_android="${TOOLCHAIN_PATH}/bin/llvm-ar"
-export RANLIB_aarch64_linux_android="${TOOLCHAIN_PATH}/bin/llvm-ranlib"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${CC_aarch64_linux_android}"
-export CC_x86_64_linux_android="${TOOLCHAIN_PATH}/bin/x86_64-linux-android${ANDROID_API_LEVEL}-clang"
-export AR_x86_64_linux_android="${TOOLCHAIN_PATH}/bin/llvm-ar"
-export RANLIB_x86_64_linux_android="${TOOLCHAIN_PATH}/bin/llvm-ranlib"
-export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="${CC_x86_64_linux_android}"
+if [[ "${ACTR_BUILD_ANDROID_NATIVE}" == true ]]; then
+    ANDROID_SDK_ROOT="$(resolve_android_sdk_root)" || {
+        echo "error: Android SDK not found. Set ANDROID_SDK_ROOT or ANDROID_HOME." >&2
+        exit 1
+    }
+    NDK_PATH="$(resolve_ndk_path "${ANDROID_SDK_ROOT}")" || {
+        echo "error: Android NDK not found. Expected version ${NDK_VERSION} under ${ANDROID_SDK_ROOT}/ndk." >&2
+        exit 1
+    }
+    TOOLCHAIN_PATH="$(resolve_toolchain_path "${NDK_PATH}")" || {
+        echo "error: Android NDK LLVM toolchain not found under ${NDK_PATH}" >&2
+        exit 1
+    }
+
+    export PATH="${TOOLCHAIN_PATH}/bin:${PATH}"
+    export CC_aarch64_linux_android="${TOOLCHAIN_PATH}/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
+    export AR_aarch64_linux_android="${TOOLCHAIN_PATH}/bin/llvm-ar"
+    export RANLIB_aarch64_linux_android="${TOOLCHAIN_PATH}/bin/llvm-ranlib"
+    export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${CC_aarch64_linux_android}"
+    export CC_x86_64_linux_android="${TOOLCHAIN_PATH}/bin/x86_64-linux-android${ANDROID_API_LEVEL}-clang"
+    export AR_x86_64_linux_android="${TOOLCHAIN_PATH}/bin/llvm-ar"
+    export RANLIB_x86_64_linux_android="${TOOLCHAIN_PATH}/bin/llvm-ranlib"
+    export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="${CC_x86_64_linux_android}"
+    export ANDROID_TOOLCHAIN_PATH="${TOOLCHAIN_PATH}"
+else
+    ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-}"
+    NDK_PATH="${ANDROID_NDK_ROOT:-}"
+    TOOLCHAIN_PATH=""
+fi
 
 echo "========================================"
 echo "Building ACTR Android Native Libraries"
@@ -167,21 +206,20 @@ echo "========================================"
 echo ""
 echo "Workspace: ${WORKSPACE_ROOT}"
 echo "libactr crate: ${CRATE_DIR}"
-echo "Android SDK: ${ANDROID_SDK_ROOT}"
-echo "Android NDK: ${NDK_PATH}"
+echo "Android SDK: ${ANDROID_SDK_ROOT:-skipped}"
+echo "Android NDK: ${NDK_PATH:-skipped}"
 echo "Output (library): ${LIBRARY_JNILIBS_DIR}"
 if [[ -d "${ROOT_DIR}/demo" ]]; then
     echo "Output (demo): ${DEMO_JNILIBS_DIR}"
 fi
 echo ""
 
-echo "Building host library for Kotlin UniFFI bindings..."
-(cd "${WORKSPACE_ROOT}" && cargo build -p libactr --target "${HOST_TARGET}")
 HOST_LIBRARY_PATH="$(host_library_path)"
-require_file "${HOST_LIBRARY_PATH}"
-
-echo ""
-echo "Building Android native libraries..."
+if [[ "${ACTR_BUILD_HOST_LIBRARY}" == true || "${ACTR_GENERATE_KOTLIN_BINDINGS}" == true ]]; then
+    echo "Building host library for Kotlin UniFFI bindings..."
+    (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --target "${HOST_TARGET}")
+    require_file "${HOST_LIBRARY_PATH}"
+fi
 
 # -----------------------------------------------------------------------
 # Opus native library (libopus.so) — reproducible build:
@@ -235,49 +273,60 @@ fix_opus_for_target() {
     so_size=$(ls -l "${opus_lib_dir}/libopus.so" 2>/dev/null | awk '{print $5}')
     echo "  libopus.a: ${a_size} bytes, libopus.so: ${so_size} bytes"
 
-    # Expose the lib dir for RUSTFLAGS
-    RUSTFLAGS_EXTRA="${RUSTFLAGS_EXTRA} -L ${opus_lib_dir} -l opus"
+    # Expose the target-specific lib dir for RUSTFLAGS.
+    printf -v "RUSTFLAGS_EXTRA_${target_upper}" "%s" "-L ${opus_lib_dir} -l opus"
 }
 
-export ANDROID_TOOLCHAIN_PATH="${TOOLCHAIN_PATH}"
-RUSTFLAGS_EXTRA=""
+unset RUSTFLAGS_EXTRA_aarch64 RUSTFLAGS_EXTRA_x86_64
 
-# Build each Android target
-for target_pair in "aarch64-linux-android aarch64" "x86_64-linux-android x86_64"; do
-    target=$(echo "$target_pair" | awk '{print $1}')
-    target_upper=$(echo "$target_pair" | awk '{print $2}')
+if [[ "${ACTR_BUILD_ANDROID_NATIVE}" == true ]]; then
     echo ""
-    echo "==> Building for ${target}..."
-    export LIBOPUS_STATIC=1
-    (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target "${target}")
-    fix_opus_for_target "${target}" "${target_upper}"
-done
+    echo "Building Android native libraries..."
 
-# Rebuild libactr with RUSTFLAGS for opus dynamic linking
-echo ""
-echo "==> Relinking libactr with libopus.so DT_NEEDED..."
-for target_pair in "aarch64-linux-android aarch64" "x86_64-linux-android x86_64"; do
-    target=$(echo "$target_pair" | awk '{print $1}')
-    # Force relink
-    rm -f "${TARGET_DIR}/${target}/release/libactr.so"
-    find "${TARGET_DIR}/${target}/release/deps" -name "liblibactr*" -delete 2>/dev/null
-    find "${TARGET_DIR}/${target}/release/.fingerprint" -name "libactr-*" -maxdepth 1 -exec rm -rf {} + 2>/dev/null
-
-    RUSTFLAGS="${RUSTFLAGS_EXTRA}" \
+    for target in ${ACTR_ANDROID_TARGETS}; do
+        target_upper=$(target_upper_for "${target}")
+        echo ""
+        echo "==> Building for ${target}..."
+        export LIBOPUS_STATIC=1
         (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target "${target}")
-done
+        fix_opus_for_target "${target}" "${target_upper}"
+    done
 
-echo ""
-echo "Copying native libraries..."
-copy_if_dir_exists "${MODULE_DIR}" "${LIBRARY_JNILIBS_DIR}"
-copy_if_dir_exists "${ROOT_DIR}/demo" "${DEMO_JNILIBS_DIR}"
+    echo ""
+    echo "==> Relinking libactr with libopus.so DT_NEEDED..."
+    for target in ${ACTR_ANDROID_TARGETS}; do
+        target_upper=$(target_upper_for "${target}")
+        target_rustflags_var="RUSTFLAGS_EXTRA_${target_upper}"
+        target_rustflags="${!target_rustflags_var:?missing opus RUSTFLAGS for ${target}}"
 
-echo ""
-echo "Generating Kotlin bindings..."
-mkdir -p "${GENERATED_DIR}"
-rm -f "${GENERATED_DIR}/actr.kt"
-rm -rf "${GENERATED_DIR}/io"
-(cd "${CRATE_DIR}" && uniffi-bindgen generate --library "${HOST_LIBRARY_PATH}" --language kotlin --out-dir "${GENERATED_DIR}")
+        rm -f "${TARGET_DIR}/${target}/release/libactr.so"
+        find "${TARGET_DIR}/${target}/release/deps" -name "liblibactr*" -delete 2>/dev/null
+        find "${TARGET_DIR}/${target}/release/.fingerprint" -name "libactr-*" -maxdepth 1 -exec rm -rf {} + 2>/dev/null
+
+        (
+            cd "${WORKSPACE_ROOT}"
+            RUSTFLAGS="${target_rustflags}" cargo build -p libactr --release --target "${target}"
+        )
+    done
+
+    echo ""
+    echo "Copying native libraries..."
+    for target in ${ACTR_ANDROID_TARGETS}; do
+        copy_target_if_dir_exists "${MODULE_DIR}" "${LIBRARY_JNILIBS_DIR}" "${target}"
+        if [[ "${ACTR_COPY_DEMO_JNILIBS}" == true ]]; then
+            copy_target_if_dir_exists "${ROOT_DIR}/demo" "${DEMO_JNILIBS_DIR}" "${target}"
+        fi
+    done
+fi
+
+if [[ "${ACTR_GENERATE_KOTLIN_BINDINGS}" == true ]]; then
+    echo ""
+    echo "Generating Kotlin bindings..."
+    mkdir -p "${GENERATED_DIR}"
+    rm -f "${GENERATED_DIR}/actr.kt"
+    rm -rf "${GENERATED_DIR}/io"
+    (cd "${CRATE_DIR}" && uniffi-bindgen generate --library "${HOST_LIBRARY_PATH}" --language kotlin --out-dir "${GENERATED_DIR}")
+fi
 
 echo ""
 echo "========================================"
@@ -285,7 +334,11 @@ echo "Build completed successfully!"
 echo "========================================"
 echo ""
 echo "Library sizes (library module):"
-ls -lh "${LIBRARY_JNILIBS_DIR}"/*/*.so
+if compgen -G "${LIBRARY_JNILIBS_DIR}/*/*.so" >/dev/null; then
+    ls -lh "${LIBRARY_JNILIBS_DIR}"/*/*.so
+else
+    echo "No native libraries present."
+fi
 echo ""
 echo "Next steps:"
 echo "  1. Build the Android project: ./gradlew :actr-kotlin:assembleRelease"
