@@ -22,7 +22,6 @@ on:
       - "bindings/typescript/Cargo.toml"
       - "bindings/typescript/Cargo.lock"
       - "bindings/typescript/package.json"
-      - "bindings/typescript/package-lock.json"
   pull_request:
     branches:
       - main
@@ -44,7 +43,6 @@ on:
       - "bindings/typescript/Cargo.toml"
       - "bindings/typescript/Cargo.lock"
       - "bindings/typescript/package.json"
-      - "bindings/typescript/package-lock.json"
 
 concurrency:
   group: release-train-basic-verify-${{ github.ref }}

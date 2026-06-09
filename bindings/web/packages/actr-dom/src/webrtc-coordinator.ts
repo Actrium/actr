@@ -47,6 +47,7 @@ export class WebRtcCoordinator {
   private rpcPorts: Map<string, MessagePort> = new Map();
   private fragmentCounters: Map<string, number> = new Map();
   private reassembly: Map<string, FragmentEntry> = new Map();
+  private commandQueues: Map<string, Promise<void>> = new Map();
   private config: WebRtcConfig;
   /** Dynamic TURN credentials received from SW (AIS registration) */
   private turnCredential: { username: string; credential: string } | null = null;
@@ -78,7 +79,7 @@ export class WebRtcCoordinator {
     //  SW  WebRTC
     this.swBridge.onMessage((message) => {
       if (message.type === 'webrtc_command') {
-        this.handleWebRtcCommand(message.payload);
+        this.enqueueWebRtcCommand(message.payload);
       } else if (message.type === 'update_turn_credential') {
         this.turnCredential = {
           username: message.payload.username,
@@ -87,6 +88,23 @@ export class WebRtcCoordinator {
         console.log('[WebRTC] TURN credential received from SW');
       }
     });
+  }
+
+  private enqueueWebRtcCommand(command: WebRtcCommandPayload): void {
+    const previous = this.commandQueues.get(command.peerId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.handleWebRtcCommand(command));
+
+    this.commandQueues.set(command.peerId, next);
+
+    void next
+      .finally(() => {
+        if (this.commandQueues.get(command.peerId) === next) {
+          this.commandQueues.delete(command.peerId);
+        }
+      })
+      .catch(() => undefined);
   }
 
   private canBindRpcPort(
@@ -397,7 +415,7 @@ export class WebRtcCoordinator {
           break;
 
         case 'create_answer':
-          await this.createAnswer(peerId);
+          await this.createAnswer(peerId, command.payload?.sdpExchangeId);
           break;
 
         case 'close_peer':
@@ -487,7 +505,7 @@ export class WebRtcCoordinator {
   /**
    * Create SDP answer and notify SW.
    */
-  private async createAnswer(peerId: string): Promise<void> {
+  private async createAnswer(peerId: string, sdpExchangeId?: string): Promise<void> {
     const peer = this.peers.get(peerId);
     if (!peer) {
       throw new Error(`Peer ${peerId} not found`);
@@ -499,6 +517,7 @@ export class WebRtcCoordinator {
     this.notifySW('local_description', {
       peerId,
       sdp: answer,
+      ...(sdpExchangeId ? { sdpExchangeId } : {}),
     });
   }
 
