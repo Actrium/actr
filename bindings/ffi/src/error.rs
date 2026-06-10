@@ -5,7 +5,10 @@
 //! binding-local variants cover errors that occur strictly before a call
 //! reaches the protocol layer (e.g. config parsing inside the shell).
 
-use actr_protocol::{Classify, ErrorKind as ProtocolErrorKind};
+use crate::types::ActrId;
+use actr_protocol::{
+    Classify, ErrorKind as ProtocolErrorKind, RecoveryReason as ProtoRecoveryReason,
+};
 
 /// Fault domain classification exposed to UniFFI consumers.
 ///
@@ -35,6 +38,136 @@ impl From<ProtocolErrorKind> for ErrorKind {
     }
 }
 
+/// Structured reason for a connection recovery window.
+///
+/// Mirrors `actr_protocol::RecoveryReason` using `u64` for `elapsed_ms`
+/// (UniFFI does not support `u128`). Display delegates to the protocol
+/// `RecoveryReason` for identical output formatting.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum RecoveryReason {
+    PeerDisconnected {
+        peer: ActrId,
+        session_id: u64,
+        elapsed_ms: u64,
+    },
+    PeerFailed {
+        peer: ActrId,
+        session_id: u64,
+        elapsed_ms: u64,
+    },
+    IceNetworkStarted {
+        peer: ActrId,
+        session_id: u64,
+    },
+    RecoveryTimeout {
+        peer: ActrId,
+        session_id: u64,
+        reason: String,
+        elapsed_ms: u64,
+    },
+    TransportClosing {
+        peer: ActrId,
+    },
+}
+
+impl std::fmt::Display for RecoveryReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Delegate to the protocol RecoveryReason for identical output.
+        let proto: ProtoRecoveryReason = self.clone().into();
+        proto.fmt(f)
+    }
+}
+
+impl From<ProtoRecoveryReason> for RecoveryReason {
+    fn from(r: ProtoRecoveryReason) -> Self {
+        match r {
+            ProtoRecoveryReason::PeerDisconnected {
+                peer,
+                session_id,
+                elapsed_ms,
+            } => RecoveryReason::PeerDisconnected {
+                peer: crate::types::ActrId::from(peer),
+                session_id,
+                elapsed_ms: elapsed_ms as u64,
+            },
+            ProtoRecoveryReason::PeerFailed {
+                peer,
+                session_id,
+                elapsed_ms,
+            } => RecoveryReason::PeerFailed {
+                peer: crate::types::ActrId::from(peer),
+                session_id,
+                elapsed_ms: elapsed_ms as u64,
+            },
+            ProtoRecoveryReason::IceNetworkStarted { peer, session_id } => {
+                RecoveryReason::IceNetworkStarted {
+                    peer: crate::types::ActrId::from(peer),
+                    session_id,
+                }
+            }
+            ProtoRecoveryReason::RecoveryTimeout {
+                peer,
+                session_id,
+                reason,
+                elapsed_ms,
+            } => RecoveryReason::RecoveryTimeout {
+                peer: crate::types::ActrId::from(peer),
+                session_id,
+                reason,
+                elapsed_ms: elapsed_ms as u64,
+            },
+            ProtoRecoveryReason::TransportClosing { peer } => RecoveryReason::TransportClosing {
+                peer: crate::types::ActrId::from(peer),
+            },
+        }
+    }
+}
+
+impl From<RecoveryReason> for ProtoRecoveryReason {
+    fn from(r: RecoveryReason) -> Self {
+        match r {
+            RecoveryReason::PeerDisconnected {
+                peer,
+                session_id,
+                elapsed_ms,
+            } => ProtoRecoveryReason::PeerDisconnected {
+                peer: actr_protocol::ActrId::from(peer),
+                session_id,
+                elapsed_ms: elapsed_ms as u128,
+            },
+            RecoveryReason::PeerFailed {
+                peer,
+                session_id,
+                elapsed_ms,
+            } => ProtoRecoveryReason::PeerFailed {
+                peer: actr_protocol::ActrId::from(peer),
+                session_id,
+                elapsed_ms: elapsed_ms as u128,
+            },
+            RecoveryReason::IceNetworkStarted { peer, session_id } => {
+                ProtoRecoveryReason::IceNetworkStarted {
+                    peer: actr_protocol::ActrId::from(peer),
+                    session_id,
+                }
+            }
+            RecoveryReason::RecoveryTimeout {
+                peer,
+                session_id,
+                reason,
+                elapsed_ms,
+            } => ProtoRecoveryReason::RecoveryTimeout {
+                peer: actr_protocol::ActrId::from(peer),
+                session_id,
+                reason,
+                elapsed_ms: elapsed_ms as u128,
+            },
+            RecoveryReason::TransportClosing { peer } => ProtoRecoveryReason::TransportClosing {
+                peer: actr_protocol::ActrId::from(peer),
+            },
+        }
+    }
+}
+
 /// Error type for actr operations.
 ///
 /// The first ten variants mirror `actr_protocol::ActrError` exactly; the
@@ -45,6 +178,9 @@ pub enum ActrError {
     // ── Transient ─────────────────────────────────────────────────────────
     #[error("unavailable: {msg}")]
     Unavailable { msg: String },
+
+    #[error("recovering: {reason}")]
+    Recovering { reason: RecoveryReason },
 
     #[error("timed out")]
     TimedOut,
@@ -98,7 +234,9 @@ impl ActrError {
     /// rather than pattern-matching every variant.
     pub(crate) fn kind(&self) -> ErrorKind {
         match self {
-            ActrError::Unavailable { .. } | ActrError::TimedOut => ErrorKind::Transient,
+            ActrError::Unavailable { .. } | ActrError::Recovering { .. } | ActrError::TimedOut => {
+                ErrorKind::Transient
+            }
 
             ActrError::NotFound { .. }
             | ActrError::PermissionDenied { .. }
@@ -153,6 +291,9 @@ impl From<actr_protocol::ActrError> for ActrError {
     fn from(e: actr_protocol::ActrError) -> Self {
         match e {
             actr_protocol::ActrError::Unavailable(msg) => ActrError::Unavailable { msg },
+            actr_protocol::ActrError::Recovering(reason) => ActrError::Recovering {
+                reason: reason.into(),
+            },
             actr_protocol::ActrError::TimedOut => ActrError::TimedOut,
             actr_protocol::ActrError::NotFound(msg) => ActrError::NotFound { msg },
             actr_protocol::ActrError::PermissionDenied(msg) => ActrError::PermissionDenied { msg },
@@ -176,6 +317,7 @@ impl From<ActrError> for actr_protocol::ActrError {
     fn from(e: ActrError) -> Self {
         match e {
             ActrError::Unavailable { msg } => actr_protocol::ActrError::Unavailable(msg),
+            ActrError::Recovering { reason } => actr_protocol::ActrError::Recovering(reason.into()),
             ActrError::TimedOut => actr_protocol::ActrError::TimedOut,
             ActrError::NotFound { msg } => actr_protocol::ActrError::NotFound(msg),
             ActrError::PermissionDenied { msg } => actr_protocol::ActrError::PermissionDenied(msg),
@@ -216,8 +358,12 @@ mod tests {
 
     #[test]
     fn roundtrip_preserves_every_protocol_variant() {
+        let peer = actr_protocol::ActrId::default();
         let cases = [
             actr_protocol::ActrError::Unavailable("u".into()),
+            actr_protocol::ActrError::Recovering(actr_protocol::RecoveryReason::TransportClosing {
+                peer: peer.clone(),
+            }),
             actr_protocol::ActrError::TimedOut,
             actr_protocol::ActrError::NotFound("nf".into()),
             actr_protocol::ActrError::PermissionDenied("pd".into()),
@@ -245,6 +391,15 @@ mod tests {
             ActrError::Unavailable { msg: "x".into() }.kind(),
             ErrorKind::Transient,
         );
+        assert_eq!(
+            ActrError::Recovering {
+                reason: RecoveryReason::TransportClosing {
+                    peer: crate::types::ActrId::from(actr_protocol::ActrId::default())
+                }
+            }
+            .kind(),
+            ErrorKind::Transient,
+        );
         assert_eq!(ActrError::TimedOut.kind(), ErrorKind::Transient);
         assert_eq!(
             ActrError::NotFound { msg: "x".into() }.kind(),
@@ -267,6 +422,14 @@ mod tests {
     #[test]
     fn retry_and_dlq_predicates() {
         assert!(ActrError::Unavailable { msg: "x".into() }.is_retryable());
+        assert!(
+            ActrError::Recovering {
+                reason: RecoveryReason::TransportClosing {
+                    peer: crate::types::ActrId::from(actr_protocol::ActrId::default())
+                }
+            }
+            .is_retryable()
+        );
         assert!(!ActrError::NotFound { msg: "x".into() }.is_retryable());
         assert!(ActrError::DecodeFailure { msg: "x".into() }.requires_dlq());
         assert!(!ActrError::Internal { msg: "x".into() }.requires_dlq());

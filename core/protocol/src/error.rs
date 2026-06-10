@@ -25,7 +25,97 @@
 //!
 //! Use the `Classify` trait to query classification from any error type.
 
+use crate::ActrId;
+use std::fmt;
 use thiserror::Error;
+
+// ── RecoveryReason ─────────────────────────────────────────────────────────────
+
+/// Structured reason for a connection recovery window.
+///
+/// Carries the peer identity, session id, and elapsed time so callers can
+/// discriminate *why* the peer is blocked and whether retry makes sense.
+#[derive(Debug, Clone)]
+pub enum RecoveryReason {
+    PeerDisconnected {
+        peer: ActrId,
+        session_id: u64,
+        elapsed_ms: u128,
+    },
+    PeerFailed {
+        peer: ActrId,
+        session_id: u64,
+        elapsed_ms: u128,
+    },
+    IceNetworkStarted {
+        peer: ActrId,
+        session_id: u64,
+    },
+    RecoveryTimeout {
+        peer: ActrId,
+        session_id: u64,
+        reason: String,
+        elapsed_ms: u128,
+    },
+    TransportClosing {
+        peer: ActrId,
+    },
+}
+
+impl fmt::Display for RecoveryReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RecoveryReason::PeerDisconnected {
+                peer,
+                session_id,
+                elapsed_ms,
+            } => {
+                write!(
+                    f,
+                    "Connection recovering: peer={:?}, session_id={}, reason=peer state Disconnected, elapsed_ms={}, timeout_ms=6000",
+                    peer, session_id, elapsed_ms
+                )
+            }
+            RecoveryReason::PeerFailed {
+                peer,
+                session_id,
+                elapsed_ms,
+            } => {
+                write!(
+                    f,
+                    "Connection recovering: peer={:?}, session_id={}, reason=peer state Failed, elapsed_ms={}, timeout_ms=6000",
+                    peer, session_id, elapsed_ms
+                )
+            }
+            RecoveryReason::IceNetworkStarted { peer, session_id } => {
+                write!(
+                    f,
+                    "Connection recovering: peer={:?}, session_id={}, reason=ice/network recovery started, elapsed_ms=0, timeout_ms=6000",
+                    peer, session_id
+                )
+            }
+            RecoveryReason::RecoveryTimeout {
+                peer,
+                session_id,
+                reason,
+                elapsed_ms,
+            } => {
+                write!(
+                    f,
+                    "Connection recovery timeout: peer={:?}, session_id={}, reason={}, elapsed_ms={}, timeout_ms=6000",
+                    peer, session_id, reason, elapsed_ms
+                )
+            }
+            RecoveryReason::TransportClosing { peer } => {
+                write!(
+                    f,
+                    "Connection recovering: peer={:?}, reason=transport closing",
+                    peer
+                )
+            }
+        }
+    }
+}
 
 // ── ActrError ────────────────────────────────────────────────────────────────
 
@@ -40,6 +130,13 @@ pub enum ActrError {
     /// `ErrorKind::Transient` — retry with backoff.
     #[error("unavailable: {0}")]
     Unavailable(String),
+
+    /// Connection is in a recovery window (typically 6 s).
+    ///
+    /// `ErrorKind::Transient` — retry within the recovery window; the peer
+    /// should become reachable again once ICE restart completes.
+    #[error("recovering: {0}")]
+    Recovering(RecoveryReason),
 
     /// Request deadline exceeded.
     ///
@@ -147,7 +244,9 @@ pub trait Classify {
 impl Classify for ActrError {
     fn kind(&self) -> ErrorKind {
         match self {
-            ActrError::Unavailable(_) | ActrError::TimedOut => ErrorKind::Transient,
+            ActrError::Unavailable(_) | ActrError::Recovering(_) | ActrError::TimedOut => {
+                ErrorKind::Transient
+            }
 
             ActrError::NotFound(_)
             | ActrError::PermissionDenied(_)
@@ -253,5 +352,93 @@ mod tests {
         let e = ActrError::InvalidArgument("bad".into());
         let cloned = e.clone();
         assert_eq!(format!("{cloned}"), "invalid argument: bad");
+    }
+
+    // ── RecoveryReason Display ────────────────────────────────────────────
+
+    #[test]
+    fn recovery_reason_peer_disconnected_display() {
+        let peer = ActrId::default();
+        let reason = RecoveryReason::PeerDisconnected {
+            peer: peer.clone(),
+            session_id: 42,
+            elapsed_ms: 1200,
+        };
+        let s = format!("{reason}");
+        assert!(s.starts_with("Connection recovering: peer="));
+        assert!(s.contains("session_id=42"));
+        assert!(s.contains("reason=peer state Disconnected"));
+        assert!(s.contains("elapsed_ms=1200"));
+        assert!(s.contains("timeout_ms=6000"));
+    }
+
+    #[test]
+    fn recovery_reason_peer_failed_display() {
+        let peer = ActrId::default();
+        let reason = RecoveryReason::PeerFailed {
+            peer: peer.clone(),
+            session_id: 7,
+            elapsed_ms: 3500,
+        };
+        let s = format!("{reason}");
+        assert!(s.starts_with("Connection recovering: peer="));
+        assert!(s.contains("reason=peer state Failed"));
+        assert!(s.contains("elapsed_ms=3500"));
+    }
+
+    #[test]
+    fn recovery_reason_ice_network_started_display() {
+        let peer = ActrId::default();
+        let reason = RecoveryReason::IceNetworkStarted {
+            peer: peer.clone(),
+            session_id: 99,
+        };
+        let s = format!("{reason}");
+        assert!(s.contains("reason=ice/network recovery started"));
+        assert!(s.contains("elapsed_ms=0"));
+    }
+
+    #[test]
+    fn recovery_reason_recovery_timeout_display() {
+        let peer = ActrId::default();
+        let reason = RecoveryReason::RecoveryTimeout {
+            peer: peer.clone(),
+            session_id: 10,
+            reason: "ice restart failed".to_string(),
+            elapsed_ms: 6000,
+        };
+        let s = format!("{reason}");
+        assert!(s.starts_with("Connection recovery timeout:"));
+        assert!(s.contains("reason=ice restart failed"));
+        assert!(s.contains("elapsed_ms=6000"));
+    }
+
+    #[test]
+    fn recovery_reason_transport_closing_display() {
+        let peer = ActrId::default();
+        let reason = RecoveryReason::TransportClosing { peer: peer.clone() };
+        let s = format!("{reason}");
+        assert!(s.starts_with("Connection recovering: peer="));
+        assert!(s.contains("reason=transport closing"));
+    }
+
+    // ── Recovering classification ────────────────────────────────────────
+
+    #[test]
+    fn recovering_classifies_as_transient() {
+        let peer = ActrId::default();
+        let err = ActrError::Recovering(RecoveryReason::PeerDisconnected {
+            peer,
+            session_id: 1,
+            elapsed_ms: 0,
+        });
+        assert_eq!(err.kind(), ErrorKind::Transient);
+    }
+
+    #[test]
+    fn recovering_is_retryable() {
+        let peer = ActrId::default();
+        let err = ActrError::Recovering(RecoveryReason::TransportClosing { peer });
+        assert!(err.is_retryable());
     }
 }

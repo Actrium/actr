@@ -17,18 +17,27 @@
 //! A companion `ActrError` class is declared in `index.d.ts`; the JS wrapper
 //! in `typescript/*.ts` parses the JSON and re-throws a typed instance.
 
-use actr_protocol::{ActrError, Classify, ErrorKind};
+use actr_protocol::{ActrError, Classify, ErrorKind, RecoveryReason};
 
 /// Discriminate a protocol error into `(variant_code, user_message,
-/// optional service_name)`.
-fn discriminate(e: &ActrError) -> (&'static str, String, Option<String>) {
+/// optional service_name, optional recovery_code)`.
+///
+/// `recovery_code` is the RecoveryReason variant name (e.g. "TransportClosing")
+/// when the error is `Recovering`; `None` otherwise.
+fn discriminate(e: &ActrError) -> (&'static str, String, Option<String>, Option<&'static str>) {
     match e {
-        ActrError::Unavailable(msg) => ("Unavailable", msg.clone(), None),
-        ActrError::TimedOut => ("TimedOut", "operation timed out".to_string(), None),
-        ActrError::NotFound(msg) => ("NotFound", msg.clone(), None),
-        ActrError::PermissionDenied(msg) => ("PermissionDenied", msg.clone(), None),
-        ActrError::InvalidArgument(msg) => ("InvalidArgument", msg.clone(), None),
-        ActrError::UnknownRoute(msg) => ("UnknownRoute", msg.clone(), None),
+        ActrError::Unavailable(msg) => ("Unavailable", msg.clone(), None, None),
+        ActrError::Recovering(reason) => (
+            "Recovering",
+            reason.to_string(),
+            None,
+            Some(recovery_code(reason)),
+        ),
+        ActrError::TimedOut => ("TimedOut", "operation timed out".to_string(), None, None),
+        ActrError::NotFound(msg) => ("NotFound", msg.clone(), None, None),
+        ActrError::PermissionDenied(msg) => ("PermissionDenied", msg.clone(), None, None),
+        ActrError::InvalidArgument(msg) => ("InvalidArgument", msg.clone(), None, None),
+        ActrError::UnknownRoute(msg) => ("UnknownRoute", msg.clone(), None, None),
         ActrError::DependencyNotFound {
             service_name,
             message,
@@ -36,10 +45,21 @@ fn discriminate(e: &ActrError) -> (&'static str, String, Option<String>) {
             "DependencyNotFound",
             message.clone(),
             Some(service_name.clone()),
+            None,
         ),
-        ActrError::DecodeFailure(msg) => ("DecodeFailure", msg.clone(), None),
-        ActrError::NotImplemented(msg) => ("NotImplemented", msg.clone(), None),
-        ActrError::Internal(msg) => ("Internal", msg.clone(), None),
+        ActrError::DecodeFailure(msg) => ("DecodeFailure", msg.clone(), None, None),
+        ActrError::NotImplemented(msg) => ("NotImplemented", msg.clone(), None, None),
+        ActrError::Internal(msg) => ("Internal", msg.clone(), None, None),
+    }
+}
+
+fn recovery_code(reason: &RecoveryReason) -> &'static str {
+    match reason {
+        RecoveryReason::PeerDisconnected { .. } => "PeerDisconnected",
+        RecoveryReason::PeerFailed { .. } => "PeerFailed",
+        RecoveryReason::IceNetworkStarted { .. } => "IceNetworkStarted",
+        RecoveryReason::RecoveryTimeout { .. } => "RecoveryTimeout",
+        RecoveryReason::TransportClosing { .. } => "TransportClosing",
     }
 }
 
@@ -80,16 +100,39 @@ fn json_escape(s: &str) -> String {
 
 /// Build a JSON payload carrying kind / code / message / optional
 /// service_name — the structure the `ActrError` JS class expects.
-fn build_payload(kind: ErrorKind, code: &str, message: &str, service_name: Option<&str>) -> String {
-    match service_name {
-        Some(svc) => format!(
+fn build_payload(
+    kind: ErrorKind,
+    code: &str,
+    message: &str,
+    service_name: Option<&str>,
+    recovery_code: Option<&str>,
+) -> String {
+    // Build JSON with all fields that are present.
+    // The recovery_code field is only included when the error is Recovering.
+    match (service_name, recovery_code) {
+        (Some(svc), Some(rc)) => format!(
+            r#"{{"kind":"{kind}","code":"{code}","message":"{message}","service_name":"{svc}","recovery_code":"{rc}"}}"#,
+            kind = kind_str(kind),
+            code = code,
+            message = json_escape(message),
+            svc = json_escape(svc),
+            rc = rc,
+        ),
+        (Some(svc), None) => format!(
             r#"{{"kind":"{kind}","code":"{code}","message":"{message}","service_name":"{svc}"}}"#,
             kind = kind_str(kind),
             code = code,
             message = json_escape(message),
             svc = json_escape(svc),
         ),
-        None => format!(
+        (None, Some(rc)) => format!(
+            r#"{{"kind":"{kind}","code":"{code}","message":"{message}","recovery_code":"{rc}"}}"#,
+            kind = kind_str(kind),
+            code = code,
+            message = json_escape(message),
+            rc = rc,
+        ),
+        (None, None) => format!(
             r#"{{"kind":"{kind}","code":"{code}","message":"{message}"}}"#,
             kind = kind_str(kind),
             code = code,
@@ -102,8 +145,8 @@ fn build_payload(kind: ErrorKind, code: &str, message: &str, service_name: Optio
 /// structured JSON payload.
 pub(crate) fn actr_error_to_napi(e: actr_protocol::ActrError) -> napi::Error {
     let kind = e.kind();
-    let (code, message, service_name) = discriminate(&e);
-    let payload = build_payload(kind, code, &message, service_name.as_deref());
+    let (code, message, service_name, recovery_code) = discriminate(&e);
+    let payload = build_payload(kind, code, &message, service_name.as_deref(), recovery_code);
     napi::Error::new(napi::Status::GenericFailure, payload)
 }
 
@@ -116,7 +159,7 @@ pub(crate) fn protocol_error_to_napi(e: actr_protocol::ActrError) -> napi::Error
 /// Pre-protocol config failure. Classified as `Client` (the caller gave us
 /// a bad manifest / config file).
 pub(crate) fn config_error_to_napi(e: actr_config::ConfigError) -> napi::Error {
-    let payload = build_payload(ErrorKind::Client, "Config", &e.to_string(), None);
+    let payload = build_payload(ErrorKind::Client, "Config", &e.to_string(), None, None);
     napi::Error::new(napi::Status::GenericFailure, payload)
 }
 
@@ -125,7 +168,7 @@ pub(crate) fn config_error_to_napi(e: actr_config::ConfigError) -> napi::Error {
 /// failures almost always indicate a platform/runtime problem rather than
 /// bad caller input.
 pub(crate) fn hyper_error_to_napi(e: actr_hyper::HyperError) -> napi::Error {
-    let payload = build_payload(ErrorKind::Internal, "HyperBootstrap", &e.to_string(), None);
+    let payload = build_payload(ErrorKind::Internal, "HyperBootstrap", &e.to_string(), None, None);
     napi::Error::new(napi::Status::GenericFailure, payload)
 }
 

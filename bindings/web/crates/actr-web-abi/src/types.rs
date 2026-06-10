@@ -119,11 +119,28 @@ pub struct Timestamp {
     pub nanoseconds: u32,
 }
 
+/// Lowered from WIT `variant recovery-reason`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RecoveryReason {
+    #[serde(rename = "peer-disconnected")]
+    PeerDisconnected { peer: ActrId, #[serde(rename = "session-id")] session_id: u64, #[serde(rename = "elapsed-ms")] elapsed_ms: u128 },
+    #[serde(rename = "peer-failed")]
+    PeerFailed { peer: ActrId, #[serde(rename = "session-id")] session_id: u64, #[serde(rename = "elapsed-ms")] elapsed_ms: u128 },
+    #[serde(rename = "ice-network-started")]
+    IceNetworkStarted { peer: ActrId, #[serde(rename = "session-id")] session_id: u64 },
+    #[serde(rename = "recovery-timeout")]
+    RecoveryTimeout { peer: ActrId, #[serde(rename = "session-id")] session_id: u64, reason: String, #[serde(rename = "elapsed-ms")] elapsed_ms: u128 },
+    #[serde(rename = "transport-closing")]
+    TransportClosing { peer: ActrId },
+}
+
 /// Lowered from WIT `variant actr-error`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ActrError {
     #[serde(rename = "unavailable")]
     Unavailable(String),
+    #[serde(rename = "recovering")]
+    Recovering(RecoveryReason),
     #[serde(rename = "timed-out")]
     TimedOut,
     #[serde(rename = "not-found")]

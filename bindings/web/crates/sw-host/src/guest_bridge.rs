@@ -287,6 +287,7 @@ fn parse_actr_type(value: &JsValue) -> Result<ActrType, JsValue> {
 fn actr_error_to_js(error: ActrError) -> JsValue {
     let (tag, message) = match &error {
         ActrError::Unavailable(m) => ("unavailable", m.clone()),
+        ActrError::Recovering(r) => ("recovering", format!("{r}")),
         ActrError::TimedOut => ("timed-out", String::new()),
         ActrError::NotFound(m) => ("not-found", m.clone()),
         ActrError::PermissionDenied(m) => ("permission-denied", m.clone()),

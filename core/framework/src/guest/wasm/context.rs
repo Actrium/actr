@@ -7,7 +7,7 @@
 //! suspends the guest task at await points directly.
 
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, RpcRequest,
+    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, RecoveryReason, RpcRequest,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -31,6 +31,9 @@ use super::generated::actr::workload::types as wit_types;
 pub(crate) fn wit_actr_error_to_proto(e: wit_types::ActrError) -> ActrError {
     match e {
         wit_types::ActrError::Unavailable(msg) => ActrError::Unavailable(msg),
+        wit_types::ActrError::Recovering(reason) => {
+            ActrError::Recovering(wit_recovery_reason_to_proto(reason))
+        }
         wit_types::ActrError::TimedOut => ActrError::TimedOut,
         wit_types::ActrError::NotFound(msg) => ActrError::NotFound(msg),
         wit_types::ActrError::PermissionDenied(msg) => ActrError::PermissionDenied(msg),
@@ -51,6 +54,9 @@ pub(crate) fn wit_actr_error_to_proto(e: wit_types::ActrError) -> ActrError {
 pub(crate) fn proto_actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
     match e {
         ActrError::Unavailable(msg) => wit_types::ActrError::Unavailable(msg),
+        ActrError::Recovering(reason) => {
+            wit_types::ActrError::Recovering(proto_recovery_reason_to_wit(reason))
+        }
         ActrError::TimedOut => wit_types::ActrError::TimedOut,
         ActrError::NotFound(msg) => wit_types::ActrError::NotFound(msg),
         ActrError::PermissionDenied(msg) => wit_types::ActrError::PermissionDenied(msg),
@@ -66,6 +72,83 @@ pub(crate) fn proto_actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
         ActrError::DecodeFailure(msg) => wit_types::ActrError::DecodeFailure(msg),
         ActrError::NotImplemented(msg) => wit_types::ActrError::NotImplemented(msg),
         ActrError::Internal(msg) => wit_types::ActrError::Internal(msg),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RecoveryReason WIT ↔ protocol conversion helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn wit_recovery_reason_to_proto(reason: wit_types::RecoveryReason) -> RecoveryReason {
+    match reason {
+        wit_types::RecoveryReason::PeerDisconnected(d) => RecoveryReason::PeerDisconnected {
+            peer: actr_id_from_wit(&d.peer),
+            session_id: d.session_id,
+            elapsed_ms: d.elapsed_ms,
+        },
+        wit_types::RecoveryReason::PeerFailed(f) => RecoveryReason::PeerFailed {
+            peer: actr_id_from_wit(&f.peer),
+            session_id: f.session_id,
+            elapsed_ms: f.elapsed_ms,
+        },
+        wit_types::RecoveryReason::IceNetworkStarted(i) => RecoveryReason::IceNetworkStarted {
+            peer: actr_id_from_wit(&i.peer),
+            session_id: i.session_id,
+        },
+        wit_types::RecoveryReason::RecoveryTimeout(t) => RecoveryReason::RecoveryTimeout {
+            peer: actr_id_from_wit(&t.peer),
+            session_id: t.session_id,
+            reason: t.reason,
+            elapsed_ms: t.elapsed_ms,
+        },
+        wit_types::RecoveryReason::TransportClosing(c) => RecoveryReason::TransportClosing {
+            peer: actr_id_from_wit(&c.peer),
+        },
+    }
+}
+
+fn proto_recovery_reason_to_wit(reason: RecoveryReason) -> wit_types::RecoveryReason {
+    match reason {
+        RecoveryReason::PeerDisconnected {
+            peer,
+            session_id,
+            elapsed_ms,
+        } => wit_types::RecoveryReason::PeerDisconnected(wit_types::PeerDisconnected {
+            peer: actr_id_to_wit(&peer),
+            session_id,
+            elapsed_ms,
+        }),
+        RecoveryReason::PeerFailed {
+            peer,
+            session_id,
+            elapsed_ms,
+        } => wit_types::RecoveryReason::PeerFailed(wit_types::PeerFailed {
+            peer: actr_id_to_wit(&peer),
+            session_id,
+            elapsed_ms,
+        }),
+        RecoveryReason::IceNetworkStarted { peer, session_id } => {
+            wit_types::RecoveryReason::IceNetworkStarted(wit_types::IceNetworkStarted {
+                peer: actr_id_to_wit(&peer),
+                session_id,
+            })
+        }
+        RecoveryReason::RecoveryTimeout {
+            peer,
+            session_id,
+            reason: r,
+            elapsed_ms,
+        } => wit_types::RecoveryReason::RecoveryTimeout(wit_types::RecoveryTimeout {
+            peer: actr_id_to_wit(&peer),
+            session_id,
+            reason: r,
+            elapsed_ms,
+        }),
+        RecoveryReason::TransportClosing { peer } => {
+            wit_types::RecoveryReason::TransportClosing(wit_types::TransportClosing {
+                peer: actr_id_to_wit(&peer),
+            })
+        }
     }
 }
 

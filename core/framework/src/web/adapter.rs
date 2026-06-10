@@ -25,7 +25,9 @@
 
 use std::time::{Duration, UNIX_EPOCH};
 
-use actr_protocol::{ActrError, ActrId, DataStream, MetadataEntry, Realm, RpcEnvelope};
+use actr_protocol::{
+    ActrError, ActrId, DataStream, MetadataEntry, Realm, RecoveryReason, RpcEnvelope,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -61,6 +63,24 @@ fn actr_id_from_wit(id: &wit::ActrId) -> ActrId {
     }
 }
 
+fn actr_type_to_wit(t: &actr_protocol::ActrType) -> wit::ActrType {
+    wit::ActrType {
+        manufacturer: t.manufacturer.clone(),
+        name: t.name.clone(),
+        version: t.version.clone(),
+    }
+}
+
+fn actr_id_to_wit(id: &ActrId) -> wit::ActrId {
+    wit::ActrId {
+        realm: wit::Realm {
+            realm_id: id.realm.realm_id,
+        },
+        serial_number: id.serial_number,
+        actr_type: actr_type_to_wit(&id.r#type),
+    }
+}
+
 fn timestamp_from_wit(t: wit::Timestamp) -> std::time::SystemTime {
     UNIX_EPOCH + Duration::new(t.seconds, t.nanoseconds)
 }
@@ -87,6 +107,7 @@ fn error_category_from_wit(c: wit::ErrorCategory) -> ErrorCategory {
 fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
     match e {
         wit::ActrError::Unavailable(m) => ActrError::Unavailable(m),
+        wit::ActrError::Recovering(r) => ActrError::Recovering(wit_recovery_reason_to_proto(r)),
         wit::ActrError::TimedOut => ActrError::TimedOut,
         wit::ActrError::NotFound(m) => ActrError::NotFound(m),
         wit::ActrError::PermissionDenied(m) => ActrError::PermissionDenied(m),
@@ -105,6 +126,7 @@ fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
 fn proto_error_to_wit(e: ActrError) -> wit::ActrError {
     match e {
         ActrError::Unavailable(m) => wit::ActrError::Unavailable(m),
+        ActrError::Recovering(r) => wit::ActrError::Recovering(proto_recovery_reason_to_wit(r)),
         ActrError::TimedOut => wit::ActrError::TimedOut,
         ActrError::NotFound(m) => wit::ActrError::NotFound(m),
         ActrError::PermissionDenied(m) => wit::ActrError::PermissionDenied(m),
@@ -120,6 +142,79 @@ fn proto_error_to_wit(e: ActrError) -> wit::ActrError {
         ActrError::DecodeFailure(m) => wit::ActrError::DecodeFailure(m),
         ActrError::NotImplemented(m) => wit::ActrError::NotImplemented(m),
         ActrError::Internal(m) => wit::ActrError::Internal(m),
+    }
+}
+
+fn wit_recovery_reason_to_proto(reason: wit::RecoveryReason) -> RecoveryReason {
+    match reason {
+        wit::RecoveryReason::PeerDisconnected(d) => RecoveryReason::PeerDisconnected {
+            peer: actr_id_from_wit(&d.peer),
+            session_id: d.session_id,
+            elapsed_ms: d.elapsed_ms,
+        },
+        wit::RecoveryReason::PeerFailed(f) => RecoveryReason::PeerFailed {
+            peer: actr_id_from_wit(&f.peer),
+            session_id: f.session_id,
+            elapsed_ms: f.elapsed_ms,
+        },
+        wit::RecoveryReason::IceNetworkStarted(i) => RecoveryReason::IceNetworkStarted {
+            peer: actr_id_from_wit(&i.peer),
+            session_id: i.session_id,
+        },
+        wit::RecoveryReason::RecoveryTimeout(t) => RecoveryReason::RecoveryTimeout {
+            peer: actr_id_from_wit(&t.peer),
+            session_id: t.session_id,
+            reason: t.reason,
+            elapsed_ms: t.elapsed_ms,
+        },
+        wit::RecoveryReason::TransportClosing(c) => RecoveryReason::TransportClosing {
+            peer: actr_id_from_wit(&c.peer),
+        },
+    }
+}
+
+fn proto_recovery_reason_to_wit(reason: RecoveryReason) -> wit::RecoveryReason {
+    match reason {
+        RecoveryReason::PeerDisconnected {
+            peer,
+            session_id,
+            elapsed_ms,
+        } => wit::RecoveryReason::PeerDisconnected(wit::PeerDisconnected {
+            peer: actr_id_to_wit(&peer),
+            session_id,
+            elapsed_ms,
+        }),
+        RecoveryReason::PeerFailed {
+            peer,
+            session_id,
+            elapsed_ms,
+        } => wit::RecoveryReason::PeerFailed(wit::PeerFailed {
+            peer: actr_id_to_wit(&peer),
+            session_id,
+            elapsed_ms,
+        }),
+        RecoveryReason::IceNetworkStarted { peer, session_id } => {
+            wit::RecoveryReason::IceNetworkStarted(wit::IceNetworkStarted {
+                peer: actr_id_to_wit(&peer),
+                session_id,
+            })
+        }
+        RecoveryReason::RecoveryTimeout {
+            peer,
+            session_id,
+            reason: r,
+            elapsed_ms,
+        } => wit::RecoveryReason::RecoveryTimeout(wit::RecoveryTimeout {
+            peer: actr_id_to_wit(&peer),
+            session_id,
+            reason: r,
+            elapsed_ms,
+        }),
+        RecoveryReason::TransportClosing { peer } => {
+            wit::RecoveryReason::TransportClosing(wit::TransportClosing {
+                peer: actr_id_to_wit(&peer),
+            })
+        }
     }
 }
 

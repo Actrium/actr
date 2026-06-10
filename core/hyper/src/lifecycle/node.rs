@@ -547,6 +547,7 @@ async fn stream_callback_host_operation_handler(
 fn protocol_error_to_code(err: &ActrError) -> u32 {
     match err {
         ActrError::Unavailable(_) => 503,            // Service Unavailable
+        ActrError::Recovering(_) => 503,             // Service Unavailable (recovery window)
         ActrError::TimedOut => 504,                  // Gateway Timeout
         ActrError::NotFound(_) => 404,               // Not Found
         ActrError::PermissionDenied(_) => 403,       // Forbidden

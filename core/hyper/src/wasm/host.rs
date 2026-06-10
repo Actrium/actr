@@ -36,7 +36,8 @@ use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_framework::{BackpressureEvent, CredentialEvent, PeerEvent};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActrError, ActrId, ActrType, DataStream, MetadataEntry, PayloadType, Realm, RpcEnvelope,
+    ActrError, ActrId, ActrType, DataStream, MetadataEntry, PayloadType, Realm, RecoveryReason,
+    RpcEnvelope,
 };
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, OptLevel, RegallocAlgorithm, Store};
@@ -373,6 +374,79 @@ fn proto_actr_id_to_wit(id: &ActrId) -> WitActrId {
     }
 }
 
+fn recovery_reason_to_wit(reason: &RecoveryReason) -> wit_types::RecoveryReason {
+    match reason {
+        RecoveryReason::PeerDisconnected {
+            peer,
+            session_id,
+            elapsed_ms,
+        } => wit_types::RecoveryReason::PeerDisconnected(wit_types::PeerDisconnected {
+            peer: proto_actr_id_to_wit(peer),
+            session_id,
+            elapsed_ms,
+        }),
+        RecoveryReason::PeerFailed {
+            peer,
+            session_id,
+            elapsed_ms,
+        } => wit_types::RecoveryReason::PeerFailed(wit_types::PeerFailed {
+            peer: proto_actr_id_to_wit(peer),
+            session_id,
+            elapsed_ms,
+        }),
+        RecoveryReason::IceNetworkStarted { peer, session_id } => {
+            wit_types::RecoveryReason::IceNetworkStarted(wit_types::IceNetworkStarted {
+                peer: proto_actr_id_to_wit(peer),
+                session_id,
+            })
+        }
+        RecoveryReason::RecoveryTimeout {
+            peer,
+            session_id,
+            reason: r,
+            elapsed_ms,
+        } => wit_types::RecoveryReason::RecoveryTimeout(wit_types::RecoveryTimeout {
+            peer: proto_actr_id_to_wit(peer),
+            session_id,
+            reason: r.clone(),
+            elapsed_ms,
+        }),
+        RecoveryReason::TransportClosing { peer } => {
+            wit_types::RecoveryReason::TransportClosing(wit_types::TransportClosing {
+                peer: proto_actr_id_to_wit(peer),
+            })
+        }
+    }
+}
+
+fn wit_recovery_reason_to_proto(reason: wit_types::RecoveryReason) -> RecoveryReason {
+    match reason {
+        wit_types::RecoveryReason::PeerDisconnected(d) => RecoveryReason::PeerDisconnected {
+            peer: wit_actr_id_to_proto(&d.peer),
+            session_id: d.session_id,
+            elapsed_ms: d.elapsed_ms,
+        },
+        wit_types::RecoveryReason::PeerFailed(f) => RecoveryReason::PeerFailed {
+            peer: wit_actr_id_to_proto(&f.peer),
+            session_id: f.session_id,
+            elapsed_ms: f.elapsed_ms,
+        },
+        wit_types::RecoveryReason::IceNetworkStarted(i) => RecoveryReason::IceNetworkStarted {
+            peer: wit_actr_id_to_proto(&i.peer),
+            session_id: i.session_id,
+        },
+        wit_types::RecoveryReason::RecoveryTimeout(t) => RecoveryReason::RecoveryTimeout {
+            peer: wit_actr_id_to_proto(&t.peer),
+            session_id: t.session_id,
+            reason: t.reason,
+            elapsed_ms: t.elapsed_ms,
+        },
+        wit_types::RecoveryReason::TransportClosing(c) => RecoveryReason::TransportClosing {
+            peer: wit_actr_id_to_proto(&c.peer),
+        },
+    }
+}
+
 fn wit_dest_to_v1(dest: &WitDest) -> guest_abi::DestV1 {
     match dest {
         WitDest::Shell => guest_abi::DestV1::shell(),
@@ -402,6 +476,7 @@ fn actr_error_from_abi_code(code: i32) -> WitActrError {
 fn actr_error_to_wit(e: &ActrError) -> WitActrError {
     match e {
         ActrError::Unavailable(msg) => WitActrError::Unavailable(msg.clone()),
+        ActrError::Recovering(reason) => WitActrError::Recovering(recovery_reason_to_wit(reason)),
         ActrError::TimedOut => WitActrError::TimedOut,
         ActrError::NotFound(msg) => WitActrError::NotFound(msg.clone()),
         ActrError::PermissionDenied(msg) => WitActrError::PermissionDenied(msg.clone()),
@@ -423,6 +498,9 @@ fn actr_error_to_wit(e: &ActrError) -> WitActrError {
 fn wit_actr_error_to_proto(e: WitActrError) -> ActrError {
     match e {
         WitActrError::Unavailable(msg) => ActrError::Unavailable(msg),
+        WitActrError::Recovering(reason) => {
+            ActrError::Recovering(wit_recovery_reason_to_proto(reason))
+        }
         WitActrError::TimedOut => ActrError::TimedOut,
         WitActrError::NotFound(msg) => ActrError::NotFound(msg),
         WitActrError::PermissionDenied(msg) => ActrError::PermissionDenied(msg),

@@ -33,7 +33,8 @@
 use std::rc::Rc;
 
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, Realm, RpcRequest,
+    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, Realm, RecoveryReason,
+    RpcRequest,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -151,6 +152,7 @@ fn actr_id_from_wit(id: &wit::ActrId) -> ActrId {
 fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
     match e {
         wit::ActrError::Unavailable(m) => ActrError::Unavailable(m),
+        wit::ActrError::Recovering(r) => ActrError::Recovering(wit_recovery_reason_to_proto(r)),
         wit::ActrError::TimedOut => ActrError::TimedOut,
         wit::ActrError::NotFound(m) => ActrError::NotFound(m),
         wit::ActrError::PermissionDenied(m) => ActrError::PermissionDenied(m),
@@ -167,6 +169,34 @@ fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
         wit::ActrError::DecodeFailure(m) => ActrError::DecodeFailure(m),
         wit::ActrError::NotImplemented(m) => ActrError::NotImplemented(m),
         wit::ActrError::Internal(m) => ActrError::Internal(m),
+    }
+}
+
+fn wit_recovery_reason_to_proto(reason: wit::RecoveryReason) -> RecoveryReason {
+    match reason {
+        wit::RecoveryReason::PeerDisconnected(d) => RecoveryReason::PeerDisconnected {
+            peer: actr_id_from_wit(&d.peer),
+            session_id: d.session_id,
+            elapsed_ms: d.elapsed_ms,
+        },
+        wit::RecoveryReason::PeerFailed(f) => RecoveryReason::PeerFailed {
+            peer: actr_id_from_wit(&f.peer),
+            session_id: f.session_id,
+            elapsed_ms: f.elapsed_ms,
+        },
+        wit::RecoveryReason::IceNetworkStarted(i) => RecoveryReason::IceNetworkStarted {
+            peer: actr_id_from_wit(&i.peer),
+            session_id: i.session_id,
+        },
+        wit::RecoveryReason::RecoveryTimeout(t) => RecoveryReason::RecoveryTimeout {
+            peer: actr_id_from_wit(&t.peer),
+            session_id: t.session_id,
+            reason: t.reason,
+            elapsed_ms: t.elapsed_ms,
+        },
+        wit::RecoveryReason::TransportClosing(c) => RecoveryReason::TransportClosing {
+            peer: actr_id_from_wit(&c.peer),
+        },
     }
 }
 

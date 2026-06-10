@@ -8,10 +8,12 @@
 
 use super::data_stream_activity::{DataStreamActivityTracker, DataStreamRecordState};
 use crate::transport::{ConnectionEvent, ConnectionState, Dest, PayloadTypeExt, PeerTransport};
-use crate::wire::webrtc::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus, WebRtcCoordinator};
+use crate::wire::webrtc::{NetworkRecoveryStatus, WebRtcCoordinator};
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError, ActrId, Classify, PayloadType, RpcEnvelope};
+use actr_protocol::{
+    ActorResult, ActrError, ActrId, Classify, PayloadType, RecoveryReason, RpcEnvelope,
+};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -95,25 +97,38 @@ impl PeerGate {
     }
 
     fn recovering_error(target: &ActrId, status: &NetworkRecoveryStatus) -> ActrError {
-        ActrError::Unavailable(format!(
-            "Connection recovering: peer={:?}, session_id={}, reason={}, elapsed_ms={}, timeout_ms={}",
-            target,
-            status.session_id,
-            status.reason.as_str(),
-            status.elapsed_ms(),
-            NETWORK_RECOVERY_TIMEOUT.as_millis()
-        ))
+        let reason = match status.reason.as_str() {
+            RECOVERY_REASON_PEER_DISCONNECTED => RecoveryReason::PeerDisconnected {
+                peer: target.clone(),
+                session_id: status.session_id,
+                elapsed_ms: status.elapsed_ms(),
+            },
+            RECOVERY_REASON_PEER_FAILED => RecoveryReason::PeerFailed {
+                peer: target.clone(),
+                session_id: status.session_id,
+                elapsed_ms: status.elapsed_ms(),
+            },
+            RECOVERY_REASON_ICE_NETWORK_STARTED => RecoveryReason::IceNetworkStarted {
+                peer: target.clone(),
+                session_id: status.session_id,
+            },
+            _ => RecoveryReason::PeerDisconnected {
+                // Fallback for coordinator-set reasons or unknown strings
+                peer: target.clone(),
+                session_id: status.session_id,
+                elapsed_ms: status.elapsed_ms(),
+            },
+        };
+        ActrError::Recovering(reason)
     }
 
     fn recovery_timeout_error(target: &ActrId, status: &NetworkRecoveryStatus) -> ActrError {
-        ActrError::Unavailable(format!(
-            "Connection recovery timeout: peer={:?}, session_id={}, reason={}, elapsed_ms={}, timeout_ms={}",
-            target,
-            status.session_id,
-            status.reason.as_str(),
-            status.elapsed_ms(),
-            NETWORK_RECOVERY_TIMEOUT.as_millis()
-        ))
+        ActrError::Recovering(RecoveryReason::RecoveryTimeout {
+            peer: target.clone(),
+            session_id: status.session_id,
+            reason: status.reason.clone(),
+            elapsed_ms: status.elapsed_ms(),
+        })
     }
 
     async fn notify_active_data_streams_uncertain(
@@ -726,10 +741,9 @@ impl PeerGate {
         if self.closing_peers.read().await.contains(target)
             || self.transport_manager.is_closing(dest).await
         {
-            return Err(ActrError::Unavailable(format!(
-                "Connection recovering: peer={:?}, reason=transport closing",
-                target,
-            )));
+            return Err(ActrError::Recovering(RecoveryReason::TransportClosing {
+                peer: target.clone(),
+            }));
         }
 
         Ok(())
