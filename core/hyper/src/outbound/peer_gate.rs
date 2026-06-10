@@ -27,6 +27,9 @@ type PendingRequestsMap =
 /// this prevents a stalled WebRTC DataChannel send from holding the mobile
 /// caller forever during unrecoverable network loss.
 const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+const RECOVERY_REASON_PEER_DISCONNECTED: &str = "peer state Disconnected";
+const RECOVERY_REASON_PEER_FAILED: &str = "peer state Failed";
+const RECOVERY_REASON_ICE_NETWORK_STARTED: &str = "ice/network recovery started";
 
 /// PeerGate - Outproc transport adapter (outbound)
 ///
@@ -68,7 +71,7 @@ impl PeerGate {
         reason: &str,
     ) {
         match recovering.entry(peer_id.clone()) {
-            Entry::Occupied(entry) if entry.get().session_id == session_id => {
+            Entry::Occupied(mut entry) if entry.get().session_id == session_id => {
                 tracing::debug!(
                     peer_id = ?peer_id,
                     session_id,
@@ -76,6 +79,11 @@ impl PeerGate {
                     recovery_reason = entry.get().reason.as_str(),
                     "Peer already blocked for recovery",
                 );
+                if entry.get().reason.as_str() == RECOVERY_REASON_PEER_FAILED
+                    && reason == RECOVERY_REASON_ICE_NETWORK_STARTED
+                {
+                    entry.get_mut().reason = reason.to_string();
+                }
             }
             Entry::Occupied(mut entry) => {
                 entry.insert(NetworkRecoveryStatus::new(session_id, reason));
@@ -228,7 +236,7 @@ impl PeerGate {
                     ConnectionEvent::StateChanged {
                         peer_id,
                         session_id,
-                        state: ConnectionState::Disconnected | ConnectionState::Failed,
+                        state: state @ (ConnectionState::Disconnected | ConnectionState::Failed),
                         ..
                     } => {
                         if !webrtc_coordinator
@@ -243,13 +251,18 @@ impl PeerGate {
                             continue;
                         }
 
+                        let reason = match state {
+                            ConnectionState::Disconnected => RECOVERY_REASON_PEER_DISCONNECTED,
+                            ConnectionState::Failed => RECOVERY_REASON_PEER_FAILED,
+                            _ => unreachable!("state pattern only matches recovery states"),
+                        };
                         {
                             let mut recovering = recovering_peers.write().await;
                             Self::remember_recovering_peer(
                                 &mut recovering,
                                 peer_id,
                                 *session_id,
-                                "peer state Disconnected/Failed",
+                                reason,
                             );
                         }
                         closing_peers.write().await.insert(peer_id.clone());
@@ -270,7 +283,7 @@ impl PeerGate {
                                 &mut recovering,
                                 peer_id,
                                 *session_id,
-                                "ice/network recovery started",
+                                RECOVERY_REASON_ICE_NETWORK_STARTED,
                             );
                         }
                         tracing::debug!("Peer {} entered ICE/network recovery", peer_id);
@@ -285,10 +298,35 @@ impl PeerGate {
                     | ConnectionEvent::DataChannelOpened {
                         peer_id,
                         session_id,
-                        payload_type: PayloadType::RpcReliable,
                         ..
+                    } => {
+                        let should_clear = {
+                            let recovering = recovering_peers.read().await;
+                            recovering
+                                .get(peer_id)
+                                .map(|status| status.session_id == *session_id)
+                                .unwrap_or(true)
+                        };
+
+                        let is_sendable = webrtc_coordinator
+                            .is_peer_sendable_session(peer_id, *session_id)
+                            .await;
+
+                        if should_clear && is_sendable {
+                            recovering_peers.write().await.remove(peer_id);
+                            closing_peers.write().await.remove(peer_id);
+                            tracing::debug!("Peer {} is sendable again", peer_id);
+                        } else {
+                            tracing::debug!(
+                                peer_id = ?peer_id,
+                                event_session_id = session_id,
+                                is_sendable = is_sendable,
+                                "Ignoring recovery unblock event until current session is sendable",
+                            );
+                        }
                     }
-                    | ConnectionEvent::IceRestartCompleted {
+
+                    ConnectionEvent::IceRestartCompleted {
                         peer_id,
                         session_id,
                         success: true,
@@ -302,7 +340,11 @@ impl PeerGate {
                                 .unwrap_or(true)
                         };
 
-                        if should_clear {
+                        let is_sendable = webrtc_coordinator
+                            .is_peer_sendable_session(peer_id, *session_id)
+                            .await;
+
+                        if should_clear && is_sendable {
                             recovering_peers.write().await.remove(peer_id);
                             closing_peers.write().await.remove(peer_id);
                             tracing::debug!("Peer {} is sendable again", peer_id);
@@ -310,7 +352,8 @@ impl PeerGate {
                             tracing::debug!(
                                 peer_id = ?peer_id,
                                 event_session_id = session_id,
-                                "Ignoring sendable event for stale session",
+                                is_sendable = is_sendable,
+                                "Ignoring recovery unblock event until current session is sendable",
                             );
                         }
                     }
@@ -654,12 +697,33 @@ impl PeerGate {
             recovering.get(target).cloned()
         };
         if let Some(status) = local_recovery {
-            if status.is_timed_out() {
+            let mut cleared_locally = false;
+            if let Some(coordinator) = &self.webrtc_coordinator {
+                if let Some(current_session_id) = coordinator.get_peer_session_id(target).await {
+                    if current_session_id != status.session_id {
+                        self.clear_local_recovery_guard(target, status.session_id)
+                            .await;
+                        cleared_locally = true;
+                    } else if status.reason.as_str() != RECOVERY_REASON_PEER_FAILED
+                        && coordinator
+                            .is_peer_sendable_session(target, status.session_id)
+                            .await
+                    {
+                        self.clear_local_recovery_guard(target, status.session_id)
+                            .await;
+                        cleared_locally = true;
+                    }
+                }
+            }
+
+            if !cleared_locally && status.is_timed_out() {
                 return Err(self
                     .handle_recovery_timeout(target, dest, &status, "peer gate")
                     .await);
             }
-            return Err(Self::recovering_error(target, &status));
+            if !cleared_locally {
+                return Err(Self::recovering_error(target, &status));
+            }
         }
 
         if self.closing_peers.read().await.contains(target)

@@ -3,8 +3,9 @@
 
 use actr_framework::Bytes;
 use actr_hyper::lifecycle::{
-    NetworkAvailability, NetworkEvent, NetworkRecoveryAction, NetworkSnapshot,
-    NetworkTransportFlags, ReconnectReason, process_network_event_batch,
+    NetworkAvailability, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
+    NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags,
+    ReconnectReason, process_network_event_batch, run_network_event_reconciler,
     select_network_recovery_action,
 };
 use actr_hyper::outbound::PeerGate;
@@ -21,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::{Notify, mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 
 const LARGE_PAYLOAD_SIZE: usize = 200 * 1024;
 
@@ -511,11 +513,7 @@ async fn process_mobile_events_for(
     assert!(results.iter().all(|result| result.success));
 }
 
-fn spawn_mobile_event_storm(
-    harness: &TestHarness,
-    mobile_serial: u64,
-) -> tokio::task::JoinHandle<()> {
-    let processor = harness.peer(mobile_serial).network_processor();
+fn spawn_mobile_event_storm(handle: NetworkEventHandle) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let batches = [
             vec![
@@ -533,12 +531,60 @@ fn spawn_mobile_event_storm(
             vec![network_event(106, true, false, true), wifi_event(107)],
         ];
 
+        let mut tasks = Vec::new();
         for batch in batches {
-            let results = process_network_event_batch(batch, processor.clone()).await;
-            assert!(results.iter().all(|result| result.success));
+            for event in batch {
+                let handle = handle.clone();
+                tasks.push(tokio::spawn(async move {
+                    submit_mobile_event(handle, event).await
+                }));
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
+
+        for task in tasks {
+            let result = task
+                .await
+                .expect("mobile network event task should not panic")
+                .expect("mobile network event should complete");
+            assert!(result.success, "mobile network event failed: {result:?}");
+        }
     })
+}
+
+fn spawn_network_event_reconciler(
+    processor: Arc<dyn NetworkEventProcessor>,
+    result_timeout: Duration,
+) -> (
+    NetworkEventHandle,
+    CancellationToken,
+    tokio::task::JoinHandle<()>,
+) {
+    let (event_tx, event_rx) = mpsc::channel(32);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, result_timeout);
+    let shutdown = CancellationToken::new();
+    let reconciler_shutdown = shutdown.clone();
+    let task = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    (handle, shutdown, task)
+}
+
+async fn submit_mobile_event(
+    handle: NetworkEventHandle,
+    event: NetworkEvent,
+) -> Result<NetworkEventResult, String> {
+    match event {
+        NetworkEvent::NetworkPathChanged { snapshot } => {
+            handle.handle_network_path_changed(snapshot).await
+        }
+        NetworkEvent::AppLifecycleChanged { state } => {
+            handle.handle_app_lifecycle_changed(state).await
+        }
+        NetworkEvent::CleanupConnections { reason } => handle.cleanup_connections(reason).await,
+        NetworkEvent::ForceReconnect { reason } => handle.force_reconnect(reason).await,
+    }
 }
 
 async fn inflight_short_offline_recovers_original_request(case: RoleCase) {
@@ -1028,12 +1074,16 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
         let server_id = harness.peer(case.server_serial).id.clone();
         let (data, hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
+        let (network_handle, network_shutdown, network_task) = spawn_network_event_reconciler(
+            harness.peer(case.mobile_serial).network_processor(),
+            Duration::from_secs(20),
+        );
 
         harness.simulate_disconnect();
         tokio::time::sleep(Duration::from_secs(1)).await;
         harness.simulate_reconnect();
 
-        let storm_task = spawn_mobile_event_storm(&harness, case.mobile_serial);
+        let storm_task = spawn_mobile_event_storm(network_handle);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let call = spawn_large_request(
@@ -1091,6 +1141,10 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
         storm_task
             .await
             .expect("mobile event storm task should not panic");
+        network_shutdown.cancel();
+        network_task
+            .await
+            .expect("network event reconciler task should not panic");
         assert_eq!(
             harness.peer(case.mobile_serial).pending_count().await,
             0,
