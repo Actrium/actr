@@ -49,6 +49,17 @@ match exactly.
 - Valid types: `feat`, `fix`, `chore`, `docs`, `style`, `refactor`, `test`, `ci`, `perf`, `build`, `revert`.
 - Breaking changes: append `!` after type/scope (e.g. `feat!:`) or include `BREAKING CHANGE` in the footer.
 - The release train auto-detects semver bump from PR titles: `feat` → MINOR, `fix` → PATCH, `feat!` / `BREAKING CHANGE` → MAJOR.
+
+### Commit type selection for 0.x development
+
+During 0.x early development, prefer conservative bumping to avoid unnecessary version inflation:
+
+- **`fix:` (PATCH)** — The default for most changes. Use for bug fixes, small enhancements, internal helpers, FFI bindings, incremental refinements, and non-user-facing improvements.
+- **`feat:` (MINOR)** — Use ONLY when exposing a clearly new end-user-facing capability or API surface. Do NOT use for internal helpers, small refinements, or incremental polish.
+- **`feat!:` / `BREAKING CHANGE` (MAJOR)** — Public API removal, signature changes that break callers, or incompatible protocol changes.
+- **`refactor:` (no bump)** — Pure internal restructuring with zero behavioral change.
+- **`chore:`, `ci:`, `build:`, `docs:`, `test:` (no bump)** — Maintenance, CI, dependencies, documentation, tests.
+
 - Each PR should describe the change scope, mention affected crates or directories, and link to any relevant issues or design docs.
 - Include reproduction or validation steps (commands, screenshots, or log excerpts) so reviewers can verify behavior quickly.
 - Ensure generated files are up to date (`actr gen …`) and that formatters/tests have been run prior to opening a PR.
