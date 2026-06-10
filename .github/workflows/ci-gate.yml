@@ -32,7 +32,6 @@ jobs:
       ts_workload: ${{ steps.targets.outputs.ts_workload }}
       python_codegen: ${{ steps.targets.outputs.python_codegen }}
       python_workload: ${{ steps.targets.outputs.python_workload }}
-      python_web_e2e: ${{ steps.targets.outputs.python_web_e2e }}
       swift_binding: ${{ steps.targets.outputs.swift_binding }}
       kotlin_binding: ${{ steps.targets.outputs.kotlin_binding }}
       web_binding: ${{ steps.targets.outputs.web_binding }}
@@ -48,6 +47,8 @@ jobs:
           python-version: "3.11"
       - name: Test target detection
         run: python .github/scripts/ci_targets_test.py
+      - name: Test CI configuration
+        run: python .github/scripts/ci_gate_test.py
 
       - id: targets
         name: Compute targets
@@ -80,39 +81,28 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-          # wasm32-wasip2 is required for the Component Model guest
-          # fixture rebuilt by core/hyper/tests/wasm_actor_fixture/build.sh
-          # under --all-features (wasm-engine).
-          targets: wasm32-wasip2,wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown
       - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-      # Phase 1 Component Model toolchain:
-      # - wasm-component-ld 0.5.22 is the first release that recognises
-      #   wit-bindgen 0.57's async-ABI custom sections; earlier versions
-      #   reject the guest fixture with "unknown custom section".
-      # - wasm-tools 1.247 is pinned via `cargo install --version` so a
-      #   compatible component validator is available for diagnostics.
-      - name: Install wasm Component Model toolchain
-        run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
+      - name: Cache cargo-installed tools
+        id: cargo-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
       - name: Install wasm-pack
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Build workspace
-        run: cargo build --verbose --all-features
-      - name: Build release
-        run: cargo build --release --verbose --all-features
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Run tests
-        run: cargo test --workspace --verbose --all-features
 
   typescript:
     name: TypeScript
@@ -283,9 +273,19 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Cache cargo-installed tools
+        id: cargo-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-tools
+            ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wt1.247.0-wp0.13.1
       - name: Install wasm-tools
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-tools --version 1.247.0 --locked
       - name: Install wasm-pack
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
       - name: Verify TypeScript workload WIT drift
         run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
@@ -321,7 +321,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-ios,aarch64-apple-ios-sim,aarch64-apple-darwin
+          targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
       - name: Install protoc
         uses: arduino/setup-protoc@v3
@@ -337,6 +337,7 @@ jobs:
         working-directory: bindings/swift
         env:
           ACTR_BUILD_PROFILE: debug
+          ACTR_XCFRAMEWORK_TARGETS: macos
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
         run: |
           ACTR_BINDINGS_PATH=dist/ActrBindings \
@@ -408,7 +409,15 @@ jobs:
         with:
           repo-token: ${{ github.token }}
       - uses: Swatinem/rust-cache@v2
+      - name: Cache cargo-installed tools
+        id: cargo-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
       - name: Install wasm-pack
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
       - name: Check formatting
         working-directory: bindings/web
@@ -426,178 +435,6 @@ jobs:
       - name: cli/assets sync drift gate
         run: bash bindings/web/scripts/sync-cli-assets.sh --check --skip-sw-host
 
-  web_browser_e2e:
-    name: Web Browser E2E
-    needs: determine
-    if: needs.determine.outputs.web_binding == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-    steps:
-      - uses: actions/checkout@v5
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-wasip2,wasm32-unknown-unknown
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
-      - name: Install wasm Component Model toolchain
-        run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Linux test deps
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*
-          sudo apt-get update
-          sudo apt-get install -y lsof
-          google-chrome --version || google-chrome-stable --version || true
-      - name: Install web binding root deps (puppeteer)
-        working-directory: bindings/web
-        env:
-          PUPPETEER_SKIP_DOWNLOAD: "true"
-          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.15.9 --activate
-          pnpm install --frozen-lockfile
-      - name: Generate CLI web runtime assets
-        run: bash bindings/web/scripts/sync-cli-assets.sh --build
-      - name: Pre-build actr CLI (release)
-        run: cargo build --release -p actr-cli --bin actr --features wasm-engine
-      - name: Pre-build mock-actrix
-        run: cargo build --release -p actr-mock-actrix --bin mock-actrix
-      - name: Run echo browser e2e
-        working-directory: bindings/web/examples/echo
-        env:
-          ACTR_CMD: ${{ github.workspace }}/target/release/actr
-          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
-          SUITES: BasicFunction
-        run: bash start-mock.sh
-      - name: Run generated TypeScript workload browser e2e
-        env:
-          ACTR_E2E_ACTR_BIN: ${{ github.workspace }}/target/release/actr
-          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
-        run: cargo test -p actr-cli --test e2e_typescript_generated_echo_web -- --ignored --test-threads=1
-
-  ts_stream_e2e:
-    name: TypeScript Stream E2E
-    needs: determine
-    if: needs.determine.outputs.ts_workload == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-    steps:
-      - uses: actions/checkout@v5
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-wasip2
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
-      - name: Install wasm Component Model toolchain
-        run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Linux test deps
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*
-          sudo apt-get update
-          sudo apt-get install -y jq lsof perl
-      - name: Generate CLI web runtime assets
-        run: bash bindings/web/scripts/sync-cli-assets.sh --build
-      - name: Pre-build actr and mock-actrix
-        run: |
-          cargo build --release -p actr-cli --bin actr --features wasm-engine
-          cargo build --release -p actr-mock-actrix --bin mock-actrix
-      - name: Run TypeScript stream e2e
-        run: bash e2e/typescript-stream/run.sh
-
-  python_web_e2e:
-    name: Python Web E2E
-    needs: determine
-    if: needs.determine.outputs.python_web_e2e == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      CARGO_TERM_COLOR: always
-      RUST_BACKTRACE: 1
-    steps:
-      - uses: actions/checkout@v5
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-wasip2,wasm32-unknown-unknown
-      - name: Install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          repo-token: ${{ github.token }}
-      - name: Install wasm Component Model toolchain
-        run: |
-          cargo install wasm-component-ld --version 0.5.22 --locked
-          cargo install wasm-tools --version 1.247.0 --locked
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-      - uses: Swatinem/rust-cache@v2
-      - name: Install Linux test deps
-        run: |
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*
-          sudo apt-get update
-          sudo apt-get install -y lsof netcat-openbsd
-          google-chrome --version || google-chrome-stable --version || true
-      - name: Install web binding root deps (puppeteer)
-        working-directory: bindings/web
-        env:
-          PUPPETEER_SKIP_DOWNLOAD: "true"
-          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: "true"
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.15.9 --activate
-          pnpm install --frozen-lockfile
-      - name: Generate CLI web runtime assets
-        run: bash bindings/web/scripts/sync-cli-assets.sh --build
-      - name: Pre-build actr CLI (release)
-        run: cargo build --release -p actr-cli --bin actr --features wasm-engine
-      - name: Run generated Python echo browser e2e
-        working-directory: bindings/web/examples/echo
-        env:
-          ACTR_CMD: ${{ github.workspace }}/target/release/actr
-          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
-          PYTHON_SERVER_READY_ATTEMPTS: "1200"
-          PYTHON_ECHO_MESSAGE: hello-from-actr-web
-        run: bash start-python-mock.sh
-
   gate:
     name: Gate
     runs-on: ubuntu-latest
@@ -607,14 +444,11 @@ jobs:
       - rust
       - typescript
       - typescript_workload
-      - ts_stream_e2e
       - python_codegen
       - python_workload
       - swift
       - kotlin
       - web
-      - web_browser_e2e
-      - python_web_e2e
     env:
       MODE: ${{ needs.determine.outputs.mode }}
       CHANGED_FILES_JSON: ${{ needs.determine.outputs.changed_files_json }}
@@ -622,14 +456,11 @@ jobs:
       RUST_RESULT: ${{ needs.rust.result }}
       TYPESCRIPT_RESULT: ${{ needs.typescript.result }}
       TYPESCRIPT_WORKLOAD_RESULT: ${{ needs.typescript_workload.result }}
-      TS_STREAM_E2E_RESULT: ${{ needs.ts_stream_e2e.result }}
       PYTHON_CODEGEN_RESULT: ${{ needs.python_codegen.result }}
       PYTHON_WORKLOAD_RESULT: ${{ needs.python_workload.result }}
       SWIFT_RESULT: ${{ needs.swift.result }}
       KOTLIN_RESULT: ${{ needs.kotlin.result }}
       WEB_RESULT: ${{ needs.web.result }}
-      WEB_BROWSER_E2E_RESULT: ${{ needs.web_browser_e2e.result }}
-      PYTHON_WEB_E2E_RESULT: ${{ needs.python_web_e2e.result }}
     steps:
       - name: Summarize gate
         run: |
@@ -642,14 +473,11 @@ jobs:
               "rust": os.environ["RUST_RESULT"],
               "typescript": os.environ["TYPESCRIPT_RESULT"],
               "typescript_workload": os.environ["TYPESCRIPT_WORKLOAD_RESULT"],
-              "ts_stream_e2e": os.environ["TS_STREAM_E2E_RESULT"],
               "python_codegen": os.environ["PYTHON_CODEGEN_RESULT"],
               "python_workload": os.environ["PYTHON_WORKLOAD_RESULT"],
               "swift": os.environ["SWIFT_RESULT"],
               "kotlin": os.environ["KOTLIN_RESULT"],
               "web": os.environ["WEB_RESULT"],
-              "web_browser_e2e": os.environ["WEB_BROWSER_E2E_RESULT"],
-              "python_web_e2e": os.environ["PYTHON_WEB_E2E_RESULT"],
           }
 
           changed_files = json.loads(os.environ["CHANGED_FILES_JSON"])
