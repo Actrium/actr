@@ -14,17 +14,8 @@ env:
   PROTOC_VERSION: "29.3"
 
 jobs:
-  preflight-rust:
-    name: Preflight Rust CI
-    if: |
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) &&
-      github.repository_owner != 'dependabot[bot]'
-    uses: ./.github/workflows/ci-rust.yml
-
   publish:
     name: Publish to crates.io
-    needs: preflight-rust
     runs-on: ubuntu-latest
     permissions:
       contents: read
