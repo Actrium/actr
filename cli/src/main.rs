@@ -6,7 +6,15 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_tracing();
+    // Skip CLI-level tracing init in detached child mode — the runtime
+    // sets up its own tracing subscriber via init_observability().
+    // If we init here first, the global subscriber with "off" filter
+    // prevents init_observability()'s try_init() from succeeding,
+    // and all runtime logs are silently dropped.
+    let is_detached_child = std::env::args().any(|a| a == "--internal-detached-child");
+    if !is_detached_child {
+        init_tracing();
+    }
     actr_cli::cli::run().await
 }
 
