@@ -142,7 +142,14 @@ fn spawn_data_echo_responder(
                         ..Default::default()
                     };
 
-                    if let Err(e) = gate.send_message(&sender_id, response).await {
+                    if let Err(e) = gate
+                        .send_response_with_recovery_retry(
+                            &sender_id,
+                            PayloadType::RpcReliable,
+                            response,
+                        )
+                        .await
+                    {
                         tracing::error!(
                             "{} failed to send echo response for {}: {}",
                             name,
