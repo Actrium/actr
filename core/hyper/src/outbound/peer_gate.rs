@@ -700,14 +700,11 @@ impl PeerGate {
             let mut cleared_locally = false;
             if let Some(coordinator) = &self.webrtc_coordinator {
                 if let Some(current_session_id) = coordinator.get_peer_session_id(target).await {
-                    if current_session_id != status.session_id {
-                        self.clear_local_recovery_guard(target, status.session_id)
-                            .await;
-                        cleared_locally = true;
-                    } else if status.reason.as_str() != RECOVERY_REASON_PEER_FAILED
-                        && coordinator
-                            .is_peer_sendable_session(target, status.session_id)
-                            .await
+                    if current_session_id != status.session_id
+                        || (status.reason.as_str() != RECOVERY_REASON_PEER_FAILED
+                            && coordinator
+                                .is_peer_sendable_session(target, status.session_id)
+                                .await)
                     {
                         self.clear_local_recovery_guard(target, status.session_id)
                             .await;
