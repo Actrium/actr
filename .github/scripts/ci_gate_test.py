@@ -23,6 +23,8 @@ def test_rust_gate_avoids_slow_workspace_tests_and_unused_prewarm() -> None:
     assert "- name: Prepare Rust codegen plugins" not in rust_job
     assert "cargo install protoc-gen-prost" not in rust_job
     assert "cargo build --quiet -p actr-framework-protoc-codegen" not in rust_job
+    assert "- name: Build workspace" not in rust_job
+    assert "cargo build --verbose --all-features" not in rust_job
     assert "- name: Build release" not in rust_job
     assert "cargo build --release --verbose --all-features" not in rust_job
 
