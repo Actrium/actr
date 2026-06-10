@@ -20,6 +20,26 @@ use actr_protocol::{DataStream, PayloadType};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
+struct RoleCase {
+    name: &'static str,
+    mobile_serial: u64,
+    server_serial: u64,
+}
+
+const ROLE_CASES: [RoleCase; 2] = [
+    RoleCase {
+        name: "mobile_offerer",
+        mobile_serial: 100,
+        server_serial: 200,
+    },
+    RoleCase {
+        name: "mobile_answerer",
+        mobile_serial: 200,
+        server_serial: 100,
+    },
+];
+
+#[derive(Clone, Copy)]
 enum EventSpec {
     Available,
     Lost,
@@ -939,106 +959,117 @@ fn test_mobile_jsonl_replay_maps_real_log_shape_to_recovery_actions() {
 async fn test_complex_mobile_event_storms_with_real_network_outage() {
     init_tracing();
 
-    let mut harness = TestHarness::with_vnet().await;
-    harness.add_peer(100).await;
-    harness.add_peer(200).await;
-    harness.connect(100, 200).await;
+    for case in ROLE_CASES {
+        let mut harness = TestHarness::with_vnet().await;
+        for serial in [
+            case.mobile_serial.min(case.server_serial),
+            case.mobile_serial.max(case.server_serial),
+        ] {
+            harness.add_peer(serial).await;
+        }
+        harness
+            .connect(case.mobile_serial, case.server_serial)
+            .await;
 
-    harness.reset_counters();
+        harness.reset_counters();
 
-    harness.simulate_disconnect();
-    tokio::time::sleep(Duration::from_secs(8)).await;
-    harness.simulate_reconnect();
+        harness.simulate_disconnect();
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        harness.simulate_reconnect();
 
-    let recovered_after_outage = vec![offline_event(1), online_event(2), wifi_event(3)];
-    assert_eq!(
-        select_network_recovery_action(&recovered_after_outage),
-        NetworkRecoveryAction::Restore
-    );
-    let results = process_network_event_batch(
-        recovered_after_outage,
-        harness.peer(100).network_processor(),
-    )
-    .await;
-    assert!(results.iter().all(|result| result.success));
-    harness
-        .wait_for_ice_restart_count(1, Duration::from_secs(10))
+        let recovered_after_outage = vec![offline_event(1), online_event(2), wifi_event(3)];
+        assert_eq!(
+            select_network_recovery_action(&recovered_after_outage),
+            NetworkRecoveryAction::Restore
+        );
+        let results = process_network_event_batch(
+            recovered_after_outage,
+            harness.peer(case.mobile_serial).network_processor(),
+        )
         .await;
-    expect_request_ok(
-        &harness,
-        100,
-        200,
-        "complex_full_outage_recovered",
-        Duration::from_secs(15),
-    )
-    .await;
+        assert!(
+            results.iter().all(|result| result.success),
+            "{} full outage restore should succeed: {results:?}",
+            case.name
+        );
+        harness
+            .wait_for_ice_restart_count(1, Duration::from_secs(10))
+            .await;
+        expect_request_ok(
+            &harness,
+            case.mobile_serial,
+            case.server_serial,
+            &format!("{}_complex_full_outage_recovered", case.name),
+            Duration::from_secs(15),
+        )
+        .await;
 
-    let restore_last = vec![online_event(4), offline_event(5), online_event(6)];
-    assert_eq!(
-        select_network_recovery_action(&restore_last),
-        NetworkRecoveryAction::Restore
-    );
-    let results =
-        process_network_event_batch(restore_last, harness.peer(100).network_processor()).await;
-    assert!(results.iter().all(|result| result.success));
-    expect_request_ok(
-        &harness,
-        100,
-        200,
-        "complex_available_lost_available",
-        Duration::from_secs(15),
-    )
-    .await;
+        let restore_last = vec![online_event(4), offline_event(5), online_event(6)];
+        assert_eq!(
+            select_network_recovery_action(&restore_last),
+            NetworkRecoveryAction::Restore
+        );
+        let results = process_network_event_batch(
+            restore_last,
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            results.iter().all(|result| result.success),
+            "{} available-lost-available restore should succeed: {results:?}",
+            case.name
+        );
+        expect_request_ok(
+            &harness,
+            case.mobile_serial,
+            case.server_serial,
+            &format!("{}_complex_available_lost_available", case.name),
+            Duration::from_secs(15),
+        )
+        .await;
 
-    let offline_last = vec![offline_event(7), online_event(8), offline_event(9)];
-    assert_eq!(
-        select_network_recovery_action(&offline_last),
-        NetworkRecoveryAction::Offline
-    );
-    let results =
-        process_network_event_batch(offline_last, harness.peer(100).network_processor()).await;
-    assert!(results.iter().all(|result| result.success));
+        let offline_last = vec![offline_event(7), online_event(8), offline_event(9)];
+        assert_eq!(
+            select_network_recovery_action(&offline_last),
+            NetworkRecoveryAction::Offline
+        );
+        let results = process_network_event_batch(
+            offline_last,
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            results.iter().all(|result| result.success),
+            "{} offline-last batch should succeed: {results:?}",
+            case.name
+        );
 
-    let restore_results = process_network_event_batch(
-        vec![online_event(10)],
-        harness.peer(100).network_processor(),
-    )
-    .await;
-    assert!(restore_results.iter().all(|result| result.success));
-    expect_request_ok(
-        &harness,
-        100,
-        200,
-        "complex_offline_then_restore",
-        Duration::from_secs(15),
-    )
-    .await;
+        let restore_results = process_network_event_batch(
+            vec![online_event(10)],
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            restore_results.iter().all(|result| result.success),
+            "{} final online restore should succeed: {restore_results:?}",
+            case.name
+        );
+        expect_request_ok(
+            &harness,
+            case.mobile_serial,
+            case.server_serial,
+            &format!("{}_complex_offline_then_restore", case.name),
+            Duration::from_secs(15),
+        )
+        .await;
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bounded() {
     init_tracing();
 
-    struct RoleCase {
-        name: &'static str,
-        mobile_serial: u64,
-        server_serial: u64,
-    }
-
-    let cases = [
-        RoleCase {
-            name: "mobile_offerer",
-            mobile_serial: 100,
-            server_serial: 200,
-        },
-        RoleCase {
-            name: "mobile_answerer",
-            mobile_serial: 200,
-            server_serial: 100,
-        },
-    ];
-
-    for case in cases {
+    for case in ROLE_CASES {
         let mut harness = TestHarness::with_vnet().await;
         for serial in [
             case.mobile_serial.min(case.server_serial),

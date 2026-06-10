@@ -646,6 +646,81 @@ impl WebRtcCoordinator {
         Some(status)
     }
 
+    async fn peer_sendable_session(&self, peer_id: &ActrId) -> Option<u64> {
+        let (session_id, current_state, ice_restart_inflight, webrtc_conn) = {
+            let peers = self.peers.read().await;
+            let state = peers.get(peer_id)?;
+            (
+                state.session_id,
+                state.current_state,
+                state.ice_restart_inflight,
+                state.webrtc_conn.clone(),
+            )
+        };
+
+        if ice_restart_inflight || current_state != RTCPeerConnectionState::Connected {
+            return None;
+        }
+
+        if webrtc_conn.has_open_data_channel().await {
+            Some(session_id)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) async fn is_peer_sendable_session(&self, peer_id: &ActrId, session_id: u64) -> bool {
+        self.peer_sendable_session(peer_id)
+            .await
+            .is_some_and(|current_session_id| current_session_id == session_id)
+    }
+
+    /// Wait until the current session for `peer_id` has an open DataChannel and
+    /// no ICE restart is in flight.
+    pub async fn wait_for_peer_sendable(&self, peer_id: &ActrId, timeout: Duration) -> Option<u64> {
+        let mut event_rx = self.event_broadcaster.subscribe();
+        if let Some(session_id) = self.peer_sendable_session(peer_id).await {
+            return Some(session_id);
+        }
+
+        let target_peer = peer_id.clone();
+        let sleep = tokio::time::sleep(timeout);
+        tokio::pin!(sleep);
+
+        loop {
+            tokio::select! {
+                _ = &mut sleep => return None,
+                res = event_rx.recv() => {
+                    match res {
+                        Ok(ConnectionEvent::StateChanged {
+                            peer_id,
+                            state: ConnectionState::Connected,
+                            ..
+                        })
+                        | Ok(ConnectionEvent::DataChannelOpened { peer_id, .. })
+                        | Ok(ConnectionEvent::IceRestartCompleted {
+                            peer_id,
+                            success: true,
+                            ..
+                        }) if peer_id == target_peer => {
+                            if let Some(session_id) = self.peer_sendable_session(&peer_id).await {
+                                return Some(session_id);
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("Peer sendable wait lagged by {} events", n);
+                            if let Some(session_id) = self.peer_sendable_session(&target_peer).await {
+                                return Some(session_id);
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                    }
+                }
+            }
+        }
+    }
+
     pub async fn expire_peer_recovery(
         &self,
         peer_id: &ActrId,
@@ -759,6 +834,25 @@ impl WebRtcCoordinator {
                 elapsed_ms = status.as_ref().map(|status| status.elapsed_ms()).unwrap_or(0),
                 reason = reason,
                 "✅ Peer left network recovery"
+            );
+        }
+    }
+
+    async fn clear_peer_recovering_if_sendable(
+        &self,
+        peer_id: &ActrId,
+        session_id: u64,
+        reason: &str,
+    ) {
+        if self.is_peer_sendable_session(peer_id, session_id).await {
+            self.clear_peer_recovering(peer_id, session_id, reason)
+                .await;
+        } else {
+            tracing::debug!(
+                peer_id = ?peer_id,
+                session_id = session_id,
+                reason = reason,
+                "Peer is not sendable yet; keeping network recovery guard"
             );
         }
     }
@@ -1000,11 +1094,13 @@ impl WebRtcCoordinator {
                                         if let Some(state) = peers.get_mut(peer_id)
                                             && state.session_id == *session_id
                                         {
-                                            state.ever_ice_connected = true;
+                                            state.update_connection_state(
+                                                RTCPeerConnectionState::Connected,
+                                            );
                                         }
                                     }
                                     coord
-                                        .clear_peer_recovering(
+                                        .clear_peer_recovering_if_sendable(
                                             peer_id,
                                             *session_id,
                                             "peer connection connected",
@@ -1014,7 +1110,6 @@ impl WebRtcCoordinator {
                                 ConnectionEvent::DataChannelOpened {
                                     peer_id,
                                     session_id,
-                                    payload_type: PayloadType::RpcReliable,
                                     ..
                                 } => {
                                     {
@@ -1026,10 +1121,10 @@ impl WebRtcCoordinator {
                                         }
                                     }
                                     coord
-                                        .clear_peer_recovering(
+                                        .clear_peer_recovering_if_sendable(
                                             peer_id,
                                             *session_id,
-                                            "reliable data channel opened",
+                                            "data channel opened",
                                         )
                                         .await;
                                 }
@@ -1040,7 +1135,7 @@ impl WebRtcCoordinator {
                                     ..
                                 } => {
                                     coord
-                                        .clear_peer_recovering(
+                                        .clear_peer_recovering_if_sendable(
                                             peer_id,
                                             *session_id,
                                             "ice restart completed",

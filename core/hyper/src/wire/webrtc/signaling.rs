@@ -513,15 +513,32 @@ impl WebSocketSignalingClient {
 
         tracing::info!("🔄 Starting reconnect manager for signaling client");
 
-        let client = self.clone();
+        let client = Arc::downgrade(self);
         let notify = self.reconnect_notify.clone();
 
         tokio::spawn(async move {
             loop {
-                // Wait until someone requests a reconnect
-                notify.notified().await;
+                let reconnect_requested = tokio::select! {
+                    _ = notify.notified() => true,
+                    _ = tokio::time::sleep(Duration::from_secs(30)) => false,
+                };
+
+                if !reconnect_requested && client.upgrade().is_none() {
+                    break;
+                }
+                if !reconnect_requested {
+                    continue;
+                }
+
+                let Some(client) = client.upgrade() else {
+                    break;
+                };
 
                 if !client.config.reconnect_config.enabled {
+                    break;
+                }
+
+                if Arc::strong_count(&client) <= 1 {
                     break;
                 }
 
@@ -537,6 +554,11 @@ impl WebSocketSignalingClient {
 
         let cfg = &self.config.reconnect_config;
         let generation = self.reconnect_generation.load(Ordering::Acquire);
+
+        if Arc::strong_count(self) <= 1 {
+            tracing::debug!("Stopping signaling auto-reconnect cycle after owner drop");
+            return;
+        }
 
         if self.auto_reconnect_cancelled(generation) {
             tracing::debug!("Skipping signaling auto-reconnect cycle after explicit disconnect");
@@ -574,6 +596,11 @@ impl WebSocketSignalingClient {
         let mut attempt: u32 = 0;
 
         for delay in backoff {
+            if Arc::strong_count(self) <= 1 {
+                tracing::debug!("Stopping signaling auto-reconnect cycle after owner drop");
+                return;
+            }
+
             if self.auto_reconnect_cancelled(generation) {
                 tracing::debug!(
                     "Stopping signaling auto-reconnect cycle after explicit disconnect"
@@ -610,6 +637,10 @@ impl WebSocketSignalingClient {
                         _ = self.reconnect_notify.notified() => {
                             tracing::debug!("Explicit reconnect request interrupted reconnect backoff");
                         }
+                    }
+                    if Arc::strong_count(self) <= 1 {
+                        tracing::debug!("Stopping signaling auto-reconnect cycle after owner drop");
+                        return;
                     }
                     if self.auto_reconnect_cancelled(generation) {
                         tracing::debug!(
@@ -2388,6 +2419,20 @@ mod tests {
         assert!(
             !client.reconnector_started.load(Ordering::Acquire),
             "reconnect manager should not start when reconnect config is disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reconnect_manager_does_not_keep_client_alive() {
+        let client = make_ws_client(make_config());
+        let weak = Arc::downgrade(&client);
+
+        client.start_reconnect_manager();
+        drop(client);
+
+        assert!(
+            weak.upgrade().is_none(),
+            "reconnect manager must not keep signaling client alive after owner drop"
         );
     }
 

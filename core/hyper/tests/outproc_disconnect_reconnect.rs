@@ -2017,89 +2017,141 @@ async fn test_cleanup_available_type_changed_batch_rebuilds_webrtc_end_to_end() 
 async fn test_cleanup_during_ice_restart_prioritizes_cleanup_then_mobile_restore() {
     init_tracing();
 
-    let mut harness = TestHarness::with_vnet().await;
-    harness.add_peer(100).await;
-    harness.add_peer(200).await;
-    harness.connect(100, 200).await;
-    harness.reset_counters();
+    struct RoleCase {
+        name: &'static str,
+        mobile_serial: u64,
+        server_serial: u64,
+    }
 
-    let target = harness.peer(200).id.clone();
+    let cases = [
+        RoleCase {
+            name: "mobile_offerer",
+            mobile_serial: 100,
+            server_serial: 200,
+        },
+        RoleCase {
+            name: "mobile_answerer",
+            mobile_serial: 200,
+            server_serial: 100,
+        },
+    ];
 
-    tracing::info!("Step 1: Block UDP and start mobile recovery/ICE restart");
-    harness
-        .vnet
-        .as_ref()
-        .expect("VNet harness should have network controls")
-        .block_network();
-    harness
-        .peer(100)
-        .coordinator
-        .begin_network_recovery("rc12 cleanup during ice restart")
-        .await;
-
-    let restart_task = {
-        let coordinator = harness.peer(100).coordinator.clone();
-        tokio::spawn(async move {
-            coordinator.restart_network_recovery_connections().await;
-        })
-    };
-
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    tracing::info!("Step 2: Cleanup overlaps the in-flight restart window");
-    let cleanup_result = tokio::time::timeout(
-        Duration::from_secs(8),
-        harness.peer(100).network_processor().cleanup_connections(),
-    )
-    .await
-    .expect("cleanup during ICE restart should be bounded");
-    assert!(
-        cleanup_result.is_ok(),
-        "cleanup during ICE restart should not fail: {:?}",
-        cleanup_result
-    );
-
-    tokio::time::timeout(Duration::from_secs(2), restart_task)
-        .await
-        .expect("restart trigger task should not hang")
-        .expect("restart trigger task should not panic");
-
-    assert!(
+    for case in cases {
+        let mut harness = TestHarness::with_vnet().await;
+        for serial in [
+            case.mobile_serial.min(case.server_serial),
+            case.mobile_serial.max(case.server_serial),
+        ] {
+            harness.add_peer(serial).await;
+        }
         harness
-            .peer(100)
-            .coordinator
-            .peer_recovery_status(&target)
-            .await
-            .is_none(),
-        "cleanup should clear the old recovery guard once the old peer is gone"
-    );
-    assert_eq!(
-        harness.peer(100).transport_manager.dest_count().await,
-        0,
-        "cleanup during ICE restart must not leave stale transport state"
-    );
-
-    tracing::info!("Step 3: Only a later mobile event restores connectivity");
-    harness
-        .vnet
-        .as_ref()
-        .expect("VNet harness should have network controls")
-        .unblock_network();
-    let results =
-        process_network_event_batch(vec![wifi_event(1)], harness.peer(100).network_processor())
+            .connect(case.mobile_serial, case.server_serial)
             .await;
-    assert!(results.iter().all(|result| result.success));
+        harness.reset_counters();
 
-    let response = expect_request_eventually_ok(
-        &harness,
-        100,
-        200,
-        "rc12_cleanup_then_mobile_restore",
-        Duration::from_secs(20),
-        2_000,
-    )
-    .await;
-    assert!(!response.is_empty());
+        let target = harness.peer(case.server_serial).id.clone();
+
+        tracing::info!(
+            case = case.name,
+            "Step 1: Block UDP and start mobile recovery/ICE restart"
+        );
+        harness
+            .vnet
+            .as_ref()
+            .expect("VNet harness should have network controls")
+            .block_network();
+        harness
+            .peer(case.mobile_serial)
+            .coordinator
+            .begin_network_recovery("rc12 cleanup during ice restart")
+            .await;
+
+        let restart_task = {
+            let coordinator = harness.peer(case.mobile_serial).coordinator.clone();
+            tokio::spawn(async move {
+                coordinator.restart_network_recovery_connections().await;
+            })
+        };
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        tracing::info!(
+            case = case.name,
+            "Step 2: Cleanup overlaps the in-flight restart window"
+        );
+        let cleanup_result = tokio::time::timeout(
+            Duration::from_secs(8),
+            harness
+                .peer(case.mobile_serial)
+                .network_processor()
+                .cleanup_connections(),
+        )
+        .await
+        .expect("cleanup during ICE restart should be bounded");
+        assert!(
+            cleanup_result.is_ok(),
+            "{} cleanup during ICE restart should not fail: {:?}",
+            case.name,
+            cleanup_result
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), restart_task)
+            .await
+            .expect("restart trigger task should not hang")
+            .expect("restart trigger task should not panic");
+
+        assert!(
+            harness
+                .peer(case.mobile_serial)
+                .coordinator
+                .peer_recovery_status(&target)
+                .await
+                .is_none(),
+            "{} cleanup should clear the old recovery guard once the old peer is gone",
+            case.name
+        );
+        assert_eq!(
+            harness
+                .peer(case.mobile_serial)
+                .transport_manager
+                .dest_count()
+                .await,
+            0,
+            "{} cleanup during ICE restart must not leave stale transport state",
+            case.name
+        );
+
+        tracing::info!(
+            case = case.name,
+            "Step 3: Only a later mobile event restores connectivity"
+        );
+        harness
+            .vnet
+            .as_ref()
+            .expect("VNet harness should have network controls")
+            .unblock_network();
+        let results = process_network_event_batch(
+            vec![wifi_event(1)],
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            results.iter().all(|result| result.success),
+            "{} restore should succeed after cleanup: {results:?}",
+            case.name
+        );
+
+        let response = expect_request_eventually_ok(
+            &harness,
+            case.mobile_serial,
+            case.server_serial,
+            &format!("{}_rc12_cleanup_then_mobile_restore", case.name),
+            Duration::from_secs(20),
+            2_000,
+        )
+        .await;
+        assert!(!response.is_empty());
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
