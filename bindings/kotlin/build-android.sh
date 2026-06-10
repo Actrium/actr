@@ -290,6 +290,16 @@ if [[ "${ACTR_BUILD_ANDROID_NATIVE}" == true ]]; then
         export LIBOPUS_STATIC=1
         (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target "${target}")
         fix_opus_for_target "${target}" "${target_upper}"
+
+        # Copy libopus.so now before relink overwrites the build directory.
+        abi=$(target_abi_for "${target}")
+        opus_build_dir=$(find "${TARGET_DIR}/${target}/release/build" \
+            -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+        if [[ -n "${opus_build_dir}" && -f "${opus_build_dir}/out/lib/libopus.so" ]]; then
+            mkdir -p "${LIBRARY_JNILIBS_DIR}/${abi}"
+            cp "${opus_build_dir}/out/lib/libopus.so" "${LIBRARY_JNILIBS_DIR}/${abi}/"
+            echo "  Copied libopus.so → ${LIBRARY_JNILIBS_DIR}/${abi}/"
+        fi
     done
 
     echo ""
