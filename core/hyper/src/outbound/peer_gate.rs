@@ -31,15 +31,6 @@ const RECOVERY_REASON_PEER_DISCONNECTED: &str = "peer state Disconnected";
 const RECOVERY_REASON_PEER_FAILED: &str = "peer state Failed";
 const RECOVERY_REASON_ICE_NETWORK_STARTED: &str = "ice/network recovery started";
 
-/// Maximum time to wait for recovery guard to clear when sending a response.
-///
-/// ICE restart typically completes in ~200ms; 2s provides 10× headroom.
-/// Responses that still cannot be sent after this deadline are reported as errors.
-const RESPONSE_RECOVERY_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Interval between recovery retry attempts when sending a response.
-const RESPONSE_RECOVERY_RETRY_INTERVAL: Duration = Duration::from_millis(50);
-
 /// PeerGate - Outproc transport adapter (outbound)
 ///
 /// # Features
@@ -938,69 +929,6 @@ impl PeerGate {
         let dest = Self::actr_id_to_dest(target);
         self.preflight_send(target, &dest).await?;
         self.send_with_retry(&dest, payload_type, &data).await
-    }
-
-    /// Send a response message, retrying if blocked by a transient recovery guard.
-    ///
-    /// When an ICE restart is in progress the PeerGate sets a recovery guard that
-    /// blocks `send_message` to protect SCTP from writing on a potentially broken
-    /// transport. For response sends (echo replies, Guest→Shell responses, RPC
-    /// handler replies) this guard creates a brief window (~200ms) during which the
-    /// response would be permanently dropped.
-    ///
-    /// This method detects that specific condition and retries with bounded
-    /// back-off until the guard clears, instead of immediately returning an error.
-    /// The retry budget is capped at [`RESPONSE_RECOVERY_RETRY_TIMEOUT`].
-    ///
-    /// # When to use
-    ///
-    /// Only for **response** sends where the caller has no independent timeout
-    /// mechanism and dropping the message is worse than waiting. Do **not** use
-    /// for `send_request` (the caller controls its own `timeout_ms`) or for
-    /// fire-and-forget messages where FailFast is acceptable.
-    pub async fn send_response_with_recovery_retry(
-        &self,
-        target: &ActrId,
-        payload_type: PayloadType,
-        envelope: RpcEnvelope,
-    ) -> ActorResult<()> {
-        let data = Self::serialize_envelope(&envelope);
-        let dest = Self::actr_id_to_dest(target);
-
-        match self.preflight_send(target, &dest).await {
-            Ok(()) => self.send_with_retry(&dest, payload_type, &data).await,
-            Err(ref e) if Self::is_recovering_error(e) => {
-                let deadline = tokio::time::Instant::now() + RESPONSE_RECOVERY_RETRY_TIMEOUT;
-                loop {
-                    if tokio::time::Instant::now() >= deadline {
-                        tracing::warn!(
-                            peer_id = ?target,
-                            "Response send still blocked after recovery retry timeout; giving up"
-                        );
-                        return Err(e.clone());
-                    }
-                    tokio::time::sleep(RESPONSE_RECOVERY_RETRY_INTERVAL).await;
-                    match self.preflight_send(target, &dest).await {
-                        Ok(()) => {
-                            return self.send_with_retry(&dest, payload_type, &data).await;
-                        }
-                        Err(ref retry_err) if Self::is_recovering_error(retry_err) => {
-                            continue;
-                        }
-                        Err(other) => return Err(other),
-                    }
-                }
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Check if an error is a transient recovery-guard blockage.
-    ///
-    /// Only matches the `Unavailable("Connection recovering: ...")` pattern
-    /// produced by `preflight_send` when a peer is under recovery guard.
-    fn is_recovering_error(err: &ActrError) -> bool {
-        matches!(err, ActrError::Unavailable(msg) if msg.starts_with("Connection recovering"))
     }
 
     /// Send media sample via WebRTC native track

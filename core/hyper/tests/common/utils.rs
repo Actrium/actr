@@ -268,15 +268,8 @@ pub fn spawn_echo_responder(
                                 ..Default::default()
                             };
 
-                            // Send response (retry through transient recovery guards)
-                            if let Err(e) = gate
-                                .send_response_with_recovery_retry(
-                                    &sender_id,
-                                    actr_protocol::PayloadType::RpcReliable,
-                                    response,
-                                )
-                                .await
-                            {
+                            // Send response
+                            if let Err(e) = gate.send_message(&sender_id, response).await {
                                 tracing::error!(
                                     "{}: Failed to send response for {}: {}",
                                     peer_name,

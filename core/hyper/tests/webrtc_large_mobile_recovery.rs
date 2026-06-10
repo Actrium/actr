@@ -142,14 +142,7 @@ fn spawn_data_echo_responder(
                         ..Default::default()
                     };
 
-                    if let Err(e) = gate
-                        .send_response_with_recovery_retry(
-                            &sender_id,
-                            PayloadType::RpcReliable,
-                            response,
-                        )
-                        .await
-                    {
+                    if let Err(e) = gate.send_message(&sender_id, response).await {
                         tracing::error!(
                             "{} failed to send echo response for {}: {}",
                             name,
@@ -289,9 +282,30 @@ async fn expect_large_request_ok(
     expected_hash: &[u8; 32],
     timeout: Duration,
 ) {
+    expect_large_request_ok_between(
+        harness,
+        case.mobile_serial,
+        case.server_serial,
+        request_id,
+        data,
+        expected_hash,
+        timeout,
+    )
+    .await;
+}
+
+async fn expect_large_request_ok_between(
+    harness: &TestHarness,
+    mobile_serial: u64,
+    server_serial: u64,
+    request_id: &str,
+    data: &[u8],
+    expected_hash: &[u8; 32],
+    timeout: Duration,
+) {
     let handle = spawn_large_request(
-        harness.peer(case.mobile_serial).gate.clone(),
-        harness.peer(case.server_serial).id.clone(),
+        harness.peer(mobile_serial).gate.clone(),
+        harness.peer(server_serial).id.clone(),
         request_id,
         data.to_vec(),
         timeout.as_millis() as i64,
@@ -305,7 +319,7 @@ async fn expect_large_request_ok(
 
     assert_payload_integrity(request_id, &response, data, expected_hash);
     assert_eq!(
-        harness.peer(case.mobile_serial).pending_count().await,
+        harness.peer(mobile_serial).pending_count().await,
         0,
         "{} should leave no pending request",
         request_id
@@ -1093,12 +1107,13 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
         let storm_task = spawn_mobile_event_storm(network_handle);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
+        let call_id = format!("{}_mobile_event_storm_concurrent_call", case.name);
         let call = spawn_large_request(
             harness.peer(case.mobile_serial).gate.clone(),
             server_id.clone(),
-            &format!("{}_mobile_event_storm_concurrent_call", case.name),
+            &call_id,
             data.clone(),
-            30_000,
+            5_000,
         );
 
         let stream = DataStream {
@@ -1118,14 +1133,7 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
             })
         };
 
-        expect_bounded_completion(
-            call,
-            &format!("{} mobile event storm concurrent call", case.name),
-            &data,
-            &hash,
-            Duration::from_secs(35),
-        )
-        .await;
+        expect_bounded_completion(call, &call_id, &data, &hash, Duration::from_secs(8)).await;
 
         let stream_result = tokio::time::timeout(Duration::from_secs(20), stream_task)
             .await
@@ -1160,14 +1168,14 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
         );
 
         let (retry_payload, retry_hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
-        expect_large_request_eventually_ok_between(
+        expect_large_request_ok_between(
             &harness,
             case.mobile_serial,
             case.server_serial,
-            &format!("{}_after_mobile_event_storm_concurrent_stream", case.name),
+            &format!("{}_after_mobile_event_storm_retry_once", case.name),
             &retry_payload,
             &retry_hash,
-            Duration::from_secs(25),
+            Duration::from_secs(30),
         )
         .await;
     }
