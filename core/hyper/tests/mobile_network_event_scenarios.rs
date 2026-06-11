@@ -1311,17 +1311,7 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
     init_tracing();
 
     for case in ROLE_CASES {
-        let mut harness = TestHarness::with_vnet().await;
-        for serial in [
-            case.mobile_serial.min(case.server_serial),
-            case.mobile_serial.max(case.server_serial),
-        ] {
-            harness.add_peer(serial).await;
-        }
-        harness
-            .connect(case.mobile_serial, case.server_serial)
-            .await;
-
+        let (harness, _bg_tasks) = setup_bidirectional_mobile_server_harness(case).await;
         harness.reset_counters();
 
         harness.simulate_disconnect();
@@ -1346,10 +1336,9 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
         harness
             .wait_for_ice_restart_count(1, Duration::from_secs(10))
             .await;
-        expect_request_ok(
+        expect_direction_requests_ok(
             &harness,
-            case.mobile_serial,
-            case.server_serial,
+            case,
             &format!("{}_complex_full_outage_recovered", case.name),
             Duration::from_secs(15),
         )
@@ -1370,10 +1359,9 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
             "{} available-lost-available restore should succeed: {results:?}",
             case.name
         );
-        expect_request_ok(
+        expect_direction_requests_ok(
             &harness,
-            case.mobile_serial,
-            case.server_serial,
+            case,
             &format!("{}_complex_available_lost_available", case.name),
             Duration::from_secs(15),
         )
@@ -1405,10 +1393,9 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
             "{} final online restore should succeed: {restore_results:?}",
             case.name
         );
-        expect_request_ok(
+        expect_direction_requests_ok(
             &harness,
-            case.mobile_serial,
-            case.server_serial,
+            case,
             &format!("{}_complex_offline_then_restore", case.name),
             Duration::from_secs(15),
         )
@@ -1421,16 +1408,7 @@ async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bo
     init_tracing();
 
     for case in ROLE_CASES {
-        let mut harness = TestHarness::with_vnet().await;
-        for serial in [
-            case.mobile_serial.min(case.server_serial),
-            case.mobile_serial.max(case.server_serial),
-        ] {
-            harness.add_peer(serial).await;
-        }
-        harness
-            .connect(case.mobile_serial, case.server_serial)
-            .await;
+        let (harness, _bg_tasks) = setup_bidirectional_mobile_server_harness(case).await;
         harness.reset_counters();
 
         let processor: Arc<dyn NetworkEventProcessor> =
@@ -1469,26 +1447,26 @@ async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bo
             case.name
         );
 
-        expect_request_ok(
+        expect_direction_requests_ok(
             &harness,
-            case.mobile_serial,
-            case.server_serial,
+            case,
             &format!("{}_handle_storm_then_call", case.name),
             Duration::from_secs(25),
         )
         .await;
-        send_data_stream_bounded(
+        for direction in case.directions() {
+            send_data_stream_bounded(
+                &harness,
+                direction.from_serial,
+                direction.to_serial,
+                &format!("{}-{}-handle-storm-then-stream", case.name, direction.name),
+                Duration::from_secs(20),
+            )
+            .await;
+        }
+        expect_direction_requests_ok(
             &harness,
-            case.mobile_serial,
-            case.server_serial,
-            &format!("{}-handle-storm-then-stream", case.name),
-            Duration::from_secs(20),
-        )
-        .await;
-        expect_request_ok(
-            &harness,
-            case.mobile_serial,
-            case.server_serial,
+            case,
             &format!("{}_handle_storm_after_stream_call", case.name),
             Duration::from_secs(25),
         )
@@ -1497,6 +1475,12 @@ async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bo
             harness.peer(case.mobile_serial).pending_count().await,
             0,
             "{} mobile event storm call/DataStream path should not leak pending requests",
+            case.name
+        );
+        assert_eq!(
+            harness.peer(case.server_serial).pending_count().await,
+            0,
+            "{} server event storm call/DataStream path should not leak pending requests",
             case.name
         );
 
