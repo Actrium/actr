@@ -885,6 +885,22 @@ impl PeerGate {
             Err(_) => {
                 // Timeout — covers both send retry and response wait
                 self.pending_requests.write().await.remove(&request_id);
+                let transport_manager = self.transport_manager.clone();
+                let stale_dest = dest.clone();
+                let stale_target = target.clone();
+                tokio::spawn(async move {
+                    tracing::warn!(
+                        peer = ?stale_target,
+                        "Request timed out after send; closing stale transport before future retries"
+                    );
+                    if let Err(e) = transport_manager.close_transport(&stale_dest).await {
+                        tracing::warn!(
+                            peer = ?stale_target,
+                            "Failed to close stale transport after request timeout: {}",
+                            e
+                        );
+                    }
+                });
                 Err(ActrError::Unavailable(format!(
                     "Request timeout: {}ms",
                     envelope.timeout_ms
