@@ -1,11 +1,17 @@
 package com.example.actrdemo
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.os.Bundle
+import android.os.Environment
 import android.util.Log
 import android.widget.Button
 import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.MyUnifiedHandler
@@ -24,10 +30,15 @@ import kotlinx.coroutines.withContext
 import local.StreamClientOuterClass.ClientStartStreamRequest
 import local.StreamClientOuterClass.ClientStartStreamResponse
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class ClientActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "ClientActivity"
+        // Limit log buffer to avoid exceeding Android clipboard ~1MB transaction limit
+        private const val MAX_LOG_CHARS = 50_000
     }
 
     private lateinit var statusText: TextView
@@ -38,10 +49,16 @@ class ClientActivity : AppCompatActivity() {
     private lateinit var sendFileButton: Button
     private lateinit var logText: TextView
     private lateinit var scrollView: ScrollView
+    private lateinit var copyLogButton: Button
+    private lateinit var downloadLogButton: Button
+    private lateinit var clearLogButton: Button
 
     private var clientRef: ActrRef? = null
     private var clientSystem: ActrNode? = null
     private lateinit var networkMonitor: NetworkMonitor
+
+    // Logcat reader - streams native actr library logs to the UI
+    private lateinit var logcatReader: LogcatReader
 
     /** Parse ActrType from the [package] section of an actr.toml config file. */
     private fun parseActrTypeFromConfig(configPath: String): ActrType {
@@ -77,6 +94,7 @@ class ClientActivity : AppCompatActivity() {
         setContentView(R.layout.activity_client)
 
         initViews()
+        initLogcatReader() // Start early to capture actr library's early logs
         setupClickListeners()
         initNetworkMonitoring()
 
@@ -97,6 +115,26 @@ class ClientActivity : AppCompatActivity() {
         networkMonitor.startMonitoring()
     }
 
+    private fun appendToLog(text: String) {
+        // Auto-scroll only when user is at the bottom, avoiding forced layout spam
+        val atBottom = scrollView.run {
+            childCount > 0 && scrollY + height >= getChildAt(0).height - 20
+        }
+        logText.append(text)
+        val excess = logText.length() - MAX_LOG_CHARS
+        if (excess > 0) {
+            logText.editableText.delete(0, excess)
+        }
+        if (atBottom) {
+            scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+    }
+
+    private fun initLogcatReader() {
+        logcatReader = LogcatReader { lines -> appendToLog(lines) }
+        logcatReader.start()
+    }
+
     private fun initViews() {
         statusText = findViewById(R.id.statusText)
         connectButton = findViewById(R.id.connectButton)
@@ -106,6 +144,9 @@ class ClientActivity : AppCompatActivity() {
         sendFileButton = findViewById(R.id.sendFileButton)
         logText = findViewById(R.id.logText)
         scrollView = findViewById(R.id.scrollView)
+        copyLogButton = findViewById(R.id.copyLogButton)
+        downloadLogButton = findViewById(R.id.downloadLogButton)
+        clearLogButton = findViewById(R.id.clearLogButton)
     }
 
     private fun setupClickListeners() {
@@ -117,6 +158,21 @@ class ClientActivity : AppCompatActivity() {
             log("📡 Current network: $networkStatus")
             networkMonitor.triggerNetworkCheck()
             sendFile()
+        }
+
+        copyLogButton.setOnClickListener {
+            val text = logText.text.toString()
+            if (text.isNotEmpty()) {
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("actr logs", text))
+                Toast.makeText(this, "Logs copied to clipboard", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        downloadLogButton.setOnClickListener { downloadLogs() }
+
+        clearLogButton.setOnClickListener {
+            logText.text = ""
         }
     }
 
@@ -284,18 +340,43 @@ class ClientActivity : AppCompatActivity() {
         }
     }
 
+    private fun downloadLogs() {
+        val text = logText.text.toString()
+        if (text.isEmpty()) {
+            Toast.makeText(this, "No logs to download", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+            val fileName = "actr_logs_$timestamp.txt"
+            val dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) ?: filesDir
+            dir.mkdirs()
+            val file = File(dir, fileName)
+            file.writeText(text)
+            Toast.makeText(this, "Logs saved: ${file.absolutePath}", Toast.LENGTH_LONG).show()
+
+            // Also offer to share
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, text)
+                putExtra(Intent.EXTRA_SUBJECT, "actr Logs $timestamp")
+            }
+            startActivity(Intent.createChooser(shareIntent, "Share Logs"))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Failed to save logs: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun updateStatus(status: String) {
         statusText.text = "Status: $status"
     }
 
     private fun log(message: String) {
+        Log.i(TAG, message)
         val currentTime =
-            java.text
-                .SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
-                .format(java.util.Date())
-        val logEntry = "[$currentTime] $message\n"
-        logText.append(logEntry)
-        scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
+            SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                .format(Date())
+        appendToLog("[$currentTime] $message\n")
     }
 
     override fun onResume() {
@@ -318,6 +399,11 @@ class ClientActivity : AppCompatActivity() {
         if (::networkMonitor.isInitialized) {
             networkMonitor.cleanupConnections(CleanupReason.APP_TERMINATING)
             networkMonitor.stopMonitoring()
+        }
+
+        // Stop logcat reader
+        if (::logcatReader.isInitialized) {
+            logcatReader.stop()
         }
 
         lifecycleScope.launch {
