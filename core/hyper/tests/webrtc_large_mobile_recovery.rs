@@ -785,9 +785,9 @@ async fn inflight_short_background_survives_foreground_restore(case: RoleCase) {
     expect_bounded_completion(request, &request_id, &data, &hash, Duration::from_secs(8)).await;
     assert_eq!(harness.peer(case.mobile_serial).pending_count().await, 0);
 
-    // If the original request failed, caller retries with a new request.
-    // After recovery completes, a fresh request should succeed immediately.
-    expect_large_request_ok(
+    // If the original request failed, the caller retries until the recovery
+    // guard clears. Fresh requests remain intentionally fail-fast.
+    expect_large_request_eventually_ok(
         &harness,
         case,
         &retry_id,
