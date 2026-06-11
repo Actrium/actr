@@ -50,8 +50,8 @@ import java.util.concurrent.atomic.AtomicLong
  * networkMonitor.startMonitoring()
  * ```
  *
- * Background threshold: 30 seconds. Under 30s triggers a connection probe;
- * 30s or more triggers force reconnect on return to foreground.
+ * On foreground return, report background_duration_ms to the Rust runtime,
+ * which decides whether to connection-probe or force-reconnect.
  */
 class NetworkMonitor
     (
@@ -64,9 +64,6 @@ class NetworkMonitor
 ) {
     companion object {
         private const val TAG = "NetworkMonitor"
-
-        /** Background duration threshold in milliseconds (30 seconds). */
-        private const val BACKGROUND_THRESHOLD_MS: Long = 30_000
 
         /**
          * Create a NetworkMonitor integrated with ActrNode
@@ -519,15 +516,6 @@ class NetworkMonitor
                 Log.e(TAG, "Failed to handle app foreground: ${e.message}", e)
             }
         }
-    }
-
-    /**
-     * Check whether the background duration exceeded the threshold.
-     * Under 30s: connection probe. 30s or more: force reconnect.
-     */
-    fun isLongBackground(): Boolean {
-        val start = backgroundEnteredAtMs ?: return false
-        return (System.currentTimeMillis() - start) >= BACKGROUND_THRESHOLD_MS
     }
 
     /** Cleanup connections without reconnecting (e.g. app terminating, user logout). */
