@@ -5,7 +5,7 @@
 //! Reads `core/framework/wit/actr-workload.wit` and emits three Rust
 //! source files under `bindings/web/crates/actr-web-abi/src/`:
 //!
-//! - `types.rs` — every WIT record / variant lowered to a serde-derived
+//! - `types.rs` — every WIT record / enum / variant lowered to a serde-derived
 //!   Rust struct or enum. `serde-wasm-bindgen`'s default shapes match
 //!   what a hand-written JS host would produce / consume, so the two
 //!   sides stay in sync without hand-crafted converters.
@@ -88,6 +88,13 @@ struct RecordDef {
 struct VariantDef {
     name: String,
     cases: Vec<(String, Option<TypeRef>)>,
+}
+
+/// An enum projected from WIT. Enum cases are always unit cases.
+#[derive(Debug, Clone)]
+struct EnumDef {
+    name: String,
+    cases: Vec<String>,
 }
 
 /// A function projected from a WIT interface.
@@ -180,6 +187,7 @@ struct WitModel {
     /// Ordered map (BTreeMap on WIT kebab name) so regeneration is
     /// byte-deterministic regardless of HashMap iteration order.
     records: BTreeMap<String, RecordDef>,
+    enums: BTreeMap<String, EnumDef>,
     variants: BTreeMap<String, VariantDef>,
     host_imports: Vec<FuncDef>,
     guest_exports: Vec<FuncDef>,
@@ -230,13 +238,20 @@ fn flatten(resolve: &Resolve) -> Result<WitModel> {
                     .entry(name.clone())
                     .or_insert(VariantDef { name, cases });
             }
+            TypeDefKind::Enum(enum_) => {
+                let cases = enum_.cases.iter().map(|c| c.name.clone()).collect();
+                model
+                    .enums
+                    .entry(name.clone())
+                    .or_insert(EnumDef { name, cases });
+            }
             TypeDefKind::Type(_) => {
                 // Alias introduced by `use ...` re-export; skip.
                 let _ = id;
             }
-            TypeDefKind::Enum(_) | TypeDefKind::Flags(_) | TypeDefKind::Resource => {
+            TypeDefKind::Flags(_) | TypeDefKind::Resource => {
                 bail!(
-                    "type '{}' uses a kind (enum/flags/resource) that Phase 0 didn't see \
+                    "type '{}' uses a kind (flags/resource) that Phase 0 didn't see \
                      — codegen needs to be extended before this lands",
                     name
                 );
@@ -283,9 +298,13 @@ fn flatten(resolve: &Resolve) -> Result<WitModel> {
     model.host_imports.sort_by(|a, b| a.name.cmp(&b.name));
     model.guest_exports.sort_by(|a, b| a.name.cmp(&b.name));
 
-    if model.records.is_empty() && model.variants.is_empty() && model.host_imports.is_empty() {
+    if model.records.is_empty()
+        && model.enums.is_empty()
+        && model.variants.is_empty()
+        && model.host_imports.is_empty()
+    {
         return Err(anyhow!(
-            "WIT resolve produced no records/variants/functions — parser likely misread the file"
+            "WIT resolve produced no records/enums/variants/functions — parser likely misread the file"
         ));
     }
     Ok(model)
@@ -413,7 +432,7 @@ fn emit_types(model: &WitModel) -> String {
     out.push_str(HEADER);
     out.push('\n');
     out.push_str(
-        "//! Serde-derived record / variant definitions lowered from \n\
+        "//! Serde-derived record / enum / variant definitions lowered from \n\
          //! `core/framework/wit/actr-workload.wit`.\n\
          //!\n\
          //! Every type derives `Serialize` + `Deserialize` so \n\
@@ -429,6 +448,12 @@ fn emit_types(model: &WitModel) -> String {
     // Records first (alphabetised via BTreeMap iteration).
     for rec in model.records.values() {
         emit_record(&mut out, rec);
+        out.push('\n');
+    }
+
+    // Enums.
+    for enum_ in model.enums.values() {
+        emit_enum(&mut out, enum_);
         out.push('\n');
     }
 
@@ -457,6 +482,21 @@ fn emit_record(out: &mut String, rec: &RecordDef) {
             out.push_str(&format!("    #[serde(rename = \"{wire_name}\")]\n"));
         }
         out.push_str(&format!("    pub {rust_field}: {rust_ty},\n"));
+    }
+    out.push_str("}\n");
+}
+
+fn emit_enum(out: &mut String, enum_: &EnumDef) {
+    let enum_name = wit_type_name_to_rust(&enum_.name);
+    out.push_str(&format!("/// Lowered from WIT `enum {}`.\n", enum_.name));
+    out.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+    out.push_str(&format!("pub enum {enum_name} {{\n"));
+    for case_name in &enum_.cases {
+        let rust_case = wit_case_to_rust(case_name);
+        if rust_case != *case_name {
+            out.push_str(&format!("    #[serde(rename = \"{case_name}\")]\n"));
+        }
+        out.push_str(&format!("    {rust_case},\n"));
     }
     out.push_str("}\n");
 }
@@ -1055,6 +1095,11 @@ mod tests {
                 red,
                 green(string),
             }
+
+            enum delivery-state {
+                not-sent,
+                delivery-uncertain,
+            }
         }
 
         interface host {
@@ -1085,6 +1130,7 @@ mod tests {
     fn records_and_variants_surface() {
         let model = load_inmem(MINI_WIT);
         assert!(model.records.contains_key("sample"));
+        assert!(model.enums.contains_key("delivery-state"));
         assert!(model.variants.contains_key("colour"));
     }
 
