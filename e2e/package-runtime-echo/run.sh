@@ -218,13 +218,16 @@ EOF
 
 [patch.crates-io]
 actr = { path = "$repo_path" }
+actr-config = { path = "$repo_path/core/config" }
 actr-protocol = { path = "$repo_path/core/protocol" }
 actr-framework = { path = "$repo_path/core/framework" }
 actr-hyper = { path = "$repo_path/core/hyper" }
+actr-pack = { path = "$repo_path/core/pack" }
+actr-platform-native = { path = "$repo_path/core/platform-native" }
+actr-platform-traits = { path = "$repo_path/core/platform-traits" }
 actr-runtime = { path = "$repo_path/core/runtime" }
-actr-config = { path = "$repo_path/core/config" }
-actr-service-compat = { path = "$repo_path/core/service-compat" }
 actr-runtime-mailbox = { path = "$repo_path/core/runtime-mailbox" }
+actr-service-compat = { path = "$repo_path/core/service-compat" }
 EOF
 }
 

@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package echoapp;
+
+message LocalEchoRequest {
+  string message = 1;
+}
+
+message LocalEchoResponse {
+  string reply = 1;
+  string forwarded_message = 2;
+}
+
+service LocalEchoService {
+  rpc Send(LocalEchoRequest) returns (LocalEchoResponse);
+}

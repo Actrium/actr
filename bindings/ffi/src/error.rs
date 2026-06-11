@@ -8,6 +8,7 @@
 use actr_protocol::{
     Classify, ConnectionNotReadyInfo as ProtoConnectionNotReadyInfo, ErrorKind as ProtocolErrorKind,
 };
+use std::future::Future;
 
 /// Fault domain classification exposed to UniFFI consumers.
 ///
@@ -124,6 +125,24 @@ pub enum ActrError {
 }
 
 pub type ActrResult<T> = Result<T, ActrError>;
+
+/// Keep stack-heavy Rust futures off foreign-language cooperative executors.
+pub(crate) async fn run_on_tokio_runtime<T, E, F>(
+    operation: &'static str,
+    future: F,
+) -> ActrResult<T>
+where
+    T: Send + 'static,
+    E: Into<ActrError> + Send + 'static,
+    F: Future<Output = Result<T, E>> + Send + 'static,
+{
+    tokio::spawn(future)
+        .await
+        .map_err(|error| ActrError::Internal {
+            msg: format!("{operation} task failed: {error}"),
+        })?
+        .map_err(Into::into)
+}
 
 impl ActrError {
     /// Returns the fault domain this error belongs to.

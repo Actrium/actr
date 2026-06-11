@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use std::any::TypeId;
 use std::sync::Arc;
 
+use crate::error::run_on_tokio_runtime;
 use crate::{ActrError, ActrResult};
 
 /// Callback interface for DataStream events.
@@ -82,16 +83,19 @@ impl ContextBridge {
     ) -> crate::error::ActrResult<Vec<u8>> {
         let target_id: ActrId = target.into();
         let proto_payload_type: PayloadType = payload_type.into();
-        let resp = self
-            .inner
-            .call_raw(
-                &Dest::Actor(target_id),
-                route_key,
-                proto_payload_type,
-                Bytes::from(payload),
-                timeout_ms,
-            )
-            .await?;
+        let inner = self.inner.clone();
+        let resp = run_on_tokio_runtime("remote call", async move {
+            inner
+                .call_raw(
+                    &Dest::Actor(target_id),
+                    route_key,
+                    proto_payload_type,
+                    Bytes::from(payload),
+                    timeout_ms,
+                )
+                .await
+        })
+        .await?;
         Ok(resp.to_vec())
     }
 
@@ -111,15 +115,18 @@ impl ContextBridge {
     ) -> crate::error::ActrResult<()> {
         let target_id: ActrId = target.into();
         let proto_payload_type: PayloadType = payload_type.into();
-        self.inner
-            .tell_raw(
-                &Dest::Actor(target_id),
-                route_key,
-                proto_payload_type,
-                Bytes::from(payload),
-            )
-            .await?;
-        Ok(())
+        let inner = self.inner.clone();
+        run_on_tokio_runtime("remote tell", async move {
+            inner
+                .tell_raw(
+                    &Dest::Actor(target_id),
+                    route_key,
+                    proto_payload_type,
+                    Bytes::from(payload),
+                )
+                .await
+        })
+        .await
     }
 
     /// Send a DataStream to a remote actor (Fast Path)

@@ -8,7 +8,7 @@ pub mod echo {
 }
 
 use actr_framework::{Context, MessageDispatcher, Workload, entry};
-use actr_protocol::{ActrError, ActrId, ActrType, ActorResult, RpcEnvelope, RpcRequest};
+use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcEnvelope, RpcRequest};
 use async_trait::async_trait;
 use bytes::Bytes;
 use prost::Message as ProstMessage;
