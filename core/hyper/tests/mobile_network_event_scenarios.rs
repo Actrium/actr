@@ -1306,6 +1306,131 @@ async fn test_mobile_app_kill_cleanup_then_restart_online_recovers_bidirectional
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_mobile_app_kill_restart_offline_bounds_server_send_until_online_restore() {
+    init_tracing();
+
+    for case in ROLE_CASES {
+        let label = format!("{}_app_kill_restart_offline", case.name);
+        let (harness, mut bg_tasks) = setup_bidirectional_mobile_server_harness(case).await;
+        harness.reset_counters();
+
+        expect_direction_requests_ok(
+            &harness,
+            case,
+            &format!("{label}_baseline"),
+            Duration::from_secs(15),
+        )
+        .await;
+
+        let cleanup_results = process_network_event_batch(
+            vec![NetworkEvent::CleanupConnections {
+                reason: CleanupReason::AppTerminating,
+            }],
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            cleanup_results.iter().all(|result| result.success),
+            "{label} app terminating cleanup should succeed: {cleanup_results:?}"
+        );
+
+        let mobile_router = bg_tasks.handles.remove(0);
+        mobile_router.abort();
+        wait_for_transport_dest_count(
+            &harness,
+            case.mobile_serial,
+            0,
+            &format!("{label}_mobile_cleanup"),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        harness.simulate_disconnect();
+        bg_tasks.handles.push(spawn_rpc_router(
+            harness.peer(case.mobile_serial).coordinator.clone(),
+            harness.peer(case.mobile_serial).gate.clone(),
+            "mobile_network_event_router_restarted_offline",
+        ));
+
+        let offline_restart_events = vec![offline_event(30)];
+        assert_eq!(
+            select_network_recovery_action(&offline_restart_events),
+            NetworkRecoveryAction::Offline
+        );
+        let offline_results = process_network_event_batch(
+            offline_restart_events,
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            offline_results.iter().all(|result| result.success),
+            "{label} offline restart processing should succeed: {offline_results:?}"
+        );
+        assert!(
+            !harness
+                .peer(case.mobile_serial)
+                .signaling_client
+                .is_connected(),
+            "{label} mobile signaling should remain disconnected while restarted offline"
+        );
+
+        let offline_error = expect_request_bounded_failure(
+            &harness,
+            case.server_serial,
+            case.mobile_serial,
+            &format!("{label}_server_send_while_restart_offline"),
+            1_000,
+            Duration::from_secs(15),
+        )
+        .await;
+        tracing::info!(
+            case = case.name,
+            error = %offline_error,
+            "server-to-mobile send failed bounded while mobile app restarted offline"
+        );
+        assert_eq!(
+            harness.peer(case.server_serial).pending_count().await,
+            0,
+            "{label} server send while offline restart should not leak pending state"
+        );
+
+        harness.simulate_reconnect();
+        let online_restore_events = vec![online_event(31), wifi_event(32)];
+        assert_eq!(
+            select_network_recovery_action(&online_restore_events),
+            NetworkRecoveryAction::Restore
+        );
+        let restore_results = process_network_event_batch(
+            online_restore_events,
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            restore_results.iter().all(|result| result.success),
+            "{label} online restore should succeed after offline restart: {restore_results:?}"
+        );
+
+        expect_direction_requests_ok(
+            &harness,
+            case,
+            &format!("{label}_after_online_restore"),
+            Duration::from_secs(30),
+        )
+        .await;
+        assert_eq!(
+            harness.peer(case.mobile_serial).pending_count().await,
+            0,
+            "{label} mobile should not leak pending requests after online restore"
+        );
+        assert_eq!(
+            harness.peer(case.server_serial).pending_count().await,
+            0,
+            "{label} server should not leak pending requests after online restore"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_complex_mobile_event_storms_with_real_network_outage() {
     init_tracing();
