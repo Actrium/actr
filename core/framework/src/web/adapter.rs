@@ -26,7 +26,8 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use actr_protocol::{
-    ActrError, ActrId, DataStream, MetadataEntry, Realm, RecoveryReason, RpcEnvelope,
+    ActrError, ActrId, DataStream, DeliveryState, MetadataEntry, Realm, RecoveryCode, RecoveryInfo,
+    RpcEnvelope,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -107,7 +108,7 @@ fn error_category_from_wit(c: wit::ErrorCategory) -> ErrorCategory {
 fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
     match e {
         wit::ActrError::Unavailable(m) => ActrError::Unavailable(m),
-        wit::ActrError::Recovering(r) => ActrError::Recovering(wit_recovery_reason_to_proto(r)),
+        wit::ActrError::Recovering(info) => ActrError::Recovering(wit_recovery_info_to_proto(info)),
         wit::ActrError::TimedOut => ActrError::TimedOut,
         wit::ActrError::NotFound(m) => ActrError::NotFound(m),
         wit::ActrError::PermissionDenied(m) => ActrError::PermissionDenied(m),
@@ -126,7 +127,7 @@ fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
 fn proto_error_to_wit(e: ActrError) -> wit::ActrError {
     match e {
         ActrError::Unavailable(m) => wit::ActrError::Unavailable(m),
-        ActrError::Recovering(r) => wit::ActrError::Recovering(proto_recovery_reason_to_wit(r)),
+        ActrError::Recovering(info) => wit::ActrError::Recovering(proto_recovery_info_to_wit(info)),
         ActrError::TimedOut => wit::ActrError::TimedOut,
         ActrError::NotFound(m) => wit::ActrError::NotFound(m),
         ActrError::PermissionDenied(m) => wit::ActrError::PermissionDenied(m),
@@ -145,76 +146,63 @@ fn proto_error_to_wit(e: ActrError) -> wit::ActrError {
     }
 }
 
-fn wit_recovery_reason_to_proto(reason: wit::RecoveryReason) -> RecoveryReason {
-    match reason {
-        wit::RecoveryReason::PeerDisconnected(d) => RecoveryReason::PeerDisconnected {
-            peer: actr_id_from_wit(&d.peer),
-            session_id: d.session_id,
-            elapsed_ms: d.elapsed_ms,
-        },
-        wit::RecoveryReason::PeerFailed(f) => RecoveryReason::PeerFailed {
-            peer: actr_id_from_wit(&f.peer),
-            session_id: f.session_id,
-            elapsed_ms: f.elapsed_ms,
-        },
-        wit::RecoveryReason::IceNetworkStarted(i) => RecoveryReason::IceNetworkStarted {
-            peer: actr_id_from_wit(&i.peer),
-            session_id: i.session_id,
-        },
-        wit::RecoveryReason::RecoveryTimeout(t) => RecoveryReason::RecoveryTimeout {
-            peer: actr_id_from_wit(&t.peer),
-            session_id: t.session_id,
-            reason: t.reason,
-            elapsed_ms: t.elapsed_ms,
-        },
-        wit::RecoveryReason::TransportClosing(c) => RecoveryReason::TransportClosing {
-            peer: actr_id_from_wit(&c.peer),
-        },
+fn wit_recovery_code_to_proto(code: wit::RecoveryCode) -> RecoveryCode {
+    match code {
+        wit::RecoveryCode::PeerDisconnected => RecoveryCode::PeerDisconnected,
+        wit::RecoveryCode::PeerFailed => RecoveryCode::PeerFailed,
+        wit::RecoveryCode::IceNetworkStarted => RecoveryCode::IceNetworkStarted,
+        wit::RecoveryCode::RecoveryTimeout => RecoveryCode::RecoveryTimeout,
+        wit::RecoveryCode::TransportClosing => RecoveryCode::TransportClosing,
     }
 }
 
-fn proto_recovery_reason_to_wit(reason: RecoveryReason) -> wit::RecoveryReason {
-    match reason {
-        RecoveryReason::PeerDisconnected {
-            peer,
-            session_id,
-            elapsed_ms,
-        } => wit::RecoveryReason::PeerDisconnected(wit::PeerDisconnected {
-            peer: actr_id_to_wit(&peer),
-            session_id,
-            elapsed_ms,
-        }),
-        RecoveryReason::PeerFailed {
-            peer,
-            session_id,
-            elapsed_ms,
-        } => wit::RecoveryReason::PeerFailed(wit::PeerFailed {
-            peer: actr_id_to_wit(&peer),
-            session_id,
-            elapsed_ms,
-        }),
-        RecoveryReason::IceNetworkStarted { peer, session_id } => {
-            wit::RecoveryReason::IceNetworkStarted(wit::IceNetworkStarted {
-                peer: actr_id_to_wit(&peer),
-                session_id,
-            })
-        }
-        RecoveryReason::RecoveryTimeout {
-            peer,
-            session_id,
-            reason: r,
-            elapsed_ms,
-        } => wit::RecoveryReason::RecoveryTimeout(wit::RecoveryTimeout {
-            peer: actr_id_to_wit(&peer),
-            session_id,
-            reason: r,
-            elapsed_ms,
-        }),
-        RecoveryReason::TransportClosing { peer } => {
-            wit::RecoveryReason::TransportClosing(wit::TransportClosing {
-                peer: actr_id_to_wit(&peer),
-            })
-        }
+fn proto_recovery_code_to_wit(code: RecoveryCode) -> wit::RecoveryCode {
+    match code {
+        RecoveryCode::PeerDisconnected => wit::RecoveryCode::PeerDisconnected,
+        RecoveryCode::PeerFailed => wit::RecoveryCode::PeerFailed,
+        RecoveryCode::IceNetworkStarted => wit::RecoveryCode::IceNetworkStarted,
+        RecoveryCode::RecoveryTimeout => wit::RecoveryCode::RecoveryTimeout,
+        RecoveryCode::TransportClosing => wit::RecoveryCode::TransportClosing,
+    }
+}
+
+fn wit_delivery_state_to_proto(state: wit::DeliveryState) -> DeliveryState {
+    match state {
+        wit::DeliveryState::NotSent => DeliveryState::NotSent,
+        wit::DeliveryState::DeliveryUncertain => DeliveryState::DeliveryUncertain,
+    }
+}
+
+fn proto_delivery_state_to_wit(state: DeliveryState) -> wit::DeliveryState {
+    match state {
+        DeliveryState::NotSent => wit::DeliveryState::NotSent,
+        DeliveryState::DeliveryUncertain => wit::DeliveryState::DeliveryUncertain,
+    }
+}
+
+fn wit_recovery_info_to_proto(info: wit::RecoveryInfo) -> RecoveryInfo {
+    RecoveryInfo {
+        peer: actr_id_from_wit(&info.peer),
+        session_id: info.session_id,
+        code: wit_recovery_code_to_proto(info.code),
+        reason: info.reason,
+        elapsed_ms: info.elapsed_ms,
+        timeout_ms: info.timeout_ms,
+        retry_after_ms: info.retry_after_ms,
+        delivery: wit_delivery_state_to_proto(info.delivery),
+    }
+}
+
+fn proto_recovery_info_to_wit(info: RecoveryInfo) -> wit::RecoveryInfo {
+    wit::RecoveryInfo {
+        peer: actr_id_to_wit(&info.peer),
+        session_id: info.session_id,
+        code: proto_recovery_code_to_wit(info.code),
+        reason: info.reason,
+        elapsed_ms: info.elapsed_ms,
+        timeout_ms: info.timeout_ms,
+        retry_after_ms: info.retry_after_ms,
+        delivery: proto_delivery_state_to_wit(info.delivery),
     }
 }
 

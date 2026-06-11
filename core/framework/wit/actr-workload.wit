@@ -121,7 +121,7 @@ interface types {
     // `ActrError::DependencyNotFound` don't lose structure.
     variant actr-error {
         unavailable(string),
-        recovering(recovery-reason),
+        recovering(recovery-info),
         timed-out,
         not-found(string),
         permission-denied(string),
@@ -139,14 +139,29 @@ interface types {
         message: string,
     }
 
-    // Structured reason for a connection recovery window — one-to-one with
-    // `actr_protocol::RecoveryReason`.
-    variant recovery-reason {
-        peer-disconnected(peer: actr-id, session-id: u64, elapsed-ms: u128),
-        peer-failed(peer: actr-id, session-id: u64, elapsed-ms: u128),
-        ice-network-started(peer: actr-id, session-id: u64),
-        recovery-timeout(peer: actr-id, session-id: u64, reason: string, elapsed-ms: u128),
-        transport-closing(peer: actr-id),
+    enum recovery-code {
+        peer-disconnected,
+        peer-failed,
+        ice-network-started,
+        recovery-timeout,
+        transport-closing,
+    }
+
+    enum delivery-state {
+        not-sent,
+        delivery-uncertain,
+    }
+
+    // Structured information for a connection recovery window.
+    record recovery-info {
+        peer: actr-id,
+        session-id: option<u64>,
+        code: recovery-code,
+        reason: string,
+        elapsed-ms: u64,
+        timeout-ms: u64,
+        retry-after-ms: option<u64>,
+        delivery: delivery-state,
     }
 
     // Peer-scoped event (actr_framework::PeerEvent) carried by the

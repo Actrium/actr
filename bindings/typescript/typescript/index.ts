@@ -3,7 +3,10 @@ export { ActrRef } from './ref';
 export {
   ActrError,
   type ActrErrorCode,
+  type ActrDeliveryState,
   type ActrErrorKind,
+  type ActrErrorPeerId,
+  type ActrRecoveryCode,
   callNative,
   mapNativeError,
 } from './error';

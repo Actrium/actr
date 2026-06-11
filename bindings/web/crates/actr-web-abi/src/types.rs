@@ -6,7 +6,7 @@
 // Regenerate with: cargo run -p actr-wit-compile-web
 // Drift check:      cargo run -p actr-wit-compile-web -- --check
 
-//! Serde-derived record / variant definitions lowered from
+//! Serde-derived record / enum / variant definitions lowered from
 //! `core/framework/wit/actr-workload.wit`.
 //!
 //! Every type derives `Serialize` + `Deserialize` so
@@ -102,6 +102,23 @@ pub struct Realm {
     pub realm_id: u32,
 }
 
+/// Lowered from WIT `record recovery-info`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryInfo {
+    pub peer: ActrId,
+    #[serde(rename = "session-id")]
+    pub session_id: Option<u64>,
+    pub code: RecoveryCode,
+    pub reason: String,
+    #[serde(rename = "elapsed-ms")]
+    pub elapsed_ms: u64,
+    #[serde(rename = "timeout-ms")]
+    pub timeout_ms: u64,
+    #[serde(rename = "retry-after-ms")]
+    pub retry_after_ms: Option<u64>,
+    pub delivery: DeliveryState,
+}
+
 /// Lowered from WIT `record rpc-envelope`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcEnvelope {
@@ -119,19 +136,28 @@ pub struct Timestamp {
     pub nanoseconds: u32,
 }
 
-/// Lowered from WIT `variant recovery-reason`.
+/// Lowered from WIT `enum delivery-state`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RecoveryReason {
+pub enum DeliveryState {
+    #[serde(rename = "not-sent")]
+    NotSent,
+    #[serde(rename = "delivery-uncertain")]
+    DeliveryUncertain,
+}
+
+/// Lowered from WIT `enum recovery-code`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RecoveryCode {
     #[serde(rename = "peer-disconnected")]
-    PeerDisconnected { peer: ActrId, #[serde(rename = "session-id")] session_id: u64, #[serde(rename = "elapsed-ms")] elapsed_ms: u128 },
+    PeerDisconnected,
     #[serde(rename = "peer-failed")]
-    PeerFailed { peer: ActrId, #[serde(rename = "session-id")] session_id: u64, #[serde(rename = "elapsed-ms")] elapsed_ms: u128 },
+    PeerFailed,
     #[serde(rename = "ice-network-started")]
-    IceNetworkStarted { peer: ActrId, #[serde(rename = "session-id")] session_id: u64 },
+    IceNetworkStarted,
     #[serde(rename = "recovery-timeout")]
-    RecoveryTimeout { peer: ActrId, #[serde(rename = "session-id")] session_id: u64, reason: String, #[serde(rename = "elapsed-ms")] elapsed_ms: u128 },
+    RecoveryTimeout,
     #[serde(rename = "transport-closing")]
-    TransportClosing { peer: ActrId },
+    TransportClosing,
 }
 
 /// Lowered from WIT `variant actr-error`.
@@ -140,7 +166,7 @@ pub enum ActrError {
     #[serde(rename = "unavailable")]
     Unavailable(String),
     #[serde(rename = "recovering")]
-    Recovering(RecoveryReason),
+    Recovering(RecoveryInfo),
     #[serde(rename = "timed-out")]
     TimedOut,
     #[serde(rename = "not-found")]

@@ -9,6 +9,7 @@
 //   kind          fault-domain bucket — use for retry / DLQ policy.
 //   code          exact variant name — use for fine-grained branching.
 //   service_name  present only when `code === "DependencyNotFound"`.
+//   recovery_*    present when `code === "Recovering"`.
 //
 // The raw native binding throws `Error` with a JSON payload in
 // `error.message`; the `index.js` wrapper parses it and re-throws an
@@ -18,6 +19,7 @@ export type ActrErrorKind = 'Transient' | 'Client' | 'Internal' | 'Corrupt'
 
 export type ActrErrorCode =
   | 'Unavailable'
+  | 'Recovering'
   | 'TimedOut'
   | 'NotFound'
   | 'PermissionDenied'
@@ -30,12 +32,41 @@ export type ActrErrorCode =
   | 'Config'
   | 'HyperBootstrap'
 
+export type ActrRecoveryCode =
+  | 'PeerDisconnected'
+  | 'PeerFailed'
+  | 'IceNetworkStarted'
+  | 'RecoveryTimeout'
+  | 'TransportClosing'
+
+export type ActrDeliveryState = 'NotSent' | 'DeliveryUncertain'
+
+export interface ActrErrorPeerId {
+  realm_id: number
+  serial_number: number
+  type: {
+    manufacturer: string
+    name: string
+    version: string
+  }
+}
+
 export declare class ActrError extends Error {
   readonly kind: ActrErrorKind
   readonly code: ActrErrorCode
   readonly service_name?: string
+  readonly recovery_code?: ActrRecoveryCode
+  readonly peer?: ActrErrorPeerId
+  readonly session_id?: number | null
+  readonly reason?: string
+  readonly elapsed_ms?: number
+  readonly timeout_ms?: number
+  readonly retry_after_ms?: number | null
+  readonly delivery?: ActrDeliveryState
   /** `true` iff `kind === 'Transient'` — retry with backoff. */
   isRetryable(): boolean
+  /** `true` iff `code === 'Recovering'`. */
+  isRecovering(): boolean
   /** `true` iff `kind === 'Corrupt'` — route to Dead Letter Queue. */
   requiresDlq(): boolean
 }

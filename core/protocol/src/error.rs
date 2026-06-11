@@ -29,91 +29,107 @@ use crate::ActrId;
 use std::fmt;
 use thiserror::Error;
 
-// ── RecoveryReason ─────────────────────────────────────────────────────────────
+// ── RecoveryInfo ───────────────────────────────────────────────────────────────
 
-/// Structured reason for a connection recovery window.
-///
-/// Carries the peer identity, session id, and elapsed time so callers can
-/// discriminate *why* the peer is blocked and whether retry makes sense.
-#[derive(Debug, Clone)]
-pub enum RecoveryReason {
-    PeerDisconnected {
-        peer: ActrId,
-        session_id: u64,
-        elapsed_ms: u128,
-    },
-    PeerFailed {
-        peer: ActrId,
-        session_id: u64,
-        elapsed_ms: u128,
-    },
-    IceNetworkStarted {
-        peer: ActrId,
-        session_id: u64,
-    },
-    RecoveryTimeout {
-        peer: ActrId,
-        session_id: u64,
-        reason: String,
-        elapsed_ms: u128,
-    },
-    TransportClosing {
-        peer: ActrId,
-    },
+/// Stable machine-readable code for a connection recovery window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryCode {
+    PeerDisconnected,
+    PeerFailed,
+    IceNetworkStarted,
+    RecoveryTimeout,
+    TransportClosing,
 }
 
-impl fmt::Display for RecoveryReason {
+impl fmt::Display for RecoveryCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RecoveryReason::PeerDisconnected {
-                peer,
-                session_id,
-                elapsed_ms,
-            } => {
-                write!(
-                    f,
-                    "Connection recovering: peer={:?}, session_id={}, reason=peer state Disconnected, elapsed_ms={}, timeout_ms=6000",
-                    peer, session_id, elapsed_ms
-                )
-            }
-            RecoveryReason::PeerFailed {
-                peer,
-                session_id,
-                elapsed_ms,
-            } => {
-                write!(
-                    f,
-                    "Connection recovering: peer={:?}, session_id={}, reason=peer state Failed, elapsed_ms={}, timeout_ms=6000",
-                    peer, session_id, elapsed_ms
-                )
-            }
-            RecoveryReason::IceNetworkStarted { peer, session_id } => {
-                write!(
-                    f,
-                    "Connection recovering: peer={:?}, session_id={}, reason=ice/network recovery started, elapsed_ms=0, timeout_ms=6000",
-                    peer, session_id
-                )
-            }
-            RecoveryReason::RecoveryTimeout {
-                peer,
-                session_id,
-                reason,
-                elapsed_ms,
-            } => {
-                write!(
-                    f,
-                    "Connection recovery timeout: peer={:?}, session_id={}, reason={}, elapsed_ms={}, timeout_ms=6000",
-                    peer, session_id, reason, elapsed_ms
-                )
-            }
-            RecoveryReason::TransportClosing { peer } => {
-                write!(
-                    f,
-                    "Connection recovering: peer={:?}, reason=transport closing",
-                    peer
-                )
-            }
+            RecoveryCode::PeerDisconnected => write!(f, "PeerDisconnected"),
+            RecoveryCode::PeerFailed => write!(f, "PeerFailed"),
+            RecoveryCode::IceNetworkStarted => write!(f, "IceNetworkStarted"),
+            RecoveryCode::RecoveryTimeout => write!(f, "RecoveryTimeout"),
+            RecoveryCode::TransportClosing => write!(f, "TransportClosing"),
         }
+    }
+}
+
+/// Whether the failed operation may have reached the remote peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryState {
+    /// The operation failed before being written to the transport.
+    NotSent,
+    /// The transport state changed after send started, so delivery is unknown.
+    DeliveryUncertain,
+}
+
+impl fmt::Display for DeliveryState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeliveryState::NotSent => write!(f, "NotSent"),
+            DeliveryState::DeliveryUncertain => write!(f, "DeliveryUncertain"),
+        }
+    }
+}
+
+/// Structured information for a connection recovery window.
+///
+/// `delivery` is intentionally part of the public payload. For preflight
+/// recovery errors it is `NotSent`, which tells callers that retrying creates a
+/// fresh operation rather than duplicating one already delivered remotely.
+#[derive(Debug, Clone)]
+pub struct RecoveryInfo {
+    pub peer: ActrId,
+    pub session_id: Option<u64>,
+    pub code: RecoveryCode,
+    pub reason: String,
+    pub elapsed_ms: u64,
+    pub timeout_ms: u64,
+    pub retry_after_ms: Option<u64>,
+    pub delivery: DeliveryState,
+}
+
+impl RecoveryInfo {
+    pub fn new(
+        peer: ActrId,
+        session_id: Option<u64>,
+        code: RecoveryCode,
+        reason: impl Into<String>,
+        elapsed_ms: u64,
+        timeout_ms: u64,
+    ) -> Self {
+        let retry_after_ms = timeout_ms.checked_sub(elapsed_ms);
+        Self {
+            peer,
+            session_id,
+            code,
+            reason: reason.into(),
+            elapsed_ms,
+            timeout_ms,
+            retry_after_ms,
+            delivery: DeliveryState::NotSent,
+        }
+    }
+}
+
+impl fmt::Display for RecoveryInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let prefix = if self.code == RecoveryCode::RecoveryTimeout {
+            "Connection recovery timeout"
+        } else {
+            "Connection recovering"
+        };
+        write!(
+            f,
+            "{prefix}: peer={:?}, session_id={:?}, code={}, reason={}, elapsed_ms={}, timeout_ms={}, retry_after_ms={:?}, delivery={}",
+            self.peer,
+            self.session_id,
+            self.code,
+            self.reason,
+            self.elapsed_ms,
+            self.timeout_ms,
+            self.retry_after_ms,
+            self.delivery
+        )
     }
 }
 
@@ -131,12 +147,12 @@ pub enum ActrError {
     #[error("unavailable: {0}")]
     Unavailable(String),
 
-    /// Connection is in a recovery window (typically 6 s).
+    /// Connection is in a recovery window.
     ///
     /// `ErrorKind::Transient` — retry within the recovery window; the peer
     /// should become reachable again once ICE restart completes.
     #[error("recovering: {0}")]
-    Recovering(RecoveryReason),
+    Recovering(RecoveryInfo),
 
     /// Request deadline exceeded.
     ///
@@ -354,71 +370,98 @@ mod tests {
         assert_eq!(format!("{cloned}"), "invalid argument: bad");
     }
 
-    // ── RecoveryReason Display ────────────────────────────────────────────
+    // ── RecoveryInfo Display ──────────────────────────────────────────────
 
     #[test]
-    fn recovery_reason_peer_disconnected_display() {
+    fn recovery_info_peer_disconnected_display() {
         let peer = ActrId::default();
-        let reason = RecoveryReason::PeerDisconnected {
-            peer: peer.clone(),
-            session_id: 42,
-            elapsed_ms: 1200,
-        };
-        let s = format!("{reason}");
+        let info = RecoveryInfo::new(
+            peer.clone(),
+            Some(42),
+            RecoveryCode::PeerDisconnected,
+            "peer state Disconnected",
+            1200,
+            6000,
+        );
+        let s = format!("{info}");
         assert!(s.starts_with("Connection recovering: peer="));
-        assert!(s.contains("session_id=42"));
+        assert!(s.contains("session_id=Some(42)"));
+        assert!(s.contains("code=PeerDisconnected"));
         assert!(s.contains("reason=peer state Disconnected"));
         assert!(s.contains("elapsed_ms=1200"));
         assert!(s.contains("timeout_ms=6000"));
+        assert!(s.contains("retry_after_ms=Some(4800)"));
+        assert!(s.contains("delivery=NotSent"));
     }
 
     #[test]
-    fn recovery_reason_peer_failed_display() {
+    fn recovery_info_peer_failed_display() {
         let peer = ActrId::default();
-        let reason = RecoveryReason::PeerFailed {
-            peer: peer.clone(),
-            session_id: 7,
-            elapsed_ms: 3500,
-        };
-        let s = format!("{reason}");
+        let info = RecoveryInfo::new(
+            peer.clone(),
+            Some(7),
+            RecoveryCode::PeerFailed,
+            "peer state Failed",
+            3500,
+            6000,
+        );
+        let s = format!("{info}");
         assert!(s.starts_with("Connection recovering: peer="));
+        assert!(s.contains("code=PeerFailed"));
         assert!(s.contains("reason=peer state Failed"));
         assert!(s.contains("elapsed_ms=3500"));
     }
 
     #[test]
-    fn recovery_reason_ice_network_started_display() {
+    fn recovery_info_ice_network_started_display() {
         let peer = ActrId::default();
-        let reason = RecoveryReason::IceNetworkStarted {
-            peer: peer.clone(),
-            session_id: 99,
-        };
-        let s = format!("{reason}");
+        let info = RecoveryInfo::new(
+            peer.clone(),
+            Some(99),
+            RecoveryCode::IceNetworkStarted,
+            "ice/network recovery started",
+            0,
+            6000,
+        );
+        let s = format!("{info}");
+        assert!(s.contains("code=IceNetworkStarted"));
         assert!(s.contains("reason=ice/network recovery started"));
         assert!(s.contains("elapsed_ms=0"));
     }
 
     #[test]
-    fn recovery_reason_recovery_timeout_display() {
+    fn recovery_info_recovery_timeout_display() {
         let peer = ActrId::default();
-        let reason = RecoveryReason::RecoveryTimeout {
-            peer: peer.clone(),
-            session_id: 10,
-            reason: "ice restart failed".to_string(),
-            elapsed_ms: 6000,
-        };
-        let s = format!("{reason}");
+        let info = RecoveryInfo::new(
+            peer.clone(),
+            Some(10),
+            RecoveryCode::RecoveryTimeout,
+            "ice restart failed",
+            6000,
+            6000,
+        );
+        let s = format!("{info}");
         assert!(s.starts_with("Connection recovery timeout:"));
+        assert!(s.contains("code=RecoveryTimeout"));
         assert!(s.contains("reason=ice restart failed"));
         assert!(s.contains("elapsed_ms=6000"));
     }
 
     #[test]
-    fn recovery_reason_transport_closing_display() {
+    fn recovery_info_transport_closing_display() {
         let peer = ActrId::default();
-        let reason = RecoveryReason::TransportClosing { peer: peer.clone() };
-        let s = format!("{reason}");
+        let info = RecoveryInfo::new(
+            peer.clone(),
+            None,
+            RecoveryCode::TransportClosing,
+            "transport closing",
+            0,
+            6000,
+        );
+        let s = format!("{info}");
         assert!(s.starts_with("Connection recovering: peer="));
+        assert!(s.contains("session_id=None"));
+        assert!(s.contains("code=TransportClosing"));
         assert!(s.contains("reason=transport closing"));
     }
 
@@ -427,18 +470,28 @@ mod tests {
     #[test]
     fn recovering_classifies_as_transient() {
         let peer = ActrId::default();
-        let err = ActrError::Recovering(RecoveryReason::PeerDisconnected {
+        let err = ActrError::Recovering(RecoveryInfo::new(
             peer,
-            session_id: 1,
-            elapsed_ms: 0,
-        });
+            Some(1),
+            RecoveryCode::PeerDisconnected,
+            "peer state Disconnected",
+            0,
+            6000,
+        ));
         assert_eq!(err.kind(), ErrorKind::Transient);
     }
 
     #[test]
     fn recovering_is_retryable() {
         let peer = ActrId::default();
-        let err = ActrError::Recovering(RecoveryReason::TransportClosing { peer });
+        let err = ActrError::Recovering(RecoveryInfo::new(
+            peer,
+            None,
+            RecoveryCode::TransportClosing,
+            "transport closing",
+            0,
+            6000,
+        ));
         assert!(err.is_retryable());
     }
 }

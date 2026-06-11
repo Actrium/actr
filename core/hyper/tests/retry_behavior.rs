@@ -27,7 +27,7 @@ use actr_hyper::test_support::{
     wait_for_peer_state,
 };
 use actr_hyper::transport::{ConnectionEvent, ConnectionState};
-use actr_protocol::PayloadType;
+use actr_protocol::{ActrError, DeliveryState, PayloadType, RecoveryCode};
 use std::time::{Duration, Instant};
 
 /// Initialize tracing for test output.
@@ -501,12 +501,20 @@ async fn test_send_data_stream_rejected_during_recovery() {
         result.is_err(),
         "send_data_stream should fail during recovery window"
     );
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("recovering") || msg.contains("Unavailable"),
-        "expected recovery/unavailable error, got: {}",
-        msg
-    );
+    let err = result.unwrap_err();
+    match err {
+        ActrError::Recovering(info) => {
+            assert_eq!(info.peer, target_id);
+            assert_eq!(info.code, RecoveryCode::IceNetworkStarted);
+            assert_eq!(info.delivery, DeliveryState::NotSent);
+            assert!(info.session_id.is_some(), "session_id should be present");
+            assert!(
+                info.retry_after_ms.is_some(),
+                "retry_after_ms should be present"
+            );
+        }
+        other => panic!("expected structured Recovering error, got: {other}"),
+    }
     // Should be fast — no retry backoff.
     assert!(
         elapsed < Duration::from_secs(2),
@@ -514,9 +522,8 @@ async fn test_send_data_stream_rejected_during_recovery() {
         elapsed
     );
     tracing::info!(
-        "send_data_stream correctly rejected without retry in {:?}: {}",
-        elapsed,
-        msg
+        "send_data_stream correctly rejected without retry in {:?} with Recovering",
+        elapsed
     );
 }
 
@@ -628,9 +635,9 @@ async fn test_call_succeeds_after_full_disconnect_reconnect_cycle() {
 
 // ─── Scenario 10 ────────────────────────────────────────────────────────────
 // When a call is blocked in `preflight_send` (peer is in the 6s recovery
-// window), it returns `Unavailable("Connection recovering")` immediately — it
-// does NOT wait for the recovery to complete. This is not a retry; it is a
-// fast-fail so the caller can decide what to do.
+// window), it returns `Recovering(RecoveryInfo)` immediately — it does NOT wait
+// for the recovery to complete. This is not a retry; it is a fast-fail so the
+// caller can decide what to do and retry after `on_webrtc_connected`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_call_fast_fails_during_recovery_window() {
     init_tracing();
@@ -639,6 +646,7 @@ async fn test_call_fast_fails_during_recovery_window() {
     harness.add_peer(100).await;
     harness.add_peer(200).await;
     harness.connect(100, 200).await;
+    let target_id = harness.peer(200).id.clone();
 
     // Manually enter network recovery on peer 100.
     harness
@@ -657,12 +665,19 @@ async fn test_call_fast_fails_during_recovery_window() {
     match tokio::time::timeout(Duration::from_secs(5), handle).await {
         Ok(Ok(Err(e))) => {
             let elapsed = start.elapsed();
-            let msg = e.to_string();
-            assert!(
-                msg.contains("Connection recovering"),
-                "expected 'Connection recovering' error, got: {}",
-                msg
-            );
+            match e {
+                ActrError::Recovering(info) => {
+                    assert_eq!(info.peer, target_id);
+                    assert_eq!(info.code, RecoveryCode::IceNetworkStarted);
+                    assert_eq!(info.delivery, DeliveryState::NotSent);
+                    assert!(info.session_id.is_some(), "session_id should be present");
+                    assert!(
+                        info.retry_after_ms.is_some(),
+                        "retry_after_ms should be present"
+                    );
+                }
+                other => panic!("expected structured Recovering error, got: {other}"),
+            }
             // Should be nearly instant, not waiting for 30s.
             assert!(
                 elapsed < Duration::from_secs(2),
@@ -670,9 +685,8 @@ async fn test_call_fast_fails_during_recovery_window() {
                 elapsed
             );
             tracing::info!(
-                "preflight_send correctly fast-failed in {:?}: {}",
-                elapsed,
-                msg
+                "preflight_send correctly fast-failed in {:?} with Recovering",
+                elapsed
             );
         }
         Ok(Ok(Ok(_))) => panic!("call should be blocked during recovery window"),
