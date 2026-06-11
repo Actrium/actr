@@ -46,7 +46,7 @@ impl DestTransport {
         Ok(Self { conn_mgr })
     }
 
-    /// Send message
+    /// Send message and return the wire identity that accepted the payload.
     ///
     /// Core design: event-driven waiting
     /// - If connection available, send immediately
@@ -493,7 +493,7 @@ mod tests {
 
         let err = timeout(
             Duration::from_secs(1),
-            transport.send(PayloadType::StreamReliable, b"payload"),
+            transport.send_with_identity(PayloadType::StreamReliable, b"payload"),
         )
         .await
         .expect("send should not hang")
@@ -518,7 +518,7 @@ mod tests {
 
         timeout(
             Duration::from_secs(1),
-            transport.send(PayloadType::StreamReliable, b"payload"),
+            transport.send_with_identity(PayloadType::StreamReliable, b"payload"),
         )
         .await
         .expect("send should not hang")
@@ -542,7 +542,7 @@ mod tests {
 
         let err = timeout(
             Duration::from_secs(1),
-            transport.send(PayloadType::StreamReliable, b"payload"),
+            transport.send_with_identity(PayloadType::StreamReliable, b"payload"),
         )
         .await
         .expect("send should not hang")
