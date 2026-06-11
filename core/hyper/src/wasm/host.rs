@@ -36,7 +36,8 @@ use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_framework::{BackpressureEvent, CredentialEvent, PeerEvent};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActrError, ActrId, ActrType, DataStream, MetadataEntry, PayloadType, Realm, RpcEnvelope,
+    ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, MetadataEntry, PayloadType,
+    Realm, RpcEnvelope,
 };
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, OptLevel, RegallocAlgorithm, Store};
@@ -373,6 +374,22 @@ fn proto_actr_id_to_wit(id: &ActrId) -> WitActrId {
     }
 }
 
+fn connection_not_ready_info_to_wit(
+    info: &ConnectionNotReadyInfo,
+) -> wit_types::ConnectionNotReadyInfo {
+    wit_types::ConnectionNotReadyInfo {
+        retry_after_ms: info.retry_after_ms,
+    }
+}
+
+fn wit_connection_not_ready_info_to_proto(
+    info: wit_types::ConnectionNotReadyInfo,
+) -> ConnectionNotReadyInfo {
+    ConnectionNotReadyInfo {
+        retry_after_ms: info.retry_after_ms,
+    }
+}
+
 fn wit_dest_to_v1(dest: &WitDest) -> guest_abi::DestV1 {
     match dest {
         WitDest::Shell => guest_abi::DestV1::shell(),
@@ -402,6 +419,9 @@ fn actr_error_from_abi_code(code: i32) -> WitActrError {
 fn actr_error_to_wit(e: &ActrError) -> WitActrError {
     match e {
         ActrError::Unavailable(msg) => WitActrError::Unavailable(msg.clone()),
+        ActrError::ConnectionNotReady(info) => {
+            WitActrError::ConnectionNotReady(connection_not_ready_info_to_wit(info))
+        }
         ActrError::TimedOut => WitActrError::TimedOut,
         ActrError::NotFound(msg) => WitActrError::NotFound(msg.clone()),
         ActrError::PermissionDenied(msg) => WitActrError::PermissionDenied(msg.clone()),
@@ -423,6 +443,9 @@ fn actr_error_to_wit(e: &ActrError) -> WitActrError {
 fn wit_actr_error_to_proto(e: WitActrError) -> ActrError {
     match e {
         WitActrError::Unavailable(msg) => ActrError::Unavailable(msg),
+        WitActrError::ConnectionNotReady(info) => {
+            ActrError::ConnectionNotReady(wit_connection_not_ready_info_to_proto(info))
+        }
         WitActrError::TimedOut => ActrError::TimedOut,
         WitActrError::NotFound(msg) => ActrError::NotFound(msg),
         WitActrError::PermissionDenied(msg) => ActrError::PermissionDenied(msg),

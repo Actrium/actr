@@ -5,7 +5,9 @@
 //! binding-local variants cover errors that occur strictly before a call
 //! reaches the protocol layer (e.g. config parsing inside the shell).
 
-use actr_protocol::{Classify, ErrorKind as ProtocolErrorKind};
+use actr_protocol::{
+    Classify, ConnectionNotReadyInfo as ProtoConnectionNotReadyInfo, ErrorKind as ProtocolErrorKind,
+};
 
 /// Fault domain classification exposed to UniFFI consumers.
 ///
@@ -35,6 +37,35 @@ impl From<ProtocolErrorKind> for ErrorKind {
     }
 }
 
+/// Public payload for send preflight failures.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct ConnectionNotReadyInfo {
+    pub retry_after_ms: Option<u64>,
+}
+
+impl std::fmt::Display for ConnectionNotReadyInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let proto: ProtoConnectionNotReadyInfo = self.clone().into();
+        proto.fmt(f)
+    }
+}
+
+impl From<ProtoConnectionNotReadyInfo> for ConnectionNotReadyInfo {
+    fn from(info: ProtoConnectionNotReadyInfo) -> Self {
+        ConnectionNotReadyInfo {
+            retry_after_ms: info.retry_after_ms,
+        }
+    }
+}
+
+impl From<ConnectionNotReadyInfo> for ProtoConnectionNotReadyInfo {
+    fn from(info: ConnectionNotReadyInfo) -> Self {
+        ProtoConnectionNotReadyInfo {
+            retry_after_ms: info.retry_after_ms,
+        }
+    }
+}
+
 /// Error type for actr operations.
 ///
 /// The first ten variants mirror `actr_protocol::ActrError` exactly; the
@@ -45,6 +76,9 @@ pub enum ActrError {
     // ── Transient ─────────────────────────────────────────────────────────
     #[error("unavailable: {msg}")]
     Unavailable { msg: String },
+
+    #[error("connection not ready: {info}")]
+    ConnectionNotReady { info: ConnectionNotReadyInfo },
 
     #[error("timed out")]
     TimedOut,
@@ -98,7 +132,9 @@ impl ActrError {
     /// rather than pattern-matching every variant.
     pub(crate) fn kind(&self) -> ErrorKind {
         match self {
-            ActrError::Unavailable { .. } | ActrError::TimedOut => ErrorKind::Transient,
+            ActrError::Unavailable { .. }
+            | ActrError::ConnectionNotReady { .. }
+            | ActrError::TimedOut => ErrorKind::Transient,
 
             ActrError::NotFound { .. }
             | ActrError::PermissionDenied { .. }
@@ -153,6 +189,9 @@ impl From<actr_protocol::ActrError> for ActrError {
     fn from(e: actr_protocol::ActrError) -> Self {
         match e {
             actr_protocol::ActrError::Unavailable(msg) => ActrError::Unavailable { msg },
+            actr_protocol::ActrError::ConnectionNotReady(info) => {
+                ActrError::ConnectionNotReady { info: info.into() }
+            }
             actr_protocol::ActrError::TimedOut => ActrError::TimedOut,
             actr_protocol::ActrError::NotFound(msg) => ActrError::NotFound { msg },
             actr_protocol::ActrError::PermissionDenied(msg) => ActrError::PermissionDenied { msg },
@@ -176,6 +215,9 @@ impl From<ActrError> for actr_protocol::ActrError {
     fn from(e: ActrError) -> Self {
         match e {
             ActrError::Unavailable { msg } => actr_protocol::ActrError::Unavailable(msg),
+            ActrError::ConnectionNotReady { info } => {
+                actr_protocol::ActrError::ConnectionNotReady(info.into())
+            }
             ActrError::TimedOut => actr_protocol::ActrError::TimedOut,
             ActrError::NotFound { msg } => actr_protocol::ActrError::NotFound(msg),
             ActrError::PermissionDenied { msg } => actr_protocol::ActrError::PermissionDenied(msg),
@@ -218,6 +260,9 @@ mod tests {
     fn roundtrip_preserves_every_protocol_variant() {
         let cases = [
             actr_protocol::ActrError::Unavailable("u".into()),
+            actr_protocol::ActrError::ConnectionNotReady(
+                actr_protocol::ConnectionNotReadyInfo::new(0, 6000),
+            ),
             actr_protocol::ActrError::TimedOut,
             actr_protocol::ActrError::NotFound("nf".into()),
             actr_protocol::ActrError::PermissionDenied("pd".into()),
@@ -245,6 +290,15 @@ mod tests {
             ActrError::Unavailable { msg: "x".into() }.kind(),
             ErrorKind::Transient,
         );
+        assert_eq!(
+            ActrError::ConnectionNotReady {
+                info: ConnectionNotReadyInfo {
+                    retry_after_ms: Some(6000),
+                },
+            }
+            .kind(),
+            ErrorKind::Transient,
+        );
         assert_eq!(ActrError::TimedOut.kind(), ErrorKind::Transient);
         assert_eq!(
             ActrError::NotFound { msg: "x".into() }.kind(),
@@ -267,6 +321,14 @@ mod tests {
     #[test]
     fn retry_and_dlq_predicates() {
         assert!(ActrError::Unavailable { msg: "x".into() }.is_retryable());
+        assert!(
+            ActrError::ConnectionNotReady {
+                info: ConnectionNotReadyInfo {
+                    retry_after_ms: Some(6000),
+                },
+            }
+            .is_retryable()
+        );
         assert!(!ActrError::NotFound { msg: "x".into() }.is_retryable());
         assert!(ActrError::DecodeFailure { msg: "x".into() }.requires_dlq());
         assert!(!ActrError::Internal { msg: "x".into() }.requires_dlq());

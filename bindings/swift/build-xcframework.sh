@@ -207,9 +207,56 @@ if [[ -f "${MODULEMAP_FILE}" ]]; then
 fi
 
 if [[ "${XCFRAMEWORK_TARGETS}" == "all" ]]; then
-  echo "[3/4] Building Rust static libraries (iOS + macOS - ARM64 only)"
-  cargo_build_libactr aarch64-apple-ios
-  cargo_build_libactr aarch64-apple-ios-sim
+  echo "[3/4] Building Rust static libraries (iOS + macOS - ARM64 only) in parallel"
+
+  # Use separate target directories to allow concurrent cargo invocations.
+  IOS_TARGET_DIR="${TARGET_DIR}/xcframework-ios"
+  IOS_SIM_TARGET_DIR="${TARGET_DIR}/xcframework-ios-sim"
+
+  echo "  → Starting aarch64-apple-ios build..."
+  (cd "${WORKSPACE_ROOT}" && env -u SDKROOT CARGO_TARGET_DIR="${IOS_TARGET_DIR}" \
+    cargo build -p libactr "${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"}" --target aarch64-apple-ios) &
+  IOS_PID=$!
+
+  echo "  → Starting aarch64-apple-ios-sim build..."
+  (cd "${WORKSPACE_ROOT}" && env -u SDKROOT CARGO_TARGET_DIR="${IOS_SIM_TARGET_DIR}" \
+    cargo build -p libactr "${CARGO_PROFILE_ARGS[@]+"${CARGO_PROFILE_ARGS[@]}"}" --target aarch64-apple-ios-sim) &
+  IOS_SIM_PID=$!
+
+  # wait(1) returns the background process exit code.  Under `set -e` a
+  # non-zero exit from `wait` would kill the script before `$?` is captured.
+  # The `||` operator suppresses errexit for its left-hand side so the
+  # assignment still runs on failure.
+  IOS_EXIT=0
+  IOS_SIM_EXIT=0
+  wait $IOS_PID || IOS_EXIT=$?
+  wait $IOS_SIM_PID || IOS_SIM_EXIT=$?
+
+  if [[ $IOS_EXIT -ne 0 ]]; then
+    echo "error: aarch64-apple-ios build failed (exit ${IOS_EXIT})" >&2
+    exit $IOS_EXIT
+  fi
+  if [[ $IOS_SIM_EXIT -ne 0 ]]; then
+    echo "error: aarch64-apple-ios-sim build failed (exit ${IOS_SIM_EXIT})" >&2
+    exit $IOS_SIM_EXIT
+  fi
+
+  # Verify artifacts exist before copying.
+  IOS_LIB="${IOS_TARGET_DIR}/aarch64-apple-ios/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a"
+  IOS_SIM_LIB="${IOS_SIM_TARGET_DIR}/aarch64-apple-ios-sim/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a"
+  require_file "${IOS_LIB}"
+  require_file "${IOS_SIM_LIB}"
+
+  # Copy artifacts to the standard target layout expected by step [4/4].
+  mkdir -p "${TARGET_DIR}/aarch64-apple-ios/${CARGO_PROFILE_DIR}"
+  mkdir -p "${TARGET_DIR}/aarch64-apple-ios-sim/${CARGO_PROFILE_DIR}"
+  cp "${IOS_LIB}" "${TARGET_DIR}/aarch64-apple-ios/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a"
+  cp "${IOS_SIM_LIB}" "${TARGET_DIR}/aarch64-apple-ios-sim/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a"
+
+  # Clean up temporary target directories.
+  rm -rf "${IOS_TARGET_DIR}" "${IOS_SIM_TARGET_DIR}"
+
+  echo "  ✅ All targets built successfully"
 else
   echo "[3/4] Building Rust static library (macOS - ARM64 only)"
 fi

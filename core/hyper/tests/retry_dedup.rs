@@ -242,6 +242,7 @@ async fn test_late_response_after_connection_closed_is_dropped() {
             let msg = e.to_string();
             assert!(
                 msg.contains("Connection")
+                    || msg.contains("connection")
                     || msg.contains("Unavailable")
                     || msg.contains("recovering"),
                 "caller should get connection error, not late response, got: {}",

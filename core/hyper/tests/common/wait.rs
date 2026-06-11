@@ -186,7 +186,7 @@ pub async fn wait_for_peer_state(
     }
 }
 
-/// Assert that a spawned request handle fails with "Connection recovering".
+/// Assert that a spawned request handle fails with "connection not ready".
 pub async fn expect_connection_recovering(
     handle: tokio::task::JoinHandle<ActorResult<Bytes>>,
     label: &str,
@@ -195,8 +195,8 @@ pub async fn expect_connection_recovering(
         Ok(Ok(Err(err))) => {
             let msg = err.to_string();
             assert!(
-                msg.contains("Connection recovering"),
-                "{label} failed, but not with Connection recovering: {msg}"
+                msg.contains("connection not ready"),
+                "{label} failed, but not with connection not ready: {msg}"
             );
         }
         Ok(Ok(Ok(response))) => {
@@ -212,7 +212,7 @@ pub async fn expect_connection_recovering(
 
 /// Poll a request until it succeeds or the total timeout expires.
 ///
-/// This helper re-sends on transient errors (Connection recovering, timeout,
+/// This helper re-sends on transient errors (connection not ready, timeout,
 /// Connection*) and returns the response bytes on success.
 pub async fn expect_request_eventually_ok(
     harness: &super::harness::TestHarness,
@@ -243,7 +243,7 @@ pub async fn expect_request_eventually_ok(
             Ok(Ok(Err(err))) => {
                 let msg = err.to_string();
                 assert!(
-                    msg.contains("Connection recovering")
+                    msg.contains("connection not ready")
                         || msg.contains("Request timeout")
                         || msg.contains("Connection"),
                     "unexpected retry error while waiting for recovery: {msg}"

@@ -176,34 +176,12 @@ impl WebRtcConnection {
             state: connection_state.clone(),
         });
 
-        // Invoke hook synchronously (5s timeout to avoid blocking libwebrtc)
+        // Invoke only the "connecting" hook here. The coordinator owns
+        // connected/disconnected readiness hooks because it can validate the
+        // current session and DataChannel sendability.
         if let Some(cb) = &self.hook_callback {
             let event = match connection_state {
                 ConnectionState::Connecting => Some(HookEvent::WebRtcConnectStart {
-                    peer_id: self.peer_id.clone(),
-                }),
-                ConnectionState::Connected => {
-                    // Detect relay via ICE selected candidate pair
-                    let sctp = self.peer_connection.sctp();
-                    let dtls = sctp.transport();
-                    let ice = dtls.ice_transport();
-                    let relayed = match ice.get_selected_candidate_pair().await {
-                        Some(pair) => pair.to_string().contains("relay"),
-                        None => false,
-                    };
-                    tracing::debug!(
-                        "WebRtcConnection peer connected: {:?}, relayed={}",
-                        self.peer_id,
-                        relayed
-                    );
-                    Some(HookEvent::WebRtcConnected {
-                        peer_id: self.peer_id.clone(),
-                        relayed,
-                    })
-                }
-                ConnectionState::Disconnected
-                | ConnectionState::Failed
-                | ConnectionState::Closed => Some(HookEvent::WebRtcDisconnected {
                     peer_id: self.peer_id.clone(),
                 }),
                 _ => None,

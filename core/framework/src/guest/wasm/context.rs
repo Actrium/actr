@@ -7,7 +7,8 @@
 //! suspends the guest task at await points directly.
 
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, RpcRequest,
+    ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, PayloadType,
+    RpcRequest,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -31,6 +32,9 @@ use super::generated::actr::workload::types as wit_types;
 pub(crate) fn wit_actr_error_to_proto(e: wit_types::ActrError) -> ActrError {
     match e {
         wit_types::ActrError::Unavailable(msg) => ActrError::Unavailable(msg),
+        wit_types::ActrError::ConnectionNotReady(info) => {
+            ActrError::ConnectionNotReady(wit_connection_not_ready_info_to_proto(info))
+        }
         wit_types::ActrError::TimedOut => ActrError::TimedOut,
         wit_types::ActrError::NotFound(msg) => ActrError::NotFound(msg),
         wit_types::ActrError::PermissionDenied(msg) => ActrError::PermissionDenied(msg),
@@ -51,6 +55,9 @@ pub(crate) fn wit_actr_error_to_proto(e: wit_types::ActrError) -> ActrError {
 pub(crate) fn proto_actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
     match e {
         ActrError::Unavailable(msg) => wit_types::ActrError::Unavailable(msg),
+        ActrError::ConnectionNotReady(info) => {
+            wit_types::ActrError::ConnectionNotReady(proto_connection_not_ready_info_to_wit(info))
+        }
         ActrError::TimedOut => wit_types::ActrError::TimedOut,
         ActrError::NotFound(msg) => wit_types::ActrError::NotFound(msg),
         ActrError::PermissionDenied(msg) => wit_types::ActrError::PermissionDenied(msg),
@@ -66,6 +73,26 @@ pub(crate) fn proto_actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
         ActrError::DecodeFailure(msg) => wit_types::ActrError::DecodeFailure(msg),
         ActrError::NotImplemented(msg) => wit_types::ActrError::NotImplemented(msg),
         ActrError::Internal(msg) => wit_types::ActrError::Internal(msg),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ConnectionNotReadyInfo WIT ↔ protocol conversion helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn wit_connection_not_ready_info_to_proto(
+    info: wit_types::ConnectionNotReadyInfo,
+) -> ConnectionNotReadyInfo {
+    ConnectionNotReadyInfo {
+        retry_after_ms: info.retry_after_ms,
+    }
+}
+
+fn proto_connection_not_ready_info_to_wit(
+    info: ConnectionNotReadyInfo,
+) -> wit_types::ConnectionNotReadyInfo {
+    wit_types::ConnectionNotReadyInfo {
+        retry_after_ms: info.retry_after_ms,
     }
 }
 

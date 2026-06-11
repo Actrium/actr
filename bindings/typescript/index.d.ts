@@ -9,6 +9,7 @@
 //   kind          fault-domain bucket — use for retry / DLQ policy.
 //   code          exact variant name — use for fine-grained branching.
 //   service_name  present only when `code === "DependencyNotFound"`.
+//   retry_after_ms present when `code === "ConnectionNotReady"`.
 //
 // The raw native binding throws `Error` with a JSON payload in
 // `error.message`; the `index.js` wrapper parses it and re-throws an
@@ -18,6 +19,7 @@ export type ActrErrorKind = 'Transient' | 'Client' | 'Internal' | 'Corrupt'
 
 export type ActrErrorCode =
   | 'Unavailable'
+  | 'ConnectionNotReady'
   | 'TimedOut'
   | 'NotFound'
   | 'PermissionDenied'
@@ -34,8 +36,11 @@ export declare class ActrError extends Error {
   readonly kind: ActrErrorKind
   readonly code: ActrErrorCode
   readonly service_name?: string
+  readonly retry_after_ms?: number | null
   /** `true` iff `kind === 'Transient'` — retry with backoff. */
   isRetryable(): boolean
+  /** `true` iff `code === 'ConnectionNotReady'`. */
+  isConnectionNotReady(): boolean
   /** `true` iff `kind === 'Corrupt'` — route to Dead Letter Queue. */
   requiresDlq(): boolean
 }

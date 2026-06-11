@@ -18,6 +18,7 @@ export type ActrErrorKind = 'Transient' | 'Client' | 'Internal' | 'Corrupt';
 
 export type ActrErrorCode =
   | 'Unavailable'
+  | 'ConnectionNotReady'
   | 'TimedOut'
   | 'NotFound'
   | 'PermissionDenied'
@@ -35,6 +36,7 @@ interface StructuredPayload {
   code: ActrErrorCode;
   message: string;
   service_name?: string;
+  retry_after_ms?: number | null;
 }
 
 /**
@@ -43,11 +45,16 @@ interface StructuredPayload {
  * `kind` is the fault-domain bucket (drive retry / DLQ policy off this),
  * `code` is the exact protocol variant, and `service_name` is populated
  * only when `code === 'DependencyNotFound'`.
+ *
+ * When `code === 'ConnectionNotReady'`, `retry_after_ms` is an optional hint
+ * for backing off before the next send attempt. The readiness hook is still
+ * the authoritative signal.
  */
 export class ActrError extends Error {
   readonly kind: ActrErrorKind;
   readonly code: ActrErrorCode;
   readonly service_name?: string;
+  readonly retry_after_ms?: number | null;
 
   constructor(payload: StructuredPayload) {
     super(payload.message);
@@ -56,6 +63,9 @@ export class ActrError extends Error {
     this.code = payload.code;
     if (payload.service_name !== undefined) {
       this.service_name = payload.service_name;
+    }
+    if (payload.retry_after_ms !== undefined) {
+      this.retry_after_ms = payload.retry_after_ms;
     }
     // Preserve V8 stack-trace ergonomics in Node.
     if (
@@ -73,6 +83,11 @@ export class ActrError extends Error {
   /** `true` iff the error is in the Transient fault domain. */
   isRetryable(): boolean {
     return this.kind === 'Transient';
+  }
+
+  /** `true` iff this send was stopped before entering transport. */
+  isConnectionNotReady(): boolean {
+    return this.code === 'ConnectionNotReady';
   }
 
   /** `true` iff the error should be routed to a Dead Letter Queue. */

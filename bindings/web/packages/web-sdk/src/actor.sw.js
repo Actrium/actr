@@ -328,11 +328,15 @@ function installActrHostGlobals() {
 function mapHostErrorToActr(e) {
   // sw-host's `actr_error_to_js` attaches `actrErrorTag` + message.
   // actr-web-abi `ActrError` variant serde tags are kebab-case; we
-  // return the matching `{ "kebab-tag": string }` shape.
+  // return the matching `{ "kebab-tag": payload }` shape.
   const tag = (e && e.actrErrorTag) || 'internal';
   const msg = (e && e.message) || String(e);
   // `timed-out` is a unit variant; serde emits it as a bare string.
   if (tag === 'timed-out') return 'timed-out';
+  if (tag === 'connection-not-ready') {
+    const retryAfterMs = Number.isFinite(e && e.actrRetryAfterMs) ? e.actrRetryAfterMs : null;
+    return { 'connection-not-ready': { 'retry-after-ms': retryAfterMs } };
+  }
   // `dependency-not-found` carries a record payload; we don't have the
   // fields cleanly separated here, so fall back to `internal` to keep
   // the result deserialisable.

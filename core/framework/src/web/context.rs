@@ -33,7 +33,8 @@
 use std::rc::Rc;
 
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, Realm, RpcRequest,
+    ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, PayloadType,
+    Realm, RpcRequest,
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
@@ -151,6 +152,9 @@ fn actr_id_from_wit(id: &wit::ActrId) -> ActrId {
 fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
     match e {
         wit::ActrError::Unavailable(m) => ActrError::Unavailable(m),
+        wit::ActrError::ConnectionNotReady(info) => {
+            ActrError::ConnectionNotReady(wit_connection_not_ready_info_to_proto(info))
+        }
         wit::ActrError::TimedOut => ActrError::TimedOut,
         wit::ActrError::NotFound(m) => ActrError::NotFound(m),
         wit::ActrError::PermissionDenied(m) => ActrError::PermissionDenied(m),
@@ -167,6 +171,14 @@ fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
         wit::ActrError::DecodeFailure(m) => ActrError::DecodeFailure(m),
         wit::ActrError::NotImplemented(m) => ActrError::NotImplemented(m),
         wit::ActrError::Internal(m) => ActrError::Internal(m),
+    }
+}
+
+fn wit_connection_not_ready_info_to_proto(
+    info: wit::ConnectionNotReadyInfo,
+) -> ConnectionNotReadyInfo {
+    ConnectionNotReadyInfo {
+        retry_after_ms: info.retry_after_ms,
     }
 }
 
