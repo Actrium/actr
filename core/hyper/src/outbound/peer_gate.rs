@@ -32,6 +32,11 @@ const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const RECOVERY_REASON_PEER_DISCONNECTED: &str = "peer state Disconnected";
 const RECOVERY_REASON_PEER_FAILED: &str = "peer state Failed";
 const RECOVERY_REASON_ICE_NETWORK_STARTED: &str = "ice/network recovery started";
+/// Extra delay exposed to callers on top of the internal recovery guard.
+///
+/// The internal guard still times out at `NETWORK_RECOVERY_TIMEOUT`; this grace
+/// keeps mobile fallback retries from firing exactly on the cleanup boundary.
+const CONNECTION_NOT_READY_RETRY_GRACE: Duration = Duration::from_millis(300);
 
 /// PeerGate - Outproc transport adapter (outbound)
 ///
@@ -99,15 +104,19 @@ impl PeerGate {
     fn connection_not_ready_error(status: &NetworkRecoveryStatus) -> ActrError {
         ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(
             status.elapsed_ms() as u64,
-            NETWORK_RECOVERY_TIMEOUT.as_millis() as u64,
+            Self::connection_not_ready_retry_window_ms(),
         ))
     }
 
     fn recovery_timeout_error(status: &NetworkRecoveryStatus) -> ActrError {
         ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(
             status.elapsed_ms() as u64,
-            NETWORK_RECOVERY_TIMEOUT.as_millis() as u64,
+            Self::connection_not_ready_retry_window_ms(),
         ))
+    }
+
+    fn connection_not_ready_retry_window_ms() -> u64 {
+        (NETWORK_RECOVERY_TIMEOUT + CONNECTION_NOT_READY_RETRY_GRACE).as_millis() as u64
     }
 
     async fn notify_active_data_streams_uncertain(
