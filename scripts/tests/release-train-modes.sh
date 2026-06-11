@@ -45,7 +45,6 @@ _original_publish_package_sync_repo=$(declare -f publish_package_sync_repo)
 _original_publish_web_packages=$(declare -f publish_web_packages)
 _original_publish_typescript_workload_package=$(declare -f publish_typescript_workload_package)
 _original_publish_typescript_package=$(declare -f publish_typescript_package)
-_original_stage_validate=$(declare -f stage_validate)
 _original_stage_create_tag=$(declare -f stage_create_tag)
 _original_stage_publish_rust=$(declare -f stage_publish_rust)
 _original_write_context=$(declare -f write_context)
@@ -78,7 +77,6 @@ restore_all_functions() {
   eval "$_original_publish_web_packages"
   eval "$_original_publish_typescript_workload_package"
   eval "$_original_publish_typescript_package"
-  eval "$_original_stage_validate"
   eval "$_original_stage_create_tag"
   eval "$_original_stage_publish_rust"
   eval "$_original_write_context"
@@ -117,6 +115,35 @@ assert_eq() {
   fi
 }
 
+test_detect_conventional_bump_reads_commit_without_trailing_newline() {
+  reset_release_train_state
+
+  local temp_repo previous_root
+  temp_repo=$(mktemp -d)
+  previous_root=$ORIGINAL_REPO_ROOT
+
+  git -C "$temp_repo" init -q
+  printf 'tracked
+' >"$temp_repo/tracked.txt"
+  git -C "$temp_repo" add tracked.txt
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "init"
+  git -C "$temp_repo" tag v0.1.0
+  printf 'fix
+' >"$temp_repo/tracked.txt"
+  git -C "$temp_repo" add tracked.txt
+  git -C "$temp_repo" -c user.name="Release Test" -c user.email="release-test@example.com" commit -q -m "fix(runtime): repair mailbox state"
+
+  ORIGINAL_REPO_ROOT=$temp_repo
+
+  local bump
+  bump=$(detect_conventional_bump)
+
+  ORIGINAL_REPO_ROOT=$previous_root
+  rm -rf "$temp_repo"
+
+  assert_eq "patch" "$bump" "fix commit after tag must return patch"
+}
+
 test_parse_prepare_only_mode() {
   reset_release_train_state
 
@@ -130,9 +157,9 @@ test_parse_prepare_only_mode() {
 test_parse_stage_argument() {
   reset_release_train_state
 
-  parse_args --version 1.2.3 --stage validate
+  parse_args --version 1.2.3 --stage create-tag
 
-  assert_eq "validate" "$STAGE" "STAGE"
+  assert_eq "create-tag" "$STAGE" "STAGE"
   assert_eq "1.2.3" "$VERSION" "VERSION"
 }
 
@@ -343,9 +370,9 @@ test_publish_mode_uses_prepared_versions_without_mutating() {
   fi
 
   assert_eq "ensure_versions_prepared" "${calls[0]}" "first publish step"
-  assert_eq "run_validation_suite" "${calls[1]}" "second publish step"
-  assert_eq "ensure_publish_worktree_clean" "${calls[2]}" "third publish step"
-  assert_eq "set_release_sha" "${calls[3]}" "fourth publish step"
+  # run_validation_suite removed from publish path (now covered by CI gate test job)
+  assert_eq "ensure_publish_worktree_clean" "${calls[1]}" "second publish step"
+  assert_eq "set_release_sha" "${calls[2]}" "third publish step"
 }
 
 test_prepare_only_updates_validates_and_commits_without_publishing() {
@@ -377,46 +404,6 @@ test_prepare_only_updates_validates_and_commits_without_publishing() {
   fi
 }
 
-test_staged_validate_does_not_publish() {
-  reset_release_train_state
-
-  local calls=()
-  update_versions() { calls+=("update_versions"); }
-  ensure_versions_prepared() { calls+=("ensure_versions_prepared"); }
-  run_validation_suite() { calls+=("run_validation_suite"); }
-  ensure_publish_worktree_clean() { calls+=("ensure_publish_worktree_clean"); }
-  set_release_sha() { calls+=("set_release_sha"); RELEASE_SHA="abc123"; }
-  append_skipped_components() { calls+=("append_skipped_components"); }
-  write_context() { calls+=("write_context"); }
-  publish_rust_package() { calls+=("publish_rust_package"); }
-
-  VERSION="1.2.3"
-  DRY_RUN=false
-  PREPARE_ONLY=false
-  STAGE="validate"
-  REPORT_DIR="/tmp/test-release-reports"
-  mkdir -p "$REPORT_DIR"
-
-  run_release_train
-
-  local joined
-  joined=$(printf '%s\n' "${calls[@]}")
-
-  if grep -q "publish_rust_package" <<<"$joined"; then
-    printf 'validate stage must not call publish functions\n' >&2
-    rm -rf "$REPORT_DIR"
-    exit 1
-  fi
-
-  if ! grep -q "run_validation_suite" <<<"$joined"; then
-    printf 'validate stage must call run_validation_suite\n' >&2
-    rm -rf "$REPORT_DIR"
-    exit 1
-  fi
-
-  rm -rf "$REPORT_DIR"
-}
-
 test_create_tag_dry_run_does_not_push() {
   reset_release_train_state
 
@@ -433,6 +420,8 @@ test_create_tag_dry_run_does_not_push() {
   DRY_RUN=true
   STAGE="create-tag"
 
+  REPORT_DIR="/tmp/test-release-reports"
+  mkdir -p "$REPORT_DIR"
   run_release_train
 
   # In dry-run mode, create_final_tag is called but returns early.
@@ -475,8 +464,10 @@ test_main_publish_stage_skips_absent_tag_check() {
 
 test_main_validate_and_create_tag_check_absent_tag() {
   local stage expected_stage_call
-  for stage in validate create-tag; do
+  for stage in create-tag; do
     reset_release_train_state
+    REPORT_DIR="/tmp/test-release-reports"
+    mkdir -p "$REPORT_DIR"
 
     local calls=()
     ensure_clean_worktree() { calls+=("ensure_clean_worktree"); }
@@ -485,7 +476,6 @@ test_main_validate_and_create_tag_check_absent_tag() {
     ensure_release_tag_absent() { calls+=("ensure_release_tag_absent"); FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"; }
     resolve_package_sync_owner() { calls+=("resolve_package_sync_owner"); }
     install_python_release_tools() { calls+=("install_python_release_tools"); }
-    stage_validate() { calls+=("stage_validate"); }
     stage_create_tag() { calls+=("stage_create_tag"); }
 
     main --version 1.2.3 --stage "$stage" --dry-run --skip-python
@@ -1035,6 +1025,7 @@ test_typescript_dry_run_uses_pack_without_registry_publish() {
   fi
 }
 
+test_detect_conventional_bump_reads_commit_without_trailing_newline
 test_parse_prepare_only_mode
 test_parse_stage_argument
 test_parse_stage_publish_rust
@@ -1048,7 +1039,6 @@ test_latest_release_tag_accepts_legacy_release_train_prefix
 test_release_prepare_skips_release_commit_head
 test_publish_mode_uses_prepared_versions_without_mutating
 test_prepare_only_updates_validates_and_commits_without_publishing
-test_staged_validate_does_not_publish
 test_create_tag_dry_run_does_not_push
 test_main_publish_stage_skips_absent_tag_check
 test_main_validate_and_create_tag_check_absent_tag
