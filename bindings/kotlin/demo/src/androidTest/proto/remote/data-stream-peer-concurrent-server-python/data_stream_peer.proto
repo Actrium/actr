@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package data_stream_peer;
+
+message StartStreamRequest {
+  string client_id = 1;
+  string stream_id = 2;
+  uint32 message_count = 3;
+}
+
+message StartStreamResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message PrepareClientStreamRequest {
+  string stream_id = 1;
+  uint32 expected_count = 2;
+}
+
+message PrepareServerStreamRequest {
+  string stream_id = 1;
+  uint32 expected_count = 2;
+}
+
+message PrepareStreamResponse {
+  bool ready = 1;
+  string message = 2;
+}
+
+service StreamClient {
+  rpc StartStream(StartStreamRequest) returns (StartStreamResponse);
+  rpc PrepareClientStream(PrepareClientStreamRequest) returns (PrepareStreamResponse);
+}
+
+service StreamServer {
+  rpc PrepareStream(PrepareServerStreamRequest) returns (PrepareStreamResponse);
+}
+

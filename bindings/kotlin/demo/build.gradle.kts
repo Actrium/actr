@@ -51,6 +51,30 @@ protobuf {
     }
 }
 
+// Copy proto files from assets/protos to proto source dirs for protobuf plugin
+// Exclude duplicate directories that conflict (echo-real-server has same messages as echo-echo-server)
+val copyMainProtos = tasks.register<Copy>("copyMainProtos") {
+    from("src/main/assets/protos") {
+        include("**/*.proto")
+        exclude("**/echo-real-server/**")
+    }
+    into("src/main/proto")
+}
+val copyTestProtos = tasks.register<Copy>("copyTestProtos") {
+    from("src/main/assets/protos") {
+        include("**/*.proto")
+        exclude("**/echo-real-server/**")
+    }
+    from("src/androidTest/assets/protos") { include("**/*.proto") }
+    into("src/androidTest/proto")
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+afterEvaluate {
+    tasks.matching { it.name.startsWith("generate") && it.name.contains("Proto") }.configureEach {
+        dependsOn(copyMainProtos, copyTestProtos)
+    }
+}
+
 dependencies {
     // actr-kotlin library
     implementation(project(":actr-kotlin"))

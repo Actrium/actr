@@ -150,6 +150,9 @@ TOOLCHAIN_PATH="$(resolve_toolchain_path "${NDK_PATH}")" || {
     exit 1
 }
 
+export ANDROID_NDK_HOME="${NDK_PATH}"
+export ANDROID_NDK_ROOT="${NDK_PATH}"
+
 export PROTOC="${PROTOC_PATH}"
 export PATH="${TOOLCHAIN_PATH}/bin:${PATH}"
 export CC_aarch64_linux_android="${TOOLCHAIN_PATH}/bin/aarch64-linux-android${ANDROID_API_LEVEL}-clang"
@@ -234,13 +237,9 @@ fix_opus_for_target() {
     a_size=$(ls -l "${opus_lib_dir}/libopus.a" 2>/dev/null | awk '{print $5}')
     so_size=$(ls -l "${opus_lib_dir}/libopus.so" 2>/dev/null | awk '{print $5}')
     echo "  libopus.a: ${a_size} bytes, libopus.so: ${so_size} bytes"
-
-    # Expose the lib dir for RUSTFLAGS
-    RUSTFLAGS_EXTRA="${RUSTFLAGS_EXTRA} -L ${opus_lib_dir} -l opus"
 }
 
 export ANDROID_TOOLCHAIN_PATH="${TOOLCHAIN_PATH}"
-RUSTFLAGS_EXTRA=""
 
 # Build each Android target
 for target_pair in "aarch64-linux-android aarch64" "x86_64-linux-android x86_64"; do
@@ -258,13 +257,22 @@ echo ""
 echo "==> Relinking libactr with libopus.so DT_NEEDED..."
 for target_pair in "aarch64-linux-android aarch64" "x86_64-linux-android x86_64"; do
     target=$(echo "$target_pair" | awk '{print $1}')
+    target_upper=$(echo "$target_pair" | awk '{print $2}')
+
+    # Find the audiopus_sys build directory for THIS target
+    local_opus_dir=$(find "${TARGET_DIR}/${target}/release/build" \
+        -maxdepth 1 -name "audiopus_sys-*" -type d 2>/dev/null | head -1)
+    local_opus_flags=""
+    if [[ -n "${local_opus_dir}" && -f "${local_opus_dir}/out/lib/libopus.so" ]]; then
+        local_opus_flags="-L ${local_opus_dir}/out/lib -l opus"
+    fi
+
     # Force relink
     rm -f "${TARGET_DIR}/${target}/release/libactr.so"
     find "${TARGET_DIR}/${target}/release/deps" -name "liblibactr*" -delete 2>/dev/null
     find "${TARGET_DIR}/${target}/release/.fingerprint" -name "libactr-*" -maxdepth 1 -exec rm -rf {} + 2>/dev/null
 
-    RUSTFLAGS="${RUSTFLAGS_EXTRA}" \
-        (cd "${WORKSPACE_ROOT}" && cargo build -p libactr --release --target "${target}")
+    (cd "${WORKSPACE_ROOT}" && RUSTFLAGS="${local_opus_flags}" cargo build -p libactr --release --target "${target}")
 done
 
 echo ""

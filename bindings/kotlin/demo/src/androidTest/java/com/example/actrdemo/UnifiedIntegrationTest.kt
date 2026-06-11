@@ -16,8 +16,8 @@ import android.content.Context
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import data_stream_peer.StreamClientOuterClass.ClientStartStreamRequest
-import data_stream_peer.StreamClientOuterClass.ClientStartStreamResponse
+import local.StreamClientOuterClass.ClientStartStreamRequest
+import local.StreamClientOuterClass.ClientStartStreamResponse
 import io.actor_rtc.actr.PayloadType
 import io.actor_rtc.actr.dsl.ActrRef
 import io.actor_rtc.actr.dsl.awaitShutdown
@@ -165,7 +165,7 @@ class UnifiedIntegrationTest {
                     ClientStartStreamRequest
                         .newBuilder()
                         .setClientId("android-test-client")
-                        .setStreamId("test-stream-${System.currentTimeMillis()}")
+                        .setSessionId("test-stream-${System.currentTimeMillis()}")
                         .setMessageCount(3)
                         .build()
 

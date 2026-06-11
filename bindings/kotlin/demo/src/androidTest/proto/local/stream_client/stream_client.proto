@@ -1,0 +1,22 @@
+syntax = "proto3";
+package local;
+
+import "remote/data-stream-peer-concurrent-server/data_stream_peer.proto";
+
+// Local trigger to start a duplex stream session.
+// The handler calls StartDuplexStream RPC on the remote DuplexStreamService,
+// then sends DataStream chunks, and finally calls FinishDuplexStream.
+message ClientStartStreamRequest {
+  string client_id = 1;
+  string session_id = 2;
+  uint32 message_count = 3;
+}
+
+message ClientStartStreamResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+service StreamClient {
+  rpc StartStream(ClientStartStreamRequest) returns (ClientStartStreamResponse);
+}
