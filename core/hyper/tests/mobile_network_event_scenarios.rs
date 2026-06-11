@@ -14,9 +14,11 @@ use actr_hyper::lifecycle::{
     NetworkTransportFlags, ReconnectReason, process_network_event_batch,
     run_network_event_reconciler, select_network_recovery_action,
 };
+use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::TestHarness;
+use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{DataStream, PayloadType};
+use actr_protocol::{ActrId, DataStream, PayloadType, RpcEnvelope};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
@@ -24,6 +26,30 @@ struct RoleCase {
     name: &'static str,
     mobile_serial: u64,
     server_serial: u64,
+}
+
+#[derive(Clone, Copy)]
+struct DirectionCase {
+    name: &'static str,
+    from_serial: u64,
+    to_serial: u64,
+}
+
+impl RoleCase {
+    fn directions(self) -> [DirectionCase; 2] {
+        [
+            DirectionCase {
+                name: "mobile_to_server",
+                from_serial: self.mobile_serial,
+                to_serial: self.server_serial,
+            },
+            DirectionCase {
+                name: "server_to_mobile",
+                from_serial: self.server_serial,
+                to_serial: self.mobile_serial,
+            },
+        ]
+    }
 }
 
 const ROLE_CASES: [RoleCase; 2] = [
@@ -38,6 +64,18 @@ const ROLE_CASES: [RoleCase; 2] = [
         server_serial: 100,
     },
 ];
+
+struct BackgroundTasks {
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for BackgroundTasks {
+    fn drop(&mut self) {
+        for handle in &self.handles {
+            handle.abort();
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 enum EventSpec {
@@ -659,6 +697,123 @@ fn parse_mobile_jsonl_events(jsonl: &str) -> Vec<NetworkEvent> {
     events
 }
 
+fn spawn_rpc_router(
+    coordinator: Arc<WebRtcCoordinator>,
+    gate: Arc<PeerGate>,
+    name: &str,
+) -> tokio::task::JoinHandle<()> {
+    let name = name.to_string();
+    tokio::spawn(async move {
+        loop {
+            match coordinator.receive_message().await {
+                Ok(Some((sender_bytes, message_data, _payload_type))) => {
+                    let sender_id = match ActrId::decode(sender_bytes.as_slice()) {
+                        Ok(sender_id) => sender_id,
+                        Err(e) => {
+                            tracing::error!("{} failed to decode sender ActrId: {}", name, e);
+                            continue;
+                        }
+                    };
+
+                    let envelope = match RpcEnvelope::decode(message_data.as_ref()) {
+                        Ok(envelope) => envelope,
+                        Err(e) => {
+                            tracing::error!("{} failed to decode RpcEnvelope: {}", name, e);
+                            continue;
+                        }
+                    };
+
+                    if envelope.route_key == "response" {
+                        let result = if let Some(error) = envelope.error {
+                            Err(actr_protocol::ActrError::Unavailable(format!(
+                                "RPC error {}: {}",
+                                error.code, error.message
+                            )))
+                        } else if let Some(payload) = envelope.payload {
+                            Ok(payload)
+                        } else {
+                            Err(actr_protocol::ActrError::DecodeFailure(
+                                "Invalid response: no payload or error".to_string(),
+                            ))
+                        };
+
+                        if let Err(e) = gate.handle_response(&envelope.request_id, result).await {
+                            tracing::error!(
+                                "{} failed to handle response {}: {}",
+                                name,
+                                envelope.request_id,
+                                e
+                            );
+                        }
+                        continue;
+                    }
+
+                    let response = RpcEnvelope {
+                        request_id: envelope.request_id.clone(),
+                        route_key: "response".to_string(),
+                        payload: envelope.payload.clone(),
+                        timeout_ms: 0,
+                        ..Default::default()
+                    };
+
+                    if let Err(e) = gate.send_message(&sender_id, response).await {
+                        tracing::error!(
+                            "{} failed to send echo response for {}: {}",
+                            name,
+                            envelope.request_id,
+                            e
+                        );
+                    }
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::error!("{} receive loop failed: {}", name, e);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    })
+}
+
+async fn setup_bidirectional_mobile_server_harness(
+    case: RoleCase,
+) -> (TestHarness, BackgroundTasks) {
+    let mut harness = TestHarness::with_vnet().await;
+    for serial in [
+        case.mobile_serial.min(case.server_serial),
+        case.mobile_serial.max(case.server_serial),
+    ] {
+        harness.add_peer(serial).await;
+    }
+
+    let bg_tasks = BackgroundTasks {
+        handles: vec![
+            spawn_rpc_router(
+                harness.peer(case.mobile_serial).coordinator.clone(),
+                harness.peer(case.mobile_serial).gate.clone(),
+                "mobile_network_event_router",
+            ),
+            spawn_rpc_router(
+                harness.peer(case.server_serial).coordinator.clone(),
+                harness.peer(case.server_serial).gate.clone(),
+                "server_network_event_router",
+            ),
+        ],
+    };
+
+    expect_request_ok(
+        &harness,
+        case.mobile_serial,
+        case.server_serial,
+        &format!("{}_bidirectional_setup", case.name),
+        Duration::from_secs(30),
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    (harness, bg_tasks)
+}
+
 async fn expect_request_ok(
     harness: &TestHarness,
     from_serial: u64,
@@ -710,6 +865,79 @@ async fn expect_request_ok(
     }
 }
 
+async fn expect_request_bounded_failure(
+    harness: &TestHarness,
+    from_serial: u64,
+    to_serial: u64,
+    request_id: &str,
+    request_timeout_ms: u32,
+    timeout: Duration,
+) -> String {
+    let handle = harness
+        .peer(from_serial)
+        .spawn_request(to_serial, request_id, request_timeout_ms);
+
+    match tokio::time::timeout(timeout, handle).await {
+        Ok(Ok(Err(err))) => {
+            let msg = err.to_string();
+            assert!(
+                is_expected_bounded_send_error(&msg),
+                "{} failed with unexpected error: {}",
+                request_id,
+                msg
+            );
+            msg
+        }
+        Ok(Ok(Ok(response))) => panic!(
+            "{} unexpectedly succeeded with {} bytes",
+            request_id,
+            response.len()
+        ),
+        Ok(Err(err)) => panic!("{} request task panicked: {}", request_id, err),
+        Err(_) => panic!("{} did not complete within {:?}", request_id, timeout),
+    }
+}
+
+async fn expect_direction_requests_ok(
+    harness: &TestHarness,
+    case: RoleCase,
+    label: &str,
+    timeout: Duration,
+) {
+    for direction in case.directions() {
+        expect_request_ok(
+            harness,
+            direction.from_serial,
+            direction.to_serial,
+            &format!("{label}_{}", direction.name),
+            timeout,
+        )
+        .await;
+    }
+}
+
+async fn wait_for_transport_dest_count(
+    harness: &TestHarness,
+    serial: u64,
+    expected: usize,
+    label: &str,
+    timeout: Duration,
+) {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let actual = harness.peer(serial).transport_manager.dest_count().await;
+        if actual == expected {
+            return;
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{label} expected peer {serial} to have {expected} cached transports, got {actual}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 fn is_expected_bounded_send_error(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     [
@@ -723,6 +951,9 @@ fn is_expected_bounded_send_error(message: &str) -> bool {
         "not opened",
         "timeout",
         "unavailable",
+        "not found",
+        "no route",
+        "all transport candidates exhausted",
     ]
     .iter()
     .any(|needle| message.contains(needle))
@@ -951,6 +1182,126 @@ fn test_mobile_jsonl_replay_maps_real_log_shape_to_recovery_actions() {
             case.expected,
             "{} JSONL selected unexpected action",
             case.name
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_mobile_app_kill_cleanup_then_restart_online_recovers_bidirectional_server_send() {
+    init_tracing();
+
+    for case in ROLE_CASES {
+        let label = format!("{}_app_kill_restart_online", case.name);
+        let (harness, mut bg_tasks) = setup_bidirectional_mobile_server_harness(case).await;
+        harness.reset_counters();
+
+        expect_direction_requests_ok(
+            &harness,
+            case,
+            &format!("{label}_baseline"),
+            Duration::from_secs(15),
+        )
+        .await;
+
+        let cleanup_events = vec![NetworkEvent::CleanupConnections {
+            reason: CleanupReason::AppTerminating,
+        }];
+        assert_eq!(
+            select_network_recovery_action(&cleanup_events),
+            NetworkRecoveryAction::CleanupOnly
+        );
+        let cleanup_results = process_network_event_batch(
+            cleanup_events,
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            cleanup_results.iter().all(|result| result.success),
+            "{label} app terminating cleanup should succeed: {cleanup_results:?}"
+        );
+
+        let mobile_router = bg_tasks.handles.remove(0);
+        mobile_router.abort();
+        assert!(
+            !harness
+                .peer(case.mobile_serial)
+                .signaling_client
+                .is_connected(),
+            "{label} mobile signaling should be disconnected while app is killed"
+        );
+        wait_for_transport_dest_count(
+            &harness,
+            case.mobile_serial,
+            0,
+            &format!("{label}_mobile_cleanup"),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        let killed_error = expect_request_bounded_failure(
+            &harness,
+            case.server_serial,
+            case.mobile_serial,
+            &format!("{label}_server_send_while_killed"),
+            1_000,
+            Duration::from_secs(15),
+        )
+        .await;
+        tracing::info!(
+            case = case.name,
+            error = %killed_error,
+            "server-to-mobile send failed bounded while mobile app was killed"
+        );
+        assert_eq!(
+            harness.peer(case.server_serial).pending_count().await,
+            0,
+            "{label} server send while killed should not leak pending state"
+        );
+
+        bg_tasks.handles.push(spawn_rpc_router(
+            harness.peer(case.mobile_serial).coordinator.clone(),
+            harness.peer(case.mobile_serial).gate.clone(),
+            "mobile_network_event_router_restarted",
+        ));
+
+        let restart_events = vec![online_event(20), wifi_event(21)];
+        assert_eq!(
+            select_network_recovery_action(&restart_events),
+            NetworkRecoveryAction::Restore
+        );
+        let restart_results = process_network_event_batch(
+            restart_events,
+            harness.peer(case.mobile_serial).network_processor(),
+        )
+        .await;
+        assert!(
+            restart_results.iter().all(|result| result.success),
+            "{label} online restart restore should succeed: {restart_results:?}"
+        );
+        assert!(
+            harness
+                .peer(case.mobile_serial)
+                .signaling_client
+                .is_connected(),
+            "{label} mobile signaling should reconnect after app restart"
+        );
+
+        expect_direction_requests_ok(
+            &harness,
+            case,
+            &format!("{label}_after_restart"),
+            Duration::from_secs(30),
+        )
+        .await;
+        assert_eq!(
+            harness.peer(case.mobile_serial).pending_count().await,
+            0,
+            "{label} mobile should not leak pending requests after restart"
+        );
+        assert_eq!(
+            harness.peer(case.server_serial).pending_count().await,
+            0,
+            "{label} server should not leak pending requests after restart"
         );
     }
 }
