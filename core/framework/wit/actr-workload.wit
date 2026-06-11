@@ -121,6 +121,7 @@ interface types {
     // `ActrError::DependencyNotFound` don't lose structure.
     variant actr-error {
         unavailable(string),
+        connection-not-ready(connection-not-ready-info),
         timed-out,
         not-found(string),
         permission-denied(string),
@@ -136,6 +137,11 @@ interface types {
     record dependency-not-found-payload {
         service-name: string,
         message: string,
+    }
+
+    // Send preflight failure payload. The operation did not enter transport.
+    record connection-not-ready-info {
+        retry-after-ms: option<u64>,
     }
 
     // Peer-scoped event (actr_framework::PeerEvent) carried by the

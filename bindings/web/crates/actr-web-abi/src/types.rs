@@ -6,7 +6,7 @@
 // Regenerate with: cargo run -p actr-wit-compile-web
 // Drift check:      cargo run -p actr-wit-compile-web -- --check
 
-//! Serde-derived record / variant definitions lowered from
+//! Serde-derived record / enum / variant definitions lowered from
 //! `core/framework/wit/actr-workload.wit`.
 //!
 //! Every type derives `Serialize` + `Deserialize` so
@@ -43,6 +43,13 @@ pub struct BackpressureEvent {
     #[serde(rename = "queue-len")]
     pub queue_len: u64,
     pub threshold: u64,
+}
+
+/// Lowered from WIT `record connection-not-ready-info`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionNotReadyInfo {
+    #[serde(rename = "retry-after-ms")]
+    pub retry_after_ms: Option<u64>,
 }
 
 /// Lowered from WIT `record credential-event`.
@@ -124,6 +131,8 @@ pub struct Timestamp {
 pub enum ActrError {
     #[serde(rename = "unavailable")]
     Unavailable(String),
+    #[serde(rename = "connection-not-ready")]
+    ConnectionNotReady(ConnectionNotReadyInfo),
     #[serde(rename = "timed-out")]
     TimedOut,
     #[serde(rename = "not-found")]

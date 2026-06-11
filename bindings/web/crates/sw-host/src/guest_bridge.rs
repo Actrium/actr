@@ -285,8 +285,13 @@ fn parse_actr_type(value: &JsValue) -> Result<ActrType, JsValue> {
 /// with the matching variant tags; here we flatten to message text plus a
 /// machine-readable `name` attribute so the SW can re-tag deterministically.
 fn actr_error_to_js(error: ActrError) -> JsValue {
+    let mut retry_after_ms = None;
     let (tag, message) = match &error {
         ActrError::Unavailable(m) => ("unavailable", m.clone()),
+        ActrError::ConnectionNotReady(info) => {
+            retry_after_ms = info.retry_after_ms;
+            ("connection-not-ready", format!("{info}"))
+        }
         ActrError::TimedOut => ("timed-out", String::new()),
         ActrError::NotFound(m) => ("not-found", m.clone()),
         ActrError::PermissionDenied(m) => ("permission-denied", m.clone()),
@@ -307,6 +312,12 @@ fn actr_error_to_js(error: ActrError) -> JsValue {
         &JsValue::from_str("actrErrorTag"),
         &JsValue::from_str(tag),
     );
+    if tag == "connection-not-ready" {
+        let value = retry_after_ms
+            .map(|value| JsValue::from_f64(value as f64))
+            .unwrap_or(JsValue::NULL);
+        let _ = js_sys::Reflect::set(&err, &JsValue::from_str("actrRetryAfterMs"), &value);
+    }
     err.into()
 }
 

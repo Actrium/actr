@@ -843,7 +843,7 @@ async fn expect_request_ok(
             Ok(Ok(Err(err))) => {
                 let msg = err.to_string();
                 assert!(
-                    msg.contains("Connection recovering")
+                    msg.contains("connection not ready")
                         || msg.contains("Request timeout")
                         || msg.contains("Connection"),
                     "unexpected retry error while waiting for recovery: {msg}"

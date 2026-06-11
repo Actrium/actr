@@ -134,7 +134,7 @@ async fn answerer_failed_peer_does_not_keep_sending_on_stale_webrtc() {
         Ok(Err(err)) => {
             let msg = err.to_string();
             assert!(
-                msg.contains("Connection recovering")
+                msg.contains("connection not ready")
                     || msg.contains("closing")
                     || msg.contains("not ready")
                     || msg.contains("Disconnected")

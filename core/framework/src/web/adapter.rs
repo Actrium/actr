@@ -25,7 +25,9 @@
 
 use std::time::{Duration, UNIX_EPOCH};
 
-use actr_protocol::{ActrError, ActrId, DataStream, MetadataEntry, Realm, RpcEnvelope};
+use actr_protocol::{
+    ActrError, ActrId, ConnectionNotReadyInfo, DataStream, MetadataEntry, Realm, RpcEnvelope,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -61,6 +63,24 @@ fn actr_id_from_wit(id: &wit::ActrId) -> ActrId {
     }
 }
 
+fn actr_type_to_wit(t: &actr_protocol::ActrType) -> wit::ActrType {
+    wit::ActrType {
+        manufacturer: t.manufacturer.clone(),
+        name: t.name.clone(),
+        version: t.version.clone(),
+    }
+}
+
+fn actr_id_to_wit(id: &ActrId) -> wit::ActrId {
+    wit::ActrId {
+        realm: wit::Realm {
+            realm_id: id.realm.realm_id,
+        },
+        serial_number: id.serial_number,
+        actr_type: actr_type_to_wit(&id.r#type),
+    }
+}
+
 fn timestamp_from_wit(t: wit::Timestamp) -> std::time::SystemTime {
     UNIX_EPOCH + Duration::new(t.seconds, t.nanoseconds)
 }
@@ -87,6 +107,9 @@ fn error_category_from_wit(c: wit::ErrorCategory) -> ErrorCategory {
 fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
     match e {
         wit::ActrError::Unavailable(m) => ActrError::Unavailable(m),
+        wit::ActrError::ConnectionNotReady(info) => {
+            ActrError::ConnectionNotReady(wit_connection_not_ready_info_to_proto(info))
+        }
         wit::ActrError::TimedOut => ActrError::TimedOut,
         wit::ActrError::NotFound(m) => ActrError::NotFound(m),
         wit::ActrError::PermissionDenied(m) => ActrError::PermissionDenied(m),
@@ -105,6 +128,9 @@ fn wit_error_to_proto(e: wit::ActrError) -> ActrError {
 fn proto_error_to_wit(e: ActrError) -> wit::ActrError {
     match e {
         ActrError::Unavailable(m) => wit::ActrError::Unavailable(m),
+        ActrError::ConnectionNotReady(info) => {
+            wit::ActrError::ConnectionNotReady(proto_connection_not_ready_info_to_wit(info))
+        }
         ActrError::TimedOut => wit::ActrError::TimedOut,
         ActrError::NotFound(m) => wit::ActrError::NotFound(m),
         ActrError::PermissionDenied(m) => wit::ActrError::PermissionDenied(m),
@@ -120,6 +146,22 @@ fn proto_error_to_wit(e: ActrError) -> wit::ActrError {
         ActrError::DecodeFailure(m) => wit::ActrError::DecodeFailure(m),
         ActrError::NotImplemented(m) => wit::ActrError::NotImplemented(m),
         ActrError::Internal(m) => wit::ActrError::Internal(m),
+    }
+}
+
+fn wit_connection_not_ready_info_to_proto(
+    info: wit::ConnectionNotReadyInfo,
+) -> ConnectionNotReadyInfo {
+    ConnectionNotReadyInfo {
+        retry_after_ms: info.retry_after_ms,
+    }
+}
+
+fn proto_connection_not_ready_info_to_wit(
+    info: ConnectionNotReadyInfo,
+) -> wit::ConnectionNotReadyInfo {
+    wit::ConnectionNotReadyInfo {
+        retry_after_ms: info.retry_after_ms,
     }
 }
 

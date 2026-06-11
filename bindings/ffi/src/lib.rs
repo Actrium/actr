@@ -13,6 +13,7 @@
 
 mod context;
 mod error;
+mod log_callback;
 mod logger;
 mod opus;
 mod runtime;
@@ -20,6 +21,7 @@ mod types;
 mod workload;
 
 pub use error::*;
+pub use log_callback::*;
 pub use opus::*;
 pub use runtime::*;
 pub use types::*;

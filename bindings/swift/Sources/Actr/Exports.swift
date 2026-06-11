@@ -10,3 +10,4 @@ public typealias MediaSample = ActrBindings.MediaSample
 public typealias MediaType = ActrBindings.MediaType
 public typealias MediaTrackCallback = ActrBindings.MediaTrackCallback
 public typealias OpusEncoder = ActrBindings.OpusEncoder
+public typealias LogCallback = ActrBindings.LogCallback

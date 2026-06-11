@@ -342,8 +342,8 @@ async fn expect_connection_recovering(
         Ok(Ok(Err(err))) => {
             let msg = err.to_string();
             assert!(
-                msg.contains("Connection recovering"),
-                "{label} failed, but not with Connection recovering: {msg}"
+                msg.contains("connection not ready"),
+                "{label} failed, but not with connection not ready: {msg}"
             );
         }
         Ok(Ok(Ok(response))) => {
@@ -386,7 +386,7 @@ async fn expect_request_eventually_ok(
             Ok(Ok(Err(err))) => {
                 let msg = err.to_string();
                 assert!(
-                    msg.contains("Connection recovering")
+                    msg.contains("connection not ready")
                         || msg.contains("Request timeout")
                         || msg.contains("Connection"),
                     "unexpected retry error while waiting for recovery: {msg}"
@@ -1683,12 +1683,12 @@ async fn test_network_recovery_guard_times_out_after_6s_and_closes_transport() {
         Ok(Ok(Err(err))) => {
             let msg = err.to_string();
             assert!(
-                msg.contains("Connection recovery timeout"),
-                "expected recovery timeout error, got: {msg}"
+                msg.contains("connection not ready"),
+                "expected connection-not-ready error, got: {msg}"
             );
             assert!(
-                msg.contains("timeout_ms=6000"),
-                "timeout error should report the 6s recovery budget: {msg}"
+                msg.contains("retry_after_ms=None"),
+                "expired recovery guard should not expose a retry hint: {msg}"
             );
         }
         Ok(Ok(Ok(response))) => panic!(
@@ -2471,7 +2471,7 @@ async fn test_answerer_recovery_latency() {
 ///    signaling and starts/retries WebRTC recovery.
 /// 2. That success does not mean the reliable DataChannel is usable yet.
 /// 3. RPCs sent immediately after the event now fail fast with
-///    `Connection recovering` before they enter pending_requests.
+///    `connection not ready` before they enter pending_requests.
 /// 4. A later retry succeeds once UDP/signaling are restored.
 #[tokio::test]
 #[ignore = "slow VNet recovery regression test"]
@@ -2584,7 +2584,7 @@ async fn repro_network_event_returns_before_webrtc_ready_causing_early_rpc_timeo
                     panic!("retry after recovery should eventually succeed, last error: {msg}");
                 }
                 assert!(
-                    msg.contains("Connection recovering")
+                    msg.contains("connection not ready")
                         || msg.contains("Request timeout")
                         || msg.contains("Connection"),
                     "unexpected retry error while waiting for recovery: {msg}"

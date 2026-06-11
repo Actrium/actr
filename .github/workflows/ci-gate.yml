@@ -104,6 +104,44 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+
+  test:
+    name: Test (Rust)
+    needs: determine
+    if: needs.determine.outputs.rust_core == 'true' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Cache cargo-installed tools
+        id: cargo-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
+      - name: Install wasm-pack
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Run tests
+        run: cargo test --workspace --verbose --all-features
+
   typescript:
     name: TypeScript
     needs: determine
@@ -456,6 +494,7 @@ jobs:
       - swift
       - kotlin
       - web
+      - test
     env:
       MODE: ${{ needs.determine.outputs.mode }}
       CHANGED_FILES_JSON: ${{ needs.determine.outputs.changed_files_json }}
@@ -468,6 +507,7 @@ jobs:
       SWIFT_RESULT: ${{ needs.swift.result }}
       KOTLIN_RESULT: ${{ needs.kotlin.result }}
       WEB_RESULT: ${{ needs.web.result }}
+      TEST_RESULT: ${{ needs.test.result }}
     steps:
       - name: Summarize gate
         run: |
@@ -485,6 +525,7 @@ jobs:
               "swift": os.environ["SWIFT_RESULT"],
               "kotlin": os.environ["KOTLIN_RESULT"],
               "web": os.environ["WEB_RESULT"],
+              "test": os.environ["TEST_RESULT"],
           }
 
           changed_files = json.loads(os.environ["CHANGED_FILES_JSON"])
