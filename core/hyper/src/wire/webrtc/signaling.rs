@@ -1633,12 +1633,17 @@ impl SignalingClient for WebSocketSignalingClient {
         let (tx, rx) = oneshot::channel();
         self.pending_pongs.lock().await.insert(payload.clone(), tx);
 
-        let send_result = {
+        let send_timeout = std::cmp::min(
+            timeout,
+            std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
+        );
+        let ping_payload = payload.clone();
+        let send_result = tokio::time::timeout(send_timeout, async {
             let mut sink_guard = self.ws_sink.lock().await;
             match sink_guard.as_mut() {
                 Some(sink) => sink
                     .send(tokio_tungstenite::tungstenite::Message::Ping(
-                        payload.clone().into(),
+                        ping_payload.into(),
                     ))
                     .await
                     .map_err(|e| {
@@ -1648,7 +1653,14 @@ impl SignalingClient for WebSocketSignalingClient {
                     "Signaling probe failed: WebSocket sink is not available".to_string(),
                 )),
             }
-        };
+        })
+        .await
+        .unwrap_or_else(|_| {
+            Err(NetworkError::TimeoutError(format!(
+                "Timed out sending signaling probe ping after {}ms",
+                send_timeout.as_millis()
+            )))
+        });
 
         if let Err(e) = send_result {
             self.pending_pongs.lock().await.remove(&payload);
@@ -2266,6 +2278,37 @@ mod tests {
     /// Helper: create a WebSocketSignalingClient wrapped in Arc
     fn make_ws_client(config: SignalingConfig) -> Arc<WebSocketSignalingClient> {
         Arc::new(WebSocketSignalingClient::new(config))
+    }
+
+    #[tokio::test]
+    async fn probe_alive_times_out_when_sink_lock_is_stalled() {
+        let client = make_ws_client(make_config());
+        client.connected.store(true, Ordering::Release);
+
+        let _sink_guard = client.ws_sink.lock().await;
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(250),
+            client.probe_alive(Duration::from_millis(20)),
+        )
+        .await
+        .expect("probe should be bounded by its own timeout");
+
+        let err = result.expect_err("stalled sink lock should fail the probe");
+        assert!(
+            err.to_string()
+                .contains("Timed out sending signaling probe ping"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !client.is_connected(),
+            "stalled probe send should mark signaling disconnected"
+        );
+        assert_eq!(client.get_stats().disconnections, 1);
+        assert!(
+            client.pending_pongs.lock().await.is_empty(),
+            "failed probe send should remove its pending pong waiter"
+        );
     }
 
     #[tokio::test]

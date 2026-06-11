@@ -610,6 +610,13 @@ impl DefaultNetworkEventProcessor {
                     "Connectivity probe failed; restoring connections: {}",
                     e
                 );
+                if let Err(disconnect_err) = self.signaling_client.disconnect().await {
+                    tracing::warn!(
+                        reason = reason,
+                        "Failed to disconnect unhealthy signaling before restore: {}",
+                        disconnect_err
+                    );
+                }
                 self.restore_signaling_and_webrtc(reason).await
             }
         }
