@@ -24,7 +24,7 @@ _original_run_validation_suite=$(declare -f run_validation_suite)
 _original_ensure_clean_worktree=$(declare -f ensure_clean_worktree)
 _original_prepare_paths=$(declare -f prepare_paths)
 _original_prepare_worktree=$(declare -f prepare_worktree)
-_original_ensure_release_tag_absent=$(declare -f ensure_release_tag_absent)
+_original_ensure_release_tag_available=$(declare -f ensure_release_tag_available)
 _original_resolve_package_sync_owner=$(declare -f resolve_package_sync_owner)
 _original_install_python_release_tools=$(declare -f install_python_release_tools)
 _original_build_python_distribution=$(declare -f build_python_distribution)
@@ -56,7 +56,7 @@ restore_all_functions() {
   eval "$_original_ensure_clean_worktree"
   eval "$_original_prepare_paths"
   eval "$_original_prepare_worktree"
-  eval "$_original_ensure_release_tag_absent"
+  eval "$_original_ensure_release_tag_available"
   eval "$_original_resolve_package_sync_owner"
   eval "$_original_install_python_release_tools"
   eval "$_original_build_python_distribution"
@@ -101,6 +101,7 @@ reset_release_train_state() {
   OVERALL_STATUS="success"
   FAILURE_REASON=""
   FINAL_TAG=""
+  TAG_ALREADY_EXISTS=false
   ORIGINAL_REPO_ROOT="$repo_root"
   restore_all_functions
 }
@@ -259,7 +260,7 @@ test_final_tag_uses_conventional_v_prefix() {
   VERSION="1.2.3"
   DRY_RUN=false
 
-  ensure_release_tag_absent
+  ensure_release_tag_available
 
   cd "$previous_pwd"
   rm -rf "$temp_repo"
@@ -432,14 +433,14 @@ test_create_tag_dry_run_does_not_push() {
   fi
 }
 
-test_main_publish_stage_skips_absent_tag_check() {
+test_main_publish_stage_skips_tag_availability_check() {
   reset_release_train_state
 
   local calls=()
   ensure_clean_worktree() { calls+=("ensure_clean_worktree"); }
   prepare_paths() { calls+=("prepare_paths"); }
   prepare_worktree() { calls+=("prepare_worktree"); }
-  ensure_release_tag_absent() { calls+=("ensure_release_tag_absent"); }
+  ensure_release_tag_available() { calls+=("ensure_release_tag_available"); }
   resolve_package_sync_owner() { calls+=("resolve_package_sync_owner"); }
   install_python_release_tools() { calls+=("install_python_release_tools"); }
   stage_publish_rust() { calls+=("stage_publish_rust"); }
@@ -449,7 +450,7 @@ test_main_publish_stage_skips_absent_tag_check() {
   local joined
   joined=$(printf '%s\n' "${calls[@]}")
 
-  if grep -qx "ensure_release_tag_absent" <<<"$joined"; then
+  if grep -qx "ensure_release_tag_available" <<<"$joined"; then
     printf 'publish-rust stage must not check that the final tag is absent\n' >&2
     exit 1
   fi
@@ -473,7 +474,7 @@ test_main_validate_and_create_tag_check_absent_tag() {
     ensure_clean_worktree() { calls+=("ensure_clean_worktree"); }
     prepare_paths() { calls+=("prepare_paths"); }
     prepare_worktree() { calls+=("prepare_worktree"); }
-    ensure_release_tag_absent() { calls+=("ensure_release_tag_absent"); FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"; }
+    ensure_release_tag_available() { calls+=("ensure_release_tag_available"); FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"; }
     resolve_package_sync_owner() { calls+=("resolve_package_sync_owner"); }
     install_python_release_tools() { calls+=("install_python_release_tools"); }
     stage_create_tag() { calls+=("stage_create_tag"); }
@@ -482,7 +483,7 @@ test_main_validate_and_create_tag_check_absent_tag() {
 
     local joined
     joined=$(printf '%s\n' "${calls[@]}")
-    if ! grep -qx "ensure_release_tag_absent" <<<"$joined"; then
+    if ! grep -qx "ensure_release_tag_available" <<<"$joined"; then
       printf '%s stage must check that the final tag is absent\n' "$stage" >&2
       exit 1
     fi
@@ -1040,7 +1041,7 @@ test_release_prepare_skips_release_commit_head
 test_publish_mode_uses_prepared_versions_without_mutating
 test_prepare_only_updates_validates_and_commits_without_publishing
 test_create_tag_dry_run_does_not_push
-test_main_publish_stage_skips_absent_tag_check
+test_main_publish_stage_skips_tag_availability_check
 test_main_validate_and_create_tag_check_absent_tag
 test_publish_python_package_builds_distribution_before_upload
 test_publish_rust_package_prepares_cli_web_assets_before_publish
