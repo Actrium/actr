@@ -1564,26 +1564,40 @@ impl SignalingClient for WebSocketSignalingClient {
     }
 
     async fn connect_once(&self) -> NetworkResult<()> {
-        if self.connected.load(Ordering::Acquire) {
-            tracing::debug!("Already connected, skipping connect_once()");
-            return Ok(());
-        }
+        loop {
+            if self.connected.load(Ordering::Acquire) {
+                tracing::debug!("Already connected, skipping connect_once()");
+                return Ok(());
+            }
 
-        match self
-            .connecting
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        {
-            Ok(_) => {}
-            Err(_) => {
-                if self.connected.load(Ordering::Acquire) {
-                    tracing::debug!("Already connected, skipping connect_once()");
-                    return Ok(());
+            match self
+                .connecting
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break,
+                Err(_) => {
+                    if self.connected.load(Ordering::Acquire) {
+                        tracing::debug!("Already connected, skipping connect_once()");
+                        return Ok(());
+                    }
+
+                    tracing::debug!(
+                        "Another connection attempt in progress, waiting for state change..."
+                    );
+                    match self.wait_for_connection_result().await {
+                        Ok(()) => return Ok(()),
+                        Err(e)
+                            if !self.connected.load(Ordering::Acquire)
+                                && !self.connecting.load(Ordering::Acquire) =>
+                        {
+                            tracing::debug!(
+                                "Concurrent signaling connection failed; explicit connect_once will retry immediately: {e}"
+                            );
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
                 }
-
-                tracing::debug!(
-                    "Another connection attempt in progress, waiting for state change..."
-                );
-                return self.wait_for_connection_result().await;
             }
         }
 
@@ -2309,6 +2323,65 @@ mod tests {
             client.pending_pongs.lock().await.is_empty(),
             "failed probe send should remove its pending pong waiter"
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_connect_once_retries_after_concurrent_attempt_fails() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should bind");
+        let server_url = format!(
+            "ws://{}/signaling/ws",
+            listener
+                .local_addr()
+                .expect("test listener should have local addr")
+        );
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener
+                .accept()
+                .await
+                .expect("test server should accept tcp connection");
+            let ws_stream = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("test server should complete websocket handshake");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(ws_stream);
+        });
+
+        let mut config = make_config();
+        config.server_url = Url::parse(&server_url).expect("test websocket URL should parse");
+        config.connection_timeout = 2;
+        config.reconnect_config = ReconnectConfig {
+            enabled: false,
+            ..ReconnectConfig::default()
+        };
+        let client = make_ws_client(config);
+
+        client.connecting.store(true, Ordering::Release);
+        let connect_task = {
+            let client = client.clone();
+            tokio::spawn(async move { client.connect_once().await })
+        };
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.connecting.store(false, Ordering::Release);
+        let _ = client.event_tx.send(SignalingEvent::Disconnected {
+            reason: DisconnectReason::ConnectionFailed("simulated auto attempt failed".into()),
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), connect_task)
+            .await
+            .expect("explicit connect_once should not wait for auto backoff")
+            .expect("connect_once task should not panic")
+            .expect("explicit connect_once should retry after concurrent failure");
+
+        assert!(
+            client.is_connected(),
+            "explicit recovery connect should establish signaling"
+        );
+
+        client.disconnect().await.ok();
+        let _ = tokio::time::timeout(Duration::from_secs(1), server_task).await;
     }
 
     #[tokio::test]
