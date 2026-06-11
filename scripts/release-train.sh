@@ -39,7 +39,6 @@ readonly CLI_CRATES=(
 )
 
 readonly VALID_STAGES=(
-  "validate"
   "create-tag"
   "publish-rust"
   "publish-python"
@@ -99,7 +98,7 @@ Options:
                      Uses npm tag "pre" and allows pre-release semver versions.
   --branch <branch>  Target release branch (default: main).
   --stage <name>     Run a single stage instead of the full pipeline.
-                     Stages: validate, create-tag, publish-rust, publish-python,
+                     Stages: create-tag, publish-rust, publish-python,
                      publish-swift, publish-kotlin, publish-web,
                      build-typescript-native, publish-typescript-workload,
                      publish-typescript, report.
@@ -288,7 +287,7 @@ detect_conventional_bump() {
     if [[ "$highest" == "none" ]] && echo "$commit_msg" | grep -qE '^fix(\([^)]+\))?:'; then
       highest="patch"
     fi
-  done < <(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --pretty=format:"%s")
+  done < <(git -C "$ORIGINAL_REPO_ROOT" log "${last_tag}..HEAD" --pretty=format:"%s%n")
 
   echo "$highest"
 }
@@ -440,7 +439,7 @@ read_context() {
   local ctx
   ctx="$(context_file)"
   if [[ ! -f "$ctx" ]]; then
-    fail "Context file not found: ${ctx}. Run --stage validate first."
+    fail "Context file not found: ${ctx}. Run --stage create-tag first."
   fi
   eval "$(python3 - "$ctx" <<'PY'
 from __future__ import annotations
@@ -453,6 +452,15 @@ for k, v in ctx.items():
         print(f'{k.upper()}={v}')
 PY
 )"
+
+  if [[ "$STAGE" == "report" ]]; then
+    return
+  fi
+
+  local current_sha
+  current_sha=$(git rev-parse HEAD)
+  [[ "$current_sha" == "$RELEASE_SHA" ]] ||
+    fail "Release context SHA ${RELEASE_SHA} does not match current HEAD ${current_sha}"
 }
 
 prepare_paths() {
@@ -597,7 +605,7 @@ ensure_release_tag_absent() {
 
 stage_requires_absent_tag_check() {
   case "$STAGE" in
-    all|validate|create-tag)
+    all|create-tag)
       return 0
       ;;
     *)
@@ -1574,30 +1582,11 @@ create_final_tag() {
 # Staged execution
 # ---------------------------------------------------------------------------
 
-stage_validate() {
-  if [[ "$DRY_RUN" == true ]]; then
-    update_versions
-  else
-    ensure_versions_prepared
-  fi
-
-  run_validation_suite
-
-  if [[ "$DRY_RUN" == false ]]; then
-    ensure_publish_worktree_clean
-  fi
-
-  set_release_sha
-  append_skipped_components
-
-  # Write context for downstream stages.
-  write_context
-
-  log_info "Stage validate complete (sha: ${RELEASE_SHA})"
-}
 
 stage_create_tag() {
-  # Read context written by validate stage.
+  # Generate and read release context.
+  set_release_sha
+  write_context
   read_context
   FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"
 
@@ -1749,7 +1738,6 @@ run_release_train() {
     ensure_versions_prepared
   fi
 
-  run_validation_suite
   if [[ "$DRY_RUN" == false ]]; then
     ensure_publish_worktree_clean
   fi

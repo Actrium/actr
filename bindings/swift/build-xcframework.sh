@@ -21,6 +21,7 @@ TARGET_DIR="${WORKSPACE_ROOT}/target"
 export IPHONEOS_DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-15.0}"
 export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-12.0}"
 BUILD_PROFILE="${ACTR_BUILD_PROFILE:-release}"
+XCFRAMEWORK_TARGETS="${ACTR_XCFRAMEWORK_TARGETS:-all}"
 declare -a CARGO_PROFILE_ARGS
 declare -a HOST_FEATURE_ARGS
 
@@ -36,6 +37,16 @@ case "${BUILD_PROFILE}" in
   *)
     echo "error: unsupported ACTR_BUILD_PROFILE: ${BUILD_PROFILE}" >&2
     echo "hint: use ACTR_BUILD_PROFILE=debug or ACTR_BUILD_PROFILE=release" >&2
+    exit 1
+    ;;
+esac
+
+case "${XCFRAMEWORK_TARGETS}" in
+  all | macos)
+    ;;
+  *)
+    echo "error: unsupported ACTR_XCFRAMEWORK_TARGETS: ${XCFRAMEWORK_TARGETS}" >&2
+    echo "hint: use ACTR_XCFRAMEWORK_TARGETS=all or ACTR_XCFRAMEWORK_TARGETS=macos" >&2
     exit 1
     ;;
 esac
@@ -75,6 +86,7 @@ require_cmd rustc
 echo "Checking libactr crate..."
 echo "Using libactr crate at: ${CRATE_DIR}"
 echo "Using cargo profile: ${BUILD_PROFILE}"
+echo "Using XCFramework targets: ${XCFRAMEWORK_TARGETS}"
 
 require_file "${CRATE_DIR}/Cargo.toml"
 require_file "${CRATE_DIR}/uniffi.toml"
@@ -194,9 +206,13 @@ if [[ -f "${MODULEMAP_FILE}" ]]; then
   fi
 fi
 
-echo "[3/4] Building Rust static libraries (iOS + macOS - ARM64 only)"
-cargo_build_libactr aarch64-apple-ios
-cargo_build_libactr aarch64-apple-ios-sim
+if [[ "${XCFRAMEWORK_TARGETS}" == "all" ]]; then
+  echo "[3/4] Building Rust static libraries (iOS + macOS - ARM64 only)"
+  cargo_build_libactr aarch64-apple-ios
+  cargo_build_libactr aarch64-apple-ios-sim
+else
+  echo "[3/4] Building Rust static library (macOS - ARM64 only)"
+fi
 if [[ "${REUSE_HOST_MACOS_STATICLIB}" -eq 1 ]]; then
   echo "Reusing host build for aarch64-apple-darwin static library"
 else
@@ -206,14 +222,22 @@ fi
 echo "[4/4] Creating XCFramework"
 rm -rf "${XCFRAMEWORK_DIR}"
 
-xcodebuild -create-xcframework \
-  -library "${TARGET_DIR}/aarch64-apple-ios/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a" \
-  -headers "${HEADERS_DIR}" \
-  -library "${TARGET_DIR}/aarch64-apple-ios-sim/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a" \
-  -headers "${HEADERS_DIR}" \
-  -library "${TARGET_DIR}/aarch64-apple-darwin/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a" \
-  -headers "${HEADERS_DIR}" \
+declare -a XCODEBUILD_ARGS
+if [[ "${XCFRAMEWORK_TARGETS}" == "all" ]]; then
+  XCODEBUILD_ARGS+=(
+    -library "${TARGET_DIR}/aarch64-apple-ios/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a"
+    -headers "${HEADERS_DIR}"
+    -library "${TARGET_DIR}/aarch64-apple-ios-sim/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a"
+    -headers "${HEADERS_DIR}"
+  )
+fi
+XCODEBUILD_ARGS+=(
+  -library "${TARGET_DIR}/aarch64-apple-darwin/${CARGO_PROFILE_DIR}/lib${CRATE_LIB_NAME}.a"
+  -headers "${HEADERS_DIR}"
   -output "${XCFRAMEWORK_DIR}"
+)
+
+xcodebuild -create-xcframework "${XCODEBUILD_ARGS[@]}"
 
 echo ""
 echo "✅ XCFramework build complete!"

@@ -255,6 +255,13 @@ typedef void (*UniffiCallbackInterfaceMediaTrackCallbackMethod0)(uint64_t, RustB
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOG_CALLBACK_METHOD0
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_LOG_CALLBACK_METHOD0
+typedef void (*UniffiCallbackInterfaceLogCallbackMethod0)(uint64_t, RustBuffer, RustBuffer, RustBuffer, int64_t, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CREDENTIAL_OBSERVER_BRIDGE_METHOD0
 #define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CREDENTIAL_OBSERVER_BRIDGE_METHOD0
 typedef void (*UniffiCallbackInterfaceCredentialObserverBridgeMethod0)(uint64_t, uint64_t, RustBuffer, UniffiForeignFutureCompleteVoid _Nonnull, uint64_t, UniffiForeignFutureDroppedCallbackStruct* _Nonnull
@@ -373,6 +380,15 @@ typedef struct UniffiVTableCallbackInterfaceMediaTrackCallback {
     UniffiCallbackInterfaceClone _Nonnull uniffiClone;
     UniffiCallbackInterfaceMediaTrackCallbackMethod0 _Nonnull onSample;
 } UniffiVTableCallbackInterfaceMediaTrackCallback;
+
+#endif
+#ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_LOG_CALLBACK
+#define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_LOG_CALLBACK
+typedef struct UniffiVTableCallbackInterfaceLogCallback {
+    UniffiCallbackInterfaceFree _Nonnull uniffiFree;
+    UniffiCallbackInterfaceClone _Nonnull uniffiClone;
+    UniffiCallbackInterfaceLogCallbackMethod0 _Nonnull onLog;
+} UniffiVTableCallbackInterfaceLogCallback;
 
 #endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_CREDENTIAL_OBSERVER_BRIDGE
@@ -660,6 +676,11 @@ void uniffi_actr_fn_init_callback_vtable_datastreamcallback(const UniffiVTableCa
 void uniffi_actr_fn_init_callback_vtable_mediatrackcallback(const UniffiVTableCallbackInterfaceMediaTrackCallback* _Nonnull vtable
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_LOGCALLBACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_LOGCALLBACK
+void uniffi_actr_fn_init_callback_vtable_logcallback(const UniffiVTableCallbackInterfaceLogCallback* _Nonnull vtable
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_CREDENTIALOBSERVERBRIDGE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_INIT_CALLBACK_VTABLE_CREDENTIALOBSERVERBRIDGE
 void uniffi_actr_fn_init_callback_vtable_credentialobserverbridge(const UniffiVTableCallbackInterfaceCredentialObserverBridge* _Nonnull vtable
@@ -703,6 +724,11 @@ RustBuffer uniffi_actr_fn_func_actr_error_kind(RustBuffer err, RustCallStatus *_
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_ACTR_ERROR_REQUIRES_DLQ
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_ACTR_ERROR_REQUIRES_DLQ
 int8_t uniffi_actr_fn_func_actr_error_requires_dlq(RustBuffer err, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_SET_LOG_CALLBACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_SET_LOG_CALLBACK
+void uniffi_actr_fn_func_set_log_callback(RustBuffer callback, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_FUNC_RESOLVE_MANIFEST_DEPENDENCY
@@ -998,6 +1024,12 @@ uint16_t uniffi_actr_checksum_func_actr_error_requires_dlq(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_SET_LOG_CALLBACK
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_SET_LOG_CALLBACK
+uint16_t uniffi_actr_checksum_func_set_log_callback(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_RESOLVE_MANIFEST_DEPENDENCY
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_FUNC_RESOLVE_MANIFEST_DEPENDENCY
 uint16_t uniffi_actr_checksum_func_resolve_manifest_dependency(void
@@ -1205,6 +1237,12 @@ uint16_t uniffi_actr_checksum_method_datastreamcallback_on_stream(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_MEDIATRACKCALLBACK_ON_SAMPLE
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_MEDIATRACKCALLBACK_ON_SAMPLE
 uint16_t uniffi_actr_checksum_method_mediatrackcallback_on_sample(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_LOGCALLBACK_ON_LOG
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_LOGCALLBACK_ON_LOG
+uint16_t uniffi_actr_checksum_method_logcallback_on_log(void
     
 );
 #endif

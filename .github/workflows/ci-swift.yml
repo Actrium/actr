@@ -25,8 +25,15 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Cache uniffi-bindgen binary
+        id: cache-uniffi
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/uniffi-bindgen*
+          key: uniffi-bindgen-0.31.1-${{ runner.os }}-${{ runner.arch }}
       - name: Install UniFFI bindgen
-        run: cargo install --locked uniffi --version 0.30.0 --features cli --bin uniffi-bindgen
+        if: steps.cache-uniffi.outputs.cache-hit != 'true'
+        run: cargo install --locked uniffi --version 0.31.1 --features cli --bin uniffi-bindgen
       - name: Install Swift tools and libraries
         run: brew install swiftlint opus
       - name: Run SwiftLint

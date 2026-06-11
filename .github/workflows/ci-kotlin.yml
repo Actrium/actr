@@ -8,6 +8,14 @@ permissions:
   contents: read
 
 jobs:
+  script-check:
+    name: Kotlin Android Script Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate Android build script
+        run: scripts/tests/kotlin-android-build-script.sh
+
   test:
     name: Kotlin Binding Test
     runs-on: ubuntu-latest
@@ -48,17 +56,33 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+      - name: Cache wasm-pack binary
+        id: wasm-pack-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: wasm-pack-binary-v0.13.1
       - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
+        if: steps.wasm-pack-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL https://github.com/rustwasm/wasm-pack/releases/download/v0.13.1/wasm-pack-v0.13.1-x86_64-unknown-linux-musl.tar.gz | tar xz -C /tmp
+          mv /tmp/wasm-pack-v0.13.1-x86_64-unknown-linux-musl/wasm-pack ~/.cargo/bin/
+          chmod +x ~/.cargo/bin/wasm-pack
+      - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
-      - name: Build CLI
-        run: cargo build -p actr-cli
-      - name: Compile Kotlin demo
-        working-directory: bindings/kotlin
-        run: ./gradlew :demo:compileDebugKotlin --no-daemon
-      - name: Build Kotlin protoc plugin
-        working-directory: tools/protoc-gen/kotlin
-        run: ./gradlew protocPluginJar --no-daemon
+      - name: Cache Gradle build outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            bindings/kotlin/demo/build
+            bindings/kotlin/build
+            tools/protoc-gen/kotlin/build
+          key: gradle-build-${{ runner.os }}-${{ hashFiles('bindings/kotlin/**/*.kt', 'tools/protoc-gen/kotlin/**/*.kt', 'bindings/kotlin/**/build.gradle.kts', 'tools/protoc-gen/kotlin/**/build.gradle.kts') }}
+      - name: Compile Kotlin demo and build protoc plugin (parallel)
+        run: |
+          (cd bindings/kotlin && ./gradlew :demo:compileDebugKotlin --no-daemon) &
+          (cd tools/protoc-gen/kotlin && ./gradlew protocPluginJar --no-daemon) &
+          wait
       - name: Run Kotlin codegen integration tests
         run: cargo test -p actr-cli --test kotlin_echo --verbose
