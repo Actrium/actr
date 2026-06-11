@@ -8,14 +8,16 @@ import android.util.Log
  * Captures logcat output tagged "actr" (native library logs) and streams them
  * to the UI via the [onLines] callback.
  *
- * NOTE: On some devices (Chinese OEMs like vivo, OPPO, Xiaomi), the SELinux
- * policy blocks regular app processes from reading logcat — the logd connection
- * is refused immediately. When this is detected the reader gives up after a
- * few attempts to avoid error spam.
+ * Uses `redirectErrorStream(true)` because Android's Process implementation
+ * does not reliably separate logcat's stdout/stderr — all output arrives on
+ * the merged stream. Noise lines like "read: unexpected EOF!" are filtered
+ * out before reaching the UI.
  *
- * Long-term solution: wire up the Rust-side LogCallback callback interface
- * (ffi/src/log_callback.rs) which forwards tracing events directly to Kotlin,
- * bypassing logcat entirely. This requires regenerating UniFFI bindings.
+ * On devices where logcat is blocked (Chinese OEMs), the reader detects zero
+ * valid output and gives up after a few attempts.
+ *
+ * Long-term: wire up the Rust LogCallback interface (ffi/src/log_callback.rs)
+ * to bypass logcat entirely.
  */
 class LogcatReader(
     private val onLines: (String) -> Unit
@@ -26,9 +28,18 @@ class LogcatReader(
     private val buffer = StringBuilder()
     private val lock = Any()
 
-    // Retry state — accumulated across start() calls
     private var consecutiveFailures = 0
     private var gaveUp = false
+
+    // Lines matching these patterns are logcat stderr noise, not real actr logs
+    private val noisePatterns = listOf(
+        "read: unexpected EOF!",
+        "unexpected EOF",
+        "Unexpected EOF",
+    )
+
+    private fun isNoise(line: String): Boolean =
+        noisePatterns.any { line.contains(it) }
 
     private val flushRunnable = object : Runnable {
         override fun run() {
@@ -47,48 +58,33 @@ class LogcatReader(
         thread = Thread {
             try {
                 val pb = ProcessBuilder("logcat", "-b", "main", "-v", "threadtime", "actr:V", "*:S")
-                // Keep stderr separate — we only count stdout lines as "real" output
-                pb.redirectErrorStream(false)
+                pb.redirectErrorStream(true)
                 val startMs = System.currentTimeMillis()
                 val proc = pb.start()
                 process = proc
-
-                // Drain stderr silently on a background thread
-                val stderrDone = java.util.concurrent.CountDownLatch(1)
-                val stderrThread = Thread({
-                    try {
-                        proc.errorStream.bufferedReader(Charsets.UTF_8).use { it.readLine() }
-                    } catch (_: Exception) {}
-                    stderrDone.countDown()
-                }, "LogcatReader-stderr").apply { isDaemon = true }
-                stderrThread.start()
 
                 var exitCode: Int
                 var readAny = false
                 proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
                     while (!Thread.currentThread().isInterrupted) {
                         val line = reader.readLine() ?: break
+                        if (isNoise(line)) continue
                         readAny = true
                         synchronized(lock) { buffer.append(line).append('\n') }
                     }
                     exitCode = try { proc.exitValue() } catch (_: Exception) { -1 }
                 }
 
-                // Wait briefly for stderr drain
-                try { stderrDone.await(500, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: Exception) {}
-
                 val elapsed = System.currentTimeMillis() - startMs
                 if (readAny) {
-                    // Real output produced — logcat works
                     consecutiveFailures = 0
                     Log.d("LogcatReader", "logcat exited with code=$exitCode after ${elapsed}ms")
-                    scheduleRetry(2000) // Normal restart delay
+                    scheduleRetry(2000)
                 } else {
-                    // Zero stdout lines = logcat blocked on this device
                     consecutiveFailures++
                     Log.d(
                         "LogcatReader",
-                        "logcat produced no output after ${elapsed}ms (attempt $consecutiveFailures/3)"
+                        "logcat produced no valid output after ${elapsed}ms (attempt $consecutiveFailures/3)"
                     )
 
                     if (consecutiveFailures >= 3) {
@@ -99,7 +95,6 @@ class LogcatReader(
                         return@Thread
                     }
 
-                    // Exponential backoff: 1s, 2s, 4s
                     scheduleRetry(1000L shl (consecutiveFailures - 1))
                 }
             } catch (_: InterruptedException) {
