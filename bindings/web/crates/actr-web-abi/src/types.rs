@@ -45,6 +45,13 @@ pub struct BackpressureEvent {
     pub threshold: u64,
 }
 
+/// Lowered from WIT `record connection-not-ready-info`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionNotReadyInfo {
+    #[serde(rename = "retry-after-ms")]
+    pub retry_after_ms: Option<u64>,
+}
+
 /// Lowered from WIT `record credential-event`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CredentialEvent {
@@ -102,23 +109,6 @@ pub struct Realm {
     pub realm_id: u32,
 }
 
-/// Lowered from WIT `record recovery-info`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecoveryInfo {
-    pub peer: ActrId,
-    #[serde(rename = "session-id")]
-    pub session_id: Option<u64>,
-    pub code: RecoveryCode,
-    pub reason: String,
-    #[serde(rename = "elapsed-ms")]
-    pub elapsed_ms: u64,
-    #[serde(rename = "timeout-ms")]
-    pub timeout_ms: u64,
-    #[serde(rename = "retry-after-ms")]
-    pub retry_after_ms: Option<u64>,
-    pub delivery: DeliveryState,
-}
-
 /// Lowered from WIT `record rpc-envelope`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RpcEnvelope {
@@ -136,37 +126,13 @@ pub struct Timestamp {
     pub nanoseconds: u32,
 }
 
-/// Lowered from WIT `enum delivery-state`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum DeliveryState {
-    #[serde(rename = "not-sent")]
-    NotSent,
-    #[serde(rename = "delivery-uncertain")]
-    DeliveryUncertain,
-}
-
-/// Lowered from WIT `enum recovery-code`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum RecoveryCode {
-    #[serde(rename = "peer-disconnected")]
-    PeerDisconnected,
-    #[serde(rename = "peer-failed")]
-    PeerFailed,
-    #[serde(rename = "ice-network-started")]
-    IceNetworkStarted,
-    #[serde(rename = "recovery-timeout")]
-    RecoveryTimeout,
-    #[serde(rename = "transport-closing")]
-    TransportClosing,
-}
-
 /// Lowered from WIT `variant actr-error`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ActrError {
     #[serde(rename = "unavailable")]
     Unavailable(String),
-    #[serde(rename = "recovering")]
-    Recovering(RecoveryInfo),
+    #[serde(rename = "connection-not-ready")]
+    ConnectionNotReady(ConnectionNotReadyInfo),
     #[serde(rename = "timed-out")]
     TimedOut,
     #[serde(rename = "not-found")]

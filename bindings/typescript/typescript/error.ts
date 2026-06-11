@@ -18,7 +18,7 @@ export type ActrErrorKind = 'Transient' | 'Client' | 'Internal' | 'Corrupt';
 
 export type ActrErrorCode =
   | 'Unavailable'
-  | 'Recovering'
+  | 'ConnectionNotReady'
   | 'TimedOut'
   | 'NotFound'
   | 'PermissionDenied'
@@ -31,38 +31,12 @@ export type ActrErrorCode =
   | 'Config'
   | 'HyperBootstrap';
 
-export type ActrRecoveryCode =
-  | 'PeerDisconnected'
-  | 'PeerFailed'
-  | 'IceNetworkStarted'
-  | 'RecoveryTimeout'
-  | 'TransportClosing';
-
-export type ActrDeliveryState = 'NotSent' | 'DeliveryUncertain';
-
-export interface ActrErrorPeerId {
-  realm_id: number;
-  serial_number: number;
-  type: {
-    manufacturer: string;
-    name: string;
-    version: string;
-  };
-}
-
 interface StructuredPayload {
   kind: ActrErrorKind;
   code: ActrErrorCode;
   message: string;
   service_name?: string;
-  recovery_code?: ActrRecoveryCode;
-  peer?: ActrErrorPeerId;
-  session_id?: number | null;
-  reason?: string;
-  elapsed_ms?: number;
-  timeout_ms?: number;
   retry_after_ms?: number | null;
-  delivery?: ActrDeliveryState;
 }
 
 /**
@@ -72,22 +46,15 @@ interface StructuredPayload {
  * `code` is the exact protocol variant, and `service_name` is populated
  * only when `code === 'DependencyNotFound'`.
  *
- * When `code === 'Recovering'`, the recovery fields describe the peer
- * connection recovery window. `delivery === 'NotSent'` means the operation was
- * stopped by preflight before bytes were written to the transport.
+ * When `code === 'ConnectionNotReady'`, `retry_after_ms` is an optional hint
+ * for backing off before the next send attempt. The readiness hook is still
+ * the authoritative signal.
  */
 export class ActrError extends Error {
   readonly kind: ActrErrorKind;
   readonly code: ActrErrorCode;
   readonly service_name?: string;
-  readonly recovery_code?: ActrRecoveryCode;
-  readonly peer?: ActrErrorPeerId;
-  readonly session_id?: number | null;
-  readonly reason?: string;
-  readonly elapsed_ms?: number;
-  readonly timeout_ms?: number;
   readonly retry_after_ms?: number | null;
-  readonly delivery?: ActrDeliveryState;
 
   constructor(payload: StructuredPayload) {
     super(payload.message);
@@ -97,29 +64,8 @@ export class ActrError extends Error {
     if (payload.service_name !== undefined) {
       this.service_name = payload.service_name;
     }
-    if (payload.recovery_code !== undefined) {
-      this.recovery_code = payload.recovery_code;
-    }
-    if (payload.peer !== undefined) {
-      this.peer = payload.peer;
-    }
-    if (payload.session_id !== undefined) {
-      this.session_id = payload.session_id;
-    }
-    if (payload.reason !== undefined) {
-      this.reason = payload.reason;
-    }
-    if (payload.elapsed_ms !== undefined) {
-      this.elapsed_ms = payload.elapsed_ms;
-    }
-    if (payload.timeout_ms !== undefined) {
-      this.timeout_ms = payload.timeout_ms;
-    }
     if (payload.retry_after_ms !== undefined) {
       this.retry_after_ms = payload.retry_after_ms;
-    }
-    if (payload.delivery !== undefined) {
-      this.delivery = payload.delivery;
     }
     // Preserve V8 stack-trace ergonomics in Node.
     if (
@@ -139,9 +85,9 @@ export class ActrError extends Error {
     return this.kind === 'Transient';
   }
 
-  /** `true` iff this is a WebRTC recovery-window preflight error. */
-  isRecovering(): boolean {
-    return this.code === 'Recovering';
+  /** `true` iff this send was stopped before entering transport. */
+  isConnectionNotReady(): boolean {
+    return this.code === 'ConnectionNotReady';
   }
 
   /** `true` iff the error should be routed to a Dead Letter Queue. */

@@ -25,111 +25,38 @@
 //!
 //! Use the `Classify` trait to query classification from any error type.
 
-use crate::ActrId;
 use std::fmt;
 use thiserror::Error;
 
-// ── RecoveryInfo ───────────────────────────────────────────────────────────────
+// ── ConnectionNotReadyInfo ────────────────────────────────────────────────────
 
-/// Stable machine-readable code for a connection recovery window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoveryCode {
-    PeerDisconnected,
-    PeerFailed,
-    IceNetworkStarted,
-    RecoveryTimeout,
-    TransportClosing,
-}
-
-impl fmt::Display for RecoveryCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RecoveryCode::PeerDisconnected => write!(f, "PeerDisconnected"),
-            RecoveryCode::PeerFailed => write!(f, "PeerFailed"),
-            RecoveryCode::IceNetworkStarted => write!(f, "IceNetworkStarted"),
-            RecoveryCode::RecoveryTimeout => write!(f, "RecoveryTimeout"),
-            RecoveryCode::TransportClosing => write!(f, "TransportClosing"),
-        }
-    }
-}
-
-/// Whether the failed operation may have reached the remote peer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryState {
-    /// The operation failed before being written to the transport.
-    NotSent,
-    /// The transport state changed after send started, so delivery is unknown.
-    DeliveryUncertain,
-}
-
-impl fmt::Display for DeliveryState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DeliveryState::NotSent => write!(f, "NotSent"),
-            DeliveryState::DeliveryUncertain => write!(f, "DeliveryUncertain"),
-        }
-    }
-}
-
-/// Structured information for a connection recovery window.
+/// Public payload for send preflight failures.
 ///
-/// `delivery` is intentionally part of the public payload. For preflight
-/// recovery errors it is `NotSent`, which tells callers that retrying creates a
-/// fresh operation rather than duplicating one already delivered remotely.
+/// This error is emitted before the operation enters transport, so callers can
+/// retry by creating a fresh operation. `retry_after_ms` is only a hint; the
+/// readiness hook is the authoritative signal that sending may be attempted
+/// again.
 #[derive(Debug, Clone)]
-pub struct RecoveryInfo {
-    pub peer: ActrId,
-    pub session_id: Option<u64>,
-    pub code: RecoveryCode,
-    pub reason: String,
-    pub elapsed_ms: u64,
-    pub timeout_ms: u64,
+pub struct ConnectionNotReadyInfo {
     pub retry_after_ms: Option<u64>,
-    pub delivery: DeliveryState,
 }
 
-impl RecoveryInfo {
-    pub fn new(
-        peer: ActrId,
-        session_id: Option<u64>,
-        code: RecoveryCode,
-        reason: impl Into<String>,
-        elapsed_ms: u64,
-        timeout_ms: u64,
-    ) -> Self {
+impl ConnectionNotReadyInfo {
+    pub fn new(elapsed_ms: u64, timeout_ms: u64) -> Self {
         let retry_after_ms = timeout_ms.checked_sub(elapsed_ms);
+        Self { retry_after_ms }
+    }
+
+    pub fn without_retry_hint() -> Self {
         Self {
-            peer,
-            session_id,
-            code,
-            reason: reason.into(),
-            elapsed_ms,
-            timeout_ms,
-            retry_after_ms,
-            delivery: DeliveryState::NotSent,
+            retry_after_ms: None,
         }
     }
 }
 
-impl fmt::Display for RecoveryInfo {
+impl fmt::Display for ConnectionNotReadyInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let prefix = if self.code == RecoveryCode::RecoveryTimeout {
-            "Connection recovery timeout"
-        } else {
-            "Connection recovering"
-        };
-        write!(
-            f,
-            "{prefix}: peer={:?}, session_id={:?}, code={}, reason={}, elapsed_ms={}, timeout_ms={}, retry_after_ms={:?}, delivery={}",
-            self.peer,
-            self.session_id,
-            self.code,
-            self.reason,
-            self.elapsed_ms,
-            self.timeout_ms,
-            self.retry_after_ms,
-            self.delivery
-        )
+        write!(f, "retry_after_ms={:?}", self.retry_after_ms)
     }
 }
 
@@ -141,18 +68,18 @@ impl fmt::Display for RecoveryInfo {
 #[derive(Error, Debug, Clone)]
 pub enum ActrError {
     // ── Transient ──────────────────────────────────────────────────────────
-    /// Peer temporarily unavailable: connection lost, overloaded, or reconnecting.
+    /// Target temporarily unavailable: connection lost, overloaded, or reconnecting.
     ///
     /// `ErrorKind::Transient` — retry with backoff.
     #[error("unavailable: {0}")]
     Unavailable(String),
 
-    /// Connection is in a recovery window.
+    /// Connection is not ready to send this operation.
     ///
-    /// `ErrorKind::Transient` — retry within the recovery window; the peer
-    /// should become reachable again once ICE restart completes.
-    #[error("recovering: {0}")]
-    Recovering(RecoveryInfo),
+    /// `ErrorKind::Transient` — wait for readiness notification or retry with
+    /// backoff. The operation has not entered transport.
+    #[error("connection not ready: {0}")]
+    ConnectionNotReady(ConnectionNotReadyInfo),
 
     /// Request deadline exceeded.
     ///
@@ -260,7 +187,7 @@ pub trait Classify {
 impl Classify for ActrError {
     fn kind(&self) -> ErrorKind {
         match self {
-            ActrError::Unavailable(_) | ActrError::Recovering(_) | ActrError::TimedOut => {
+            ActrError::Unavailable(_) | ActrError::ConnectionNotReady(_) | ActrError::TimedOut => {
                 ErrorKind::Transient
             }
 
@@ -370,128 +297,33 @@ mod tests {
         assert_eq!(format!("{cloned}"), "invalid argument: bad");
     }
 
-    // ── RecoveryInfo Display ──────────────────────────────────────────────
+    // ── ConnectionNotReadyInfo Display ────────────────────────────────────
 
     #[test]
-    fn recovery_info_peer_disconnected_display() {
-        let peer = ActrId::default();
-        let info = RecoveryInfo::new(
-            peer.clone(),
-            Some(42),
-            RecoveryCode::PeerDisconnected,
-            "peer state Disconnected",
-            1200,
-            6000,
-        );
+    fn connection_not_ready_info_display_includes_retry_hint() {
+        let info = ConnectionNotReadyInfo::new(1200, 6000);
         let s = format!("{info}");
-        assert!(s.starts_with("Connection recovering: peer="));
-        assert!(s.contains("session_id=Some(42)"));
-        assert!(s.contains("code=PeerDisconnected"));
-        assert!(s.contains("reason=peer state Disconnected"));
-        assert!(s.contains("elapsed_ms=1200"));
-        assert!(s.contains("timeout_ms=6000"));
         assert!(s.contains("retry_after_ms=Some(4800)"));
-        assert!(s.contains("delivery=NotSent"));
     }
 
     #[test]
-    fn recovery_info_peer_failed_display() {
-        let peer = ActrId::default();
-        let info = RecoveryInfo::new(
-            peer.clone(),
-            Some(7),
-            RecoveryCode::PeerFailed,
-            "peer state Failed",
-            3500,
-            6000,
-        );
+    fn connection_not_ready_info_without_retry_hint_display() {
+        let info = ConnectionNotReadyInfo::without_retry_hint();
         let s = format!("{info}");
-        assert!(s.starts_with("Connection recovering: peer="));
-        assert!(s.contains("code=PeerFailed"));
-        assert!(s.contains("reason=peer state Failed"));
-        assert!(s.contains("elapsed_ms=3500"));
+        assert!(s.contains("retry_after_ms=None"));
     }
 
-    #[test]
-    fn recovery_info_ice_network_started_display() {
-        let peer = ActrId::default();
-        let info = RecoveryInfo::new(
-            peer.clone(),
-            Some(99),
-            RecoveryCode::IceNetworkStarted,
-            "ice/network recovery started",
-            0,
-            6000,
-        );
-        let s = format!("{info}");
-        assert!(s.contains("code=IceNetworkStarted"));
-        assert!(s.contains("reason=ice/network recovery started"));
-        assert!(s.contains("elapsed_ms=0"));
-    }
+    // ── ConnectionNotReady classification ────────────────────────────────
 
     #[test]
-    fn recovery_info_recovery_timeout_display() {
-        let peer = ActrId::default();
-        let info = RecoveryInfo::new(
-            peer.clone(),
-            Some(10),
-            RecoveryCode::RecoveryTimeout,
-            "ice restart failed",
-            6000,
-            6000,
-        );
-        let s = format!("{info}");
-        assert!(s.starts_with("Connection recovery timeout:"));
-        assert!(s.contains("code=RecoveryTimeout"));
-        assert!(s.contains("reason=ice restart failed"));
-        assert!(s.contains("elapsed_ms=6000"));
-    }
-
-    #[test]
-    fn recovery_info_transport_closing_display() {
-        let peer = ActrId::default();
-        let info = RecoveryInfo::new(
-            peer.clone(),
-            None,
-            RecoveryCode::TransportClosing,
-            "transport closing",
-            0,
-            6000,
-        );
-        let s = format!("{info}");
-        assert!(s.starts_with("Connection recovering: peer="));
-        assert!(s.contains("session_id=None"));
-        assert!(s.contains("code=TransportClosing"));
-        assert!(s.contains("reason=transport closing"));
-    }
-
-    // ── Recovering classification ────────────────────────────────────────
-
-    #[test]
-    fn recovering_classifies_as_transient() {
-        let peer = ActrId::default();
-        let err = ActrError::Recovering(RecoveryInfo::new(
-            peer,
-            Some(1),
-            RecoveryCode::PeerDisconnected,
-            "peer state Disconnected",
-            0,
-            6000,
-        ));
+    fn connection_not_ready_classifies_as_transient() {
+        let err = ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(0, 6000));
         assert_eq!(err.kind(), ErrorKind::Transient);
     }
 
     #[test]
-    fn recovering_is_retryable() {
-        let peer = ActrId::default();
-        let err = ActrError::Recovering(RecoveryInfo::new(
-            peer,
-            None,
-            RecoveryCode::TransportClosing,
-            "transport closing",
-            0,
-            6000,
-        ));
+    fn connection_not_ready_is_retryable() {
+        let err = ActrError::ConnectionNotReady(ConnectionNotReadyInfo::without_retry_hint());
         assert!(err.is_retryable());
     }
 }

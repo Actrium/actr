@@ -17,18 +17,26 @@
 //! A companion `ActrError` class is declared in `index.d.ts`; the JS wrapper
 //! in `typescript/*.ts` parses the JSON and re-throws a typed instance.
 
-use actr_protocol::{
-    ActrError, ActrId, Classify, DeliveryState, ErrorKind, RecoveryCode, RecoveryInfo,
-};
+use actr_protocol::{ActrError, Classify, ConnectionNotReadyInfo, ErrorKind};
 
 /// Discriminate a protocol error into `(variant_code, user_message,
-/// optional service_name, optional recovery_info)`.
+/// optional service_name, optional connection_not_ready_info)`.
 ///
-/// `recovery_info` is present when the error is `Recovering`; `None` otherwise.
-fn discriminate(e: &ActrError) -> (&'static str, String, Option<String>, Option<&RecoveryInfo>) {
+/// `connection_not_ready_info` is present when the error is `ConnectionNotReady`;
+/// `None` otherwise.
+fn discriminate(
+    e: &ActrError,
+) -> (
+    &'static str,
+    String,
+    Option<String>,
+    Option<&ConnectionNotReadyInfo>,
+) {
     match e {
         ActrError::Unavailable(msg) => ("Unavailable", msg.clone(), None, None),
-        ActrError::Recovering(info) => ("Recovering", info.to_string(), None, Some(info)),
+        ActrError::ConnectionNotReady(info) => {
+            ("ConnectionNotReady", info.to_string(), None, Some(info))
+        }
         ActrError::TimedOut => ("TimedOut", "operation timed out".to_string(), None, None),
         ActrError::NotFound(msg) => ("NotFound", msg.clone(), None, None),
         ActrError::PermissionDenied(msg) => ("PermissionDenied", msg.clone(), None, None),
@@ -46,23 +54,6 @@ fn discriminate(e: &ActrError) -> (&'static str, String, Option<String>, Option<
         ActrError::DecodeFailure(msg) => ("DecodeFailure", msg.clone(), None, None),
         ActrError::NotImplemented(msg) => ("NotImplemented", msg.clone(), None, None),
         ActrError::Internal(msg) => ("Internal", msg.clone(), None, None),
-    }
-}
-
-fn recovery_code(code: RecoveryCode) -> &'static str {
-    match code {
-        RecoveryCode::PeerDisconnected => "PeerDisconnected",
-        RecoveryCode::PeerFailed => "PeerFailed",
-        RecoveryCode::IceNetworkStarted => "IceNetworkStarted",
-        RecoveryCode::RecoveryTimeout => "RecoveryTimeout",
-        RecoveryCode::TransportClosing => "TransportClosing",
-    }
-}
-
-fn delivery_state(state: DeliveryState) -> &'static str {
-    match state {
-        DeliveryState::NotSent => "NotSent",
-        DeliveryState::DeliveryUncertain => "DeliveryUncertain",
     }
 }
 
@@ -107,25 +98,14 @@ fn option_u64_json(value: Option<u64>) -> String {
         .unwrap_or_else(|| "null".to_string())
 }
 
-fn actr_id_json(id: &ActrId) -> String {
-    format!(
-        r#"{{"realm_id":{realm_id},"serial_number":{serial_number},"type":{{"manufacturer":"{manufacturer}","name":"{name}","version":"{version}"}}}}"#,
-        realm_id = id.realm.realm_id,
-        serial_number = id.serial_number,
-        manufacturer = json_escape(&id.r#type.manufacturer),
-        name = json_escape(&id.r#type.name),
-        version = json_escape(&id.r#type.version),
-    )
-}
-
 /// Build a JSON payload carrying kind / code / message / optional service_name
-/// and recovery metadata — the structure the `ActrError` JS class expects.
+/// and retry metadata — the structure the `ActrError` JS class expects.
 fn build_payload(
     kind: ErrorKind,
     code: &str,
     message: &str,
     service_name: Option<&str>,
-    recovery_info: Option<&RecoveryInfo>,
+    connection_not_ready_info: Option<&ConnectionNotReadyInfo>,
 ) -> String {
     let mut fields = vec![
         format!(r#""kind":"{}""#, kind_str(kind)),
@@ -137,21 +117,11 @@ fn build_payload(
         fields.push(format!(r#""service_name":"{}""#, json_escape(svc)));
     }
 
-    if let Some(info) = recovery_info {
-        fields.push(format!(r#""recovery_code":"{}""#, recovery_code(info.code)));
-        fields.push(format!(r#""peer":{}"#, actr_id_json(&info.peer)));
-        fields.push(format!(
-            r#""session_id":{}"#,
-            option_u64_json(info.session_id)
-        ));
-        fields.push(format!(r#""reason":"{}""#, json_escape(&info.reason)));
-        fields.push(format!(r#""elapsed_ms":{}"#, info.elapsed_ms));
-        fields.push(format!(r#""timeout_ms":{}"#, info.timeout_ms));
+    if let Some(info) = connection_not_ready_info {
         fields.push(format!(
             r#""retry_after_ms":{}"#,
             option_u64_json(info.retry_after_ms)
         ));
-        fields.push(format!(r#""delivery":"{}""#, delivery_state(info.delivery)));
     }
 
     format!("{{{}}}", fields.join(","))
@@ -239,41 +209,25 @@ mod tests {
     }
 
     #[test]
-    fn recovering_includes_structured_retry_metadata() {
-        let peer = actr_protocol::ActrId {
-            realm: actr_protocol::Realm { realm_id: 1 },
-            serial_number: 42,
-            r#type: actr_protocol::ActrType {
-                manufacturer: "acme".to_string(),
-                name: "mobile".to_string(),
-                version: "1.0.0".to_string(),
-            },
-        };
-        let err = actr_error_to_napi(actr_protocol::ActrError::Recovering(
-            actr_protocol::RecoveryInfo::new(
-                peer,
-                Some(7),
-                actr_protocol::RecoveryCode::PeerDisconnected,
-                "peer state Disconnected",
-                120,
-                6000,
-            ),
+    fn connection_not_ready_includes_retry_hint_only() {
+        let err = actr_error_to_napi(actr_protocol::ActrError::ConnectionNotReady(
+            actr_protocol::ConnectionNotReadyInfo::new(120, 6000),
         ));
         let msg = err.reason.as_str();
         assert!(msg.contains(r#""kind":"Transient""#), "kind: {msg}");
-        assert!(msg.contains(r#""code":"Recovering""#), "code: {msg}");
         assert!(
-            msg.contains(r#""recovery_code":"PeerDisconnected""#),
-            "recovery_code: {msg}"
+            msg.contains(r#""code":"ConnectionNotReady""#),
+            "code: {msg}"
         );
-        assert!(msg.contains(r#""serial_number":42"#), "peer: {msg}");
-        assert!(msg.contains(r#""session_id":7"#), "session_id: {msg}");
-        assert!(msg.contains(r#""elapsed_ms":120"#), "elapsed_ms: {msg}");
-        assert!(msg.contains(r#""timeout_ms":6000"#), "timeout_ms: {msg}");
         assert!(
             msg.contains(r#""retry_after_ms":5880"#),
             "retry_after_ms: {msg}"
         );
-        assert!(msg.contains(r#""delivery":"NotSent""#), "delivery: {msg}");
+        assert!(!msg.contains("peer"), "peer should not leak: {msg}");
+        assert!(
+            !msg.contains("session_id"),
+            "session_id should not leak: {msg}"
+        );
+        assert!(!msg.contains("delivery"), "delivery should not leak: {msg}");
     }
 }

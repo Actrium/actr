@@ -12,7 +12,7 @@ use crate::wire::webrtc::{NETWORK_RECOVERY_TIMEOUT, NetworkRecoveryStatus, WebRt
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, Classify, PayloadType, RecoveryCode, RecoveryInfo, RpcEnvelope,
+    ActorResult, ActrError, ActrId, Classify, ConnectionNotReadyInfo, PayloadType, RpcEnvelope,
 };
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::sync::Arc;
@@ -96,29 +96,15 @@ impl PeerGate {
         }
     }
 
-    fn recovering_error(target: &ActrId, status: &NetworkRecoveryStatus) -> ActrError {
-        let code = match status.reason.as_str() {
-            RECOVERY_REASON_PEER_DISCONNECTED => RecoveryCode::PeerDisconnected,
-            RECOVERY_REASON_PEER_FAILED => RecoveryCode::PeerFailed,
-            RECOVERY_REASON_ICE_NETWORK_STARTED => RecoveryCode::IceNetworkStarted,
-            _ => RecoveryCode::IceNetworkStarted,
-        };
-        ActrError::Recovering(RecoveryInfo::new(
-            target.clone(),
-            Some(status.session_id),
-            code,
-            status.reason.clone(),
+    fn connection_not_ready_error(status: &NetworkRecoveryStatus) -> ActrError {
+        ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(
             status.elapsed_ms() as u64,
             NETWORK_RECOVERY_TIMEOUT.as_millis() as u64,
         ))
     }
 
-    fn recovery_timeout_error(target: &ActrId, status: &NetworkRecoveryStatus) -> ActrError {
-        ActrError::Recovering(RecoveryInfo::new(
-            target.clone(),
-            Some(status.session_id),
-            RecoveryCode::RecoveryTimeout,
-            status.reason.clone(),
+    fn recovery_timeout_error(status: &NetworkRecoveryStatus) -> ActrError {
+        ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(
             status.elapsed_ms() as u64,
             NETWORK_RECOVERY_TIMEOUT.as_millis() as u64,
         ))
@@ -640,7 +626,7 @@ impl PeerGate {
         dest: &Dest,
         status: &NetworkRecoveryStatus,
         source: &str,
-    ) -> ActrError {
+    ) {
         tracing::warn!(
             peer = ?target,
             session_id = status.session_id,
@@ -668,7 +654,11 @@ impl PeerGate {
             );
         }
 
-        Self::recovery_timeout_error(target, status)
+        tracing::debug!(
+            peer = ?target,
+            session_id = status.session_id,
+            "Recovery timeout cleanup completed"
+        );
     }
 
     #[cfg(feature = "test-utils")]
@@ -692,11 +682,11 @@ impl PeerGate {
 
             if let Some(status) = coordinator.peer_recovery_status(target).await {
                 if status.is_timed_out() {
-                    return Err(self
-                        .handle_recovery_timeout(target, dest, &status, "coordinator")
-                        .await);
+                    self.handle_recovery_timeout(target, dest, &status, "coordinator")
+                        .await;
+                    return Err(Self::recovery_timeout_error(&status));
                 }
-                return Err(Self::recovering_error(target, &status));
+                return Err(Self::connection_not_ready_error(&status));
             }
         }
 
@@ -722,31 +712,21 @@ impl PeerGate {
             }
 
             if !cleared_locally && status.is_timed_out() {
-                return Err(self
-                    .handle_recovery_timeout(target, dest, &status, "peer gate")
-                    .await);
+                self.handle_recovery_timeout(target, dest, &status, "peer gate")
+                    .await;
+                return Err(Self::recovery_timeout_error(&status));
             }
             if !cleared_locally {
-                return Err(Self::recovering_error(target, &status));
+                return Err(Self::connection_not_ready_error(&status));
             }
         }
 
         if self.closing_peers.read().await.contains(target)
             || self.transport_manager.is_closing(dest).await
         {
-            let session_id = if let Some(coordinator) = &self.webrtc_coordinator {
-                coordinator.get_peer_session_id(target).await
-            } else {
-                None
-            };
-            return Err(ActrError::Recovering(RecoveryInfo::new(
-                target.clone(),
-                session_id,
-                RecoveryCode::TransportClosing,
-                "transport closing",
-                0,
-                NETWORK_RECOVERY_TIMEOUT.as_millis() as u64,
-            )));
+            return Err(ActrError::ConnectionNotReady(
+                ConnectionNotReadyInfo::without_retry_hint(),
+            ));
         }
 
         Ok(())

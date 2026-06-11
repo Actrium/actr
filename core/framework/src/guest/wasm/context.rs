@@ -7,8 +7,8 @@
 //! suspends the guest task at await points directly.
 
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, DataStream, DeliveryState, PayloadType, RecoveryCode,
-    RecoveryInfo, RpcRequest,
+    ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, PayloadType,
+    RpcRequest,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -32,8 +32,8 @@ use super::generated::actr::workload::types as wit_types;
 pub(crate) fn wit_actr_error_to_proto(e: wit_types::ActrError) -> ActrError {
     match e {
         wit_types::ActrError::Unavailable(msg) => ActrError::Unavailable(msg),
-        wit_types::ActrError::Recovering(info) => {
-            ActrError::Recovering(wit_recovery_info_to_proto(info))
+        wit_types::ActrError::ConnectionNotReady(info) => {
+            ActrError::ConnectionNotReady(wit_connection_not_ready_info_to_proto(info))
         }
         wit_types::ActrError::TimedOut => ActrError::TimedOut,
         wit_types::ActrError::NotFound(msg) => ActrError::NotFound(msg),
@@ -55,8 +55,8 @@ pub(crate) fn wit_actr_error_to_proto(e: wit_types::ActrError) -> ActrError {
 pub(crate) fn proto_actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
     match e {
         ActrError::Unavailable(msg) => wit_types::ActrError::Unavailable(msg),
-        ActrError::Recovering(info) => {
-            wit_types::ActrError::Recovering(proto_recovery_info_to_wit(info))
+        ActrError::ConnectionNotReady(info) => {
+            wit_types::ActrError::ConnectionNotReady(proto_connection_not_ready_info_to_wit(info))
         }
         ActrError::TimedOut => wit_types::ActrError::TimedOut,
         ActrError::NotFound(msg) => wit_types::ActrError::NotFound(msg),
@@ -77,66 +77,22 @@ pub(crate) fn proto_actr_error_to_wit(e: ActrError) -> wit_types::ActrError {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RecoveryInfo WIT ↔ protocol conversion helpers
+// ConnectionNotReadyInfo WIT ↔ protocol conversion helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-fn wit_recovery_code_to_proto(code: wit_types::RecoveryCode) -> RecoveryCode {
-    match code {
-        wit_types::RecoveryCode::PeerDisconnected => RecoveryCode::PeerDisconnected,
-        wit_types::RecoveryCode::PeerFailed => RecoveryCode::PeerFailed,
-        wit_types::RecoveryCode::IceNetworkStarted => RecoveryCode::IceNetworkStarted,
-        wit_types::RecoveryCode::RecoveryTimeout => RecoveryCode::RecoveryTimeout,
-        wit_types::RecoveryCode::TransportClosing => RecoveryCode::TransportClosing,
-    }
-}
-
-fn proto_recovery_code_to_wit(code: RecoveryCode) -> wit_types::RecoveryCode {
-    match code {
-        RecoveryCode::PeerDisconnected => wit_types::RecoveryCode::PeerDisconnected,
-        RecoveryCode::PeerFailed => wit_types::RecoveryCode::PeerFailed,
-        RecoveryCode::IceNetworkStarted => wit_types::RecoveryCode::IceNetworkStarted,
-        RecoveryCode::RecoveryTimeout => wit_types::RecoveryCode::RecoveryTimeout,
-        RecoveryCode::TransportClosing => wit_types::RecoveryCode::TransportClosing,
-    }
-}
-
-fn wit_delivery_state_to_proto(state: wit_types::DeliveryState) -> DeliveryState {
-    match state {
-        wit_types::DeliveryState::NotSent => DeliveryState::NotSent,
-        wit_types::DeliveryState::DeliveryUncertain => DeliveryState::DeliveryUncertain,
-    }
-}
-
-fn proto_delivery_state_to_wit(state: DeliveryState) -> wit_types::DeliveryState {
-    match state {
-        DeliveryState::NotSent => wit_types::DeliveryState::NotSent,
-        DeliveryState::DeliveryUncertain => wit_types::DeliveryState::DeliveryUncertain,
-    }
-}
-
-fn wit_recovery_info_to_proto(info: wit_types::RecoveryInfo) -> RecoveryInfo {
-    RecoveryInfo {
-        peer: actr_id_from_wit(&info.peer),
-        session_id: info.session_id,
-        code: wit_recovery_code_to_proto(info.code),
-        reason: info.reason,
-        elapsed_ms: info.elapsed_ms,
-        timeout_ms: info.timeout_ms,
+fn wit_connection_not_ready_info_to_proto(
+    info: wit_types::ConnectionNotReadyInfo,
+) -> ConnectionNotReadyInfo {
+    ConnectionNotReadyInfo {
         retry_after_ms: info.retry_after_ms,
-        delivery: wit_delivery_state_to_proto(info.delivery),
     }
 }
 
-fn proto_recovery_info_to_wit(info: RecoveryInfo) -> wit_types::RecoveryInfo {
-    wit_types::RecoveryInfo {
-        peer: actr_id_to_wit(&info.peer),
-        session_id: info.session_id,
-        code: proto_recovery_code_to_wit(info.code),
-        reason: info.reason,
-        elapsed_ms: info.elapsed_ms,
-        timeout_ms: info.timeout_ms,
+fn proto_connection_not_ready_info_to_wit(
+    info: ConnectionNotReadyInfo,
+) -> wit_types::ConnectionNotReadyInfo {
+    wit_types::ConnectionNotReadyInfo {
         retry_after_ms: info.retry_after_ms,
-        delivery: proto_delivery_state_to_wit(info.delivery),
     }
 }
 

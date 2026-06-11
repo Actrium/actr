@@ -5,10 +5,8 @@
 //! binding-local variants cover errors that occur strictly before a call
 //! reaches the protocol layer (e.g. config parsing inside the shell).
 
-use crate::types::ActrId;
 use actr_protocol::{
-    Classify, DeliveryState as ProtoDeliveryState, ErrorKind as ProtocolErrorKind,
-    RecoveryCode as ProtoRecoveryCode, RecoveryInfo as ProtoRecoveryInfo,
+    Classify, ConnectionNotReadyInfo as ProtoConnectionNotReadyInfo, ErrorKind as ProtocolErrorKind,
 };
 
 /// Fault domain classification exposed to UniFFI consumers.
@@ -39,109 +37,31 @@ impl From<ProtocolErrorKind> for ErrorKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum RecoveryCode {
-    PeerDisconnected,
-    PeerFailed,
-    IceNetworkStarted,
-    RecoveryTimeout,
-    TransportClosing,
-}
-
-impl From<ProtoRecoveryCode> for RecoveryCode {
-    fn from(code: ProtoRecoveryCode) -> Self {
-        match code {
-            ProtoRecoveryCode::PeerDisconnected => RecoveryCode::PeerDisconnected,
-            ProtoRecoveryCode::PeerFailed => RecoveryCode::PeerFailed,
-            ProtoRecoveryCode::IceNetworkStarted => RecoveryCode::IceNetworkStarted,
-            ProtoRecoveryCode::RecoveryTimeout => RecoveryCode::RecoveryTimeout,
-            ProtoRecoveryCode::TransportClosing => RecoveryCode::TransportClosing,
-        }
-    }
-}
-
-impl From<RecoveryCode> for ProtoRecoveryCode {
-    fn from(code: RecoveryCode) -> Self {
-        match code {
-            RecoveryCode::PeerDisconnected => ProtoRecoveryCode::PeerDisconnected,
-            RecoveryCode::PeerFailed => ProtoRecoveryCode::PeerFailed,
-            RecoveryCode::IceNetworkStarted => ProtoRecoveryCode::IceNetworkStarted,
-            RecoveryCode::RecoveryTimeout => ProtoRecoveryCode::RecoveryTimeout,
-            RecoveryCode::TransportClosing => ProtoRecoveryCode::TransportClosing,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
-pub enum DeliveryState {
-    NotSent,
-    DeliveryUncertain,
-}
-
-impl From<ProtoDeliveryState> for DeliveryState {
-    fn from(state: ProtoDeliveryState) -> Self {
-        match state {
-            ProtoDeliveryState::NotSent => DeliveryState::NotSent,
-            ProtoDeliveryState::DeliveryUncertain => DeliveryState::DeliveryUncertain,
-        }
-    }
-}
-
-impl From<DeliveryState> for ProtoDeliveryState {
-    fn from(state: DeliveryState) -> Self {
-        match state {
-            DeliveryState::NotSent => ProtoDeliveryState::NotSent,
-            DeliveryState::DeliveryUncertain => ProtoDeliveryState::DeliveryUncertain,
-        }
-    }
-}
-
-/// Structured information for a connection recovery window.
+/// Public payload for send preflight failures.
 #[derive(Debug, Clone, uniffi::Record)]
-pub struct RecoveryInfo {
-    pub peer: ActrId,
-    pub session_id: Option<u64>,
-    pub code: RecoveryCode,
-    pub reason: String,
-    pub elapsed_ms: u64,
-    pub timeout_ms: u64,
+pub struct ConnectionNotReadyInfo {
     pub retry_after_ms: Option<u64>,
-    pub delivery: DeliveryState,
 }
 
-impl std::fmt::Display for RecoveryInfo {
+impl std::fmt::Display for ConnectionNotReadyInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let proto: ProtoRecoveryInfo = self.clone().into();
+        let proto: ProtoConnectionNotReadyInfo = self.clone().into();
         proto.fmt(f)
     }
 }
 
-impl From<ProtoRecoveryInfo> for RecoveryInfo {
-    fn from(info: ProtoRecoveryInfo) -> Self {
-        RecoveryInfo {
-            peer: crate::types::ActrId::from(info.peer),
-            session_id: info.session_id,
-            code: info.code.into(),
-            reason: info.reason,
-            elapsed_ms: info.elapsed_ms,
-            timeout_ms: info.timeout_ms,
+impl From<ProtoConnectionNotReadyInfo> for ConnectionNotReadyInfo {
+    fn from(info: ProtoConnectionNotReadyInfo) -> Self {
+        ConnectionNotReadyInfo {
             retry_after_ms: info.retry_after_ms,
-            delivery: info.delivery.into(),
         }
     }
 }
 
-impl From<RecoveryInfo> for ProtoRecoveryInfo {
-    fn from(info: RecoveryInfo) -> Self {
-        ProtoRecoveryInfo {
-            peer: actr_protocol::ActrId::from(info.peer),
-            session_id: info.session_id,
-            code: info.code.into(),
-            reason: info.reason,
-            elapsed_ms: info.elapsed_ms,
-            timeout_ms: info.timeout_ms,
+impl From<ConnectionNotReadyInfo> for ProtoConnectionNotReadyInfo {
+    fn from(info: ConnectionNotReadyInfo) -> Self {
+        ProtoConnectionNotReadyInfo {
             retry_after_ms: info.retry_after_ms,
-            delivery: info.delivery.into(),
         }
     }
 }
@@ -157,8 +77,8 @@ pub enum ActrError {
     #[error("unavailable: {msg}")]
     Unavailable { msg: String },
 
-    #[error("recovering: {info}")]
-    Recovering { info: RecoveryInfo },
+    #[error("connection not ready: {info}")]
+    ConnectionNotReady { info: ConnectionNotReadyInfo },
 
     #[error("timed out")]
     TimedOut,
@@ -212,9 +132,9 @@ impl ActrError {
     /// rather than pattern-matching every variant.
     pub(crate) fn kind(&self) -> ErrorKind {
         match self {
-            ActrError::Unavailable { .. } | ActrError::Recovering { .. } | ActrError::TimedOut => {
-                ErrorKind::Transient
-            }
+            ActrError::Unavailable { .. }
+            | ActrError::ConnectionNotReady { .. }
+            | ActrError::TimedOut => ErrorKind::Transient,
 
             ActrError::NotFound { .. }
             | ActrError::PermissionDenied { .. }
@@ -269,8 +189,8 @@ impl From<actr_protocol::ActrError> for ActrError {
     fn from(e: actr_protocol::ActrError) -> Self {
         match e {
             actr_protocol::ActrError::Unavailable(msg) => ActrError::Unavailable { msg },
-            actr_protocol::ActrError::Recovering(info) => {
-                ActrError::Recovering { info: info.into() }
+            actr_protocol::ActrError::ConnectionNotReady(info) => {
+                ActrError::ConnectionNotReady { info: info.into() }
             }
             actr_protocol::ActrError::TimedOut => ActrError::TimedOut,
             actr_protocol::ActrError::NotFound(msg) => ActrError::NotFound { msg },
@@ -295,7 +215,9 @@ impl From<ActrError> for actr_protocol::ActrError {
     fn from(e: ActrError) -> Self {
         match e {
             ActrError::Unavailable { msg } => actr_protocol::ActrError::Unavailable(msg),
-            ActrError::Recovering { info } => actr_protocol::ActrError::Recovering(info.into()),
+            ActrError::ConnectionNotReady { info } => {
+                actr_protocol::ActrError::ConnectionNotReady(info.into())
+            }
             ActrError::TimedOut => actr_protocol::ActrError::TimedOut,
             ActrError::NotFound { msg } => actr_protocol::ActrError::NotFound(msg),
             ActrError::PermissionDenied { msg } => actr_protocol::ActrError::PermissionDenied(msg),
@@ -336,17 +258,11 @@ mod tests {
 
     #[test]
     fn roundtrip_preserves_every_protocol_variant() {
-        let peer = actr_protocol::ActrId::default();
         let cases = [
             actr_protocol::ActrError::Unavailable("u".into()),
-            actr_protocol::ActrError::Recovering(actr_protocol::RecoveryInfo::new(
-                peer.clone(),
-                None,
-                actr_protocol::RecoveryCode::TransportClosing,
-                "transport closing",
-                0,
-                6000,
-            )),
+            actr_protocol::ActrError::ConnectionNotReady(
+                actr_protocol::ConnectionNotReadyInfo::new(0, 6000),
+            ),
             actr_protocol::ActrError::TimedOut,
             actr_protocol::ActrError::NotFound("nf".into()),
             actr_protocol::ActrError::PermissionDenied("pd".into()),
@@ -375,16 +291,9 @@ mod tests {
             ErrorKind::Transient,
         );
         assert_eq!(
-            ActrError::Recovering {
-                info: RecoveryInfo {
-                    peer: crate::types::ActrId::from(actr_protocol::ActrId::default()),
-                    session_id: None,
-                    code: RecoveryCode::TransportClosing,
-                    reason: "transport closing".into(),
-                    elapsed_ms: 0,
-                    timeout_ms: 6000,
+            ActrError::ConnectionNotReady {
+                info: ConnectionNotReadyInfo {
                     retry_after_ms: Some(6000),
-                    delivery: DeliveryState::NotSent,
                 },
             }
             .kind(),
@@ -413,16 +322,9 @@ mod tests {
     fn retry_and_dlq_predicates() {
         assert!(ActrError::Unavailable { msg: "x".into() }.is_retryable());
         assert!(
-            ActrError::Recovering {
-                info: RecoveryInfo {
-                    peer: crate::types::ActrId::from(actr_protocol::ActrId::default()),
-                    session_id: None,
-                    code: RecoveryCode::TransportClosing,
-                    reason: "transport closing".into(),
-                    elapsed_ms: 0,
-                    timeout_ms: 6000,
+            ActrError::ConnectionNotReady {
+                info: ConnectionNotReadyInfo {
                     retry_after_ms: Some(6000),
-                    delivery: DeliveryState::NotSent,
                 },
             }
             .is_retryable()

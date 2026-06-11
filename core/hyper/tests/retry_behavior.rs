@@ -27,7 +27,7 @@ use actr_hyper::test_support::{
     wait_for_peer_state,
 };
 use actr_hyper::transport::{ConnectionEvent, ConnectionState};
-use actr_protocol::{ActrError, DeliveryState, PayloadType, RecoveryCode};
+use actr_protocol::{ActrError, PayloadType};
 use std::time::{Duration, Instant};
 
 /// Initialize tracing for test output.
@@ -308,6 +308,7 @@ async fn test_call_returns_promptly_after_connection_closed_cleanup() {
             // Error is expected — cleanup severed the response channel.
             assert!(
                 msg.contains("Connection")
+                    || msg.contains("connection")
                     || msg.contains("Unavailable")
                     || msg.contains("recovering"),
                 "expected connection error, got: {}",
@@ -445,7 +446,7 @@ async fn test_tell_does_not_register_pending_requests() {
 // ─── Scenario 7 ─────────────────────────────────────────────────────────────
 // `send_data_stream` does NOT use `send_with_retry`. When the recovery guard
 // is active (peer in recovery window), send_data_stream is rejected by
-// preflight_send with "Connection recovering" — just like call/tell. The key
+// preflight_send with "connection not ready" — just like call/tell. The key
 // difference is that send_data_stream won't retry on Transient transport
 // errors either.
 //
@@ -503,17 +504,13 @@ async fn test_send_data_stream_rejected_during_recovery() {
     );
     let err = result.unwrap_err();
     match err {
-        ActrError::Recovering(info) => {
-            assert_eq!(info.peer, target_id);
-            assert_eq!(info.code, RecoveryCode::IceNetworkStarted);
-            assert_eq!(info.delivery, DeliveryState::NotSent);
-            assert!(info.session_id.is_some(), "session_id should be present");
+        ActrError::ConnectionNotReady(info) => {
             assert!(
                 info.retry_after_ms.is_some(),
                 "retry_after_ms should be present"
             );
         }
-        other => panic!("expected structured Recovering error, got: {other}"),
+        other => panic!("expected ConnectionNotReady error, got: {other}"),
     }
     // Should be fast — no retry backoff.
     assert!(
@@ -522,7 +519,7 @@ async fn test_send_data_stream_rejected_during_recovery() {
         elapsed
     );
     tracing::info!(
-        "send_data_stream correctly rejected without retry in {:?} with Recovering",
+        "send_data_stream correctly rejected without retry in {:?} with ConnectionNotReady",
         elapsed
     );
 }
@@ -635,7 +632,7 @@ async fn test_call_succeeds_after_full_disconnect_reconnect_cycle() {
 
 // ─── Scenario 10 ────────────────────────────────────────────────────────────
 // When a call is blocked in `preflight_send` (peer is in the 6s recovery
-// window), it returns `Recovering(RecoveryInfo)` immediately — it does NOT wait
+// window), it returns `ConnectionNotReady` immediately — it does NOT wait
 // for the recovery to complete. This is not a retry; it is a fast-fail so the
 // caller can decide what to do and retry after `on_webrtc_connected`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -646,8 +643,6 @@ async fn test_call_fast_fails_during_recovery_window() {
     harness.add_peer(100).await;
     harness.add_peer(200).await;
     harness.connect(100, 200).await;
-    let target_id = harness.peer(200).id.clone();
-
     // Manually enter network recovery on peer 100.
     harness
         .peer(100)
@@ -666,17 +661,13 @@ async fn test_call_fast_fails_during_recovery_window() {
         Ok(Ok(Err(e))) => {
             let elapsed = start.elapsed();
             match e {
-                ActrError::Recovering(info) => {
-                    assert_eq!(info.peer, target_id);
-                    assert_eq!(info.code, RecoveryCode::IceNetworkStarted);
-                    assert_eq!(info.delivery, DeliveryState::NotSent);
-                    assert!(info.session_id.is_some(), "session_id should be present");
+                ActrError::ConnectionNotReady(info) => {
                     assert!(
                         info.retry_after_ms.is_some(),
                         "retry_after_ms should be present"
                     );
                 }
-                other => panic!("expected structured Recovering error, got: {other}"),
+                other => panic!("expected ConnectionNotReady error, got: {other}"),
             }
             // Should be nearly instant, not waiting for 30s.
             assert!(
@@ -685,7 +676,7 @@ async fn test_call_fast_fails_during_recovery_window() {
                 elapsed
             );
             tracing::info!(
-                "preflight_send correctly fast-failed in {:?} with Recovering",
+                "preflight_send correctly fast-failed in {:?} with ConnectionNotReady",
                 elapsed
             );
         }
