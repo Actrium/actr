@@ -24,6 +24,7 @@
 | `d5d4588` | test | app terminating cleanup 后，server -> mobile 在移动端 killed 期间有界失败；app 在线重启后双向恢复。 |
 | `1c021e1` | test | 真实 mobile network event storm 测试改为双向，并覆盖两个方向的 DataStream bounded send。 |
 | `954f700` | test | app killed 后离线重启时，server -> mobile 有界失败；后续 online restore 后双向恢复。 |
+| `当前提交` | fix + test | request timeout 后按本次发送使用的 `WireIdentity` 做 session-guarded close，避免误关已替换的新 WebRTC session。 |
 
 ## 覆盖矩阵
 
@@ -58,8 +59,10 @@
 
 修复：
 
-- 在 `core/hyper/src/outbound/peer_gate.rs` 的 request send path 中，如果 payload 已发送但等待 response 超时，则移除 pending request 后异步调用 `transport_manager.close_transport(&stale_dest)`。
-- 关闭 stale dest 后，后续 retry 会重新走 transport build，避免无限复用旧 DataChannel。
+- 在 `core/hyper/src/transport/dest_transport.rs` / `peer_transport.rs` 中让 send path 返回本次实际使用的 `WireIdentity`。
+- 在 `core/hyper/src/outbound/peer_gate.rs` 的 request send path 中，如果 payload 已发送但等待 response 超时，则移除 pending request 后异步关闭 stale transport。
+- 如果本次发送记录到了 `WireIdentity::WebRtc { peer_id, session_id }`，timeout cleanup 走 `close_transport_if_webrtc_session()`，只有当前 active wire 仍是同一 session 时才关闭；如果 session 已经被新连接替换，则跳过关闭，避免误关新连接。
+- 如果 timeout 发生在 send identity 记录前（例如建连/发送阶段超时），保留原来的 `close_transport()` 行为，用于取消 connecting state 或无 identity 的 transport。
 
 验证：
 
@@ -67,6 +70,7 @@
 - `cargo test -p actr-hyper --test retry_core_mechanics --features test-utils`
 - `cargo test -p actr-hyper --test retry_behavior --features test-utils`
 - `cargo test -p actr-hyper --test retry_dedup --features test-utils`
+- `request_timeout_does_not_close_replaced_webrtc_session` 确认旧 session request timeout 不会关闭已经替换的新 WebRTC session。
 
 ### 2. 双向测试中的 receive loop 竞争
 
@@ -133,6 +137,9 @@
 ```bash
 cargo fmt
 cargo test -p actr-hyper --test webrtc_large_mobile_recovery --features test-utils
+cargo test -p actr-hyper --test retry_core_mechanics --features test-utils
+cargo test -p actr-hyper --test retry_behavior --features test-utils
+cargo test -p actr-hyper --test retry_dedup --features test-utils
 cargo test -p actr-hyper --test mobile_full_disconnect_recovery --features test-utils
 cargo test -p actr-hyper --test mobile_network_event_scenarios --features test-utils
 ```
@@ -140,5 +147,8 @@ cargo test -p actr-hyper --test mobile_network_event_scenarios --features test-u
 结果：
 
 - `webrtc_large_mobile_recovery`: 2 passed
+- `retry_core_mechanics`: 15 passed
+- `retry_behavior`: 10 passed
+- `retry_dedup`: 6 passed
 - `mobile_full_disconnect_recovery`: 2 passed
 - `mobile_network_event_scenarios`: 8 passed
