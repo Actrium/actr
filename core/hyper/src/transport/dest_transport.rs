@@ -248,6 +248,23 @@ impl DestTransport {
         Ok(())
     }
 
+    /// Close a single connection type without affecting other connections in
+    /// the pool.
+    ///
+    /// Used when a WebRTC connection closes but the WebSocket connection for
+    /// the same peer should remain alive (e.g. for response routing).
+    pub(crate) async fn close_connection(&self, conn_type: ConnType) -> NetworkResult<()> {
+        if let Some(conn) = self.conn_mgr.get_connection(conn_type).await {
+            if let Err(e) = conn.close().await {
+                tracing::warn!("Failed to close {:?} connection: {}", conn_type, e);
+            } else {
+                tracing::debug!("Closed {:?} connection", conn_type);
+            }
+            self.conn_mgr.mark_connection_closed(conn_type).await;
+        }
+        Ok(())
+    }
+
     /// Close DestTransport and release all connection resources
     pub(crate) async fn close(&self) -> NetworkResult<()> {
         tracing::info!("🔌 Closing DestTransport");

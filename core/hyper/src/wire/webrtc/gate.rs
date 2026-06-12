@@ -114,10 +114,10 @@ impl WebRtcGate {
             // Convert envelope to result
             let result = match (envelope.payload, envelope.error) {
                 (Some(payload), None) => Ok(payload),
-                (None, Some(error)) => Err(ActrError::Unavailable(format!(
-                    "RPC error {}: {}",
-                    error.code, error.message
-                ))),
+                (None, Some(error)) => Err(crate::lifecycle::node::wire_code_to_actr_error(
+                    error.code,
+                    error.message,
+                )),
                 _ => Err(ActrError::DecodeFailure(
                     "Invalid RpcEnvelope: payload and error fields inconsistent".to_string(),
                 )),

@@ -671,7 +671,7 @@ async fn test_call_envelope_timeout_truncates_retry_backoff() {
             let elapsed = start.elapsed();
             let msg = e.to_string();
             assert!(
-                msg.contains("timeout") || msg.contains("Unavailable"),
+                msg.contains("timeout") || msg.contains("timed out") || msg.contains("Unavailable"),
                 "expected timeout/unavailable error, got: {}",
                 msg
             );

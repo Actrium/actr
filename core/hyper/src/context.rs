@@ -15,7 +15,9 @@ use actr_protocol::{
 };
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// RuntimeContext - Runtime's implementation of Context trait
 ///
@@ -43,6 +45,10 @@ pub struct RuntimeContext {
     signaling_client: Arc<dyn SignalingClient>,
     credential: AIdCredential,
     actr_lock: Option<Arc<LockFile>>, // packaged manifest.lock.toml for fingerprint lookups
+    /// Shared map of discovered direct-connect WebSocket URLs, keyed by ActrId.
+    /// Populated by `discover_route_candidate` from the signaling `ws_address_map`,
+    /// then read by `DefaultWireBuilder` when establishing outbound connections.
+    discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
 }
 
 impl RuntimeContext {
@@ -60,6 +66,7 @@ impl RuntimeContext {
     /// - `signaling_client`: signaling client used for route discovery
     /// - `credential`: credentials used when calling signaling interfaces
     /// - `actr_lock`: shared packaged `manifest.lock.toml` used for fingerprint lookup (wrapped in `Arc` so context clones stay cheap)
+    /// - `discovered_ws_addresses`: shared map written by `discover_route_candidate` and read by `DefaultWireBuilder`
     #[allow(clippy::too_many_arguments)] // Internal API - all parameters are required
     pub(crate) fn new(
         self_id: ActrId,
@@ -72,6 +79,7 @@ impl RuntimeContext {
         signaling_client: Arc<dyn SignalingClient>,
         credential: AIdCredential,
         actr_lock: Option<Arc<LockFile>>,
+        discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
     ) -> Self {
         Self {
             self_id,
@@ -84,6 +92,7 @@ impl RuntimeContext {
             signaling_client,
             credential,
             actr_lock,
+            discovered_ws_addresses,
         }
     }
 
@@ -289,6 +298,7 @@ impl RuntimeContext {
             Some(actr_protocol::route_candidates_response::Result::Success(success)) => {
                 Ok(InternalDiscoveryResult {
                     candidates: success.candidates,
+                    ws_address_map: success.ws_address_map,
                 })
             }
             Some(actr_protocol::route_candidates_response::Result::Error(err)) => {
@@ -307,6 +317,8 @@ impl RuntimeContext {
 /// Internal discovery result structure
 struct InternalDiscoveryResult {
     candidates: Vec<ActrId>,
+    /// Direct-connect WebSocket URLs returned alongside candidates.
+    ws_address_map: Vec<actr_protocol::WsAddressEntry>,
 }
 
 /// Template used to materialize `RuntimeContext` instances for lifecycle
@@ -333,6 +345,9 @@ pub(crate) struct BootstrapContextBuilder {
     media_frame_registry: Arc<MediaFrameRegistry>,
     signaling_client: Arc<dyn SignalingClient>,
     actr_lock: Option<Arc<LockFile>>,
+    /// Shared map populated by discover_route_candidate; forwarded into each
+    /// RuntimeContext so discovery results are visible to DefaultWireBuilder.
+    discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
 }
 
 impl BootstrapContextBuilder {
@@ -348,6 +363,7 @@ impl BootstrapContextBuilder {
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
         actr_lock: Option<Arc<LockFile>>,
+        discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
     ) -> Self {
         Self {
             inproc_gate,
@@ -356,6 +372,7 @@ impl BootstrapContextBuilder {
             media_frame_registry,
             signaling_client,
             actr_lock,
+            discovered_ws_addresses,
         }
     }
 
@@ -381,6 +398,7 @@ impl BootstrapContextBuilder {
             self.signaling_client.clone(),
             credential.clone(),
             self.actr_lock.clone(),
+            self.discovered_ws_addresses.clone(),
         )
     }
 }
@@ -619,10 +637,28 @@ impl Context for RuntimeContext {
             .await?;
 
         tracing::info!(
-            "Discovery result [{}]: {} candidates",
+            "Discovery result [{}]: {} candidates, {} ws_address entries",
             service_name,
             result.candidates.len(),
+            result.ws_address_map.len(),
         );
+
+        // Populate the shared discovered_ws_addresses map so DefaultWireBuilder
+        // can use direct WebSocket connections instead of WebRTC for peers that
+        // advertise a ws:// address through the signaling server.
+        if !result.ws_address_map.is_empty() {
+            let mut map = self.discovered_ws_addresses.write().await;
+            for entry in result.ws_address_map {
+                if let Some(url) = entry.ws_address {
+                    tracing::debug!(
+                        actor_id = ?entry.candidate_id,
+                        ws_url = %url,
+                        "discovered direct WebSocket address",
+                    );
+                    map.insert(entry.candidate_id, url);
+                }
+            }
+        }
 
         result.candidates.into_iter().next().ok_or_else(|| {
             ActrError::NotFound(format!(

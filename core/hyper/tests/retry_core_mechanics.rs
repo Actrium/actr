@@ -999,7 +999,8 @@ async fn request_timeout_then_late_old_response_does_not_complete_new_request() 
         .expect("old request task should not panic")
         .expect_err("old request should time out before any response arrives");
     assert!(
-        old_error.to_string().contains("Request timeout"),
+        (old_error.to_string().contains("Request timeout")
+            || old_error.to_string().contains("timed out")),
         "old request should fail with explicit timeout, got: {old_error}"
     );
     assert_eq!(
@@ -1424,7 +1425,7 @@ async fn cleanup_during_inflight_rpc_is_bounded_and_next_rpc_is_clean() {
         .expect("RPC task should not panic")
         .expect_err("in-flight RPC without response should fail boundedly");
     assert!(
-        err.to_string().contains("Request timeout"),
+        (err.to_string().contains("Request timeout") || err.to_string().contains("timed out")),
         "in-flight RPC should fail with an explicit deadline error, got: {err}"
     );
     assert_eq!(
@@ -1553,7 +1554,7 @@ async fn request_timeout_does_not_close_replaced_webrtc_session() {
         .expect("stale-session task should not panic")
         .expect_err("stale-session request should time out");
     assert!(
-        err.to_string().contains("Request timeout"),
+        (err.to_string().contains("Request timeout") || err.to_string().contains("timed out")),
         "stale-session request should fail with timeout, got: {err}"
     );
 

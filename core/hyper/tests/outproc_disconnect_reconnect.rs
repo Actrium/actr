@@ -387,7 +387,7 @@ async fn expect_request_eventually_ok(
                 let msg = err.to_string();
                 assert!(
                     msg.contains("connection not ready")
-                        || msg.contains("Request timeout")
+                        || (msg.contains("Request timeout") || msg.contains("timed out"))
                         || msg.contains("Connection"),
                     "unexpected retry error while waiting for recovery: {msg}"
                 );
@@ -868,7 +868,7 @@ async fn test_unreachable_peer_request_fails_bounded_and_clears_pending() {
         Ok(Ok(Err(err))) => {
             let message = err.to_string();
             assert!(
-                message.contains("Request timeout")
+                (message.contains("Request timeout") || message.contains("timed out"))
                     || message.contains("timeout")
                     || message.contains("Connection")
                     || message.contains("Unavailable")
@@ -995,7 +995,7 @@ async fn test_l2_data_channel_not_ready_during_initial_connect_fails_bounded_the
         Ok(Ok(Err(err))) => {
             let msg = err.to_string();
             assert!(
-                msg.contains("Request timeout")
+                (msg.contains("Request timeout") || msg.contains("timed out"))
                     || msg.contains("timeout")
                     || msg.contains("Connection")
                     || msg.contains("DataChannel")
@@ -1426,7 +1426,7 @@ async fn test_both_peers_first_rpc_concurrently_is_bounded_then_mobile_restore_r
             Err(err) => {
                 let msg = err.to_string();
                 assert!(
-                    msg.contains("Request timeout")
+                    (msg.contains("Request timeout") || msg.contains("timed out"))
                         || msg.contains("timeout")
                         || msg.contains("Connection")
                         || msg.contains("closed")
@@ -2585,7 +2585,7 @@ async fn repro_network_event_returns_before_webrtc_ready_causing_early_rpc_timeo
                 }
                 assert!(
                     msg.contains("connection not ready")
-                        || msg.contains("Request timeout")
+                        || (msg.contains("Request timeout") || msg.contains("timed out"))
                         || msg.contains("Connection"),
                     "unexpected retry error while waiting for recovery: {msg}"
                 );

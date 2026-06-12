@@ -844,7 +844,8 @@ async fn expect_request_ok(
                 let msg = err.to_string();
                 assert!(
                     msg.contains("connection not ready")
-                        || msg.contains("Request timeout")
+                        || (msg.contains("Request timeout") || msg.contains("timed out"))
+                        || msg.contains("timed out")
                         || msg.contains("Connection"),
                     "unexpected retry error while waiting for recovery: {msg}"
                 );
@@ -943,6 +944,7 @@ fn is_expected_bounded_send_error(message: &str) -> bool {
     [
         "connection",
         "request timeout",
+        "timed out",
         "closed",
         "recovering",
         "data channel",

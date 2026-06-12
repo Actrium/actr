@@ -543,20 +543,66 @@ async fn stream_callback_host_operation_handler(
     }
 }
 
-/// Map ActrError to error code for ErrorResponse
-fn protocol_error_to_code(err: &ActrError) -> u32 {
+/// Map `ActrError` to a stable, unique numeric code for the wire
+/// `ErrorResponse`.  Each variant has a distinct code so
+/// `wire_code_to_actr_error` can reconstruct the exact variant on the
+/// receiving side.
+///
+/// Code allocation (100xx namespace to avoid collisions with HTTP):
+///
+/// | code  | variant            |
+/// |-------|--------------------|
+/// | 10001 | Unavailable        |
+/// | 10002 | TimedOut           |
+/// | 10003 | NotFound           |
+/// | 10004 | PermissionDenied   |
+/// | 10005 | InvalidArgument    |
+/// | 10006 | UnknownRoute       |
+/// | 10007 | DependencyNotFound |
+/// | 10008 | DecodeFailure      |
+/// | 10009 | NotImplemented     |
+/// | 10010 | Internal           |
+pub(crate) fn protocol_error_to_code(err: &ActrError) -> u32 {
     match err {
-        ActrError::Unavailable(_) => 503,            // Service Unavailable
-        ActrError::ConnectionNotReady(_) => 503,     // Service Unavailable (send preflight)
-        ActrError::TimedOut => 504,                  // Gateway Timeout
-        ActrError::NotFound(_) => 404,               // Not Found
-        ActrError::PermissionDenied(_) => 403,       // Forbidden
-        ActrError::InvalidArgument(_) => 400,        // Bad Request
-        ActrError::UnknownRoute(_) => 404,           // Not Found - route not found
-        ActrError::DependencyNotFound { .. } => 400, // Bad Request
-        ActrError::DecodeFailure(_) => 400,          // Bad Request - decode failure
-        ActrError::NotImplemented(_) => 501,         // Not Implemented
-        ActrError::Internal(_) => 500,               // Internal Server Error
+        ActrError::Unavailable(_) => 10001,
+        // ConnectionNotReady is a local send-preflight error and should not
+        // normally cross the wire; if it does, collapse it to Unavailable
+        // (same as the legacy 503 mapping did).
+        ActrError::ConnectionNotReady(_) => 10001,
+        ActrError::TimedOut => 10002,
+        ActrError::NotFound(_) => 10003,
+        ActrError::PermissionDenied(_) => 10004,
+        ActrError::InvalidArgument(_) => 10005,
+        ActrError::UnknownRoute(_) => 10006,
+        ActrError::DependencyNotFound { .. } => 10007,
+        ActrError::DecodeFailure(_) => 10008,
+        ActrError::NotImplemented(_) => 10009,
+        ActrError::Internal(_) => 10010,
+    }
+}
+
+/// Reconstruct an `ActrError` from a wire code + message pair.
+///
+/// This is the inverse of `protocol_error_to_code`.  Unknown codes fall
+/// back to `ActrError::Unavailable` to avoid silent data loss.
+pub(crate) fn wire_code_to_actr_error(code: u32, message: String) -> ActrError {
+    match code {
+        10001 => ActrError::Unavailable(message),
+        10002 => ActrError::TimedOut,
+        10003 => ActrError::NotFound(message),
+        10004 => ActrError::PermissionDenied(message),
+        10005 => ActrError::InvalidArgument(message),
+        10006 => ActrError::UnknownRoute(message),
+        10007 => ActrError::DependencyNotFound {
+            service_name: String::new(),
+            message,
+        },
+        10008 => ActrError::DecodeFailure(message),
+        10009 => ActrError::NotImplemented(message),
+        10010 => ActrError::Internal(message),
+        // Legacy HTTP-ish codes emitted before this scheme was introduced,
+        // or any unknown future code: treat as Unavailable.
+        _ => ActrError::Unavailable(format!("rpc error {code}: {message}")),
     }
 }
 
@@ -751,8 +797,7 @@ impl Inner {
         let mut guard = self.workload_dispatch.lock().await;
         let result = guard
             .dispatch_envelope(envelope.clone(), ctx.clone(), dispatch_ctx, &call_executor)
-            .await
-            .map_err(|e| ActrError::Internal(format!("workload dispatch failed: {e:?}")));
+            .await;
 
         match &result {
             Ok(_) => tracing::debug!(
@@ -922,6 +967,7 @@ impl Inner {
             self.media_frame_registry.clone(),
             self.signaling_client.clone(),
             self.actr_lock.clone(),
+            self.discovered_ws_addresses.clone(),
         )
     }
 
@@ -947,6 +993,7 @@ impl Inner {
             self.signaling_client.clone(),
             credential.clone(),
             self.actr_lock.clone(),
+            self.discovered_ws_addresses.clone(),
         )
     }
 
@@ -1301,6 +1348,12 @@ impl Inner {
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
             tracing::info!("🏗️  Creating PeerTransport with WebRTC support");
 
+            // Pre-allocate the pending-requests map so it can be shared between
+            // DefaultWireBuilder (for outbound WS response reader tasks) and
+            // PeerGate (for request/response matching).
+            let pending_requests: crate::outbound::PendingRequestsMap =
+                Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+
             // Create DefaultWireBuilder with WebRTC coordinator
             use crate::transport::{DefaultWireBuilder, DefaultWireBuilderConfig};
 
@@ -1317,6 +1370,9 @@ impl Inner {
                 // Pass credential_state so outbound WS handshake carries X-Actr-Credential,
                 // enabling peer WebSocketGate to perform Ed25519 signature verification.
                 credential_state: Some(credential_state.clone()),
+                // Pass pending_requests so outbound WS connections spawn reader tasks
+                // to deliver server responses back to `send_request_with_type` futures.
+                pending_requests: Some(pending_requests.clone()),
             };
             let wire_builder = Arc::new(DefaultWireBuilder::new(
                 Some(coordinator.clone()),
@@ -1328,17 +1384,19 @@ impl Inner {
             let transport_manager = Arc::new(PeerTransport::new(actor_id.clone(), wire_builder));
             self.peer_transport = Some(transport_manager.clone());
 
-            // Create PeerGate with WebRTC coordinator for MediaTrack support
+            // Create PeerGate with the pre-allocated pending_requests map and WebRTC coordinator.
             use crate::outbound::PeerGate;
-            let outproc_gate =
-                Arc::new(PeerGate::new(transport_manager, Some(coordinator.clone())));
+            let outproc_gate = Arc::new(PeerGate::with_pending_requests(
+                transport_manager,
+                Some(coordinator.clone()),
+                pending_requests.clone(),
+            ));
             let outproc_gate_enum = Gate::Peer(outproc_gate.clone());
             tracing::info!("PeerTransport + PeerGate initialized");
 
             let data_stream_registry = self.data_stream_registry.clone();
 
             // Create WebRtcGate with shared pending_requests and DataStreamRegistry
-            let pending_requests = outproc_gate.get_pending_requests();
             let gate = Arc::new(crate::wire::webrtc::gate::WebRtcGate::new(
                 coordinator.clone(),
                 pending_requests,
@@ -1919,8 +1977,11 @@ impl Inner {
                                                 }
                                             }
                                             (None, Some(error)) => {
-                                                // Error response - convert to ActrError and complete with error
-                                                let actr_err = ActrError::Unavailable(format!("RPC error {}: {}", error.code, error.message));
+                                                // Error response — reconstruct the precise ActrError variant
+                                                // from the wire code so binding-visible classification
+                                                // (UnknownRoute / PermissionDenied / TimedOut / …) is preserved
+                                                // instead of collapsing every error into Unavailable.
+                                                let actr_err = wire_code_to_actr_error(error.code, error.message);
                                                 if let Err(e) = request_mgr
                                                     .complete_error(&envelope.request_id, actr_err)
                                                     .await
@@ -2085,7 +2146,8 @@ impl Inner {
         {
             let node = node_ref.clone();
             let mailbox = node_ref.mailbox.clone();
-            let gate = node_ref.webrtc_gate.clone();
+            let webrtc_gate = node_ref.webrtc_gate.clone();
+            let ws_gate = node_ref.websocket_gate.clone();
             let shutdown = shutdown_token.clone();
 
             let mailbox_handle = tokio::spawn(async move {
@@ -2141,51 +2203,107 @@ impl Inner {
                                                 #[cfg(feature = "opentelemetry")]
                                                 let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
 
+                                                /// Send `response_envelope` back to `caller` via the
+                                                /// best available transport.
+                                                ///
+                                                /// Priority: inbound WebSocket connection (if caller
+                                                /// dialled us directly) → WebRTC gate.  Returns the
+                                                /// first transport error encountered, if any.
+                                                async fn send_envelope_to_caller(
+                                                    ws_gate: &Option<Arc<crate::wire::websocket::WebSocketGate>>,
+                                                    webrtc_gate: &Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
+                                                    caller: &ActrId,
+                                                    response_envelope: RpcEnvelope,
+                                                    request_id: &str,
+                                                ) {
+                                                    // 1. Try inbound WebSocket connection first.
+                                                    if let Some(wsg) = ws_gate {
+                                                        match wsg.send_response(caller, response_envelope.clone()).await {
+                                                            Ok(true) => return, // sent successfully
+                                                            Ok(false) => {
+                                                                tracing::debug!(
+                                                                    request_id = request_id,
+                                                                    caller = %caller,
+                                                                    "No inbound WS connection for caller; falling back to WebRTC gate"
+                                                                );
+                                                            }
+                                                            Err(e) => {
+                                                                tracing::warn!(
+                                                                    severity = 5,
+                                                                    error_category = "transport_error",
+                                                                    request_id = request_id,
+                                                                    "WebSocketGate send_response failed, falling back: {:?}", e
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+
+                                                    // 2. Fall back to WebRTC gate.
+                                                    if let Some(gate) = webrtc_gate {
+                                                        if let Err(e) = gate.send_response(caller, response_envelope).await {
+                                                            tracing::error!(
+                                                                severity = 7,
+                                                                error_category = "transport_error",
+                                                                request_id = request_id,
+                                                                "❌ WebRtcGate send_response failed: {:?}", e
+                                                            );
+                                                        }
+                                                    } else {
+                                                        tracing::error!(
+                                                            severity = 7,
+                                                            error_category = "transport_error",
+                                                            request_id = request_id,
+                                                            "❌ No gate available to send response"
+                                                        );
+                                                    }
+                                                }
+
                                                 match handle_incoming_fut.await {
                                                     Ok(response_bytes) => {
-                                                        // Send response (reuse request_id)
-                                                        if let Some(ref gate) = gate {
-                                                            // Use already decoded caller_id
-                                                            match caller_id_result {
-                                                                Ok(caller) => {
-                                                                    // Construct response RpcEnvelope (reuse request_id!)
-                                                                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                                    let mut response_envelope = RpcEnvelope {
-                                                                        request_id, // Reuse!
-                                                                        route_key: envelope.route_key.clone(),
-                                                                        payload: Some(response_bytes),
-                                                                        error: None,
-                                                                        traceparent: envelope.traceparent.clone(),
-                                                                        tracestate: envelope.tracestate.clone(),
-                                                                        metadata: Vec::new(), // Response doesn't need extra metadata
-                                                                        timeout_ms: 30000,
-                                                                    };
-                                                                    // Inject tracing context
-                                                                    #[cfg(feature = "opentelemetry")]
-                                                                    inject_span_context_to_rpc(&span, &mut response_envelope);
+                                                        match caller_id_result {
+                                                            Ok(caller) => {
+                                                                // Construct response RpcEnvelope (reuse request_id!)
+                                                                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                                                                let mut response_envelope = RpcEnvelope {
+                                                                    request_id: request_id.clone(),
+                                                                    route_key: envelope.route_key.clone(),
+                                                                    payload: Some(response_bytes),
+                                                                    error: None,
+                                                                    traceparent: envelope.traceparent.clone(),
+                                                                    tracestate: envelope.tracestate.clone(),
+                                                                    metadata: Vec::new(),
+                                                                    timeout_ms: 30000,
+                                                                };
+                                                                // Inject tracing context
+                                                                #[cfg(feature = "opentelemetry")]
+                                                                inject_span_context_to_rpc(&span, &mut response_envelope);
 
-                                                                    let send_response_fut = gate.send_response(&caller, response_envelope);
-                                                                    #[cfg(feature = "opentelemetry")]
-                                                                    let send_response_fut = send_response_fut.instrument(span);
-                                                                    if let Err(e) = send_response_fut.await {
-                                                                        tracing::error!(
-                                                                            severity = 7,
-                                                                            error_category = "transport_error",
-                                                                            request_id = %envelope.request_id,
-                                                                            "❌ Failed to send response: {:?}",
-                                                                            e
-                                                                        );
-                                                                    }
-                                                                }
-                                                                Err(e) => {
-                                                                    tracing::error!(
-                                                                        severity = 8,
-                                                                        error_category = "protobuf_decode",
-                                                                        request_id = %envelope.request_id,
-                                                                        "❌ Failed to decode caller_id: {:?}",
-                                                                        e
-                                                                    );
-                                                                }
+                                                                #[cfg(feature = "opentelemetry")]
+                                                                let send_fut = send_envelope_to_caller(
+                                                                    &ws_gate,
+                                                                    &webrtc_gate,
+                                                                    &caller,
+                                                                    response_envelope,
+                                                                    &request_id,
+                                                                ).instrument(span);
+                                                                #[cfg(not(feature = "opentelemetry"))]
+                                                                let send_fut = send_envelope_to_caller(
+                                                                    &ws_gate,
+                                                                    &webrtc_gate,
+                                                                    &caller,
+                                                                    response_envelope,
+                                                                    &request_id,
+                                                                );
+                                                                send_fut.await;
+                                                            }
+                                                            Err(e) => {
+                                                                tracing::error!(
+                                                                    severity = 8,
+                                                                    error_category = "protobuf_decode",
+                                                                    request_id = %envelope.request_id,
+                                                                    "❌ Failed to decode caller_id: {:?}",
+                                                                    e
+                                                                );
                                                             }
                                                         }
 
@@ -2209,8 +2327,39 @@ impl Inner {
                                                             route_key = %envelope.route_key,
                                                             "❌ handle_incoming failed: {:?}", e
                                                         );
+
+                                                        // Send error envelope back to caller so it
+                                                        // receives a structured error rather than
+                                                        // waiting until its deadline fires.
+                                                        if let Ok(caller) = caller_id_result {
+                                                            let error_response = actr_protocol::ErrorResponse {
+                                                                code: protocol_error_to_code(&e),
+                                                                message: e.to_string(),
+                                                            };
+                                                            #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                                                            let mut error_envelope = RpcEnvelope {
+                                                                request_id: request_id.clone(),
+                                                                route_key: envelope.route_key.clone(),
+                                                                payload: None,
+                                                                error: Some(error_response),
+                                                                traceparent: envelope.traceparent.clone(),
+                                                                tracestate: envelope.tracestate.clone(),
+                                                                metadata: Vec::new(),
+                                                                timeout_ms: 30000,
+                                                            };
+                                                            #[cfg(feature = "opentelemetry")]
+                                                            inject_span_context_to_rpc(&span, &mut error_envelope);
+
+                                                            send_envelope_to_caller(
+                                                                &ws_gate,
+                                                                &webrtc_gate,
+                                                                &caller,
+                                                                error_envelope,
+                                                                &request_id,
+                                                            ).await;
+                                                        }
+
                                                         // ACK to avoid infinite retries
-                                                        // Application errors are caller's responsibility
                                                         let _ = mailbox.ack(msg_record.id).await;
                                                     }
                                                 }
