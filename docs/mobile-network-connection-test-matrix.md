@@ -431,8 +431,15 @@ L5 端上测试必须显式覆盖三个维度：
 | E2E-A08 | Android | P1 | 息屏亮屏 | RPC/DataStream 后息屏/亮屏 | offerer + answerer | 移动端发送、移动端接收都要跑 | 双向 DataStream smoke | 不直接 cleanup；回前台后按 lifecycle 恢复 |
 | E2E-A09 | Android | P1 | VPN/captive portal | 开关 VPN/连接无互联网 Wi-Fi | offerer + answerer | 移动端发送、移动端接收都要跑 | DataStream 失败/恢复各一次 | 错误可解释，网络恢复后双向成功 |
 | E2E-A10 | Android | P1 | Doze/锁屏 | 锁屏进入省电后切网 | offerer + answerer | 解锁前后验证移动端发送、接收 | 双向 DataStream smoke | 解锁/前台后最终恢复，不泄漏 pending |
+| E2E-A18 | Android | P1 | 短时间反复前后台 | 10s 内连续 5 次切后台再回前台，期间有 RPC/DataStream | offerer + answerer | 移动端发送、移动端接收各验证 | 双向 DataStream | lifecycle event 幂等合并，不重复 cleanup/rebuild 风暴，最终双向成功 |
+| E2E-A19 | Android | P1 | App 被系统杀后重启 | 切走 App 等系统回收进程，从最近任务或桌面图标重新打开 | offerer + answerer | 重启后验证移动端发送、接收 | 双向 DataStream smoke | 新 node 正常建连，旧 node/handle 不干扰，双向成功 |
+| E2E-A20 | Android | P1 | 强制停止后重启 | 设置中强制停止 App，再重新打开 | offerer + answerer | 重启后验证移动端发送、接收 | 双向 DataStream smoke | 清状态后冷启动正常建连，不残留旧连接/旧 handle |
+| E2E-A21 | Android | P1 | 服务端主动关闭连接后重连 | 服务端 WebSocket/WebRTC 主动 close，客户端网络仍通 | offerer + answerer | 关闭后验证 `server -> mobile` bounded failure；重连后双向 RPC | 双向 DataStream：关闭后 bounded failure，重连后恢复 | 不误触发 network recovery，客户端 probe 或 force reconnect 后重建成功 |
 | E2E-I07 | iOS | P1 | 锁屏亮屏 | RPC/DataStream 后锁屏/亮屏 | offerer + answerer | 移动端发送、移动端接收都要跑 | 双向 DataStream smoke | 不把亮屏误报 foreground recovery |
 | E2E-I08 | iOS | P1 | VPN/热点/Low Data Mode | 开关 VPN/热点/低数据 | offerer + answerer | 移动端发送、移动端接收都要跑 | DataStream 失败/恢复各一次 | 不破坏连接，必要时恢复 |
+| E2E-I14 | iOS | P1 | 短时间反复前后台 | 10s 内连续 5 次切后台再回前台，期间有 RPC/DataStream | offerer + answerer | 移动端发送、移动端接收各验证 | 双向 DataStream | lifecycle event 幂等合并，不重复 cleanup/rebuild 风暴，最终双向成功 |
+| E2E-I15 | iOS | P1 | App 被系统杀后重启 | 系统回收进程后从 Spotlight/桌面图标重新打开 | offerer + answerer | 重启后验证移动端发送、接收 | 双向 DataStream smoke | 新 node 正常建连，旧 node/handle 不干扰，双向成功 |
+| E2E-I16 | iOS | P1 | 服务端主动关闭连接后重连 | 服务端 WebSocket/WebRTC 主动 close，客户端网络仍通 | offerer + answerer | 关闭后验证 `server -> mobile` bounded failure；重连后双向 RPC | 双向 DataStream：关闭后 bounded failure，重连后恢复 | 不误触发 network recovery，客户端 probe 或 force reconnect 后重建成功 |
 | E2E-B02 | 双端 | P1 | 长时间稳定性 | 30min 多轮切网/前后台/发送 | offerer + answerer | 周期性执行移动端发送、接收 | 周期性双向 DataStream | 连接数/任务数/内存不持续增长 |
 
 端上执行结果建议按以下汇总表回填，避免“跑了场景但漏了角色/方向/载荷”：
