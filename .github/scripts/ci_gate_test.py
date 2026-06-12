@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 
+import sqlite3
+import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -8,6 +11,7 @@ CI_GATE_WORKFLOW = ROOT / ".github/workflows/ci-gate.yml"
 CI_E2E_WORKFLOW = ROOT / ".github/workflows/ci-e2e.yml"
 RELEASE_TRAIN_WORKFLOW = ROOT / ".github/workflows/release-train.yml"
 RELEASE_TRAIN_SCRIPT = ROOT / "scripts/release-train.sh"
+SWIFT_E2E_READINESS = ROOT / "e2e/swift-echo-app/lib/readiness.sh"
 
 
 def _job(workflow: str, name: str, next_name: str) -> str:
@@ -49,8 +53,8 @@ def test_pr_gate_excludes_heavy_root_e2e_jobs() -> None:
 def test_scheduled_e2e_runs_root_level_browser_and_stream_e2e() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "e2e/typescript-stream/**" in workflow
-    assert "e2e/web-browser/**" in workflow
+    assert "typescript-e2e:" in workflow
+    assert "web-browser-e2e:" in workflow
     assert "bash e2e/typescript-stream/run.sh" in workflow
     assert "bash e2e/web-browser/run.sh" in workflow
 
@@ -127,6 +131,191 @@ def test_release_train_forwards_release_context() -> None:
     assert 'Release context SHA ${RELEASE_SHA} does not match current HEAD ${current_sha}' in release_script
 
 
+def test_swift_echoapp_e2e_job_present() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    swift_job = _job(workflow, "swift-echo-app-e2e", "python-web-e2e")
+
+    assert "runs-on: macos-latest" in swift_job
+    assert "bash e2e/swift-echo-app/run.sh" in swift_job
+
+
+def test_e2e_actrix_artifact_download_uses_shared_script() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    pkg_job = _job(workflow, "package-runtime-echo-e2e", "typescript-e2e")
+    swift_job = _job(workflow, "swift-echo-app-e2e", "python-web-e2e")
+
+    # Both jobs call the shared script with arch-appropriate artifact names
+    assert "bash .github/scripts/download-actrix-artifact.sh actrix-linux-x86_64" in pkg_job
+    assert "bash .github/scripts/download-actrix-artifact.sh actrix-macos-arm64" in swift_job
+
+    # Linux runner gets x86_64, macOS runner gets arm64
+    assert "runs-on: ubuntu-latest" in pkg_job
+    assert "actrix-linux-x86_64" in pkg_job
+    assert "runs-on: macos-latest" in swift_job
+    assert "actrix-macos-arm64" in swift_job
+
+
+def test_e2e_no_private_actrix_checkout() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+
+    # No private Actrix checkout git config in any job
+    assert "insteadOf" not in workflow
+    assert "x-access-token" not in workflow
+    assert "Configure git for private Actrix checkout" not in workflow
+
+
+def test_e2e_no_inline_archive_download_url() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+
+    # Inline archive_download_url + curl download replaced by shared script
+    assert "archive_download_url" not in workflow
+
+
+def test_e2e_linux_deps_includes_unzip() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    pkg_job = _job(workflow, "package-runtime-echo-e2e", "typescript-e2e")
+
+    # unzip is required by the download script on Linux
+    assert "unzip" in pkg_job
+
+
+def test_e2e_linux_job_has_no_ios_rust_targets() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    pkg_job = _job(workflow, "package-runtime-echo-e2e", "typescript-e2e")
+
+    assert "aarch64-apple-ios" not in pkg_job
+    assert "aarch64-apple-ios-sim" not in pkg_job
+
+
+def test_swift_e2e_upload_artifact_on_failure() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    swift_job = _job(workflow, "swift-echo-app-e2e", "python-web-e2e")
+
+    # Upload step runs even on failure
+    assert "if: always()" in swift_job
+    assert "actions/upload-artifact@v4" in swift_job
+    assert "retention-days: 7" in swift_job
+    # Upload path must match the fixed location used by cleanup trap
+    assert "e2e/swift-echo-app/.tmp/sanitized-logs/" in swift_job
+
+    run_sh = (ROOT / "e2e/swift-echo-app/run.sh").read_text(encoding="utf-8")
+    # Cleanup must output sanitized logs to the same fixed path the workflow uploads
+    assert '.tmp/sanitized-logs' in run_sh
+
+
+def test_e2e_no_call_remote_in_ffi() -> None:
+    ffi_runtime = (ROOT / "bindings/ffi/src/runtime.rs").read_text(encoding="utf-8")
+    swift_actr_ref = (ROOT / "bindings/swift/Sources/Actr/ActrRef.swift").read_text(encoding="utf-8")
+
+    # callRemote was an exploratory API, removed to keep the established
+    # local-workload-forwarding path
+    assert "call_remote" not in ffi_runtime
+    assert "callRemote" not in swift_actr_ref
+
+
+def test_download_script_explicit_empty_runs_check() -> None:
+    script = (ROOT / ".github/scripts/download-actrix-artifact.sh").read_text(encoding="utf-8")
+
+    # P2 fix: must not use jq -er on .workflow_runs[0] without an explicit
+    # empty-list guard. The script must check for empty RUN_ID and call fail
+    # with a clear message, not let jq exit silently.
+    assert 'No successful actrix CI run found' in script
+    assert 'jq -r \'.workflow_runs[0].id // ""\'' in script
+    # Must NOT use the old pattern that exits silently on empty list
+    assert 'jq -er \'.workflow_runs[0].id\'' not in script
+
+
+def test_run_sh_uses_correct_signaling_cache_table() -> None:
+    run_sh = (ROOT / "e2e/swift-echo-app/run.sh").read_text(encoding="utf-8")
+
+    # Must query the actual table name (service_registry, not service_registrations)
+    assert "service_registry" in run_sh
+    assert "service_registrations" not in run_sh
+    assert "actor_registry" not in run_sh
+
+
+def _create_service_registry(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE service_registry (
+                actor_realm_id INTEGER NOT NULL,
+                actor_manufacturer TEXT NOT NULL,
+                actor_device_name TEXT NOT NULL,
+                service_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                last_heartbeat_at INTEGER NOT NULL
+            )
+            """
+        )
+
+
+def _run_service_readiness(db_path: Path, timeout: str = "0") -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; wait_for_service_registration "$2" 1001 actrium EchoService "$3"',
+            "bash",
+            str(SWIFT_E2E_READINESS),
+            str(db_path),
+            timeout,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_service_readiness_rejects_missing_or_unrelated_registration() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "signaling_cache.db"
+        _create_service_registry(db_path)
+
+        missing = _run_service_readiness(db_path)
+        assert missing.returncode != 0
+
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO service_registry
+                    (actor_realm_id, actor_manufacturer, actor_device_name,
+                     service_name, status, last_heartbeat_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (1001, "actrium", "OtherService", "actrium:OtherService", "Available", 1),
+            )
+
+        unrelated = _run_service_readiness(db_path)
+        assert unrelated.returncode != 0
+
+
+def test_service_readiness_waits_for_exact_registration() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db_path = Path(temp_dir) / "signaling_cache.db"
+        _create_service_registry(db_path)
+
+        script = """
+            source "$1"
+            (
+                sleep 0.2
+                sqlite3 "$2" \
+                    "INSERT INTO service_registry VALUES \
+                    (1001, 'actrium', 'EchoService', 'actrium:EchoService', 'Available', 1);"
+            ) &
+            SERVICE_READY_POLL_INTERVAL_SECONDS=0.1 \
+                wait_for_service_registration "$2" 1001 actrium EchoService 2
+        """
+        result = subprocess.run(
+            ["bash", "-c", script, "bash", str(SWIFT_E2E_READINESS), str(db_path)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+
+
 if __name__ == "__main__":
     test_rust_gate_avoids_slow_workspace_tests_and_unused_prewarm()
     test_pr_gate_excludes_heavy_root_e2e_jobs()
@@ -135,3 +324,15 @@ if __name__ == "__main__":
     test_release_train_has_valid_publish_steps()
     test_release_train_waits_for_matching_ci_gate()
     test_release_train_forwards_release_context()
+    test_swift_echoapp_e2e_job_present()
+    test_e2e_actrix_artifact_download_uses_shared_script()
+    test_e2e_no_private_actrix_checkout()
+    test_e2e_no_inline_archive_download_url()
+    test_e2e_linux_deps_includes_unzip()
+    test_e2e_linux_job_has_no_ios_rust_targets()
+    test_swift_e2e_upload_artifact_on_failure()
+    test_e2e_no_call_remote_in_ffi()
+    test_download_script_explicit_empty_runs_check()
+    test_run_sh_uses_correct_signaling_cache_table()
+    test_service_readiness_rejects_missing_or_unrelated_registration()
+    test_service_readiness_waits_for_exact_registration()

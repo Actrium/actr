@@ -1,6 +1,6 @@
 //! Runtime wrappers for UniFFI export
 
-use crate::error::{ActrError, ActrResult};
+use crate::error::{ActrError, ActrResult, run_on_tokio_runtime};
 use crate::types::{
     ActrId, ActrType, AppLifecycleState, CleanupReason, NetworkEventResult, NetworkSnapshot,
     PayloadType, ReconnectReason,
@@ -222,7 +222,11 @@ impl ActrNode {
                 msg: "ActrNode already started".to_string(),
             })?;
 
-        let actr_ref = hyper.start().await.map_err(ActrError::from)?;
+        // UniFFI polls exported futures on the foreign executor. Run node startup
+        // on Tokio's runtime thread so deep network handshakes do not use the
+        // smaller Swift cooperative-executor stack.
+        let actr_ref =
+            run_on_tokio_runtime("runtime startup", async move { hyper.start().await }).await?;
 
         Ok(Arc::new(ActrRefWrapper { inner: actr_ref }))
     }
@@ -441,6 +445,7 @@ impl ActrRefWrapper {
             )
             .await?;
 
+        tracing::info!(response_bytes = response_bytes.len(), "ffi.call.completed");
         Ok(response_bytes.to_vec())
     }
 

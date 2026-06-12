@@ -722,6 +722,39 @@ async fn test_network_available_rebuilds_when_signaling_probe_fails() {
 }
 
 #[tokio::test]
+async fn test_short_foreground_failed_probe_disconnects_before_restore() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    client.set_probe_success(false);
+
+    let processor = Arc::new(DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_millis(500),
+        },
+    ));
+
+    let results = process_network_event_batch(vec![foreground_event(5_000)], processor).await;
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].success);
+    assert_eq!(
+        client.probe_calls(),
+        1,
+        "failed short-foreground probe should not be probed a second time during restore"
+    );
+    assert_eq!(client.connect_once_calls(), 1);
+    let stats = client.get_stats();
+    assert_eq!(
+        stats.disconnections, 1,
+        "failed short-foreground probe should disconnect stale signaling before restore"
+    );
+    assert_eq!(stats.connections, 2);
+    assert!(client.is_connected());
+}
+
+#[tokio::test]
 async fn test_network_available_connects_without_probe_when_disconnected() {
     let client = Arc::new(FakeSignalingClient::new());
 

@@ -1,0 +1,15 @@
+# manifest.toml - EchoApp package declaration and dependencies
+#
+# EchoApp uses the linked runtime and is not built through `actr build`.
+# This file declares the package identity and remote EchoService dependency.
+
+edition = 1
+
+[package]
+name = "EchoApp"
+manufacturer = "actrium"
+version = "0.1.0"
+description = "Actor-RTC EchoApp — iOS linked runtime"
+
+[dependencies]
+echo = { actr_type = "actrium:EchoService:1.0.0" }

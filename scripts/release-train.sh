@@ -80,6 +80,7 @@ OVERALL_STATUS="success"
 FAILURE_REASON=""
 RELEASE_SHA=""
 FINAL_TAG=""
+TAG_ALREADY_EXISTS=false
 STAGE="all"
 PACKAGE_SYNC_OWNER="${PACKAGE_SYNC_OWNER:-}"
 RELEASE_BRANCH="${RELEASE_BRANCH:-main}"
@@ -588,22 +589,48 @@ package_sync_release_url() {
   printf '%s/releases/tag/v%s' "$(package_sync_repo_url "$repo")" "$VERSION"
 }
 
-ensure_release_tag_absent() {
+ensure_release_tag_available() {
   FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"
+  TAG_ALREADY_EXISTS=false
+
   if [[ "$DRY_RUN" == true ]]; then
     log_info "Skipping final tag existence check in dry-run mode (tag: ${FINAL_TAG})"
     return
   fi
+
+  local current_sha
+  current_sha=$(git rev-parse HEAD 2>/dev/null || true)
+
+  # Check local tag first.
   if git rev-parse -q --verify "refs/tags/${FINAL_TAG}" >/dev/null 2>&1; then
-    fail "Final release tag already exists locally: ${FINAL_TAG}"
+    local tag_sha
+    tag_sha=$(git rev-parse "refs/tags/${FINAL_TAG}")
+    if [[ -n "$current_sha" && "$tag_sha" == "$current_sha" ]]; then
+      log_info "Final release tag ${FINAL_TAG} already exists on current HEAD; skipping tag creation"
+      TAG_ALREADY_EXISTS=true
+      return
+    elif [[ -n "$current_sha" ]]; then
+      fail "Final release tag ${FINAL_TAG} exists locally but points to a different commit (tag: ${tag_sha}, HEAD: ${current_sha})"
+    fi
+    # current_sha is empty (e.g. fresh repo with no commits); this is unexpected but continuing.
   fi
 
+  # Check remote tag.
   if git ls-remote --exit-code --tags origin "refs/tags/${FINAL_TAG}" >/dev/null 2>&1; then
-    fail "Final release tag already exists on origin: ${FINAL_TAG}"
+    local remote_tag_sha
+    remote_tag_sha=$(git ls-remote --tags origin "refs/tags/${FINAL_TAG}" | awk '{print $1}')
+    if [[ -n "$current_sha" && "$remote_tag_sha" == "$current_sha" ]]; then
+      log_info "Final release tag ${FINAL_TAG} already exists on origin and points to current HEAD; skipping tag creation"
+      TAG_ALREADY_EXISTS=true
+      return
+    elif [[ -n "$current_sha" ]]; then
+      fail "Final release tag ${FINAL_TAG} exists on origin but points to a different commit (tag: ${remote_tag_sha}, HEAD: ${current_sha})"
+    fi
+    fail "Final release tag ${FINAL_TAG} exists on origin (tag: ${remote_tag_sha}) but HEAD is not a commit yet"
   fi
 }
 
-stage_requires_absent_tag_check() {
+stage_requires_tag_availability_check() {
   case "$STAGE" in
     all|create-tag)
       return 0
@@ -1574,6 +1601,11 @@ create_final_tag() {
     return
   fi
 
+  if [[ "${TAG_ALREADY_EXISTS:-false}" == "true" ]]; then
+    log_info "Tag ${FINAL_TAG} already exists on target commit; skipping creation"
+    return
+  fi
+
   git tag "$FINAL_TAG"
   git push origin "$FINAL_TAG"
 }
@@ -1816,8 +1848,8 @@ main() {
   ensure_clean_worktree
   prepare_paths
   prepare_worktree
-  if stage_requires_absent_tag_check; then
-    ensure_release_tag_absent
+  if stage_requires_tag_availability_check; then
+    ensure_release_tag_available
   else
     FINAL_TAG="${FINAL_TAG_PREFIX}${VERSION}"
   fi
