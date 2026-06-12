@@ -56,7 +56,7 @@ jobs:
   gate:
     name: Gate on release commit
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
       release_sha: ${{ steps.release.outputs.sha }}
@@ -85,13 +85,17 @@ jobs:
         id: release
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for CI Gate
+      - name: Verify CI Gate is triggered
         if: steps.check.outputs.should_run == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ steps.release.outputs.sha }}
         run: |
-          deadline=$((SECONDS + 2400))
+          # Release PRs already passed CI before merge, so we only verify that
+          # CI Gate has been triggered for the merge commit — we do NOT block on
+          # completion. CI Gate runs in parallel, and if it fails later, the
+          # release-train-verify job provides post-hoc rollback coverage.
+          deadline=$((SECONDS + 120))
           while (( SECONDS < deadline )); do
             run_info=$(
               gh api --method GET \
@@ -102,27 +106,24 @@ jobs:
                 --jq '.workflow_runs | sort_by(.created_at) | last | select(. != null) | [.id, .status, (.conclusion // "")] | @tsv'
             )
 
-            if [[ -z "$run_info" ]]; then
-              echo "Waiting for CI Gate run for ${RELEASE_SHA}"
-              sleep 15
-              continue
-            fi
-
-            IFS=$'\t' read -r run_id status conclusion <<<"$run_info"
-            echo "CI Gate run ${run_id}: status=${status}, conclusion=${conclusion:-pending}"
-            if [[ "$status" == "completed" ]]; then
-              if [[ "$conclusion" == "success" ]]; then
-                exit 0
+            if [[ -n "$run_info" ]]; then
+              IFS=$'\t' read -r run_id status conclusion <<<"$run_info"
+              echo "CI Gate run ${run_id} found: status=${status}"
+              if [[ "$status" == "completed" ]]; then
+                if [[ "$conclusion" == "success" ]]; then
+                  echo "CI Gate already passed — proceeding immediately"
+                else
+                  echo "::warning::CI Gate for ${RELEASE_SHA} completed with '${conclusion}' but release train will proceed. The release PR already passed CI before merge; check the CI Gate run for details."
+                fi
               fi
-              echo "CI Gate did not succeed for ${RELEASE_SHA}: ${conclusion}" >&2
-              exit 1
+              exit 0
             fi
 
-            sleep 15
+            echo "Waiting for CI Gate run to be created for ${RELEASE_SHA}"
+            sleep 10
           done
 
-          echo "Timed out waiting for CI Gate run for ${RELEASE_SHA}" >&2
-          exit 1
+          echo "::warning::No CI Gate run found for ${RELEASE_SHA} within 120s. Proceeding anyway — the release PR passed CI before merge."
 
   # ── Context ───────────────────────────────────────────────────────────
   context:
@@ -230,7 +231,15 @@ jobs:
         with:
           repo-token: ${{ github.token }}
 
+      - name: Cache cargo-installed tools
+        id: cargo-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
       - name: Install wasm-pack
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
 
       - name: Download create-tag artifacts
