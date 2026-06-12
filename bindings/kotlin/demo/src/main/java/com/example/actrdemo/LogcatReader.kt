@@ -20,7 +20,7 @@ import android.util.Log
  * to bypass logcat entirely.
  */
 class LogcatReader(
-    private val onLines: (String) -> Unit
+    private val onLines: (String) -> Unit,
 ) {
     private var thread: Thread? = null
     private var process: java.lang.Process? = null
@@ -32,86 +32,99 @@ class LogcatReader(
     private var gaveUp = false
 
     // Lines matching these patterns are logcat stderr noise, not real actr logs
-    private val noisePatterns = listOf(
-        "read: unexpected EOF!",
-        "unexpected EOF",
-        "Unexpected EOF",
-    )
+    private val noisePatterns =
+        listOf(
+            "read: unexpected EOF!",
+            "unexpected EOF",
+            "Unexpected EOF",
+        )
 
-    private fun isNoise(line: String): Boolean =
-        noisePatterns.any { line.contains(it) }
+    private fun isNoise(line: String): Boolean = noisePatterns.any { line.contains(it) }
 
-    private val flushRunnable = object : Runnable {
-        override fun run() {
-            val batch = synchronized(lock) {
-                if (buffer.isEmpty()) null
-                else buffer.toString().also { buffer.clear() }
+    private val flushRunnable =
+        object : Runnable {
+            override fun run() {
+                val batch =
+                    synchronized(lock) {
+                        if (buffer.isEmpty()) {
+                            null
+                        } else {
+                            buffer.toString().also { buffer.clear() }
+                        }
+                    }
+                if (batch != null) onLines(batch)
+                mainHandler.postDelayed(this, 100)
             }
-            if (batch != null) onLines(batch)
-            mainHandler.postDelayed(this, 100)
         }
-    }
 
     fun start() {
         if (gaveUp || thread?.isAlive == true) return
 
-        thread = Thread {
-            try {
-                val pb = ProcessBuilder("logcat", "-b", "main", "-v", "threadtime", "actr:V", "*:S")
-                pb.redirectErrorStream(true)
-                val startMs = System.currentTimeMillis()
-                val proc = pb.start()
-                process = proc
+        thread =
+            Thread {
+                try {
+                    val pb = ProcessBuilder("logcat", "-b", "main", "-v", "threadtime", "actr:V", "*:S")
+                    pb.redirectErrorStream(true)
+                    val startMs = System.currentTimeMillis()
+                    val proc = pb.start()
+                    process = proc
 
-                var exitCode: Int
-                var readAny = false
-                proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
-                    while (!Thread.currentThread().isInterrupted) {
-                        val line = reader.readLine() ?: break
-                        if (isNoise(line)) continue
-                        readAny = true
-                        synchronized(lock) { buffer.append(line).append('\n') }
+                    var exitCode: Int
+                    var readAny = false
+                    proc.inputStream.bufferedReader(Charsets.UTF_8).use { reader ->
+                        while (!Thread.currentThread().isInterrupted) {
+                            val line = reader.readLine() ?: break
+                            if (isNoise(line)) continue
+                            readAny = true
+                            synchronized(lock) { buffer.append(line).append('\n') }
+                        }
+                        exitCode =
+                            try {
+                                proc.exitValue()
+                            } catch (_: Exception) {
+                                -1
+                            }
                     }
-                    exitCode = try { proc.exitValue() } catch (_: Exception) { -1 }
-                }
 
-                val elapsed = System.currentTimeMillis() - startMs
-                if (readAny) {
-                    consecutiveFailures = 0
-                    Log.d("LogcatReader", "logcat exited with code=$exitCode after ${elapsed}ms")
-                    scheduleRetry(2000)
-                } else {
+                    val elapsed = System.currentTimeMillis() - startMs
+                    if (readAny) {
+                        consecutiveFailures = 0
+                        Log.d("LogcatReader", "logcat exited with code=$exitCode after ${elapsed}ms")
+                        scheduleRetry(2000)
+                    } else {
+                        consecutiveFailures++
+                        Log.d(
+                            "LogcatReader",
+                            "logcat produced no valid output after ${elapsed}ms (attempt $consecutiveFailures/3)",
+                        )
+
+                        if (consecutiveFailures >= 3) {
+                            val msg =
+                                "[LogcatReader] logcat blocked on this device — native logs " +
+                                    "unavailable. Consider wiring up LogCallback for native log capture."
+                            Log.w("LogcatReader", msg)
+                            synchronized(lock) { buffer.append(msg).append('\n') }
+                            gaveUp = true
+                            return@Thread
+                        }
+
+                        scheduleRetry(1000L shl (consecutiveFailures - 1))
+                    }
+                } catch (_: InterruptedException) {
+                    // Normal shutdown
+                } catch (e: Exception) {
+                    Log.e("LogcatReader", "logcat error", e)
                     consecutiveFailures++
-                    Log.d(
-                        "LogcatReader",
-                        "logcat produced no valid output after ${elapsed}ms (attempt $consecutiveFailures/3)"
-                    )
-
                     if (consecutiveFailures >= 3) {
-                        val msg = "[LogcatReader] logcat blocked on this device — native logs unavailable. Consider wiring up LogCallback for native log capture."
-                        Log.w("LogcatReader", msg)
-                        synchronized(lock) { buffer.append(msg).append('\n') }
                         gaveUp = true
                         return@Thread
                     }
-
-                    scheduleRetry(1000L shl (consecutiveFailures - 1))
+                    scheduleRetry(2000L * consecutiveFailures)
                 }
-            } catch (_: InterruptedException) {
-                // Normal shutdown
-            } catch (e: Exception) {
-                Log.e("LogcatReader", "logcat error", e)
-                consecutiveFailures++
-                if (consecutiveFailures >= 3) {
-                    gaveUp = true
-                    return@Thread
-                }
-                scheduleRetry(2000L * consecutiveFailures)
+            }.apply {
+                name = "LogcatReader"
+                isDaemon = true
             }
-        }.apply {
-            name = "LogcatReader"
-            isDaemon = true
-        }
 
         thread!!.start()
         mainHandler.post(flushRunnable)
@@ -119,7 +132,10 @@ class LogcatReader(
 
     private fun scheduleRetry(delayMs: Long) {
         if (Thread.currentThread().isInterrupted) return
-        try { Thread.sleep(delayMs) } catch (_: InterruptedException) {}
+        try {
+            Thread.sleep(delayMs)
+        } catch (_: InterruptedException) {
+        }
         if (!Thread.currentThread().isInterrupted) {
             thread = null
             start()
@@ -128,7 +144,10 @@ class LogcatReader(
 
     fun stop() {
         mainHandler.removeCallbacks(flushRunnable)
-        try { process?.destroy() } catch (_: Exception) {}
+        try {
+            process?.destroy()
+        } catch (_: Exception) {
+        }
         process = null
         thread?.interrupt()
         thread = null
