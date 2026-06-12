@@ -271,6 +271,12 @@ class ClientActivity : AppCompatActivity() {
 				clientSystem = system
 				Log.i(TAG, "✅ ActrNode created - NetworkMonitor will auto-handle network events")
 
+				// Pre-create the network event handle before start().
+				// Rust FFI requires createNetworkEventHandle() before start();
+				// subsequent calls from NetworkMonitor hit the cached handle.
+				system.createNetworkEventHandle()
+				Log.i(TAG, "🔗 Network event handle primed")
+
 				Log.i(TAG, "🚀 Starting linked multi-service actor...")
 				clientRef = system.start()
 				Log.i(TAG, "✅ Client started: ${clientRef?.actorId()?.serialNumber}")
