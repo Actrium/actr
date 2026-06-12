@@ -761,7 +761,15 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
 
     async fn force_reconnect(&self) -> Result<(), String> {
         self.cleanup_connections().await?;
-        self.restore_signaling_and_webrtc("ForceReconnect").await
+        let result = self.restore_signaling_and_webrtc("ForceReconnect").await;
+        if let Err(err) = &result {
+            tracing::warn!(
+                error = %err,
+                "ForceReconnect restore failed; scheduling signaling auto-reconnect"
+            );
+            self.signaling_client.schedule_auto_reconnect();
+        }
+        result
     }
 
     async fn process_network_recovery_action(
@@ -1077,6 +1085,147 @@ impl Clone for NetworkEventHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle::CredentialState;
+    use crate::transport::{NetworkError, NetworkResult};
+    use crate::wire::webrtc::{SignalingEvent, SignalingStats};
+    use actr_protocol::{
+        AIdCredential, ActrId, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
+        RouteCandidatesResponse, ServiceAvailabilityState, SignalingEnvelope, UnregisterResponse,
+    };
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+    use tokio::sync::broadcast;
+
+    struct ForceReconnectFakeSignalingClient {
+        connected: AtomicBool,
+        connect_once_should_fail: bool,
+        disconnect_calls: AtomicUsize,
+        connect_once_calls: AtomicUsize,
+        schedule_auto_reconnect_calls: AtomicUsize,
+        event_tx: broadcast::Sender<SignalingEvent>,
+    }
+
+    impl ForceReconnectFakeSignalingClient {
+        fn new(connect_once_should_fail: bool) -> Self {
+            let (event_tx, _rx) = broadcast::channel(8);
+            Self {
+                connected: AtomicBool::new(false),
+                connect_once_should_fail,
+                disconnect_calls: AtomicUsize::new(0),
+                connect_once_calls: AtomicUsize::new(0),
+                schedule_auto_reconnect_calls: AtomicUsize::new(0),
+                event_tx,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SignalingClient for ForceReconnectFakeSignalingClient {
+        async fn connect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn connect_once(&self) -> NetworkResult<()> {
+            self.connect_once_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            if self.connect_once_should_fail {
+                return Err(NetworkError::ConnectionError(
+                    "forced connect_once failure".to_string(),
+                ));
+            }
+
+            self.connected.store(true, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+
+        fn schedule_auto_reconnect(&self) {
+            self.schedule_auto_reconnect_calls
+                .fetch_add(1, AtomicOrdering::SeqCst);
+        }
+
+        async fn disconnect(&self) -> NetworkResult<()> {
+            self.disconnect_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.connected.store(false, AtomicOrdering::SeqCst);
+            Ok(())
+        }
+
+        async fn send_register_request(
+            &self,
+            _request: RegisterRequest,
+        ) -> NetworkResult<RegisterResponse> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_unregister_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _reason: Option<String>,
+        ) -> NetworkResult<UnregisterResponse> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _availability: ServiceAvailabilityState,
+            _power_reserve: f32,
+            _mailbox_backlog: f32,
+        ) -> NetworkResult<Pong> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_route_candidates_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _request: RouteCandidatesRequest,
+        ) -> NetworkResult<RouteCandidatesResponse> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn get_signing_key(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _key_id: u32,
+        ) -> NetworkResult<(u32, Vec<u8>)> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_credential_update_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+        ) -> NetworkResult<RegisterResponse> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+            Err(NetworkError::ConnectionError("unused".to_string()))
+        }
+
+        fn is_connected(&self) -> bool {
+            self.connected.load(AtomicOrdering::SeqCst)
+        }
+
+        fn get_stats(&self) -> SignalingStats {
+            SignalingStats::default()
+        }
+
+        fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+            self.event_tx.subscribe()
+        }
+
+        async fn set_actor_id(&self, _actor_id: ActrId) {}
+
+        async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+        async fn clear_identity(&self) {}
+    }
 
     fn snapshot(sequence: u64, availability: NetworkAvailability) -> NetworkSnapshot {
         NetworkSnapshot {
@@ -1152,5 +1301,32 @@ mod tests {
                 "{event:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn force_reconnect_failure_schedules_auto_reconnect() {
+        let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(true));
+        let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
+
+        let result = processor.force_reconnect().await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            signaling.disconnect_calls.load(AtomicOrdering::SeqCst),
+            1,
+            "ForceReconnect cleanup should disconnect signaling once"
+        );
+        assert_eq!(
+            signaling.connect_once_calls.load(AtomicOrdering::SeqCst),
+            1,
+            "ForceReconnect restore should make one quick connect attempt"
+        );
+        assert_eq!(
+            signaling
+                .schedule_auto_reconnect_calls
+                .load(AtomicOrdering::SeqCst),
+            1,
+            "failed ForceReconnect restore should wake the auto-reconnect manager"
+        );
     }
 }
