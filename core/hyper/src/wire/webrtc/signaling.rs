@@ -164,6 +164,10 @@ pub trait SignalingClient: Send + Sync {
         self.connect().await
     }
 
+    /// Re-enable and wake the automatic reconnect manager after an explicit
+    /// lifecycle recovery attempt failed.
+    fn schedule_auto_reconnect(&self) {}
+
     /// DisconnectConnect
     async fn disconnect(&self) -> NetworkResult<()>;
 
@@ -1616,6 +1620,17 @@ impl SignalingClient for WebSocketSignalingClient {
         }
     }
 
+    fn schedule_auto_reconnect(&self) {
+        if !self.config.reconnect_config.enabled {
+            tracing::debug!("Skipping signaling auto-reconnect schedule; config disabled");
+            return;
+        }
+
+        self.auto_reconnect_suppressed
+            .store(false, Ordering::Release);
+        self.reconnect_notify.notify_one();
+    }
+
     async fn disconnect(&self) -> NetworkResult<()> {
         self.disconnect_internal(true).await
     }
@@ -2594,6 +2609,27 @@ mod tests {
         );
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_schedule_auto_reconnect_reenables_after_explicit_disconnect() {
+        let client = make_ws_client(make_config());
+
+        client
+            .disconnect()
+            .await
+            .expect("explicit disconnect should be idempotent");
+        assert!(
+            client.auto_reconnect_suppressed.load(Ordering::Acquire),
+            "explicit disconnect should suppress stale auto-reconnect cycles"
+        );
+
+        client.schedule_auto_reconnect();
+
+        assert!(
+            !client.auto_reconnect_suppressed.load(Ordering::Acquire),
+            "scheduling a fresh auto-reconnect should clear explicit disconnect suppression"
+        );
     }
 
     #[tokio::test]
