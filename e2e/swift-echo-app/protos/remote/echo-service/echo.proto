@@ -2,27 +2,15 @@ syntax = "proto3";
 
 package echo;
 
-<<<<<<<< HEAD:bindings/kotlin/demo/src/androidTest/proto/remote/echo-echo-server/echo.proto
-// Echo request message.
-========
->>>>>>>> origin/main:e2e/swift-echo-app/protos/remote/echo-service/echo.proto
 message EchoRequest {
   string message = 1;
 }
 
-<<<<<<<< HEAD:bindings/kotlin/demo/src/androidTest/proto/remote/echo-echo-server/echo.proto
-// Echo response message.
-========
->>>>>>>> origin/main:e2e/swift-echo-app/protos/remote/echo-service/echo.proto
 message EchoResponse {
   string reply = 1;
   uint64 timestamp = 2;
 }
 
-<<<<<<<< HEAD:bindings/kotlin/demo/src/androidTest/proto/remote/echo-echo-server/echo.proto
-// Echo service definition.
-========
->>>>>>>> origin/main:e2e/swift-echo-app/protos/remote/echo-service/echo.proto
 service EchoService {
   rpc Echo(EchoRequest) returns (EchoResponse);
 }
