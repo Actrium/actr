@@ -117,7 +117,7 @@ private final class NetworkEventMonitor: @unchecked Sendable {
     func notifyCurrentPath() {
         queue.async { [weak self] in
             guard let self else { return }
-            self.process(path: self.monitor.currentPath, forceNotify: true)
+            self.process(path: self.monitor.currentPath, forceNotify: false)
         }
     }
 
