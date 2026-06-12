@@ -4,10 +4,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
 import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -42,16 +45,28 @@ class ServerActivity : AppCompatActivity() {
 
         // Limit log buffer to avoid exceeding Android clipboard ~1MB transaction limit
         private const val MAX_LOG_CHARS = 50_000
+        private const val TAB_SERVER = 0
+        private const val TAB_LOGS = 1
     }
 
+    // Tab views
+    private lateinit var serverTabButton: Button
+    private lateinit var logsTabButton: Button
+    private lateinit var serverTabContent: LinearLayout
+    private lateinit var logsTabContent: LinearLayout
+
+    // Server tab views
     private lateinit var statusText: TextView
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
+
+    // Logs tab views
     private lateinit var logText: TextView
     private lateinit var scrollView: ScrollView
     private lateinit var copyLogButton: Button
     private lateinit var downloadLogButton: Button
     private lateinit var clearLogButton: Button
+
     private var serverSystem: ActrNode? = null
     private var serverRef: ActrRef? = null
 
@@ -62,9 +77,18 @@ class ServerActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_server)
 
+        // Tab views
+        serverTabButton = findViewById(R.id.serverTabButton)
+        logsTabButton = findViewById(R.id.logsTabButton)
+        serverTabContent = findViewById(R.id.serverTabContent)
+        logsTabContent = findViewById(R.id.logsTabContent)
+
+        // Server tab views
         statusText = findViewById(R.id.statusText)
         startButton = findViewById(R.id.startButton)
         stopButton = findViewById(R.id.stopButton)
+
+        // Logs tab views
         logText = findViewById(R.id.logText)
         scrollView = findViewById(R.id.scrollView)
         copyLogButton = findViewById(R.id.copyLogButton)
@@ -72,6 +96,9 @@ class ServerActivity : AppCompatActivity() {
         clearLogButton = findViewById(R.id.clearLogButton)
 
         initLogcatReader() // Start early to capture actr library's early logs
+
+        serverTabButton.setOnClickListener { switchToTab(TAB_SERVER) }
+        logsTabButton.setOnClickListener { switchToTab(TAB_LOGS) }
 
         startButton.setOnClickListener { startServer() }
         stopButton.setOnClickListener { stopServer() }
@@ -91,7 +118,32 @@ class ServerActivity : AppCompatActivity() {
             logText.text = ""
         }
 
+        switchToTab(TAB_SERVER)
         log("Server activity created")
+    }
+
+    private fun switchToTab(tab: Int) {
+        val accentColor = Color.parseColor("#1976D2")
+        val defaultColor = Color.parseColor("#E0E0E0")
+
+        when (tab) {
+            TAB_SERVER -> {
+                serverTabContent.visibility = LinearLayout.VISIBLE
+                logsTabContent.visibility = LinearLayout.GONE
+                serverTabButton.backgroundTintList = ColorStateList.valueOf(accentColor)
+                serverTabButton.setTextColor(Color.WHITE)
+                logsTabButton.backgroundTintList = ColorStateList.valueOf(defaultColor)
+                logsTabButton.setTextColor(Color.BLACK)
+            }
+            TAB_LOGS -> {
+                serverTabContent.visibility = LinearLayout.GONE
+                logsTabContent.visibility = LinearLayout.VISIBLE
+                logsTabButton.backgroundTintList = ColorStateList.valueOf(accentColor)
+                logsTabButton.setTextColor(Color.WHITE)
+                serverTabButton.backgroundTintList = ColorStateList.valueOf(defaultColor)
+                serverTabButton.setTextColor(Color.BLACK)
+            }
+        }
     }
 
     private fun startServer() {

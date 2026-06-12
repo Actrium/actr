@@ -28,7 +28,7 @@ realm_id = 2368266035
 visible = true
 
 [system.observability]
-filter_level = "info"
+filter_level = "debug"
 tracing_enabled = false
 tracing_endpoint = "http://10.30.3.206:4317"
 tracing_service_name = "android-echo-client"

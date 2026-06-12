@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.util.Log
+import io.actor_rtc.actr.ActrException
 import io.actor_rtc.actr.AppLifecycleState
 import io.actor_rtc.actr.CleanupReason
 import io.actor_rtc.actr.NetworkAvailability
@@ -175,9 +176,15 @@ class NetworkMonitor
                                 "vpn=${snapshot.transport.vpn}",
                         )
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle network path changed event", error)
-                        onLog?.invoke("❌ Network path changed event failed: ${error.message}")
+                        if (error is ActrException.Internal) {
+                            Log.d(TAG, "Runtime node no longer available, skipping network path changed event")
+                        } else {
+                            Log.e(TAG, "Failed to handle network path changed event", error)
+                            onLog?.invoke("❌ Network path changed event failed: ${error.message}")
+                        }
                     }
+            } catch (e: ActrException.Internal) {
+                Log.d(TAG, "Runtime node no longer available, skipping network path changed event")
             } catch (e: Exception) {
                 Log.e(TAG, "Error handling network path changed", e)
                 onLog?.invoke("❌ Network path changed error: ${e.message}")
@@ -211,9 +218,15 @@ class NetworkMonitor
                         }
                         onLog?.invoke("📱 App lifecycle: $label")
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle app lifecycle event", error)
-                        onLog?.invoke("❌ App lifecycle event failed: ${error.message}")
+                        if (error is ActrException.Internal) {
+                            Log.d(TAG, "Runtime node no longer available, skipping app lifecycle event")
+                        } else {
+                            Log.e(TAG, "Failed to handle app lifecycle event", error)
+                            onLog?.invoke("❌ App lifecycle event failed: ${error.message}")
+                        }
                     }
+            } catch (e: ActrException.Internal) {
+                Log.d(TAG, "Runtime node no longer available, skipping app lifecycle event")
             } catch (e: Exception) {
                 Log.e(TAG, "Error handling app lifecycle", e)
                 onLog?.invoke("❌ App lifecycle error: ${e.message}")
@@ -239,9 +252,15 @@ class NetworkMonitor
                         Log.i(TAG, "Cleanup connections handled successfully: $eventResult")
                         onLog?.invoke("🧹 Cleanup connections: $reason")
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to cleanup connections", error)
-                        onLog?.invoke("❌ Cleanup connections failed: ${error.message}")
+                        if (error is ActrException.Internal) {
+                            Log.d(TAG, "Runtime node no longer available, skipping cleanup connections")
+                        } else {
+                            Log.e(TAG, "Failed to cleanup connections", error)
+                            onLog?.invoke("❌ Cleanup connections failed: ${error.message}")
+                        }
                     }
+            } catch (e: ActrException.Internal) {
+                Log.d(TAG, "Runtime node no longer available, skipping cleanup connections")
             } catch (e: Exception) {
                 Log.e(TAG, "Error cleaning up connections", e)
                 onLog?.invoke("❌ Cleanup connections error: ${e.message}")
@@ -267,9 +286,15 @@ class NetworkMonitor
                         Log.i(TAG, "Force reconnect handled successfully: $eventResult")
                         onLog?.invoke("🔄 Force reconnect: $reason")
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to force reconnect", error)
-                        onLog?.invoke("❌ Force reconnect failed: ${error.message}")
+                        if (error is ActrException.Internal) {
+                            Log.d(TAG, "Runtime node no longer available, skipping force reconnect")
+                        } else {
+                            Log.e(TAG, "Failed to force reconnect", error)
+                            onLog?.invoke("❌ Force reconnect failed: ${error.message}")
+                        }
                     }
+            } catch (e: ActrException.Internal) {
+                Log.d(TAG, "Runtime node no longer available, skipping force reconnect")
             } catch (e: Exception) {
                 Log.e(TAG, "Error force reconnecting", e)
                 onLog?.invoke("❌ Force reconnect error: ${e.message}")
@@ -306,8 +331,12 @@ class NetworkMonitor
                                 "wifi=${snapshot.transport.wifi}",
                         )
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle network path changed event", error)
-                        onLog?.invoke("❌ Network path changed event failed: ${error.message}")
+                        if (error is ActrException.Internal) {
+                            Log.d(TAG, "Runtime node no longer available, skipping network path changed event")
+                        } else {
+                            Log.e(TAG, "Failed to handle network path changed event", error)
+                            onLog?.invoke("❌ Network path changed event failed: ${error.message}")
+                        }
                     }
             } catch (e: Exception) {
                 Log.e(TAG, "Error handling network path changed", e)
@@ -338,8 +367,12 @@ class NetworkMonitor
                         }
                         onLog?.invoke("📱 App lifecycle: $label")
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to handle app lifecycle event", error)
-                        onLog?.invoke("❌ App lifecycle event failed: ${error.message}")
+                        if (error is ActrException.Internal) {
+                            Log.d(TAG, "Runtime node no longer available, skipping app lifecycle event")
+                        } else {
+                            Log.e(TAG, "Failed to handle app lifecycle event", error)
+                            onLog?.invoke("❌ App lifecycle event failed: ${error.message}")
+                        }
                     }
             } catch (e: Exception) {
                 Log.e(TAG, "Error handling app lifecycle", e)
@@ -365,8 +398,12 @@ class NetworkMonitor
                         Log.i(TAG, "Cleanup connections handled successfully: $eventResult")
                         onLog?.invoke("🧹 Cleanup connections: $reason")
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to cleanup connections", error)
-                        onLog?.invoke("❌ Cleanup connections failed: ${error.message}")
+                        if (error is ActrException.Internal) {
+                            Log.d(TAG, "Runtime node no longer available, skipping cleanup connections")
+                        } else {
+                            Log.e(TAG, "Failed to cleanup connections", error)
+                            onLog?.invoke("❌ Cleanup connections failed: ${error.message}")
+                        }
                     }
             } catch (e: Exception) {
                 Log.e(TAG, "Error cleaning up connections", e)
@@ -392,8 +429,12 @@ class NetworkMonitor
                         Log.i(TAG, "Force reconnect handled successfully: $eventResult")
                         onLog?.invoke("🔄 Force reconnect: $reason")
                     }.onFailure { error ->
-                        Log.e(TAG, "Failed to force reconnect", error)
-                        onLog?.invoke("❌ Force reconnect failed: ${error.message}")
+                        if (error is ActrException.Internal) {
+                            Log.d(TAG, "Runtime node no longer available, skipping force reconnect")
+                        } else {
+                            Log.e(TAG, "Failed to force reconnect", error)
+                            onLog?.invoke("❌ Force reconnect failed: ${error.message}")
+                        }
                     }
             } catch (e: Exception) {
                 Log.e(TAG, "Error force reconnecting", e)

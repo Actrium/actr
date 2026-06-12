@@ -24,7 +24,7 @@ realm_secret = "rs_m5bEk-i1R9mCOpj3ej1_eN80f6ukR7OS"
 visible = true
 
 [observability]
-filter_level = "info"
+filter_level = "debug"
 tracing_enabled = false
 
 [webrtc]

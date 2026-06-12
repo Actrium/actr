@@ -61,7 +61,6 @@ val copyMainProtos =
         }
         into("src/main/proto")
     }
-
 val copyTestProtos =
     tasks.register<Copy>("copyTestProtos") {
         from("src/main/assets/protos") {

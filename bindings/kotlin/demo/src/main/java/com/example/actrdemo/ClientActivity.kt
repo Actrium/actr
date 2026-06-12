@@ -4,11 +4,14 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -40,14 +43,27 @@ class ClientActivity : AppCompatActivity() {
 
         // Limit log buffer to avoid exceeding Android clipboard ~1MB transaction limit
         private const val MAX_LOG_CHARS = 50_000
+        private const val TAB_MAIN = 0
+        private const val TAB_LOGS = 1
     }
 
+    // Tab views
+    private lateinit var mainTabButton: Button
+    private lateinit var logsTabButton: Button
+    private lateinit var mainTabContent: LinearLayout
+    private lateinit var logsTabContent: LinearLayout
+
+    // Main tab views
     private lateinit var statusText: TextView
     private lateinit var connectButton: Button
     private lateinit var disconnectButton: Button
     private lateinit var messageInput: EditText
     private lateinit var sendButton: Button
     private lateinit var sendFileButton: Button
+    private lateinit var messageLogText: TextView
+    private lateinit var messageScrollView: ScrollView
+
+    // Logs tab views
     private lateinit var logText: TextView
     private lateinit var scrollView: ScrollView
     private lateinit var copyLogButton: Button
@@ -98,6 +114,7 @@ class ClientActivity : AppCompatActivity() {
         initLogcatReader() // Start early to capture actr library's early logs
         setupClickListeners()
         initNetworkMonitoring()
+        switchToTab(TAB_MAIN)
 
         log("Ready to connect (linked multi-service workload)")
     }
@@ -132,18 +149,44 @@ class ClientActivity : AppCompatActivity() {
         }
     }
 
+    private fun appendToMessageLog(text: String) {
+        val atBottom =
+            messageScrollView.run {
+                childCount > 0 && scrollY + height >= getChildAt(0).height - 20
+            }
+        messageLogText.append(text)
+        val excess = messageLogText.length() - MAX_LOG_CHARS
+        if (excess > 0) {
+            messageLogText.editableText.delete(0, excess)
+        }
+        if (atBottom) {
+            messageScrollView.post { messageScrollView.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+    }
+
     private fun initLogcatReader() {
         logcatReader = LogcatReader { lines -> appendToLog(lines) }
         logcatReader.start()
     }
 
     private fun initViews() {
+        // Tab views
+        mainTabButton = findViewById(R.id.mainTabButton)
+        logsTabButton = findViewById(R.id.logsTabButton)
+        mainTabContent = findViewById(R.id.mainTabContent)
+        logsTabContent = findViewById(R.id.logsTabContent)
+
+        // Main tab views
         statusText = findViewById(R.id.statusText)
         connectButton = findViewById(R.id.connectButton)
         disconnectButton = findViewById(R.id.disconnectButton)
         messageInput = findViewById(R.id.messageInput)
         sendButton = findViewById(R.id.sendButton)
         sendFileButton = findViewById(R.id.sendFileButton)
+        messageLogText = findViewById(R.id.messageLogText)
+        messageScrollView = findViewById(R.id.messageScrollView)
+
+        // Logs tab views
         logText = findViewById(R.id.logText)
         scrollView = findViewById(R.id.scrollView)
         copyLogButton = findViewById(R.id.copyLogButton)
@@ -151,7 +194,34 @@ class ClientActivity : AppCompatActivity() {
         clearLogButton = findViewById(R.id.clearLogButton)
     }
 
+    private fun switchToTab(tab: Int) {
+        val accentColor = Color.parseColor("#1976D2")
+        val defaultColor = Color.parseColor("#E0E0E0")
+
+        when (tab) {
+            TAB_MAIN -> {
+                mainTabContent.visibility = LinearLayout.VISIBLE
+                logsTabContent.visibility = LinearLayout.GONE
+                mainTabButton.backgroundTintList = ColorStateList.valueOf(accentColor)
+                mainTabButton.setTextColor(Color.WHITE)
+                logsTabButton.backgroundTintList = ColorStateList.valueOf(defaultColor)
+                logsTabButton.setTextColor(Color.BLACK)
+            }
+            TAB_LOGS -> {
+                mainTabContent.visibility = LinearLayout.GONE
+                logsTabContent.visibility = LinearLayout.VISIBLE
+                logsTabButton.backgroundTintList = ColorStateList.valueOf(accentColor)
+                logsTabButton.setTextColor(Color.WHITE)
+                mainTabButton.backgroundTintList = ColorStateList.valueOf(defaultColor)
+                mainTabButton.setTextColor(Color.BLACK)
+            }
+        }
+    }
+
     private fun setupClickListeners() {
+        mainTabButton.setOnClickListener { switchToTab(TAB_MAIN) }
+        logsTabButton.setOnClickListener { switchToTab(TAB_LOGS) }
+
         connectButton.setOnClickListener { connect() }
         disconnectButton.setOnClickListener { disconnect() }
         sendButton.setOnClickListener { sendMessage() }
@@ -204,6 +274,12 @@ class ClientActivity : AppCompatActivity() {
                 clientSystem = system
                 Log.i(TAG, "✅ ActrNode created - NetworkMonitor will auto-handle network events")
 
+                // Pre-create the network event handle before start().
+                // Rust FFI requires createNetworkEventHandle() before start();
+                // subsequent calls from NetworkMonitor hit the cached handle.
+                system.createNetworkEventHandle()
+                Log.i(TAG, "🔗 Network event handle primed")
+
                 Log.i(TAG, "🚀 Starting linked multi-service actor...")
                 clientRef = system.start()
                 Log.i(TAG, "✅ Client started: ${clientRef?.actorId()?.serialNumber}")
@@ -216,8 +292,8 @@ class ClientActivity : AppCompatActivity() {
                     messageInput.isEnabled = true
                     sendButton.isEnabled = true
                     sendFileButton.isEnabled = true
-                    log("Connected (linked multi-service mode)")
-                    log("Client ID: ${clientRef?.actorId()?.serialNumber}")
+                    logMessage("✅ Connected (linked multi-service mode)")
+                    logMessage("🆔 Client ID: ${clientRef?.actorId()?.serialNumber}")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Connection failed", e)
@@ -246,7 +322,7 @@ class ClientActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     updateStatus("Disconnected")
                     connectButton.isEnabled = true
-                    log("Disconnected")
+                    logMessage("🔌 Disconnected")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Disconnect error", e)
@@ -271,7 +347,7 @@ class ClientActivity : AppCompatActivity() {
         }
 
         messageInput.text.clear()
-        log("📤 Sending Echo: $message")
+        logMessage("📤 Sent: $message")
 
         lifecycleScope.launch {
             try {
@@ -286,10 +362,10 @@ class ClientActivity : AppCompatActivity() {
                 val response = EchoResponse.parseFrom(responsePayload)
                 Log.i(TAG, "📬 Echo Response: ${response.reply}")
 
-                withContext(Dispatchers.Main) { log("📥 Echo: ${response.reply}") }
+                withContext(Dispatchers.Main) { logMessage("📥 Received: ${response.reply}") }
             } catch (e: Exception) {
                 Log.e(TAG, "Echo send error", e)
-                withContext(Dispatchers.Main) { log("❌ Echo error: ${e.message}") }
+                withContext(Dispatchers.Main) { logMessage("❌ Echo error: ${e.message}") }
             }
         }
     }
@@ -301,7 +377,7 @@ class ClientActivity : AppCompatActivity() {
             return
         }
 
-        log("📤 Starting stream transfer...")
+        logMessage("📤 Starting stream transfer...")
 
         lifecycleScope.launch {
             try {
@@ -329,15 +405,15 @@ class ClientActivity : AppCompatActivity() {
 
                 withContext(Dispatchers.Main) {
                     if (response.accepted) {
-                        log("✅ Stream transfer started successfully")
-                        log("📝 ${response.message}")
+                        logMessage("✅ Stream transfer completed")
+                        logMessage("📝 ${response.message}")
                     } else {
-                        log("❌ Stream transfer rejected: ${response.message}")
+                        logMessage("❌ Stream transfer rejected: ${response.message}")
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Stream transfer error", e)
-                withContext(Dispatchers.Main) { log("❌ Stream transfer error: ${e.message}") }
+                withContext(Dispatchers.Main) { logMessage("❌ Stream transfer error: ${e.message}") }
             }
         }
     }
@@ -380,6 +456,16 @@ class ClientActivity : AppCompatActivity() {
             SimpleDateFormat("HH:mm:ss", Locale.getDefault())
                 .format(Date())
         appendToLog("[$currentTime] $message\n")
+    }
+
+    /** Log a sent/received message — shows in the Main tab message log only. */
+    private fun logMessage(message: String) {
+        Log.i(TAG, message)
+        val currentTime =
+            SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+                .format(Date())
+        val timestamped = "[$currentTime] $message\n"
+        appendToMessageLog(timestamped)
     }
 
     override fun onResume() {
