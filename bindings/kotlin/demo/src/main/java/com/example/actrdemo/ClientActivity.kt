@@ -454,7 +454,7 @@ class ClientActivity : AppCompatActivity() {
 		appendToLog("[$currentTime] $message\n")
 	}
 
-	/** Log a sent/received message — shows on Main tab message log and also in the Logs tab. */
+	/** Log a sent/received message — shows in the Main tab message log only. */
 	private fun logMessage(message: String) {
 		Log.i(TAG, message)
 		val currentTime =
@@ -462,7 +462,6 @@ class ClientActivity : AppCompatActivity() {
 				.format(Date())
 		val timestamped = "[$currentTime] $message\n"
 		appendToMessageLog(timestamped)
-		appendToLog(timestamped)
 	}
 
 	override fun onResume() {
