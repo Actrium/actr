@@ -230,7 +230,15 @@ jobs:
         with:
           repo-token: ${{ github.token }}
 
+      - name: Cache cargo-installed tools
+        id: cargo-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
       - name: Install wasm-pack
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
 
       - name: Download create-tag artifacts
