@@ -42,7 +42,7 @@ class ClientActivity : AppCompatActivity() {
         private const val TAG = "ClientActivity"
 
         // Limit log buffer to avoid exceeding Android clipboard ~1MB transaction limit
-        private const val MAX_LOG_CHARS = 50_000
+        private const val MAX_LOG_CHARS = 5_000_000
         private const val TAB_MAIN = 0
         private const val TAB_LOGS = 1
     }
