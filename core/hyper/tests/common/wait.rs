@@ -5,7 +5,7 @@
 
 use crate::transport::{ConnectionEvent, ConnectionState};
 use actr_framework::Bytes;
-use actr_protocol::{ActorResult, ActrId, PayloadType};
+use actr_protocol::{ActorResult, ActrId, Classify, PayloadType};
 use std::time::Duration;
 
 /// Wait until a `DataChannelOpened` event is observed for the given peer and
@@ -243,9 +243,7 @@ pub async fn expect_request_eventually_ok(
             Ok(Ok(Err(err))) => {
                 let msg = err.to_string();
                 assert!(
-                    msg.contains("connection not ready")
-                        || msg.contains("Request timeout")
-                        || msg.contains("Connection"),
+                    err.is_retryable(),
                     "unexpected retry error while waiting for recovery: {msg}"
                 );
                 msg
