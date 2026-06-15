@@ -93,6 +93,7 @@ def test_release_train_verifies_ci_gate_triggered() -> None:
     assert "- name: Verify CI Gate is triggered" in gate_job
     assert "actions/workflows/ci-gate.yml/runs" in gate_job
     assert "head_sha=${RELEASE_SHA}" in gate_job
+    assert "we do NOT block on" in gate_job
 
 
 def test_release_train_forwards_release_context() -> None:
@@ -185,6 +186,24 @@ def test_e2e_linux_job_has_no_ios_rust_targets() -> None:
 
     assert "aarch64-apple-ios" not in pkg_job
     assert "aarch64-apple-ios-sim" not in pkg_job
+
+
+def test_e2e_workspace_prebuilds_use_locked_cargo_resolution() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    ts_stream = (ROOT / "e2e/typescript-stream/run.sh").read_text(encoding="utf-8")
+
+    assert "cargo build --release -p actr-cli --bin actr --features wasm-engine" not in workflow
+    assert "cargo build --release -p actr-cli --bin actr --features wasm-engine" not in ts_stream
+    assert workflow.count(
+        "cargo build --locked --release -p actr-cli --bin actr --features wasm-engine"
+    ) == 3
+    assert workflow.count(
+        "cargo build --locked --release -p actr-mock-actrix --bin mock-actrix"
+    ) == 2
+    assert "cargo build --locked -p actr-framework-protoc-codegen" in ts_stream
+    assert 'cp "$REPO_ROOT/Cargo.lock" "$project/Cargo.lock"' in ts_stream
+    assert "cargo generate-lockfile --offline" in ts_stream
+    assert "cargo run --locked --features host --bin client-app" in ts_stream
 
 
 def test_swift_e2e_upload_artifact_on_failure() -> None:
@@ -330,6 +349,7 @@ if __name__ == "__main__":
     test_e2e_no_inline_archive_download_url()
     test_e2e_linux_deps_includes_unzip()
     test_e2e_linux_job_has_no_ios_rust_targets()
+    test_e2e_workspace_prebuilds_use_locked_cargo_resolution()
     test_swift_e2e_upload_artifact_on_failure()
     test_e2e_no_call_remote_in_ffi()
     test_download_script_explicit_empty_runs_check()
