@@ -987,47 +987,72 @@ impl WebSocketSignalingClient {
             return self.connect_once().await;
         }
 
-        let backoff = ExponentialBackoff::builder()
-            .initial_delay(std::time::Duration::from_secs(cfg.initial_delay.max(1)))
-            .max_delay(std::time::Duration::from_secs(cfg.max_delay.max(1)))
-            .max_retries(cfg.max_attempts)
-            .with_jitter()
-            .build();
-
         let mut last_err = None;
 
-        // First attempt immediately (delay = 0), subsequent delays from backoff
-        for (attempt, delay) in std::iter::once(std::time::Duration::ZERO)
-            .chain(backoff)
-            .enumerate()
-        {
-            let attempt = attempt as u32 + 1;
-            self.invoke_hook(HookEvent::SignalingConnectStart { attempt })
-                .await;
-            if delay > std::time::Duration::ZERO {
-                tracing::info!("Retry signaling connect after {delay:?} (attempt {attempt})");
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    _ = self.reconnect_notify.notified() => {
-                        tracing::debug!("Explicit reconnect request interrupted signaling connect backoff");
+        'cycle: loop {
+            let backoff_reset_generation = self
+                .reconnect_backoff_reset_generation
+                .load(Ordering::Acquire);
+            let backoff = ExponentialBackoff::builder()
+                .initial_delay(std::time::Duration::from_secs(cfg.initial_delay.max(1)))
+                .max_delay(std::time::Duration::from_secs(cfg.max_delay.max(1)))
+                .max_retries(cfg.max_attempts)
+                .with_jitter()
+                .build();
+
+            // First attempt immediately (delay = 0), subsequent delays from backoff
+            for (attempt, delay) in std::iter::once(std::time::Duration::ZERO)
+                .chain(backoff)
+                .enumerate()
+            {
+                let attempt = attempt as u32 + 1;
+                self.invoke_hook(HookEvent::SignalingConnectStart { attempt })
+                    .await;
+                if delay > std::time::Duration::ZERO {
+                    tracing::info!("Retry signaling connect after {delay:?} (attempt {attempt})");
+                    tokio::select! {
+                        _ = tokio::time::sleep(delay) => {}
+                        _ = self.reconnect_notify.notified() => {
+                            tracing::debug!("Explicit reconnect request interrupted signaling connect backoff");
+                        }
+                    }
+                    if self
+                        .reconnect_backoff_reset_generation
+                        .load(Ordering::Acquire)
+                        != backoff_reset_generation
+                    {
+                        tracing::debug!(
+                            "Restarting explicit signaling connect backoff after external recovery event"
+                        );
+                        continue 'cycle;
+                    }
+                }
+
+                match self.connect_once().await {
+                    Ok(()) => return Ok(()),
+                    Err(e) => {
+                        tracing::warn!("Signaling connect attempt {attempt} failed: {e:?}");
+                        last_err = Some(e);
+                        if self
+                            .reconnect_backoff_reset_generation
+                            .load(Ordering::Acquire)
+                            != backoff_reset_generation
+                        {
+                            tracing::debug!(
+                                "Restarting explicit signaling connect backoff after external recovery event"
+                            );
+                            continue 'cycle;
+                        }
                     }
                 }
             }
 
-            match self.connect_once().await {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    tracing::warn!("Signaling connect attempt {attempt} failed: {e:?}");
-                    last_err = Some(e);
-                }
-            }
+            let total = cfg.max_attempts + 1; // backoff max_retries + first attempt
+            tracing::error!("Signaling connect failed after {total} attempts, giving up");
+            return Err(last_err.unwrap_or_else(|| {
+                NetworkError::ConnectionError("All connection attempts failed".to_string())
+            }));
         }
-
-        let total = cfg.max_attempts + 1; // backoff max_retries + first attempt
-        tracing::error!("Signaling connect failed after {total} attempts, giving up");
-        Err(last_err.unwrap_or_else(|| {
-            NetworkError::ConnectionError("All connection attempts failed".to_string())
-        }))
     }
 
     /// Send envelope and wait for response with timeout and error handling.
@@ -2475,6 +2500,72 @@ mod tests {
             restore_result.is_ok(),
             "network restore should not be blocked by an older connect() backoff; got {restore_result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_connect_backoff_reset_restarts_attempt_sequence() {
+        let reserved_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener should reserve a local port");
+        let addr = reserved_listener
+            .local_addr()
+            .expect("reserved listener should have local addr");
+        drop(reserved_listener);
+
+        let mut config = make_config();
+        config.server_url =
+            Url::parse(&format!("ws://{addr}/signaling/ws")).expect("test URL should parse");
+        config.connection_timeout = 1;
+        config.reconnect_config = ReconnectConfig {
+            enabled: true,
+            max_attempts: 10,
+            initial_delay: 30,
+            max_delay: 30,
+            backoff_multiplier: 1.0,
+        };
+        let client = make_ws_client(config);
+
+        let (attempt_tx, mut attempt_rx) = tokio::sync::mpsc::unbounded_channel();
+        let hook_callback: HookCallback = Arc::new(move |event| {
+            let attempt_tx = attempt_tx.clone();
+            Box::pin(async move {
+                if let HookEvent::SignalingConnectStart { attempt } = event {
+                    let _ = attempt_tx.send(attempt);
+                }
+            })
+        });
+        client.set_hook_callback(hook_callback);
+
+        let connect_task = {
+            let client = client.clone();
+            tokio::spawn(async move { client.connect().await })
+        };
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), attempt_rx.recv())
+                .await
+                .expect("connect should publish attempt 1"),
+            Some(1)
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), attempt_rx.recv())
+                .await
+                .expect("connect should enter first backoff as attempt 2"),
+            Some(2)
+        );
+
+        client.schedule_auto_reconnect_reset_backoff();
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), attempt_rx.recv())
+                .await
+                .expect("reset should restart explicit connect attempts"),
+            Some(1),
+            "network recovery reset should restart explicit connect() backoff from attempt 1"
+        );
+
+        connect_task.abort();
+        client.disconnect().await.ok();
     }
 
     #[tokio::test]

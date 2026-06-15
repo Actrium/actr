@@ -515,6 +515,12 @@ impl DefaultNetworkEventProcessor {
         let _guard = self.recovery_state.connect_lock.lock().await;
 
         if !self.signaling_client.is_connected() {
+            tracing::info!(
+                reason = reason,
+                "Network recovery event resetting signaling reconnect backoff before connect"
+            );
+            self.signaling_client
+                .schedule_auto_reconnect_reset_backoff();
             tracing::info!(reason = reason, "🔄 Connecting signaling");
             self.signaling_client.connect_once().await.map_err(|e| {
                 let err_msg = format!("WebSocket connect failed: {}", e);
@@ -560,6 +566,12 @@ impl DefaultNetworkEventProcessor {
                     );
                 }
 
+                tracing::info!(
+                    reason = reason,
+                    "Network recovery event resetting signaling reconnect backoff before rebuild"
+                );
+                self.signaling_client
+                    .schedule_auto_reconnect_reset_backoff();
                 tracing::info!(reason = reason, "🔄 Rebuilding signaling: connecting");
                 self.signaling_client
                     .connect_once()
@@ -605,10 +617,9 @@ impl DefaultNetworkEventProcessor {
         tracing::warn!(
             reason = reason,
             error = %err,
-            "Network recovery failed; scheduling signaling auto-reconnect with reset backoff"
+            "Network recovery failed; ensuring signaling auto-reconnect remains scheduled"
         );
-        self.signaling_client
-            .schedule_auto_reconnect_reset_backoff();
+        self.signaling_client.schedule_auto_reconnect();
     }
 
     async fn restore_signaling_and_webrtc_from_network_event(
@@ -1350,15 +1361,15 @@ mod tests {
             signaling
                 .schedule_auto_reconnect_calls
                 .load(AtomicOrdering::SeqCst),
-            1,
-            "failed ForceReconnect restore should wake the auto-reconnect manager"
+            2,
+            "ForceReconnect should wake auto-reconnect before restore and keep it scheduled after failure"
         );
         assert_eq!(
             signaling
                 .schedule_auto_reconnect_reset_backoff_calls
                 .load(AtomicOrdering::SeqCst),
             1,
-            "failed ForceReconnect restore should reset reconnect backoff"
+            "ForceReconnect should reset reconnect backoff before the quick restore attempt"
         );
     }
 
@@ -1383,6 +1394,30 @@ mod tests {
                 .load(AtomicOrdering::SeqCst),
             1,
             "failed Restore should reset reconnect backoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_schedules_reset_backoff_before_quick_connect() {
+        let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(false));
+        let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
+
+        processor
+            .process_network_recovery_action(NetworkRecoveryAction::Restore)
+            .await
+            .expect("Restore should connect successfully");
+
+        assert_eq!(
+            signaling.connect_once_calls.load(AtomicOrdering::SeqCst),
+            1,
+            "Restore should make one quick connect attempt"
+        );
+        assert_eq!(
+            signaling
+                .schedule_auto_reconnect_reset_backoff_calls
+                .load(AtomicOrdering::SeqCst),
+            1,
+            "Restore should reset reconnect backoff before the quick connect attempt"
         );
     }
 }
