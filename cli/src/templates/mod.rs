@@ -24,7 +24,6 @@ use std::path::{Path, PathBuf};
 pub use crate::commands::SupportedLanguage;
 
 pub const DEFAULT_ACTR_SWIFT_VERSION: &str = "0.1.15";
-pub const DEFAULT_ACTR_PROTOCOLS_VERSION: &str = "0.1.2";
 pub const DEFAULT_MANUFACTURER: &str = "acme";
 
 /// Project template options
@@ -92,8 +91,6 @@ pub struct TemplateContext {
     pub workload_name: String,
     #[serde(rename = "ACTR_SWIFT_VERSION")]
     pub actr_swift_version: String,
-    #[serde(rename = "ACTR_PROTOCOLS_VERSION")]
-    pub actr_protocols_version: String,
     #[serde(rename = "ACTR_LOCAL_PATH")]
     pub actr_local_path: Option<String>,
 
@@ -129,7 +126,6 @@ impl TemplateContext {
             service_name: service_name.to_string(),
             workload_name: format!("{}Workload", project_name_pascal),
             actr_swift_version: DEFAULT_ACTR_SWIFT_VERSION.to_string(),
-            actr_protocols_version: DEFAULT_ACTR_PROTOCOLS_VERSION.to_string(),
             actr_local_path: resolve_actr_swift_local_path(),
             realm_id: 2368266035,
             stun_urls: r#"["stun:actrix1.develenv.com:3478"]"#.to_string(),
@@ -154,20 +150,12 @@ impl TemplateContext {
             is_service,
         );
 
-        // Fetch latest versions in parallel with 5s timeout
-        let swift_task = crate::utils::fetch_latest_git_tag(
-            "https://github.com/actor-rtc/actr-swift",
+        // Fetch latest package version with 5s timeout.
+        ctx.actr_swift_version = crate::utils::fetch_latest_git_tag(
+            "https://github.com/Actrium/actr-swift-package-sync",
             &ctx.actr_swift_version,
-        );
-        let protocols_task = crate::utils::fetch_latest_git_tag(
-            "https://github.com/actor-rtc/actr-protocols-swift",
-            &ctx.actr_protocols_version,
-        );
-
-        let (swift_v, protocols_v) = tokio::join!(swift_task, protocols_task);
-
-        ctx.actr_swift_version = swift_v;
-        ctx.actr_protocols_version = protocols_v;
+        )
+        .await;
 
         ctx
     }
@@ -325,7 +313,6 @@ mod tests {
         assert_eq!(ctx.signaling_url, "ws://localhost:8080");
         assert_eq!(ctx.ais_endpoint_url, "http://localhost:8080/ais");
         assert_eq!(ctx.actr_swift_version, DEFAULT_ACTR_SWIFT_VERSION);
-        assert_eq!(ctx.actr_protocols_version, DEFAULT_ACTR_PROTOCOLS_VERSION);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 name: EchoApp
 options:
-  bundleIdPrefix: com.actrium
+  bundleIdPrefix: io.actrium
   deploymentTarget:
     iOS: "26.2"
 settings:
@@ -51,7 +51,7 @@ targets:
           NSAllowsArbitraryLoads: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.actrium.EchoApp
+        PRODUCT_BUNDLE_IDENTIFIER: io.actrium.EchoApp
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"

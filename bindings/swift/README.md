@@ -1,6 +1,6 @@
 # Actr
 
-Swift Package for distributing the ACTR (Actor-RTC) framework via a prebuilt XCFramework.
+Swift Package for distributing the ACTR (Actrium) framework via a prebuilt XCFramework.
 
 ## Overview
 

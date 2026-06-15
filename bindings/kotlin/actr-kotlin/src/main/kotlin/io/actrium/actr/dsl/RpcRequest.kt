@@ -26,9 +26,9 @@
  * )
  * ```
  */
-package io.actor_rtc.actr.dsl
+package io.actrium.actr.dsl
 
-import io.actor_rtc.actr.PayloadType
+import io.actrium.actr.PayloadType
 
 /**
  * Type-safe RPC contract that binds a request type to its response type and route.

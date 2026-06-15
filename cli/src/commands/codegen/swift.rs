@@ -666,7 +666,7 @@ impl SwiftGenerator {
                 }
                 PROTOC_GEN_ACTR_FRAMEWORK_SWIFT => {
                     error_msg.push_str(
-                        "  - protoc-gen-actrframework-swift: install via your package manager, e.g. `brew install protoc-gen-actrframework-swift` or `brew reinstall protoc-gen-actrframework-swift`\n",
+                        "  - protoc-gen-actrframework-swift: build from source with `cd tools/protoc-gen/swift && swift build -c release --product protoc-gen-actrframework-swift --arch arm64`, then add the release binary to PATH\n",
                     );
                 }
                 _ => {}
@@ -915,73 +915,10 @@ impl SwiftGenerator {
     }
 
     /// Best-effort automatic installation hook for protoc-gen-actrframework-swift.
-    ///
-    /// On macOS with Homebrew available this will run:
-    ///   brew install protoc-gen-actrframework-swift
     fn try_install_actrframework_swift_plugin(&self) -> Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            if !command_exists("brew") {
-                debug!(
-                    "Homebrew not found; skipping Homebrew installation for protoc-gen-actrframework-swift"
-                );
-                return Ok(());
-            }
-
-            info!("📦 Installing protoc-gen-actrframework-swift via Homebrew...");
-            let tap_output = StdCommand::new("brew")
-                .arg("tap")
-                .arg("actor-rtc/homebrew-tap")
-                .output()
-                .map_err(|e| {
-                    ActrCliError::command_error(format!(
-                        "Failed to run Homebrew tap for actor-rtc/homebrew-tap: {e}"
-                    ))
-                })?;
-            if !tap_output.status.success() {
-                let stdout = String::from_utf8_lossy(&tap_output.stdout);
-                let stderr = String::from_utf8_lossy(&tap_output.stderr);
-                warn!(
-                    "Homebrew tap for actor-rtc/homebrew-tap failed, please add it manually.\n{}{}",
-                    stdout, stderr
-                );
-            }
-
-            let output = StdCommand::new("brew")
-                .arg("install")
-                .arg("protoc-gen-actrframework-swift")
-                .output()
-                .map_err(|e| {
-                    ActrCliError::command_error(format!(
-                        "Failed to run Homebrew for protoc-gen-actrframework-swift installation: {e}"
-                    ))
-                })?;
-
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let combined_output = format!("{stdout}{stderr}");
-            if combined_output.contains("Warning:") {
-                let highlighted_output = colorize_warning_output(combined_output.trim());
-                eprintln!("{highlighted_output}");
-            }
-
-            if !output.status.success() {
-                warn!(
-                    "Homebrew installation for protoc-gen-actrframework-swift failed, please install manually.\n{}",
-                    stderr
-                );
-            } else {
-                info!("✅ protoc-gen-actrframework-swift installation completed");
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            debug!(
-                "Automatic installation for protoc-gen-actrframework-swift is only supported on macOS (Homebrew/workspace build)"
-            );
-        }
-
+        debug!(
+            "No remote package installer is configured for protoc-gen-actrframework-swift; use the workspace-local build or build tools/protoc-gen/swift manually"
+        );
         Ok(())
     }
 
@@ -1141,70 +1078,11 @@ impl SwiftGenerator {
         Ok(None)
     }
 
-    /// Try to update protoc-gen-actrframework-swift via Homebrew
+    /// Try to update protoc-gen-actrframework-swift.
     fn try_update_plugin(&self) -> Result<()> {
-        #[cfg(target_os = "macos")]
-        {
-            if !command_exists("brew") {
-                return Err(ActrCliError::command_error(
-                    "Homebrew not found; cannot update protoc-gen-actrframework-swift".to_string(),
-                ));
-            }
-
-            info!("🔄 Updating Homebrew...");
-            let update_output = StdCommand::new("brew")
-                .arg("update")
-                .output()
-                .map_err(|e| {
-                    ActrCliError::command_error(format!("Failed to run brew update: {e}"))
-                })?;
-
-            if !update_output.status.success() {
-                let stderr = String::from_utf8_lossy(&update_output.stderr);
-                warn!("brew update failed: {}", stderr);
-            } else {
-                info!("✅ Homebrew updated");
-            }
-
-            info!("🔄 Reinstalling protoc-gen-actrframework-swift...");
-            let reinstall_output = StdCommand::new("brew")
-                .arg("reinstall")
-                .arg("protoc-gen-actrframework-swift")
-                .output()
-                .map_err(|e| {
-                    ActrCliError::command_error(format!(
-                        "Failed to run brew reinstall protoc-gen-actrframework-swift: {e}"
-                    ))
-                })?;
-
-            let stdout = String::from_utf8_lossy(&reinstall_output.stdout);
-            let stderr = String::from_utf8_lossy(&reinstall_output.stderr);
-            let combined_output = format!("{stdout}{stderr}");
-            if combined_output.contains("Warning:") {
-                let highlighted_output = colorize_warning_output(combined_output.trim());
-                eprintln!("{highlighted_output}");
-            }
-
-            if !reinstall_output.status.success() {
-                return Err(ActrCliError::command_error(format!(
-                    "brew reinstall protoc-gen-actrframework-swift failed: {stderr}"
-                )));
-            }
-
-            info!("✅ protoc-gen-actrframework-swift reinstalled");
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            Ok(())
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(ActrCliError::command_error(
-                "Automatic update for protoc-gen-actrframework-swift is only supported on macOS (Homebrew)".to_string(),
-            ))
-        }
+        Err(ActrCliError::command_error(
+            "Automatic update for protoc-gen-actrframework-swift is not configured. Build from source with `cd tools/protoc-gen/swift && swift build -c release --product protoc-gen-actrframework-swift --arch arm64`, then add the release binary to PATH.".to_string(),
+        ))
     }
 
     fn has_messages_enums_or_extensions(&self, path: &Path) -> bool {

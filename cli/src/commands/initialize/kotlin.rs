@@ -50,7 +50,7 @@ impl ProjectInitializer for KotlinInitializer {
         info!("");
         info!("💡 Tips:");
         info!("  - For Android emulator, use ws://10.0.2.2:PORT to reach host localhost");
-        info!("  - actr-kotlin library is fetched from JitPack automatically");
+        info!("  - actr-kotlin library is fetched from Actrium GitHub Packages");
         info!(
             "  - Generated framework code is in app/src/main/java/{}/generated/",
             package_path
@@ -433,13 +433,13 @@ fn to_pascal_case(input: &str) -> String {
 
 fn to_package_name(project_name: &str) -> String {
     // Convert project name to valid Android package name
-    // e.g., "my-echo-client" -> "io.actr.myechoclient"
+    // e.g., "my-echo-client" -> "io.actrium.myechoclient"
     let clean_name: String = project_name
         .chars()
         .filter(|c| c.is_alphanumeric())
         .collect::<String>()
         .to_lowercase();
-    format!("io.actr.{}", clean_name)
+    format!("io.actrium.{}", clean_name)
 }
 
 fn copy_gradle_wrapper(project_dir: &Path) -> Result<()> {

@@ -6,8 +6,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import stream_server.StreamClientOuterClass.ClientStartStreamRequest
 import stream_server.StreamClientOuterClass.ClientStartStreamResponse
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.dsl.*
+import io.actrium.actr.PayloadType
+import io.actrium.actr.dsl.*
 import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking

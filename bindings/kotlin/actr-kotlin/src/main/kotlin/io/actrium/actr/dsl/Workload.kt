@@ -1,23 +1,23 @@
 /** Simplified Workload interface and base implementations. */
-package io.actor_rtc.actr.dsl
+package io.actrium.actr.dsl
 
-import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.CredentialObserverBridge
-import io.actor_rtc.actr.DataStream
-import io.actor_rtc.actr.ErrorEventBridge
-import io.actor_rtc.actr.MailboxObserverBridge
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.RpcEnvelopeBridge
-import io.actor_rtc.actr.SignalingObserverBridge
-import io.actor_rtc.actr.WebRtcObserverBridge
-import io.actor_rtc.actr.WebSocketObserverBridge
-import io.actor_rtc.actr.WorkloadLifecycleBridge
+import io.actrium.actr.ActrId
+import io.actrium.actr.ActrType
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.CredentialObserverBridge
+import io.actrium.actr.DataStream
+import io.actrium.actr.ErrorEventBridge
+import io.actrium.actr.MailboxObserverBridge
+import io.actrium.actr.PayloadType
+import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.SignalingObserverBridge
+import io.actrium.actr.WebRtcObserverBridge
+import io.actrium.actr.WebSocketObserverBridge
+import io.actrium.actr.WorkloadLifecycleBridge
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
-import io.actor_rtc.actr.DynamicWorkload as DynamicWorkloadGenerated
+import io.actrium.actr.DynamicWorkload as DynamicWorkloadGenerated
 
 typealias DynamicWorkload = DynamicWorkloadGenerated
 
@@ -179,7 +179,7 @@ open class SimpleWorkload(
      * Shell (local application) side. Unlike the Rust version, there is no default forwarding
      * behavior - you must implement the logic.
      *
-     * See [shell-actr-echo/client](https://github.com/actor-rtc/actr-examples) for a reference
+     * See [shell-actr-echo/client](https://github.com/Actrium/actr/tree/main/examples) for a reference
      * implementation pattern.
      *
      * @param ctx Context for making RPC calls

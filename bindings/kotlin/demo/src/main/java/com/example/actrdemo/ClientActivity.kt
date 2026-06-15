@@ -21,11 +21,11 @@ import com.example.MyUnifiedHandler
 import com.example.UnifiedWorkload
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.CleanupReason
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.dsl.*
-import io.actorrtc.demo.R
+import io.actrium.actr.ActrType
+import io.actrium.actr.CleanupReason
+import io.actrium.actr.PayloadType
+import io.actrium.actr.dsl.*
+import io.actrium.demo.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch

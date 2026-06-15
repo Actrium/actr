@@ -1,19 +1,19 @@
-/** Utility functions and extensions for Actor-RTC SDK. */
-package io.actor_rtc.actr.dsl
+/** Utility functions and extensions for Actrium SDK. */
+package io.actrium.actr.dsl
 
-import io.actor_rtc.actr.ActrException
-import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.ErrorKind
-import io.actor_rtc.actr.AppLifecycleState
-import io.actor_rtc.actr.CleanupReason
-import io.actor_rtc.actr.NetworkEventResult
-import io.actor_rtc.actr.NetworkSnapshot
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.ReconnectReason
-import io.actor_rtc.actr.actrErrorIsRetryable
-import io.actor_rtc.actr.actrErrorKind
-import io.actor_rtc.actr.actrErrorRequiresDlq
+import io.actrium.actr.ActrException
+import io.actrium.actr.ActrId
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.ErrorKind
+import io.actrium.actr.AppLifecycleState
+import io.actrium.actr.CleanupReason
+import io.actrium.actr.NetworkEventResult
+import io.actrium.actr.NetworkSnapshot
+import io.actrium.actr.PayloadType
+import io.actrium.actr.ReconnectReason
+import io.actrium.actr.actrErrorIsRetryable
+import io.actrium.actr.actrErrorKind
+import io.actrium.actr.actrErrorRequiresDlq
 
 // ============================================================================
 // ActrRef Call Extensions - Convenience wrappers with default parameters

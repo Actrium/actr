@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "io.actorrtc.demo"
+    namespace = "io.actrium.demo"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "io.actorrtc.demo"
+        applicationId = "io.actrium.demo"
         minSdk = 26
         targetSdk = 34
         versionCode = 1

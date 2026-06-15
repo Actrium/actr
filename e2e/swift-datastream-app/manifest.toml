@@ -9,7 +9,7 @@ edition = 1
 name = "DataStreamApp"
 manufacturer = "actrium"
 version = "0.1.0"
-description = "Actor-RTC DataStreamApp — iOS linked runtime"
+description = "Actrium DataStreamApp — iOS linked runtime"
 
 [dependencies]
 duplex_stream = { actr_type = "actrium:DuplexStreamService:1.0.0" }

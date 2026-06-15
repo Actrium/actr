@@ -4,7 +4,7 @@ exports = []
 [package]
 name = "StreamEchoClient"
 manufacturer = "{{MANUFACTURER}}"
-description = "An Actor-RTC Android DataStream client"
+description = "An Actrium Android DataStream client"
 authors = []
 
 [dependencies]

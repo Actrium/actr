@@ -2,7 +2,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-Kotlin/Android source bindings for the Actor-RTC (ACTR) framework.
+Kotlin/Android source bindings for the Actrium (ACTR) framework.
 
 Official release artifacts are published from the package-sync repository:
 
@@ -75,7 +75,7 @@ power-user territory — bindings do not re-export it.
 ```
 actr-kotlin/
 ├── actr-kotlin/              # Library module
-│   └── src/main/kotlin/io/actor_rtc/actr/
+│   └── src/main/kotlin/io/actrium/actr/
 │       ├── actr.kt           # UniFFI-generated bindings (raw FFI layer)
 │       └── dsl/              # High-level Kotlin-idiomatic API
 │           ├── Actr.kt       # ActrNode/ActrRef wrapper classes + factory fns
@@ -127,7 +127,7 @@ Detailed API documentation: **[docs/api.md](docs/api.md)**
 ### Package-backed Node
 
 ```kotlin
-import io.actor_rtc.actr.dsl.*
+import io.actrium.actr.dsl.*
 
 // Create a node from config + package file
 val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
@@ -260,5 +260,5 @@ Licensed under the Apache License, Version 2.0.
 
 ## Related Projects
 
-- [ACTR Framework](https://github.com/actor-rtc/actr) - Core Rust implementation
-- [ACTR Examples](https://github.com/actor-rtc/actr-examples) - Usage examples
+- [ACTR Framework](https://github.com/Actrium/actr) - Core Rust implementation
+- [ACTR Examples](https://github.com/Actrium/actr/tree/main/examples) - Usage examples

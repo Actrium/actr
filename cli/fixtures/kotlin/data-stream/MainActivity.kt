@@ -10,8 +10,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import stream_server.StreamClientOuterClass.ClientStartStreamRequest
 import stream_server.StreamClientOuterClass.ClientStartStreamResponse
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.dsl.*
+import io.actrium.actr.PayloadType
+import io.actrium.actr.dsl.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -23,7 +23,7 @@ import {{PACKAGE_NAME}}.R
  * {{PROJECT_NAME_PASCAL}} DataStream Client Main Activity
  *
  * This activity provides a simple UI to:
- * 1. Connect to the DataStream server via Actor-RTC
+ * 1. Connect to the DataStream server via Actrium
  * 2. Send data stream messages and receive responses
  * 3. Display connection status and message logs
  */
@@ -42,7 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logText: TextView
     private lateinit var scrollView: ScrollView
 
-    // Actor-RTC components
+    // Actrium components
     private var clientRef: ActrRef? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {

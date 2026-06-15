@@ -3,7 +3,7 @@
 
 @file:Suppress("NAME_SHADOWING")
 
-package io.actor_rtc.actr
+package io.actrium.actr
 
 // Common helper code.
 //
@@ -5507,7 +5507,7 @@ public object FfiConverterTypeNetworkAvailability: FfiConverterRustBuffer<Networ
 sealed class NetworkEvent {
     
     data class NetworkPathChanged(
-        val `snapshot`: io.actor_rtc.actr.NetworkSnapshot) : NetworkEvent()
+        val `snapshot`: io.actrium.actr.NetworkSnapshot) : NetworkEvent()
         
     {
         
@@ -5516,7 +5516,7 @@ sealed class NetworkEvent {
     }
     
     data class AppLifecycleChanged(
-        val `state`: io.actor_rtc.actr.AppLifecycleState) : NetworkEvent()
+        val `state`: io.actrium.actr.AppLifecycleState) : NetworkEvent()
         
     {
         
@@ -5525,7 +5525,7 @@ sealed class NetworkEvent {
     }
     
     data class CleanupConnections(
-        val `reason`: io.actor_rtc.actr.CleanupReason) : NetworkEvent()
+        val `reason`: io.actrium.actr.CleanupReason) : NetworkEvent()
         
     {
         
@@ -5534,7 +5534,7 @@ sealed class NetworkEvent {
     }
     
     data class ForceReconnect(
-        val `reason`: io.actor_rtc.actr.ReconnectReason) : NetworkEvent()
+        val `reason`: io.actrium.actr.ReconnectReason) : NetworkEvent()
         
     {
         

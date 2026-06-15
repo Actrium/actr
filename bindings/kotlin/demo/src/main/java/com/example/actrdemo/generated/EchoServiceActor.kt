@@ -6,8 +6,8 @@
 package com.example.actrdemo.generated
 
 import echo.Echo.*
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.RpcEnvelopeBridge
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.RpcEnvelopeBridge
 
 /**
  * Handler interface for EchoService

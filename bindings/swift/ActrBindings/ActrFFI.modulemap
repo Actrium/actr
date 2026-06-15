@@ -1,5 +1,5 @@
 module ActrFFI {
-    header "ActrFFI.h"
+    header "include/actrFFI.h"
     export *
     use "Darwin"
     use "_Builtin_stdbool"

@@ -4,7 +4,7 @@ exports = []
 [package]
 name = "echo-client-app"
 manufacturer = "{{MANUFACTURER}}"
-description = "An Actor-RTC Android client"
+description = "An Actrium Android client"
 authors = []
 
 [dependencies]

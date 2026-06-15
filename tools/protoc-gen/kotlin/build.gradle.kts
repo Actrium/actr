@@ -4,7 +4,7 @@ plugins {
     id("com.google.protobuf") version "0.9.4"
 }
 
-group = "io.actor-rtc"
+group = "io.actrium"
 
 version = "0.1.0"
 
@@ -16,7 +16,7 @@ dependencies {
     testImplementation(kotlin("test"))
 }
 
-application { mainClass.set("io.actor_rtc.framework.codegen.MainKt") }
+application { mainClass.set("io.actrium.codegen.MainKt") }
 
 tasks.test { useJUnitPlatform() }
 protobuf {
@@ -26,12 +26,12 @@ protobuf {
 }
 
 application {
-    mainClass.set("io.actor_rtc.codegen.MainKt")
+    mainClass.set("io.actrium.codegen.MainKt")
 }
 
 tasks.jar {
     manifest {
-        attributes["Main-Class"] = "io.actor_rtc.codegen.MainKt"
+        attributes["Main-Class"] = "io.actrium.codegen.MainKt"
     }
     // Create fat jar with all dependencies
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
@@ -42,7 +42,7 @@ tasks.jar {
 tasks.register<Jar>("protocPluginJar") {
     archiveBaseName.set("protoc-gen-actrframework-kotlin")
     manifest {
-        attributes["Main-Class"] = "io.actor_rtc.codegen.MainKt"
+        attributes["Main-Class"] = "io.actrium.codegen.MainKt"
     }
     from(sourceSets.main.get().output)
     from(configurations.runtimeClasspath.get().map { if (it.isDirectory) it else zipTree(it) })
