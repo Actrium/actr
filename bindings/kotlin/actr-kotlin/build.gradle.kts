@@ -33,7 +33,7 @@ val githubPackagesToken =
         .orElse(providers.environmentVariable("GITHUB_TOKEN"))
 
 android {
-    namespace = "io.actorrtc.actr"
+    namespace = "io.actrium.actr"
     compileSdk = 34
 
     defaultConfig {
@@ -82,7 +82,7 @@ publishing {
 
             pom {
                 name.set("actr")
-                description.set("Kotlin/Android SDK for the Actor-RTC framework")
+                description.set("Kotlin/Android SDK for the Actrium framework")
                 url.set("https://github.com/Actrium/actr-kotlin-package-sync")
 
                 licenses {

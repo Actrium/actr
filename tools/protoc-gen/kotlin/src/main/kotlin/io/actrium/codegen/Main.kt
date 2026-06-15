@@ -11,7 +11,7 @@
  *          --actrframework-kotlin_out=OUT_DIR input.proto
  * ```
  */
-package io.actor_rtc.codegen
+package io.actrium.codegen
 
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse
@@ -26,7 +26,7 @@ fun main(args: Array<String>) {
             }
             "--help", "-h" -> {
                 println(
-                        "protoc-gen-actrframework-kotlin - Protobuf plugin for Actor-RTC Kotlin framework"
+                        "protoc-gen-actrframework-kotlin - Protobuf plugin for Actrium Kotlin framework"
                 )
                 println()
                 println("USAGE:")

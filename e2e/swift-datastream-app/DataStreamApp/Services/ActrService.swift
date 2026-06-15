@@ -71,7 +71,7 @@ private final class ActrLogHandler: LogCallback, @unchecked Sendable {
     }
 }
 
-private let logger = Logger(subsystem: "com.actrium.DataStreamApp", category: "ActrService")
+private let logger = Logger(subsystem: "io.actrium.DataStreamApp", category: "ActrService")
 
 @MainActor
 final class ActrService: ObservableObject {

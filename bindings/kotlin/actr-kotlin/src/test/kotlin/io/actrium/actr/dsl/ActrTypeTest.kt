@@ -1,6 +1,6 @@
-package io.actor_rtc.actr.dsl
+package io.actrium.actr.dsl
 
-import io.actor_rtc.actr.ActrType
+import io.actrium.actr.ActrType
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith

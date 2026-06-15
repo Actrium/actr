@@ -26,7 +26,7 @@ Outputs:
    git push origin vX.Y.Z
    ```
 2. GitHub Actions builds and uploads the release assets.
-3. Update the Homebrew formula using the release URL and SHA256.
+3. Confirm the release page contains the zip and checksum assets.
 
 ## Verification
 
@@ -37,6 +37,8 @@ Outputs:
    ```
 2. Ensure the binary is on `PATH` and run `protoc`:
    ```bash
+   cp protoc-gen-actrframework-swift /usr/local/bin/
+
    cat <<'EOF' > example.proto
    syntax = "proto3";
 

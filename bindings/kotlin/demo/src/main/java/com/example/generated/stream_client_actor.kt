@@ -1,7 +1,7 @@
 package com.example.generated
 
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.RpcEnvelopeBridge
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.RpcEnvelopeBridge
 import local.StreamClientOuterClass.ClientStartStreamRequest
 import local.StreamClientOuterClass.ClientStartStreamResponse
 

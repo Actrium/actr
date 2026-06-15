@@ -47,7 +47,7 @@ filter_level = "info"
 tracing_enabled = false
 
 [hyper]
-data_dir = "/data/data/io.actorrtc.demo/files/hyper"
+data_dir = "/data/data/io.actrium.demo/files/hyper"
 
 [hyper.trust]
 kind = "dev_only"

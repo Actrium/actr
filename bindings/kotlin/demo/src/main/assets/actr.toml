@@ -4,7 +4,7 @@ edition = 1
 name = "EchoApp"
 manufacturer = "acme"
 version = "0.1.0"
-description = "Actor-RTC EchoApp — Android linked runtime"
+description = "Actrium EchoApp — Android linked runtime"
 
 [dependencies]
 echo = { actr_type = "actrium:EchoService:1.0.0" }
@@ -33,7 +33,7 @@ stun_urls = ["stun:124.71.231.251:3478"]
 turn_urls = ["turn:124.71.231.251:3478"]
 
 [hyper]
-data_dir = "/data/data/io.actorrtc.demo/files/hyper"
+data_dir = "/data/data/io.actrium.demo/files/hyper"
 
 [hyper.trust]
 kind = "dev_only"

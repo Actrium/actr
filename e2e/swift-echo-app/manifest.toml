@@ -9,7 +9,7 @@ edition = 1
 name = "EchoApp"
 manufacturer = "actrium"
 version = "0.1.0"
-description = "Actor-RTC EchoApp — iOS linked runtime"
+description = "Actrium EchoApp — iOS linked runtime"
 
 [dependencies]
 echo = { actr_type = "actrium:EchoService:1.0.0" }

@@ -1,18 +1,15 @@
 name: {{PROJECT_NAME_PASCAL}}
 options:
-  bundleIdPrefix: io.actr
+  bundleIdPrefix: io.actrium
 
 packages:
   actr-swift:
 {{#if ACTR_LOCAL_PATH}}
     path: {{{ACTR_LOCAL_PATH}}}
 {{else}}
-    url: https://github.com/actor-rtc/actr-swift
+    url: https://github.com/Actrium/actr-swift-package-sync
     from: {{ACTR_SWIFT_VERSION}}
 {{/if}}
-  actr-protocols:
-    url: https://github.com/actor-rtc/actr-protocols-swift
-    from: {{ACTR_PROTOCOLS_VERSION}}
   swift-protobuf:
     url: https://github.com/apple/swift-protobuf.git
     exactVersion: 1.32.0
@@ -43,7 +40,7 @@ targets:
         type: file
         buildPhase: resources
     settings:
-      PRODUCT_BUNDLE_IDENTIFIER: io.actr.{{PROJECT_NAME_PASCAL}}
+      PRODUCT_BUNDLE_IDENTIFIER: io.actrium.{{PROJECT_NAME_PASCAL}}
       INFOPLIST_FILE: {{PROJECT_NAME_PASCAL}}/Info.plist
       MARKETING_VERSION: 1.0.0
       CURRENT_PROJECT_VERSION: 1
@@ -56,7 +53,5 @@ targets:
     dependencies:
       - package: actr-swift
         product: Actr
-      - package: actr-protocols
-        product: ActrProtocols
       - package: swift-protobuf
         product: SwiftProtobuf

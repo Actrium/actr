@@ -2,12 +2,12 @@ package com.example
 
 import android.util.Log
 import com.example.generated.UnifiedHandler
-import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.DataStream
-import io.actor_rtc.actr.DataStreamCallback
-import io.actor_rtc.actr.PayloadType
+import io.actrium.actr.ActrId
+import io.actrium.actr.ActrType
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.DataStream
+import io.actrium.actr.DataStreamCallback
+import io.actrium.actr.PayloadType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay

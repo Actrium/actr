@@ -81,8 +81,8 @@ afterEvaluate {
 }
 
 dependencies {
-    // actr-kotlin library from JitPack
-    implementation("com.github.actor-rtc:actr-kotlin:5ae5676") {
+    // actr-kotlin library from GitHub Packages
+    implementation("io.actrium:actr:0.3.6") {
         exclude(group = "net.java.dev.jna", module = "jna")
     }
 

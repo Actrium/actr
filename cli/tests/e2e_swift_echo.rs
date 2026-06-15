@@ -32,8 +32,6 @@ fn append_cli_target(project_dir: &std::path::Path, project_name: &str, target_n
     dependencies:
       - package: actr-swift
         product: Actr
-      - package: actr-protocols
-        product: ActrProtocols
       - package: swift-protobuf
         product: SwiftProtobuf
 "#

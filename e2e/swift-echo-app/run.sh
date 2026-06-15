@@ -194,7 +194,7 @@ cleanup() {
     fi
 
     if [ -n "$DEVICE_UDID" ]; then
-        xcrun simctl terminate "$DEVICE_UDID" com.actrium.EchoApp 2>/dev/null || true
+        xcrun simctl terminate "$DEVICE_UDID" io.actrium.EchoApp 2>/dev/null || true
     fi
     if [ -n "$SERVER_PID" ] && kill -0 "$SERVER_PID" 2>/dev/null; then
         kill "$SERVER_PID" 2>/dev/null || true
@@ -507,7 +507,7 @@ edition = 1
 name = "EchoApp"
 manufacturer = "${MANUFACTURER}"
 version = "0.1.0"
-description = "Actor-RTC EchoApp linked runtime identity marker"
+description = "Actrium EchoApp linked runtime identity marker"
 
 [binary]
 path = "${ECHOAPP_MARKER_BINARY}"
@@ -785,7 +785,7 @@ install_and_launch_app() {
         --stdout="$APP_STDOUT_LOG" \
         --stderr="$APP_STDERR_LOG" \
         "$DEVICE_UDID" \
-        "com.actrium.EchoApp" \
+        "io.actrium.EchoApp" \
         >"$LOG_DIR/app.launch.log" 2>&1
 
     success "App launched, waiting for echo result"

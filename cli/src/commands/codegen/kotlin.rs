@@ -89,7 +89,7 @@ impl KotlinGenerator {
                 cd tools/protoc-gen/kotlin && ./gradlew protocPluginJar\n\n\
              3. Set environment variable:\n\
                 export ACTR_KOTLIN_PLUGIN_PATH=/path/to/protoc-gen-actrframework-kotlin\n\n\
-             For more information, visit: https://github.com/actor-rtc/framework-codegen-kotlin",
+             For more information, visit: https://github.com/Actrium/actr/tree/main/tools/protoc-gen/kotlin",
         ))
     }
 
@@ -200,7 +200,7 @@ impl KotlinGenerator {
     /// Get Kotlin package name - infer from output path or use default
     fn get_kotlin_package(&self, context: &GenContext) -> String {
         // Try to infer package from output path
-        // e.g., ".../java/io/actr/testkotlinecho/generated" -> "io.actr.testkotlinecho.generated"
+        // e.g., ".../java/io/actrium/testkotlinecho/generated" -> "io.actrium.testkotlinecho.generated"
         let output_str = context.output.to_string_lossy();
         debug!("get_kotlin_package: output_str = {}", output_str);
 
@@ -537,11 +537,11 @@ impl KotlinGenerator {
  */
 package {kotlin_package}
 
-import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.RpcEnvelopeBridge
+import io.actrium.actr.ActrId
+import io.actrium.actr.ActrType
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.PayloadType
+import io.actrium.actr.RpcEnvelopeBridge
 
 "#,
             local_count = local_services.len(),
@@ -1094,13 +1094,13 @@ package {base_package}
 
 import android.util.Log
 import {kotlin_package}.UnifiedDispatcher{handler_import}
-import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.DynamicWorkload
-import io.actor_rtc.actr.Realm
-import io.actor_rtc.actr.RpcEnvelopeBridge
-import io.actor_rtc.actr.WorkloadLifecycleBridge
+import io.actrium.actr.ActrId
+import io.actrium.actr.ActrType
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.DynamicWorkload
+import io.actrium.actr.Realm
+import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.WorkloadLifecycleBridge
 
 /**
  * Unified Workload lifecycle scaffold
@@ -1143,7 +1143,7 @@ class UnifiedWorkload(
         Log.i(TAG, "UnifiedWorkload.onStop")
     }}
 
-    override suspend fun onError(ctx: ContextBridge, event: io.actor_rtc.actr.ErrorEventBridge) {{
+    override suspend fun onError(ctx: ContextBridge, event: io.actrium.actr.ErrorEventBridge) {{
         Log.e(TAG, "UnifiedWorkload.onError: $event")
     }}
 
@@ -1277,7 +1277,7 @@ package {base_package}
 
 import android.util.Log
 import {kotlin_package}.UnifiedHandler
-import io.actor_rtc.actr.ContextBridge
+import io.actrium.actr.ContextBridge
 {imports}
 
 /**
