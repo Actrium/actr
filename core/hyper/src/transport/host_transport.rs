@@ -332,12 +332,10 @@ impl HostTransport {
 
         // Wait for response
         let timeout_duration = Duration::from_millis(timeout_ms as u64);
-        let result = tokio::time::timeout(timeout_duration, response_rx)
+        tokio::time::timeout(timeout_duration, response_rx)
             .await
             .map_err(|_| ActrError::TimedOut)?
-            .map_err(|_| ActrError::Unavailable("Response channel closed".into()))?;
-
-        result
+            .map_err(|_| ActrError::Unavailable("Response channel closed".into()))?
     }
 
     /// Send one-way message
