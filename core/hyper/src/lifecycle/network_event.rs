@@ -601,6 +601,27 @@ impl DefaultNetworkEventProcessor {
         Ok(())
     }
 
+    fn schedule_auto_reconnect_after_recovery_failure(&self, reason: &str, err: &str) {
+        tracing::warn!(
+            reason = reason,
+            error = %err,
+            "Network recovery failed; scheduling signaling auto-reconnect with reset backoff"
+        );
+        self.signaling_client
+            .schedule_auto_reconnect_reset_backoff();
+    }
+
+    async fn restore_signaling_and_webrtc_from_network_event(
+        &self,
+        reason: &str,
+    ) -> Result<(), String> {
+        let result = self.restore_signaling_and_webrtc(reason).await;
+        if let Err(err) = &result {
+            self.schedule_auto_reconnect_after_recovery_failure(reason, err);
+        }
+        result
+    }
+
     async fn probe_or_restore(&self, reason: &str) -> Result<(), String> {
         match self.probe_connectivity().await {
             Ok(()) => Ok(()),
@@ -617,7 +638,8 @@ impl DefaultNetworkEventProcessor {
                         disconnect_err
                     );
                 }
-                self.restore_signaling_and_webrtc(reason).await
+                self.restore_signaling_and_webrtc_from_network_event(reason)
+                    .await
             }
         }
     }
@@ -659,7 +681,8 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
 
         tracing::info!("📱 Processing: Network available");
 
-        self.restore_signaling_and_webrtc("NetworkAvailable").await
+        self.restore_signaling_and_webrtc_from_network_event("NetworkAvailable")
+            .await
     }
 
     /// Process network lost event
@@ -690,7 +713,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             is_cellular
         );
 
-        self.restore_signaling_and_webrtc("NetworkTypeChanged")
+        self.restore_signaling_and_webrtc_from_network_event("NetworkTypeChanged")
             .await
     }
 
@@ -761,15 +784,8 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
 
     async fn force_reconnect(&self) -> Result<(), String> {
         self.cleanup_connections().await?;
-        let result = self.restore_signaling_and_webrtc("ForceReconnect").await;
-        if let Err(err) = &result {
-            tracing::warn!(
-                error = %err,
-                "ForceReconnect restore failed; scheduling signaling auto-reconnect"
-            );
-            self.signaling_client.schedule_auto_reconnect();
-        }
-        result
+        self.restore_signaling_and_webrtc_from_network_event("ForceReconnect")
+            .await
     }
 
     async fn process_network_recovery_action(
@@ -781,7 +797,8 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             NetworkRecoveryAction::Offline => self.process_offline().await,
             NetworkRecoveryAction::Probe => self.probe_or_restore("Probe").await,
             NetworkRecoveryAction::Restore => {
-                self.restore_signaling_and_webrtc("NetworkEventBatch").await
+                self.restore_signaling_and_webrtc_from_network_event("NetworkEventBatch")
+                    .await
             }
             NetworkRecoveryAction::CleanupOnly => self.cleanup_connections().await,
             NetworkRecoveryAction::ForceReconnect => self.force_reconnect().await,
@@ -1101,6 +1118,7 @@ mod tests {
         disconnect_calls: AtomicUsize,
         connect_once_calls: AtomicUsize,
         schedule_auto_reconnect_calls: AtomicUsize,
+        schedule_auto_reconnect_reset_backoff_calls: AtomicUsize,
         event_tx: broadcast::Sender<SignalingEvent>,
     }
 
@@ -1113,6 +1131,7 @@ mod tests {
                 disconnect_calls: AtomicUsize::new(0),
                 connect_once_calls: AtomicUsize::new(0),
                 schedule_auto_reconnect_calls: AtomicUsize::new(0),
+                schedule_auto_reconnect_reset_backoff_calls: AtomicUsize::new(0),
                 event_tx,
             }
         }
@@ -1139,6 +1158,12 @@ mod tests {
         fn schedule_auto_reconnect(&self) {
             self.schedule_auto_reconnect_calls
                 .fetch_add(1, AtomicOrdering::SeqCst);
+        }
+
+        fn schedule_auto_reconnect_reset_backoff(&self) {
+            self.schedule_auto_reconnect_reset_backoff_calls
+                .fetch_add(1, AtomicOrdering::SeqCst);
+            self.schedule_auto_reconnect();
         }
 
         async fn disconnect(&self) -> NetworkResult<()> {
@@ -1327,6 +1352,37 @@ mod tests {
                 .load(AtomicOrdering::SeqCst),
             1,
             "failed ForceReconnect restore should wake the auto-reconnect manager"
+        );
+        assert_eq!(
+            signaling
+                .schedule_auto_reconnect_reset_backoff_calls
+                .load(AtomicOrdering::SeqCst),
+            1,
+            "failed ForceReconnect restore should reset reconnect backoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_failure_schedules_auto_reconnect_reset_backoff() {
+        let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(true));
+        let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
+
+        let result = processor
+            .process_network_recovery_action(NetworkRecoveryAction::Restore)
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            signaling.connect_once_calls.load(AtomicOrdering::SeqCst),
+            1,
+            "Restore should make one quick connect attempt"
+        );
+        assert_eq!(
+            signaling
+                .schedule_auto_reconnect_reset_backoff_calls
+                .load(AtomicOrdering::SeqCst),
+            1,
+            "failed Restore should reset reconnect backoff"
         );
     }
 }

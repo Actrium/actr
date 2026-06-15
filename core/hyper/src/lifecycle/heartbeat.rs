@@ -321,7 +321,7 @@ pub async fn heartbeat_task(
             }
             _ = interval.tick() => {
                 if !client.is_connected() {
-                    match client.connect().await {
+                    match client.connect_once().await {
                         Ok(()) => {
                             tracing::info!("✅ Signaling reconnected before heartbeat");
                         }
@@ -340,6 +340,7 @@ pub async fn heartbeat_task(
                                     e
                                 );
                             }
+                            client.schedule_auto_reconnect();
                             continue;
                         }
                     }
@@ -513,7 +514,7 @@ async fn re_register_task(
 
             // Step 5: Reconnect signaling WebSocket (URL will carry new credential)
             tracing::info!("🔗 Reconnecting signaling client with new credential");
-            match client.connect().await {
+            match client.connect_once().await {
                 Ok(()) => {
                     tracing::info!(
                         "✅ Re-registration successful and signaling reconnected (ActrId: {})",
@@ -525,6 +526,7 @@ async fn re_register_task(
                         "❌ AIS re-registration succeeded but signaling reconnect is pending: {}",
                         e
                     );
+                    client.schedule_auto_reconnect();
                 }
             }
 
@@ -890,9 +892,13 @@ mod tests {
             None,
         ));
 
-        tokio::time::timeout(Duration::from_secs(1), client.heartbeat_sent.notified())
-            .await
-            .expect("heartbeat should be sent after reconnect preflight");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while client.heartbeat_calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("heartbeat should be sent after reconnect preflight");
 
         shutdown.cancel();
         task.await.expect("heartbeat task should stop cleanly");
