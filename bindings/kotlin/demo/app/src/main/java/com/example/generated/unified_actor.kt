@@ -123,11 +123,11 @@ object UnifiedDispatcher {
             RemoteServiceRegistry.isRemoteRoute(routeKey) -> {
                 // Get target actor type and discover it
                 val actrType = RemoteServiceRegistry.getActorType(routeKey)
-                    ?: throw IllegalArgumentException("Unknown remote route: $routeKey")
+                    ?: throw io.actor_rtc.actr.ActrException.UnknownRoute("Unknown remote route: $routeKey")
 
                 // Discover remote actor
                 val targetId = discoveredActors[actrType]
-                    ?: throw IllegalStateException("Remote actor not discovered: ${actrType.name}. Call discoverRemoteServices() first.")
+                    ?: throw io.actor_rtc.actr.ActrException.Internal("Remote actor not discovered: ${actrType.name}. Call discoverRemoteServices() first.")
 
                 // Forward to remote actor
                 ctx.callRaw(
@@ -139,7 +139,7 @@ object UnifiedDispatcher {
                 )
             }
 
-            else -> throw IllegalArgumentException("Unknown route key: $routeKey")
+            else -> throw io.actor_rtc.actr.ActrException.UnknownRoute("Unknown route key: $routeKey")
         }
     }
 }

@@ -47,6 +47,6 @@ object EchoServiceDispatcher {
                 val response = handler.echo(request, ctx)
                 response.toByteArray()
             }
-            else -> throw IllegalArgumentException("Unknown route key: ${envelope.routeKey}")
+            else -> throw io.actor_rtc.actr.ActrException.UnknownRoute("Unknown route key: ${envelope.routeKey}")
         }
 }
