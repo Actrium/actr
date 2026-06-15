@@ -85,14 +85,15 @@ def test_release_train_has_valid_publish_steps() -> None:
         assert f"- name: Run {stage} stage" in workflow
 
 
-def test_release_train_waits_for_matching_ci_gate() -> None:
+def test_release_train_verifies_ci_gate_triggered() -> None:
     workflow = RELEASE_TRAIN_WORKFLOW.read_text(encoding="utf-8")
     gate_job = _job(workflow, "gate", "context")
 
     assert "actions: read" in workflow
-    assert "- name: Wait for CI Gate" in gate_job
+    assert "- name: Verify CI Gate is triggered" in gate_job
     assert "actions/workflows/ci-gate.yml/runs" in gate_job
     assert "head_sha=${RELEASE_SHA}" in gate_job
+    assert "we do NOT block on" in gate_job
 
 
 def test_release_train_forwards_release_context() -> None:
@@ -185,6 +186,24 @@ def test_e2e_linux_job_has_no_ios_rust_targets() -> None:
 
     assert "aarch64-apple-ios" not in pkg_job
     assert "aarch64-apple-ios-sim" not in pkg_job
+
+
+def test_e2e_workspace_prebuilds_use_locked_cargo_resolution() -> None:
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    ts_stream = (ROOT / "e2e/typescript-stream/run.sh").read_text(encoding="utf-8")
+
+    assert "cargo build --release -p actr-cli --bin actr --features wasm-engine" not in workflow
+    assert "cargo build --release -p actr-cli --bin actr --features wasm-engine" not in ts_stream
+    assert workflow.count(
+        "cargo build --locked --release -p actr-cli --bin actr --features wasm-engine"
+    ) == 3
+    assert workflow.count(
+        "cargo build --locked --release -p actr-mock-actrix --bin mock-actrix"
+    ) == 2
+    assert "cargo build --locked -p actr-framework-protoc-codegen" in ts_stream
+    assert 'cp "$REPO_ROOT/Cargo.lock" "$project/Cargo.lock"' in ts_stream
+    assert "cargo generate-lockfile --offline" in ts_stream
+    assert "cargo run --locked --features host --bin client-app" in ts_stream
 
 
 def test_swift_e2e_upload_artifact_on_failure() -> None:
@@ -290,6 +309,113 @@ def test_service_readiness_rejects_missing_or_unrelated_registration() -> None:
         assert unrelated.returncode != 0
 
 
+def test_nightly_e2e_includes_swift_datastream() -> None:
+    """Verify ci-e2e.yml contains the swift-datastream-app-e2e job."""
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    assert "swift-datastream-app-e2e:" in workflow
+
+
+def test_swift_datastream_job_runs_on_macos() -> None:
+    """Verify the datastream job uses runs-on: macos-latest."""
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    ds_job = _job(workflow, "swift-datastream-app-e2e", "python-web-e2e")
+    assert "runs-on: macos-latest" in ds_job
+
+
+def test_swift_datastream_job_downloads_actrix_artifact() -> None:
+    """Verify the datastream job downloads the actrix macOS arm64 artifact."""
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    ds_job = _job(workflow, "swift-datastream-app-e2e", "python-web-e2e")
+    assert "bash .github/scripts/download-actrix-artifact.sh actrix-macos-arm64" in ds_job
+
+
+def test_swift_datastream_job_builds_xcframework() -> None:
+    """Verify the datastream job builds the Swift XCFramework."""
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    ds_job = _job(workflow, "swift-datastream-app-e2e", "python-web-e2e")
+    assert "build-xcframework.sh" in ds_job
+
+
+def test_swift_datastream_timeout_not_less_than_240() -> None:
+    """Verify the datastream job has timeout-minutes >= 240."""
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    ds_job = _job(workflow, "swift-datastream-app-e2e", "python-web-e2e")
+    import re
+
+    match = re.search(r"timeout-minutes:\s*(\d+)", ds_job)
+    assert match is not None, "timeout-minutes not found in swift-datastream-app-e2e job"
+    timeout = int(match.group(1))
+    assert timeout >= 240, f"timeout-minutes is {timeout}, expected >= 240"
+
+
+def test_swift_datastream_job_not_in_pr_gate() -> None:
+    """Verify ci-gate.yml does NOT contain swift-datastream-app-e2e."""
+    workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
+    assert "swift-datastream-app-e2e" not in workflow
+
+
+def test_swift_datastream_cleanup_only_removes_owned_simulator() -> None:
+    """Verify local cleanup cannot shut down unrelated iOS Simulators."""
+    run_sh = (ROOT / "e2e/swift-datastream-app/run.sh").read_text(encoding="utf-8")
+
+    assert "xcrun simctl shutdown all" not in run_sh
+    assert 'DEVICE_CREATED="0"' in run_sh
+    assert 'DEVICE_CREATED="1"' in run_sh
+    assert 'if [ "$DEVICE_CREATED" = "1" ]' in run_sh
+    assert 'xcrun simctl shutdown "$DEVICE_UDID"' in run_sh
+    assert 'xcrun simctl delete "$DEVICE_UDID"' in run_sh
+
+
+def test_datastream_cli_templates_use_empty_scaffolds() -> None:
+    """Verify Rust/Swift DataStream init starts from empty templates only."""
+    rust_mod = (ROOT / "cli/src/templates/rust/mod.rs").read_text(encoding="utf-8")
+    swift_mod = (ROOT / "cli/src/templates/swift/mod.rs").read_text(encoding="utf-8")
+
+    assert "pub mod data_stream;" not in rust_mod
+    assert "pub mod data_stream;" not in swift_mod
+    assert "ProjectTemplateName::Empty" in rust_mod
+    assert "ProjectTemplateName::Empty" in swift_mod
+    assert "ProjectTemplateName::DataStream" in rust_mod
+    assert "ProjectTemplateName::DataStream" in swift_mod
+    assert rust_mod.count("empty::load(&mut files)?;") >= 2
+    assert swift_mod.count("empty::load(&mut files)?;") >= 2
+    assert not (ROOT / "cli/src/templates/rust/data_stream.rs").exists()
+    assert not (ROOT / "cli/src/templates/swift/data_stream.rs").exists()
+    assert not any((ROOT / "cli/fixtures/rust/data-stream").glob("*"))
+    assert not any((ROOT / "cli/fixtures/swift/data-stream").glob("*"))
+
+
+def test_swift_datastream_e2e_builds_custom_proto_flow_from_empty() -> None:
+    """Verify DataStreamApp E2E creates custom proto/service after empty init."""
+    run_sh = (ROOT / "e2e/swift-datastream-app/run.sh").read_text(encoding="utf-8")
+    actr_toml = (ROOT / "e2e/swift-datastream-app/actr.toml.tpl").read_text(
+        encoding="utf-8"
+    )
+    actr_service = (
+        ROOT / "e2e/swift-datastream-app/DataStreamApp/Services/ActrService.swift"
+    ).read_text(encoding="utf-8")
+
+    assert "--template empty" in run_sh
+    assert 'rm -f "$TMP_SERVICE_DIR/protos/local/local.proto"' in run_sh
+    assert 'rm -f "$TMP_APP_DIR/protos/local/local.proto"' in run_sh
+    assert 'write_duplex_stream_proto "$TMP_SERVICE_DIR/protos/local/duplex_stream.proto"' in run_sh
+    assert 'write_probe_proto "$TMP_APP_DIR/protos/local/probe.proto"' in run_sh
+    assert 'write_duplex_stream_proto "$TMP_APP_DIR/protos/remote' not in run_sh
+    assert "use crate::generated::local::{" in run_sh
+    assert "use crate::generated::duplex_stream::{" not in run_sh
+    assert "run_actr gen -l rust" in run_sh
+    assert "run_actr gen -l swift" in run_sh
+    assert "rm -f DataStreamApp/ActrService.swift" in run_sh
+    assert "SIMCTL_CHILD_ACTR_DATASTREAMAPP_AUTO_STREAM_COUNT=3" in run_sh
+    assert "ACTR_E2E_RESULT:3/3" in run_sh
+    main_flow = run_sh.split("# ──── Main ────", 1)[1]
+    assert main_flow.index("run_server_host") < main_flow.index("build_datastream_app")
+    assert main_flow.index("check_service_ready") < main_flow.index("build_datastream_app")
+    assert "__MANUFACTURER__:DuplexStreamService:1.0.0" in actr_toml
+    assert 'ActrType(manufacturer: manufacturer, name: "DataStreamApp", version: "0.1.0")' in actr_service
+    assert 'let expectedLines = (1...count).map { "received: echo: hello \\($0)" }' in actr_service
+
+
 def test_service_readiness_waits_for_exact_registration() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = Path(temp_dir) / "signaling_cache.db"
@@ -322,7 +448,7 @@ if __name__ == "__main__":
     test_scheduled_e2e_runs_root_level_browser_and_stream_e2e()
     test_pr_gate_swift_uses_macos_only_xcframework()
     test_release_train_has_valid_publish_steps()
-    test_release_train_waits_for_matching_ci_gate()
+    test_release_train_verifies_ci_gate_triggered()
     test_release_train_forwards_release_context()
     test_swift_echoapp_e2e_job_present()
     test_e2e_actrix_artifact_download_uses_shared_script()
@@ -330,9 +456,19 @@ if __name__ == "__main__":
     test_e2e_no_inline_archive_download_url()
     test_e2e_linux_deps_includes_unzip()
     test_e2e_linux_job_has_no_ios_rust_targets()
+    test_e2e_workspace_prebuilds_use_locked_cargo_resolution()
     test_swift_e2e_upload_artifact_on_failure()
     test_e2e_no_call_remote_in_ffi()
     test_download_script_explicit_empty_runs_check()
     test_run_sh_uses_correct_signaling_cache_table()
     test_service_readiness_rejects_missing_or_unrelated_registration()
     test_service_readiness_waits_for_exact_registration()
+    test_nightly_e2e_includes_swift_datastream()
+    test_swift_datastream_job_runs_on_macos()
+    test_swift_datastream_job_downloads_actrix_artifact()
+    test_swift_datastream_job_builds_xcframework()
+    test_swift_datastream_timeout_not_less_than_240()
+    test_swift_datastream_job_not_in_pr_gate()
+    test_swift_datastream_cleanup_only_removes_owned_simulator()
+    test_datastream_cli_templates_use_empty_scaffolds()
+    test_swift_datastream_e2e_builds_custom_proto_flow_from_empty()

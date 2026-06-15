@@ -168,6 +168,13 @@ path = "$package_path"
 EOF_RUNTIME
 }
 
+seed_cargo_lock() {
+  local project="$1"
+  # Seed workspace resolution, then add the generated package without resolving new versions.
+  cp "$REPO_ROOT/Cargo.lock" "$project/Cargo.lock"
+  (cd "$project" && cargo generate-lockfile --offline)
+}
+
 write_public_key() {
   local project="$1"
   jq '{public_key: .public_key}' "$RUN_ROOT/dev-key.json" >"$project/public-key.json"
@@ -1059,16 +1066,16 @@ mkdir -p "$LOG_DIR"
 
 if [ ! -x "$ACTR_BIN" ]; then
   log "Build actr CLI"
-  cargo build --release -p actr-cli --bin actr --features wasm-engine
+  cargo build --locked --release -p actr-cli --bin actr --features wasm-engine
 fi
 
 if [ ! -x "$MOCK_ACTRIX_BIN" ]; then
   log "Build mock-actrix"
-  cargo build --release -p actr-mock-actrix --bin mock-actrix
+  cargo build --locked --release -p actr-mock-actrix --bin mock-actrix
 fi
 
 log "Build local Rust protoc plugin"
-cargo build -p actr-framework-protoc-codegen --bin protoc-gen-actrframework
+cargo build --locked -p actr-framework-protoc-codegen --bin protoc-gen-actrframework
 RUST_PLUGIN_TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target}"
 if [[ "$RUST_PLUGIN_TARGET_DIR" != /* ]]; then
   RUST_PLUGIN_TARGET_DIR="$REPO_ROOT/$RUST_PLUGIN_TARGET_DIR"
@@ -1143,6 +1150,7 @@ wait_actor_registered "EchoService"
 
 log "Generate Rust RelayService from fixture source"
 write_relay_project
+seed_cargo_lock "$RELAY"
 write_cli_config "$RELAY"
 write_public_key "$RELAY"
 write_runtime_config "$RELAY" "dist/relay-service.actr" "true" "typescript-stream-relay"
@@ -1159,6 +1167,7 @@ wait_actor_registered "RelayService"
 
 log "Generate Rust ClientApp from fixture source"
 write_client_project
+seed_cargo_lock "$CLIENT"
 write_cli_config "$CLIENT"
 write_public_key "$CLIENT"
 write_runtime_config "$CLIENT" "dist/app.actr" "false" "typescript-stream-client"
@@ -1169,7 +1178,7 @@ write_runtime_config "$CLIENT" "dist/app.actr" "false" "typescript-stream-client
 
 log "Run ClientApp against mock-actrix"
 CLIENT_OUTPUT="$LOG_DIR/client-run.log"
-(cd "$CLIENT" && ACTR_BIN="$ACTR_BIN" cargo run --features host --bin client-app) 2>&1 | tee "$CLIENT_OUTPUT"
+(cd "$CLIENT" && ACTR_BIN="$ACTR_BIN" cargo run --locked --features host --bin client-app) 2>&1 | tee "$CLIENT_OUTPUT"
 
 grep -q "Relay reply: relay: echo: hello; stream:" "$CLIENT_OUTPUT"
 grep -q "reliable-ok" "$CLIENT_OUTPUT"

@@ -17,7 +17,7 @@ pub struct InitCommand {
     /// Name of the project to create (use '.' for current directory)
     pub name: Option<String>,
 
-    /// Project template to use (echo, data-stream)
+    /// Project template to use (echo, empty, data-stream)
     #[arg(long, default_value_t = ProjectTemplateName::Echo)]
     pub template: ProjectTemplateName,
 
@@ -34,8 +34,8 @@ pub struct InitCommand {
     #[arg(short, long, default_value = "rust")]
     pub language: SupportedLanguage,
 
-    /// Role for echo template: service (provides EchoService), app (calls EchoService),
-    /// or both (generate app and service projects)
+    /// Role for project templates. Echo supports service, app, or both. Rust empty/data-stream
+    /// supports service only. Swift empty/data-stream supports app/default only.
     #[arg(long)]
     pub role: Option<EchoRole>,
 
@@ -78,11 +78,7 @@ impl InitCommand {
         let signaling_url =
             self.prompt_if_missing("signaling server URL", self.signaling.as_ref())?;
 
-        let echo_role = if self.template == ProjectTemplateName::Echo {
-            Some(self.prompt_echo_role(self.role.as_ref())?)
-        } else {
-            None
-        };
+        let echo_role = self.resolve_template_role()?;
 
         // Resolve effective manufacturer from CLI args and config
         let manufacturer_owned = self.effective_manufacturer(&cli_config)?;
@@ -96,19 +92,28 @@ impl InitCommand {
             ));
         }
 
-        // role=service with default manufacturer will register as 'acme:EchoService', which
-        // conflicts with the public echo service on the same signaling server.
-        if matches!(echo_role, Some(EchoRole::Service)) && manufacturer == DEFAULT_MANUFACTURER {
+        // role=service with default manufacturer will register under the default manufacturer,
+        // which may conflict with public services on the same signaling server.
+        if matches!(echo_role, Some(EchoRole::Service))
+            && self.template == ProjectTemplateName::Echo
+            && manufacturer == DEFAULT_MANUFACTURER
+        {
+            let svc_name = "EchoService";
             println!(
                 "⚠️  Warning: using default manufacturer 'acme' with role=service will register\n\
-                 this service as 'acme:EchoService', which conflicts with the public echo service\n\
+                 this service as 'acme:{svc_name}', which conflicts with the public {svc_name}\n\
                  on the same signaling server and may cause interference.\n\
                  Consider using a custom manufacturer: --manufacturer <your-org-name>"
             );
         }
 
-        // When role=both, generate both echo-app and echo-service projects
+        // When role=both, generate both echo-app and echo-service projects.
         if matches!(echo_role, Some(EchoRole::Both)) {
+            if self.template != ProjectTemplateName::Echo {
+                return Err(ActrCliError::InvalidProject(
+                    "role=both is only supported for the echo template".to_string(),
+                ));
+            }
             self.execute_both(&name, &signaling_url, manufacturer)
                 .await?;
             return Ok(());
@@ -166,6 +171,74 @@ impl InitCommand {
 }
 
 impl InitCommand {
+    fn resolve_template_role(&self) -> Result<Option<EchoRole>> {
+        match self.template {
+            ProjectTemplateName::Echo => Ok(Some(self.prompt_echo_role(self.role.as_ref())?)),
+            ProjectTemplateName::Empty => match self.language {
+                SupportedLanguage::Rust => self.role_or_default_service("empty template for Rust"),
+                SupportedLanguage::Swift => self.role_or_default_app("empty template for Swift"),
+                SupportedLanguage::Kotlin => Err(ActrCliError::Unsupported(
+                    "Empty template is not supported for Kotlin yet".to_string(),
+                )),
+                SupportedLanguage::Python => Err(ActrCliError::Unsupported(
+                    "Empty template is not supported for Python yet".to_string(),
+                )),
+                SupportedLanguage::TypeScript => Err(ActrCliError::Unsupported(
+                    "Empty template is not supported for TypeScript yet".to_string(),
+                )),
+            },
+            ProjectTemplateName::DataStream => match self.language {
+                SupportedLanguage::Rust => {
+                    self.role_or_default_service("data-stream template for Rust")
+                }
+                SupportedLanguage::Swift => {
+                    self.role_or_default_app("data-stream template for Swift")
+                }
+                SupportedLanguage::Kotlin => {
+                    let role = self.prompt_echo_role(self.role.as_ref())?;
+                    match role {
+                        EchoRole::Service => Ok(Some(EchoRole::Service)),
+                        EchoRole::App => Err(ActrCliError::InvalidProject(
+                            "role=app is only supported for the echo template. Use role=service for data-stream."
+                                .to_string(),
+                        )),
+                        EchoRole::Both => Err(ActrCliError::InvalidProject(
+                            "role=both is only supported for the echo template".to_string(),
+                        )),
+                    }
+                }
+                SupportedLanguage::Python => match self.role {
+                    Some(EchoRole::Service) => Ok(Some(EchoRole::Service)),
+                    _ => Err(ActrCliError::Unsupported(
+                        "Python init now generates workload components only; use --role service."
+                            .to_string(),
+                    )),
+                },
+                SupportedLanguage::TypeScript => Err(ActrCliError::Unsupported(
+                    "DataStream template is not supported for TypeScript yet".to_string(),
+                )),
+            },
+        }
+    }
+
+    fn role_or_default_service(&self, label: &str) -> Result<Option<EchoRole>> {
+        match self.role {
+            None | Some(EchoRole::Service) => Ok(Some(EchoRole::Service)),
+            Some(EchoRole::App) | Some(EchoRole::Both) => Err(ActrCliError::InvalidProject(
+                format!("{label} only supports --role service."),
+            )),
+        }
+    }
+
+    fn role_or_default_app(&self, label: &str) -> Result<Option<EchoRole>> {
+        match self.role {
+            None | Some(EchoRole::App) => Ok(Some(EchoRole::App)),
+            Some(EchoRole::Service) | Some(EchoRole::Both) => Err(ActrCliError::InvalidProject(
+                format!("{label} only supports --role app."),
+            )),
+        }
+    }
+
     /// Resolve the effective manufacturer, applying precedence:
     /// CLI flag > CLI config default. Ensures the result is non-empty.
     pub fn effective_manufacturer(

@@ -57,7 +57,6 @@ impl HostGate {
         self.transport
             .send_request(payload_type, identifier, envelope)
             .await
-            .map_err(|e| ActrError::Unavailable(e.to_string()))
     }
 
     /// Send one-way message (with specified PayloadType and identifier)
@@ -107,8 +106,7 @@ impl HostGate {
         let result = self
             .transport
             .send_request(PayloadType::RpcReliable, None, envelope)
-            .await
-            .map_err(|e| ActrError::Unavailable(e.to_string()));
+            .await;
 
         match &result {
             Ok(_) => tracing::info!("HostGate::send_request completed successfully"),

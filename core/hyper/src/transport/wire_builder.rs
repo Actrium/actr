@@ -7,13 +7,16 @@
 
 use super::Dest; // Re-exported from actr-framework
 use super::error::{NetworkError, NetworkResult};
+use super::lane::DataLane;
 use super::peer_transport::WireBuilder;
 use super::wire_handle::WireHandle;
+use super::wire_pool::ConnType;
 use crate::lifecycle::CredentialState;
+use crate::outbound::PendingRequestsMap;
 use crate::wire::webrtc::WebRtcCoordinator;
 use crate::wire::websocket::WebSocketConnection;
-use actr_protocol::ActrId;
 use actr_protocol::prost::Message as ProstMessage;
+use actr_protocol::{ActrError, ActrId, PayloadType, RpcEnvelope};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,6 +43,13 @@ pub struct DefaultWireBuilderConfig {
 
     /// Optional local credential state. During outbound WebSocket handshakes the current credential is base64-encoded and sent in the `X-Actr-Credential` header so the peer can verify the Ed25519 signature.
     pub credential_state: Option<CredentialState>,
+
+    /// Shared pending-requests map.
+    ///
+    /// When set, outbound WebSocket connections spawn reader tasks that deliver
+    /// server responses (and error envelopes) to the waiting `send_request` calls.
+    /// Must be the same map as `PeerGate.pending_requests`.
+    pub pending_requests: Option<PendingRequestsMap>,
 }
 
 impl Default for DefaultWireBuilderConfig {
@@ -50,6 +60,7 @@ impl Default for DefaultWireBuilderConfig {
             enable_websocket: true,
             discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
             credential_state: None,
+            pending_requests: None,
         }
     }
 }
@@ -70,6 +81,9 @@ pub struct DefaultWireBuilder {
     /// Local credential state used to provide `X-Actr-Credential` during outbound WebSocket handshakes.
     credential_state: Option<CredentialState>,
 
+    /// Pending requests map (shared with PeerGate) for outbound WebSocket response routing.
+    pending_requests: Option<PendingRequestsMap>,
+
     /// Builder configuration.
     config: DefaultWireBuilderConfig,
 }
@@ -89,6 +103,7 @@ impl DefaultWireBuilder {
             local_id_hex: config.local_id_hex.clone(),
             discovered_ws_addresses: config.discovered_ws_addresses.clone(),
             credential_state: config.credential_state.clone(),
+            pending_requests: config.pending_requests.clone(),
             config,
         }
     }
@@ -107,6 +122,135 @@ impl DefaultWireBuilder {
             }
         }
         None
+    }
+}
+
+// ── ClientWebSocketHandle ─────────────────────────────────────────────────────
+
+/// `WireHandle` wrapper around an outbound `WebSocketConnection` that, after
+/// a successful `connect()`, spawns lane-reader tasks routing incoming
+/// `RpcEnvelope` responses back to the shared `pending_requests` map.
+///
+/// Without this, the server-side `WebSocketGate.send_response()` would write
+/// the response onto the TCP connection but nobody on the client side would
+/// consume it from the dispatcher lanes and deliver it to the waiting
+/// `send_request_with_type` future.
+#[derive(Debug)]
+struct ClientWebSocketHandle {
+    inner: WebSocketConnection,
+    pending_requests: PendingRequestsMap,
+}
+
+impl ClientWebSocketHandle {
+    fn new(inner: WebSocketConnection, pending_requests: PendingRequestsMap) -> Self {
+        Self {
+            inner,
+            pending_requests,
+        }
+    }
+
+    /// Spawn a task that reads `RpcReliable` and `RpcSignal` lanes on the
+    /// outbound connection and routes every received envelope to
+    /// `pending_requests`.
+    ///
+    /// Responses are identified by `request_id`: if a matching entry exists
+    /// in `pending_requests`, the oneshot sender is fired.  Unknown
+    /// `request_id` values are dropped with a debug log (they arrive before
+    /// the sender registers, which should not happen in practice).
+    fn spawn_response_readers(&self) {
+        for pt in [PayloadType::RpcReliable, PayloadType::RpcSignal] {
+            let conn = self.inner.clone();
+            let pending = self.pending_requests.clone();
+
+            tokio::spawn(async move {
+                let lane = match conn.get_lane(pt).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::error!("ClientWebSocketHandle: get_lane({pt:?}) failed: {e:?}");
+                        return;
+                    }
+                };
+
+                tracing::debug!("ClientWebSocketHandle: response reader started for {pt:?}");
+
+                loop {
+                    let data = match lane.recv().await {
+                        Ok(d) => d,
+                        Err(e) => {
+                            tracing::info!("ClientWebSocketHandle: lane {pt:?} closed: {e:?}");
+                            break;
+                        }
+                    };
+
+                    match RpcEnvelope::decode(&data[..]) {
+                        Ok(envelope) => {
+                            let request_id = &envelope.request_id;
+                            let mut guard = pending.write().await;
+                            if let Some((_target, tx)) = guard.remove(request_id.as_str()) {
+                                drop(guard);
+                                let result: actr_protocol::ActorResult<actr_framework::Bytes> =
+                                    match (envelope.payload, envelope.error) {
+                                        (Some(payload), None) => Ok(payload),
+                                        (None, Some(err)) => {
+                                            Err(crate::lifecycle::node::wire_code_to_actr_error(
+                                                err.code,
+                                                err.message,
+                                            ))
+                                        }
+                                        _ => Err(ActrError::DecodeFailure(
+                                            "invalid RpcEnvelope: payload/error inconsistent"
+                                                .to_string(),
+                                        )),
+                                    };
+                                let _ = tx.send(result);
+                            } else {
+                                drop(guard);
+                                tracing::debug!(
+                                    request_id = %request_id,
+                                    "ClientWebSocketHandle: no pending request for incoming envelope, dropping"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "ClientWebSocketHandle: RpcEnvelope decode failed: {e:?}"
+                            );
+                        }
+                    }
+                }
+
+                tracing::debug!("ClientWebSocketHandle: response reader exited for {pt:?}");
+            });
+        }
+    }
+}
+
+#[async_trait]
+impl WireHandle for ClientWebSocketHandle {
+    fn connection_type(&self) -> ConnType {
+        ConnType::WebSocket
+    }
+
+    fn priority(&self) -> u8 {
+        self.inner.priority()
+    }
+
+    async fn connect(&self) -> NetworkResult<()> {
+        self.inner.connect().await?;
+        self.spawn_response_readers();
+        Ok(())
+    }
+
+    fn is_connected(&self) -> bool {
+        self.inner.is_connected()
+    }
+
+    async fn close(&self) -> NetworkResult<()> {
+        self.inner.close().await
+    }
+
+    async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+        self.inner.get_lane(payload_type).await
     }
 }
 
@@ -160,7 +304,16 @@ impl WireBuilder for DefaultWireBuilder {
                     ws_conn = ws_conn.with_credential_b64(cred_b64);
                 }
 
-                connections.push(Arc::new(ws_conn) as Arc<dyn WireHandle>);
+                // Wrap the connection so that, after `connect()`, response reader
+                // tasks are spawned to deliver server responses to `pending_requests`.
+                if let Some(ref pending) = self.pending_requests {
+                    connections.push(
+                        Arc::new(ClientWebSocketHandle::new(ws_conn, pending.clone()))
+                            as Arc<dyn WireHandle>,
+                    );
+                } else {
+                    connections.push(Arc::new(ws_conn) as Arc<dyn WireHandle>);
+                }
             } else {
                 tracing::debug!(
                     "🔎 [Factory] No WebSocket URL available for {:?}, skipping WS connection",
@@ -246,6 +399,7 @@ mod tests {
             local_id_hex: "deadbeef".to_string(),
             discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
             credential_state: None,
+            pending_requests: None,
         };
         let factory = DefaultWireBuilder::new(None, config);
         let dest = Dest::actor(ActrId::default());
@@ -268,6 +422,7 @@ mod tests {
             local_id_hex: "deadbeef".to_string(),
             discovered_ws_addresses: map,
             credential_state: None,
+            pending_requests: None,
         };
         let factory = DefaultWireBuilder::new(None, config);
         let dest = Dest::actor(actor_id);

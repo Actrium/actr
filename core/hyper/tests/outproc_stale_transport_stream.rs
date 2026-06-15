@@ -84,6 +84,7 @@ fn is_expected_recovery_error(message: &str) -> bool {
     [
         "connection",
         "request timeout",
+        "timed out",
         "closed",
         "recovering",
         "data channel",

@@ -19,6 +19,11 @@ impl LangTemplate for KotlinTemplate {
             ProjectTemplateName::Echo => {
                 echo::load(&mut files)?;
             }
+            ProjectTemplateName::Empty => {
+                return Err(crate::error::ActrCliError::Unsupported(
+                    "Empty template is not supported for Kotlin yet".to_string(),
+                ));
+            }
             ProjectTemplateName::DataStream => {
                 data_stream::load(&mut files)?;
             }

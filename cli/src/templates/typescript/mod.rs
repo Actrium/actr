@@ -18,6 +18,11 @@ impl LangTemplate for TypeScriptTemplate {
             ProjectTemplateName::Echo => {
                 echo::load(&mut files, context.is_service)?;
             }
+            ProjectTemplateName::Empty => {
+                return Err(crate::error::ActrCliError::Unsupported(
+                    "Empty template is not supported for TypeScript yet".to_string(),
+                ));
+            }
             ProjectTemplateName::DataStream => {
                 return Err(crate::error::ActrCliError::Unsupported(
                     "DataStream template is not supported for TypeScript yet".to_string(),

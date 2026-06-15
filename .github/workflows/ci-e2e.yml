@@ -91,8 +91,8 @@ jobs:
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Pre-build actr and mock-actrix
         run: |
-          cargo build --release -p actr-cli --bin actr --features wasm-engine
-          cargo build --release -p actr-mock-actrix --bin mock-actrix
+          cargo build --locked --release -p actr-cli --bin actr --features wasm-engine
+          cargo build --locked --release -p actr-mock-actrix --bin mock-actrix
       - name: Run TypeScript stream e2e
         run: bash e2e/typescript-stream/run.sh
 
@@ -142,8 +142,8 @@ jobs:
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Pre-build actr CLI and mock-actrix
         run: |
-          cargo build --release -p actr-cli --bin actr --features wasm-engine
-          cargo build --release -p actr-mock-actrix --bin mock-actrix
+          cargo build --locked --release -p actr-cli --bin actr --features wasm-engine
+          cargo build --locked --release -p actr-mock-actrix --bin mock-actrix
       - name: Run web browser e2e
         env:
           ACTR_CMD: ${{ github.workspace }}/target/release/actr
@@ -231,6 +231,79 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
 
+  swift-datastream-app-e2e:
+    name: Swift DataStreamApp E2E
+    runs-on: macos-latest
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cache SPM packages
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('e2e/swift-datastream-app/project.yml') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,aarch64-apple-ios,aarch64-apple-ios-sim
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Install macOS e2e dependencies
+        run: |
+          brew install xcodegen jq sqlite libssh2 pkg-config
+          brew link libssh2
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Download actrix artifact
+        run: bash .github/scripts/download-actrix-artifact.sh actrix-macos-arm64
+      - name: Cache uniffi-bindgen binary
+        id: cache-uniffi
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/uniffi-bindgen*
+          key: uniffi-bindgen-0.31.1-${{ runner.os }}-${{ runner.arch }}
+      - name: Install UniFFI bindgen
+        if: steps.cache-uniffi.outputs.cache-hit != 'true'
+        run: cargo install --locked uniffi --version 0.31.1 --features cli --bin uniffi-bindgen
+      - name: Build local Swift XCFramework (iOS + macOS)
+        working-directory: bindings/swift
+        env:
+          ACTR_BUILD_PROFILE: debug
+          ACTR_XCFRAMEWORK_TARGETS: all
+          CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+        run: |
+          ACTR_BINDINGS_PATH=dist/ActrBindings \
+          ACTR_BINARY_PATH=dist/ActrFFI.xcframework \
+          ./build-xcframework.sh
+          echo "ACTR_BINARY_PATH=dist/ActrFFI.xcframework" >> "$GITHUB_ENV"
+          echo "ACTR_BINDINGS_PATH=dist/ActrBindings" >> "$GITHUB_ENV"
+      - name: Run Swift DataStreamApp e2e
+        env:
+          CAPTURE_DIAGNOSTICS_ON_SUCCESS: "1"
+        run: bash e2e/swift-datastream-app/run.sh
+      - name: Upload sanitized diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-datastream-app-e2e-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e/swift-datastream-app/.tmp/sanitized-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
   python-web-e2e:
     name: Python Web E2E
     runs-on: ubuntu-latest
@@ -279,7 +352,7 @@ jobs:
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Pre-build actr CLI (release)
-        run: cargo build --release -p actr-cli --bin actr --features wasm-engine
+        run: cargo build --locked --release -p actr-cli --bin actr --features wasm-engine
       - name: Run generated Python echo browser e2e
         working-directory: bindings/web/examples/echo
         env:

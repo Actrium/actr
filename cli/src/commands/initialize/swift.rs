@@ -3,7 +3,7 @@ use super::{
 };
 use crate::commands::SupportedLanguage;
 use crate::error::{ActrCliError, Result};
-use crate::template::{EchoRole, ProjectTemplate, TemplateContext};
+use crate::template::{EchoRole, ProjectTemplate, ProjectTemplateName, TemplateContext};
 use async_trait::async_trait;
 use std::path::Path;
 use std::process::Command;
@@ -17,8 +17,8 @@ impl ProjectInitializer for SwiftInitializer {
         let is_service = context.echo_role == Some(EchoRole::Service);
         let template = ProjectTemplate::new(context.template, SupportedLanguage::Swift);
         let service_name = match context.template {
-            crate::template::ProjectTemplateName::DataStream => "LocalFileService",
-            _ => context.template.to_service_name(),
+            ProjectTemplateName::Echo => context.template.to_service_name(),
+            ProjectTemplateName::Empty | ProjectTemplateName::DataStream => "empty-service",
         };
 
         let mut template_context = TemplateContext::new_with_versions(

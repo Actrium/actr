@@ -1,4 +1,5 @@
 pub mod echo;
+pub mod empty;
 
 pub use echo::load;
 
@@ -20,10 +21,11 @@ impl LangTemplate for RustTemplate {
             ProjectTemplateName::Echo => {
                 echo::load(&mut files, context.is_service)?;
             }
+            ProjectTemplateName::Empty => {
+                empty::load(&mut files)?;
+            }
             ProjectTemplateName::DataStream => {
-                return Err(crate::error::ActrCliError::Unsupported(
-                    "DataStream template is not supported for Rust yet".to_string(),
-                ));
+                empty::load(&mut files)?;
             }
         }
 

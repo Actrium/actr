@@ -320,6 +320,32 @@ pub async fn heartbeat_task(
                 break;
             }
             _ = interval.tick() => {
+                if !client.is_connected() {
+                    match client.connect_once().await {
+                        Ok(()) => {
+                            tracing::info!("✅ Signaling reconnected before heartbeat");
+                        }
+                        Err(e) => {
+                            consecutive_failures += 1;
+                            if should_log_heartbeat_failure(consecutive_failures) {
+                                tracing::warn!(
+                                    consecutive_failures,
+                                    "⚠️ Failed to reconnect signaling before heartbeat: {}",
+                                    e
+                                );
+                            } else {
+                                tracing::debug!(
+                                    consecutive_failures,
+                                    "Suppressed repeated signaling reconnect failure before heartbeat: {}",
+                                    e
+                                );
+                            }
+                            client.schedule_auto_reconnect();
+                            continue;
+                        }
+                    }
+                }
+
                 if let Some(new_actor_id) = send_heartbeat_and_handle_response(
                     &client,
                     &actor_id,
@@ -488,15 +514,21 @@ async fn re_register_task(
 
             // Step 5: Reconnect signaling WebSocket (URL will carry new credential)
             tracing::info!("🔗 Reconnecting signaling client with new credential");
-            if let Err(e) = client.connect().await {
-                tracing::error!("❌ Failed to reconnect after re-registration: {}", e);
-                // Credential is updated even if reconnect fails — next heartbeat retry will reconnect
+            match client.connect_once().await {
+                Ok(()) => {
+                    tracing::info!(
+                        "✅ Re-registration successful and signaling reconnected (ActrId: {})",
+                        new_actor_id,
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "❌ AIS re-registration succeeded but signaling reconnect is pending: {}",
+                        e
+                    );
+                    client.schedule_auto_reconnect();
+                }
             }
-
-            tracing::info!(
-                "✅ Re-registration successful via AIS HTTP (ActrId: {})",
-                new_actor_id,
-            );
 
             tracing::debug!("TurnCredential updated, TURN authentication ready");
 
@@ -544,7 +576,8 @@ mod tests {
     };
     use actr_runtime_mailbox::{MailboxStats, MessagePriority, MessageRecord};
     use std::collections::HashMap;
-    use tokio::sync::broadcast;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use tokio::sync::{Notify, broadcast};
     use uuid::Uuid;
 
     fn test_actor_id(serial_number: u64) -> ActrId {
@@ -705,6 +738,173 @@ mod tests {
         async fn set_credential_state(&self, _credential_state: CredentialState) {}
 
         async fn clear_identity(&self) {}
+    }
+
+    struct ReconnectBeforeHeartbeatClient {
+        connected: AtomicBool,
+        connect_calls: AtomicUsize,
+        heartbeat_calls: AtomicUsize,
+        heartbeat_sent: Notify,
+    }
+
+    impl ReconnectBeforeHeartbeatClient {
+        fn new_disconnected() -> Self {
+            Self {
+                connected: AtomicBool::new(false),
+                connect_calls: AtomicUsize::new(0),
+                heartbeat_calls: AtomicUsize::new(0),
+                heartbeat_sent: Notify::new(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SignalingClient for ReconnectBeforeHeartbeatClient {
+        async fn connect(&self) -> NetworkResult<()> {
+            self.connect_calls.fetch_add(1, Ordering::SeqCst);
+            self.connected.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn connect_once(&self) -> NetworkResult<()> {
+            self.connect().await
+        }
+
+        async fn disconnect(&self) -> NetworkResult<()> {
+            self.connected.store(false, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn send_register_request(
+            &self,
+            _request: RegisterRequest,
+        ) -> NetworkResult<RegisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_unregister_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _reason: Option<String>,
+        ) -> NetworkResult<UnregisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_heartbeat(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _availability: ServiceAvailabilityState,
+            _power_reserve: f32,
+            _mailbox_backlog: f32,
+        ) -> NetworkResult<Pong> {
+            if !self.connected.load(Ordering::SeqCst) {
+                return Err(NetworkError::ConnectionError(
+                    "Cannot send: WebSocket not connected".to_string(),
+                ));
+            }
+            self.heartbeat_calls.fetch_add(1, Ordering::SeqCst);
+            self.heartbeat_sent.notify_waiters();
+            Ok(Pong {
+                seq: 0,
+                suggest_interval_secs: None,
+                credential_warning: None,
+            })
+        }
+
+        async fn send_route_candidates_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _request: RouteCandidatesRequest,
+        ) -> NetworkResult<RouteCandidatesResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn get_signing_key(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+            _key_id: u32,
+        ) -> NetworkResult<(u32, Vec<u8>)> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_credential_update_request(
+            &self,
+            _actor_id: ActrId,
+            _credential: AIdCredential,
+        ) -> NetworkResult<RegisterResponse> {
+            unimplemented!("not used by this test")
+        }
+
+        async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+            Ok(None)
+        }
+
+        fn is_connected(&self) -> bool {
+            self.connected.load(Ordering::SeqCst)
+        }
+
+        fn get_stats(&self) -> SignalingStats {
+            SignalingStats::default()
+        }
+
+        fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+            let (_tx, rx) = broadcast::channel(1);
+            rx
+        }
+
+        async fn set_actor_id(&self, _actor_id: ActrId) {}
+
+        async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+        async fn clear_identity(&self) {}
+    }
+
+    #[tokio::test]
+    async fn heartbeat_tick_reconnects_before_sending_when_signaling_is_disconnected() {
+        let actor_id = test_actor_id(1);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let client = Arc::new(ReconnectBeforeHeartbeatClient::new_disconnected());
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(heartbeat_task(
+            shutdown.clone(),
+            client.clone() as Arc<dyn SignalingClient>,
+            actor_id.clone(),
+            credential_state,
+            Arc::new(EmptyMailbox) as Arc<dyn Mailbox>,
+            Duration::from_millis(20),
+            RegisterRequest {
+                actr_type: actor_id.r#type.clone(),
+                realm: actor_id.realm,
+                ..Default::default()
+            },
+            "http://127.0.0.1:1".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while client.heartbeat_calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("heartbeat should be sent after reconnect preflight");
+
+        shutdown.cancel();
+        task.await.expect("heartbeat task should stop cleanly");
+
+        assert_eq!(client.connect_calls.load(Ordering::SeqCst), 1);
+        assert!(client.heartbeat_calls.load(Ordering::SeqCst) >= 1);
     }
 
     #[tokio::test]

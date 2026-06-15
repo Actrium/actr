@@ -33,6 +33,7 @@ pub const DEFAULT_MANUFACTURER: &str = "acme";
 pub enum ProjectTemplateName {
     #[default]
     Echo,
+    Empty,
     #[value(name = "data-stream")]
     DataStream,
 }
@@ -42,6 +43,7 @@ impl ProjectTemplateName {
     pub fn to_service_name(self) -> &'static str {
         match self {
             ProjectTemplateName::Echo => "echo-service",
+            ProjectTemplateName::Empty => "empty-service",
             ProjectTemplateName::DataStream => "data-stream-service",
         }
     }

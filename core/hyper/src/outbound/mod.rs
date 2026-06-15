@@ -14,6 +14,7 @@ mod peer_gate;
 
 pub use host_gate::HostGate;
 pub use peer_gate::PeerGate;
+pub(crate) use peer_gate::PendingRequestsMap;
 
 use actr_framework::{Bytes, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
