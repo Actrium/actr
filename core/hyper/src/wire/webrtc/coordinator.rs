@@ -179,6 +179,10 @@ impl PeerState {
         self.unavailable_hook_reported = false;
     }
 
+    fn mark_sendable_transition_pending(&mut self) {
+        self.sendable_hook_reported = false;
+    }
+
     fn mark_unavailable_hook_reported(&mut self) {
         self.sendable_hook_reported = false;
         self.unavailable_hook_reported = true;
@@ -1214,6 +1218,22 @@ impl WebRtcCoordinator {
                     Ok(event) => {
                         if let Some(coord) = coordinator.upgrade() {
                             match &event {
+                                ConnectionEvent::StateChanged {
+                                    peer_id,
+                                    session_id,
+                                    state: ConnectionState::Connecting,
+                                    ..
+                                } => {
+                                    let mut peers = coord.peers.write().await;
+                                    if let Some(state) = peers.get_mut(peer_id)
+                                        && state.session_id == *session_id
+                                    {
+                                        state.update_connection_state(
+                                            RTCPeerConnectionState::Connecting,
+                                        );
+                                        state.mark_sendable_transition_pending();
+                                    }
+                                }
                                 ConnectionEvent::StateChanged {
                                     peer_id,
                                     session_id,
@@ -5617,6 +5637,49 @@ mod tests {
             observed.is_err(),
             "connected hook must wait for an open DataChannel, got {observed:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn connecting_state_reopens_connected_hook_window() {
+        let local_id = test_actor_id(1);
+        let peer_id = test_actor_id(99);
+        let coordinator = new_test_coordinator(local_id);
+        let session_id =
+            insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+
+        {
+            let mut peers = coordinator.peers.write().await;
+            let state = peers.get_mut(&peer_id).expect("peer should exist");
+            state.update_connection_state(RTCPeerConnectionState::Connected);
+            state.mark_sendable_hook_reported();
+        }
+
+        let listener = coordinator.spawn_internal_event_listener();
+        coordinator
+            .event_broadcaster
+            .send(ConnectionEvent::StateChanged {
+                peer_id: peer_id.clone(),
+                session_id,
+                state: ConnectionState::Connecting,
+            });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                {
+                    let peers = coordinator.peers.read().await;
+                    let state = peers.get(&peer_id).expect("peer should exist");
+                    if state.current_state == RTCPeerConnectionState::Connecting
+                        && !state.sendable_hook_reported
+                    {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("connecting event should reopen the connected hook window");
+        listener.abort();
     }
 
     #[tokio::test]
