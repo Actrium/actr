@@ -310,7 +310,7 @@ impl HostTransport {
         payload_type: PayloadType,
         identifier: Option<String>,
         envelope: RpcEnvelope,
-    ) -> NetworkResult<Bytes> {
+    ) -> actr_protocol::ActorResult<Bytes> {
         let (response_tx, response_rx) = oneshot::channel();
 
         // Register pending request
@@ -322,18 +322,22 @@ impl HostTransport {
             .insert(request_id, response_tx);
 
         // Send
-        let lane = self.get_lane(payload_type, identifier).await?;
-        lane.send_envelope(envelope).await?;
+        let lane = self
+            .get_lane(payload_type, identifier)
+            .await
+            .map_err(ActrError::from)?;
+        lane.send_envelope(envelope)
+            .await
+            .map_err(ActrError::from)?;
 
         // Wait for response
         let timeout_duration = Duration::from_millis(timeout_ms as u64);
         let result = tokio::time::timeout(timeout_duration, response_rx)
             .await
-            .map_err(|_| NetworkError::TimeoutError(format!("Request timeout: {}ms", timeout_ms)))?
-            .map_err(|_| NetworkError::ConnectionError("Response channel closed".into()))?;
+            .map_err(|_| ActrError::TimedOut)?
+            .map_err(|_| ActrError::Unavailable("Response channel closed".into()))?;
 
-        // result is ActorResult<Bytes>, convert to NetworkError if error
-        result.map_err(|e| NetworkError::Other(anyhow::anyhow!("{e}")))
+        result
     }
 
     /// Send one-way message

@@ -738,7 +738,7 @@ mod tests {
             .expect_err("foreign dispatch errors should cross the FFI runtime boundary");
 
         assert!(
-            matches!(err, crate::ActrError::Unavailable { ref msg } if msg.contains("UnknownRoute(\"echoapp.UnknownService.Send\")")),
+            matches!(err, crate::ActrError::UnknownRoute { ref msg } if msg.contains("echoapp.UnknownService.Send")),
             "unexpected dispatch error: {err:?}"
         );
         {
