@@ -1,0 +1,29 @@
+import SwiftUI
+
+struct ContentView: View {
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("{{PROJECT_NAME_PASCAL}}")
+                    .font(.largeTitle.weight(.bold))
+
+                Text("Empty Actor-RTC app shell")
+                    .font(.headline)
+
+                Text("Add local proto definitions, run actr gen, then wire the generated client code into this app.")
+                    .foregroundColor(.secondary)
+
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+        }
+    }
+}
+
+#Preview {
+    ContentView()
+}

@@ -1,0 +1,15 @@
+# manifest.toml - DataStreamApp package declaration and dependencies
+#
+# DataStreamApp uses the linked runtime and is not built through `actr build`.
+# This file declares the package identity and remote DuplexStreamService dependency.
+
+edition = 1
+
+[package]
+name = "DataStreamApp"
+manufacturer = "actrium"
+version = "0.1.0"
+description = "Actor-RTC DataStreamApp — iOS linked runtime"
+
+[dependencies]
+duplex_stream = { actr_type = "actrium:DuplexStreamService:1.0.0" }

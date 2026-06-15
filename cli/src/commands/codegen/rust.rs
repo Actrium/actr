@@ -1,15 +1,19 @@
 use crate::commands::SupportedLanguage;
-use crate::commands::codegen::scaffold::ScaffoldCatalog;
+use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldService};
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
 use crate::plugin_config::{load_protoc_plugin_config, version_is_at_least};
 use crate::utils::to_snake_case;
 use async_trait::async_trait;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
 
 pub struct RustGenerator;
+
+const HANDLER_SCAFFOLD_MARKER: &str = "// ACTR: generated Rust handler scaffold";
+const ENTRY_SCAFFOLD_MARKER: &str = "// ACTR: generated Rust workload entry scaffold";
 
 #[async_trait]
 impl LanguageGenerator for RustGenerator {
@@ -56,22 +60,13 @@ impl LanguageGenerator for RustGenerator {
         let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Rust)?;
 
         for service in &catalog.local_services {
-            if service.methods.is_empty() {
-                continue;
-            }
-            let service_name = service
-                .proto_file
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| to_snake_case(&service.name));
+            self.generate_service_scaffold(service, &context.output, context.overwrite_user_code)
+                .await?;
+        }
 
-            self.generate_service_scaffold(
-                &service_name,
-                &context.output,
-                context.overwrite_user_code,
-            )
-            .await?;
+        if let Some(service) = catalog.local_services.first() {
+            self.generate_entry_scaffold(service, &context.output, context.overwrite_user_code)
+                .await?;
         }
 
         info!("✅ User code scaffold generation completed");
@@ -402,21 +397,32 @@ impl RustGenerator {
 
     async fn generate_service_scaffold(
         &self,
-        service_name: &str,
+        service: &ScaffoldService,
         output: &Path,
         overwrite_user_code: bool,
     ) -> Result<()> {
-        let user_file_path = output
-            .parent()
-            .unwrap_or_else(|| Path::new("src"))
-            .join(format!("{}_service.rs", service_name.to_lowercase()));
+        let src_dir = src_dir_from_output(output);
+        std::fs::create_dir_all(&src_dir).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to create src directory: {e}"))
+        })?;
+        let user_file_path = src_dir.join(format!("{}.rs", handler_module_name(service)));
+        let scaffold_content = self.generate_scaffold_content(service);
 
         if user_file_path.exists() && !overwrite_user_code {
-            info!("⏭️  Skipping existing user code file: {:?}", user_file_path);
-            return Ok(());
+            if self.should_overwrite_handler_scaffold(&user_file_path, &scaffold_content)? {
+                info!(
+                    "🔄 Overwriting generated Rust handler scaffold: {:?}",
+                    user_file_path
+                );
+            } else {
+                info!("⏭️  Skipping existing user code file: {:?}", user_file_path);
+                return Ok(());
+            }
         }
 
-        let scaffold_content = self.generate_scaffold_content(service_name);
+        if user_file_path.exists() {
+            make_writable_recursive(&user_file_path)?;
+        }
 
         std::fs::write(&user_file_path, scaffold_content).map_err(|e| {
             ActrCliError::config_error(format!("Failed to write user code scaffold: {e}"))
@@ -426,134 +432,145 @@ impl RustGenerator {
         Ok(())
     }
 
-    fn generate_scaffold_content(&self, service_name: &str) -> String {
-        let service_name_pascal = service_name
-            .split('_')
-            .map(|s| {
-                let mut chars = s.chars();
-                match chars.next() {
-                    None => String::new(),
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                }
-            })
-            .collect::<String>();
+    async fn generate_entry_scaffold(
+        &self,
+        service: &ScaffoldService,
+        output: &Path,
+        overwrite_user_code: bool,
+    ) -> Result<()> {
+        let src_dir = src_dir_from_output(output);
+        std::fs::create_dir_all(&src_dir).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to create src directory: {e}"))
+        })?;
+        let lib_path = src_dir.join("lib.rs");
+        let scaffold_content = self.generate_entry_scaffold_content(service);
+
+        if lib_path.exists() && !overwrite_user_code {
+            if self.should_overwrite_entry_scaffold(&lib_path, &scaffold_content)? {
+                info!(
+                    "🔄 Overwriting generated Rust entry scaffold: {:?}",
+                    lib_path
+                );
+            } else {
+                info!("⏭️  Skipping existing Rust entry file: {:?}", lib_path);
+                return Ok(());
+            }
+        }
+
+        if lib_path.exists() {
+            make_writable_recursive(&lib_path)?;
+        }
+
+        std::fs::write(&lib_path, scaffold_content).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to write Rust entry scaffold: {e}"))
+        })?;
+
+        info!("📄 Generated Rust entry scaffold: {:?}", lib_path);
+        Ok(())
+    }
+
+    fn should_overwrite_handler_scaffold(
+        &self,
+        path: &Path,
+        expected_scaffold: &str,
+    ) -> Result<bool> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to read {}: {e}", path.display()))
+        })?;
+
+        Ok(content == expected_scaffold)
+    }
+
+    fn should_overwrite_entry_scaffold(
+        &self,
+        path: &Path,
+        expected_scaffold: &str,
+    ) -> Result<bool> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            ActrCliError::config_error(format!("Failed to read {}: {e}", path.display()))
+        })?;
+
+        if content == expected_scaffold {
+            return Ok(true);
+        }
+
+        Ok(is_default_cargo_lib_rs(&content))
+    }
+
+    fn generate_entry_scaffold_content(&self, service: &ScaffoldService) -> String {
+        let actor_module = actor_module_name(service);
+        let handler_module = handler_module_name(service);
+        let handler_impl = handler_impl_type(service);
+        let workload_type =
+            service_type_or_default(service, service.workload_type.as_deref(), "Workload");
 
         format!(
-            r#"//! # {service_name_pascal} user business logic implementation
+            r#"{ENTRY_SCAFFOLD_MARKER}
+//! Entry point for the generated {service_name} workload.
+
+pub mod generated;
+pub mod {handler_module};
+
+use actr_framework::entry;
+use generated::{actor_module}::{workload_type};
+
+pub use crate::{handler_module}::{handler_impl};
+
+entry!(
+    {workload_type}<{handler_impl}>,
+    {workload_type}::new({handler_impl}::new())
+);
+"#,
+            service_name = service.name,
+        )
+    }
+
+    fn generate_scaffold_content(&self, service: &ScaffoldService) -> String {
+        let actor_module = actor_module_name(service);
+        let proto_module = proto_module_name(service);
+        let handler_interface =
+            service_type_or_default(service, service.handler_interface.as_deref(), "Handler");
+        let handler_impl = handler_impl_type(service);
+        let message_imports = message_imports(service);
+        let method_impls = handler_method_impls(service);
+        let method_imports = if message_imports.is_empty() {
+            String::new()
+        } else {
+            format!("use crate::generated::{proto_module}::{{{message_imports}}};\n")
+        };
+        let framework_imports = if service.methods.is_empty() {
+            String::new()
+        } else {
+            "use actr_framework::Context;\nuse actr_protocol::ActorResult;\n".to_string()
+        };
+
+        format!(
+            r#"{HANDLER_SCAFFOLD_MARKER}
+//! # {service_name} user business logic implementation
 //!
 //! This file is a user code scaffold automatically generated by the `actr gen` command.
 //! Please implement your specific business logic here.
 
-use crate::generated::{{{service_name_pascal}Handler, {service_name_pascal}Actor}};
-// Only import necessary types; avoid pulling in unneeded dependencies like sqlite
-// use actr_framework::prelude::*;
-use std::sync::Arc;
+use crate::generated::{actor_module}::{handler_interface};
+{method_imports}{framework_imports}
 
-/// Specific implementation of the {service_name_pascal} service
-///
-/// TODO: Add state fields you need, for example:
-/// - Database connection pool
-/// - Configuration information
-/// - Cache client
-/// - Logger, etc.
-pub struct My{service_name_pascal}Service {{
-    // TODO: Add your service state fields
-    // For example:
-    // pub db_pool: Arc<DatabasePool>,
-    // pub config: Arc<ServiceConfig>,
-    // pub metrics: Arc<Metrics>,
-}}
+/// Specific implementation of the {service_name} service.
+pub struct {handler_impl};
 
-impl My{service_name_pascal}Service {{
+impl {handler_impl} {{
     /// Create a new service instance
-    ///
-    /// TODO: Modify constructor parameters as needed
     pub fn new(/* TODO: Add necessary dependencies */) -> Self {{
-        Self {{
-            // TODO: Initialize your fields
-        }}
-    }}
-
-    /// Create a service instance with default configuration (for testing)
-    pub fn default_for_testing() -> Self {{
-        Self {{
-            // TODO: Provide default values for testing
-        }}
+        Self
     }}
 }}
 
-// TODO: Implement all methods of the {service_name_pascal}Handler trait
-// Note: The impl_user_code_scaffold! macro has generated a basic scaffold for you,
-// you need to replace it with real business logic implementation.
-//
-// Example:
-// #[async_trait]
-// impl {service_name_pascal}Handler for My{service_name_pascal}Service {{
-//     async fn method_name(&self, req: RequestType) -> ActorResult<ResponseType> {{
-//         // 1. Validate input
-//         // 2. Execute business logic
-//         // 3. Return result
-//         todo!("Implement your business logic")
-//     }}
-// }}
-
-
-#[cfg(test)]
-mod tests {{
-    use super::*;
-
-    #[tokio::test]
-    async fn test_service_creation() {{
-        let _service = My{service_name_pascal}Service::default_for_testing();
-        // TODO: Add your tests
-    }}
-
-    // TODO: Add more test cases
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+impl {handler_interface} for {handler_impl} {{
+{method_impls}
 }}
-
-/*
-📚 User Guide
-
-## 🚀 Quick Start
-
-1. **Implement business logic**:
-   Implement all methods of the `{service_name_pascal}Handler` trait in `My{service_name_pascal}Service`
-
-2. **Add dependencies**:
-   Add dependencies you need in `Cargo.toml`, such as database clients, HTTP clients, etc.
-
-3. **Configure service**:
-   Modify the `new()` constructor to inject necessary dependencies
-
-4. **Start service**:
-   ```rust
-   #[tokio::main]
-   async fn main() -> ActorResult<()> {{
-       let config = actr::config::ConfigParser::from_manifest_file("manifest.toml")?;
-       let hyper_data_dir = actr::config::user_config::resolve_hyper_data_dir()?;
-       let hyper = Hyper::new(HyperConfig::new(&hyper_data_dir)).await?;
-       let package = WorkloadPackage::new(std::fs::read("dist/service.actr")?);
-       let node = Node::from_hyper(hyper, config).attach(&package).await?;
-       node.register(&ais_endpoint).await?.start().await?;
-       Ok(())
-   }}
-   ```
-
-## 🔧 Development Tips
-
-- Use `tracing` crate for logging
-- Implement error handling and retry logic
-- Add unit and integration tests
-- Consider using configuration files for environment variables
-- Implement health checks and metrics collection
-
-## 📖 More Resources
-
-- Actor-RTC Documentation: [Link]
-- API Reference: [Link]
-- Example Projects: [Link]
-*/
-"# // Service in example code
+"#,
+            service_name = service.name,
         )
     }
 
@@ -994,6 +1011,97 @@ mod tests {{
     }
 }
 
+fn src_dir_from_output(output: &Path) -> PathBuf {
+    output
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("src"))
+}
+
+fn handler_module_name(service: &ScaffoldService) -> String {
+    to_snake_case(&service.name)
+}
+
+fn handler_impl_type(service: &ScaffoldService) -> String {
+    format!("{}Impl", service.name)
+}
+
+fn service_type_or_default(
+    service: &ScaffoldService,
+    metadata_type: Option<&str>,
+    suffix: &str,
+) -> String {
+    metadata_type
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("{}{}", service.name, suffix))
+}
+
+fn actor_module_name(service: &ScaffoldService) -> String {
+    service
+        .proto_file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| format!("{}_actor", to_snake_case(stem)))
+        .unwrap_or_else(|| format!("{}_actor", to_snake_case(&service.name)))
+}
+
+fn proto_module_name(service: &ScaffoldService) -> String {
+    if !service.package.is_empty() {
+        return service.package.replace('.', "_");
+    }
+
+    service
+        .proto_file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(to_snake_case)
+        .unwrap_or_else(|| to_snake_case(&service.name))
+}
+
+fn message_imports(service: &ScaffoldService) -> String {
+    let mut imports = BTreeSet::new();
+    for method in &service.methods {
+        imports.insert(method.input_type.clone());
+        imports.insert(method.output_type.clone());
+    }
+    imports.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+fn handler_method_impls(service: &ScaffoldService) -> String {
+    if service.methods.is_empty() {
+        return "    // This service does not declare RPC methods yet.\n".to_string();
+    }
+
+    service
+        .methods
+        .iter()
+        .map(|method| {
+            format!(
+                r#"    async fn {method_name}<C: Context>(
+        &self,
+        _req: {input_type},
+        _ctx: &C,
+    ) -> ActorResult<{output_type}> {{
+        todo!("Implement {service_name}.{rpc_name}")
+    }}
+"#,
+                method_name = method.snake_name,
+                input_type = method.input_type,
+                output_type = method.output_type,
+                service_name = service.name,
+                rpc_name = method.name,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn is_default_cargo_lib_rs(content: &str) -> bool {
+    content.contains("pub fn add(left: u64, right: u64) -> u64")
+        && content.contains("fn it_works()")
+}
+
 /// Recursively make all files in a directory (or a file) writable.
 fn make_writable_recursive(path: &Path) -> Result<()> {
     use std::fs;
@@ -1034,9 +1142,152 @@ fn make_writable_recursive(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::RustGenerator;
-    use crate::commands::codegen::{GenContext, ProtoModel};
+    use crate::commands::codegen::scaffold::{ScaffoldMethod, ScaffoldService};
+    use crate::commands::codegen::{GenContext, LanguageGenerator, ProtoModel};
     use actr_config::ConfigParser;
+    use std::path::PathBuf;
     use tempfile::TempDir;
+
+    fn scaffold_service() -> ScaffoldService {
+        ScaffoldService {
+            name: "EmptyShell".to_string(),
+            package: "demo.shell".to_string(),
+            proto_file: PathBuf::from("bridge.proto"),
+            handler_interface: Some("EmptyShellHandler".to_string()),
+            workload_type: Some("EmptyShellWorkload".to_string()),
+            dispatcher_type: Some("EmptyShellDispatcher".to_string()),
+            client_type: None,
+            actr_type: None,
+            methods: vec![ScaffoldMethod {
+                name: "Ping".to_string(),
+                snake_name: "ping".to_string(),
+                input_type: "PingRequest".to_string(),
+                output_type: "PingResponse".to_string(),
+                route_key: "demo.shell.EmptyShell/Ping".to_string(),
+            }],
+        }
+    }
+
+    #[test]
+    fn modified_generated_handler_scaffold_is_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("empty_shell.rs");
+        let generator = RustGenerator;
+        let scaffold = generator.generate_scaffold_content(&scaffold_service());
+        let modified = format!("{scaffold}\n// User customization.\n");
+        std::fs::write(&path, modified).unwrap();
+
+        assert!(
+            !generator
+                .should_overwrite_handler_scaffold(&path, &scaffold)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn modified_generated_entry_scaffold_is_preserved() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("lib.rs");
+        let generator = RustGenerator;
+        let scaffold = generator.generate_entry_scaffold_content(&scaffold_service());
+        let modified = format!("{scaffold}\n// User customization.\n");
+        std::fs::write(&path, modified).unwrap();
+
+        assert!(
+            !generator
+                .should_overwrite_entry_scaffold(&path, &scaffold)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn scaffold_empty_service_uses_service_metadata_and_writes_entry() {
+        let tmp = TempDir::new().unwrap();
+        let src_dir = tmp.path().join("src");
+        let proto_root = tmp.path().join("protos");
+        std::fs::create_dir_all(src_dir.join("generated")).unwrap();
+        std::fs::create_dir_all(&proto_root).unwrap();
+
+        let proto_file = proto_root.join("bridge.proto");
+        std::fs::write(
+            &proto_file,
+            "syntax = \"proto3\";\npackage demo.shell;\nservice EmptyShell {}\n",
+        )
+        .unwrap();
+
+        let config_path = tmp.path().join("manifest.toml");
+        std::fs::write(
+            &config_path,
+            r#"edition = 1
+exports = []
+
+[package]
+name = "Demo"
+manufacturer = "acme"
+version = "0.1.0"
+
+[system.signaling]
+url = "ws://127.0.0.1:8080"
+
+[system.ais_endpoint]
+url = "http://127.0.0.1:8080/ais"
+
+[system.deployment]
+realm_id = 1001
+"#,
+        )
+        .unwrap();
+
+        let config = ConfigParser::from_manifest_file(&config_path).unwrap();
+        let proto_files = vec![proto_file];
+        let proto_model = ProtoModel::parse(&proto_files, &proto_root, &config).unwrap();
+        let context = GenContext {
+            proto_files,
+            proto_model,
+            input_path: proto_root,
+            output: src_dir.join("generated"),
+            config_path,
+            config,
+            no_scaffold: false,
+            overwrite_user_code: false,
+            no_format: false,
+            debug: false,
+            skip_validation: false,
+        };
+
+        tokio_test::block_on(RustGenerator.generate_scaffold(&context)).unwrap();
+
+        let handler_path = src_dir.join("empty_shell.rs");
+        assert!(
+            handler_path.exists(),
+            "handler file should be named from service metadata, not proto stem"
+        );
+        assert!(
+            !src_dir.join("bridge_service.rs").exists(),
+            "proto file stem should not drive the scaffold handler path"
+        );
+
+        let handler = std::fs::read_to_string(&handler_path).unwrap();
+        assert!(handler.contains("use crate::generated::bridge_actor::EmptyShellHandler;"));
+        assert!(handler.contains("pub struct EmptyShellImpl;"));
+        assert!(handler.contains("impl EmptyShellHandler for EmptyShellImpl"));
+
+        let lib = std::fs::read_to_string(src_dir.join("lib.rs")).unwrap();
+        assert!(lib.contains("pub mod generated;"));
+        assert!(lib.contains("pub mod empty_shell;"));
+        assert!(lib.contains("use generated::bridge_actor::EmptyShellWorkload;"));
+        assert!(lib.contains("pub use crate::empty_shell::EmptyShellImpl;"));
+        assert!(lib.contains("entry!("));
+        assert!(lib.contains("EmptyShellWorkload<EmptyShellImpl>"));
+
+        std::fs::write(&handler_path, "pub struct UserImplemented;\n").unwrap();
+        tokio_test::block_on(RustGenerator.generate_scaffold(&context)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&handler_path).unwrap(),
+            "pub struct UserImplemented;\n",
+            "implemented handler files must be preserved without overwrite_user_code"
+        );
+    }
 
     #[test]
     fn build_remote_file_actr_types_uses_shared_proto_model() {

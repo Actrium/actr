@@ -13,6 +13,9 @@ impl ProjectInitializer for KotlinInitializer {
     async fn generate_project_structure(&self, context: &InitContext) -> Result<()> {
         match context.template {
             ProjectTemplateName::Echo => self.generate_echo_project(context).await,
+            ProjectTemplateName::Empty => Err(crate::error::ActrCliError::Unsupported(
+                "Empty template is not supported for Kotlin yet".to_string(),
+            )),
             ProjectTemplateName::DataStream => self.generate_data_stream_project(context).await,
         }
     }
@@ -34,6 +37,9 @@ impl ProjectInitializer for KotlinInitializer {
                     "  actr gen -l kotlin -i protos/remote/echo-echo-server/echo.proto -o app/src/main/java/{}/generated",
                     package_path
                 );
+            }
+            ProjectTemplateName::Empty => {
+                info!("  # Empty template is not supported for Kotlin yet");
             }
             ProjectTemplateName::DataStream => {
                 info!("  actr gen -l kotlin  # Generate code for stream-echo-server-python");

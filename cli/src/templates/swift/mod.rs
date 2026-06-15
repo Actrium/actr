@@ -2,8 +2,8 @@ use super::{LangTemplate, ProjectTemplateName, TemplateContext};
 use crate::error::Result;
 use std::collections::HashMap;
 
-pub mod data_stream;
 pub mod echo;
+pub mod empty;
 
 pub struct SwiftTemplate;
 
@@ -19,8 +19,11 @@ impl LangTemplate for SwiftTemplate {
             ProjectTemplateName::Echo => {
                 echo::load(&mut files, context.is_service)?;
             }
+            ProjectTemplateName::Empty => {
+                empty::load(&mut files)?;
+            }
             ProjectTemplateName::DataStream => {
-                data_stream::load(&mut files)?;
+                empty::load(&mut files)?;
             }
         }
 

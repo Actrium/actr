@@ -78,7 +78,8 @@ pub fn create_local_proto(
     let template_file_name = match (template, echo_role) {
         (ProjectTemplateName::Echo, Some(EchoRole::Service)) => "echo_service.hbs",
         (ProjectTemplateName::Echo, _) => "local.echo.hbs",
-        (ProjectTemplateName::DataStream, _) => "local.data-stream.hbs",
+        (ProjectTemplateName::Empty, _) => "local.empty.hbs",
+        (ProjectTemplateName::DataStream, _) => "local.empty.hbs",
     };
     let template_path = fixtures_root.join("protos").join(template_file_name);
 

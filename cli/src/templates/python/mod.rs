@@ -18,6 +18,11 @@ impl LangTemplate for PythonTemplate {
             ProjectTemplateName::Echo => {
                 echo::load(&mut files)?;
             }
+            ProjectTemplateName::Empty => {
+                return Err(crate::error::ActrCliError::Unsupported(
+                    "Empty template is not supported for Python yet".to_string(),
+                ));
+            }
             ProjectTemplateName::DataStream => {
                 return Err(crate::error::ActrCliError::Unsupported(
                     "DataStream template is not supported for Python yet".to_string(),
