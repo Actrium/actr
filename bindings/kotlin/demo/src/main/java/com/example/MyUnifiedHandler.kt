@@ -7,7 +7,6 @@ import io.actrium.actr.ActrType
 import io.actrium.actr.ContextBridge
 import io.actrium.actr.DataStream
 import io.actrium.actr.DataStreamCallback
-import io.actrium.actr.ActrException
 import io.actrium.actr.PayloadType
 import io.actrium.actr.dsl.withRetry
 import kotlinx.coroutines.delay
