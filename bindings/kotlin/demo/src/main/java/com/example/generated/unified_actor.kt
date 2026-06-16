@@ -19,9 +19,9 @@ import local.StreamClientOuterClass.*
 import echo.Echo.*
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
+import io.actrium.actr.dsl.Context
 import io.actrium.actr.PayloadType
-import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.dsl.RpcEnvelope
 
 /**
  * Unified Handler interface combining all local service handlers
@@ -69,7 +69,7 @@ object UnifiedDispatcher {
     private val discoveredActors = mutableMapOf<ActrType, ActrId>()
 
     private suspend fun resolveRemoteActor(
-        ctx: ContextBridge,
+        ctx: Context,
         actrType: ActrType,
     ): ActrId =
         discoveredActors[actrType] ?: ctx.discover(actrType).also {
@@ -85,7 +85,7 @@ object UnifiedDispatcher {
      *
      * Call this in your Workload's onStart method to pre-discover remote actors.
      */
-    suspend fun discoverRemoteServices(ctx: ContextBridge) {
+    suspend fun discoverRemoteServices(ctx: Context) {
         for ((_, actrType) in RemoteServiceRegistry.remoteRoutes) {
             if (!discoveredActors.containsKey(actrType)) {
                 try {
@@ -107,14 +107,14 @@ object UnifiedDispatcher {
      * Dispatch an RPC envelope to the appropriate handler or remote service
      *
      * @param handler The unified handler implementation (for local services)
-     * @param ctx The context bridge for making remote calls
+     * @param ctx The context for making remote calls
      * @param envelope The RPC envelope containing the request
      * @return The serialized response bytes
      */
     suspend fun dispatch(
         handler: UnifiedHandler,
-        ctx: ContextBridge,
-        envelope: RpcEnvelopeBridge,
+        ctx: Context,
+        envelope: RpcEnvelope,
     ): ByteArray {
         val routeKey = envelope.routeKey
 

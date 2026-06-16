@@ -280,9 +280,17 @@ class ServerActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * EchoService workload — implements both the [WorkloadLifecycleBridge] contract
+     * (lifecycle methods) and the [EchoServiceHandler] contract (business logic).
+     *
+     * Per the 0.3.x design: Workload methods use ContextBridge / RpcEnvelopeBridge;
+     * Handler methods use Context (= ContextBridge, same type).
+     */
     private class EchoServerWorkload :
         WorkloadLifecycleBridge,
         EchoServiceHandler {
+        // -- Workload lifecycle (ContextBridge per design doc Section 5) --
         override suspend fun onStart(ctx: ContextBridge) {
             Log.i(TAG, "EchoServerWorkload.onStart")
         }
@@ -307,6 +315,7 @@ class ServerActivity : AppCompatActivity() {
             envelope: RpcEnvelopeBridge,
         ): ByteArray = EchoServiceDispatcher.dispatch(this, ctx, envelope)
 
+        // -- Handler method (Context per design doc Section 5; ContextBridge is the same type) --
         override suspend fun echo(
             request: EchoRequest,
             ctx: ContextBridge,

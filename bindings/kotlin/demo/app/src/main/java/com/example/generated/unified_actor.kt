@@ -14,9 +14,9 @@ package com.example.generated
 
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
+import io.actrium.actr.dsl.Context
 import io.actrium.actr.PayloadType
-import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.dsl.RpcEnvelope
 
 // Import protobuf message types
 import local_file.File.*
@@ -82,7 +82,7 @@ object UnifiedDispatcher {
      *
      * Call this in your Workload's onStart method to pre-discover remote actors.
      */
-    suspend fun discoverRemoteServices(ctx: ContextBridge) {
+    suspend fun discoverRemoteServices(ctx: Context) {
         for ((_, actrType) in RemoteServiceRegistry.remoteRoutes) {
             if (!discoveredActors.containsKey(actrType)) {
                 val actorId = ctx.discover(actrType)
@@ -108,8 +108,8 @@ object UnifiedDispatcher {
      */
     suspend fun dispatch(
         handler: UnifiedHandler,
-        ctx: ContextBridge,
-        envelope: RpcEnvelopeBridge
+        ctx: Context,
+        envelope: RpcEnvelope
     ): ByteArray {
         val routeKey = envelope.routeKey
 

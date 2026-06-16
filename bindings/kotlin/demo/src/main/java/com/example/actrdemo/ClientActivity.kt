@@ -86,6 +86,29 @@ class ClientActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_client)
 
+        // Optional: forward actr runtime tracing logs to Android logcat.
+        // Must be called before any ActrNode is created.
+        setLogCallback(object : LogCallback {
+            override fun onLog(
+                level: String,
+                target: String,
+                message: String,
+                timestampMs: Long,
+            ) {
+                Log.println(
+                    when (level.uppercase()) {
+                        "ERROR" -> Log.ERROR
+                        "WARN" -> Log.WARN
+                        "INFO" -> Log.INFO
+                        "DEBUG" -> Log.DEBUG
+                        else -> Log.VERBOSE
+                    },
+                    "actr/$target",
+                    message,
+                )
+            }
+        })
+
         initViews()
         initLogcatReader() // Start early to capture actr library's early logs
         setupClickListeners()

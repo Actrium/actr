@@ -4,7 +4,7 @@ import android.util.Log
 import com.example.generated.UnifiedHandler
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
+import io.actrium.actr.dsl.Context
 import io.actrium.actr.DataStream
 import io.actrium.actr.DataStreamCallback
 import io.actrium.actr.PayloadType
@@ -29,7 +29,7 @@ class MyUnifiedHandler : UnifiedHandler {
 
     override suspend fun start_stream(
         request: local.StreamClientOuterClass.ClientStartStreamRequest,
-        ctx: ContextBridge,
+        ctx: Context,
     ): local.StreamClientOuterClass.ClientStartStreamResponse {
         val clientId = request.clientId
         val sessionId = request.sessionId

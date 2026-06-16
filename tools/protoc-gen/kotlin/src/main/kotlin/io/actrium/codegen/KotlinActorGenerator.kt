@@ -56,8 +56,8 @@ class KotlinActorGenerator(
         val outerClassName = getProtoOuterClassName()
 
         return buildString {
-            appendLine("import io.actrium.actr.ContextBridge")
-            appendLine("import io.actrium.actr.RpcEnvelopeBridge")
+            appendLine("import io.actrium.actr.dsl.Context")
+            appendLine("import io.actrium.actr.dsl.RpcEnvelope")
             appendLine()
             // Import the protobuf outer class
             // The outer class name is derived from the proto file name (e.g., file.proto -> File)
@@ -81,7 +81,7 @@ class KotlinActorGenerator(
             |    /**
             |     * RPC method: ${method.name}
             |     */
-            |    suspend fun $methodName(request: $inputType, ctx: ContextBridge): $outputType
+            |    suspend fun $methodName(request: $inputType, ctx: Context): $outputType
             """.trimMargin()
                 }
 
@@ -94,7 +94,7 @@ class KotlinActorGenerator(
             | * Example:
             | * ```kotlin
             | * class My$serviceName : $handlerName {
-            | *     override suspend fun methodName(request: RequestType, ctx: ContextBridge): ResponseType {
+            | *     override suspend fun methodName(request: RequestType, ctx: Context): ResponseType {
             | *         // Business logic here
             | *         return ResponseType.newBuilder().build()
             | *     }
@@ -139,18 +139,18 @@ class KotlinActorGenerator(
             |     * Dispatch an RPC envelope to the appropriate handler method
             |     *
             |     * @param handler The handler implementation
-            |     * @param ctx The context bridge
+            |     * @param ctx The context for making RPC calls
             |     * @param envelope The RPC envelope containing the request
             |     * @return The serialized response bytes
             |     */
             |    suspend fun dispatch(
             |        handler: $handlerName,
-            |        ctx: ContextBridge,
-            |        envelope: RpcEnvelopeBridge
+            |        ctx: Context,
+            |        envelope: RpcEnvelope
             |    ): ByteArray {
             |        return when (envelope.routeKey) {
             |$matchCases
-            |            else -> throw IllegalArgumentException("Unknown route key: ${'$'}{envelope.routeKey}")
+            |            else -> throw io.actrium.actr.ActrException.UnknownRoute("Unknown route key: ${'$'}{envelope.routeKey}")
             |        }
             |    }
             |}
