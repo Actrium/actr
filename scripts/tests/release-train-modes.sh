@@ -49,6 +49,9 @@ _original_stage_create_tag=$(declare -f stage_create_tag)
 _original_stage_publish_rust=$(declare -f stage_publish_rust)
 _original_write_context=$(declare -f write_context)
 _original_read_context=$(declare -f read_context)
+_original_build_cli_binary_target=$(declare -f build_cli_binary_target)
+_original_stage_build_cli_binaries=$(declare -f stage_build_cli_binaries)
+_original_stage_publish_cli_binaries=$(declare -f stage_publish_cli_binaries)
 
 restore_all_functions() {
   eval "$_original_update_versions"
@@ -81,6 +84,9 @@ restore_all_functions() {
   eval "$_original_stage_publish_rust"
   eval "$_original_write_context"
   eval "$_original_read_context"
+  eval "$_original_build_cli_binary_target"
+  eval "$_original_stage_build_cli_binaries"
+  eval "$_original_stage_publish_cli_binaries"
 }
 
 reset_release_train_state() {
@@ -347,6 +353,8 @@ test_publish_mode_uses_prepared_versions_without_mutating() {
   publish_web_packages() { calls+=("publish_web_packages"); }
   publish_typescript_workload_package() { calls+=("publish_typescript_workload_package"); }
   publish_typescript_package() { calls+=("publish_typescript_package"); }
+  build_cli_binary_target() { calls+=("build_cli_binary_target:$1"); }
+  stage_publish_cli_binaries() { calls+=("stage_publish_cli_binaries"); }
 
   VERSION="1.2.3"
   DRY_RUN=false
@@ -960,6 +968,157 @@ EOF
   rm -rf "$temp_dir"
 }
 
+test_cli_zigbuild_uses_zigbuild_arguments_without_build_subcommand() {
+  reset_release_train_state
+
+  local temp_dir original_path original_work_repo_root cargo_args_log
+  temp_dir=$(mktemp -d)
+  cargo_args_log="$temp_dir/cargo-args.log"
+  mkdir -p "$temp_dir/bin" "$temp_dir/bindings/web/scripts"
+
+  cat >"$temp_dir/bindings/web/scripts/sync-cli-assets.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$temp_dir/bindings/web/scripts/sync-cli-assets.sh"
+
+  cat >"$temp_dir/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"${CARGO_ARGS_LOG}"
+target=""
+previous=""
+for arg in "$@"; do
+  if [[ "$previous" == "--target" ]]; then
+    target="$arg"
+    break
+  fi
+  previous="$arg"
+done
+mkdir -p "${WORK_REPO_ROOT}/target/${target}/release"
+printf 'actr test binary\n' >"${WORK_REPO_ROOT}/target/${target}/release/actr"
+exit 0
+EOF
+  chmod +x "$temp_dir/bin/cargo"
+
+  original_path=$PATH
+  original_work_repo_root=$WORK_REPO_ROOT
+  PATH="$temp_dir/bin:$PATH"
+  export CARGO_ARGS_LOG="$cargo_args_log"
+  export WORK_REPO_ROOT="$temp_dir"
+  VERSION="1.2.3"
+  DRY_RUN=false
+  RELEASE_SHA="abc123"
+  PACKAGE_SYNC_OWNER="actrium"
+  GITHUB_REPOSITORY_NAME="actr"
+  append_state() { :; }
+
+  build_cli_binary_target "aarch64-unknown-linux-musl|ubuntu-latest|true" "$temp_dir/staging"
+
+  PATH=$original_path
+  WORK_REPO_ROOT=$original_work_repo_root
+  unset CARGO_ARGS_LOG
+
+  if grep -q '^zigbuild build ' "$cargo_args_log"; then
+    printf 'cargo zigbuild must not receive cargo build subcommand arguments\n' >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  if ! grep -q '^zigbuild --release -p actr-cli --locked --features wasm-engine --target aarch64-unknown-linux-musl$' "$cargo_args_log"; then
+    printf 'cargo zigbuild arguments did not match expected release CLI build\n' >&2
+    cat "$cargo_args_log" >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  rm -rf "$temp_dir"
+}
+
+test_cli_release_upload_asset_deletes_existing_asset_before_retry() {
+  reset_release_train_state
+
+  local temp_dir asset_path curl_log upload_attempts
+  temp_dir=$(mktemp -d)
+  asset_path="$temp_dir/actr-v1.2.3-x86_64-unknown-linux-gnu.tar.gz"
+  curl_log="$temp_dir/curl.log"
+  upload_attempts="$temp_dir/upload-attempts"
+  printf 'archive\n' >"$asset_path"
+  printf '0\n' >"$upload_attempts"
+
+  curl() {
+    local method="GET"
+    local url=""
+    local previous=""
+    local arg
+    for arg in "$@"; do
+      if [[ "$previous" == "-X" ]]; then
+        method="$arg"
+        previous=""
+        continue
+      fi
+      if [[ "$arg" == "-X" ]]; then
+        previous="-X"
+        continue
+      fi
+      if [[ "$arg" == http://* || "$arg" == https://* ]]; then
+        url="$arg"
+      fi
+    done
+    printf '%s %s\n' "$method" "$url" >>"$curl_log"
+
+    if [[ "$url" == */repos/actrium/actr/releases/tags/v1.2.3 ]]; then
+      printf '{"id":123,"upload_url":"https://uploads.github.test/repos/actrium/actr/releases/123/assets{?name,label}"}'
+      return 0
+    fi
+
+    if [[ "$url" == https://uploads.github.test/* ]]; then
+      local count
+      count=$(cat "$upload_attempts")
+      count=$((count + 1))
+      printf '%s\n' "$count" >"$upload_attempts"
+      if [[ "$count" -eq 1 ]]; then
+        printf '422'
+      else
+        printf '201'
+      fi
+      return 0
+    fi
+
+    if [[ "$url" == */repos/actrium/actr/releases/123/assets?per_page=100 ]]; then
+      printf '[{"id":456,"name":"actr-v1.2.3-x86_64-unknown-linux-gnu.tar.gz"}]'
+      return 0
+    fi
+
+    if [[ "$method" == "DELETE" && "$url" == */repos/actrium/actr/releases/assets/456 ]]; then
+      return 0
+    fi
+
+    printf 'unexpected curl call: %s %s\n' "$method" "$url" >&2
+    return 1
+  }
+
+  GITHUB_TOKEN="test-token"
+  PRE_RELEASE=false
+
+  cli_release_upload_asset "actrium" "actr" "v1.2.3" "$asset_path"
+
+  unset -f curl
+  unset GITHUB_TOKEN
+
+  if ! grep -q '^DELETE .*/repos/actrium/actr/releases/assets/456$' "$curl_log"; then
+    printf 'existing GitHub Release asset must be deleted before retry\n' >&2
+    cat "$curl_log" >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
+
+  local upload_count
+  upload_count=$(grep -c '^POST https://uploads.github.test/' "$curl_log")
+  assert_eq "2" "$upload_count" "upload retry count"
+
+  rm -rf "$temp_dir"
+}
+
 test_publish_web_workflow_has_timeout() {
   reset_release_train_state
 
@@ -1053,6 +1212,8 @@ test_release_prepare_workflow_skips_release_commits
 test_report_stage_merges_state_files
 test_update_versions_syncs_optional_dependencies
 test_publish_web_packages_skips_puppeteer_download
+test_cli_zigbuild_uses_zigbuild_arguments_without_build_subcommand
+test_cli_release_upload_asset_deletes_existing_asset_before_retry
 test_publish_web_workflow_has_timeout
 test_release_prepare_workflow_rejects_stale_runs
 test_release_prepare_workflow_closes_superseded_prs

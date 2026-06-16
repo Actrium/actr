@@ -38,6 +38,17 @@ readonly CLI_CRATES=(
   "actr-cli"
 )
 
+# GitHub Release binary matrix for the `actr` CLI.
+# Format per entry: rust-target|runner|use_zigbuild (true=zig cross-compile, false=native cargo build)
+readonly CLI_BINARY_TARGETS=(
+  "x86_64-unknown-linux-gnu|ubuntu-latest|false"
+  "x86_64-unknown-linux-musl|ubuntu-latest|true"
+  "aarch64-unknown-linux-gnu|ubuntu-latest|true"
+  "aarch64-unknown-linux-musl|ubuntu-latest|true"
+  "aarch64-apple-darwin|macos-14|false"
+  "x86_64-pc-windows-msvc|windows-latest|false"
+)
+
 readonly VALID_STAGES=(
   "create-tag"
   "publish-rust"
@@ -48,6 +59,8 @@ readonly VALID_STAGES=(
   "build-typescript-native"
   "publish-typescript-workload"
   "publish-typescript"
+  "build-cli-binaries"
+  "publish-cli-binaries"
   "report"
   "notify-wechat"
 )
@@ -103,7 +116,8 @@ Options:
                      Stages: create-tag, publish-rust, publish-python,
                      publish-swift, publish-kotlin, publish-web,
                      build-typescript-native, publish-typescript-workload,
-                     publish-typescript, report, notify-wechat.
+                     publish-typescript, build-cli-binaries, publish-cli-binaries,
+                     report, notify-wechat.
                      Default: all (runs full pipeline sequentially).
   --help             Show this help message.
 EOF
@@ -1651,6 +1665,347 @@ stage_publish_rust() {
   log_info "Stage publish-rust complete"
 }
 
+# ---------------------------------------------------------------------------
+# CLI binary GitHub Release stages
+# ---------------------------------------------------------------------------
+#
+# Two stages cooperate to attach cross-platform `actr` binaries to the GitHub
+# Release created for tag v${VERSION}:
+#
+#   build-cli-binaries    — matrix build (one Rust target per CI job), emits
+#                           actr-${target}.{tar.gz,zip} + .sha256 in worktree
+#   publish-cli-binaries  — collects all per-target archives and uploads them
+#                           to the GitHub Release for v${VERSION} (idempotent)
+#
+# Dry-run mode short-circuits both stages with a state row of
+# `dry_run_validated` so verify-jobs see the same report shape.
+
+# Parse a `target|runner|use_zigbuild` descriptor.
+# Sets: ACTR_CLI_TARGET, ACTR_CLI_RUNNER, ACTR_CLI_USE_ZIGBUILD
+cli_binary_target_split() {
+  local descriptor=$1
+  ACTR_CLI_TARGET=$(printf '%s' "$descriptor" | cut -d'|' -f1)
+  ACTR_CLI_RUNNER=$(printf '%s' "$descriptor" | cut -d'|' -f2)
+  ACTR_CLI_USE_ZIGBUILD=$(printf '%s' "$descriptor" | cut -d'|' -f3)
+  [[ -n "$ACTR_CLI_TARGET" && -n "$ACTR_CLI_RUNNER" ]] \
+    || fail "Malformed CLI binary target descriptor: ${descriptor}"
+}
+
+cli_binary_archive_ext() {
+  local target=$1
+  if [[ "$target" == *windows-msvc* ]]; then
+    printf 'zip'
+  else
+    printf 'tar.gz'
+  fi
+}
+
+cli_binary_archive_name() {
+  local target=$1
+  printf 'actr-v%s-%s.%s' "$VERSION" "$target" "$(cli_binary_archive_ext "$target")"
+}
+
+cli_binary_sha_name() {
+  local target=$1
+  printf '%s.sha256' "$(cli_binary_archive_name "$target")"
+}
+
+cli_binary_binary_filename() {
+  local target=$1
+  if [[ "$target" == *windows-msvc* ]]; then
+    printf 'actr.exe'
+  else
+    printf 'actr'
+  fi
+}
+
+cli_binary_release_url() {
+  # Reuse PACKAGE_SYNC_OWNER; for the main repo this resolves to the same
+  # owner that owns actor-rtc/actr. Falls back to GITHUB_REPOSITORY_OWNER.
+  local owner
+  owner="${PACKAGE_SYNC_OWNER:-${GITHUB_REPOSITORY_OWNER:-}}"
+  local repo
+  repo="${GITHUB_REPOSITORY_NAME:-actr}"
+  if [[ -z "$owner" ]]; then
+    # Owner unknown (e.g. in unit tests); return a placeholder URL.
+    printf 'https://github.com/(unresolved)/%s/releases/tag/v%s' "$repo" "$VERSION"
+    return
+  fi
+  printf 'https://github.com/%s/%s/releases/tag/v%s' \
+    "$owner" "$repo" "$VERSION"
+}
+
+# Build a single CLI target, package it, and write a SHA256 sidecar.
+# Emits state rows of kind=cli_binary.
+#   $1: target descriptor (`target|runner|use_zigbuild`)
+#   $2: artifact staging directory (where tar.gz/zip + .sha256 land)
+build_cli_binary_target() {
+  local descriptor=$1
+  local staging_dir=$2
+  cli_binary_target_split "$descriptor"
+  local target=$ACTR_CLI_TARGET
+  local use_zig=$ACTR_CLI_USE_ZIGBUILD
+  local archive
+  archive="$(cli_binary_archive_name "$target")"
+  local sha_name
+  sha_name="$(cli_binary_sha_name "$target")"
+  local binary_name
+  binary_name="$(cli_binary_binary_filename "$target")"
+  local release_url
+  release_url="$(cli_binary_release_url)"
+
+  mkdir -p "$staging_dir"
+
+  if [[ "$DRY_RUN" == true ]]; then
+    log_info "Dry-run: skipping actr-cli build for ${target}"
+    append_state "actr-cli-${target}" "cli-binary" "cli_binary" \
+      "success" "dry_run_validated" "$release_url" "$RELEASE_SHA"
+    return
+  fi
+
+  # Web runtime assets must be synced before building — actr-cli embeds them
+  # via include_bytes!/include_str!.
+  if [[ ! -d "bindings/web" ]]; then
+    fail "bindings/web missing; cannot sync CLI web runtime assets"
+  fi
+  log_info "Syncing CLI web runtime assets for ${target}"
+  (cd "$WORK_REPO_ROOT" && bash bindings/web/scripts/sync-cli-assets.sh --build) \
+    || fail "Failed to sync CLI web runtime assets for ${target}"
+
+  # Build. Native runners use `cargo build`; cross-compile runners use
+  # `cargo zigbuild` (zig ships the matching musl/glibc toolchains).
+  # Both dynclib-engine (default) and wasm-engine are included so the
+  # released binary can run WASM Component .actr packages.
+  local build_log
+  build_log=$(mktemp)
+  local cargo_build_args=(--release -p actr-cli --locked --features wasm-engine)
+  if [[ "$use_zig" == "true" ]]; then
+    log_info "Cross-compiling actr-cli for ${target} via cargo-zigbuild"
+    if ! (
+      cd "$WORK_REPO_ROOT"
+      RUSTFLAGS="${RUSTFLAGS:-} -C strip=symbols" \
+        cargo zigbuild "${cargo_build_args[@]}" --target "$target"
+    ) 2>&1 | tee "$build_log"; then
+      rm -f "$build_log"
+      append_state "actr-cli-${target}" "cli-binary" "cli_binary" \
+        "failure" "build_failed" "$release_url" "$RELEASE_SHA"
+      fail "cargo zigbuild failed for actr-cli (${target})"
+    fi
+  else
+    log_info "Building actr-cli for ${target}"
+    if ! (
+      cd "$WORK_REPO_ROOT"
+      RUSTFLAGS="${RUSTFLAGS:-} -C strip=symbols" \
+        cargo build "${cargo_build_args[@]}"
+    ) 2>&1 | tee "$build_log"; then
+      rm -f "$build_log"
+      append_state "actr-cli-${target}" "cli-binary" "cli_binary" \
+        "failure" "build_failed" "$release_url" "$RELEASE_SHA"
+      fail "cargo build failed for actr-cli (${target})"
+    fi
+  fi
+  rm -f "$build_log"
+
+  local binary_path="$WORK_REPO_ROOT/target/release/${binary_name}"
+  if [[ "$use_zig" == "true" ]]; then
+    binary_path="$WORK_REPO_ROOT/target/${target}/release/${binary_name}"
+  fi
+  if [[ ! -f "$binary_path" ]]; then
+    append_state "actr-cli-${target}" "cli-binary" "cli_binary" \
+      "failure" "binary_missing" "$release_url" "$RELEASE_SHA"
+    fail "Built actr-cli binary not found at ${binary_path}"
+  fi
+
+  # Pack.
+  local archive_path="$staging_dir/$archive"
+  local src_dir
+  src_dir=$(dirname "$binary_path")
+  if [[ "$(cli_binary_archive_ext "$target")" == "zip" ]]; then
+    # zip on Windows runners is provided by Compress-Archive (PowerShell).
+    # For other native runners we fall back to `zip` from the system.
+    if command -v zip >/dev/null 2>&1; then
+      (cd "$src_dir" \
+        && zip -j -X "$archive_path" "$binary_name") >/dev/null
+    else
+      (cd "$src_dir" \
+        && powershell -NoProfile -Command \
+          "Compress-Archive -Force -Path '${binary_name}' -DestinationPath '${archive_path}.tmp'" \
+        && mv "$archive_path.tmp" "$archive_path") >/dev/null
+    fi
+  else
+    tar -C "$src_dir" \
+      -czf "$archive_path" "$binary_name"
+  fi
+  [[ -f "$archive_path" ]] || fail "Failed to package actr-cli archive at ${archive_path}"
+
+  # SHA256 sidecar.
+  local sha_path="$staging_dir/$sha_name"
+  (cd "$staging_dir" && shasum -a 256 "$archive") | awk '{print $1 "  " "'"$archive"'"}' > "$sha_path"
+  [[ -s "$sha_path" ]] || fail "Failed to write SHA256 for ${archive}"
+
+  log_info "Packaged ${archive} (sha256 recorded)"
+  append_state "actr-cli-${target}" "cli-binary" "cli_binary" \
+    "success" "packaged" "$release_url" "$RELEASE_SHA"
+}
+
+# Upload one asset payload and return the HTTP status code.
+cli_release_upload_asset_once() {
+  local upload_url=$1
+  local asset_name=$2
+  local asset_path=$3
+  local token=$4
+
+  curl -sS -o /dev/null -w '%{http_code}' \
+    -X POST \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/octet-stream" \
+    -H "User-Agent: actr-release-train" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${upload_url}?name=${asset_name}" \
+    --data-binary "@${asset_path}"
+}
+
+# Upload a single asset to a GitHub Release. Uses the REST API directly
+# (avoids requiring gh CLI) and supports the release-by-tag endpoint that
+# creates the release on first upload.
+cli_release_upload_asset() {
+  local owner=$1
+  local repo=$2
+  local tag=$3
+  local asset_path=$4
+  local asset_name
+  asset_name=$(basename "$asset_path")
+  local token
+  token="${GITHUB_TOKEN:-${RELEASE_GITHUB_TOKEN:-}}"
+  [[ -n "$token" ]] || fail "GITHUB_TOKEN must be set for CLI binary release upload"
+
+  # Step 1: look up the release id for the tag.
+  local response release_id upload_url
+  response=$(curl -fsSL \
+    -H "Accept: application/vnd.github+json" \
+    -H "Authorization: Bearer ${token}" \
+    -H "User-Agent: actr-release-train" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "${PACKAGE_SYNC_GITHUB_API}/repos/${owner}/${repo}/releases/tags/${tag}" 2>/dev/null || true)
+
+  if [[ -n "$response" ]]; then
+    release_id=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])' <<<"$response")
+    upload_url=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["upload_url"])' <<<"$response")
+  else
+    # Create the release on first publish.
+    response=$(curl -fsSL \
+      -X POST \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${token}" \
+      -H "User-Agent: actr-release-train" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "${PACKAGE_SYNC_GITHUB_API}/repos/${owner}/${repo}/releases" \
+      -d "$(python3 -c "import json,sys; print(json.dumps({'tag_name': sys.argv[1], 'name': 'actr v' + sys.argv[1].lstrip('v'), 'generate_release_notes': True, 'prerelease': '${PRE_RELEASE}' == 'true'}))" "$tag")")
+    release_id=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])' <<<"$response")
+    upload_url=$(python3 -c 'import json,sys;print(json.load(sys.stdin)["upload_url"])' <<<"$response")
+  fi
+
+  [[ -n "$release_id" && -n "$upload_url" ]] \
+    || fail "Failed to resolve release id / upload url for ${owner}/${repo}@${tag}"
+
+  # upload_url ends with `{?name,label}` — strip that suffix.
+  upload_url="${upload_url%%\{*}"
+
+  # Step 2: upload the asset.
+  local http_code
+  http_code=$(cli_release_upload_asset_once "$upload_url" "$asset_name" "$asset_path" "$token")
+
+  if [[ "$http_code" == "422" ]]; then
+    log_info "Asset ${asset_name} already exists on ${owner}/${repo}@${tag}; deleting before retry"
+    local assets existing_asset_id
+    assets=$(curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${token}" \
+      -H "User-Agent: actr-release-train" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "${PACKAGE_SYNC_GITHUB_API}/repos/${owner}/${repo}/releases/${release_id}/assets?per_page=100")
+    existing_asset_id=$(python3 -c 'import json,sys; name=sys.argv[1]; print(next((str(a["id"]) for a in json.load(sys.stdin) if a.get("name") == name), ""))' "$asset_name" <<<"$assets")
+    [[ -n "$existing_asset_id" ]] \
+      || fail "GitHub release upload reported duplicate asset, but ${asset_name} was not found on ${owner}/${repo}@${tag}"
+
+    curl -fsSL \
+      -X DELETE \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${token}" \
+      -H "User-Agent: actr-release-train" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "${PACKAGE_SYNC_GITHUB_API}/repos/${owner}/${repo}/releases/assets/${existing_asset_id}" >/dev/null
+
+    http_code=$(cli_release_upload_asset_once "$upload_url" "$asset_name" "$asset_path" "$token")
+  fi
+
+  if [[ "$http_code" != "201" && "$http_code" != "200" ]]; then
+    fail "GitHub release upload failed for ${asset_name} (HTTP ${http_code})"
+  fi
+  log_info "Uploaded ${asset_name} to ${owner}/${repo}@${tag}"
+}
+
+# Stage entry: build CLI binaries. In CI each matrix runner invokes this
+# stage once with ACTR_CLI_TARGET_DESCRIPTOR set to its target row; in
+# --stage all mode (sequential) it iterates the full matrix.
+stage_build_cli_binaries() {
+  read_context
+
+  if [[ -n "${ACTR_CLI_TARGET_DESCRIPTOR:-}" ]]; then
+    local staging="$WORK_REPO_ROOT/release/reports/cli-binaries"
+    build_cli_binary_target "$ACTR_CLI_TARGET_DESCRIPTOR" "$staging"
+  else
+    local descriptor staging
+    staging="$WORK_REPO_ROOT/release/reports/cli-binaries"
+    mkdir -p "$staging"
+    for descriptor in "${CLI_BINARY_TARGETS[@]}"; do
+      build_cli_binary_target "$descriptor" "$staging"
+    done
+  fi
+
+  log_info "Stage build-cli-binaries complete"
+}
+
+# Stage entry: collect all per-target archives + sha256s and attach them to
+# the GitHub Release for v${VERSION}.
+stage_publish_cli_binaries() {
+  read_context
+
+  if [[ "$DRY_RUN" == true ]]; then
+    log_info "Dry-run: skipping actr-cli release upload for v${VERSION}"
+    append_state "actr-cli-release" "cli-binary" "cli_binary" \
+      "success" "dry_run_validated" "$(cli_binary_release_url)" "$RELEASE_SHA"
+    log_info "Stage publish-cli-binaries complete"
+    return
+  fi
+
+  local owner repo
+  owner="${PACKAGE_SYNC_OWNER:-${GITHUB_REPOSITORY_OWNER:-}}"
+  repo="${GITHUB_REPOSITORY_NAME:-actr}"
+  [[ -n "$owner" ]] || fail "Cannot resolve GitHub owner for CLI binary release upload"
+
+  local staging="$WORK_REPO_ROOT/release/reports/cli-binaries"
+  [[ -d "$staging" ]] || fail "CLI binary staging directory missing: ${staging}"
+
+  local archive_count=0
+  local asset
+  while IFS= read -r asset; do
+    [[ -n "$asset" ]] || continue
+    cli_release_upload_asset "$owner" "$repo" "$FINAL_TAG" "$asset"
+    archive_count=$((archive_count + 1))
+  done < <(find "$staging" -maxdepth 1 -type f \( -name "actr-v${VERSION}-*.tar.gz" -o -name "actr-v${VERSION}-*.zip" -o -name "actr-v${VERSION}-*.tar.gz.sha256" -o -name "actr-v${VERSION}-*.zip.sha256" \) | sort)
+
+  if (( archive_count == 0 )); then
+    fail "No actr-cli archives found in ${staging}; did build-cli-binaries run?"
+  fi
+
+  append_state "actr-cli-release" "cli-binary" "cli_binary" \
+    "success" "uploaded_${archive_count}_assets" "$(cli_binary_release_url)" "$RELEASE_SHA"
+
+  log_info "Stage publish-cli-binaries complete (${archive_count} assets attached)"
+}
+
 stage_publish_python() {
   read_context
 
@@ -1820,6 +2175,7 @@ kind_order = [
     ("python", "Python"),
     ("npm", "npm Packages"),
     ("package_sync", "Package Sync"),
+    ("cli_binary", "CLI Binaries (GitHub Release)"),
 ]
 
 by_kind = {}
@@ -1947,6 +2303,13 @@ run_release_train() {
     publish_typescript_workload_package
     publish_typescript_package
   fi
+
+  # Build and attach CLI binaries to the GitHub Release created for v${VERSION}.
+  for descriptor in "${CLI_BINARY_TARGETS[@]}"; do
+    build_cli_binary_target "$descriptor" \
+      "$WORK_REPO_ROOT/release/reports/cli-binaries"
+  done
+  stage_publish_cli_binaries
 }
 
 main() {
@@ -2014,6 +2377,11 @@ main() {
       ;;
     publish-python)
       # PYPI_API_TOKEN is optional: when unset, the Python package publish is skipped.
+      ;;
+    publish-cli-binaries)
+      if [[ -z "${GITHUB_TOKEN:-${RELEASE_GITHUB_TOKEN:-}}" ]] && [[ "$DRY_RUN" == false ]]; then
+        fail "GITHUB_TOKEN must be set for publish-cli-binaries stage"
+      fi
       ;;
   esac
 

@@ -670,6 +670,163 @@ jobs:
           path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-typescript.state.tsv
           if-no-files-found: warn
 
+  # ── Build CLI Binaries ─────────────────────────────────────────────────
+  build-cli-binaries:
+    name: Build actr CLI (${{ matrix.target }})
+    needs:
+      - context
+      - create-tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_zig: false
+            archive_ext: tar.gz
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_zig: true
+            archive_ext: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            use_zig: true
+            archive_ext: tar.gz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_zig: true
+            archive_ext: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-14
+            use_zig: false
+            archive_ext: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            use_zig: false
+            archive_ext: zip
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      ACTR_CLI_TARGET: ${{ matrix.target }}
+      ACTR_CLI_TARGET_DESCRIPTOR: ${{ matrix.target }}|${{ matrix.os }}|${{ matrix.use_zig }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Download create-tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: create-tag-artifacts
+          path: release/reports
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - name: Setup Zig
+        if: ${{ matrix.use_zig }}
+        uses: mlugg/setup-zig@v2
+
+      - name: Install cargo-zigbuild
+        if: ${{ matrix.use_zig }}
+        run: cargo install --locked cargo-zigbuild
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+
+      - name: Build and package actr CLI binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--stage build-cli-binaries --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          if [[ "${{ needs.context.outputs.skip_python }}" == "true" ]]; then
+            args+=(--skip-python)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload archive + SHA256
+        if: needs.context.outputs.dry_run != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: actr-cli-${{ matrix.target }}
+          path: |
+            release/reports/cli-binaries/actr-v${{ needs.context.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+            release/reports/cli-binaries/actr-v${{ needs.context.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+          if-no-files-found: error
+
+      - name: Upload build-cli-binaries state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-cli-binaries-${{ matrix.target }}-state
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.build-cli-binaries.state.tsv
+          if-no-files-found: warn
+
+  # ── Publish CLI Binaries ──────────────────────────────────────────────
+  publish-cli-binaries:
+    name: Publish actr CLI binaries to GitHub Release
+    needs:
+      - context
+      - create-tag
+      - build-cli-binaries
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PACKAGE_SYNC_OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Download create-tag artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: create-tag-artifacts
+          path: release/reports
+
+      - name: Download all CLI binary artifacts
+        if: needs.context.outputs.dry_run != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: actr-cli-*
+          path: release/reports/cli-binaries
+          merge-multiple: true
+
+      - name: Stage publish-cli-binaries
+        run: |
+          set -euo pipefail
+          args=(--stage publish-cli-binaries --branch main --version "${{ needs.context.outputs.version }}")
+          if [[ "${{ needs.context.outputs.dry_run }}" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          if [[ "${{ needs.context.outputs.skip_python }}" == "true" ]]; then
+            args+=(--skip-python)
+          fi
+          scripts/release-train.sh "${args[@]}"
+
+      - name: Upload publish-cli-binaries artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-cli-binaries-artifacts
+          path: release/reports/release-train-v${{ needs.context.outputs.version }}.publish-cli-binaries.state.tsv
+          if-no-files-found: warn
+
   # ── Collect Report ────────────────────────────────────────────────────
   collect-report:
     name: Collect release report
@@ -685,6 +842,8 @@ jobs:
       - build-typescript-native
       - publish-typescript-workload
       - publish-typescript
+      - build-cli-binaries
+      - publish-cli-binaries
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main
