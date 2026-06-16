@@ -1,0 +1,18 @@
+# manifest.toml — package declaration and dependencies (instrumentation test)
+#
+# This is the test-side manifest matching the main app's dependencies.
+# It uses the same package identity so that UnifiedIntegrationTest can
+# resolve the correct ActrType for linked-mode node creation.
+
+edition = 1
+
+[package]
+name = "echo-client-app"
+manufacturer = "acme"
+version = "0.1.0"
+description = "Android Echo Client"
+license = "Apache-2.0"
+
+[dependencies]
+EchoService = { actr_type = "acme:EchoService:1.0.0" }
+DataStreamConcurrentServer = { actr_type = "acme:DataStreamConcurrentServer:1.0.0" }

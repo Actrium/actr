@@ -221,10 +221,6 @@ val ActrException.userMessage: String
             is ActrException.NotImplemented -> "Not implemented: $msg"
             is ActrException.Internal -> "Internal error: $msg"
             is ActrException.Config -> "Configuration error: $msg"
-            is ActrException.ConnectionNotReady -> {
-                val retryMsg = info.retryAfterMs?.let { " Retry after ${it}ms." } ?: ""
-                "Connection not ready.$retryMsg"
-            }
         }
 
 /** Check if the exception is a timeout. */

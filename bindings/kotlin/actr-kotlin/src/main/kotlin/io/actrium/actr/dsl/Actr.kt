@@ -48,11 +48,37 @@ import java.net.URL
 // Type Aliases — provide DSL-friendly names for remaining generated types
 // ============================================================================
 
+/** Re-export of context bridge as [Context] — aligns with the design doc convention
+ * that handler interfaces use `Context`, not `ContextBridge`. */
+typealias Context = io.actrium.actr.ContextBridge
+
+/** Re-export of RPC envelope bridge as [RpcEnvelope] — aligns with design doc naming. */
+typealias RpcEnvelope = io.actrium.actr.RpcEnvelopeBridge
+
 /** Handle for network event callbacks. Used for platform integration. */
 typealias NetworkEventHandle = NetworkEventHandleWrapper
 
 /** Workload callback interface for handling lifecycle events. */
 typealias Workload = WorkloadLifecycleBridge
+
+/** Callback interface for forwarding tracing log events to the host.
+ * Register via [setLogCallback] before starting the actr node. */
+typealias LogCallback = io.actrium.actr.LogCallback
+
+/** Callback interface for incoming DataStream chunks. */
+typealias DataStreamCallback = io.actrium.actr.DataStreamCallback
+
+/** A single media sample (audio/video frame). */
+typealias MediaSample = io.actrium.actr.MediaSample
+
+/** Callback interface for incoming media tracks. */
+typealias MediaTrackCallback = io.actrium.actr.MediaTrackCallback
+
+/** Media type enumeration (audio/video). */
+typealias MediaType = io.actrium.actr.MediaType
+
+/** Opus audio encoder. */
+typealias OpusEncoder = io.actrium.actr.OpusEncoder
 
 // ============================================================================
 // ActrNode — high-level wrapper with workload retention
@@ -532,6 +558,32 @@ class ActrRef internal constructor(
 }
 
 // ============================================================================
+// Global Log Callback
+// ============================================================================
+
+/**
+ * Set or clear the global log callback.
+ *
+ * Must be called **before** the actr node is created. The tracing subscriber
+ * is locked during node initialization; calls after that point are ignored.
+ * Pass `null` to disable forwarding.
+ *
+ * Example:
+ * ```kotlin
+ * setLogCallback(object : LogCallback {
+ *     override fun onLog(level: String, target: String, message: String, timestampMs: Long) {
+ *         Log.d("actr", "[$level] $target: $message")
+ *     }
+ * })
+ * ```
+ *
+ * @param callback The log callback implementation, or null to clear
+ */
+fun setLogCallback(callback: LogCallback?) {
+    io.actrium.actr.setLogCallback(callback)
+}
+
+// ============================================================================
 // Top-Level Convenience Functions
 // ============================================================================
 
@@ -566,6 +618,37 @@ suspend fun createActrNodeWithMonitoring(
     ActrNode.fromPackageFileWithMonitoring(
         configPath = configPath,
         packagePath = packagePath,
+        context = context,
+        scope = scope,
+        onNetworkStatusLog = onNetworkStatusLog,
+    )
+
+/**
+ * Create an ActrNode from config and package file URLs (top-level function).
+ *
+ * @param configURL File URL to the TOML configuration file
+ * @param packageURL File URL to the `.actr` package file
+ * @return A new ActrNode instance
+ * @throws IllegalArgumentException if either URL is not a file URL
+ */
+suspend fun createActrNode(
+    configURL: URL,
+    packageURL: URL,
+): ActrNode = ActrNode.fromPackageFile(configURL, packageURL)
+
+/**
+ * Create a monitored ActrNode from config and package file URLs.
+ */
+suspend fun createActrNodeWithMonitoring(
+    configURL: URL,
+    packageURL: URL,
+    context: Context,
+    scope: CoroutineScope,
+    onNetworkStatusLog: ((String) -> Unit)? = null,
+): ActrNode =
+    ActrNode.fromPackageFileWithMonitoring(
+        configURL = configURL,
+        packageURL = packageURL,
         context = context,
         scope = scope,
         onNetworkStatusLog = onNetworkStatusLog,

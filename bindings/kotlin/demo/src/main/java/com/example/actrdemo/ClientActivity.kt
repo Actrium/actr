@@ -76,33 +76,10 @@ class ClientActivity : AppCompatActivity() {
     // Logcat reader - streams native actr library logs to the UI
     private lateinit var logcatReader: LogcatReader
 
-    /** Parse ActrType from the [package] section of an actr.toml config file. */
-    private fun parseActrTypeFromConfig(configPath: String): ActrType {
-        val lines = java.io.File(configPath).readLines()
-        var inPackage = false
-        var name = ""
-        var manufacturer = ""
-        var version = ""
-
-        for (line in lines) {
-            val trimmed = line.trim()
-            when {
-                trimmed.startsWith("[package]") -> inPackage = true
-                trimmed.startsWith("[") && inPackage -> break
-                inPackage && trimmed.startsWith("name") ->
-                    name = trimmed.substringAfter("=").trim().removeSurrounding("\"")
-                inPackage && trimmed.startsWith("manufacturer") ->
-                    manufacturer = trimmed.substringAfter("=").trim().removeSurrounding("\"")
-                inPackage && trimmed.startsWith("version") ->
-                    version = trimmed.substringAfter("=").trim().removeSurrounding("\"")
-            }
-        }
-
-        require(manufacturer.isNotBlank() && name.isNotBlank() && version.isNotBlank()) {
-            "Failed to parse [package] section from actr.toml"
-        }
-
-        return ActrType(manufacturer = manufacturer, name = name, version = version)
+    /** Resolve the actor's ActrType from manifest.toml using the FFI-backed [Manifest] API. */
+    private suspend fun resolveActorType(manifestPath: String): ActrType {
+        val manifest = Manifest.from(java.io.File(manifestPath))
+        return manifest.packageType()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -249,10 +226,12 @@ class ClientActivity : AppCompatActivity() {
         lifecycleScope.launch {
             try {
                 val configPath = copyAssetToInternalStorage("actr.toml")
+                val manifestPath = copyAssetToInternalStorage("manifest.toml")
                 Log.i(TAG, "Config path: $configPath")
+                Log.i(TAG, "Manifest path: $manifestPath")
 
-                val actorType = parseActrTypeFromConfig(configPath)
-                Log.i(TAG, "Actor type from config: ${actorType.manufacturer}:${actorType.name}:${actorType.version}")
+                val actorType = resolveActorType(manifestPath)
+                Log.i(TAG, "Actor type from manifest: ${actorType.manufacturer}:${actorType.name}:${actorType.version}")
                 val workload = UnifiedWorkload(MyUnifiedHandler())
                 val system =
                     linkedWithMonitoring(

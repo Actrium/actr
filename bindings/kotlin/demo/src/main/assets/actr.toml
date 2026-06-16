@@ -1,14 +1,10 @@
-edition = 1
-
-[package]
-name = "EchoApp"
-manufacturer = "acme"
-version = "0.1.0"
-description = "Actrium EchoApp — Android linked runtime"
-
-[dependencies]
-echo = { actr_type = "actrium:EchoService:1.0.0" }
-stream = { actr_type = "actrium:DuplexStreamService:1.0.0" }
+# actr.toml — linked runtime configuration
+#
+# EchoApp uses linked mode through ActrNode.linked() and does not use
+# `actr build`. This file is read directly as runtime configuration, so
+# package, binary, and build sections are intentionally omitted.
+#
+# Package identity and dependencies are declared in manifest.toml.
 
 [signaling]
 url = "ws://124.71.231.251:9080/signaling/ws"
@@ -51,5 +47,3 @@ type = "actrium:EchoService:1.0.0"
 [[acl.rules]]
 permission = "allow"
 type = "actrium:DuplexStreamService:1.0.0"
-
-[scripts]

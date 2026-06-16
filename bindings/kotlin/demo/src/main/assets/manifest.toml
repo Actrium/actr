@@ -1,0 +1,20 @@
+# manifest.toml — package declaration and dependencies
+#
+# EchoApp uses the linked runtime and is not built through `actr build`.
+# This file declares the package identity and remote service dependencies.
+#
+# The actor type is resolved at runtime via resolveManifestPackageActrType()
+# (or Manifest.from(path).packageType()), matching the Swift pattern:
+#   let actorType = try ActrType.fromStringRepr("actrium:EchoApp:0.1.0")
+
+edition = 1
+
+[package]
+name = "EchoApp"
+manufacturer = "acme"
+version = "0.1.0"
+description = "Actrium EchoApp — Android linked runtime"
+
+[dependencies]
+echo = { actr_type = "actrium:EchoService:1.0.0" }
+stream = { actr_type = "actrium:DuplexStreamService:1.0.0" }

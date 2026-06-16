@@ -66,6 +66,8 @@ open class SimpleWorkload(
     private val type: ActrType,
     private val onStartHandler: suspend (ContextBridge) -> Unit = {},
     private val onStopHandler: suspend (ContextBridge) -> Unit = {},
+    private val onReadyHandler: suspend (ContextBridge) -> Unit = {},
+    private val onErrorHandler: suspend (ContextBridge, ErrorEventBridge) -> Unit = { _, _ -> },
 ) : WorkloadLifecycleBridge {
     /** Channel for sending DataStream requests from UI to workload. */
     private val dataStreamChannel = Channel<DataStreamRequest>(Channel.UNLIMITED)
@@ -93,7 +95,9 @@ open class SimpleWorkload(
         typeString: String,
         onStartHandler: suspend (ContextBridge) -> Unit = {},
         onStopHandler: suspend (ContextBridge) -> Unit = {},
-    ) : this(realmId, typeString.toActrType(), onStartHandler, onStopHandler)
+        onReadyHandler: suspend (ContextBridge) -> Unit = {},
+        onErrorHandler: suspend (ContextBridge, ErrorEventBridge) -> Unit = { _, _ -> },
+    ) : this(realmId, typeString.toActrType(), onStartHandler, onStopHandler, onReadyHandler, onErrorHandler)
 
     /** Create a SimpleWorkload with named parameters. */
     constructor(
@@ -103,11 +107,15 @@ open class SimpleWorkload(
         version: String,
         onStartHandler: suspend (ContextBridge) -> Unit = {},
         onStopHandler: suspend (ContextBridge) -> Unit = {},
+        onReadyHandler: suspend (ContextBridge) -> Unit = {},
+        onErrorHandler: suspend (ContextBridge, ErrorEventBridge) -> Unit = { _, _ -> },
     ) : this(
         realm,
         ActrType(manufacturer = manufacturer, name = name, version = version),
         onStartHandler,
         onStopHandler,
+        onReadyHandler,
+        onErrorHandler,
     )
 
     /**
@@ -158,7 +166,7 @@ open class SimpleWorkload(
     }
 
     override suspend fun onReady(ctx: ContextBridge) {
-        // Default: do nothing
+        onReadyHandler(ctx)
     }
 
     override suspend fun onStop(ctx: ContextBridge) {
@@ -169,7 +177,7 @@ open class SimpleWorkload(
         ctx: ContextBridge,
         event: ErrorEventBridge,
     ) {
-        // Default: do nothing
+        onErrorHandler(ctx, event)
     }
 
     /**
@@ -222,7 +230,9 @@ class WorkloadBuilder {
     var realm: UInt = 0u
     private var _type: ActrType? = null
     private var startHandler: suspend (ContextBridge) -> Unit = {}
+    private var readyHandler: suspend (ContextBridge) -> Unit = {}
     private var stopHandler: suspend (ContextBridge) -> Unit = {}
+    private var errorHandler: suspend (ContextBridge, ErrorEventBridge) -> Unit = { _, _ -> }
 
     /** Set the actor type from a string. */
     var type: String
@@ -255,6 +265,15 @@ class WorkloadBuilder {
     }
 
     /**
+     * Set the onReady handler.
+     *
+     * @param handler Function called when the node becomes ready, receives the context
+     */
+    fun onReady(handler: suspend (ctx: ContextBridge) -> Unit) {
+        readyHandler = handler
+    }
+
+    /**
      * Set the onStop handler.
      *
      * @param handler Function called when the workload stops, receives the context
@@ -264,13 +283,22 @@ class WorkloadBuilder {
     }
 
     /**
+     * Set the onError handler.
+     *
+     * @param handler Function called when the runtime reports a workload error
+     */
+    fun onError(handler: suspend (ctx: ContextBridge, event: ErrorEventBridge) -> Unit) {
+        errorHandler = handler
+    }
+
+    /**
      * Build the workload. Returns [SimpleWorkload] to allow setting target server ID before RPC
      * calls.
      */
     fun build(): SimpleWorkload {
         require(realm > 0u) { "realm must be set" }
         requireNotNull(_type) { "type must be set" }
-        return SimpleWorkload(realm, _type!!, startHandler, stopHandler)
+        return SimpleWorkload(realm, _type!!, startHandler, stopHandler, readyHandler, errorHandler)
     }
 }
 

@@ -1,17 +1,6 @@
-edition = 1
-exports = []
-
-[package]
-name = "echo-client-app"
-manufacturer = "acme"
-description = "Android Echo Client"
-authors = []
-license = "Apache-2.0"
-tags = ["dev", "example", "android"]
-
-[dependencies]
-EchoService = { actr_type = "acme+EchoService" }
-DataStreamConcurrentServer = { actr_type = "acme+DataStreamConcurrentServer" }
+# actr.toml — linked runtime configuration (instrumentation test)
+#
+# Package identity and dependencies are declared in manifest.toml.
 
 [system.signaling]
 url = "wss://actrix1.develenv.com/signaling/ws"
@@ -38,6 +27,8 @@ tracing_service_name = "android-echo-client"
 
 [[acl.rules]]
 permission = "allow"
-types = ["acme+EchoService", "acme+DataStreamConcurrentServer"]
+type = "acme:EchoService:1.0.0"
 
-[scripts]
+[[acl.rules]]
+permission = "allow"
+type = "acme:DataStreamConcurrentServer:1.0.0"
