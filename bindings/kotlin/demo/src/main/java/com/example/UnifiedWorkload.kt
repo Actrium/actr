@@ -10,11 +10,11 @@ package com.example
 import android.util.Log
 import com.example.generated.UnifiedDispatcher
 import com.example.generated.UnifiedHandler
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.DynamicWorkload
-import io.actor_rtc.actr.ErrorEventBridge
-import io.actor_rtc.actr.RpcEnvelopeBridge
-import io.actor_rtc.actr.WorkloadLifecycleBridge
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.DynamicWorkload
+import io.actrium.actr.ErrorEventBridge
+import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.WorkloadLifecycleBridge
 
 /**
  * Unified Workload lifecycle scaffold

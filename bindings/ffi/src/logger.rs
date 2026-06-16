@@ -59,7 +59,7 @@ fn init_macos(config: &ObservabilityConfig) -> Option<ObservabilityGuard> {
 
     #[cfg(feature = "macos-oslog")]
     let platform_layer: Option<crate::log_callback::DynLayer> = {
-        let layer = tracing_oslog::OsLogger::new("com.actor-rtc.actr", "core");
+        let layer = tracing_oslog::OsLogger::new("io.actrium.actr", "core");
         Some(Box::new(layer))
     };
     #[cfg(not(feature = "macos-oslog"))]

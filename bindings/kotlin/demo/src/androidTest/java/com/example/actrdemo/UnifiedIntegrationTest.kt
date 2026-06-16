@@ -16,10 +16,10 @@ import android.content.Context
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.dsl.ActrRef
-import io.actor_rtc.actr.dsl.awaitShutdown
-import io.actor_rtc.actr.dsl.createActrNode
+import io.actrium.actr.PayloadType
+import io.actrium.actr.dsl.ActrRef
+import io.actrium.actr.dsl.awaitShutdown
+import io.actrium.actr.dsl.createActrNode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import local.StreamClientOuterClass.ClientStartStreamRequest

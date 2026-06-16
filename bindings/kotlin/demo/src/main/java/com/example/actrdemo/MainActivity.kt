@@ -5,7 +5,7 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
 import androidx.appcompat.app.AppCompatActivity
-import io.actorrtc.demo.R
+import io.actrium.demo.R
 
 class MainActivity : AppCompatActivity() {
     private lateinit var signalingUrlInput: EditText

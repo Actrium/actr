@@ -6,10 +6,10 @@ This document provides a comprehensive reference for both the low-level (UniFFI-
 
 | Package | Purpose |
 |---------|---------|
-| `io.actor_rtc.actr` | UniFFI-generated raw bindings (import for low-level access) |
-| `io.actor_rtc.actr.dsl` | High-level Kotlin-idiomatic API (recommended for app developers) |
+| `io.actrium.actr` | UniFFI-generated raw bindings (import for low-level access) |
+| `io.actrium.actr.dsl` | High-level Kotlin-idiomatic API (recommended for app developers) |
 
-For most use cases, `import io.actor_rtc.actr.dsl.*` gives you everything you need.
+For most use cases, `import io.actrium.actr.dsl.*` gives you everything you need.
 
 ---
 
@@ -184,7 +184,7 @@ fun dynamicWorkload(
 ): DynamicWorkload
 ```
 
-- `DynamicWorkload` typealias for `io.actor_rtc.actr.DynamicWorkload`
+- `DynamicWorkload` typealias for `io.actrium.actr.DynamicWorkload`
 
 ---
 
@@ -377,13 +377,13 @@ suspend fun <T> withRetry(
 
 ## Low-Level API (Generated Bindings)
 
-The low-level API is in `io.actor_rtc.actr` and consists of UniFFI-generated bindings directly from the Rust codebase. In most cases, use the high-level DSL API instead.
+The low-level API is in `io.actrium.actr` and consists of UniFFI-generated bindings directly from the Rust codebase. In most cases, use the high-level DSL API instead.
 
 ### Key Generated Classes
 
 | Class | Description |
 |-------|-------------|
-| `ActrNode` (in `io.actor_rtc.actr`) | Raw node — use `ActrNode` from DSL layer instead |
+| `ActrNode` (in `io.actrium.actr`) | Raw node — use `ActrNode` from DSL layer instead |
 | `ActrRefWrapper` | Raw actor reference — use `ActrRef` from DSL layer instead |
 | `ContextBridge` | Workload context (same class used in both layers) |
 | `DynamicWorkload` | Raw composite workload |

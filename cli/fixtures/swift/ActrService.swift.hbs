@@ -15,7 +15,7 @@ final class ActrService: ObservableObject {
     var system: ActrNode?
     var actr: ActrRef?
     private let logger = Logger(
-        subsystem: Bundle.main.bundleIdentifier ?? "io.actr.App",
+        subsystem: Bundle.main.bundleIdentifier ?? "io.actrium.App",
         category: "ActrService"
     )
 
@@ -95,4 +95,4 @@ extension ActrService {
 }
 
 // Global logger for the handlers to use
-private let logger = Logger(subsystem: "io.actr.App", category: "Handler")
+private let logger = Logger(subsystem: "io.actrium.App", category: "Handler")

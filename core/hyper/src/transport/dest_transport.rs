@@ -360,6 +360,7 @@ fn is_closed_like_error(e: &NetworkError) -> bool {
             || msg.contains("datachannel closed")
             || msg.contains("data channel closed")
             || msg.contains("websocket connection closed")
+            || msg.contains("non-established state")
             || msg.contains("closed")
     }
 
@@ -404,6 +405,7 @@ mod tests {
         conn_type: ConnType,
         connect_fails: bool,
         lane_closed: bool,
+        lane_non_established: bool,
         connected: AtomicBool,
         send_count: Arc<AtomicUsize>,
         identity: Option<WireIdentity>,
@@ -415,6 +417,7 @@ mod tests {
                 conn_type,
                 connect_fails: false,
                 lane_closed: false,
+                lane_non_established: false,
                 connected: AtomicBool::new(false),
                 send_count: Arc::new(AtomicUsize::new(0)),
                 identity: None,
@@ -428,6 +431,11 @@ mod tests {
 
         fn lane_closed(mut self) -> Self {
             self.lane_closed = true;
+            self
+        }
+
+        fn lane_non_established(mut self) -> Self {
+            self.lane_non_established = true;
             self
         }
 
@@ -476,6 +484,11 @@ mod tests {
             if self.lane_closed {
                 return Err(NetworkError::DataChannelError(
                     "DataChannel closed".to_string(),
+                ));
+            }
+            if self.lane_non_established {
+                return Err(NetworkError::WebRtcError(
+                    "sending payload data in non-Established state".to_string(),
                 ));
             }
             Ok(Arc::new(FakeLane {
@@ -564,6 +577,33 @@ mod tests {
         .await
         .expect("send should not hang")
         .expect_err("stale WebRTC-only candidate should fail clearly");
+
+        assert!(
+            matches!(err, NetworkError::NoRoute(ref msg) if msg.contains("all transport candidates exhausted")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_established_webrtc_candidate_is_evicted() {
+        let peer_id = actr_protocol::ActrId::default();
+        let transport = test_transport(vec![Arc::new(
+            FakeWire::new(ConnType::WebRTC)
+                .lane_non_established()
+                .with_identity(WireIdentity::WebRtc {
+                    peer_id,
+                    session_id: 8,
+                }),
+        )])
+        .await;
+
+        let err = timeout(
+            Duration::from_secs(1),
+            transport.send_with_identity(PayloadType::RpcReliable, b"response"),
+        )
+        .await
+        .expect("send should not hang")
+        .expect_err("non-established WebRTC candidate should be evicted");
 
         assert!(
             matches!(err, NetworkError::NoRoute(ref msg) if msg.contains("all transport candidates exhausted")),

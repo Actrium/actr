@@ -1,10 +1,10 @@
 package com.example.generated
 
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.ErrorEventBridge
-import io.actor_rtc.actr.RpcEnvelopeBridge
-import io.actor_rtc.actr.WorkloadLifecycleBridge
+import io.actrium.actr.ActrType
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.ErrorEventBridge
+import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.WorkloadLifecycleBridge
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull

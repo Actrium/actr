@@ -7,7 +7,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_ROOT="$(cd "${ROOT_DIR}/../.." && pwd)"
 CRATE_DIR="${ROOT_DIR}/../ffi"
 MODULE_DIR="${ROOT_DIR}/actr-kotlin"
-GENERATED_DIR="${MODULE_DIR}/src/main/kotlin/io/actor_rtc/actr"
+KOTLIN_SRC_DIR="${MODULE_DIR}/src/main/kotlin"
+GENERATED_PACKAGE_DIR="${KOTLIN_SRC_DIR}/io/actrium/actr"
+OLD_GENERATED_DIR="${MODULE_DIR}/src/main/kotlin/io/actor""_rtc/actr"
 LIBRARY_JNILIBS_DIR="${MODULE_DIR}/src/main/jniLibs"
 DEMO_JNILIBS_DIR="${ROOT_DIR}/demo/src/main/jniLibs"
 TARGET_DIR="${WORKSPACE_ROOT}/target"
@@ -332,10 +334,10 @@ fi
 if [[ "${ACTR_GENERATE_KOTLIN_BINDINGS}" == true ]]; then
     echo ""
     echo "Generating Kotlin bindings..."
-    mkdir -p "${GENERATED_DIR}"
-    rm -f "${GENERATED_DIR}/actr.kt"
-    rm -rf "${GENERATED_DIR}/io"
-    (cd "${CRATE_DIR}" && uniffi-bindgen generate --library "${HOST_LIBRARY_PATH}" --language kotlin --out-dir "${GENERATED_DIR}")
+    mkdir -p "${KOTLIN_SRC_DIR}"
+    rm -f "${GENERATED_PACKAGE_DIR}/actr.kt"
+    rm -rf "${GENERATED_PACKAGE_DIR}/io" "${OLD_GENERATED_DIR}"
+    (cd "${CRATE_DIR}" && uniffi-bindgen generate --library "${HOST_LIBRARY_PATH}" --language kotlin --out-dir "${KOTLIN_SRC_DIR}")
 fi
 
 echo ""

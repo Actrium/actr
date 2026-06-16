@@ -1,11 +1,11 @@
-/** Type builders and extensions for Actor-RTC types. */
-package io.actor_rtc.actr.dsl
+/** Type builders and extensions for Actrium types. */
+package io.actrium.actr.dsl
 
-import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.DataStream
-import io.actor_rtc.actr.MetadataEntry
-import io.actor_rtc.actr.Realm
+import io.actrium.actr.ActrId
+import io.actrium.actr.ActrType
+import io.actrium.actr.DataStream
+import io.actrium.actr.MetadataEntry
+import io.actrium.actr.Realm
 
 // ============================================================================
 // ActrType Builders

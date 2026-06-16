@@ -1,11 +1,11 @@
 /**
- * Actor-RTC Kotlin SDK
+ * Actrium Kotlin SDK
  *
  * This file re-exports all public API for convenient imports.
  *
  * Usage:
  * ```kotlin
- * import io.actor_rtc.actr.dsl.*
+ * import io.actrium.actr.dsl.*
  * ```
  *
  * This gives you access to:
@@ -16,14 +16,14 @@
  *
  * For direct access to generated types, use:
  * ```kotlin
- * import io.actor_rtc.actr.*
+ * import io.actrium.actr.*
  * ```
  */
 @file:Suppress("unused")
 
-package io.actor_rtc.actr.dsl
+package io.actrium.actr.dsl
 
 // Re-export commonly used types from the generated bindings
 // Users can import either:
-// - io.actor_rtc.actr.dsl.* for the DSL API
-// - io.actor_rtc.actr.* for the raw generated types
+// - io.actrium.actr.dsl.* for the DSL API
+// - io.actrium.actr.* for the raw generated types

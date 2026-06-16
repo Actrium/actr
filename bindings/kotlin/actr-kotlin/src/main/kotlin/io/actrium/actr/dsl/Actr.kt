@@ -1,7 +1,7 @@
 /**
- * Actor-RTC Kotlin SDK
+ * Actrium Kotlin SDK
  *
- * A Kotlin-idiomatic wrapper for the Actor-RTC framework.
+ * A Kotlin-idiomatic wrapper for the Actrium framework.
  *
  * Example usage:
  * ```kotlin
@@ -27,17 +27,17 @@
  * ref.stop()
  * ```
  */
-package io.actor_rtc.actr.dsl
+package io.actrium.actr.dsl
 
-import io.actor_rtc.actr.ActrException
-import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrRefWrapper
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.DynamicWorkload
-import io.actor_rtc.actr.NetworkEventHandleWrapper
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.WorkloadLifecycleBridge
-import io.actor_rtc.actr.ActrNode as ActrNodeGenerated
+import io.actrium.actr.ActrException
+import io.actrium.actr.ActrId
+import io.actrium.actr.ActrRefWrapper
+import io.actrium.actr.ActrType
+import io.actrium.actr.DynamicWorkload
+import io.actrium.actr.NetworkEventHandleWrapper
+import io.actrium.actr.PayloadType
+import io.actrium.actr.WorkloadLifecycleBridge
+import io.actrium.actr.ActrNode as ActrNodeGenerated
 import java.net.URL
 
 // ============================================================================

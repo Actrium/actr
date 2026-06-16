@@ -181,7 +181,7 @@ cleanup() {
     fi
 
     if [ -n "$DEVICE_UDID" ]; then
-        xcrun simctl terminate "$DEVICE_UDID" com.actrium.DataStreamApp 2>/dev/null || true
+        xcrun simctl terminate "$DEVICE_UDID" io.actrium.DataStreamApp 2>/dev/null || true
         if [ "$DEVICE_CREATED" = "1" ]; then
             xcrun simctl shutdown "$DEVICE_UDID" 2>/dev/null || true
             xcrun simctl delete "$DEVICE_UDID" 2>/dev/null || true
@@ -549,7 +549,7 @@ exports = ["protos/local/duplex_stream.proto"]
 name = "DuplexStreamService"
 manufacturer = "${MANUFACTURER}"
 version = "1.0.0"
-description = "Actor-RTC DuplexStreamService workload package for Swift DataStreamApp E2E"
+description = "Actrium DuplexStreamService workload package for Swift DataStreamApp E2E"
 authors = []
 license = "Apache-2.0"
 tags = ["e2e", "service"]
@@ -1051,7 +1051,7 @@ edition = 1
 name = "DataStreamApp"
 manufacturer = "${MANUFACTURER}"
 version = "0.1.0"
-description = "Actor-RTC DataStreamApp linked runtime identity marker"
+description = "Actrium DataStreamApp linked runtime identity marker"
 
 [binary]
 path = "${DATASTREAMAPP_MARKER_BINARY}"
@@ -1098,7 +1098,7 @@ exports = ["protos/local/probe.proto"]
 name = "DataStreamApp"
 manufacturer = "${MANUFACTURER}"
 version = "0.1.0"
-description = "Actor-RTC DataStreamApp iOS linked runtime"
+description = "Actrium DataStreamApp iOS linked runtime"
 
 [dependencies]
 duplex_stream = { actr_type = "${MANUFACTURER}:DuplexStreamService:1.0.0" }
@@ -1109,7 +1109,7 @@ write_datastreamapp_project_yml() {
     cat >"$TMP_APP_DIR/project.yml" <<EOF
 name: DataStreamApp
 options:
-  bundleIdPrefix: com.actrium
+  bundleIdPrefix: io.actrium
   deploymentTarget:
     iOS: "26.2"
 settings:
@@ -1159,7 +1159,7 @@ targets:
           NSAllowsArbitraryLoads: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.actrium.DataStreamApp
+        PRODUCT_BUNDLE_IDENTIFIER: io.actrium.DataStreamApp
         SWIFT_VERSION: "6.0"
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
@@ -1434,7 +1434,7 @@ install_and_launch_app() {
         --stdout="$APP_STDOUT_LOG" \
         --stderr="$APP_STDERR_LOG" \
         "$DEVICE_UDID" \
-        "com.actrium.DataStreamApp" \
+        "io.actrium.DataStreamApp" \
         >"$LOG_DIR/app.launch.log" 2>&1
 
     success "App launched, waiting for datastream echo result"

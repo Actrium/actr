@@ -1,4 +1,4 @@
-package io.actor_rtc.actr.dsl
+package io.actrium.actr.dsl
 
 import android.content.Context
 import android.net.ConnectivityManager
@@ -7,13 +7,13 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.util.Log
-import io.actor_rtc.actr.ActrException
-import io.actor_rtc.actr.AppLifecycleState
-import io.actor_rtc.actr.CleanupReason
-import io.actor_rtc.actr.NetworkAvailability
-import io.actor_rtc.actr.NetworkSnapshot
-import io.actor_rtc.actr.NetworkTransportFlags
-import io.actor_rtc.actr.ReconnectReason
+import io.actrium.actr.ActrException
+import io.actrium.actr.AppLifecycleState
+import io.actrium.actr.CleanupReason
+import io.actrium.actr.NetworkAvailability
+import io.actrium.actr.NetworkSnapshot
+import io.actrium.actr.NetworkTransportFlags
+import io.actrium.actr.ReconnectReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

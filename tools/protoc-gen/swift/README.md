@@ -10,13 +10,6 @@ Binary name: `protoc-gen-actrframework-swift`.
 - Swift 6+ (for building from source)
 - `protoc`
 
-## Install (Homebrew)
-
-```bash
-brew tap actor-rtc/tap
-brew install protoc-gen-actrframework-swift
-```
-
 ## Install (Build from source)
 
 Using Makefile:
@@ -85,5 +78,4 @@ Generates `echo.actor.swift` with standard handler protocol.
 
 - Tag `vX.Y.Z` to trigger the GitHub Actions release workflow.
 - Use `scripts/build-release.sh` for local packaging.
-- Homebrew formula template: `homebrew/protoc-gen-actrframework-swift.rb`.
 - Release checklist: `docs/release.md`.

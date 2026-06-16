@@ -17,11 +17,11 @@ package com.example.generated
 import local.DataStreamPeer.*
 import local.StreamClientOuterClass.*
 import echo.Echo.*
-import io.actor_rtc.actr.ActrId
-import io.actor_rtc.actr.ActrType
-import io.actor_rtc.actr.ContextBridge
-import io.actor_rtc.actr.PayloadType
-import io.actor_rtc.actr.RpcEnvelopeBridge
+import io.actrium.actr.ActrId
+import io.actrium.actr.ActrType
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.PayloadType
+import io.actrium.actr.RpcEnvelopeBridge
 
 /**
  * Unified Handler interface combining all local service handlers

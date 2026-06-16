@@ -4,7 +4,7 @@
  * Generates Handler interface and Dispatcher for ACTR services. Similar to the Rust ModernGenerator
  * but for Kotlin.
  */
-package io.actor_rtc.codegen
+package io.actrium.codegen
 
 import com.google.protobuf.DescriptorProtos.MethodDescriptorProto
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse
@@ -56,8 +56,8 @@ class KotlinActorGenerator(
         val outerClassName = getProtoOuterClassName()
 
         return buildString {
-            appendLine("import io.actor_rtc.actr.ContextBridge")
-            appendLine("import io.actor_rtc.actr.RpcEnvelopeBridge")
+            appendLine("import io.actrium.actr.ContextBridge")
+            appendLine("import io.actrium.actr.RpcEnvelopeBridge")
             appendLine()
             // Import the protobuf outer class
             // The outer class name is derived from the proto file name (e.g., file.proto -> File)
