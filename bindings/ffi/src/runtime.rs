@@ -5,7 +5,7 @@ use crate::types::{
     ActrId, ActrType, AppLifecycleState, CleanupReason, NetworkEventResult, NetworkSnapshot,
     PayloadType, ReconnectReason,
 };
-use crate::workload::DynamicWorkload;
+use crate::workload::{DynamicWorkload, RuntimeObservers};
 use actr_framework::{Bytes, Dest};
 use actr_hyper::{ActrRef, NetworkEventHandle, Node, Registered, WorkloadPackage};
 use parking_lot::Mutex;
@@ -110,50 +110,17 @@ impl ActrNode {
         config_path: String,
         package_path: String,
     ) -> ActrResult<Arc<Self>> {
-        let package_bytes = std::fs::read(&package_path).map_err(|e| {
-            error!("Failed to read package at {}: {}", package_path, e);
-            ActrError::Config {
-                msg: format!("Failed to read package at {}: {}", package_path, e),
-            }
-        })?;
-        let package = WorkloadPackage::new(package_bytes);
+        new_from_package_file_inner(config_path, package_path, None).await
+    }
 
-        // Node::from_config_file owns config parsing, [hyper] section
-        // parsing (data_dir / trust), and Hyper construction — the shell
-        // only composes observability + attach + register + start on top
-        // of the returned Node<Init>.
-        let init = Node::from_config_file(&config_path).await.map_err(|e| {
-            error!("Failed to load runtime config: {}", e);
-            ActrError::Config {
-                msg: format!("Failed to load runtime config `{}`: {}", config_path, e),
-            }
-        })?;
-        crate::logger::init_observability(init.runtime_config().observability.clone());
-
-        info!(
-            config_path = %config_path,
-            package_path = %package_path,
-            "Creating package-backed runtime wrapper",
-        );
-
-        let attached = init.attach(&package).await.map_err(|e| {
-            error!("Failed to attach package-backed node: {}", e);
-            ActrError::Internal {
-                msg: format!("Failed to attach package-backed node: {e}"),
-            }
-        })?;
-        let ais_endpoint = attached.ais_endpoint().to_string();
-        let registered = attached.register(&ais_endpoint).await.map_err(|e| {
-            error!("AIS registration failed: {}", e);
-            ActrError::Internal {
-                msg: format!("AIS registration failed: {e}"),
-            }
-        })?;
-
-        Ok(Arc::new(Self {
-            inner: Mutex::new(Some(registered)),
-            network_event_handle: Mutex::new(None),
-        }))
+    /// Create a package-backed runtime and install host-side observers.
+    #[uniffi::constructor(async_runtime = "tokio")]
+    pub async fn new_from_package_file_with_observers(
+        config_path: String,
+        package_path: String,
+        observers: Arc<RuntimeObservers>,
+    ) -> ActrResult<Arc<Self>> {
+        new_from_package_file_inner(config_path, package_path, Some(observers)).await
     }
 
     /// Create a linked/static runtime from a foreign-language workload.
@@ -208,6 +175,60 @@ impl ActrNode {
 
         Ok(Arc::new(NetworkEventHandleWrapper { inner: handle }))
     }
+}
+
+async fn new_from_package_file_inner(
+    config_path: String,
+    package_path: String,
+    observers: Option<Arc<RuntimeObservers>>,
+) -> ActrResult<Arc<ActrNode>> {
+    let package_bytes = std::fs::read(&package_path).map_err(|e| {
+        error!("Failed to read package at {}: {}", package_path, e);
+        ActrError::Config {
+            msg: format!("Failed to read package at {}: {}", package_path, e),
+        }
+    })?;
+    let package = WorkloadPackage::new(package_bytes);
+
+    // Node::from_config_file owns config parsing, [hyper] section
+    // parsing (data_dir / trust), and Hyper construction — the shell
+    // only composes observability + attach + register + start on top
+    // of the returned Node<Init>.
+    let init = Node::from_config_file(&config_path).await.map_err(|e| {
+        error!("Failed to load runtime config: {}", e);
+        ActrError::Config {
+            msg: format!("Failed to load runtime config `{}`: {}", config_path, e),
+        }
+    })?;
+    crate::logger::init_observability(init.runtime_config().observability.clone());
+
+    info!(
+        config_path = %config_path,
+        package_path = %package_path,
+        "Creating package-backed runtime wrapper",
+    );
+
+    let mut attached = init.attach(&package).await.map_err(|e| {
+        error!("Failed to attach package-backed node: {}", e);
+        ActrError::Internal {
+            msg: format!("Failed to attach package-backed node: {e}"),
+        }
+    })?;
+    if let Some(observers) = observers {
+        attached = attached.with_hook_observer(observers.as_ref().clone());
+    }
+    let ais_endpoint = attached.ais_endpoint().to_string();
+    let registered = attached.register(&ais_endpoint).await.map_err(|e| {
+        error!("AIS registration failed: {}", e);
+        ActrError::Internal {
+            msg: format!("AIS registration failed: {e}"),
+        }
+    })?;
+
+    Ok(Arc::new(ActrNode {
+        inner: Mutex::new(Some(registered)),
+        network_event_handle: Mutex::new(None),
+    }))
 }
 
 #[uniffi::export(async_runtime = "tokio")]

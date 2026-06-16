@@ -53,8 +53,49 @@ private final class StaticWorkloadProbe: WorkloadLifecycleBridge, @unchecked Sen
     }
 }
 
+private final class RuntimeObserverProbe: SignalingObserverBridge, WebRtcObserverBridge, @unchecked Sendable {
+    func onConnecting(ctx _: ContextBridge?) async {}
+
+    func onConnected(ctx _: ContextBridge?) async {}
+
+    func onDisconnected(ctx _: ContextBridge) async {}
+
+    func onConnecting(ctx _: ContextBridge, event _: PeerEventBridge) async {}
+
+    func onConnected(ctx _: ContextBridge, event _: PeerEventBridge) async {}
+
+    func onDisconnected(ctx _: ContextBridge, event _: PeerEventBridge) async {}
+}
+
 @Suite(.serialized)
 private struct DynamicWorkloadTests {
+    @Test func packageRuntimeObserversExposeReadinessHooksAndConnectionNotReady() async throws {
+        let probe = RuntimeObserverProbe()
+        let observers = runtimeObservers(signaling: probe, webrtc: probe)
+        let error = ActrError.ConnectionNotReady(
+            info: ConnectionNotReadyInfo(retryAfterMs: 6_300)
+        )
+
+        #expect(actrErrorKind(error) == .transient)
+        #expect(actrErrorIsRetryable(error))
+
+        let remoteConfigURL = try #require(URL(string: "https://example.com/actr.toml"))
+        let packageURL = URL(fileURLWithPath: "/tmp/example.actr")
+
+        do {
+            _ = try await ActrNode.from(
+                packageConfig: remoteConfigURL,
+                packageURL: packageURL,
+                observers: observers
+            )
+            Issue.record("package-backed observer API should reject non-file config URLs before starting runtime")
+        } catch ActrError.Config(let msg) {
+            #expect(msg == "packageConfig URL must be a file URL")
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func dynamicWorkloadAcceptsSwiftLifecycleBridgeForLinkedNodeApi() async throws {
         let lifecycle = StaticWorkloadProbe()
         let workload = DynamicWorkload(
