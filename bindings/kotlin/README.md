@@ -180,18 +180,32 @@ val node = ActrNode.linked(configFileUrl, myActrType, workload)
 ### Network Monitoring (Android)
 
 ```kotlin
-// One-shot setup — monitor is wired to the node and auto-started
-val monitor = node.createNetworkMonitor(this, lifecycleScope) { msg ->
+// Recommended: create a node that owns the NetworkEventHandle and monitor.
+val node = ActrNode.fromPackageFileWithMonitoring(
+    configPath = "config.toml",
+    packagePath = "dist/app.actr",
+    context = this,
+    scope = lifecycleScope,
+) { msg ->
     Log.d("App", msg)
 }
 
-// Or lazy setup (node created after monitor)
+override fun onResume() {
+    super.onResume()
+    node.onAppForeground()
+}
+
+override fun onPause() {
+    node.onAppBackground()
+    super.onPause()
+}
+
+// Manual monitor setup remains available for custom wiring.
 var system: ActrNode? = null
 val monitor = NetworkMonitor.create(this, lifecycleScope, { system }) { msg ->
     Log.d("App", msg)
 }
 monitor.startMonitoring()
-system = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
 ```
 
 ### Error Handling & Retry
@@ -239,12 +253,19 @@ val wl = workload {
     onStart { ctx -> /* setup */ }
     onStop { ctx -> /* teardown */ }
 }
+
+// Manifest
+val manifest = Manifest.from(Path.of("/app/actr.toml"))
+val myType = manifest.packageType()
+val aliases = manifest.dependencyAliases()
+val echoType = manifest.resolveDependency("EchoService")
 ```
 
 ### Key Types
 
 | Type | Description |
 |------|-------------|
+| `Manifest` | Parsed manifest.toml — typed access to package identity and dependency resolution |
 | `ActrNode` | High-level node wrapper — creates and starts actors |
 | `ActrRef` | Running actor reference — RPC, discovery, lifecycle |
 | `ContextBridge` | Workload context — call/discover/send from within a workload |

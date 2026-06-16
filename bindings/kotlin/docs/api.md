@@ -17,16 +17,22 @@ For most use cases, `import io.actrium.actr.dsl.*` gives you everything you need
 
 ### ActrNode
 
-High-level wrapper around the generated `ActrNode`. Retains `DynamicWorkload` references to prevent premature garbage collection.
+High-level wrapper around the generated `ActrNode`. Retains `DynamicWorkload`
+references, and monitored factories retain Android network resources to prevent
+premature garbage collection.
 
 **Companion factories:**
 
 | Method | Description |
 |--------|-------------|
 | `suspend fun fromPackageFile(configPath: String, packagePath: String): ActrNode` | Create from TOML config + `.actr` package file paths |
+| `suspend fun fromPackageFileWithMonitoring(configPath, packagePath, context, scope, onNetworkStatusLog): ActrNode` | Create a package-backed node with retained `NetworkEventHandle` + started `NetworkMonitor` |
 | `suspend fun fromPackageFile(configURL: URL, packageURL: URL): ActrNode` | URL-based overload — validates file URLs |
+| `suspend fun fromPackageFileWithMonitoring(configURL, packageURL, context, scope, onNetworkStatusLog): ActrNode` | URL-based monitored package-backed overload |
 | `suspend fun linked(configPath: String, actorType: ActrType, workload: DynamicWorkload): ActrNode` | Create a linked node with a Kotlin workload |
+| `suspend fun linkedWithMonitoring(configPath, actorType, workload, context, scope, onNetworkStatusLog): ActrNode` | Create a linked node with retained network monitoring |
 | `suspend fun linked(configURL: URL, actorType: ActrType, workload: DynamicWorkload): ActrNode` | URL-based linked overload |
+| `suspend fun linkedWithMonitoring(configURL, actorType, workload, context, scope, onNetworkStatusLog): ActrNode` | URL-based monitored linked overload |
 
 **Instance methods:**
 
@@ -34,6 +40,12 @@ High-level wrapper around the generated `ActrNode`. Retains `DynamicWorkload` re
 |--------|-------------|
 | `suspend fun start(): ActrRef` | Start the actor, returns a running reference retaining the workload |
 | `suspend fun createNetworkEventHandle(): NetworkEventHandle` | Create a handle for platform network event callbacks |
+| `fun onAppBackground()` | Forward background transition to retained monitor, if present |
+| `fun onAppForeground()` | Forward foreground transition to retained monitor, if present |
+| `fun cleanupConnections(reason = MANUAL_RESET)` | Request cleanup through retained monitor, if present |
+| `fun forceReconnect(reason = MANUAL_RECONNECT)` | Request forced reconnect through retained monitor, if present |
+| `fun triggerNetworkCheck()` | Force a network snapshot through retained monitor, if present |
+| `fun getCurrentNetworkStatus(): String?` | Return retained monitor status, if present |
 | `suspend fun <T> withStartedActor(block: suspend (ActrRef) -> T): T` | Execute a block with auto-shutdown on exit |
 | `fun close()` | Release native resources (implements `AutoCloseable`) |
 
@@ -42,7 +54,9 @@ High-level wrapper around the generated `ActrNode`. Retains `DynamicWorkload` re
 | Function | Description |
 |----------|-------------|
 | `suspend fun createActrNode(configPath, packagePath): ActrNode` | Alias for `ActrNode.fromPackageFile` |
+| `suspend fun createActrNodeWithMonitoring(configPath, packagePath, context, scope, onNetworkStatusLog): ActrNode` | Alias for `ActrNode.fromPackageFileWithMonitoring` |
 | `suspend fun linked(configPath, actorType, workload): ActrNode` | Alias for `ActrNode.linked` |
+| `suspend fun linkedWithMonitoring(configPath, actorType, workload, context, scope, onNetworkStatusLog): ActrNode` | Alias for `ActrNode.linkedWithMonitoring` |
 
 ---
 
@@ -67,7 +81,13 @@ High-level wrapper around the generated `ActrRefWrapper`. Retains `DynamicWorklo
 | `val isActive: Boolean` | Whether the actor reference is still valid |
 | `fun shutdown()` | Trigger shutdown |
 | `suspend fun waitForShutdown()` | Wait for shutdown to complete |
-| `suspend fun stop()` | Shutdown + wait (recommended) |
+| `suspend fun stop()` | Shutdown + wait + close retained network resources |
+| `fun onAppBackground()` | Forward background transition to retained monitor, if present |
+| `fun onAppForeground()` | Forward foreground transition to retained monitor, if present |
+| `fun cleanupConnections(reason = MANUAL_RESET)` | Request cleanup through retained monitor, if present |
+| `fun forceReconnect(reason = MANUAL_RECONNECT)` | Request forced reconnect through retained monitor, if present |
+| `fun triggerNetworkCheck()` | Force a network snapshot through retained monitor, if present |
+| `fun getCurrentNetworkStatus(): String?` | Return retained monitor status, if present |
 | `suspend fun awaitShutdown()` | **Extension** — Alias for `waitForShutdown()` |
 | `fun close()` | Release native resources |
 | `suspend fun callCatching(...): Result<ByteArray>` | **Extension** — Result-wrapped RPC call |
@@ -244,6 +264,69 @@ fun realm(id: Int): Realm
 
 ---
 
+### Manifest
+
+Typed access to `actr.toml` manifest files — resolve package identity and dependency
+types without hardcoding `"manufacturer:name:version"` strings.
+
+#### Manifest class
+
+The recommended Kotlin entry point. Construct with a `Path`, `File`, or raw path
+string, then query package type, dependency aliases, and resolved dependency types.
+
+```kotlin
+class Manifest(manifestPath: String) {
+    fun packageType(): ActrType
+    fun resolveDependency(alias: String): ActrType
+    fun dependencyAliases(): List<String>
+
+    companion object {
+        fun from(path: Path): Manifest
+        fun from(file: File): Manifest
+    }
+}
+```
+
+**Example:**
+
+```kotlin
+val manifest = Manifest.from(Path.of("/app/actr.toml"))
+val myType = manifest.packageType()          // ActrType of [package]
+val aliases = manifest.dependencyAliases()   // List of all dependency aliases
+val echoType = manifest.resolveDependency("EchoService")  // Resolved ActrType
+```
+
+#### Top-level functions
+
+Path/File overloads of the raw UniFFI bindings:
+
+```kotlin
+// Package type
+fun resolveManifestPackageActrType(manifestPath: String): ActrType
+fun resolveManifestPackageActrType(manifestPath: Path): ActrType
+fun resolveManifestPackageActrType(manifestFile: File): ActrType
+
+// Dependency resolution
+fun resolveManifestDependency(manifestPath: String, dependencyAlias: String): ActrType
+fun resolveManifestDependency(manifestPath: Path, dependencyAlias: String): ActrType
+fun resolveManifestDependency(manifestFile: File, dependencyAlias: String): ActrType
+
+// Alias list
+fun resolveManifestDependencyAliasList(manifestPath: String): List<String>
+fun resolveManifestDependencyAliasList(manifestPath: Path): List<String>
+fun resolveManifestDependencyAliasList(manifestFile: File): List<String>
+```
+
+**Error handling:** All manifest functions throw `ActrException.Config` when the
+manifest file cannot be parsed, a dependency alias is not found, or a dependency
+lacks an `actr_type` field.
+
+**Underlying FFI:** These functions wrap `io.actrium.actr.resolveManifestDependency`,
+`resolveManifestDependencyAliasList`, and `resolveManifestPackageActrType` from the
+UniFFI-generated layer, which call into the Rust `actr_config` manifest parser.
+
+---
+
 ### NetworkEventHandle
 
 Type alias: `typealias NetworkEventHandle = NetworkEventHandleWrapper`
@@ -270,10 +353,21 @@ suspend fun NetworkEventHandle.forceReconnectCatching(reason): Result<NetworkEve
 
 ### NetworkMonitor (Android)
 
-Android-specific network and lifecycle monitoring. Automatically forwards `ConnectivityManager` changes and app lifecycle transitions to the runtime.
+Android-specific network and lifecycle monitoring. Monitored `ActrNode`
+factories are the recommended entry point because they retain the network event
+handle and monitor for the node lifetime.
 
 ```kotlin
-// One-shot setup (node already created)
+// Recommended monitored factory
+val node = ActrNode.linkedWithMonitoring(
+    configPath = "config.toml",
+    actorType = actorType,
+    workload = workload,
+    context = this,
+    scope = lifecycleScope,
+)
+
+// Manual setup (node already created)
 fun ActrNode.createNetworkMonitor(
     context: Context,
     scope: CoroutineScope,

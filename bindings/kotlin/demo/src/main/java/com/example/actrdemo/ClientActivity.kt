@@ -72,7 +72,6 @@ class ClientActivity : AppCompatActivity() {
 
     private var clientRef: ActrRef? = null
     private var clientSystem: ActrNode? = null
-    private lateinit var networkMonitor: NetworkMonitor
 
     // Logcat reader - streams native actr library logs to the UI
     private lateinit var logcatReader: LogcatReader
@@ -113,24 +112,9 @@ class ClientActivity : AppCompatActivity() {
         initViews()
         initLogcatReader() // Start early to capture actr library's early logs
         setupClickListeners()
-        initNetworkMonitoring()
         switchToTab(TAB_MAIN)
 
         log("Ready to connect (linked multi-service workload)")
-    }
-
-    private fun initNetworkMonitoring() {
-        networkMonitor =
-            NetworkMonitor.create(
-                context = this,
-                scope = lifecycleScope,
-                getSystem = { clientSystem },
-                onNetworkStatusLog = { message ->
-                    lifecycleScope.launch(Dispatchers.Main) { log(message) }
-                },
-            )
-
-        networkMonitor.startMonitoring()
     }
 
     private fun appendToLog(text: String) {
@@ -226,8 +210,9 @@ class ClientActivity : AppCompatActivity() {
         disconnectButton.setOnClickListener { disconnect() }
         sendButton.setOnClickListener { sendMessage() }
         sendFileButton.setOnClickListener {
-            val networkStatus = networkMonitor.getCurrentNetworkStatus()
+            val networkStatus = clientSystem?.getCurrentNetworkStatus() ?: "Network monitor not ready"
             log("📡 Current network: $networkStatus")
+            clientSystem?.triggerNetworkCheck()
             sendFile()
         }
 
@@ -269,15 +254,19 @@ class ClientActivity : AppCompatActivity() {
                 val actorType = parseActrTypeFromConfig(configPath)
                 Log.i(TAG, "Actor type from config: ${actorType.manufacturer}:${actorType.name}:${actorType.version}")
                 val workload = UnifiedWorkload(MyUnifiedHandler())
-                val system = linked(configPath, actorType, workload.toDynamicWorkload())
+                val system =
+                    linkedWithMonitoring(
+                        configPath = configPath,
+                        actorType = actorType,
+                        workload = workload.toDynamicWorkload(),
+                        context = this@ClientActivity,
+                        scope = lifecycleScope,
+                        onNetworkStatusLog = { message ->
+                            lifecycleScope.launch(Dispatchers.Main) { log(message) }
+                        },
+                    )
                 clientSystem = system
-                Log.i(TAG, "✅ ActrNode created - NetworkMonitor will auto-handle network events")
-
-                // Pre-create the network event handle before start().
-                // Rust FFI requires createNetworkEventHandle() before start();
-                // subsequent calls from NetworkMonitor hit the cached handle.
-                system.createNetworkEventHandle()
-                Log.i(TAG, "🔗 Network event handle primed")
+                Log.i(TAG, "✅ ActrNode created with retained NetworkMonitor")
 
                 Log.i(TAG, "🚀 Starting linked multi-service actor...")
                 clientRef = system.start()
@@ -314,9 +303,10 @@ class ClientActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                clientRef?.shutdown()
-                clientRef?.awaitShutdown()
+                clientRef?.stop()
                 clientRef = null
+                clientSystem?.close()
+                clientSystem = null
 
                 withContext(Dispatchers.Main) {
                     updateStatus("Disconnected")
@@ -329,6 +319,8 @@ class ClientActivity : AppCompatActivity() {
                     updateStatus("Disconnected")
                     connectButton.isEnabled = true
                     clientRef = null
+                    clientSystem?.close()
+                    clientSystem = null
                     log("Disconnect error: ${e.message}")
                 }
             }
@@ -469,25 +461,18 @@ class ClientActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (::networkMonitor.isInitialized) {
-            networkMonitor.onAppForeground()
-        }
+        clientSystem?.onAppForeground()
     }
 
     override fun onPause() {
         super.onPause()
-        if (::networkMonitor.isInitialized) {
-            networkMonitor.onAppBackground()
-        }
+        clientSystem?.onAppBackground()
     }
 
     override fun onDestroy() {
         super.onDestroy()
 
-        if (::networkMonitor.isInitialized) {
-            networkMonitor.cleanupConnections(CleanupReason.APP_TERMINATING)
-            networkMonitor.stopMonitoring()
-        }
+        clientSystem?.cleanupConnections(CleanupReason.APP_TERMINATING)
 
         // Stop logcat reader
         if (::logcatReader.isInitialized) {
