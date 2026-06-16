@@ -45,7 +45,7 @@ object RemoteServiceRegistry {
                 ActrType(
                     manufacturer = "actrium",
                     name = "DuplexStreamService",
-                    version = "0.1.0",
+                    version = "1.0.0",
                 ),
             "echo.Echo" to ActrType(manufacturer = "actrium", name = "EchoService", version = "1.0.0"),
         )

@@ -8,7 +8,7 @@ description = "Actor-RTC EchoApp — Android linked runtime"
 
 [dependencies]
 echo = { actr_type = "actrium:EchoService:1.0.0" }
-stream = { actr_type = "actrium:DuplexStreamService:0.1.0" }
+stream = { actr_type = "actrium:DuplexStreamService:1.0.0" }
 
 [signaling]
 url = "ws://124.71.231.251:9080/signaling/ws"
@@ -50,6 +50,6 @@ type = "actrium:EchoService:1.0.0"
 
 [[acl.rules]]
 permission = "allow"
-type = "actrium:DuplexStreamService:0.1.0"
+type = "actrium:DuplexStreamService:1.0.0"
 
 [scripts]

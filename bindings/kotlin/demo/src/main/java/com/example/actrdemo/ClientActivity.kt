@@ -228,7 +228,6 @@ class ClientActivity : AppCompatActivity() {
         sendFileButton.setOnClickListener {
             val networkStatus = networkMonitor.getCurrentNetworkStatus()
             log("📡 Current network: $networkStatus")
-            networkMonitor.triggerNetworkCheck()
             sendFile()
         }
 

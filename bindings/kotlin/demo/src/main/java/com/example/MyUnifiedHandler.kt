@@ -8,10 +8,7 @@ import io.actor_rtc.actr.ContextBridge
 import io.actor_rtc.actr.DataStream
 import io.actor_rtc.actr.DataStreamCallback
 import io.actor_rtc.actr.PayloadType
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
  * Implementation of UnifiedHandler (StreamClientHandler)
@@ -27,7 +24,7 @@ class MyUnifiedHandler : UnifiedHandler {
     }
 
     private val serverType =
-        ActrType(manufacturer = "actrium", name = "DuplexStreamService", version = "0.1.0")
+        ActrType(manufacturer = "actrium", name = "DuplexStreamService", version = "1.0.0")
 
     override suspend fun start_stream(
         request: local.StreamClientOuterClass.ClientStartStreamRequest,
@@ -99,58 +96,66 @@ class MyUnifiedHandler : UnifiedHandler {
                 Log.i(TAG, "✅ Registered stream handler for server return stream: $serverStreamId")
             }
 
-            // Step 3: Send DataStream chunks to the server
-            CoroutineScope(Dispatchers.IO).launch {
-                for (i in 1..messageCount) {
-                    val message = "[client $clientId] message $i"
-                    val dataStream =
-                        DataStream(
-                            streamId = clientStreamId,
-                            sequence = i.toULong(),
-                            payload = message.toByteArray(Charsets.UTF_8),
-                            metadata = emptyList(),
-                            timestampMs = System.currentTimeMillis(),
-                        )
+            // Step 3: Send DataStream chunks to the server (synchronous)
+            for (i in 1..messageCount) {
+                val message = "[client $clientId] message $i"
+                val dataStream =
+                    DataStream(
+                        streamId = clientStreamId,
+                        sequence = i.toULong(),
+                        payload = message.toByteArray(Charsets.UTF_8),
+                        metadata = emptyList(),
+                        timestampMs = System.currentTimeMillis(),
+                    )
 
-                    Log.i(TAG, "client sending $i/$messageCount: $message")
-                    try {
-                        ctx.sendDataStream(
-                            serverId,
-                            dataStream,
-                            PayloadType.STREAM_RELIABLE,
-                        )
-                    } catch (e: Exception) {
-                        Log.e(TAG, "client send_data_stream error: ${e.message}")
-                    }
-                    delay(1000)
-                }
-
-                // Step 4: Call FinishDuplexStream
+                Log.i(TAG, "client sending $i/$messageCount: $message")
                 try {
-                    val finishReq =
-                        local.DataStreamPeer.FinishDuplexStreamRequest
-                            .newBuilder()
-                            .setSessionId(sessionId)
-                            .setClientToServiceStreamId(clientStreamId)
-                            .setServiceToClientStreamId(serverStreamId)
-                            .build()
-                    val finishRespPayload =
-                        ctx.callRaw(
-                            serverId,
-                            "local.DuplexStreamService.FinishDuplexStream",
-                            PayloadType.RPC_RELIABLE,
-                            finishReq.toByteArray(),
-                            30000L,
-                        )
-                    val finishResp =
-                        local.DataStreamPeer.FinishDuplexStreamResponse.parseFrom(finishRespPayload)
-                    Log.i(
-                        TAG,
-                        "FinishDuplexStream: recv=${finishResp.clientChunksReceived}, " +
-                            "sent=${finishResp.serviceChunksSent}, status=${finishResp.status}",
+                    ctx.sendDataStream(
+                        serverId,
+                        dataStream,
+                        PayloadType.STREAM_RELIABLE,
                     )
                 } catch (e: Exception) {
-                    Log.e(TAG, "FinishDuplexStream error: ${e.message}")
+                    Log.e(TAG, "client send_data_stream error: ${e.message}")
+                }
+                delay(1000)
+            }
+
+            // Step 4: Call FinishDuplexStream
+            try {
+                val finishReq =
+                    local.DataStreamPeer.FinishDuplexStreamRequest
+                        .newBuilder()
+                        .setSessionId(sessionId)
+                        .setClientToServiceStreamId(clientStreamId)
+                        .setServiceToClientStreamId(serverStreamId)
+                        .build()
+                val finishRespPayload =
+                    ctx.callRaw(
+                        serverId,
+                        "local.DuplexStreamService.FinishDuplexStream",
+                        PayloadType.RPC_RELIABLE,
+                        finishReq.toByteArray(),
+                        30000L,
+                    )
+                val finishResp =
+                    local.DataStreamPeer.FinishDuplexStreamResponse.parseFrom(finishRespPayload)
+                Log.i(
+                    TAG,
+                    "FinishDuplexStream: recv=${finishResp.clientChunksReceived}, " +
+                        "sent=${finishResp.serviceChunksSent}, status=${finishResp.status}",
+                )
+            } catch (e: Exception) {
+                Log.e(TAG, "FinishDuplexStream error: ${e.message}")
+            }
+
+            // Step 5: Unregister return stream callback
+            if (serverStreamId.isNotBlank()) {
+                try {
+                    ctx.unregisterStream(serverStreamId)
+                    Log.i(TAG, "✅ Unregistered stream handler: $serverStreamId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "unregisterStream error: ${e.message}")
                 }
             }
 
