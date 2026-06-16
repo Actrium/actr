@@ -244,6 +244,69 @@ fun realm(id: Int): Realm
 
 ---
 
+### Manifest
+
+Typed access to `actr.toml` manifest files — resolve package identity and dependency
+types without hardcoding `"manufacturer:name:version"` strings.
+
+#### Manifest class
+
+The recommended Kotlin entry point. Construct with a `Path`, `File`, or raw path
+string, then query package type, dependency aliases, and resolved dependency types.
+
+```kotlin
+class Manifest(manifestPath: String) {
+    fun packageType(): ActrType
+    fun resolveDependency(alias: String): ActrType
+    fun dependencyAliases(): List<String>
+
+    companion object {
+        fun from(path: Path): Manifest
+        fun from(file: File): Manifest
+    }
+}
+```
+
+**Example:**
+
+```kotlin
+val manifest = Manifest.from(Path.of("/app/actr.toml"))
+val myType = manifest.packageType()          // ActrType of [package]
+val aliases = manifest.dependencyAliases()   // List of all dependency aliases
+val echoType = manifest.resolveDependency("EchoService")  // Resolved ActrType
+```
+
+#### Top-level functions
+
+Path/File overloads of the raw UniFFI bindings:
+
+```kotlin
+// Package type
+fun resolveManifestPackageActrType(manifestPath: String): ActrType
+fun resolveManifestPackageActrType(manifestPath: Path): ActrType
+fun resolveManifestPackageActrType(manifestFile: File): ActrType
+
+// Dependency resolution
+fun resolveManifestDependency(manifestPath: String, dependencyAlias: String): ActrType
+fun resolveManifestDependency(manifestPath: Path, dependencyAlias: String): ActrType
+fun resolveManifestDependency(manifestFile: File, dependencyAlias: String): ActrType
+
+// Alias list
+fun resolveManifestDependencyAliasList(manifestPath: String): List<String>
+fun resolveManifestDependencyAliasList(manifestPath: Path): List<String>
+fun resolveManifestDependencyAliasList(manifestFile: File): List<String>
+```
+
+**Error handling:** All manifest functions throw `ActrException.Config` when the
+manifest file cannot be parsed, a dependency alias is not found, or a dependency
+lacks an `actr_type` field.
+
+**Underlying FFI:** These functions wrap `io.actrium.actr.resolveManifestDependency`,
+`resolveManifestDependencyAliasList`, and `resolveManifestPackageActrType` from the
+UniFFI-generated layer, which call into the Rust `actr_config` manifest parser.
+
+---
+
 ### NetworkEventHandle
 
 Type alias: `typealias NetworkEventHandle = NetworkEventHandleWrapper`

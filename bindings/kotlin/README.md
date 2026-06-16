@@ -239,12 +239,19 @@ val wl = workload {
     onStart { ctx -> /* setup */ }
     onStop { ctx -> /* teardown */ }
 }
+
+// Manifest
+val manifest = Manifest.from(Path.of("/app/actr.toml"))
+val myType = manifest.packageType()
+val aliases = manifest.dependencyAliases()
+val echoType = manifest.resolveDependency("EchoService")
 ```
 
 ### Key Types
 
 | Type | Description |
 |------|-------------|
+| `Manifest` | Parsed manifest.toml — typed access to package identity and dependency resolution |
 | `ActrNode` | High-level node wrapper — creates and starts actors |
 | `ActrRef` | Running actor reference — RPC, discovery, lifecycle |
 | `ContextBridge` | Workload context — call/discover/send from within a workload |
