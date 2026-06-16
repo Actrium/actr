@@ -7,7 +7,9 @@ import io.actrium.actr.ActrType
 import io.actrium.actr.ContextBridge
 import io.actrium.actr.DataStream
 import io.actrium.actr.DataStreamCallback
+import io.actrium.actr.ActrException
 import io.actrium.actr.PayloadType
+import io.actrium.actr.dsl.withRetry
 import kotlinx.coroutines.delay
 
 /**
@@ -60,13 +62,15 @@ class MyUnifiedHandler : UnifiedHandler {
                     .build()
 
             val startRespPayload =
-                ctx.callRaw(
-                    serverId,
-                    "local.DuplexStreamService.StartDuplexStream",
-                    PayloadType.RPC_RELIABLE,
-                    startReq.toByteArray(),
-                    30000L,
-                )
+                withRetry(maxAttempts = 5) {
+                    ctx.callRaw(
+                        serverId,
+                        "local.DuplexStreamService.StartDuplexStream",
+                        PayloadType.RPC_RELIABLE,
+                        startReq.toByteArray(),
+                        30000L,
+                    )
+                }
             val startResp = local.DataStreamPeer.StartDuplexStreamResponse.parseFrom(startRespPayload)
             Log.i(
                 TAG,

@@ -129,7 +129,7 @@ object UnifiedDispatcher {
                 // Get target actor type and discover it
                 val actrType =
                     RemoteServiceRegistry.getActorType(routeKey)
-                        ?: throw io.actor_rtc.actr.ActrException.UnknownRoute("Unknown remote route: $routeKey")
+                        ?: throw io.actrium.actr.ActrException.UnknownRoute("Unknown remote route: $routeKey")
 
                 val targetId = resolveRemoteActor(ctx, actrType)
 
@@ -151,16 +151,16 @@ object UnifiedDispatcher {
                         // callback boundary as a declared error (ActrError) rather
                         // than UNIFFI_CALL_UNEXPECTED_ERROR which panics the Rust
                         // inproc receive loop and kills the entire Shell→Guest path.
-                        if (retry is io.actor_rtc.actr.ActrException) {
+                        if (retry is io.actrium.actr.ActrException) {
                             throw retry
                         }
-                        throw io.actor_rtc.actr.ActrException.Internal(
+                        throw io.actrium.actr.ActrException.Internal(
                             "Remote route $routeKey failed after rediscovery: ${retry.message}"
                         )
                     }
                 }
             }
-            else -> throw io.actor_rtc.actr.ActrException.UnknownRoute("Unknown route key: $routeKey")
+            else -> throw io.actrium.actr.ActrException.UnknownRoute("Unknown route key: $routeKey")
         }
     }
 }

@@ -24,6 +24,6 @@ object StreamClientDispatcher {
                 val response = handler.start_stream(request, ctx)
                 response.toByteArray()
             }
-            else -> throw io.actor_rtc.actr.ActrException.UnknownRoute("Unknown route key: ${envelope.routeKey}")
+            else -> throw io.actrium.actr.ActrException.UnknownRoute("Unknown route key: ${envelope.routeKey}")
         }
 }
