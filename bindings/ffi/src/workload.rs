@@ -22,7 +22,7 @@ use actr_framework::{
     BackpressureEvent, Bytes, Context, CredentialEvent, ErrorCategory, ErrorEvent,
     MessageDispatcher, PeerEvent, Workload,
 };
-use actr_protocol::{ActorResult, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -299,6 +299,185 @@ impl DynamicWorkload {
     }
 }
 
+/// Runtime-only observers for package-backed hosts.
+///
+/// Unlike [`DynamicWorkload`], this object does not represent actor business
+/// logic and does not need lifecycle or dispatch callbacks. Mobile shells use
+/// it to observe transport readiness for UI state and intent retry decisions
+/// while the package guest continues to own actor dispatch.
+#[derive(uniffi::Object)]
+pub struct RuntimeObservers {
+    signaling: Option<Arc<dyn SignalingObserverBridge>>,
+    websocket: Option<Arc<dyn WebSocketObserverBridge>>,
+    webrtc: Option<Arc<dyn WebRtcObserverBridge>>,
+    credential: Option<Arc<dyn CredentialObserverBridge>>,
+    mailbox: Option<Arc<dyn MailboxObserverBridge>>,
+}
+
+impl Clone for RuntimeObservers {
+    fn clone(&self) -> Self {
+        Self {
+            signaling: self.signaling.clone(),
+            websocket: self.websocket.clone(),
+            webrtc: self.webrtc.clone(),
+            credential: self.credential.clone(),
+            mailbox: self.mailbox.clone(),
+        }
+    }
+}
+
+#[uniffi::export]
+impl RuntimeObservers {
+    /// Construct host-side observers for a package-backed runtime.
+    #[uniffi::constructor]
+    pub fn new(
+        signaling: Option<Box<dyn SignalingObserverBridge>>,
+        websocket: Option<Box<dyn WebSocketObserverBridge>>,
+        webrtc: Option<Box<dyn WebRtcObserverBridge>>,
+        credential: Option<Box<dyn CredentialObserverBridge>>,
+        mailbox: Option<Box<dyn MailboxObserverBridge>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            signaling: signaling.map(Arc::from),
+            websocket: websocket.map(Arc::from),
+            webrtc: webrtc.map(Arc::from),
+            credential: credential.map(Arc::from),
+            mailbox: mailbox.map(Arc::from),
+        })
+    }
+}
+
+#[async_trait]
+impl Workload for RuntimeObservers {
+    type Dispatcher = RuntimeObserverDispatcher;
+
+    // ── Signaling observers ──────────────────────────────────────────────
+
+    async fn on_signaling_connecting<C: Context>(&self, ctx: Option<&C>) {
+        let Some(obs) = self.signaling.clone() else {
+            return;
+        };
+        let ctx_bridge = ctx.and_then(|c| ContextBridge::try_from_context(c).ok());
+        obs.on_connecting(ctx_bridge).await;
+    }
+
+    async fn on_signaling_connected<C: Context>(&self, ctx: Option<&C>) {
+        let Some(obs) = self.signaling.clone() else {
+            return;
+        };
+        let ctx_bridge = ctx.and_then(|c| ContextBridge::try_from_context(c).ok());
+        obs.on_connected(ctx_bridge).await;
+    }
+
+    async fn on_signaling_disconnected<C: Context>(&self, ctx: &C) {
+        let Some(obs) = self.signaling.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_disconnected(ctx_bridge).await;
+    }
+
+    // ── WebSocket observers ──────────────────────────────────────────────
+
+    async fn on_websocket_connecting<C: Context>(&self, ctx: &C, event: &PeerEvent) {
+        let Some(obs) = self.websocket.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_connecting(ctx_bridge, event.into()).await;
+    }
+
+    async fn on_websocket_connected<C: Context>(&self, ctx: &C, event: &PeerEvent) {
+        let Some(obs) = self.websocket.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_connected(ctx_bridge, event.into()).await;
+    }
+
+    async fn on_websocket_disconnected<C: Context>(&self, ctx: &C, event: &PeerEvent) {
+        let Some(obs) = self.websocket.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_disconnected(ctx_bridge, event.into()).await;
+    }
+
+    // ── WebRTC observers ─────────────────────────────────────────────────
+
+    async fn on_webrtc_connecting<C: Context>(&self, ctx: &C, event: &PeerEvent) {
+        let Some(obs) = self.webrtc.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_connecting(ctx_bridge, event.into()).await;
+    }
+
+    async fn on_webrtc_connected<C: Context>(&self, ctx: &C, event: &PeerEvent) {
+        let Some(obs) = self.webrtc.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_connected(ctx_bridge, event.into()).await;
+    }
+
+    async fn on_webrtc_disconnected<C: Context>(&self, ctx: &C, event: &PeerEvent) {
+        let Some(obs) = self.webrtc.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_disconnected(ctx_bridge, event.into()).await;
+    }
+
+    // ── Credential observers ─────────────────────────────────────────────
+
+    async fn on_credential_renewed<C: Context>(&self, ctx: &C, event: &CredentialEvent) {
+        let Some(obs) = self.credential.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_renewed(ctx_bridge, event.into()).await;
+    }
+
+    async fn on_credential_expiring<C: Context>(&self, ctx: &C, event: &CredentialEvent) {
+        let Some(obs) = self.credential.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_expiring(ctx_bridge, event.into()).await;
+    }
+
+    // ── Mailbox observers ────────────────────────────────────────────────
+
+    async fn on_mailbox_backpressure<C: Context>(&self, ctx: &C, event: &BackpressureEvent) {
+        let Some(obs) = self.mailbox.clone() else {
+            return;
+        };
+        let Ok(ctx_bridge) = ContextBridge::try_from_context(ctx) else {
+            return;
+        };
+        obs.on_backpressure(ctx_bridge, event.into()).await;
+    }
+}
+
 #[async_trait]
 impl Workload for DynamicWorkload {
     type Dispatcher = DynamicDispatcher;
@@ -491,6 +670,29 @@ impl MessageDispatcher for DynamicDispatcher {
             .await
             .map_err(actr_protocol::ActrError::from)?;
         Ok(Bytes::from(response))
+    }
+}
+
+/// Dispatcher placeholder for [`RuntimeObservers`].
+///
+/// Runtime-only observers are never used for inbound actor dispatch; the
+/// package guest remains the dispatcher. Returning `NotImplemented` keeps the
+/// type compliant with `actr_framework::Workload` if this path is accidentally
+/// invoked.
+pub struct RuntimeObserverDispatcher;
+
+#[async_trait]
+impl MessageDispatcher for RuntimeObserverDispatcher {
+    type Workload = RuntimeObservers;
+
+    async fn dispatch<C: Context>(
+        _workload: &Self::Workload,
+        _envelope: RpcEnvelope,
+        _ctx: &C,
+    ) -> ActorResult<Bytes> {
+        Err(ActrError::NotImplemented(
+            "runtime observers do not dispatch actor messages".to_string(),
+        ))
     }
 }
 

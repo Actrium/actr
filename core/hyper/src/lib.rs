@@ -820,6 +820,28 @@ impl Node<Init> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Node<Attached> {
+    /// Add a host-side observer to an already attached node.
+    ///
+    /// Package-backed nodes keep their guest hook observer installed; this
+    /// method chains the supplied host observer after it so shells such as
+    /// mobile bindings can watch signaling/WebRTC readiness without replacing
+    /// package-delivered hooks.
+    pub fn with_hook_observer<W: actr_framework::Workload>(mut self, observer: W) -> Self {
+        let attachment = self
+            .attachment
+            .as_mut()
+            .expect("Node<Attached> without attachment");
+        let handle: Arc<dyn workload::LinkedWorkloadHandle> =
+            workload::WorkloadAdapter::new(observer);
+        let observer: Arc<dyn crate::lifecycle::hooks::WorkloadHookObserver> =
+            Arc::new(crate::workload::LinkedHandleObserver { handle });
+        attachment.node.hook_observer = crate::lifecycle::hooks::chain_observers(
+            attachment.node.hook_observer.take(),
+            Some(observer),
+        );
+        self
+    }
+
     /// Register with AIS, obtain an AId credential, and inject it into this
     /// attached node. Consumes `Node<Attached>` and returns `Node<Registered>`.
     ///

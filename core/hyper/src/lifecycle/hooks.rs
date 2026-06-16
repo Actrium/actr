@@ -88,6 +88,263 @@ pub(crate) trait WorkloadHookObserver: Send + Sync + 'static {
 /// Shared observer handle held by the running node.
 pub(crate) type WorkloadHookObserverRef = Arc<dyn WorkloadHookObserver>;
 
+/// Compose two optional observers into one delivery target.
+///
+/// Package-backed nodes use this to keep guest hook delivery installed while
+/// also allowing a host UI/runtime shell to observe connection state.
+pub(crate) fn chain_observers(
+    first: Option<WorkloadHookObserverRef>,
+    second: Option<WorkloadHookObserverRef>,
+) -> Option<WorkloadHookObserverRef> {
+    match (first, second) {
+        (None, None) => None,
+        (Some(observer), None) | (None, Some(observer)) => Some(observer),
+        (Some(first), Some(second)) => Some(Arc::new(ChainedHookObserver { first, second })),
+    }
+}
+
+struct ChainedHookObserver {
+    first: WorkloadHookObserverRef,
+    second: WorkloadHookObserverRef,
+}
+
+#[async_trait]
+impl WorkloadHookObserver for ChainedHookObserver {
+    async fn on_start(&self, ctx: &RuntimeContext) -> ActorResult<()> {
+        call_both_lifecycle(
+            self.first.on_start(ctx).await,
+            self.second.on_start(ctx).await,
+        )
+    }
+
+    async fn on_ready(&self, ctx: &RuntimeContext) -> ActorResult<()> {
+        call_both_lifecycle(
+            self.first.on_ready(ctx).await,
+            self.second.on_ready(ctx).await,
+        )
+    }
+
+    async fn on_stop(&self, ctx: &RuntimeContext) -> ActorResult<()> {
+        call_both_lifecycle(
+            self.first.on_stop(ctx).await,
+            self.second.on_stop(ctx).await,
+        )
+    }
+
+    async fn on_error(&self, ctx: &RuntimeContext, event: &ErrorEvent) -> ActorResult<()> {
+        call_both_lifecycle(
+            self.first.on_error(ctx, event).await,
+            self.second.on_error(ctx, event).await,
+        )
+    }
+
+    async fn on_signaling_connecting(&self, ctx: Option<&RuntimeContext>) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.cloned();
+        let second_ctx = first_ctx.clone();
+        spawn_hook("on_signaling_connecting:first", async move {
+            first.on_signaling_connecting(first_ctx.as_ref()).await;
+        });
+        spawn_hook("on_signaling_connecting:second", async move {
+            second.on_signaling_connecting(second_ctx.as_ref()).await;
+        });
+    }
+
+    async fn on_signaling_connected(&self, ctx: Option<&RuntimeContext>) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.cloned();
+        let second_ctx = first_ctx.clone();
+        spawn_hook("on_signaling_connected:first", async move {
+            first.on_signaling_connected(first_ctx.as_ref()).await;
+        });
+        spawn_hook("on_signaling_connected:second", async move {
+            second.on_signaling_connected(second_ctx.as_ref()).await;
+        });
+    }
+
+    async fn on_signaling_disconnected(&self, ctx: &RuntimeContext) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        spawn_hook("on_signaling_disconnected:first", async move {
+            first.on_signaling_disconnected(&first_ctx).await;
+        });
+        spawn_hook("on_signaling_disconnected:second", async move {
+            second.on_signaling_disconnected(&second_ctx).await;
+        });
+    }
+
+    async fn on_websocket_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = event.clone();
+        let second_event = first_event.clone();
+        spawn_hook("on_websocket_connecting:first", async move {
+            first
+                .on_websocket_connecting(&first_ctx, &first_event)
+                .await;
+        });
+        spawn_hook("on_websocket_connecting:second", async move {
+            second
+                .on_websocket_connecting(&second_ctx, &second_event)
+                .await;
+        });
+    }
+
+    async fn on_websocket_connected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = event.clone();
+        let second_event = first_event.clone();
+        spawn_hook("on_websocket_connected:first", async move {
+            first.on_websocket_connected(&first_ctx, &first_event).await;
+        });
+        spawn_hook("on_websocket_connected:second", async move {
+            second
+                .on_websocket_connected(&second_ctx, &second_event)
+                .await;
+        });
+    }
+
+    async fn on_websocket_disconnected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = event.clone();
+        let second_event = first_event.clone();
+        spawn_hook("on_websocket_disconnected:first", async move {
+            first
+                .on_websocket_disconnected(&first_ctx, &first_event)
+                .await;
+        });
+        spawn_hook("on_websocket_disconnected:second", async move {
+            second
+                .on_websocket_disconnected(&second_ctx, &second_event)
+                .await;
+        });
+    }
+
+    async fn on_webrtc_connecting(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = event.clone();
+        let second_event = first_event.clone();
+        spawn_hook("on_webrtc_connecting:first", async move {
+            first.on_webrtc_connecting(&first_ctx, &first_event).await;
+        });
+        spawn_hook("on_webrtc_connecting:second", async move {
+            second
+                .on_webrtc_connecting(&second_ctx, &second_event)
+                .await;
+        });
+    }
+
+    async fn on_webrtc_connected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = event.clone();
+        let second_event = first_event.clone();
+        spawn_hook("on_webrtc_connected:first", async move {
+            first.on_webrtc_connected(&first_ctx, &first_event).await;
+        });
+        spawn_hook("on_webrtc_connected:second", async move {
+            second.on_webrtc_connected(&second_ctx, &second_event).await;
+        });
+    }
+
+    async fn on_webrtc_disconnected(&self, ctx: &RuntimeContext, event: &PeerEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = event.clone();
+        let second_event = first_event.clone();
+        spawn_hook("on_webrtc_disconnected:first", async move {
+            first.on_webrtc_disconnected(&first_ctx, &first_event).await;
+        });
+        spawn_hook("on_webrtc_disconnected:second", async move {
+            second
+                .on_webrtc_disconnected(&second_ctx, &second_event)
+                .await;
+        });
+    }
+
+    async fn on_credential_renewed(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = event.clone();
+        let second_event = first_event.clone();
+        spawn_hook("on_credential_renewed:first", async move {
+            first.on_credential_renewed(&first_ctx, &first_event).await;
+        });
+        spawn_hook("on_credential_renewed:second", async move {
+            second
+                .on_credential_renewed(&second_ctx, &second_event)
+                .await;
+        });
+    }
+
+    async fn on_credential_expiring(&self, ctx: &RuntimeContext, event: &CredentialEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = event.clone();
+        let second_event = first_event.clone();
+        spawn_hook("on_credential_expiring:first", async move {
+            first.on_credential_expiring(&first_ctx, &first_event).await;
+        });
+        spawn_hook("on_credential_expiring:second", async move {
+            second
+                .on_credential_expiring(&second_ctx, &second_event)
+                .await;
+        });
+    }
+
+    async fn on_mailbox_backpressure(&self, ctx: &RuntimeContext, event: &BackpressureEvent) {
+        let first = self.first.clone();
+        let second = self.second.clone();
+        let first_ctx = ctx.clone();
+        let second_ctx = first_ctx.clone();
+        let first_event = *event;
+        let second_event = first_event;
+        spawn_hook("on_mailbox_backpressure:first", async move {
+            first
+                .on_mailbox_backpressure(&first_ctx, &first_event)
+                .await;
+        });
+        spawn_hook("on_mailbox_backpressure:second", async move {
+            second
+                .on_mailbox_backpressure(&second_ctx, &second_event)
+                .await;
+        });
+    }
+}
+
+fn call_both_lifecycle(first: ActorResult<()>, second: ActorResult<()>) -> ActorResult<()> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(err), Ok(())) | (Ok(()), Err(err)) => Err(err),
+        (Err(first), Err(second)) => Err(ActrError::Internal(format!(
+            "multiple workload hook observers failed: {first}; {second}"
+        ))),
+    }
+}
+
 /// Future type produced by a [`HookContextBuilder`].
 pub(crate) type HookContextFut = Pin<Box<dyn Future<Output = Option<RuntimeContext>> + Send>>;
 
@@ -416,7 +673,7 @@ mod tests {
     };
     use actr_framework::Context as _;
     use actr_protocol::{AIdCredential, ActrId, ActrType, Realm};
-    use tokio::sync::mpsc;
+    use tokio::sync::{Notify, mpsc};
 
     #[tokio::test(flavor = "current_thread")]
     async fn spawn_hook_survives_panic() {
@@ -643,6 +900,19 @@ mod tests {
         }
     }
 
+    struct BlockingWebRtcObserver {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkloadHookObserver for BlockingWebRtcObserver {
+        async fn on_webrtc_connected(&self, _ctx: &RuntimeContext, _event: &PeerEvent) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+    }
+
     async fn expect_recorded(rx: &mut mpsc::UnboundedReceiver<String>, expected: &'static str) {
         let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
             .await
@@ -773,6 +1043,39 @@ mod tests {
             rx.try_recv().is_err(),
             "observer should receive exactly one hook event"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chained_observation_hooks_do_not_let_first_observer_block_second() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let first: WorkloadHookObserverRef = Arc::new(BlockingWebRtcObserver {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let second: WorkloadHookObserverRef = Arc::new(RecordingObserver { tx });
+        let observer =
+            chain_observers(Some(first), Some(second)).expect("chained observer should exist");
+        let ctx = test_runtime_context();
+        let event = PeerEvent {
+            peer: test_actr_id(10),
+            relayed: Some(false),
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            observer.on_webrtc_connected(&ctx, &event),
+        )
+        .await
+        .expect("chained observer must not wait for either observation branch");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+            .await
+            .expect("first observer should still be invoked");
+        expect_recorded(&mut rx, "on_webrtc_connected:peer=10:relayed=false").await;
+        release.notify_waiters();
     }
 
     #[tokio::test(flavor = "current_thread")]
