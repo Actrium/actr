@@ -18,8 +18,8 @@ use crate::wire::webrtc::trace::{inject_span_context_to_rpc, set_parent_from_rpc
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActorResult, ActrError, ActrId, PayloadType, RegisterAuthMode, RegisterRequest,
-    RpcEnvelope, TurnCredential, register_response,
+    AIdCredential, ActorResult, ActrError, ActrId, ConnectionNotReadyInfo, PayloadType,
+    RegisterAuthMode, RegisterRequest, RpcEnvelope, TurnCredential, register_response,
 };
 use actr_runtime::check_acl_permission;
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
@@ -562,13 +562,11 @@ async fn stream_callback_host_operation_handler(
 /// | 10008 | DecodeFailure      |
 /// | 10009 | NotImplemented     |
 /// | 10010 | Internal           |
+/// | 10011 | ConnectionNotReady |
 pub(crate) fn protocol_error_to_code(err: &ActrError) -> u32 {
     match err {
         ActrError::Unavailable(_) => 10001,
-        // ConnectionNotReady is a local send-preflight error and should not
-        // normally cross the wire; if it does, collapse it to Unavailable
-        // (same as the legacy 503 mapping did).
-        ActrError::ConnectionNotReady(_) => 10001,
+        ActrError::ConnectionNotReady(_) => 10011,
         ActrError::TimedOut => 10002,
         ActrError::NotFound(_) => 10003,
         ActrError::PermissionDenied(_) => 10004,
@@ -600,10 +598,23 @@ pub(crate) fn wire_code_to_actr_error(code: u32, message: String) -> ActrError {
         10008 => ActrError::DecodeFailure(message),
         10009 => ActrError::NotImplemented(message),
         10010 => ActrError::Internal(message),
+        10011 => ActrError::ConnectionNotReady(ConnectionNotReadyInfo {
+            retry_after_ms: parse_connection_not_ready_retry_hint(&message),
+        }),
         // Legacy HTTP-ish codes emitted before this scheme was introduced,
         // or any unknown future code: treat as Unavailable.
         _ => ActrError::Unavailable(format!("rpc error {code}: {message}")),
     }
+}
+
+fn parse_connection_not_ready_retry_hint(message: &str) -> Option<u64> {
+    // ErrorResponse currently carries only a code and display string. Keep this
+    // parser narrow and best-effort until the wire error payload grows typed details.
+    let marker = "retry_after_ms=Some(";
+    let start = message.find(marker)? + marker.len();
+    let rest = &message[start..];
+    let end = rest.find(')')?;
+    rest[..end].parse().ok()
 }
 
 impl Inner {
@@ -2475,5 +2486,44 @@ impl Inner {
         tracing::info!("✅ ActrRef created (Shell → Guest communication handle)");
 
         Ok(ActrRef { shared })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_not_ready_has_distinct_wire_code() {
+        let err = ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(1200, 6000));
+
+        assert_eq!(protocol_error_to_code(&err), 10011);
+    }
+
+    #[test]
+    fn connection_not_ready_wire_code_roundtrips_variant_and_retry_hint() {
+        let err = wire_code_to_actr_error(
+            10011,
+            "connection not ready: retry_after_ms=Some(4800)".to_string(),
+        );
+
+        match err {
+            ActrError::ConnectionNotReady(info) => {
+                assert_eq!(info.retry_after_ms, Some(4800));
+            }
+            other => panic!("expected ConnectionNotReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connection_not_ready_wire_code_handles_missing_retry_hint() {
+        let err = wire_code_to_actr_error(10011, "connection not ready".to_string());
+
+        match err {
+            ActrError::ConnectionNotReady(info) => {
+                assert_eq!(info.retry_after_ms, None);
+            }
+            other => panic!("expected ConnectionNotReady, got {other:?}"),
+        }
     }
 }
