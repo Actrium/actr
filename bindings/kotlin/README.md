@@ -180,18 +180,32 @@ val node = ActrNode.linked(configFileUrl, myActrType, workload)
 ### Network Monitoring (Android)
 
 ```kotlin
-// One-shot setup — monitor is wired to the node and auto-started
-val monitor = node.createNetworkMonitor(this, lifecycleScope) { msg ->
+// Recommended: create a node that owns the NetworkEventHandle and monitor.
+val node = ActrNode.fromPackageFileWithMonitoring(
+    configPath = "config.toml",
+    packagePath = "dist/app.actr",
+    context = this,
+    scope = lifecycleScope,
+) { msg ->
     Log.d("App", msg)
 }
 
-// Or lazy setup (node created after monitor)
+override fun onResume() {
+    super.onResume()
+    node.onAppForeground()
+}
+
+override fun onPause() {
+    node.onAppBackground()
+    super.onPause()
+}
+
+// Manual monitor setup remains available for custom wiring.
 var system: ActrNode? = null
 val monitor = NetworkMonitor.create(this, lifecycleScope, { system }) { msg ->
     Log.d("App", msg)
 }
 monitor.startMonitoring()
-system = ActrNode.fromPackageFile("config.toml", "dist/app.actr")
 ```
 
 ### Error Handling & Retry

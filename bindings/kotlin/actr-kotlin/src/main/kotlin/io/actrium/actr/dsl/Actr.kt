@@ -29,15 +29,19 @@
  */
 package io.actrium.actr.dsl
 
+import android.content.Context
 import io.actrium.actr.ActrException
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrRefWrapper
 import io.actrium.actr.ActrType
+import io.actrium.actr.CleanupReason
 import io.actrium.actr.DynamicWorkload
 import io.actrium.actr.NetworkEventHandleWrapper
 import io.actrium.actr.PayloadType
+import io.actrium.actr.ReconnectReason
 import io.actrium.actr.WorkloadLifecycleBridge
 import io.actrium.actr.ActrNode as ActrNodeGenerated
+import kotlinx.coroutines.CoroutineScope
 import java.net.URL
 
 // ============================================================================
@@ -66,9 +70,13 @@ typealias Workload = WorkloadLifecycleBridge
 class ActrNode private constructor(
     private val inner: ActrNodeGenerated,
     private val retainedWorkload: DynamicWorkload? = null,
+    private val networkResources: ManagedNetworkResources? = null,
 ) : AutoCloseable {
     /** Close the underlying node, releasing native resources. */
-    override fun close() = inner.close()
+    override fun close() {
+        networkResources?.close()
+        inner.close()
+    }
 
     companion object {
         /**
@@ -91,6 +99,30 @@ class ActrNode private constructor(
         ): ActrNode {
             val inner = ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
             return ActrNode(inner, null)
+        }
+
+        /**
+         * Create a package-backed node and start Android network monitoring.
+         *
+         * The returned [ActrNode] retains the [NetworkEventHandle] and
+         * [NetworkMonitor], so callers do not need to manually create or hold
+         * those objects.
+         */
+        suspend fun fromPackageFileWithMonitoring(
+            configPath: String,
+            packagePath: String,
+            context: Context,
+            scope: CoroutineScope,
+            onNetworkStatusLog: ((String) -> Unit)? = null,
+        ): ActrNode {
+            val inner = ActrNodeGenerated.newFromPackageFile(configPath, packagePath)
+            return withNetworkMonitoring(
+                inner = inner,
+                retainedWorkload = null,
+                context = context,
+                scope = scope,
+                onNetworkStatusLog = onNetworkStatusLog,
+            )
         }
 
         /**
@@ -124,6 +156,30 @@ class ActrNode private constructor(
         }
 
         /**
+         * Create a linked/static node and start Android network monitoring.
+         *
+         * Use this when workload logic lives in Kotlin and you want the node to
+         * own the network event handle and Android network monitor.
+         */
+        suspend fun linkedWithMonitoring(
+            configPath: String,
+            actorType: ActrType,
+            workload: DynamicWorkload,
+            context: Context,
+            scope: CoroutineScope,
+            onNetworkStatusLog: ((String) -> Unit)? = null,
+        ): ActrNode {
+            val inner = ActrNodeGenerated.newFromLinkedWorkload(configPath, actorType, workload)
+            return withNetworkMonitoring(
+                inner = inner,
+                retainedWorkload = workload,
+                context = context,
+                scope = scope,
+                onNetworkStatusLog = onNetworkStatusLog,
+            )
+        }
+
+        /**
          * Create a package-backed node from config and package file URLs.
          *
          * Validates that both URLs are file URLs before delegating to
@@ -148,6 +204,31 @@ class ActrNode private constructor(
         }
 
         /**
+         * Create a monitored package-backed node from config and package file URLs.
+         */
+        suspend fun fromPackageFileWithMonitoring(
+            configURL: URL,
+            packageURL: URL,
+            context: Context,
+            scope: CoroutineScope,
+            onNetworkStatusLog: ((String) -> Unit)? = null,
+        ): ActrNode {
+            require(configURL.protocol == "file") {
+                "configURL must be a file URL, got: $configURL"
+            }
+            require(packageURL.protocol == "file") {
+                "packageURL must be a file URL, got: $packageURL"
+            }
+            return fromPackageFileWithMonitoring(
+                configPath = configURL.path,
+                packagePath = packageURL.path,
+                context = context,
+                scope = scope,
+                onNetworkStatusLog = onNetworkStatusLog,
+            )
+        }
+
+        /**
          * Create a linked node from a config file URL.
          *
          * @param configURL File URL to the TOML configuration file
@@ -166,6 +247,61 @@ class ActrNode private constructor(
             }
             return linked(configURL.path, actorType, workload)
         }
+
+        /**
+         * Create a monitored linked/static node from a config file URL.
+         */
+        suspend fun linkedWithMonitoring(
+            configURL: URL,
+            actorType: ActrType,
+            workload: DynamicWorkload,
+            context: Context,
+            scope: CoroutineScope,
+            onNetworkStatusLog: ((String) -> Unit)? = null,
+        ): ActrNode {
+            require(configURL.protocol == "file") {
+                "config URL must be a file URL, got: $configURL"
+            }
+            return linkedWithMonitoring(
+                configPath = configURL.path,
+                actorType = actorType,
+                workload = workload,
+                context = context,
+                scope = scope,
+                onNetworkStatusLog = onNetworkStatusLog,
+            )
+        }
+
+        private suspend fun withNetworkMonitoring(
+            inner: ActrNodeGenerated,
+            retainedWorkload: DynamicWorkload?,
+            context: Context,
+            scope: CoroutineScope,
+            onNetworkStatusLog: ((String) -> Unit)?,
+        ): ActrNode =
+            try {
+                val handle = inner.createNetworkEventHandle()
+                val monitor =
+                    NetworkMonitor.createWithHandle(
+                        context = context,
+                        scope = scope,
+                        getHandle = { handle },
+                        onNetworkStatusLog = onNetworkStatusLog,
+                    )
+                monitor.startMonitoring()
+                ActrNode(
+                    inner = inner,
+                    retainedWorkload = retainedWorkload,
+                    networkResources =
+                        ManagedNetworkResources(
+                            handle = handle,
+                            monitor = NetworkMonitorLifecycleAdapter(monitor),
+                        ),
+                )
+            } catch (error: Throwable) {
+                inner.close()
+                throw error
+            }
     }
 
     /**
@@ -194,7 +330,36 @@ class ActrNode private constructor(
      * @return A new NetworkEventHandle instance
      * @throws ActrException if the handle cannot be created
      */
-    suspend fun createNetworkEventHandle(): NetworkEventHandle = inner.createNetworkEventHandle()
+    suspend fun createNetworkEventHandle(): NetworkEventHandle =
+        networkResources?.handle ?: inner.createNetworkEventHandle()
+
+    /** Notify the retained Android monitor that the app moved to background. */
+    fun onAppBackground() {
+        networkResources?.onAppBackground()
+    }
+
+    /** Notify the retained Android monitor that the app returned to foreground. */
+    fun onAppForeground() {
+        networkResources?.onAppForeground()
+    }
+
+    /** Request cleanup on the retained network event handle. */
+    fun cleanupConnections(reason: CleanupReason = CleanupReason.MANUAL_RESET) {
+        networkResources?.cleanupConnections(reason)
+    }
+
+    /** Request cleanup and reconnect on the retained network event handle. */
+    fun forceReconnect(reason: ReconnectReason = ReconnectReason.MANUAL_RECONNECT) {
+        networkResources?.forceReconnect(reason)
+    }
+
+    /** Trigger an immediate network snapshot from the retained Android monitor. */
+    fun triggerNetworkCheck() {
+        networkResources?.triggerNetworkCheck()
+    }
+
+    /** Return the retained Android monitor's current network status, if present. */
+    fun getCurrentNetworkStatus(): String? = networkResources?.getCurrentNetworkStatus()
 
     /**
      * Start the actor and return a running reference.
@@ -207,7 +372,7 @@ class ActrNode private constructor(
      */
     suspend fun start(): ActrRef {
         val ref = inner.start()
-        return ActrRef(ref, retainedWorkload)
+        return ActrRef(ref, retainedWorkload, networkResources)
     }
 
     /**
@@ -231,8 +396,7 @@ class ActrNode private constructor(
             block(ref)
         } finally {
             try {
-                ref.shutdown()
-                ref.waitForShutdown()
+                ref.stop()
             } catch (_: Exception) {
                 // Ignore cleanup errors
             }
@@ -261,9 +425,13 @@ class ActrNode private constructor(
 class ActrRef internal constructor(
     private val inner: ActrRefWrapper,
     internal val retainedWorkload: DynamicWorkload? = null,
+    private val retainedNetworkResources: ManagedNetworkResources? = null,
 ) : AutoCloseable {
     /** Close the underlying reference, releasing native resources. */
-    override fun close() = inner.close()
+    override fun close() {
+        retainedNetworkResources?.close()
+        inner.close()
+    }
 
     /** Get the actor's unique identifier. */
     fun actorId(): ActrId = inner.actorId()
@@ -316,6 +484,34 @@ class ActrRef internal constructor(
     /** Wait for shutdown to complete. */
     suspend fun waitForShutdown() = inner.waitForShutdown()
 
+    /** Notify the retained Android monitor that the app moved to background. */
+    fun onAppBackground() {
+        retainedNetworkResources?.onAppBackground()
+    }
+
+    /** Notify the retained Android monitor that the app returned to foreground. */
+    fun onAppForeground() {
+        retainedNetworkResources?.onAppForeground()
+    }
+
+    /** Request cleanup on the retained network event handle. */
+    fun cleanupConnections(reason: CleanupReason = CleanupReason.MANUAL_RESET) {
+        retainedNetworkResources?.cleanupConnections(reason)
+    }
+
+    /** Request cleanup and reconnect on the retained network event handle. */
+    fun forceReconnect(reason: ReconnectReason = ReconnectReason.MANUAL_RECONNECT) {
+        retainedNetworkResources?.forceReconnect(reason)
+    }
+
+    /** Trigger an immediate network snapshot from the retained Android monitor. */
+    fun triggerNetworkCheck() {
+        retainedNetworkResources?.triggerNetworkCheck()
+    }
+
+    /** Return the retained Android monitor's current network status, if present. */
+    fun getCurrentNetworkStatus(): String? = retainedNetworkResources?.getCurrentNetworkStatus()
+
     /**
      * Shut down the actor and wait for it to terminate.
      *
@@ -326,8 +522,12 @@ class ActrRef internal constructor(
      * ```
      */
     suspend fun stop() {
-        shutdown()
-        waitForShutdown()
+        try {
+            shutdown()
+            waitForShutdown()
+        } finally {
+            retainedNetworkResources?.close()
+        }
     }
 }
 
@@ -354,6 +554,24 @@ suspend fun createActrNode(
 ): ActrNode = ActrNode.fromPackageFile(configPath, packagePath)
 
 /**
+ * Create a monitored ActrNode from a config file and package file.
+ */
+suspend fun createActrNodeWithMonitoring(
+    configPath: String,
+    packagePath: String,
+    context: Context,
+    scope: CoroutineScope,
+    onNetworkStatusLog: ((String) -> Unit)? = null,
+): ActrNode =
+    ActrNode.fromPackageFileWithMonitoring(
+        configPath = configPath,
+        packagePath = packagePath,
+        context = context,
+        scope = scope,
+        onNetworkStatusLog = onNetworkStatusLog,
+    )
+
+/**
  * Create an ActrNode backed by a linked dynamic workload (top-level function).
  *
  * @param configPath Path to the TOML configuration file
@@ -366,6 +584,26 @@ suspend fun linked(
     actorType: ActrType,
     workload: DynamicWorkload,
 ): ActrNode = ActrNode.linked(configPath, actorType, workload)
+
+/**
+ * Create a monitored ActrNode backed by a linked dynamic workload.
+ */
+suspend fun linkedWithMonitoring(
+    configPath: String,
+    actorType: ActrType,
+    workload: DynamicWorkload,
+    context: Context,
+    scope: CoroutineScope,
+    onNetworkStatusLog: ((String) -> Unit)? = null,
+): ActrNode =
+    ActrNode.linkedWithMonitoring(
+        configPath = configPath,
+        actorType = actorType,
+        workload = workload,
+        context = context,
+        scope = scope,
+        onNetworkStatusLog = onNetworkStatusLog,
+    )
 
 // ============================================================================
 // ActrRef Extensions

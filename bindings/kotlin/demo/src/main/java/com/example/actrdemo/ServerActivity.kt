@@ -21,15 +21,15 @@ import com.example.generated.EchoServiceHandler
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
 import io.actrium.actr.ActrType
+import io.actrium.actr.CleanupReason
 import io.actrium.actr.ContextBridge
 import io.actrium.actr.ErrorEventBridge
 import io.actrium.actr.RpcEnvelopeBridge
 import io.actrium.actr.WorkloadLifecycleBridge
 import io.actrium.actr.dsl.ActrNode
 import io.actrium.actr.dsl.ActrRef
-import io.actrium.actr.dsl.awaitShutdown
 import io.actrium.actr.dsl.dynamicWorkload
-import io.actrium.actr.dsl.linked
+import io.actrium.actr.dsl.linkedWithMonitoring
 import io.actrium.demo.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -157,7 +157,17 @@ class ServerActivity : AppCompatActivity() {
                 val actorType =
                     ActrType(manufacturer = "actrium", name = "EchoService", version = "1.0.0")
                 val workload = dynamicWorkload(EchoServerWorkload())
-                val system = linked(configPath, actorType, workload)
+                val system =
+                    linkedWithMonitoring(
+                        configPath = configPath,
+                        actorType = actorType,
+                        workload = workload,
+                        context = this@ServerActivity,
+                        scope = lifecycleScope,
+                        onNetworkStatusLog = { message ->
+                            lifecycleScope.launch(Dispatchers.Main) { log(message) }
+                        },
+                    )
                 val ref = system.start()
 
                 serverSystem = system
@@ -186,9 +196,9 @@ class ServerActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             try {
-                serverRef?.shutdown()
-                serverRef?.awaitShutdown()
+                serverRef?.stop()
                 serverRef = null
+                serverSystem?.close()
                 serverSystem = null
             } catch (e: Exception) {
                 Log.w(TAG, "Linked EchoService stop failed: ${e.message}")
@@ -305,11 +315,14 @@ class ServerActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
 
+        serverSystem?.cleanupConnections(CleanupReason.APP_TERMINATING)
+
         // Stop logcat reader
         if (::logcatReader.isInitialized) {
             logcatReader.stop()
         }
 
         serverRef?.shutdown()
+        serverSystem?.close()
     }
 }
