@@ -1721,7 +1721,7 @@ cli_binary_binary_filename() {
 
 cli_binary_release_url() {
   # Reuse PACKAGE_SYNC_OWNER; for the main repo this resolves to the same
-  # owner that owns actor-rtc/actr. Falls back to GITHUB_REPOSITORY_OWNER.
+  # owner that owns Actrium/actr. Falls back to GITHUB_REPOSITORY_OWNER.
   local owner
   owner="${PACKAGE_SYNC_OWNER:-${GITHUB_REPOSITORY_OWNER:-}}"
   local repo
