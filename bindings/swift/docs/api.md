@@ -29,6 +29,15 @@ Node-level wrapper for creating and starting package-backed ACTR nodes.
   - **Returns:** An `ActrNode` instance (low-level `ActrBindings.ActrNode`)
   - **Throws:** `ActrError.Config` if the configuration is invalid
 
+- `static func newFromPackageFileWithObservers(configPath: String, packagePath: String, observers: RuntimeObservers) async throws -> ActrNode`
+  - Creates a package-backed ACTR node and installs host-side runtime observers
+  - **Parameters:**
+    - `configPath`: Path to the TOML configuration file
+    - `packagePath`: Path to the `.actr` package file
+    - `observers`: Optional observer categories bundled in a `RuntimeObservers` object
+  - **Returns:** An `ActrNode` instance (low-level `ActrBindings.ActrNode`)
+  - **Throws:** `ActrError.Config` if the configuration is invalid
+
 - `func createNetworkEventHandle() throws -> NetworkEventHandleWrapper`
   - Creates a network event handle for platform callbacks before startup
   - **Returns:** A `NetworkEventHandleWrapper` instance
@@ -138,9 +147,32 @@ Context provided to workloads during lifecycle callbacks. Provides access to RPC
     - `streamId`: Stream identifier to unregister
   - **Throws:** `ActrError` if unregistration fails
 
-#### `WorkloadBridge`
+#### Runtime Observers
 
-Low-level callback interface retained in the generated bindings. The package-first runtime flow does not use it directly.
+Package-backed hosts can install observer callbacks without implementing actor
+dispatch:
+
+```swift
+final class RtcObserver: WebRtcObserverBridge {
+    func onConnecting(ctx: ContextBridge, event: PeerEventBridge) async {}
+    func onConnected(ctx: ContextBridge, event: PeerEventBridge) async {}
+    func onDisconnected(ctx: ContextBridge, event: PeerEventBridge) async {}
+}
+
+let observers = RuntimeObservers(
+    signaling: nil,
+    websocket: nil,
+    webrtc: RtcObserver(),
+    credential: nil,
+    mailbox: nil
+)
+```
+
+`SignalingObserverBridge.onConnected` means the runtime is connected to the
+signaling service. It does **not** mean a target actor is send-ready.
+`WebRtcObserverBridge.onConnected(ctx:event:)` is the target-scoped readiness
+signal for the peer in `event.peer`; retry saved user intent only by issuing a
+fresh `call`/`tell` after that peer-specific callback.
 
 ### Data Types
 
@@ -232,6 +264,7 @@ one binding-local variant (`Config`) for pre-protocol configuration failures.
 public enum ActrError: Swift.Error, Equatable, Hashable {
     // Transient — retry with backoff
     case Unavailable(msg: String)
+    case ConnectionNotReady(info: ConnectionNotReadyInfo)
     case TimedOut
 
     // Client — fail fast
@@ -253,6 +286,13 @@ public enum ActrError: Swift.Error, Equatable, Hashable {
 }
 ```
 
+`ConnectionNotReady` is returned when runtime preflight rejects a send before it
+enters any transport queue. The message was not sent and was not queued by
+ACTR. UI/business code should retain the user intent and issue a fresh send
+after `WebRtcObserverBridge.onConnected(ctx:event:)` fires for the same target.
+`ConnectionNotReadyInfo.retryAfterMs` is a fallback probe delay, not an
+authoritative readiness signal.
+
 Classification helpers (free functions, not methods — UniFFI limitation):
 
 ```swift
@@ -273,19 +313,21 @@ High-level entry point for creating and starting a package-backed ACTR node. Thi
 
 **Methods:**
 
-- `static func from(packageConfig path: String, packagePath: String) async throws -> ActrNode`
+- `static func from(packageConfig path: String, packagePath: String, observers: RuntimeObservers? = nil) async throws -> ActrNode`
   - Creates a node from a TOML config file path and `.actr` package path
   - **Parameters:**
     - `path`: Path to the TOML configuration file
     - `packagePath`: Path to the `.actr` package file
+    - `observers`: Optional host-side runtime observers for package-backed nodes
   - **Returns:** An `ActrNode` instance
   - **Throws:** `ActrError.Config` if the configuration is invalid
 
-- `static func from(packageConfig configURL: URL, packageURL: URL) async throws -> ActrNode`
+- `static func from(packageConfig configURL: URL, packageURL: URL, observers: RuntimeObservers? = nil) async throws -> ActrNode`
   - Creates a node from TOML config and `.actr` package URLs
   - **Parameters:**
     - `configURL`: File URL to the TOML configuration file
     - `packageURL`: File URL to the `.actr` package file
+    - `observers`: Optional host-side runtime observers for package-backed nodes
   - **Returns:** An `ActrNode` instance
   - **Throws:** `ActrError.Config` if the URL is not a file URL or configuration is invalid
 

@@ -24,18 +24,45 @@ public typealias NetworkEventResult = ActrBindings.NetworkEventResult
 
 // Re-export error types
 public typealias ActrError = ActrBindings.ActrError
+public typealias ConnectionNotReadyInfo = ActrBindings.ConnectionNotReadyInfo
+public typealias ErrorKind = ActrBindings.ErrorKind
 
 // Re-export protocol types used by the bridge
 public typealias ContextBridge = ActrBindings.ContextBridge
 public typealias WorkloadLifecycleBridge = ActrBindings.WorkloadLifecycleBridge
 public typealias DynamicWorkload = ActrBindings.DynamicWorkload
+public typealias RuntimeObservers = ActrBindings.RuntimeObservers
 public typealias RpcEnvelopeBridge = ActrBindings.RpcEnvelopeBridge
 public typealias ErrorEventBridge = ActrBindings.ErrorEventBridge
+public typealias ErrorCategoryBridge = ActrBindings.ErrorCategoryBridge
+public typealias PeerEventBridge = ActrBindings.PeerEventBridge
+public typealias CredentialEventBridge = ActrBindings.CredentialEventBridge
+public typealias BackpressureEventBridge = ActrBindings.BackpressureEventBridge
+public typealias SignalingObserverBridge = ActrBindings.SignalingObserverBridge
+public typealias WebSocketObserverBridge = ActrBindings.WebSocketObserverBridge
+public typealias WebRtcObserverBridge = ActrBindings.WebRtcObserverBridge
+public typealias CredentialObserverBridge = ActrBindings.CredentialObserverBridge
+public typealias MailboxObserverBridge = ActrBindings.MailboxObserverBridge
 
 // Re-export data types
 public typealias ActrId = ActrBindings.ActrId
 public typealias ActrType = ActrBindings.ActrType
 public typealias PayloadType = ActrBindings.PayloadType
+
+/// Returns the fault-domain classification for an ACTR error.
+public func actrErrorKind(_ error: ActrError) -> ErrorKind {
+    ActrBindings.actrErrorKind(err: error)
+}
+
+/// Returns true when an ACTR error is transient and can be retried.
+public func actrErrorIsRetryable(_ error: ActrError) -> Bool {
+    ActrBindings.actrErrorIsRetryable(err: error)
+}
+
+/// Returns true when an ACTR error indicates corrupt payload handling.
+public func actrErrorRequiresDlq(_ error: ActrError) -> Bool {
+    ActrBindings.actrErrorRequiresDlq(err: error)
+}
 
 /// A high-level reference to a running actor.
 ///
@@ -44,6 +71,7 @@ public typealias PayloadType = ActrBindings.PayloadType
 public final class ActrRef: Sendable {
     private let inner: ActrRefWrapper
     private let retainedWorkload: DynamicWorkload?
+    private let retainedObservers: RuntimeObservers?
 
     /// Get the actor's ID
     public func actorId() -> ActrId {
@@ -136,8 +164,13 @@ public final class ActrRef: Sendable {
         await inner.waitForShutdown()
     }
 
-    init(inner: ActrRefWrapper, retainedWorkload: DynamicWorkload? = nil) {
+    init(
+        inner: ActrRefWrapper,
+        retainedWorkload: DynamicWorkload? = nil,
+        retainedObservers: RuntimeObservers? = nil
+    ) {
         self.inner = inner
         self.retainedWorkload = retainedWorkload
+        self.retainedObservers = retainedObservers
     }
 }

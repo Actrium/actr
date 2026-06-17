@@ -21,6 +21,12 @@ control is required (custom `TrustProvider`, pre-built `Hyper`,
 attaching a Rust `Workload`, etc.), use the `actr_hyper::{Hyper, Node}`
 API directly from native Rust.
 
+Package-backed Swift hosts can pass `RuntimeObservers` to
+`ActrNode.from(packageConfig:packagePath:observers:)` to receive signaling and
+target-scoped WebRTC readiness callbacks. Treat signaling connection as
+service availability only; retry saved user intent with a fresh send after the
+matching `WebRtcObserverBridge.onConnected(ctx:event:)` target callback.
+
 ## Workspace Layout
 
 The Swift build scripts build `libactr` from the monorepo workspace root.
