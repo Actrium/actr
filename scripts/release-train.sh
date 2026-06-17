@@ -2267,6 +2267,10 @@ run_release_train() {
     ensure_publish_worktree_clean
   fi
   set_release_sha
+  # Persist the release context so stage functions (e.g.
+  # stage_publish_cli_binaries) invoked later in the full pipeline can
+  # read_context without requiring a separate --stage create-tag run.
+  write_context
   append_skipped_components
 
   local package

@@ -345,6 +345,7 @@ test_publish_mode_uses_prepared_versions_without_mutating() {
   commit_release_prepare() { calls+=("commit_release_prepare"); }
   append_skipped_components() { calls+=("append_skipped_components"); }
   set_release_sha() { calls+=("set_release_sha"); RELEASE_SHA="test-sha"; }
+  write_context() { calls+=("write_context"); }
   publish_rust_package() { calls+=("publish_rust_package:$1:$2"); }
   publish_python_package() { calls+=("publish_python_package"); }
   skip_python_package() { calls+=("skip_python_package"); }
