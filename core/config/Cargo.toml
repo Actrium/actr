@@ -9,7 +9,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Configuration file parser and project manifest support for Actor-RTC framework"
-repository = "https://github.com/actor-rtc/actr"
+repository = "https://github.com/Actrium/actr"
 
 [lints]
 workspace = true

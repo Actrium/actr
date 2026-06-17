@@ -560,4 +560,4 @@ actr-runtime
 ---
 
 **Maintainers**: actr Core Team
-**Issues**: https://github.com/actor-rtc/actr/issues
+**Issues**: https://github.com/Actrium/actr/issues

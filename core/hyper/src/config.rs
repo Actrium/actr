@@ -63,7 +63,7 @@ pub struct HyperConfig {
 
 /// Default mailbox backpressure threshold (queued-message count).
 ///
-/// Chosen conservatively — most actor-rtc workloads are below this in
+/// Chosen conservatively — most Actor-RTC workloads are below this in
 /// steady state, so a warning at this level means queue growth needs
 /// attention. Tune per-actor via
 /// [`HyperConfig::mailbox_backpressure_threshold`].
