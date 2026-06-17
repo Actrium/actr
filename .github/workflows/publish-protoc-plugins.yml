@@ -50,6 +50,10 @@ jobs:
         with:
           targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
       - name: Build
         run: cargo build --release -p actr-framework-protoc-codegen --bin protoc-gen-actrframework --target aarch64-apple-darwin --locked
       - name: Package
@@ -184,8 +188,14 @@ jobs:
           cp tools/protoc-gen/typescript/dist/bundle.js dist/dist/bundle.js
           cp tools/protoc-gen/typescript/package.json dist/package.json
           chmod +x dist/scripts/protoc-gen-actrframework-typescript
+          ZIP_INPUTS=(scripts/protoc-gen-actrframework-typescript dist/bundle.js package.json)
+          if grep -q 'require("typescript")' dist/dist/bundle.js; then
+            mkdir -p dist/node_modules
+            cp -R tools/protoc-gen/typescript/node_modules/typescript dist/node_modules/typescript
+            ZIP_INPUTS+=(node_modules/typescript)
+          fi
           ZIP_NAME="protoc-gen-actrframework-typescript.zip"
-          ( cd dist && zip -q "$ZIP_NAME" scripts/protoc-gen-actrframework-typescript dist/bundle.js package.json )
+          ( cd dist && zip -qr "$ZIP_NAME" "${ZIP_INPUTS[@]}" )
           ( cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )
       - name: Verify self-contained bundle
         run: |
