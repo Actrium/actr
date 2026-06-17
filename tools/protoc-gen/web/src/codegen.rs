@@ -651,6 +651,8 @@ fn gen_wasm_scaffold(req: &WebCodegenRequest) -> Result<Vec<PathBuf>, String> {
 // ═══════════════════════════════════════════════════════════════════
 
 fn gen_wasm_cargo_toml(pkg_name: &str) -> String {
+    let actr_source_tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+
     format!(
         r#"[package]
 name = "{pkg_name}"
@@ -664,8 +666,8 @@ rust-version = "1.88"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-actr-sw-host = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
-actr-web-common = {{ git = "https://github.com/actor-rtc/actr", branch = "web" }}
+actr-sw-host = {{ git = "https://github.com/Actrium/actr", tag = "{actr_source_tag}" }}
+actr-web-common = {{ git = "https://github.com/Actrium/actr", tag = "{actr_source_tag}" }}
 
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
@@ -1323,3 +1325,19 @@ self.addEventListener('message', (event) => {
   });
 });
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wasm_cargo_toml_pins_actr_web_dependencies_to_current_release_tag() {
+        let cargo_toml = gen_wasm_cargo_toml("demo-wasm");
+        let expected_tag = format!("tag = \"v{}\"", env!("CARGO_PKG_VERSION"));
+
+        assert!(cargo_toml.contains("git = \"https://github.com/Actrium/actr\""));
+        assert!(cargo_toml.contains(&expected_tag));
+        assert!(!cargo_toml.contains("github.com/actor-rtc/actr"));
+        assert!(!cargo_toml.contains("branch = \"web\""));
+    }
+}
