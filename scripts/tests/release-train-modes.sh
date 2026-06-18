@@ -49,7 +49,6 @@ _original_stage_create_tag=$(declare -f stage_create_tag)
 _original_stage_publish_rust=$(declare -f stage_publish_rust)
 _original_write_context=$(declare -f write_context)
 _original_read_context=$(declare -f read_context)
-_original_build_cli_binary_target=$(declare -f build_cli_binary_target)
 _original_stage_build_cli_binaries=$(declare -f stage_build_cli_binaries)
 _original_stage_publish_cli_binaries=$(declare -f stage_publish_cli_binaries)
 
@@ -84,7 +83,6 @@ restore_all_functions() {
   eval "$_original_stage_publish_rust"
   eval "$_original_write_context"
   eval "$_original_read_context"
-  eval "$_original_build_cli_binary_target"
   eval "$_original_stage_build_cli_binaries"
   eval "$_original_stage_publish_cli_binaries"
 }
@@ -354,7 +352,7 @@ test_publish_mode_uses_prepared_versions_without_mutating() {
   publish_web_packages() { calls+=("publish_web_packages"); }
   publish_typescript_workload_package() { calls+=("publish_typescript_workload_package"); }
   publish_typescript_package() { calls+=("publish_typescript_package"); }
-  build_cli_binary_target() { calls+=("build_cli_binary_target:$1"); }
+  stage_build_cli_binaries() { calls+=("stage_build_cli_binaries"); }
   stage_publish_cli_binaries() { calls+=("stage_publish_cli_binaries"); }
 
   VERSION="1.2.3"
@@ -971,8 +969,10 @@ EOF
 
 test_cli_zigbuild_uses_zigbuild_arguments_without_build_subcommand() {
   reset_release_train_state
+  # shellcheck source=/dev/null
+  source scripts/release-actr-cli.sh
 
-  local temp_dir original_path original_work_repo_root cargo_args_log
+  local temp_dir original_path cargo_args_log
   temp_dir=$(mktemp -d)
   cargo_args_log="$temp_dir/cargo-args.log"
   mkdir -p "$temp_dir/bin" "$temp_dir/bindings/web/scripts"
@@ -995,29 +995,27 @@ for arg in "$@"; do
   fi
   previous="$arg"
 done
-mkdir -p "${WORK_REPO_ROOT}/target/${target}/release"
-printf 'actr test binary\n' >"${WORK_REPO_ROOT}/target/${target}/release/actr"
+mkdir -p "${ACTR_REPO_ROOT}/target/${target}/release"
+printf 'actr test binary\n' >"${ACTR_REPO_ROOT}/target/${target}/release/actr"
 exit 0
 EOF
   chmod +x "$temp_dir/bin/cargo"
 
   original_path=$PATH
-  original_work_repo_root=$WORK_REPO_ROOT
   PATH="$temp_dir/bin:$PATH"
   export CARGO_ARGS_LOG="$cargo_args_log"
-  export WORK_REPO_ROOT="$temp_dir"
-  VERSION="1.2.3"
-  DRY_RUN=false
-  RELEASE_SHA="abc123"
-  PACKAGE_SYNC_OWNER="actrium"
-  GITHUB_REPOSITORY_NAME="actr"
-  append_state() { :; }
+  export ACTR_REPO_ROOT="$temp_dir"
+  export GITHUB_REPOSITORY="actrium/actr"
+  export RELEASE_SHA="abc123"
 
-  build_cli_binary_target "aarch64-unknown-linux-musl|ubuntu-latest|true" "$temp_dir/staging"
+  command_build \
+    --target aarch64-unknown-linux-musl \
+    --version 1.2.3 \
+    --output "$temp_dir/staging" \
+    --state-file "$temp_dir/state.tsv"
 
   PATH=$original_path
-  WORK_REPO_ROOT=$original_work_repo_root
-  unset CARGO_ARGS_LOG
+  unset CARGO_ARGS_LOG ACTR_REPO_ROOT GITHUB_REPOSITORY RELEASE_SHA
 
   if grep -q '^zigbuild build ' "$cargo_args_log"; then
     printf 'cargo zigbuild must not receive cargo build subcommand arguments\n' >&2
@@ -1035,8 +1033,78 @@ EOF
   rm -rf "$temp_dir"
 }
 
+test_cli_release_state_rows_match_report_schema() {
+  reset_release_train_state
+  # shellcheck source=/dev/null
+  source scripts/release-actr-cli.sh
+
+  local temp_dir field_count version status mode
+  temp_dir=$(mktemp -d)
+
+  export GITHUB_REPOSITORY="actrium/actr"
+  export RELEASE_SHA="abc123"
+
+  command_build \
+    --target x86_64-unknown-linux-gnu \
+    --version 1.2.3 \
+    --output "$temp_dir/staging" \
+    --state-file "$temp_dir/state.tsv" \
+    --dry-run
+
+  unset GITHUB_REPOSITORY RELEASE_SHA
+
+  field_count=$(awk -F '\t' '{print NF}' "$temp_dir/state.tsv")
+  version=$(cut -f4 "$temp_dir/state.tsv")
+  status=$(cut -f5 "$temp_dir/state.tsv")
+  mode=$(cut -f6 "$temp_dir/state.tsv")
+
+  assert_eq "8" "$field_count" "CLI release state field count"
+  assert_eq "1.2.3" "$version" "CLI release state version"
+  assert_eq "success" "$status" "CLI release state status"
+  assert_eq "dry_run_validated" "$mode" "CLI release state mode"
+
+  rm -rf "$temp_dir"
+}
+
+test_cli_sha256_uses_sha256sum_without_shasum() {
+  reset_release_train_state
+  # shellcheck source=/dev/null
+  source scripts/release-actr-cli.sh
+
+  local temp_dir original_path expected_line actual_line
+  temp_dir=$(mktemp -d)
+  mkdir -p "$temp_dir/bin"
+  printf 'archive\n' >"$temp_dir/actr-v1.2.3-x86_64-pc-windows-msvc.zip"
+
+  ln -s "$(command -v awk)" "$temp_dir/bin/awk"
+  ln -s "$(command -v basename)" "$temp_dir/bin/basename"
+  ln -s "$(command -v dirname)" "$temp_dir/bin/dirname"
+  cat >"$temp_dir/bin/sha256sum" <<'EOF'
+#!/bin/sh
+printf 'abc123  %s\n' "$1"
+EOF
+  chmod +x "$temp_dir/bin/sha256sum"
+
+  original_path=$PATH
+  PATH="$temp_dir/bin"
+
+  write_sha256 \
+    "$temp_dir/actr-v1.2.3-x86_64-pc-windows-msvc.zip" \
+    "$temp_dir/actr-v1.2.3-x86_64-pc-windows-msvc.zip.sha256"
+
+  PATH=$original_path
+
+  expected_line="abc123  actr-v1.2.3-x86_64-pc-windows-msvc.zip"
+  actual_line=$(cat "$temp_dir/actr-v1.2.3-x86_64-pc-windows-msvc.zip.sha256")
+  assert_eq "$expected_line" "$actual_line" "CLI release sha256sum fallback"
+
+  rm -rf "$temp_dir"
+}
+
 test_cli_release_upload_asset_deletes_existing_asset_before_retry() {
   reset_release_train_state
+  # shellcheck source=/dev/null
+  source scripts/release-actr-cli.sh
 
   local temp_dir asset_path curl_log upload_attempts
   temp_dir=$(mktemp -d)
@@ -1098,13 +1166,18 @@ test_cli_release_upload_asset_deletes_existing_asset_before_retry() {
     return 1
   }
 
-  GITHUB_TOKEN="test-token"
-  PRE_RELEASE=false
+  export GITHUB_TOKEN="test-token"
+  export GITHUB_REPOSITORY="actrium/actr"
+  export RELEASE_SHA="abc123"
 
-  cli_release_upload_asset "actrium" "actr" "v1.2.3" "$asset_path"
+  command_publish \
+    --tag v1.2.3 \
+    --assets "$temp_dir" \
+    --state-file "$temp_dir/state.tsv" \
+    --replace
 
   unset -f curl
-  unset GITHUB_TOKEN
+  unset GITHUB_TOKEN GITHUB_REPOSITORY RELEASE_SHA
 
   if ! grep -q '^DELETE .*/repos/actrium/actr/releases/assets/456$' "$curl_log"; then
     printf 'existing GitHub Release asset must be deleted before retry\n' >&2
@@ -1186,6 +1259,112 @@ test_typescript_dry_run_uses_pack_without_registry_publish() {
   fi
 }
 
+test_cli_has_no_unused_git2_dependency() {
+  if grep -q '^git2[[:space:]]*=' cli/Cargo.toml; then
+    printf 'actr-cli must not depend on unused git2\n' >&2
+    exit 1
+  fi
+
+  if grep -q 'git2::Error' cli/src/error.rs; then
+    printf 'actr-cli must not retain unused git2 conversion\n' >&2
+    exit 1
+  fi
+}
+
+test_release_train_delegates_cli_release_operations() {
+  if ! grep -q 'scripts/release-actr-cli.sh.*"${args\[@\]}"' scripts/release-train.sh; then
+    printf 'release train must delegate CLI release operations\n' >&2
+    exit 1
+  fi
+
+  if grep -q '^build_cli_binary_target()' scripts/release-train.sh; then
+    printf 'release train must not retain the CLI build implementation\n' >&2
+    exit 1
+  fi
+}
+
+test_python_release_tools_are_stage_scoped() {
+  reset_release_train_state
+
+  STAGE="build-cli-binaries"
+  if stage_requires_python_release_tools; then
+    printf 'CLI build stage must not install Python release tools\n' >&2
+    exit 1
+  fi
+
+  STAGE="publish-python"
+  if ! stage_requires_python_release_tools; then
+    printf 'Python publish stage must install Python release tools\n' >&2
+    exit 1
+  fi
+
+  SKIP_PYTHON=true
+  if stage_requires_python_release_tools; then
+    printf 'skip-python must disable Python release tool installation\n' >&2
+    exit 1
+  fi
+}
+
+test_cli_release_workflows_share_one_matrix() {
+  local reusable=.github/workflows/_actr-cli-release.yml
+  local manual=.github/workflows/publish-actr-cli.yml
+  [[ -f "$reusable" ]] || { printf 'reusable CLI release workflow is missing\n' >&2; exit 1; }
+  [[ -f "$manual" ]] || { printf 'manual CLI release workflow is missing\n' >&2; exit 1; }
+
+  grep -q '^  workflow_call:' "$reusable" || {
+    printf 'reusable CLI release workflow must declare workflow_call\n' >&2
+    exit 1
+  }
+  grep -q '^  workflow_dispatch:' "$manual" || {
+    printf 'manual CLI release workflow must declare workflow_dispatch\n' >&2
+    exit 1
+  }
+  grep -q 'uses: ./\.github/workflows/_actr-cli-release.yml' "$manual" || {
+    printf 'manual CLI workflow must call the reusable workflow\n' >&2
+    exit 1
+  }
+  if grep -q 'matrix:' "$manual"; then
+    printf 'manual CLI workflow must not duplicate the target matrix\n' >&2
+    exit 1
+  fi
+
+  local target
+  for target in \
+    x86_64-unknown-linux-gnu \
+    x86_64-unknown-linux-musl \
+    aarch64-unknown-linux-gnu \
+    aarch64-unknown-linux-musl \
+    aarch64-apple-darwin \
+    x86_64-pc-windows-msvc; do
+    assert_eq "1" "$(grep -c "target: ${target}" "$reusable")" "${target} matrix count"
+  done
+}
+
+test_release_train_reuses_cli_workflow() {
+  local workflow=.github/workflows/release-train.yml
+  grep -q 'uses: ./\.github/workflows/_actr-cli-release.yml' "$workflow" || {
+    printf 'release train must call the reusable CLI workflow\n' >&2
+    exit 1
+  }
+  if grep -q '^  build-cli-binaries:' "$workflow" || grep -q '^  publish-cli-binaries:' "$workflow"; then
+    printf 'release train must not retain embedded CLI workflow jobs\n' >&2
+    exit 1
+  fi
+  grep -q '^      cli_only:' "$workflow" || {
+    printf 'release train must expose cli_only dispatch mode\n' >&2
+    exit 1
+  }
+  grep -q '^  publish-cli-only:' "$workflow" || {
+    printf 'release train must provide a pre-merge CLI-only publish job\n' >&2
+    exit 1
+  }
+  if ! sed -n '/^  publish-cli-only:/,/^    secrets: inherit/p' "$workflow" \
+    | grep -q 'create_release: true'; then
+    printf 'CLI-only recovery must create a missing GitHub Release\n' >&2
+    exit 1
+  fi
+}
+
 test_detect_conventional_bump_reads_commit_without_trailing_newline
 test_parse_prepare_only_mode
 test_parse_stage_argument
@@ -1214,8 +1393,15 @@ test_report_stage_merges_state_files
 test_update_versions_syncs_optional_dependencies
 test_publish_web_packages_skips_puppeteer_download
 test_cli_zigbuild_uses_zigbuild_arguments_without_build_subcommand
+test_cli_release_state_rows_match_report_schema
+test_cli_sha256_uses_sha256sum_without_shasum
 test_cli_release_upload_asset_deletes_existing_asset_before_retry
 test_publish_web_workflow_has_timeout
 test_release_prepare_workflow_rejects_stale_runs
 test_release_prepare_workflow_closes_superseded_prs
 test_typescript_dry_run_uses_pack_without_registry_publish
+test_cli_has_no_unused_git2_dependency
+test_release_train_delegates_cli_release_operations
+test_python_release_tools_are_stage_scoped
+test_cli_release_workflows_share_one_matrix
+test_release_train_reuses_cli_workflow

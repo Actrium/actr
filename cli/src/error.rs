@@ -20,9 +20,6 @@ pub enum ActrCliError {
     #[error("JSON serialization failed: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    #[error("Git operation failed: {0}")]
-    Git(#[from] git2::Error),
-
     // === Configuration errors ===
     #[error("Configuration error: {0}")]
     Configuration(String),

@@ -1,0 +1,46 @@
+name: Publish actr CLI
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable release tag, for example v0.3.12.
+        required: true
+        type: string
+
+concurrency:
+  group: publish-actr-cli-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  validate-release:
+    name: Ensure release exists
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Expected a stable release tag in vX.Y.Z form, got $TAG"
+            exit 1
+          }
+          git ls-remote --exit-code --tags \
+            "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$TAG" >/dev/null
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
+  publish-cli:
+    needs: validate-release
+    uses: ./.github/workflows/_actr-cli-release.yml
+    with:
+      tag: ${{ inputs.tag }}
+      source_ref: ${{ inputs.tag }}
+      publish: true
+      replace_assets: true
+      create_release: false
+    secrets: inherit
