@@ -1,0 +1,187 @@
+name: Reusable actr CLI Release
+
+on:
+  workflow_call:
+    inputs:
+      tag: { required: true, type: string }
+      source_ref: { required: true, type: string }
+      publish: { required: true, type: boolean }
+      replace_assets: { required: true, type: boolean }
+      create_release: { required: true, type: boolean }
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PROTOC_VERSION: "29.3"
+
+jobs:
+  validate:
+    name: Validate CLI release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag_sha: ${{ steps.release.outputs.tag_sha }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+          fetch-depth: 0
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+          path: tag-source
+          fetch-depth: 0
+      - name: Validate tag and workspace version
+        id: release
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
+            echo "::error::Expected vX.Y.Z, got $TAG"
+            exit 1
+          }
+          VERSION="${BASH_REMATCH[1]}"
+          WORKSPACE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' source/Cargo.toml | head -1)
+          [[ "$WORKSPACE_VERSION" == "$VERSION" ]] || {
+            echo "::error::Tag $TAG contains workspace version $WORKSPACE_VERSION"
+            exit 1
+          }
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+          echo "tag_sha=$(git -C tag-source rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+          echo "source_sha=$(git -C source rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+
+  build:
+    name: Build actr CLI (${{ matrix.target }})
+    needs: validate
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest, use_zig: false, archive_ext: tar.gz }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest, use_zig: true, archive_ext: tar.gz }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-latest, use_zig: true, archive_ext: tar.gz }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-latest, use_zig: true, archive_ext: tar.gz }
+          - { target: aarch64-apple-darwin, os: macos-14, use_zig: false, archive_ext: tar.gz }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest, use_zig: false, archive_ext: zip }
+    steps:
+      - name: Checkout release automation
+        uses: actions/checkout@v5
+        with:
+          path: automation
+      - name: Checkout release source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+          version: ${{ env.PROTOC_VERSION }}
+      - name: Set up Zig
+        if: matrix.use_zig
+        uses: mlugg/setup-zig@v2
+      - name: Install cargo-zigbuild
+        if: matrix.use_zig
+        run: cargo install --locked cargo-zigbuild
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Build and package actr CLI
+        shell: bash
+        env:
+          ACTR_REPO_ROOT: ${{ github.workspace }}/source
+          RELEASE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          automation/scripts/release-actr-cli.sh build \
+            --target "${{ matrix.target }}" \
+            --version "${{ needs.validate.outputs.version }}" \
+            --output "$GITHUB_WORKSPACE/artifacts" \
+            --state-file "$GITHUB_WORKSPACE/release-train-v${{ needs.validate.outputs.version }}.build-cli-binaries-${{ matrix.target }}.state.tsv"
+      - name: Upload archive and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: actr-cli-${{ matrix.target }}
+          path: |
+            artifacts/actr-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}
+            artifacts/actr-v${{ needs.validate.outputs.version }}-${{ matrix.target }}.${{ matrix.archive_ext }}.sha256
+          if-no-files-found: error
+      - name: Upload target state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-cli-binaries-${{ matrix.target }}-state
+          path: release-train-v${{ needs.validate.outputs.version }}.build-cli-binaries-${{ matrix.target }}.state.tsv
+          if-no-files-found: warn
+
+  publish:
+    name: Publish actr CLI assets
+    if: inputs.publish
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: automation
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: actr-cli-*
+          path: artifacts
+          merge-multiple: true
+      - name: Verify complete asset set
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          targets=(x86_64-unknown-linux-gnu x86_64-unknown-linux-musl aarch64-unknown-linux-gnu aarch64-unknown-linux-musl aarch64-apple-darwin x86_64-pc-windows-msvc)
+          for target in "${targets[@]}"; do
+            ext=tar.gz
+            [[ "$target" == *windows-msvc ]] && ext=zip
+            test -f "artifacts/actr-v${VERSION}-${target}.${ext}"
+            test -f "artifacts/actr-v${VERSION}-${target}.${ext}.sha256"
+          done
+          test "$(find artifacts -maxdepth 1 -type f | wc -l | tr -d ' ')" = 12
+      - name: Upload CLI assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.validate.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          args=(publish --tag "${{ inputs.tag }}" --assets "$GITHUB_WORKSPACE/artifacts" --state-file "$GITHUB_WORKSPACE/release-train-v${{ needs.validate.outputs.version }}.publish-cli-binaries.state.tsv")
+          [[ "${{ inputs.replace_assets }}" == true ]] && args+=(--replace)
+          [[ "${{ inputs.create_release }}" == true ]] && args+=(--create-release)
+          automation/scripts/release-actr-cli.sh "${args[@]}"
+      - name: Upload publish state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publish-cli-binaries-artifacts
+          path: release-train-v${{ needs.validate.outputs.version }}.publish-cli-binaries.state.tsv
+          if-no-files-found: warn
+
+  report:
+    name: Collect CLI release state
+    if: always()
+    needs: [validate, build, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*cli-binaries*-state"
+          path: state
+          merge-multiple: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-release-report
+          path: state
+          if-no-files-found: warn
