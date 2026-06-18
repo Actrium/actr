@@ -9,12 +9,6 @@ members = [
 ]
 resolver = "2"
 
-[patch.crates-io]
-# Use actr main branch
-actr-protocol = { git = "https://github.com/Actrium/actr.git", rev = "f815d2da01e4af8dbee72fbc5d3b8b709f335548" }
-actr-runtime = { git = "https://github.com/Actrium/actr.git", rev = "f815d2da01e4af8dbee72fbc5d3b8b709f335548" }
-actr-runtime-mailbox = { git = "https://github.com/Actrium/actr.git", rev = "f815d2da01e4af8dbee72fbc5d3b8b709f335548" }
-
 [workspace.package]
 version = "0.1.1"
 edition = "2024"
@@ -29,7 +23,7 @@ turn_crate = { package = "turn", version = "0.11.0" }
 webrtc-util = "0.12.0"
 tokio = { version = "1.0", features = ["full"] }
 # Actr framework dependencies
-actr-protocol = { version = "0.3" }
+actr-protocol = { version = "0.3.12" }
 prost = "0.14.1"
 prost-types = "0.14.1"
 tonic = { version = "0.14", features = ["tls-ring"] }
