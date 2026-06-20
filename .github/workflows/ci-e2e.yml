@@ -101,6 +101,10 @@ jobs:
             target/e2e-cache/polyglot-echo/linked-rust
             target/e2e-cache/polyglot-echo/wasm-rust
             target/e2e-cache/polyglot-echo/stream-server
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       # ── server forms (Rust client, echo scenario) ──────────────────────────
       - name: Run polyglot-echo (--server cdylib-rust --client rust)
         run: bash e2e/polyglot-echo/run.sh --server cdylib-rust --client rust polyglot-ci-cdylib
@@ -113,6 +117,9 @@ jobs:
         run: bash e2e/polyglot-echo/run.sh --client rust --scenario server-stream polyglot-ci-stream
       - name: Run polyglot-echo (--client rust --scenario bidi)
         run: bash e2e/polyglot-echo/run.sh --client rust --scenario bidi polyglot-ci-bidi
+      # ── cross-language client (TypeScript driver, echo scenario) ────────────
+      - name: Run polyglot-echo (--server cdylib-rust --client ts)
+        run: bash e2e/polyglot-echo/run.sh --server cdylib-rust --client ts polyglot-ci-ts
 
   typescript-e2e:
     name: TypeScript E2E

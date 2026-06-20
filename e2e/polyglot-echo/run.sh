@@ -86,9 +86,9 @@ case "$SERVER" in
 esac
 
 case "$CLIENT" in
-    rust) ;;
+    rust | ts) ;;
     *)
-        fail "Unknown --client value: $CLIENT (expected rust)"
+        fail "Unknown --client value: $CLIENT (expected rust|ts)"
         ;;
 esac
 
@@ -242,10 +242,67 @@ run_rust_driver() {
     fail "Expected output not found in driver log for scenario '$SCENARIO'"
 }
 
+run_ts_driver() {
+    [[ "$SCENARIO" == "echo" ]] || fail "TS client only supports --scenario echo (streaming not implemented in the TypeScript binding)"
+    require_cmd node
+    require_cmd npm
+
+    local bindings_dir="$REPO_ROOT/bindings/typescript"
+    local dist_entry="$bindings_dir/dist/index.js"
+    local build_log="$LOG_DIR/driver-ts-build.log"
+
+    section "🔨 Building bindings/typescript"
+    if [ ! -f "$dist_entry" ]; then
+        (
+            cd "$bindings_dir"
+            npm install --no-audit --no-fund
+            npm run build:debug
+            npm run compile:ts
+        ) >"$build_log" 2>&1 || { cat "$build_log" >&2; fail "bindings/typescript build failed"; }
+        [ -f "$dist_entry" ] || fail "bindings/typescript dist missing after build"
+        # `napi build` regenerates index.js/index.d.ts and strips the
+        # hand-maintained ActrError shim. The driver only consumes dist/, so
+        # restore the checked-in root bindings to keep this build side-effect
+        # out of the working tree.
+        git -C "$REPO_ROOT" checkout -- bindings/typescript/index.js bindings/typescript/index.d.ts 2>/dev/null || true
+    fi
+    success "bindings/typescript built"
+
+    section "🚀 Running TypeScript client driver"
+    local driver_log="$LOG_DIR/driver-ts.log"
+    local timeout_s="${CLIENT_TIMEOUT_SECONDS:-60}"
+
+    local rc=0
+    timeout "$timeout_s" node "$SCRIPT_DIR/clients/typescript/index.cjs" \
+        --actr-toml "$CLIENT_RUNTIME" \
+        --service-type "$SERVICE_TYPE" \
+        --message "$TEST_MESSAGE" \
+        >"$driver_log" 2>&1 || rc=$?
+
+    if [ "$rc" -ne 0 ]; then
+        cat "$driver_log" >&2
+        [ "$rc" -eq 124 ] && fail "TS driver timed out after ${timeout_s}s"
+        fail "TS driver failed (exit $rc)"
+    fi
+
+    if grep -q "\[Received reply\].*Echo: $TEST_MESSAGE" "$driver_log"; then
+        success "TS driver echoed back: 'Echo: $TEST_MESSAGE'"
+        return 0
+    fi
+    echo "" >&2
+    echo "TS driver log:" >&2
+    cat "$driver_log" >&2
+    echo "" >&2
+    echo "Server log (last 80):" >&2
+    tail -80 "$LOG_DIR/server.log" >&2 || true
+    fail "Expected output not found in TS driver log for scenario '$SCENARIO'"
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 
 case "$CLIENT" in
     rust)            run_rust_driver ;;
+    ts)              run_ts_driver ;;
 esac
 
 echo ""
