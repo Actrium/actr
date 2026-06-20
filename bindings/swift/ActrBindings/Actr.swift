@@ -834,6 +834,17 @@ public protocol ActrRefWrapperProtocol: AnyObject, Sendable {
     func call(routeKey: String, payloadType: PayloadType, requestPayload: Data, timeoutMs: Int64) async throws  -> Data
     
     /**
+     * Call a remote actor via RPC.
+     *
+     * Unlike [`Self::call`], which targets the local guest workload
+     * (`Dest::Local`), this issues an outbound RPC to a remote actor
+     * (`Dest::Actor`) — typically an `ActrId` returned by [`Self::discover`].
+     * This is the client-side primitive cross-language drivers use to reach a
+     * service hosted on another node.
+     */
+    func callRemote(target: ActrId, routeKey: String, payloadType: PayloadType, requestPayload: Data, timeoutMs: Int64) async throws  -> Data
+    
+    /**
      * Discover actors of the specified type.
      */
     func discover(targetType: ActrType, count: UInt32) async throws  -> [ActrId]
@@ -936,6 +947,32 @@ open func call(routeKey: String, payloadType: PayloadType, requestPayload: Data,
                 uniffi_actr_fn_method_actrrefwrapper_call(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(routeKey),FfiConverterTypePayloadType_lower(payloadType),FfiConverterData.lower(requestPayload),FfiConverterInt64.lower(timeoutMs)
+                )
+            },
+            pollFunc: ffi_actr_rust_future_poll_rust_buffer,
+            completeFunc: ffi_actr_rust_future_complete_rust_buffer,
+            freeFunc: ffi_actr_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterData.lift,
+            errorHandler: FfiConverterTypeActrError_lift
+        )
+}
+    
+    /**
+     * Call a remote actor via RPC.
+     *
+     * Unlike [`Self::call`], which targets the local guest workload
+     * (`Dest::Local`), this issues an outbound RPC to a remote actor
+     * (`Dest::Actor`) — typically an `ActrId` returned by [`Self::discover`].
+     * This is the client-side primitive cross-language drivers use to reach a
+     * service hosted on another node.
+     */
+open func callRemote(target: ActrId, routeKey: String, payloadType: PayloadType, requestPayload: Data, timeoutMs: Int64)async throws  -> Data  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_actr_fn_method_actrrefwrapper_call_remote(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeActrId_lower(target),FfiConverterString.lower(routeKey),FfiConverterTypePayloadType_lower(payloadType),FfiConverterData.lower(requestPayload),FfiConverterInt64.lower(timeoutMs)
                 )
             },
             pollFunc: ffi_actr_rust_future_poll_rust_buffer,
@@ -6695,6 +6732,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_actrrefwrapper_call() != 24018) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_actr_checksum_method_actrrefwrapper_call_remote() != 16697) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_actrrefwrapper_discover() != 21192) {

@@ -601,6 +601,11 @@ RustBuffer uniffi_actr_fn_method_actrrefwrapper_actor_id(uint64_t ptr, RustCallS
 uint64_t uniffi_actr_fn_method_actrrefwrapper_call(uint64_t ptr, RustBuffer route_key, RustBuffer payload_type, RustBuffer request_payload, int64_t timeout_ms
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRREFWRAPPER_CALL_REMOTE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRREFWRAPPER_CALL_REMOTE
+uint64_t uniffi_actr_fn_method_actrrefwrapper_call_remote(uint64_t ptr, RustBuffer target, RustBuffer route_key, RustBuffer payload_type, RustBuffer request_payload, int64_t timeout_ms
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRREFWRAPPER_DISCOVER
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_FN_METHOD_ACTRREFWRAPPER_DISCOVER
 uint64_t uniffi_actr_fn_method_actrrefwrapper_discover(uint64_t ptr, RustBuffer target_type, uint32_t count
@@ -1167,6 +1172,12 @@ uint16_t uniffi_actr_checksum_method_actrrefwrapper_actor_id(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_CALL
 #define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_CALL
 uint16_t uniffi_actr_checksum_method_actrrefwrapper_call(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_CALL_REMOTE
+#define UNIFFI_FFIDEF_UNIFFI_ACTR_CHECKSUM_METHOD_ACTRREFWRAPPER_CALL_REMOTE
+uint16_t uniffi_actr_checksum_method_actrrefwrapper_call_remote(void
     
 );
 #endif

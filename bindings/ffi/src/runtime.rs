@@ -470,6 +470,42 @@ impl ActrRefWrapper {
         Ok(response_bytes.to_vec())
     }
 
+    /// Call a remote actor via RPC.
+    ///
+    /// Unlike [`Self::call`], which targets the local guest workload
+    /// (`Dest::Local`), this issues an outbound RPC to a remote actor
+    /// (`Dest::Actor`) — typically an `ActrId` returned by [`Self::discover`].
+    /// This is the client-side primitive cross-language drivers use to reach a
+    /// service hosted on another node.
+    pub async fn call_remote(
+        &self,
+        target: ActrId,
+        route_key: String,
+        payload_type: PayloadType,
+        request_payload: Vec<u8>,
+        timeout_ms: i64,
+    ) -> ActrResult<Vec<u8>> {
+        let target_id: actr_protocol::ActrId = target.into();
+        let proto_payload_type: actr_protocol::PayloadType = payload_type.into();
+        let ctx = self.inner.app_context().await;
+
+        let response_bytes = ctx
+            .call_raw(
+                &Dest::Actor(target_id),
+                route_key,
+                proto_payload_type,
+                Bytes::from(request_payload),
+                timeout_ms,
+            )
+            .await?;
+
+        tracing::info!(
+            response_bytes = response_bytes.len(),
+            "ffi.call_remote.completed"
+        );
+        Ok(response_bytes.to_vec())
+    }
+
     /// Send a one-way message to the local guest workload.
     pub async fn tell(
         &self,
