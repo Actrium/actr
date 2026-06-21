@@ -43,15 +43,17 @@ impl ActrNode {
     #[napi(factory)]
     pub async fn from_file(config_path: String) -> Result<ActrNode> {
         // Accept the manifest.toml path, resolve its sibling actr.toml,
-        // and let Node::from_config_file own config + trust + Hyper
-        // construction. TypeScript bindings link a minimal static-lib
-        // workload here; this surface exposes discovery and outbound
-        // calls, not TypeScript-defined service hosting.
+        // and feed the manifest's [package] into Hyper so the node
+        // registers under the real actr_type instead of the
+        // `local:Client:0.0.0` placeholder that `from_config_file`
+        // would otherwise synthesise. TypeScript bindings link a
+        // minimal static-lib workload here; this surface exposes
+        // discovery and outbound calls, not TS-defined service hosting.
         let manifest = ConfigParser::from_manifest_file(&config_path)
             .map_err(crate::error::config_error_to_napi)?;
         let runtime_path = manifest.config_dir.join("actr.toml");
 
-        let init = Node::from_config_file(&runtime_path)
+        let init = Node::from_config_with_package(&runtime_path, manifest.package.clone())
             .await
             .map_err(crate::error::hyper_error_to_napi)?;
         crate::logger::init_observability(init.runtime_config().observability.clone());

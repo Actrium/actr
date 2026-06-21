@@ -1,0 +1,14 @@
+edition = 1
+
+# Manifest for the Rust driver. Read by `Node::from_config_with_package`
+# (see src/main.rs) so the linked attachment registers under
+# `polyglot:RustDriver:0.1.0` instead of the bare `local:Client:0.0.0`
+# placeholder. The runtime config (`actr.toml`) is passed in via
+# `--actr-toml` from `run.sh` rather than read relative to this file.
+exports = []
+
+[package]
+name = "RustDriver"
+manufacturer = "polyglot"
+version = "0.1.0"
+description = "polyglot-echo Rust driver"

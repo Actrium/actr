@@ -12,19 +12,21 @@ server is deployed.
 | Axis           | Today                                               | Follow-up |
 |----------------|-----------------------------------------------------|-----------|
 | Server form    | `cdylib-rust` (`actr build` → `actr run`), `linked-rust` (in-process binary), `wasm-rust` (wasm32-wasip2 Component via `actr-hyper` `wasm-engine`) | other-language linked forms once their FFI workload entry lands |
-| Client driver  | Rust (`actr_hyper::Node`)                            | TypeScript / Python / Swift once their client bindings work on `main` (see below) |
+| Client driver  | Rust (`actr_hyper::Node`), TypeScript (`@actrium/actr` napi) | Python / Swift once their client bindings work on `main` (see below) |
 | Scenarios      | `echo` (unary), `server-stream` + `bidi` (via a separate linked stream server) | — |
 | Signaling      | `mock-actrix` (no real `actrix`)                    | — |
 | Trust          | static MFR pubkey (`[[trust]] kind = "static"`)     | registry trust |
 
-The Rust client enters Hyper through a link-only attachment
-(`Node::from_config_file` + a no-op workload), which synthesises the
-placeholder `local:Client:0.0.0` actr_type. The server allow-lists
-exactly that triple in `config/server-runtime.toml.tpl` (and the
-linked-rust / stream-server templates), rather than loosening the
-allow-list to a wildcard.
+Each client driver registers under its own actr_type via
+`Node::from_config_with_package`, which reads the `[package]` from the
+driver's `manifest.toml` (Rust → `polyglot:RustDriver:0.1.0`, TS →
+`polyglot:TsDriver:0.1.0`) instead of the bare `local:Client:0.0.0`
+placeholder that `from_config_file` would otherwise synthesise. The
+server allow-lists those triples in `config/server-runtime.toml.tpl`
+(and the linked-rust / stream-server templates); adding a language
+driver means appending one ACL rule, not loosening to a wildcard.
 
-> **TypeScript / Python / Swift client drivers are intentionally absent.**
+> **Python / Swift client drivers are intentionally absent.**
 > Their client-side entry points are unavailable or broken on the current
 > tree:
 > - **Python**: `bindings/python` ships only the `actr-workload`
@@ -33,11 +35,6 @@ allow-list to a wildcard.
 >   and `ActrNode.linked(config:type:workload:)`, but the
 >   `ActrNode.fromConfig(configPath:manifestPath:)` + `ActrRef.callRemote`
 >   client entry points the driver needs were removed / superseded.
-> - **TypeScript**: `bindings/typescript`'s napi `ActrNode.fromConfig`
->   client path registers with an empty `ActrType.version`, which a
->   debug-built `mock-actrix` rejects (`ActrType.version must be
->   non-empty`). Re-enabling the TS client driver requires fixing that
->   binding-side registration first.
 >
 > Each of these is a binding-side fix, out of scope for this scenario.
 > Adding a driver back is a one-function change in `run.sh` once the

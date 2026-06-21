@@ -162,6 +162,19 @@ pub(crate) struct HyperSectionWrapper {
 pub(crate) async fn node_from_config_file(
     path: &Path,
 ) -> crate::error::HyperResult<crate::Node<crate::Init>> {
+    node_from_config_file_with_package(path, None).await
+}
+
+/// Same as [`node_from_config_file`] but lets the caller supply the
+/// [`actr_config::PackageInfo`] that becomes the node's registered
+/// `actr_type`. Used by the language bindings, which already parsed
+/// `manifest.toml` and don't want their identity collapsed to the
+/// placeholder.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) async fn node_from_config_file_with_package(
+    path: &Path,
+    package_info: Option<actr_config::PackageInfo>,
+) -> crate::error::HyperResult<crate::Node<crate::Init>> {
     use crate::error::HyperError;
     use crate::verify::{ChainTrust, RegistryTrust, StaticTrust, TrustProvider};
 
@@ -174,18 +187,18 @@ pub(crate) async fn node_from_config_file(
         ))
     })?;
 
-    // Derive a minimal PackageInfo from the raw toml when `[package]` is
-    // absent. Otherwise, let ConfigParser handle it from its embedded
-    // `[package]` section.
     let raw_runtime: actr_config::RuntimeRawConfig = raw_text.parse().map_err(|e| {
         HyperError::Config(format!(
             "failed to parse runtime config `{}`: {e}",
             path.display()
         ))
     })?;
-    // `RuntimeConfig` requires a PackageInfo; synthesise a placeholder
-    // one so `from_config_file` can work without a sibling manifest.
-    let package_info = actr_config::PackageInfo {
+    // `RuntimeConfig` requires a PackageInfo. When the caller has one
+    // already (bindings come in here with the manifest's `[package]`),
+    // honour it so the node registers under the real actr_type. Without
+    // an explicit one, fall back to the historical `local:Client:0.0.0`
+    // placeholder so callers without a sibling manifest still work.
+    let package_info = package_info.unwrap_or_else(|| actr_config::PackageInfo {
         name: "client".to_string(),
         actr_type: actr_protocol::ActrType {
             manufacturer: "local".to_string(),
@@ -195,7 +208,7 @@ pub(crate) async fn node_from_config_file(
         description: None,
         authors: vec![],
         license: None,
-    };
+    });
     let runtime_config = actr_config::ConfigParser::parse_runtime(raw_runtime, path, package_info)
         .map_err(|e| HyperError::Config(format!("failed to parse runtime config: {e}")))?;
 

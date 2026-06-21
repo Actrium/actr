@@ -30,13 +30,18 @@ turn_urls = ["turn:127.0.0.1:__ICE_PORT__"]
 
 [acl]
 
-# Polyglot client drivers all enter Hyper through `Node::from_config_file`,
-# which synthesises a placeholder `local:Client:0.0.0` actr_type for the
-# linked attachment. Allow-listing that single triple covers every language
-# driver in this scenario; per-language identity is a follow-up.
+# Each polyglot driver registers under its own actr_type via
+# `Node::from_config_with_package` + a per-driver `manifest.toml`,
+# so the server's allow-list enumerates them explicitly. Adding a new
+# language driver means appending another rule here, not loosening the
+# allow-list to a wildcard.
 [[acl.rules]]
 permission = "allow"
-type = "local:Client:0.0.0"
+type = "polyglot:RustDriver:0.1.0"
+
+[[acl.rules]]
+permission = "allow"
+type = "polyglot:TsDriver:0.1.0"
 
 [[trust]]
 kind = "static"

@@ -20,6 +20,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use actr_config::ConfigParser;
 use actr_framework::{Context as RtContext, MessageDispatcher, Workload as RtWorkload};
 use actr_hyper::Node;
 use actr_protocol::{
@@ -108,6 +109,7 @@ enum Scenario {
 
 struct DriverArgs {
     runtime_toml: PathBuf,
+    manifest_toml: PathBuf,
     service_type: ActrType,
     message: String,
     scenario: Scenario,
@@ -116,6 +118,7 @@ struct DriverArgs {
 fn parse_args() -> Result<DriverArgs> {
     let mut args = env::args().skip(1);
     let mut runtime_toml: Option<PathBuf> = None;
+    let mut manifest_toml: Option<PathBuf> = None;
     let mut service_type: Option<String> = None;
     let mut message: Option<String> = None;
     let mut scenario = Scenario::Echo;
@@ -126,6 +129,12 @@ fn parse_args() -> Result<DriverArgs> {
                 runtime_toml = Some(PathBuf::from(
                     args.next()
                         .ok_or_else(|| anyhow!("--actr-toml needs value"))?,
+                ));
+            }
+            "--manifest-toml" => {
+                manifest_toml = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| anyhow!("--manifest-toml needs value"))?,
                 ));
             }
             "--service-type" => {
@@ -159,6 +168,12 @@ fn parse_args() -> Result<DriverArgs> {
     }
 
     let runtime_toml = runtime_toml.ok_or_else(|| anyhow!("missing --actr-toml"))?;
+    let manifest_toml = manifest_toml.unwrap_or_else(|| {
+        // Default to the manifest.toml shipped next to the driver crate
+        // so callers don't have to repeat themselves; --manifest-toml
+        // overrides for tests that want to swap identity.
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("manifest.toml")
+    });
     let service_type_str = service_type.ok_or_else(|| anyhow!("missing --service-type"))?;
     let parts: Vec<&str> = service_type_str.splitn(3, ':').collect();
     if parts.len() != 3 {
@@ -173,6 +188,7 @@ fn parse_args() -> Result<DriverArgs> {
 
     Ok(DriverArgs {
         runtime_toml,
+        manifest_toml,
         service_type,
         message,
         scenario,
@@ -409,7 +425,13 @@ async fn main() -> Result<()> {
         "polyglot-echo rust driver starting",
     );
 
-    let init = Node::from_config_file(&args.runtime_toml)
+    let manifest = ConfigParser::from_manifest_file(&args.manifest_toml).with_context(|| {
+        format!(
+            "failed to load driver manifest {}",
+            args.manifest_toml.display()
+        )
+    })?;
+    let init = Node::from_config_with_package(&args.runtime_toml, manifest.package.clone())
         .await
         .with_context(|| {
             format!(
