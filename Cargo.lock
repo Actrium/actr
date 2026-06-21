@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "actr"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "actr-cli"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr",
  "actr-cli",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "actr-config"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-protocol",
  "chrono",
@@ -117,7 +117,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-protocol",
  "actr-web-abi",
@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "actr-framework-protoc-codegen"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -161,7 +161,7 @@ dependencies = [
 
 [[package]]
 name = "actr-hyper"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-config",
  "actr-framework",
@@ -225,7 +225,7 @@ dependencies = [
 
 [[package]]
 name = "actr-mock-actrix"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "actr-pack"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "base64",
  "ed25519-dalek",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-native"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-hyper",
  "actr-platform-traits",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "actr-platform-traits"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "async-trait",
  "thiserror 2.0.18",
@@ -295,7 +295,7 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "base64",
@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-framework",
  "actr-protocol",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime-mailbox"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "actr-service-compat"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "actr-protocol",
  "anyhow",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "actr-web-abi"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "async-trait",
  "js-sys",
@@ -370,7 +370,7 @@ dependencies = [
 
 [[package]]
 name = "actr-web-protoc-codegen"
-version = "0.3.12"
+version = "0.3.13"
 dependencies = [
  "anyhow",
  "bytes",
