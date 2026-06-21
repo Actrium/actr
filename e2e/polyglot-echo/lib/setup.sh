@@ -64,8 +64,16 @@ run_actr() {
 
 build_actr_cli() {
     section "🔧 Building local actr CLI"
+    # Build with `wasm-engine` on top of the default `dynclib-engine`: the
+    # wasm-rust server form needs `actr run` to host a wasm32-wasip2 component
+    # (otherwise it aborts with "package target requires the `wasm-engine`
+    # feature, but it is not enabled").  The flag is additive, so the cdylib
+    # and linked forms keep working; building it unconditionally also keeps a
+    # single feature set across every form that shares this actr-cli target
+    # dir, avoiding cargo feature-flip rebuilds when forms run back-to-back.
     CARGO_TARGET_DIR="$ACTR_CLI_TARGET_DIR" cargo build \
-        --manifest-path "$REPO_ROOT/cli/Cargo.toml" --bin actr >/dev/null
+        --manifest-path "$REPO_ROOT/cli/Cargo.toml" --bin actr \
+        --features wasm-engine >/dev/null
     ACTR_CLI_BIN="$ACTR_CLI_TARGET_DIR/debug/actr"
     [ -x "$ACTR_CLI_BIN" ] || fail "actr CLI binary missing at $ACTR_CLI_BIN"
     success "actr CLI ready: $ACTR_CLI_BIN"
@@ -379,7 +387,8 @@ start_linked_rust_server() {
 # Builds a wasm32-wasip2 Component Model package from services/wasm-rust/
 # via the same `actr build` pipeline as cdylib-rust (just with a different
 # manifest target/kind), then loads it through `actr run` whose hyper has
-# the wasm-engine feature enabled (default in cli/Cargo.toml).
+# the wasm-engine feature enabled (build_actr_cli builds the CLI with
+# `--features wasm-engine`; it is not a default feature of cli/Cargo.toml).
 #
 # Reuses server-runtime.toml.tpl (same one cdylib-rust uses) since the
 # only difference at runtime config level is the package path, which the
@@ -424,6 +433,17 @@ build_wasm_rust_server() {
 
     (
         cd "$server_dir"
+        # A globally-configured host linker (e.g. `~/.cargo/config.toml` with
+        # `[build] rustflags = ["-C", "link-arg=-fuse-ld=mold"]`) otherwise
+        # leaks into the wasm32-wasip2 link step.  That target links via
+        # wasm-component-ld, which rejects `-fuse-ld` ("unexpected argument
+        # '-f'") and aborts the build.  Override the per-target rustflags so
+        # the wasm component links with its own toolchain, matching CI (which
+        # has no global linker config).  An empty value does NOT work: cargo
+        # treats an empty/whitespace CARGO_TARGET_<triple>_RUSTFLAGS as unset
+        # and falls back to `[build] rustflags`, so a harmless no-op codegen
+        # flag is used to actively displace the global flags.
+        export CARGO_TARGET_WASM32_WASIP2_RUSTFLAGS="-Cdebuginfo=0"
         CARGO_TARGET_DIR="$WASM_RUST_TARGET_DIR" run_actr build \
             --manifest-path manifest.toml \
             --key "$MFR_KEY_FILE" \
