@@ -20,8 +20,8 @@ crate-type = ["cdylib"]
 # under `#[cfg(target_arch = "wasm32")]`.
 
 [dependencies]
-actr-framework = "0.3"
-actr-protocol = "0.3"
+actr-framework = { path = "../../../../core/framework" }
+actr-protocol = { path = "../../../../core/protocol" }
 async-trait = "0.1"
 prost = "0.14"
 bytes = "1"
@@ -31,10 +31,4 @@ unexpected_cfgs = { level = "allow", check-cfg = ['cfg(actr_has_generated)'] }
 
 [profile.release]
 opt-level = "s"
-
-# Pin actr-* crates at the in-tree workspace so `actr build` picks up
-# unreleased framework changes (mirrors e2e/Cargo.toml).
-[patch.crates-io]
-actr-protocol = { path = "../../../../core/protocol" }
-actr-framework = { path = "../../../../core/framework" }
 
