@@ -979,6 +979,8 @@ impl Inner {
             self.signaling_client.clone(),
             self.actr_lock.clone(),
             self.discovered_ws_addresses.clone(),
+            None, // session_state — set later when CredentialManager is wired
+            0,    // generation
         )
     }
 
@@ -1005,6 +1007,8 @@ impl Inner {
             credential.clone(),
             self.actr_lock.clone(),
             self.discovered_ws_addresses.clone(),
+            None, // session_state
+            0,    // generation
         )
     }
 
@@ -2478,6 +2482,7 @@ impl Inner {
             actor_id,
             bootstrap_ctx_builder,
             credential_state,
+            session_state: None,
             shutdown_token,
             task_handles: Mutex::new(task_handles),
         });

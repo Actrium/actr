@@ -7,7 +7,10 @@
 use std::sync::Arc;
 
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{RegisterRequest, RegisterResponse, register_response};
+use actr_protocol::{
+    RegisterRequest, RegisterResponse, RenewCredentialRequest, RenewCredentialResponse,
+    register_response, renew_credential_response,
+};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -72,6 +75,88 @@ pub async fn register_handler(
         manufacturer = req.actr_type.manufacturer,
         name = req.actr_type.name,
         "mock-actrix: registered actor (http)"
+    );
+
+    let bytes = response.encode_to_vec();
+    Ok((
+        StatusCode::OK,
+        [("content-type", "application/x-protobuf")],
+        bytes,
+    )
+        .into_response())
+}
+
+// ---------------------------------------------------------------------------
+// AIS `/renew` — protobuf in, protobuf out.
+// ---------------------------------------------------------------------------
+
+/// `POST /ais/renew` and `POST /renew`.
+///
+/// Validates the renewal token against the actor's expected mock renewal token
+/// (derived from the serial number), then re-issues credentials with the same
+/// `ActrId`.
+pub async fn renew_handler(
+    State(state): State<Arc<MockState>>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let req = RenewCredentialRequest::decode(body.as_ref())
+        .map_err(|e| ApiError::bad_request(format!("protobuf decode failed: {e}")))?;
+
+    let actor_id = &req.actr_id;
+
+    // Derive the expected mock renewal token from the serial number.
+    let expected_token = format!("mock-renewal-token-{:016x}-32b", actor_id.serial_number);
+
+    if req.renewal_token.as_ref() != expected_token.as_bytes() {
+        tracing::warn!(
+            serial = actor_id.serial_number,
+            "mock-actrix: renewal token rejected"
+        );
+        let err_response = RenewCredentialResponse {
+            result: Some(renew_credential_response::Result::Error(
+                actr_protocol::ErrorResponse {
+                    code: 401,
+                    message: "Renewal token invalid or expired".to_string(),
+                },
+            )),
+        };
+        let bytes = err_response.encode_to_vec();
+        return Ok((
+            StatusCode::UNAUTHORIZED,
+            [("content-type", "application/x-protobuf")],
+            bytes,
+        )
+            .into_response());
+    }
+
+    // Build fresh credentials for the same ActrId.
+    let fake_req = RegisterRequest {
+        actr_type: actor_id.r#type.clone(),
+        realm: actor_id.realm,
+        service: None,
+        service_spec: None,
+        acl: None,
+        ws_address: None,
+        manifest_raw: None,
+        mfr_signature: None,
+        psk_token: None,
+        target: None,
+        auth_mode: Some(actr_protocol::RegisterAuthMode::Package as i32),
+    };
+
+    let mut register_ok = signaling::build_register_ok(&fake_req, &state).await;
+    // Preserve the original ActrId (mock assigns a new serial, so override).
+    register_ok.actr_id = actor_id.clone();
+
+    let response = RenewCredentialResponse {
+        result: Some(renew_credential_response::Result::Success(
+            register_ok.clone(),
+        )),
+    };
+
+    tracing::info!(
+        serial = register_ok.actr_id.serial_number,
+        "mock-actrix: renewed credentials (http)"
     );
 
     let bytes = response.encode_to_vec();

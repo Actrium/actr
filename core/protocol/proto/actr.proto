@@ -205,9 +205,26 @@ message RegisterResponse {
     optional bytes         psk                              = 10;
     // PSK expiration timestamp in Unix seconds.
     optional int64         psk_expires_at                   = 11;
+    // Bearer token bound to actr_id and used by POST /ais/renew.
+    optional bytes         renewal_token                    = 12;
+    // Renewal token expiration timestamp.
+    optional google.protobuf.Timestamp renewal_token_expires_at = 13;
   }
   oneof result {
     RegisterOk success = 1;
+    ErrorResponse error = 2;
+  }
+}
+
+// Renew credentials for an existing actor identity.
+message RenewCredentialRequest {
+  required ActrId actr_id = 1;
+  required bytes renewal_token = 2;
+}
+
+message RenewCredentialResponse {
+  oneof result {
+    RegisterResponse.RegisterOk success = 1;
     ErrorResponse error = 2;
   }
 }

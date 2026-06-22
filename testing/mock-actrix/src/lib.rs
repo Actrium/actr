@@ -336,6 +336,7 @@ fn build_router(state: Arc<MockState>) -> Router {
 
     let ais_routes = Router::new()
         .route("/register", post(http::register_handler))
+        .route("/renew", post(http::renew_handler))
         .route(
             "/mfr/{name}/verifying_key",
             get(http::verifying_key_handler),
@@ -353,6 +354,7 @@ fn build_router(state: Arc<MockState>) -> Router {
         // AIS endpoints at the root (for callers that use the root URL as
         // their AIS endpoint base).
         .route("/register", post(http::register_handler))
+        .route("/renew", post(http::renew_handler))
         .route(
             "/mfr/{name}/verifying_key",
             get(http::verifying_key_handler),

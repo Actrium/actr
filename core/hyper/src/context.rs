@@ -3,6 +3,7 @@
 //! Implements the Context trait defined in actr-framework.
 
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::lifecycle::session_state::SessionState;
 use crate::outbound::Gate;
 use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
@@ -49,6 +50,13 @@ pub struct RuntimeContext {
     /// Populated by `discover_route_candidate` from the signaling `ws_address_map`,
     /// then read by `DefaultWireBuilder` when establishing outbound connections.
     discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
+    /// Session state handle — when set, outbound sends dynamically read the
+    /// current credential from the snapshot (soft renew propagates automatically).
+    /// `None` during transition; will become required.
+    pub(crate) session_state: Option<SessionState>,
+    /// Generation captured at context creation time. After a hard rebind,
+    /// outbound sends from old-generation contexts return `ConnectionNotReady`.
+    pub(crate) context_generation: u64,
 }
 
 impl RuntimeContext {
@@ -80,6 +88,8 @@ impl RuntimeContext {
         credential: AIdCredential,
         actr_lock: Option<Arc<LockFile>>,
         discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
+        session_state: Option<SessionState>,
+        context_generation: u64,
     ) -> Self {
         Self {
             self_id,
@@ -93,6 +103,8 @@ impl RuntimeContext {
             credential,
             actr_lock,
             discovered_ws_addresses,
+            session_state,
+            context_generation,
         }
     }
 
@@ -348,6 +360,11 @@ pub(crate) struct BootstrapContextBuilder {
     /// Shared map populated by discover_route_candidate; forwarded into each
     /// RuntimeContext so discovery results are visible to DefaultWireBuilder.
     discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
+    /// Session state handle — when set, built contexts will read credentials
+    /// dynamically from the snapshot.
+    session_state: Option<SessionState>,
+    /// Generation number for stale-context detection after hard rebind.
+    generation: u64,
 }
 
 impl BootstrapContextBuilder {
@@ -364,6 +381,8 @@ impl BootstrapContextBuilder {
         signaling_client: Arc<dyn SignalingClient>,
         actr_lock: Option<Arc<LockFile>>,
         discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
+        session_state: Option<SessionState>,
+        generation: u64,
     ) -> Self {
         Self {
             inproc_gate,
@@ -373,7 +392,19 @@ impl BootstrapContextBuilder {
             signaling_client,
             actr_lock,
             discovered_ws_addresses,
+            session_state,
+            generation,
         }
+    }
+
+    /// Set or replace the session state handle after builder construction.
+    pub(crate) fn set_session_state(&mut self, ss: Option<SessionState>) {
+        self.session_state = ss;
+    }
+
+    /// Update the generation (called after hard rebind).
+    pub(crate) fn set_generation(&mut self, generation: u64) {
+        self.generation = generation;
     }
 
     /// Materialize a bootstrap `RuntimeContext` for lifecycle hooks.
@@ -399,6 +430,8 @@ impl BootstrapContextBuilder {
             credential.clone(),
             self.actr_lock.clone(),
             self.discovered_ws_addresses.clone(),
+            self.session_state.clone(),
+            self.generation,
         )
     }
 }

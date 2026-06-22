@@ -5,11 +5,13 @@
 
 pub(crate) mod compat_lock;
 mod connection_supervisor;
+pub(crate) mod credential_manager;
 pub(crate) mod dedup;
 mod heartbeat;
 pub(crate) mod hooks;
 mod network_event;
 pub(crate) mod node;
+pub(crate) mod session_state;
 
 pub use connection_supervisor::{ConnectionFact, ConnectionSupervisor};
 pub use network_event::{
@@ -20,3 +22,4 @@ pub use network_event::{
     run_network_event_reconciler, select_network_recovery_action,
 };
 pub use node::CredentialState;
+pub use session_state::{SessionPhase, SessionSnapshot, SessionState};

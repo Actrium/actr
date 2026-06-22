@@ -940,6 +940,8 @@ mod tests {
                     signing_key_id: 7,
                     psk: None,
                     psk_expires_at: None,
+                    renewal_token: None,
+                    renewal_token_expires_at: None,
                 },
             )),
         };
@@ -1126,6 +1128,8 @@ mod tests {
                     signing_key_id: 2,
                     psk: None,
                     psk_expires_at: None,
+                    renewal_token: None,
+                    renewal_token_expires_at: None,
                 },
             )),
         };

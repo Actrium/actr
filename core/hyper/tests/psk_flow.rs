@@ -115,6 +115,8 @@ fn make_register_response(with_psk: bool, psk_bytes: Option<&[u8]>) -> Vec<u8> {
         signing_key_id: 1,
         psk: None,
         psk_expires_at: None,
+        renewal_token: None,
+        renewal_token_expires_at: None,
     };
 
     if with_psk {

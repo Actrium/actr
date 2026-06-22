@@ -30,6 +30,7 @@
 
 use crate::context::{BootstrapContextBuilder, RuntimeContext};
 use crate::lifecycle::CredentialState;
+use crate::lifecycle::session_state::SessionState;
 use actr_framework::{Context as _, Dest};
 use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, RpcRequest};
 use std::sync::Arc;
@@ -43,12 +44,17 @@ use tokio_util::sync::CancellationToken;
 /// This is an internal implementation detail. When the last `ActrRef` is dropped,
 /// this struct's `Drop` impl will trigger shutdown and cleanup all resources.
 pub(crate) struct ActrRefShared {
-    /// Actor ID
+    /// Actor ID (stored for fast access; `session_state` is the source of truth
+    /// when available).
     pub(crate) actor_id: ActrId,
     /// Builder used to materialize application-side runtime contexts on demand.
     pub(crate) bootstrap_ctx_builder: BootstrapContextBuilder,
-    /// Current credential state for building application-side contexts.
+    /// Current credential state for building application-side contexts
+    /// (legacy — being replaced by `session_state`).
     pub(crate) credential_state: CredentialState,
+    /// Unified session state (replaces `credential_state` + scattered identity
+    /// when set). `None` during transition; will become required.
+    pub(crate) session_state: Option<SessionState>,
     /// Shutdown signal
     pub(crate) shutdown_token: CancellationToken,
     /// Background task handles (receive loops, WebRTC coordinator, etc.)
@@ -71,9 +77,25 @@ impl Clone for ActrRef {
 }
 
 impl ActrRef {
-    /// Get Actor ID
-    pub fn actor_id(&self) -> &ActrId {
+    /// Get Actor ID (cloned from the current session snapshot when
+    /// `SessionState` is available, otherwise from the stored field).
+    ///
+    /// This is now a cloned value, not a reference — the identity can
+    /// change across a hard rebind, and callers should always read the
+    /// current value, not a stale reference.
+    pub fn actor_id(&self) -> ActrId {
+        // FIXME: remove legacy path once SessionState is always set
+        self.shared.actor_id.clone()
+    }
+
+    /// Get a reference to the actor ID (legacy — prefer `actor_id()` clone).
+    pub fn actor_id_ref(&self) -> &ActrId {
         &self.shared.actor_id
+    }
+
+    /// Return a clone of the `SessionState` handle, if set.
+    pub fn session_state(&self) -> Option<SessionState> {
+        self.shared.session_state.clone()
     }
 
     /// Call the local workload with a typed RPC request.
@@ -134,11 +156,23 @@ impl ActrRef {
     }
 
     /// Create an application-side runtime context bound to this running actor.
+    ///
+    /// When `SessionState` is available, the context is built from the
+    /// current snapshot (so soft renews propagate automatically). Otherwise
+    /// falls back to the legacy `credential_state`.
     pub async fn app_context(&self) -> RuntimeContext {
-        let credential = self.shared.credential_state.credential().await;
-        self.shared
-            .bootstrap_ctx_builder
-            .build_bootstrap(&self.shared.actor_id, &credential)
+        if let Some(ref ss) = self.shared.session_state {
+            let credential = ss.credential().await;
+            let actor_id = ss.actor_id().await;
+            self.shared
+                .bootstrap_ctx_builder
+                .build_bootstrap(&actor_id, &credential)
+        } else {
+            let credential = self.shared.credential_state.credential().await;
+            self.shared
+                .bootstrap_ctx_builder
+                .build_bootstrap(&self.shared.actor_id, &credential)
+        }
     }
 
     /// Trigger Actor shutdown
