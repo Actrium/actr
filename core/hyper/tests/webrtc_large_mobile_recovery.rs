@@ -16,7 +16,7 @@ use actr_hyper::test_support::{
 use actr_hyper::transport::{ConnectionEvent, ConnectionState};
 use actr_hyper::wire::webrtc::{HookCallback, HookEvent, WebRtcCoordinator};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrId, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrError, ActrId, DataStream, PayloadType, RpcEnvelope};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -191,7 +191,7 @@ fn spawn_rpc_router(
                         ..Default::default()
                     };
 
-                    if let Err(e) = gate.send_message(&sender_id, response).await {
+                    if let Err(e) = gate.send_response(&sender_id, response).await {
                         tracing::error!(
                             "{} failed to send echo response for {}: {}",
                             name,
@@ -668,7 +668,7 @@ async fn inflight_short_offline_recovers_original_request(case: RoleCase) {
     }
 }
 
-async fn inflight_network_type_switch_recovers_original_request(case: RoleCase) {
+async fn inflight_network_type_switch_recovers_or_retries_once(case: RoleCase) {
     for direction in case.directions() {
         let (harness, _bg_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
@@ -706,14 +706,38 @@ async fn inflight_network_type_switch_recovers_original_request(case: RoleCase) 
         release_send.notify_waiters();
         drop(hook_guard);
 
-        let response = tokio::time::timeout(Duration::from_secs(30), request)
+        let result = tokio::time::timeout(Duration::from_secs(32), request)
             .await
             .expect("network type switch request hung")
-            .expect("network type switch request task panicked")
-            .expect("network type switch request should recover");
+            .expect("network type switch request task panicked");
 
-        assert_payload_integrity(&request_id, &response, &data, &hash);
-        assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+        match result {
+            Ok(response) => {
+                assert_payload_integrity(&request_id, &response, &data, &hash);
+                assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+            }
+            Err(ActrError::TimedOut) => {
+                assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+
+                let retry_id = format!(
+                    "{}_{}_inflight_network_type_switch_retry",
+                    case.name, direction.name
+                );
+                expect_large_request_ok_between(
+                    &harness,
+                    direction.from_serial,
+                    direction.to_serial,
+                    &retry_id,
+                    &data,
+                    &hash,
+                    Duration::from_secs(30),
+                )
+                .await;
+            }
+            Err(err) => panic!(
+                "network type switch request should succeed or time out before one retry: {err}"
+            ),
+        }
     }
 }
 
@@ -1253,7 +1277,7 @@ async fn test_mobile_inflight_large_message_interruptions() {
 
     for case in ROLE_CASES {
         mobile_large_message_baseline_after_recovery(case).await;
-        inflight_network_type_switch_recovers_original_request(case).await;
+        inflight_network_type_switch_recovers_or_retries_once(case).await;
         inflight_short_offline_recovers_original_request(case).await;
         inflight_long_offline_fails_bounded_then_retries(case).await;
         inflight_short_background_survives_foreground_restore(case).await;

@@ -1061,6 +1061,21 @@ impl PeerGate {
             .await
     }
 
+    /// Send an RPC response without rejecting it during the WebRTC recovery window.
+    ///
+    /// A response is correlated to an already-pending request at the caller. If the
+    /// existing transport cannot accept it, the caller's RPC deadline remains the
+    /// recovery boundary and the caller may issue a fresh request. This path still
+    /// uses the normal reliable transport send and retry policy; it only bypasses
+    /// the request-oriented recovery preflight.
+    #[cfg(feature = "test-utils")]
+    pub async fn send_response(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+        let data = Self::serialize_envelope(&envelope);
+        let dest = Self::actr_id_to_dest(target);
+        self.send_with_retry(&dest, PayloadType::RpcReliable, &data)
+            .await
+    }
+
     /// Send one-way message with specified PayloadType.
     #[cfg_attr(
         feature = "opentelemetry",
