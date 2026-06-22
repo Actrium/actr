@@ -5,6 +5,7 @@
 
 use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
+use crate::lifecycle::credential_manager::CredentialManager;
 use crate::transport::NetworkError;
 use crate::wire::webrtc::gate::WebRtcGate;
 use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
@@ -95,7 +96,7 @@ async fn get_power_reserve_and_availability(
 ///
 /// This function sends a heartbeat message to the signaling server,
 /// waits for the Pong response, and handles credential warnings if present.
-/// If credential has expired (401 error), it triggers re-registration.
+/// If credential has expired (401 error), it triggers the Credential Manager.
 ///
 /// # Arguments
 /// * `client` - Signaling client for sending heartbeats
@@ -103,10 +104,9 @@ async fn get_power_reserve_and_availability(
 /// * `credential_state` - Shared credential state
 /// * `mailbox` - Mailbox instance for backlog statistics
 /// * `heartbeat_interval` - Interval between heartbeats (used for timeout calculation)
-/// * `register_request` - RegisterRequest for re-registration on credential expiry
+/// * `credential_manager` - Single-flight renewal manager
 ///
-/// Returns `Some(new_actor_id)` when re-registration assigns a new ActrId,
-/// so the caller can update its loop variable for subsequent heartbeats.
+/// Returns `Some(new_actor_id)` only for legacy hard re-registration paths.
 #[allow(clippy::too_many_arguments)]
 async fn send_heartbeat_and_handle_response(
     client: &Arc<dyn SignalingClient>,
@@ -114,13 +114,14 @@ async fn send_heartbeat_and_handle_response(
     credential_state: &CredentialState,
     mailbox: &Arc<dyn Mailbox>,
     heartbeat_interval: Duration,
-    register_request: &RegisterRequest,
+    _register_request: &RegisterRequest,
     consecutive_failures: &mut u64,
-    ais_endpoint: &str,
-    realm_secret: Option<&str>,
+    _ais_endpoint: &str,
+    _realm_secret: Option<&str>,
+    credential_manager: Option<&CredentialManager>,
     hook_callback: Option<&HookCallback>,
-    webrtc_coordinator: Option<&Arc<WebRtcCoordinator>>,
-    webrtc_gate: Option<&Arc<WebRtcGate>>,
+    _webrtc_coordinator: Option<&Arc<WebRtcCoordinator>>,
+    _webrtc_gate: Option<&Arc<WebRtcGate>>,
 ) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -145,9 +146,10 @@ async fn send_heartbeat_and_handle_response(
     let pong = match pong_response {
         Ok(Ok(pong)) => pong,
         Ok(Err(NetworkError::CredentialExpired(msg))) => {
-            // Credential has expired, trigger re-registration
+            // Credential has expired, trigger soft renewal. Do not re-register
+            // or close peers from the heartbeat path.
             tracing::warn!(
-                "⚠️ Credential expired during heartbeat: {}. Attempting re-registration.",
+                "⚠️ Credential expired during heartbeat: {}. Triggering credential renewal.",
                 msg
             );
 
@@ -155,7 +157,7 @@ async fn send_heartbeat_and_handle_response(
             // timestamp (best-effort — the credential might already be
             // past its advertised `expires_at`, but firing the event
             // gives the workload one final chance to observe the
-            // transition before we attempt re-registration).
+            // transition before we trigger renewal).
             if let Some(expires_at) = credential_state.expires_at().await {
                 fire_hook(
                     hook_callback,
@@ -166,32 +168,12 @@ async fn send_heartbeat_and_handle_response(
                 .await;
             }
 
-            let new_actor_id = re_register_task(
-                client.clone(),
-                actor_id.clone(),
-                register_request.clone(),
-                credential_state.clone(),
-                ais_endpoint.to_string(),
-                realm_secret.map(str::to_string),
-                hook_callback.cloned(),
-            )
-            .await;
-
-            // Return updated ActrId only if it actually changed
-            if &new_actor_id != actor_id {
-                if let Some(coordinator) = webrtc_coordinator {
-                    coordinator.set_local_id(new_actor_id.clone()).await;
-                    if let Err(e) = coordinator.close_all_peers().await {
-                        tracing::warn!(
-                            "⚠️ Failed to close WebRTC peers after re-registration: {}",
-                            e
-                        );
-                    }
-                }
-                if let Some(gate) = webrtc_gate {
-                    gate.set_local_id(new_actor_id.clone()).await;
-                }
-                return Some(new_actor_id);
+            if let Some(manager) = credential_manager {
+                manager.trigger_renewal();
+            } else {
+                tracing::warn!(
+                    "Credential expired but CredentialManager is not installed; keeping existing identity"
+                );
             }
             return None;
         }
@@ -258,6 +240,8 @@ async fn send_heartbeat_and_handle_response(
         // Fire `on_credential_expiring` hook once per warning so the
         // workload can preload its credential-renewed handlers (e.g. to
         // rotate derived secrets) before the refresh round-trip lands.
+        // The signaling warning is an idempotent trigger source for the
+        // Credential Manager; actual renewal goes through POST /ais/renew.
         if let Some(expires_at) = credential_state.expires_at().await {
             fire_hook(
                 hook_callback,
@@ -267,14 +251,6 @@ async fn send_heartbeat_and_handle_response(
             )
             .await;
         }
-
-        // Trigger immediate credential refresh in a spawned task
-        tokio::spawn(credential_refresh_task(
-            client.clone(),
-            actor_id.clone(),
-            credential_state.clone(),
-            hook_callback.cloned(),
-        ));
     }
     None
 }
@@ -305,6 +281,7 @@ pub async fn heartbeat_task(
     register_request: RegisterRequest,
     ais_endpoint: String,
     realm_secret: Option<String>,
+    credential_manager: Option<CredentialManager>,
     hook_callback: Option<HookCallback>,
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     webrtc_gate: Option<Arc<WebRtcGate>>,
@@ -320,6 +297,10 @@ pub async fn heartbeat_task(
                 break;
             }
             _ = interval.tick() => {
+                if let Some(manager) = credential_manager.as_ref() {
+                    actor_id = manager.session_state().actor_id().await;
+                }
+
                 if !client.is_connected() {
                     match client.connect_once().await {
                         Ok(()) => {
@@ -356,6 +337,7 @@ pub async fn heartbeat_task(
                     &mut consecutive_failures,
                     &ais_endpoint,
                     realm_secret.as_deref(),
+                    credential_manager.as_ref(),
                     hook_callback.as_ref(),
                     webrtc_coordinator.as_ref(),
                     webrtc_gate.as_ref(),
@@ -374,79 +356,6 @@ pub async fn heartbeat_task(
     tracing::info!("✅ Heartbeat task terminated gracefully");
 }
 
-/// Refresh credential for an actor
-///
-/// This function sends a credential update request to the signaling server
-/// and updates the shared credential state upon success.
-///
-/// # Arguments
-/// * `client` - Signaling client for sending credential update request
-/// * `actor_id` - Actor ID for the credential update
-/// * `credential_state` - Shared credential state to update
-async fn credential_refresh_task(
-    client: Arc<dyn SignalingClient>,
-    actor_id: ActrId,
-    credential_state: CredentialState,
-    hook_callback: Option<HookCallback>,
-) {
-    tracing::info!("🔑 Refreshing credential for Actor {}", actor_id);
-
-    match client
-        .send_credential_update_request(actor_id.clone(), credential_state.credential().await)
-        .await
-    {
-        Ok(register_response) => {
-            match register_response.result {
-                Some(actr_protocol::register_response::Result::Success(register_ok)) => {
-                    let new_credential = register_ok.credential;
-                    let new_expires_at = register_ok.credential_expires_at;
-                    // TurnCredential is a required proto field; wrap as Some directly
-                    let new_turn_credential = Some(register_ok.turn_credential);
-
-                    // Update shared credential state, synchronously updating TURN credential
-                    credential_state
-                        .update(new_credential.clone(), new_expires_at, new_turn_credential)
-                        .await;
-
-                    tracing::info!(
-                        "✅ Credential refreshed successfully for Actor {}",
-                        actor_id,
-                    );
-
-                    tracing::debug!("TurnCredential updated, TURN authentication ready");
-
-                    if let Some(expires_at) = &new_expires_at {
-                        tracing::debug!("⏰ New credential expires at: {}s", expires_at.seconds);
-                        // Fire `on_credential_renewed` so the workload
-                        // can rotate downstream state tied to the old
-                        // credential (e.g. AIS-derived tokens).
-                        fire_hook(
-                            hook_callback.as_ref(),
-                            HookEvent::CredentialRenewed {
-                                new_expiry: expiry_to_system_time(expires_at),
-                            },
-                        )
-                        .await;
-                    }
-                }
-                Some(actr_protocol::register_response::Result::Error(err)) => {
-                    tracing::error!(
-                        "❌ Credential refresh failed: code={}, message={}",
-                        err.code,
-                        err.message
-                    );
-                }
-                None => {
-                    tracing::error!("❌ Credential refresh response missing result");
-                }
-            }
-        }
-        Err(e) => {
-            tracing::warn!("⚠️ Failed to send credential update request: {}", e);
-        }
-    }
-}
-
 /// Re-register actor after credential expiry
 ///
 /// When the credential has completely expired, re-register via AIS HTTP,
@@ -458,6 +367,7 @@ async fn credential_refresh_task(
 /// * `register_request` - RegisterRequest containing actor type, realm, and service spec
 /// * `credential_state` - Shared credential state to update
 /// * `ais_endpoint` - AIS HTTP endpoint for registration
+#[allow(dead_code)]
 async fn re_register_task(
     client: Arc<dyn SignalingClient>,
     actor_id: ActrId,
@@ -705,14 +615,6 @@ mod tests {
             unimplemented!("not used by this test")
         }
 
-        async fn send_credential_update_request(
-            &self,
-            _actor_id: ActrId,
-            _credential: AIdCredential,
-        ) -> NetworkResult<RegisterResponse> {
-            unimplemented!("not used by this test")
-        }
-
         async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
             Ok(())
         }
@@ -831,14 +733,6 @@ mod tests {
             unimplemented!("not used by this test")
         }
 
-        async fn send_credential_update_request(
-            &self,
-            _actor_id: ActrId,
-            _credential: AIdCredential,
-        ) -> NetworkResult<RegisterResponse> {
-            unimplemented!("not used by this test")
-        }
-
         async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
             Ok(())
         }
@@ -886,6 +780,7 @@ mod tests {
                 ..Default::default()
             },
             "http://127.0.0.1:1".to_string(),
+            None,
             None,
             None,
             None,
@@ -938,8 +833,6 @@ mod tests {
                     signaling_heartbeat_interval_secs: 30,
                     signing_pubkey: vec![0u8; 32].into(),
                     signing_key_id: 7,
-                    psk: None,
-                    psk_expires_at: None,
                     renewal_token: None,
                     renewal_token_expires_at: None,
                 },
@@ -969,6 +862,7 @@ mod tests {
             },
             &mut consecutive_failures,
             &server.url(),
+            None,
             None,
             None,
             Some(&coordinator),
@@ -1067,14 +961,6 @@ mod tests {
             Err(NetworkError::ConnectionError("unused".to_string()))
         }
 
-        async fn send_credential_update_request(
-            &self,
-            _actor_id: ActrId,
-            _credential: AIdCredential,
-        ) -> NetworkResult<RegisterResponse> {
-            Err(NetworkError::ConnectionError("unused".to_string()))
-        }
-
         async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
             Ok(())
         }
@@ -1126,8 +1012,6 @@ mod tests {
                     signaling_heartbeat_interval_secs: 30,
                     signing_pubkey: bytes::Bytes::from_static(&[1; 32]),
                     signing_key_id: 2,
-                    psk: None,
-                    psk_expires_at: None,
                     renewal_token: None,
                     renewal_token_expires_at: None,
                 },

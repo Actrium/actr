@@ -30,9 +30,10 @@ use actr_mailbox_web::{IndexedDbMailbox, Mailbox, MessageRecord};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Ping, RegisterAuthMode,
-    RegisterRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
+    RegisterRequest, RenewCredentialRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
     ServiceAvailabilityState, SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling,
-    route_candidates_request, session_description, signaling_envelope, signaling_to_actr,
+    renew_credential_response, route_candidates_request, session_description, signaling_envelope,
+    signaling_to_actr,
 };
 use actr_protocol::{IceCandidate, SessionDescription, prost_types};
 use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, WebAisClient};
@@ -620,8 +621,8 @@ impl SwRuntime {
 
     /// Register with AIS via HTTP and obtain credential.
     ///
-    /// Checks IndexedDB for a valid PSK first (renewal path); falls back to
-    /// manifest-less initial registration if no PSK is available.
+    /// Web always uses Linked registration (realm authorization). Credential
+    /// renewal is handled by the Web Credential Manager via POST /ais/renew.
     async fn register_via_ais(&mut self) -> Result<(), JsValue> {
         let (actor_id, credential, turn_credential) = Self::obtain_credential_from_ais(
             &self.ais_endpoint,
@@ -640,10 +641,9 @@ impl SwRuntime {
 
     /// Obtain a credential from AIS via HTTP.
     ///
-    /// 1. Try to load a valid PSK from IndexedDB for renewal
-    /// 2. If no PSK, perform initial registration (no manifest for web clients)
-    /// 3. Persist PSK and credential to IndexedDB
-    /// 4. Return (actor_id, credential, turn_credential)
+    /// 1. Perform Linked registration (no manifest for web clients)
+    /// 2. Persist credential and actor_id to IndexedDB
+    /// 3. Return (actor_id, credential, turn_credential)
     async fn obtain_credential_from_ais(
         ais_endpoint: &str,
         client_actr_type: &ActrType,
@@ -668,14 +668,19 @@ impl SwRuntime {
 
         let ais = WebAisClient::new(ais_endpoint);
 
-        // Try to load PSK for renewal
-        let psk_token = Self::load_valid_psk_static(platform, cred_kv_ns).await?;
-        let auth_mode = if psk_token.is_some() {
-            RegisterAuthMode::Package
-        } else {
-            RegisterAuthMode::Linked
-        };
+        if let Some((actor_id, credential, turn_credential)) =
+            Self::try_renew_persisted_credential_static(&ais, platform, cred_kv_ns).await?
+        {
+            log::info!(
+                "[SW] credentials renewed from persisted identity lease (actor_id={})",
+                actor_id
+            );
+            return Ok((actor_id, credential, turn_credential));
+        }
 
+        // Web registration always uses Linked auth (realm authorization).
+        // Legacy PSK renewal path removed — credential renewal now goes
+        // through the Web Credential Manager via POST /ais/renew.
         let request = RegisterRequest {
             actr_type: client_actr_type.clone(),
             realm: actr_protocol::Realm { realm_id },
@@ -685,23 +690,19 @@ impl SwRuntime {
             ws_address: None,
             manifest_raw: None,
             mfr_signature: None,
-            psk_token: psk_token.clone().map(|t| t.into()),
             target: None,
-            auth_mode: Some(auth_mode as i32),
+            auth_mode: Some(RegisterAuthMode::Linked as i32),
         };
 
         log::info!(
-            "[SW] register via AIS HTTP: actr_type={}, psk={}",
-            client_actr_type,
-            psk_token.is_some()
+            "[SW] register via AIS HTTP (linked): actr_type={}",
+            client_actr_type
         );
 
-        let response = if psk_token.is_some() {
-            ais.register_with_psk(request).await
-        } else {
-            ais.register_linked(request).await
-        }
-        .map_err(|e| JsValue::from_str(&format!("AIS registration failed: {e}")))?;
+        let response = ais
+            .register_linked(request)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("AIS registration failed: {e}")))?;
 
         match response.result {
             Some(actr_protocol::register_response::Result::Success(ok)) => {
@@ -711,12 +712,6 @@ impl SwRuntime {
 
                 log::info!("[SW] AIS registration success: actr_id={}", actor_id);
 
-                // Persist PSK if returned
-                if let (Some(psk), Some(psk_expires_at)) = (&ok.psk, ok.psk_expires_at) {
-                    Self::persist_psk_static(platform, cred_kv_ns, psk, psk_expires_at as u64)
-                        .await?;
-                }
-
                 // Persist credential and actor_id
                 Self::persist_credentials_static(platform, cred_kv_ns, &actor_id, &credential)
                     .await?;
@@ -724,6 +719,19 @@ impl SwRuntime {
                 // Persist TurnCredential
                 if let Some(ref tc) = turn_credential {
                     Self::persist_turn_credential_static(platform, cred_kv_ns, tc).await?;
+                }
+
+                if let (Some(token), Some(expires_at)) = (
+                    ok.renewal_token.as_ref(),
+                    ok.renewal_token_expires_at.as_ref(),
+                ) {
+                    Self::persist_renewal_token_static(
+                        platform,
+                        cred_kv_ns,
+                        token.as_ref(),
+                        expires_at.seconds as u64,
+                    )
+                    .await?;
                 }
 
                 Ok((actor_id, credential, turn_credential))
@@ -764,82 +772,6 @@ impl SwRuntime {
             js_encode_uri_component(&claims_b64),
             js_encode_uri_component(&sig_b64),
         )
-    }
-
-    /// Load a valid (non-expired) PSK from IndexedDB.
-    async fn load_valid_psk_static(
-        platform: &WebPlatformProvider,
-        cred_kv_ns: &str,
-    ) -> Result<Option<Vec<u8>>, JsValue> {
-        let kv = platform
-            .secret_store(cred_kv_ns)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
-
-        let Some(token) = kv
-            .get("psk_token")
-            .await
-            .map_err(|e| JsValue::from_str(&format!("Failed to read PSK token: {e}")))?
-        else {
-            return Ok(None);
-        };
-
-        let Some(expires_bytes) = kv
-            .get("psk_expires_at")
-            .await
-            .map_err(|e| JsValue::from_str(&format!("Failed to read PSK expires_at: {e}")))?
-        else {
-            return Ok(None);
-        };
-
-        if expires_bytes.len() != 8 {
-            log::warn!("[SW] PSK expires_at has unexpected format, ignoring");
-            return Ok(None);
-        }
-        let expires_at = u64::from_le_bytes(expires_bytes.as_slice().try_into().unwrap());
-        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
-
-        if now_secs >= expires_at {
-            log::info!(
-                "[SW] PSK expired (expires_at={}, now={}), will do initial registration",
-                expires_at,
-                now_secs
-            );
-            let _ = kv.delete("psk_token").await;
-            let _ = kv.delete("psk_expires_at").await;
-            return Ok(None);
-        }
-
-        log::debug!(
-            "[SW] valid PSK found (expires_in={}s)",
-            expires_at.saturating_sub(now_secs)
-        );
-        Ok(Some(token))
-    }
-
-    /// Persist PSK token and expiry to IndexedDB.
-    async fn persist_psk_static(
-        platform: &WebPlatformProvider,
-        cred_kv_ns: &str,
-        psk: &[u8],
-        psk_expires_at: u64,
-    ) -> Result<(), JsValue> {
-        let kv = platform
-            .secret_store(cred_kv_ns)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
-
-        kv.set("psk_token", psk)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("Failed to persist PSK token: {e}")))?;
-
-        let expires_bytes = psk_expires_at.to_le_bytes().to_vec();
-        kv.set("psk_expires_at", &expires_bytes)
-            .await
-            .map_err(|e| JsValue::from_str(&format!("Failed to persist PSK expires_at: {e}")))?;
-
-        log::info!("[SW] PSK persisted to IndexedDB");
-        Ok(())
     }
 
     /// Persist credential and actor_id to IndexedDB (static version).
@@ -886,6 +818,121 @@ impl SwRuntime {
 
         log::info!("[SW] TurnCredential persisted to IndexedDB");
         Ok(())
+    }
+
+    async fn persist_renewal_token_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+        renewal_token: &[u8],
+        expires_at: u64,
+    ) -> Result<(), JsValue> {
+        let kv = platform
+            .secret_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        kv.set("renewal_token", renewal_token)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to persist renewal token: {e}")))?;
+        kv.set("renewal_token_expires_at", &expires_at.to_le_bytes())
+            .await
+            .map_err(|e| {
+                JsValue::from_str(&format!("Failed to persist renewal token expiry: {e}"))
+            })?;
+
+        Ok(())
+    }
+
+    async fn try_renew_persisted_credential_static(
+        ais: &WebAisClient,
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<Option<(ActrId, AIdCredential, Option<actr_protocol::TurnCredential>)>, JsValue>
+    {
+        let kv = platform
+            .secret_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        let Some(id_bytes) = kv
+            .get("actor_id")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read actor_id: {e}")))?
+        else {
+            return Ok(None);
+        };
+        let Some(token) = kv
+            .get("renewal_token")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read renewal token: {e}")))?
+        else {
+            return Ok(None);
+        };
+        let Some(expires_bytes) = kv
+            .get("renewal_token_expires_at")
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to read renewal token expiry: {e}")))?
+        else {
+            return Ok(None);
+        };
+
+        if expires_bytes.len() != 8 {
+            return Ok(None);
+        }
+        let expires_at = u64::from_le_bytes(expires_bytes.as_slice().try_into().unwrap());
+        let now_secs = (js_sys::Date::now() / 1000.0) as u64;
+        if now_secs >= expires_at {
+            let _ = kv.delete("renewal_token").await;
+            let _ = kv.delete("renewal_token_expires_at").await;
+            return Ok(None);
+        }
+
+        let id_str = String::from_utf8(id_bytes)
+            .map_err(|e| JsValue::from_str(&format!("Invalid actor_id UTF-8: {e}")))?;
+        let actor_id = ActrId::from_string_repr(&id_str)
+            .map_err(|e| JsValue::from_str(&format!("Failed to parse actor_id: {e}")))?;
+
+        let response = ais
+            .renew_credential(RenewCredentialRequest {
+                actr_id: actor_id.clone(),
+                renewal_token: token.into(),
+            })
+            .await
+            .map_err(|e| JsValue::from_str(&format!("AIS renewal failed: {e}")))?;
+
+        let ok = match response.result {
+            Some(renew_credential_response::Result::Success(ok)) => ok,
+            Some(renew_credential_response::Result::Error(err)) => {
+                log::warn!("[SW] AIS renew error: {}", err.message);
+                return Ok(None);
+            }
+            None => return Ok(None),
+        };
+
+        if ok.actr_id != actor_id {
+            return Err(JsValue::from_str("AIS renew returned a different ActrId"));
+        }
+
+        let credential = ok.credential.clone();
+        let turn_credential = Some(ok.turn_credential.clone());
+        Self::persist_credentials_static(platform, cred_kv_ns, &actor_id, &credential).await?;
+        if let Some(ref tc) = turn_credential {
+            Self::persist_turn_credential_static(platform, cred_kv_ns, tc).await?;
+        }
+        if let (Some(token), Some(expires_at)) = (
+            ok.renewal_token.as_ref(),
+            ok.renewal_token_expires_at.as_ref(),
+        ) {
+            Self::persist_renewal_token_static(
+                platform,
+                cred_kv_ns,
+                token.as_ref(),
+                expires_at.seconds as u64,
+            )
+            .await?;
+        }
+
+        Ok(Some((actor_id, credential, turn_credential)))
     }
 
     /// Try to restore a valid TurnCredential from IndexedDB (static version).
@@ -1000,7 +1047,6 @@ impl SwRuntime {
                 now_secs
             );
             let _ = kv.delete("credential").await;
-            let _ = kv.delete("actor_id").await;
             return Ok(None);
         }
 
@@ -1106,6 +1152,26 @@ impl SwRuntime {
         Ok(())
     }
 
+    async fn renew_current_credential(&mut self) -> Result<(), JsValue> {
+        let cred_kv_ns = self.cred_kv_namespace();
+        let ais = WebAisClient::new(self.ais_endpoint.clone());
+
+        let Some((actor_id, credential, turn_credential)) =
+            Self::try_renew_persisted_credential_static(&ais, &self.platform, &cred_kv_ns).await?
+        else {
+            return Err(JsValue::from_str("renewal token unavailable"));
+        };
+
+        self.actor_id = Some(actor_id);
+        self.credential = Some(credential);
+        self.turn_credential = turn_credential;
+        if let Some(ref tc) = self.turn_credential {
+            self.send_turn_credential_to_dom(tc)?;
+        }
+
+        Ok(())
+    }
+
     /// Send a signaling heartbeat (Ping) to keep the connection alive
     /// and the service registration active.
     async fn send_heartbeat(&self) -> Result<(), JsValue> {
@@ -1137,7 +1203,31 @@ impl SwRuntime {
                 payload: Some(actr_to_signaling::Payload::Ping(ping)),
             })),
         };
-        self.signaling.send_request(envelope).await?;
+        let response = self.signaling.send_request(envelope).await?;
+        match response.flow {
+            Some(signaling_envelope::Flow::ServerToActr(msg)) => match msg.payload {
+                Some(signaling_to_actr::Payload::Pong(_)) => {}
+                Some(signaling_to_actr::Payload::Error(err)) if err.code == 401 => {
+                    return Err(JsValue::from_str("signaling credential expired"));
+                }
+                Some(signaling_to_actr::Payload::Error(err)) => {
+                    return Err(JsValue::from_str(&format!(
+                        "signaling heartbeat error {}: {}",
+                        err.code, err.message
+                    )));
+                }
+                _ => {
+                    return Err(JsValue::from_str(
+                        "signaling heartbeat response was not Pong",
+                    ));
+                }
+            },
+            _ => {
+                return Err(JsValue::from_str(
+                    "invalid signaling heartbeat response flow",
+                ));
+            }
+        }
         log::debug!("[SW] heartbeat sent");
         Ok(())
     }
@@ -3146,13 +3236,40 @@ pub async fn register_client(
                 continue;
             }
 
+            let heartbeat_error = hb_result.unwrap_err();
+            let credential_expired =
+                format!("{heartbeat_error:?}").contains("signaling credential expired");
+            if credential_expired {
+                let renew_result = {
+                    let mut rt = runtime_for_heartbeat.lock().await;
+                    rt.renew_current_credential().await
+                };
+                match renew_result {
+                    Ok(()) => {
+                        log::info!(
+                            "[SW] [{}] Credential renewed after heartbeat 401",
+                            client_id_for_heartbeat
+                        );
+                        consecutive_failures = 0;
+                        continue;
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "[SW] [{}] Credential renewal after heartbeat 401 failed: {:?}",
+                            client_id_for_heartbeat,
+                            err
+                        );
+                    }
+                }
+            }
+
             // ---- heartbeat failed ----
             consecutive_failures += 1;
             log::warn!(
                 "[SW] [{}] Heartbeat failed ({}/3): {:?}",
                 client_id_for_heartbeat,
                 consecutive_failures,
-                hb_result.unwrap_err()
+                heartbeat_error
             );
 
             if consecutive_failures < 3 {

@@ -30,7 +30,7 @@ pub trait PlatformProvider: Send + Sync {
     /// (e.g. a given `data_dir` on native, a given localStorage prefix on web).
     async fn instance_uid(&self) -> Result<String, PlatformError>;
 
-    /// Open a namespaced KV store (per-actor credential / PSK storage).
+    /// Open a namespaced KV store for per-actor credentials.
     ///
     /// The namespace is supplied by the caller; the provider decides how to
     /// combine it with its own root to produce a real storage location.

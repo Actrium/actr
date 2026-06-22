@@ -404,7 +404,6 @@ impl NetworkServiceDiscovery {
             ws_address: None,
             manifest_raw: None,
             mfr_signature: None,
-            psk_token: None,
             target: None,
             auth_mode: Some(RegisterAuthMode::Linked as i32),
         }
@@ -637,7 +636,6 @@ mod tests {
         assert_eq!(request.auth_mode, Some(RegisterAuthMode::Linked as i32));
         assert_eq!(request.manifest_raw, None);
         assert_eq!(request.mfr_signature, None);
-        assert_eq!(request.psk_token, None);
         assert_eq!(request.target, None);
         assert_eq!(request.actr_type.name, "cli-client");
         assert_eq!(request.realm.realm_id, 1001);

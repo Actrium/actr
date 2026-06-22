@@ -310,8 +310,6 @@ use std::path::PathBuf;
 use std::str::FromStr;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(not(target_arch = "wasm32"))]
 use prost::Message;
@@ -898,6 +896,32 @@ impl Node<Attached> {
         let acl = attachment.node.config.acl.clone();
         let realm_secret = attachment.node.config.realm_secret.clone();
 
+        let registration_context = if let Some(verified) = attachment.verified.as_ref() {
+            let manifest = &verified.manifest;
+            Some(
+                crate::lifecycle::credential_manager::RegistrationContext::Package {
+                    request: RegisterRequest {
+                        actr_type: ActrType {
+                            manufacturer: manifest.manufacturer.clone(),
+                            name: manifest.name.clone(),
+                            version: manifest.version.clone(),
+                        },
+                        realm: Realm { realm_id },
+                        service_spec: service_spec.clone(),
+                        acl: acl.clone(),
+                        service: None,
+                        ws_address: None,
+                        manifest_raw: Some(verified.manifest_raw.clone().into()),
+                        mfr_signature: Some(verified.sig_raw.clone().into()),
+                        target: Some(manifest.binary.target.clone()),
+                        auth_mode: Some(RegisterAuthMode::Package as i32),
+                    },
+                },
+            )
+        } else {
+            None
+        };
+
         let register_ok = if let Some(verified) = attachment.verified.as_ref() {
             let verified = verified.clone();
             bootstrap_credential_inner(
@@ -916,6 +940,9 @@ impl Node<Attached> {
         };
 
         attachment.node.set_preregistered_credential(register_ok);
+        if let Some(ctx) = registration_context {
+            attachment.node.set_preregistered_registration_context(ctx);
+        }
 
         Ok(Node {
             hyper: self.hyper,
@@ -991,17 +1018,16 @@ impl Hyper {
         resolve_storage_path_for(&self.inner, manifest)
     }
 
-    /// Bootstrap credential registration with AIS (two-phase flow).
+    /// Bootstrap credential registration with AIS.
     ///
     /// Hyper completes registration bootstrap on behalf of the Actor and returns the full AIS
     /// registration payload.
     ///
-    /// ## Two-Phase Logic
+    /// ## Registration Logic
     ///
-    /// - **Phase 1 (first registration)**: no valid PSK in ActorStore ->
-    ///   register with MFR-signed manifest -> AIS returns credential + PSK -> stored in ActorStore
-    /// - **Phase 2 (PSK renewal)**: valid PSK exists in ActorStore ->
-    ///   register directly with PSK -> AIS returns new credential
+    /// Package bootstrap always authenticates with the MFR-signed manifest.
+    /// Credential renewal uses the renewal token returned by AIS through
+    /// `POST /ais/renew`, not a follow-up `/register` call.
     ///
     /// ## Parameters
     ///
@@ -1211,10 +1237,10 @@ async fn bootstrap_credential_inner(
         Arc::new(ActorStore::open(&storage_path).await?)
     };
 
-    // 2. Check if there is a valid PSK in ActorStore
-    let valid_psk = load_valid_psk_dyn(&*store).await?;
-
-    // 3. Build RegisterRequest and send to AIS
+    // 2. Build RegisterRequest and send to AIS.
+    // Package bootstrap always authenticates with manifest + MFR signature.
+    // (Legacy PSK renewal path removed — credential renewal now goes through
+    // the Credential Manager via POST /ais/renew.)
     let mut ais = AisClient::new(ais_endpoint);
     if let Some(secret) = realm_secret {
         ais = ais.with_realm_secret(secret);
@@ -1227,50 +1253,26 @@ async fn bootstrap_credential_inner(
     };
     let realm = Realm { realm_id };
 
-    let response = if let Some(psk_token) = valid_psk {
-        // Phase 2: PSK renewal
-        debug!(
-            actr_type = manifest.actr_type_str(),
-            "renewing credential using PSK"
-        );
-        let req = RegisterRequest {
-            actr_type,
-            realm,
-            service_spec,
-            acl,
-            service: None,
-            ws_address: None,
-            manifest_raw: None,
-            mfr_signature: None,
-            psk_token: Some(psk_token.into()),
-            target: Some(manifest.binary.target.clone()),
-            auth_mode: Some(RegisterAuthMode::Package as i32),
-        };
-        ais.register_with_psk(req).await?
-    } else {
-        // Phase 1: first registration, carrying MFR manifest
-        info!(
-            actr_type = manifest.actr_type_str(),
-            "first registration: registering with AIS using MFR manifest"
-        );
+    info!(
+        actr_type = manifest.actr_type_str(),
+        "registering with AIS using MFR manifest"
+    );
 
-        let req = RegisterRequest {
-            actr_type,
-            realm,
-            service_spec,
-            acl,
-            service: None,
-            ws_address: None,
-            manifest_raw: Some(verified.manifest_raw.clone().into()),
-            mfr_signature: Some(verified.sig_raw.clone().into()),
-            psk_token: None,
-            target: Some(manifest.binary.target.clone()),
-            auth_mode: Some(RegisterAuthMode::Package as i32),
-        };
-        ais.register_with_manifest(req).await?
+    let req = RegisterRequest {
+        actr_type,
+        realm,
+        service_spec,
+        acl,
+        service: None,
+        ws_address: None,
+        manifest_raw: Some(verified.manifest_raw.clone().into()),
+        mfr_signature: Some(verified.sig_raw.clone().into()),
+        target: Some(manifest.binary.target.clone()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
     };
+    let response = ais.register_with_manifest(req).await?;
 
-    // 4. Process AIS response
+    // 3. Process AIS response
     let ok = match response.result {
         Some(register_response::Result::Success(ok)) => ok,
         Some(register_response::Result::Error(e)) => {
@@ -1296,33 +1298,7 @@ async fn bootstrap_credential_inner(
         }
     };
 
-    // 5a. If the response contains a PSK (first registration scenario), store it in ActorStore
-    if let (Some(psk), Some(psk_expires_at)) = (&ok.psk, ok.psk_expires_at) {
-        info!(
-            actr_type = manifest.actr_type_str(),
-            psk_expires_at, "received PSK from AIS, storing in ActorStore"
-        );
-        let expires_at_bytes = (psk_expires_at as u64).to_le_bytes().to_vec();
-        store
-            .batch(vec![
-                KvOp::Set {
-                    key: "hyper:psk:token".to_string(),
-                    value: psk.to_vec(),
-                },
-                KvOp::Set {
-                    key: "hyper:psk:expires_at".to_string(),
-                    value: expires_at_bytes,
-                },
-            ])
-            .await
-            .map_err(|e| HyperError::Storage(format!("failed to store PSK: {e}")))?;
-        debug!(
-            actr_type = manifest.actr_type_str(),
-            "PSK successfully persisted to ActorStore"
-        );
-    }
-
-    // 5b. Store signing_pubkey + signing_key_id (for AisKeyCache use)
+    // 4. Store signing_pubkey + signing_key_id (for AisKeyCache use)
     let pubkey_bytes = ok.signing_pubkey.to_vec();
     let key_id_bytes = ok.signing_key_id.to_le_bytes().to_vec();
     store
@@ -1406,79 +1382,6 @@ fn build_linked_register_request(
 }
 
 // ─── Helper functions (native-only) ──────────────────────────────────────────
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Load PSK from any KvStore implementation; returns PSK bytes if present and not expired
-///
-/// PSK expiration check: considered expired when current Unix timestamp (seconds) >= expires_at.
-async fn load_valid_psk_dyn(store: &dyn KvStore) -> HyperResult<Option<Vec<u8>>> {
-    let token = store
-        .get("hyper:psk:token")
-        .await
-        .map_err(|e| HyperError::Storage(format!("failed to read PSK token: {e}")))?;
-    let expires_at_raw = store
-        .get("hyper:psk:expires_at")
-        .await
-        .map_err(|e| HyperError::Storage(format!("failed to read PSK expires_at: {e}")))?;
-
-    check_psk_expiry(token, expires_at_raw)
-}
-
-/// Load PSK from ActorStore; returns PSK bytes if present and not expired, otherwise None
-///
-/// PSK expiration check: considered expired when current Unix timestamp (seconds) >= expires_at.
-#[cfg(all(not(target_arch = "wasm32"), test))]
-async fn load_valid_psk(store: &ActorStore) -> HyperResult<Option<Vec<u8>>> {
-    let token = store.kv_get("hyper:psk:token").await?;
-    let expires_at_raw = store.kv_get("hyper:psk:expires_at").await?;
-
-    check_psk_expiry(token, expires_at_raw)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Check PSK expiry given pre-fetched token and expires_at values
-fn check_psk_expiry(
-    token: Option<Vec<u8>>,
-    expires_at_raw: Option<Vec<u8>>,
-) -> HyperResult<Option<Vec<u8>>> {
-    match (token, expires_at_raw) {
-        (Some(token), Some(expires_bytes)) => {
-            // parse expiration time (u64 little-endian)
-            if expires_bytes.len() != 8 {
-                warn!("PSK expires_at has unexpected format, falling back to first registration");
-                return Ok(None);
-            }
-            let expires_at = u64::from_le_bytes(expires_bytes.as_slice().try_into().unwrap());
-
-            // get current Unix timestamp (seconds)
-            let now_secs = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
-            if now_secs >= expires_at {
-                warn!(
-                    psk_expires_at = expires_at,
-                    now = now_secs,
-                    "PSK expired, falling back to first registration"
-                );
-                Ok(None)
-            } else {
-                debug!(
-                    psk_expires_at = expires_at,
-                    now = now_secs,
-                    remaining_secs = expires_at - now_secs,
-                    "PSK valid, using PSK renewal path"
-                );
-                Ok(Some(token))
-            }
-        }
-        _ => {
-            debug!("no PSK in ActorStore, proceeding with first registration");
-            Ok(None)
-        }
-    }
-}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[cfg(not(target_arch = "wasm32"))]
@@ -1808,85 +1711,11 @@ mod tests {
         assert!(matches!(result, Err(HyperError::InvalidManifest(_))));
     }
 
-    // ─── PSK storage and expiration unit tests ──────────────────────────────
+    // ─── ActorStore helpers ────────────────────────────────────────────────
 
     async fn open_test_store(dir: &TempDir) -> ActorStore {
         let db_path = dir.path().join("test.db");
         ActorStore::open(&db_path).await.unwrap()
-    }
-
-    /// Store a valid PSK and verify that load_valid_psk returns it.
-    #[tokio::test]
-    async fn psk_valid_returns_token() {
-        let dir = TempDir::new().unwrap();
-        let store = open_test_store(&dir).await;
-
-        let psk_token = b"test-psk-secret".to_vec();
-        // Set the expiry time to one hour from now.
-        let expires_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 3600;
-
-        store.kv_set("hyper:psk:token", &psk_token).await.unwrap();
-        store
-            .kv_set("hyper:psk:expires_at", &expires_at.to_le_bytes())
-            .await
-            .unwrap();
-
-        let result = load_valid_psk(&store).await.unwrap();
-        assert_eq!(result, Some(psk_token), "A valid PSK should be returned");
-    }
-
-    /// Store an expired PSK and verify that load_valid_psk returns None.
-    #[tokio::test]
-    async fn psk_expired_returns_none() {
-        let dir = TempDir::new().unwrap();
-        let store = open_test_store(&dir).await;
-
-        let psk_token = b"expired-psk".to_vec();
-        // Set the expiry time to one second in the past.
-        let expires_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .saturating_sub(1);
-
-        store.kv_set("hyper:psk:token", &psk_token).await.unwrap();
-        store
-            .kv_set("hyper:psk:expires_at", &expires_at.to_le_bytes())
-            .await
-            .unwrap();
-
-        let result = load_valid_psk(&store).await.unwrap();
-        assert_eq!(result, None, "An expired PSK should return None");
-    }
-
-    /// load_valid_psk returns None when ActorStore has no PSK.
-    #[tokio::test]
-    async fn psk_absent_returns_none() {
-        let dir = TempDir::new().unwrap();
-        let store = open_test_store(&dir).await;
-
-        let result = load_valid_psk(&store).await.unwrap();
-        assert_eq!(result, None, "Missing PSK should return None");
-    }
-
-    /// load_valid_psk returns None if token exists without expires_at.
-    #[tokio::test]
-    async fn psk_missing_expires_at_returns_none() {
-        let dir = TempDir::new().unwrap();
-        let store = open_test_store(&dir).await;
-
-        store
-            .kv_set("hyper:psk:token", b"orphan-token")
-            .await
-            .unwrap();
-        // Intentionally leave expires_at unset.
-
-        let result = load_valid_psk(&store).await.unwrap();
-        assert_eq!(result, None, "Missing expires_at should return None");
     }
 
     // ─── AIS integration tests (mockito mock server) ────────────────────────
@@ -1922,7 +1751,7 @@ mod tests {
     }
 
     /// Helper: build valid RegisterResponse protobuf bytes with credential data.
-    fn fake_register_response_bytes(with_psk: bool) -> Vec<u8> {
+    fn fake_register_response_bytes() -> Vec<u8> {
         use actr_protocol::{
             AIdCredential, ActrId, ActrType, IdentityClaims, Realm, RegisterResponse,
             TurnCredential, register_response,
@@ -1957,7 +1786,7 @@ mod tests {
             expires_at: u64::MAX,
         };
 
-        let mut ok = register_response::RegisterOk {
+        let ok = register_response::RegisterOk {
             actr_id,
             credential,
             turn_credential: turn,
@@ -1965,22 +1794,9 @@ mod tests {
             signaling_heartbeat_interval_secs: 30,
             signing_pubkey: vec![0u8; 32].into(),
             signing_key_id: 1,
-            psk: None,
-            psk_expires_at: None,
             renewal_token: None,
             renewal_token_expires_at: None,
         };
-
-        if with_psk {
-            ok.psk = Some(b"fresh-psk-from-ais".to_vec().into());
-            ok.psk_expires_at = Some(
-                (SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-                    + 86400) as i64,
-            );
-        }
 
         RegisterResponse {
             result: Some(register_response::Result::Success(ok)),
@@ -2048,7 +1864,6 @@ mod tests {
         assert_eq!(req.auth_mode, Some(RegisterAuthMode::Linked as i32));
         assert_eq!(req.manifest_raw, None);
         assert_eq!(req.mfr_signature, None);
-        assert_eq!(req.psk_token, None);
         assert_eq!(req.ws_address.as_deref(), Some("ws://127.0.0.1:9100"));
     }
 
@@ -2222,101 +2037,11 @@ mod tests {
         );
     }
 
-    /// First registration with no PSK should store the PSK returned by AIS.
+    /// Package bootstrap always authenticates with the MFR manifest and does
+    /// not read or write legacy PSK keys.
     #[tokio::test]
-    async fn bootstrap_first_registration_stores_psk() {
-        let response_body = fake_register_response_bytes(true);
-
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/register")
-            .with_status(200)
-            .with_header("content-type", "application/x-protobuf")
-            .with_body(response_body)
-            .create_async()
-            .await;
-
-        let dir = TempDir::new().unwrap();
-        let config = dev_config(&dir);
-        let hyper = Hyper::new(config).await.unwrap();
-
-        let manifest = fake_manifest();
-        let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
-            .await;
-
-        mock.assert_async().await;
-        assert!(
-            result.is_ok(),
-            "Initial registration should succeed, got: {:?}",
-            result.err()
-        );
-
-        // Verify the PSK was written to ActorStore.
-        let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
-        let store = ActorStore::open(&storage_path).await.unwrap();
-        let psk = store.kv_get("hyper:psk:token").await.unwrap();
-        assert!(
-            psk.is_some(),
-            "PSK should be stored in ActorStore after initial registration"
-        );
-        assert_eq!(psk.unwrap(), b"fresh-psk-from-ais".to_vec());
-    }
-
-    /// A valid PSK should skip manifest registration and use the renewal path.
-    #[tokio::test]
-    async fn bootstrap_psk_renewal_skips_manifest() {
-        let response_body = fake_register_response_bytes(false);
-
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/register")
-            .with_status(200)
-            .with_header("content-type", "application/x-protobuf")
-            .with_body(response_body)
-            .expect(1) // /register should be called exactly once.
-            .create_async()
-            .await;
-
-        let dir = TempDir::new().unwrap();
-        let config = dev_config(&dir);
-        let hyper = Hyper::new(config).await.unwrap();
-
-        // Seed ActorStore with a valid PSK.
-        let manifest = fake_manifest();
-        let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
-        let store = ActorStore::open(&storage_path).await.unwrap();
-
-        let expires_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            + 3600;
-        store
-            .kv_set("hyper:psk:token", b"existing-valid-psk")
-            .await
-            .unwrap();
-        store
-            .kv_set("hyper:psk:expires_at", &expires_at.to_le_bytes())
-            .await
-            .unwrap();
-
-        let result = hyper
-            .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
-            .await;
-
-        mock.assert_async().await;
-        assert!(
-            result.is_ok(),
-            "PSK renewal should succeed, got: {:?}",
-            result.err()
-        );
-    }
-
-    /// An expired PSK should fall back to the manifest registration path.
-    #[tokio::test]
-    async fn bootstrap_expired_psk_falls_back_to_manifest() {
-        let response_body = fake_register_response_bytes(true);
+    async fn bootstrap_package_uses_manifest_auth() {
+        let response_body = fake_register_response_bytes();
 
         let mut server = mockito::Server::new_async().await;
         let mock = server
@@ -2332,25 +2057,7 @@ mod tests {
         let config = dev_config(&dir);
         let hyper = Hyper::new(config).await.unwrap();
 
-        // Seed ActorStore with an expired PSK.
         let manifest = fake_manifest();
-        let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
-        let store = ActorStore::open(&storage_path).await.unwrap();
-
-        let expired_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .saturating_sub(10); // Expired 10 seconds ago.
-        store
-            .kv_set("hyper:psk:token", b"expired-psk")
-            .await
-            .unwrap();
-        store
-            .kv_set("hyper:psk:expires_at", &expired_at.to_le_bytes())
-            .await
-            .unwrap();
-
         let result = hyper
             .bootstrap_credential(&manifest, &server.url(), 1, test_service_spec(), test_acl())
             .await;
@@ -2358,8 +2065,16 @@ mod tests {
         mock.assert_async().await;
         assert!(
             result.is_ok(),
-            "Manifest registration should succeed after PSK expiration, got: {:?}",
+            "Package registration should succeed, got: {:?}",
             result.err()
+        );
+
+        // Verify no legacy PSK keys are written to ActorStore.
+        let storage_path = hyper.resolve_storage_path(&manifest.manifest).unwrap();
+        let store = ActorStore::open(&storage_path).await.unwrap();
+        assert!(
+            store.kv_get("hyper:psk:token").await.unwrap().is_none(),
+            "PSK token must not be stored after PSK removal"
         );
     }
 

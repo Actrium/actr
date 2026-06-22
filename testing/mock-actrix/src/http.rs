@@ -139,7 +139,6 @@ pub async fn renew_handler(
         ws_address: None,
         manifest_raw: None,
         mfr_signature: None,
-        psk_token: None,
         target: None,
         auth_mode: Some(actr_protocol::RegisterAuthMode::Package as i32),
     };
@@ -147,6 +146,9 @@ pub async fn renew_handler(
     let mut register_ok = signaling::build_register_ok(&fake_req, &state).await;
     // Preserve the original ActrId (mock assigns a new serial, so override).
     register_ok.actr_id = actor_id.clone();
+    // Keep the mock renewal token bound to the preserved ActrId, not to the
+    // temporary serial allocated by build_register_ok().
+    register_ok.renewal_token = Some(expected_token.into_bytes().into());
 
     let response = RenewCredentialResponse {
         result: Some(renew_credential_response::Result::Success(

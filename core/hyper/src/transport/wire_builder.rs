@@ -12,6 +12,7 @@ use super::peer_transport::WireBuilder;
 use super::wire_handle::WireHandle;
 use super::wire_pool::ConnType;
 use crate::lifecycle::CredentialState;
+use crate::lifecycle::session_state::SessionState;
 use crate::outbound::PendingRequestsMap;
 use crate::wire::webrtc::WebRtcCoordinator;
 use crate::wire::websocket::WebSocketConnection;
@@ -44,6 +45,10 @@ pub struct DefaultWireBuilderConfig {
     /// Optional local credential state. During outbound WebSocket handshakes the current credential is base64-encoded and sent in the `X-Actr-Credential` header so the peer can verify the Ed25519 signature.
     pub credential_state: Option<CredentialState>,
 
+    /// Unified session state. When present, outbound WebSocket handshakes read
+    /// source identity and credential from the current snapshot.
+    pub session_state: Option<SessionState>,
+
     /// Shared pending-requests map.
     ///
     /// When set, outbound WebSocket connections spawn reader tasks that deliver
@@ -60,6 +65,7 @@ impl Default for DefaultWireBuilderConfig {
             enable_websocket: true,
             discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
             credential_state: None,
+            session_state: None,
             pending_requests: None,
         }
     }
@@ -74,6 +80,9 @@ pub struct DefaultWireBuilder {
 
     /// Local node identity hex string used as `X-Actr-Source-ID` in outbound WebSocket handshakes.
     local_id_hex: String,
+
+    /// Unified session state used for dynamic direct WebSocket identity.
+    session_state: Option<SessionState>,
 
     /// Shared map of discovered WebSocket URLs (from signaling discovery)
     discovered_ws_addresses: Arc<RwLock<HashMap<ActrId, String>>>,
@@ -101,6 +110,7 @@ impl DefaultWireBuilder {
         Self {
             webrtc_coordinator,
             local_id_hex: config.local_id_hex.clone(),
+            session_state: config.session_state.clone(),
             discovered_ws_addresses: config.discovered_ws_addresses.clone(),
             credential_state: config.credential_state.clone(),
             pending_requests: config.pending_requests.clone(),
@@ -292,11 +302,25 @@ impl WireBuilder for DefaultWireBuilder {
 
             if let Some(url) = self.resolve_websocket_url(dest).await {
                 tracing::debug!("🏭 [Factory] Create WebSocket Connect: {}", url);
-                let mut ws_conn =
-                    WebSocketConnection::new(url).with_local_id(self.local_id_hex.clone());
+                let (local_id_hex, session_credential) =
+                    if let Some(session_state) = &self.session_state {
+                        let snapshot = session_state.snapshot().await;
+                        (
+                            hex::encode(snapshot.actor_id.encode_to_vec()),
+                            Some(snapshot.credential),
+                        )
+                    } else {
+                        (self.local_id_hex.clone(), None)
+                    };
+                let mut ws_conn = WebSocketConnection::new(url).with_local_id(local_id_hex);
 
                 // Attach the local credential so the peer `WebSocketGate` can verify the Ed25519 signature.
-                if let Some(ref cred_state) = self.credential_state {
+                if let Some(credential) = session_credential {
+                    let cred_bytes = credential.encode_to_vec();
+                    use base64::Engine as _;
+                    let cred_b64 = base64::engine::general_purpose::STANDARD.encode(&cred_bytes);
+                    ws_conn = ws_conn.with_credential_b64(cred_b64);
+                } else if let Some(ref cred_state) = self.credential_state {
                     let credential = cred_state.credential().await;
                     let cred_bytes = credential.encode_to_vec();
                     use base64::Engine as _;
@@ -399,6 +423,7 @@ mod tests {
             local_id_hex: "deadbeef".to_string(),
             discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
             credential_state: None,
+            session_state: None,
             pending_requests: None,
         };
         let factory = DefaultWireBuilder::new(None, config);
@@ -422,6 +447,7 @@ mod tests {
             local_id_hex: "deadbeef".to_string(),
             discovered_ws_addresses: map,
             credential_state: None,
+            session_state: None,
             pending_requests: None,
         };
         let factory = DefaultWireBuilder::new(None, config);

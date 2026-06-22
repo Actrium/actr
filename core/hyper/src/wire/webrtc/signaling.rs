@@ -10,11 +10,10 @@ use crate::transport::{NetworkError, NetworkResult};
 use crate::wire::webrtc::trace::extract_trace_context;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, ActrToSignaling, CredentialUpdateRequest, GetSigningKeyRequest,
-    PeerToSignaling, Ping, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
-    RouteCandidatesResponse, ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest,
-    UnregisterResponse, actr_to_signaling, peer_to_signaling, signaling_envelope,
-    signaling_to_actr,
+    AIdCredential, ActrId, ActrToSignaling, GetSigningKeyRequest, PeerToSignaling, Ping, Pong,
+    RegisterRequest, RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse,
+    ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest, UnregisterResponse,
+    actr_to_signaling, peer_to_signaling, signaling_envelope, signaling_to_actr,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -241,16 +240,6 @@ pub trait SignalingClient: Send + Sync {
         credential: AIdCredential,
         key_id: u32,
     ) -> NetworkResult<(u32, Vec<u8>)>;
-
-    /// Send CredentialUpdateRequest to refresh the Actor's credential
-    ///
-    /// This is used to refresh the credential before it expires. The server responds
-    /// with a RegisterResponse containing the new credential and expiration time.
-    async fn send_credential_update_request(
-        &self,
-        actor_id: ActrId,
-        credential: AIdCredential,
-    ) -> NetworkResult<RegisterResponse>;
 
     /// Sendsignalingsignal seal （ pass usage Method）
     async fn send_envelope(&self, envelope: SignalingEnvelope) -> NetworkResult<()>;
@@ -1964,49 +1953,6 @@ impl SignalingClient for WebSocketSignalingClient {
 
     #[cfg_attr(
         feature = "opentelemetry",
-        tracing::instrument(level = "debug", skip_all, fields(actor_id = %actor_id))
-    )]
-    async fn send_credential_update_request(
-        &self,
-        actor_id: ActrId,
-        credential: AIdCredential,
-    ) -> NetworkResult<RegisterResponse> {
-        let request = CredentialUpdateRequest {
-            actr_id: actor_id.clone(),
-        };
-
-        let flow = signaling_envelope::Flow::ActrToServer(ActrToSignaling {
-            source: actor_id,
-            credential,
-            payload: Some(actr_to_signaling::Payload::CredentialUpdateRequest(request)),
-        });
-
-        let envelope = self.create_envelope(flow).await;
-        let response_envelope = self.send_envelope_and_wait_response(envelope).await?;
-
-        if let Some(signaling_envelope::Flow::ServerToActr(server_to_actr)) = response_envelope.flow
-        {
-            match server_to_actr.payload {
-                Some(signaling_to_actr::Payload::RegisterResponse(response)) => {
-                    return Ok(response);
-                }
-                Some(signaling_to_actr::Payload::Error(err)) => {
-                    return Err(NetworkError::ConnectionError(format!(
-                        "Credential update failed: {} ({})",
-                        err.message, err.code
-                    )));
-                }
-                _ => {}
-            }
-        }
-
-        Err(NetworkError::ConnectionError(
-            "Invalid credential update response".to_string(),
-        ))
-    }
-
-    #[cfg_attr(
-        feature = "opentelemetry",
         tracing::instrument(level = "debug", skip_all, fields(envelope_id = %envelope.envelope_id))
     )]
     async fn send_envelope(&self, envelope: SignalingEnvelope) -> NetworkResult<()> {
@@ -2257,14 +2203,6 @@ mod tests {
             _credential: AIdCredential,
             _key_id: u32,
         ) -> NetworkResult<(u32, Vec<u8>)> {
-            unimplemented!("not needed in tests");
-        }
-
-        async fn send_credential_update_request(
-            &self,
-            _actor_id: ActrId,
-            _credential: AIdCredential,
-        ) -> NetworkResult<RegisterResponse> {
             unimplemented!("not needed in tests");
         }
 

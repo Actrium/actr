@@ -778,6 +778,8 @@ mod tests {
             test_credential(),
             None,
             Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            None,
+            0,
         )
     }
 

@@ -1228,14 +1228,6 @@ mod tests {
             Err(NetworkError::ConnectionError("unused".to_string()))
         }
 
-        async fn send_credential_update_request(
-            &self,
-            _actor_id: ActrId,
-            _credential: AIdCredential,
-        ) -> NetworkResult<RegisterResponse> {
-            Err(NetworkError::ConnectionError("unused".to_string()))
-        }
-
         async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
             Err(NetworkError::ConnectionError("unused".to_string()))
         }

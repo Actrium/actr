@@ -99,6 +99,14 @@ impl SessionState {
         self.inner.read().await.snapshot.actor_id.clone()
     }
 
+    /// Synchronous best-effort actor ID read for APIs that cannot be async.
+    pub fn actor_id_sync(&self) -> Option<ActrId> {
+        self.inner
+            .try_read()
+            .ok()
+            .map(|guard| guard.snapshot.actor_id.clone())
+    }
+
     /// Current access credential.
     pub async fn credential(&self) -> AIdCredential {
         self.inner.read().await.snapshot.credential.clone()
@@ -132,6 +140,14 @@ impl SessionState {
     /// Current generation number.
     pub async fn generation(&self) -> u64 {
         self.inner.read().await.current_generation
+    }
+
+    /// Synchronous best-effort generation read for context builders.
+    pub fn generation_sync(&self) -> Option<u64> {
+        self.inner
+            .try_read()
+            .ok()
+            .map(|guard| guard.current_generation)
     }
 
     /// Check whether the given generation is still current.
@@ -178,7 +194,6 @@ impl SessionState {
         let old = guard.snapshot.clone();
         guard.snapshot = new_snapshot;
         guard.current_generation = guard.snapshot.generation;
-        guard.phase = SessionPhase::Active;
         old
     }
 

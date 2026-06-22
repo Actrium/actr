@@ -9,7 +9,11 @@ use crate::actr_ref::{ActrRef, ActrRefShared};
 use crate::ais_client::AisClient;
 use crate::context::{BootstrapContextBuilder, RuntimeContext};
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::lifecycle::credential_manager::{
+    CredentialManager, HardRebindHandles, RegistrationContext,
+};
 use crate::lifecycle::dedup::{DEDUP_TTL, DedupOutcome, DedupState, DedupWaiter};
+use crate::lifecycle::session_state::{SessionSnapshot, SessionState};
 use crate::outbound::Gate;
 use crate::transport::HostTransport;
 use crate::wire::webrtc::SignalingClient;
@@ -77,6 +81,9 @@ pub(crate) struct Inner {
     /// Actor Credential (obtained after startup, used for subsequent authentication messages)
     pub(crate) credential_state: Option<CredentialState>,
 
+    /// Unified identity/credential snapshot for renewal and hard rebind.
+    pub(crate) session_state: Option<SessionState>,
+
     /// WebRTC coordinator (created after startup)
     pub(crate) webrtc_coordinator: Option<Arc<crate::wire::webrtc::WebRtcCoordinator>>,
 
@@ -126,6 +133,10 @@ pub(crate) struct Inner {
     /// the `Attached → Registered` state transition. `start()` uses it directly
     /// instead of re-registering with the signaling server.
     pub(crate) preregistered_credential: Option<actr_protocol::register_response::RegisterOk>,
+
+    /// Registration context matching `preregistered_credential`, used for
+    /// hard rebind if renewal token is no longer usable.
+    pub(crate) preregistered_registration_context: Option<RegistrationContext>,
 
     /// Shared WebSocket direct-connect address map populated by discovery
     ///
@@ -940,6 +951,7 @@ impl Inner {
             signaling_client,
             actor_id: None,
             credential_state: None,
+            session_state: None,
             webrtc_coordinator: None,
             peer_transport: None,
             webrtc_gate: None,
@@ -953,6 +965,7 @@ impl Inner {
             dedup_state: Arc::new(Mutex::new(DedupState::new())),
             package_manifest,
             preregistered_credential: None,
+            preregistered_registration_context: None,
             discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -979,8 +992,11 @@ impl Inner {
             self.signaling_client.clone(),
             self.actr_lock.clone(),
             self.discovered_ws_addresses.clone(),
-            None, // session_state — set later when CredentialManager is wired
-            0,    // generation
+            self.session_state.clone(),
+            self.session_state
+                .as_ref()
+                .and_then(SessionState::generation_sync)
+                .unwrap_or(0),
         )
     }
 
@@ -1007,8 +1023,11 @@ impl Inner {
             credential.clone(),
             self.actr_lock.clone(),
             self.discovered_ws_addresses.clone(),
-            None, // session_state
-            0,    // generation
+            self.session_state.clone(),
+            self.session_state
+                .as_ref()
+                .and_then(SessionState::generation_sync)
+                .unwrap_or(0),
         )
     }
 
@@ -1056,6 +1075,10 @@ impl Inner {
     pub fn set_preregistered_credential(&mut self, register_ok: register_response::RegisterOk) {
         tracing::debug!("Pre-registered credential attached; start() will skip AIS registration");
         self.preregistered_credential = Some(register_ok);
+    }
+
+    pub(crate) fn set_preregistered_registration_context(&mut self, ctx: RegistrationContext) {
+        self.preregistered_registration_context = Some(ctx);
     }
 
     /// Start the system
@@ -1223,10 +1246,13 @@ impl Inner {
         // setup block below and published back out into this wider
         // scope so the mailbox backpressure watchdog can subscribe.
         let node_hook_callback: Option<crate::wire::webrtc::HookCallback>;
+        let session_state: SessionState;
+        let credential_manager: CredentialManager;
 
         {
             let actor_id = register_ok.actr_id;
             let credential = register_ok.credential;
+            let credential_expires_at = register_ok.credential_expires_at;
 
             tracing::info!("🆔 Assigned ActrId: {}", actor_id);
             tracing::info!("🔐 Received credential (key_id: {})", credential.key_id);
@@ -1245,11 +1271,34 @@ impl Inner {
             // Store ActrId and credential state
             self.actor_id = Some(actor_id.clone());
             let credential_state = CredentialState::new(
-                credential,
-                register_ok.credential_expires_at,
+                credential.clone(),
+                credential_expires_at,
                 Some(register_ok.turn_credential.clone()),
             );
             self.credential_state = Some(credential_state.clone());
+            session_state = SessionState::new(SessionSnapshot {
+                actor_id: actor_id.clone(),
+                credential,
+                credential_expires_at: credential_expires_at.unwrap_or_default(),
+                turn_credential: register_ok.turn_credential.clone(),
+                renewal_token: register_ok.renewal_token.clone().unwrap_or_default(),
+                renewal_token_expires_at: register_ok.renewal_token_expires_at.unwrap_or_default(),
+                generation: 1,
+            });
+            self.session_state = Some(session_state.clone());
+            let registration_context = self
+                .preregistered_registration_context
+                .take()
+                .unwrap_or_else(|| RegistrationContext::Linked {
+                    request: register_request.clone(),
+                    realm_secret: self.config.realm_secret.clone(),
+                });
+            credential_manager = CredentialManager::new(
+                session_state.clone(),
+                registration_context,
+                self.config.ais_endpoint.clone(),
+                self.config.realm_secret.clone(),
+            );
 
             // Build the node-level lifecycle hook callback once: it is
             // reused for the initial `on_credential_renewed`, handed to
@@ -1385,6 +1434,7 @@ impl Inner {
                 // Pass credential_state so outbound WS handshake carries X-Actr-Credential,
                 // enabling peer WebSocketGate to perform Ed25519 signature verification.
                 credential_state: Some(credential_state.clone()),
+                session_state: Some(session_state.clone()),
                 // Pass pending_requests so outbound WS connections spawn reader tasks
                 // to deliver server responses back to `send_request_with_type` futures.
                 pending_requests: Some(pending_requests.clone()),
@@ -1402,7 +1452,7 @@ impl Inner {
             // Create PeerGate with the pre-allocated pending_requests map and WebRTC coordinator.
             use crate::outbound::PeerGate;
             let outproc_gate = Arc::new(PeerGate::with_pending_requests(
-                transport_manager,
+                transport_manager.clone(),
                 Some(coordinator.clone()),
                 pending_requests.clone(),
             ));
@@ -1436,6 +1486,15 @@ impl Inner {
             // Save references
             self.webrtc_coordinator = Some(coordinator.clone());
             self.webrtc_gate = Some(gate.clone());
+            credential_manager
+                .install_hard_rebind_handles(HardRebindHandles {
+                    signaling_client: self.signaling_client.clone(),
+                    credential_state: credential_state.clone(),
+                    webrtc_coordinator: Some(coordinator.clone()),
+                    webrtc_gate: Some(gate.clone()),
+                    peer_transport: Some(transport_manager.clone()),
+                })
+                .await;
             tracing::info!("✅ WebRTC infrastructure initialized");
 
             // Fire `on_start` once the runtime context can see the initialized
@@ -1565,6 +1624,7 @@ impl Inner {
                 let credential_state_for_heartbeat = credential_state.clone();
                 let mailbox_for_heartbeat = self.mailbox.clone();
                 let register_request_for_heartbeat = register_request.clone();
+                let credential_manager_for_heartbeat = credential_manager.clone();
                 let webrtc_coordinator_for_heartbeat = self.webrtc_coordinator.clone();
                 let webrtc_gate_for_heartbeat = self.webrtc_gate.clone();
 
@@ -1587,6 +1647,7 @@ impl Inner {
                     register_request_for_heartbeat,
                     ais_endpoint_for_heartbeat,
                     realm_secret_for_heartbeat,
+                    Some(credential_manager_for_heartbeat),
                     node_hook_callback.clone(),
                     webrtc_coordinator_for_heartbeat,
                     webrtc_gate_for_heartbeat,
@@ -1730,11 +1791,14 @@ impl Inner {
         // Snapshot now that outproc_gate has been wired above; this builder
         // is shared between on_start / on_stop hooks and the ActrRefShared
         // handle returned to the caller.
-        let bootstrap_ctx_builder = self.bootstrap_ctx_builder();
+        let mut bootstrap_ctx_builder = self.bootstrap_ctx_builder();
+        bootstrap_ctx_builder.set_session_state(Some(session_state.clone()));
+        bootstrap_ctx_builder.set_generation(session_state.generation().await);
         let credential_state = self
             .credential_state
             .clone()
             .expect("CredentialState must be initialized in start()");
+        let session_state = credential_manager.session_state();
         let shutdown_token = self.shutdown_token.clone();
         let node_ref = Arc::new(self);
 
@@ -2482,7 +2546,7 @@ impl Inner {
             actor_id,
             bootstrap_ctx_builder,
             credential_state,
-            session_state: None,
+            session_state: Some(session_state),
             shutdown_token,
             task_handles: Mutex::new(task_handles),
         });

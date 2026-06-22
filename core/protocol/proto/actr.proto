@@ -175,19 +175,20 @@ message RegisterRequest {
   // clients via RouteCandidatesResponse so they can connect without a relay.
   optional string ws_address = 6;
 
-  // Initial registration with an MFR manifest, used when no PSK is available.
   // Raw manifest bytes (original `actr.toml` from the `.actr` package) for MFR signature verification.
   optional bytes manifest_raw = 10;
   // Ed25519 signature over the manifest contents produced by the MFR, 64 bytes.
   optional bytes mfr_signature = 11;
-  // PSK used during renewal when an existing PSK is available, replacing manifest authentication.
-  optional bytes psk_token = 12;
   // Target platform (e.g. "wasm32-wasip1", "x86_64-unknown-linux-gnu").
   // Extracted from manifest binary.target for AIS lookup path verification.
   optional string target = 13;
   // Explicit authentication source. Omitted/UNSPECIFIED is treated as PACKAGE
   // for backward compatibility with older package clients.
   optional RegisterAuthMode auth_mode = 14;
+
+  // Removed in breaking cleanup: legacy PSK renewal token.
+  reserved 12;
+  reserved "psk_token";
 }
 
 message RegisterResponse {
@@ -201,14 +202,14 @@ message RegisterResponse {
     required uint32        signaling_heartbeat_interval_secs = 5;
     required bytes         signing_pubkey                   = 6; // AIS Ed25519 verifying key，32 bytes
     required uint32        signing_key_id                   = 7;
-    // PSK issued during initial registration and used for later renewals.
-    optional bytes         psk                              = 10;
-    // PSK expiration timestamp in Unix seconds.
-    optional int64         psk_expires_at                   = 11;
     // Bearer token bound to actr_id and used by POST /ais/renew.
     optional bytes         renewal_token                    = 12;
     // Renewal token expiration timestamp.
     optional google.protobuf.Timestamp renewal_token_expires_at = 13;
+
+    // Removed in breaking cleanup: legacy PSK fields.
+    reserved 10, 11;
+    reserved "psk", "psk_expires_at";
   }
   oneof result {
     RegisterOk success = 1;
@@ -227,14 +228,6 @@ message RenewCredentialResponse {
     RegisterResponse.RegisterOk success = 1;
     ErrorResponse error = 2;
   }
-}
-
-// ============================================================================
-// Credential Update
-// ============================================================================
-
-message CredentialUpdateRequest {
-  required ActrId actr_id = 1;
 }
 
 // ============================================================================

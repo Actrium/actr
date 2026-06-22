@@ -84,7 +84,11 @@ impl ActrRef {
     /// change across a hard rebind, and callers should always read the
     /// current value, not a stale reference.
     pub fn actor_id(&self) -> ActrId {
-        // FIXME: remove legacy path once SessionState is always set
+        if let Some(ref session_state) = self.shared.session_state
+            && let Some(actor_id) = session_state.actor_id_sync()
+        {
+            return actor_id;
+        }
         self.shared.actor_id.clone()
     }
 

@@ -5654,14 +5654,6 @@ mod tests {
             unimplemented!("not used by this test")
         }
 
-        async fn send_credential_update_request(
-            &self,
-            _actor_id: ActrId,
-            _credential: AIdCredential,
-        ) -> crate::transport::NetworkResult<RegisterResponse> {
-            unimplemented!("not used by this test")
-        }
-
         async fn send_envelope(
             &self,
             envelope: SignalingEnvelope,

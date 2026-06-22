@@ -46,9 +46,6 @@ message ActrToSignaling {
     actr.UnregisterRequest unregister_request = 3;
     actr.Ping ping = 4;
 
-    // Update AId credential
-    actr.CredentialUpdateRequest credential_update_request = 5;
-
     // Discovery & selection
     actr.DiscoveryRequest discovery_request = 10;
     actr.RouteCandidatesRequest route_candidates_request = 11;
@@ -62,6 +59,10 @@ message ActrToSignaling {
     // Error reporting from client
     actr.ErrorResponse error = 30;
   }
+
+  // Removed in breaking cleanup: legacy signaling credential-update request.
+  reserved 5;
+  reserved "credential_update_request";
 }
 
 // Flow: SignalingServer -> Actr

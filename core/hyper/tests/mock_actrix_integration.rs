@@ -5,6 +5,7 @@
 
 use actr_hyper::{AisClient, MfrCertCache};
 use actr_mock_actrix::MockActrixServer;
+use actr_protocol::prost::Message as _;
 use actr_protocol::{ActrType, Realm, RegisterAuthMode, RegisterRequest, register_response};
 use base64::Engine;
 use ed25519_dalek::SigningKey;
@@ -23,7 +24,6 @@ fn test_register_request() -> RegisterRequest {
         ws_address: None,
         manifest_raw: Some(b"manifest".to_vec().into()),
         mfr_signature: Some(vec![0u8; 64].into()),
-        psk_token: None,
         target: Some("wasm32-wasip2".into()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
     }
@@ -52,7 +52,7 @@ async fn http_register_returns_valid_protobuf() {
         ok.signing_pubkey.as_ref(),
         server.ais_signing_key().verifying_key().as_bytes()
     );
-    assert!(ok.psk.is_some());
+    assert!(ok.renewal_token.is_some());
 }
 
 #[tokio::test]
@@ -213,4 +213,73 @@ async fn publish_flow_via_nonce_and_publish() {
         .await
         .unwrap();
     assert_eq!(reuse.status(), 400, "reused nonce must be rejected");
+}
+
+#[tokio::test]
+async fn mock_renew_allows_consecutive_soft_renewals() {
+    use actr_protocol::{
+        RenewCredentialRequest, RenewCredentialResponse, renew_credential_response,
+    };
+
+    let server = MockActrixServer::start().await.unwrap();
+    let client = AisClient::new(server.http_url());
+    let resp = client
+        .register_with_manifest(test_register_request())
+        .await
+        .expect("register should succeed");
+
+    let ok = match resp.result {
+        Some(register_response::Result::Success(ok)) => ok,
+        other => panic!("expected Success, got {other:?}"),
+    };
+    let first_token = ok
+        .renewal_token
+        .clone()
+        .expect("register should return renewal token");
+
+    let http = reqwest::Client::new();
+    let renew_url = format!("{}/renew", server.http_url());
+
+    let first_req = RenewCredentialRequest {
+        actr_id: ok.actr_id.clone(),
+        renewal_token: first_token,
+    };
+    let first_resp = http
+        .post(&renew_url)
+        .header("content-type", "application/x-protobuf")
+        .body(first_req.encode_to_vec())
+        .send()
+        .await
+        .expect("first renew request should send");
+    assert_eq!(first_resp.status(), reqwest::StatusCode::OK);
+    let first_body = first_resp.bytes().await.unwrap();
+    let first = RenewCredentialResponse::decode(first_body.as_ref()).unwrap();
+    let first_ok = match first.result {
+        Some(renew_credential_response::Result::Success(ok)) => ok,
+        other => panic!("expected first renew success, got {other:?}"),
+    };
+    assert_eq!(first_ok.actr_id, ok.actr_id);
+
+    let second_req = RenewCredentialRequest {
+        actr_id: ok.actr_id.clone(),
+        renewal_token: first_ok
+            .renewal_token
+            .clone()
+            .expect("renew should return next renewal token"),
+    };
+    let second_resp = http
+        .post(&renew_url)
+        .header("content-type", "application/x-protobuf")
+        .body(second_req.encode_to_vec())
+        .send()
+        .await
+        .expect("second renew request should send");
+    assert_eq!(second_resp.status(), reqwest::StatusCode::OK);
+    let second_body = second_resp.bytes().await.unwrap();
+    let second = RenewCredentialResponse::decode(second_body.as_ref()).unwrap();
+    let second_ok = match second.result {
+        Some(renew_credential_response::Result::Success(ok)) => ok,
+        other => panic!("expected second renew success, got {other:?}"),
+    };
+    assert_eq!(second_ok.actr_id, ok.actr_id);
 }

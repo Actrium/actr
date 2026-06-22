@@ -94,6 +94,8 @@ pub fn runtime_context_with_host_transport(
         },
         None,
         Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        None,
+        0,
     )
 }
 

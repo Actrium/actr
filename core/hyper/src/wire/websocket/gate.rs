@@ -705,13 +705,6 @@ mod tests {
         ) -> crate::transport::NetworkResult<actr_protocol::RouteCandidatesResponse> {
             unimplemented!()
         }
-        async fn send_credential_update_request(
-            &self,
-            _: ActrId,
-            _: AIdCredential,
-        ) -> crate::transport::NetworkResult<actr_protocol::RegisterResponse> {
-            unimplemented!()
-        }
         async fn send_envelope(
             &self,
             _: actr_protocol::SignalingEnvelope,
