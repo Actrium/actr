@@ -57,10 +57,10 @@ crates/platform/         → 基础设施（lifecycle/cfg/state/auth/events）
 crates/control/          → 内置 admin 控制面实现（package: admin）
 crates/contracts/        → gRPC 协议定义（package: actrix-proto）
 crates/sdk/              → 统一导出门面（package: actrix-sdk）
-crates/services/ks/      → 密钥管理
-crates/services/stun/    → STUN 协议实现
-crates/services/turn/    → TURN 中继服务
-crates/services/signaling/ → WebRTC 信令
+crates/ks/      → 密钥管理
+crates/stun/    → STUN 协议实现
+crates/turn/    → TURN 中继服务
+crates/signaling/ → WebRTC 信令
 ```
 
 ### 2. 分层架构
@@ -71,7 +71,7 @@ crates/services/signaling/ → WebRTC 信令
 │  - ServiceManager (服务编排)           │
 │  - CLI (命令行解析)                     │
 ├─────────────────────────────────────────┤
-│  服务层 (crates/services/*/src/)        │
+│  服务层 (crates/*/src/)        │
 │  - AIS, KS, STUN, TURN, Signaling      │
 │  - Admin gRPC API 由 crates/control 提供 │
 ├─────────────────────────────────────────┤
@@ -85,7 +85,7 @@ crates/services/signaling/ → WebRTC 信令
 
 **代码路径映射**:
 - 应用层: `crates/actrixd/src/main.rs:66-80`, `crates/actrixd/src/service/manager.rs:23-31`
-- 服务层: `crates/services/{ais,ks,stun,turn,signaling}/src/`
+- 服务层: `crates/{ais,ks,stun,turn,signaling}/src/`
 - 控制面: `crates/control/src/`
 - 基础设施: `crates/platform/src/lib.rs:1-38`
 
@@ -135,7 +135,7 @@ async fn start_all(&mut self) -> Result<()>
 ```
 BaseError          (crates/platform/src/error/base_error.rs)
   ↓
-KsError/TurnError  (crates/services/*/src/error.rs)
+KsError/TurnError  (crates/*/src/error.rs)
   ↓
 Error              (crates/actrixd/src/error.rs:15-30)
   ↓
@@ -472,7 +472,7 @@ app = app
 **STUN 处理流程**:
 
 ```rust
-// 文件: crates/services/stun/src/lib.rs:29-90
+// 文件: crates/stun/src/lib.rs:29-90
 pub async fn create_stun_server_with_shutdown(
     socket: Arc<UdpSocket>,
     shutdown_rx: broadcast::Receiver<()>,
@@ -496,7 +496,7 @@ pub async fn create_stun_server_with_shutdown(
 **TURN 认证缓存**:
 
 ```rust
-// 文件: crates/services/turn/src/authenticator.rs:15-24
+// 文件: crates/turn/src/authenticator.rs:15-24
 static AUTH_KEY_CACHE: Lazy<Mutex<LruCache<u128, Vec<u8>>>> =
     Lazy::new(|| {
         Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap()))
@@ -525,7 +525,7 @@ POST /ks/generate
 返回 public_key + key_id
 ```
 
-**代码路径**: `crates/services/ks/src/handlers.rs:84-149`
+**代码路径**: `crates/ks/src/handlers.rs:84-149`
 
 ```rust
 // 生成密钥处理器
@@ -575,7 +575,7 @@ is_stun_message(data)?
 send_to(response, client_addr)
 ```
 
-**代码路径**: `crates/services/stun/src/lib.rs:92-176`
+**代码路径**: `crates/stun/src/lib.rs:92-176`
 
 ---
 
@@ -592,7 +592,7 @@ pub struct ActrixConfig {
 ```
 
 **使用位置**:
-- Signer 服务: `crates/services/ks/src/auth.rs`
+- Signer 服务: `crates/ks/src/auth.rs`
 - 所有内部服务间通信
 
 ### 2. Nonce 防重放攻击
@@ -634,7 +634,7 @@ pub struct HttpsBindConfig {
 **⚠️ 安全警告**: KS 当前以 **Base64 明文** 存储私钥
 
 ```sql
--- 文件: crates/services/ks/src/storage.rs:88-98
+-- 文件: crates/ks/src/storage.rs:88-98
 CREATE TABLE keys (
     key_id INTEGER PRIMARY KEY,
     secret_key TEXT NOT NULL  -- ⚠️ Base64 明文存储
@@ -811,9 +811,9 @@ sink = "otlp+grpc://localhost:4317"
 | **配置系统**    | `crates/platform/src/config/mod.rs` | 18-350   |
 | **错误处理**    | `crates/platform/src/error/mod.rs`  | 1-80     |
 | **数据库**      | `crates/platform/src/storage/db.rs` | 全文     |
-| **Signer 服务**     | `crates/services/ks/src/handlers.rs`       | 84-232   |
-| **STUN 实现**   | `crates/services/stun/src/lib.rs`          | 29-176   |
-| **TURN 实现**   | `crates/services/turn/src/lib.rs`          | 全文     |
+| **Signer 服务**     | `crates/ks/src/handlers.rs`       | 84-232   |
+| **STUN 实现**   | `crates/stun/src/lib.rs`          | 29-176   |
+| **TURN 实现**   | `crates/turn/src/lib.rs`          | 全文     |
 | **Trace Layer** | `crates/actrixd/src/service/trace.rs`            | 1-65     |
 
 ### 依赖版本

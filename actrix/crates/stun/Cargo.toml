@@ -17,4 +17,4 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 webrtc = { workspace = true }
 
-platform = { path = "../../platform" }
+platform = { path = "../platform" }

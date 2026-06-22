@@ -1,12 +1,5 @@
 [workspace]
-members = [
-    "crates/actrixd",
-    "crates/control",
-    "crates/contracts",
-    "crates/platform",
-    "crates/sdk",
-    "crates/services/*",
-]
+members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]

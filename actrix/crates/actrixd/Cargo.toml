@@ -54,12 +54,12 @@ axum-server = { version = "0.7.3", default-features = false, features = [
 # Local dependencies
 actrix-sdk = { path = "../sdk" }
 platform = { path = "../platform" }
-signaling = { path = "../services/signaling" }
-stun = { path = "../services/stun" }
-turn = { path = "../services/turn" }
-ais = { path = "../services/ais" }
-actrix-mfr = { path = "../services/mfr" }
-signer = { path = "../services/signer" }
+signaling = { path = "../signaling" }
+stun = { path = "../stun" }
+turn = { path = "../turn" }
+ais = { path = "../ais" }
+actrix-mfr = { path = "../mfr" }
+signer = { path = "../signer" }
 rand = "0.9.1"
 futures = "0.3.31"
 num_cpus = "1.16.0"

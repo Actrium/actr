@@ -117,7 +117,7 @@ async fn get_secret_key_by_id(&self, key_id: u32) -> Result<SecretKey, AidError>
 
 **🔐 Private Key Storage:**
 ```rust
-// crates/services/ks/src/storage.rs:91 - Plaintext storage
+// crates/ks/src/storage.rs:91 - Plaintext storage
 "INSERT INTO keys (public_key, secret_key, created_at, expires_at) VALUES (?1, ?2, ?3, ?4)"
 ```
 - **Risk**: Private keys stored as Base64 plaintext in SQLite
@@ -133,7 +133,7 @@ actrix_shared_key: "default-auxes-shared-key-change-in-production"
 
 **⏰ Key Lifecycle Management:**
 ```rust
-// crates/services/ks/src/storage.rs:88 - Fixed expiration
+// crates/ks/src/storage.rs:88 - Fixed expiration
 let expires_at = now + 3600; // Hardcoded 1 hour
 ```
 - **Issues**: No key rotation, no expired key cleanup, no configurable TTL
@@ -141,7 +141,7 @@ let expires_at = now + 3600; // Hardcoded 1 hour
 
 **🎯 Access Control:**
 ```rust
-// crates/services/ks/src/handlers.rs:159 - Overly permissive
+// crates/ks/src/handlers.rs:159 - Overly permissive
 match app_state.storage.get_secret_key(key_id)? {
     Some(secret_key) => { /* Any authenticated service gets any key */ }
 }
@@ -153,7 +153,7 @@ match app_state.storage.get_secret_key(key_id)? {
 
 **📝 Information Leakage:**
 ```rust
-// crates/services/ks/src/handlers.rs:169 & 199
+// crates/ks/src/handlers.rs:169 & 199
 info!("Found secret key for key_id: {}", key_id);
 warn!("Secret key not found for key_id: {}", key_id);
 ```
@@ -171,7 +171,7 @@ None => { /* Database query + error, slower */ }
 
 **🔧 Hardcoded Token Key ID:**
 ```rust
-// crates/services/ais/src/issuer.rs:83
+// crates/ais/src/issuer.rs:83
 token_key_id: 1, // Fixed value, prevents key rotation
 ```
 - **Impact**: Cannot rotate encryption keys, single point of failure

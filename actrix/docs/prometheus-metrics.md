@@ -53,7 +53,7 @@
 **示例：KS 服务**
 
 ```rust
-// crates/services/ks/src/handlers.rs
+// crates/ks/src/handlers.rs
 use lazy_static::lazy_static;
 use prometheus::{HistogramVec, IntCounterVec, ...};
 

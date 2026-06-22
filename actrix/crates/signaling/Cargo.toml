@@ -38,7 +38,7 @@ prost-types = { workspace = true }
 base64 = { workspace = true }
 
 # 内部依赖
-platform = { path = "../../platform" }
+platform = { path = "../platform" }
 
 # Database
 sqlx = { workspace = true }

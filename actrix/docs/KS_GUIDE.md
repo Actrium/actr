@@ -96,7 +96,7 @@ ECIES (Elliptic Curve Integrated Encryption Scheme)
 
 **代码实现**:
 ```rust
-// 文件: crates/services/ks/src/storage.rs:196
+// 文件: crates/ks/src/storage.rs:196
 let (secret_key, public_key) = ecies::utils::generate_keypair();
 ```
 
@@ -223,7 +223,7 @@ let (secret_key, public_key) = ecies::utils::generate_keypair();
 
 ```
 ┌────────────────────────────────────────────────┐
-│           crates/services/ks/                           │
+│           crates/ks/                           │
 ├────────────────────────────────────────────────┤
 │                                                │
 │  lib.rs (公共接口)                             │
@@ -566,7 +566,7 @@ Content-Type: application/json
 
 **请求结构**:
 ```rust
-// 文件: crates/services/ks/src/types.rs:18-22
+// 文件: crates/ks/src/types.rs:18-22
 pub struct GenerateKeyRequest {
     pub credential: NonceCredential,
 }
@@ -605,7 +605,7 @@ let signature = HMAC-SHA256(psk, nonce + timestamp + payload);
 
 **响应结构**:
 ```rust
-// 文件: crates/services/ks/src/types.rs:25-33
+// 文件: crates/ks/src/types.rs:25-33
 pub struct GenerateKeyResponse {
     pub key_id: u32,
     pub public_key: String,      // Base64 编码
@@ -662,7 +662,7 @@ Host: actrix.example.com
 
 **请求结构**:
 ```rust
-// 文件: crates/services/ks/src/types.rs:36-42
+// 文件: crates/ks/src/types.rs:36-42
 pub struct GetSecretKeyRequest {
     pub key_id: u32,
     pub credential: NonceCredential,
@@ -687,7 +687,7 @@ let signature = HMAC-SHA256(psk, nonce + timestamp + payload);
 
 **响应结构**:
 ```rust
-// 文件: crates/services/ks/src/types.rs:45-53
+// 文件: crates/ks/src/types.rs:45-53
 pub struct GetSecretKeyResponse {
     pub key_id: u32,
     pub secret_key: String,      // Base64 编码
@@ -818,7 +818,7 @@ PSK 认证架构
 
 **代码实现**:
 ```rust
-// 文件: crates/services/ks/src/handlers.rs:35-57
+// 文件: crates/ks/src/handlers.rs:35-57
 pub async fn verify_credential(
     &self,
     credential: &nonce_auth::NonceCredential,
@@ -891,7 +891,7 @@ Nonce 表结构:
 
 **代码实现**:
 ```rust
-// 文件: crates/services/ks/src/nonce_storage.rs
+// 文件: crates/ks/src/nonce_storage.rs
 impl StorageBackend for SqliteNonceStorage {
     async fn store_nonce(&self, nonce: &str, timestamp: i64)
         -> Result<(), NonceError> {
@@ -1237,7 +1237,7 @@ let client = Client::new(&config);
 
 **获取私钥**:
 ```rust
-// 文件: crates/services/ks/src/client.rs:67-118
+// 文件: crates/ks/src/client.rs:67-118
 use ecies::SecretKey;
 
 let key_id = 123;
@@ -1834,14 +1834,14 @@ sqlite3 /var/lib/actrix/ks.db \
 
 | 模块        | 文件路径                         | 说明          |
 | ----------- | -------------------------------- | ------------- |
-| 库入口      | `crates/services/ks/src/lib.rs`           | 公共接口      |
-| HTTP 处理器 | `crates/services/ks/src/handlers.rs`      | API 实现      |
-| 存储层      | `crates/services/ks/src/storage.rs`       | 数据库操作    |
-| 客户端      | `crates/services/ks/src/client.rs`        | Rust 客户端   |
-| 数据类型    | `crates/services/ks/src/types.rs`         | 请求/响应类型 |
-| 错误定义    | `crates/services/ks/src/error.rs`         | 错误类型      |
-| 配置        | `crates/services/ks/src/config.rs`        | 配置结构      |
-| Nonce 存储  | `crates/services/ks/src/nonce_storage.rs` | 防重放实现    |
+| 库入口      | `crates/ks/src/lib.rs`           | 公共接口      |
+| HTTP 处理器 | `crates/ks/src/handlers.rs`      | API 实现      |
+| 存储层      | `crates/ks/src/storage.rs`       | 数据库操作    |
+| 客户端      | `crates/ks/src/client.rs`        | Rust 客户端   |
+| 数据类型    | `crates/ks/src/types.rs`         | 请求/响应类型 |
+| 错误定义    | `crates/ks/src/error.rs`         | 错误类型      |
+| 配置        | `crates/ks/src/config.rs`        | 配置结构      |
+| Nonce 存储  | `crates/ks/src/nonce_storage.rs` | 防重放实现    |
 
 ---
 

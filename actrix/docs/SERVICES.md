@@ -1113,7 +1113,7 @@ impl ServiceStatus {
 
 **Signer 服务健康检查**:
 
-**文件**: `crates/services/ks/src/handlers.rs:240-260`
+**文件**: `crates/ks/src/handlers.rs:240-260`
 
 ```rust
 async fn health_check_handler(
@@ -1152,7 +1152,7 @@ curl https://actrix.example.com/ks/health
 
 #### 6.3.1 TURN 认证缓存统计
 
-**文件**: `crates/services/turn/src/authenticator.rs:84-88`
+**文件**: `crates/turn/src/authenticator.rs:84-88`
 
 ```rust
 impl Authenticator {
@@ -1176,7 +1176,7 @@ if size as f64 / capacity as f64 > 0.9 {
 
 #### 6.3.2 Signer 密钥统计
 
-**文件**: `crates/services/ks/src/storage.rs:250-270`
+**文件**: `crates/ks/src/storage.rs:250-270`
 
 ```rust
 impl KeyStorage {
@@ -1505,7 +1505,7 @@ info!("TURN auth cache: {}/{} ({}%)",
 
 **优化**:
 ```rust
-// crates/services/turn/src/authenticator.rs:24
+// crates/turn/src/authenticator.rs:24
 // 增加缓存容量
 let capacity = NonZeroUsize::new(5000).unwrap();  // 从 1000 增加到 5000
 ```

@@ -525,12 +525,12 @@ impl TlsConfigurer {
 
 ## 2. ks - Key Server 密钥服务
 
-**位置**: `crates/services/ks/`
+**位置**: `crates/ks/`
 **功能**: 椭圆曲线密钥生成和管理服务
 
 ### 2.1 概述
 
-**文件**: `crates/services/ks/src/lib.rs:1-8`
+**文件**: `crates/ks/src/lib.rs:1-8`
 
 ```rust
 //! Signer - 椭圆曲线密钥生成和管理服务
@@ -544,7 +544,7 @@ impl TlsConfigurer {
 
 ### 2.2 模块结构
 
-**文件**: `crates/services/ks/src/lib.rs:9-26`
+**文件**: `crates/ks/src/lib.rs:9-26`
 
 ```rust
 pub mod client;           // KS 客户端
@@ -567,7 +567,7 @@ pub use types::{GenerateKeyRequest, GenerateKeyResponse,
 
 ### 2.3 配置定义
 
-**文件**: `crates/services/ks/src/config.rs:10-40`
+**文件**: `crates/ks/src/config.rs:10-40`
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -596,7 +596,7 @@ impl Default for KeyServerConfig {
 
 ### 2.4 存储层 - KeyStorage
 
-**文件**: `crates/services/ks/src/storage.rs:15-300`
+**文件**: `crates/ks/src/storage.rs:15-300`
 
 #### 2.4.1 结构定义
 
@@ -611,7 +611,7 @@ pub struct KeyStorage {
 
 #### 2.4.2 初始化和表创建
 
-**文件**: `crates/services/ks/src/storage.rs:24-79`
+**文件**: `crates/ks/src/storage.rs:24-79`
 
 ```rust
 impl KeyStorage {
@@ -665,7 +665,7 @@ impl KeyStorage {
 
 #### 2.4.3 密钥存储
 
-**文件**: `crates/services/ks/src/storage.rs:85-130`
+**文件**: `crates/ks/src/storage.rs:85-130`
 
 ```rust
 /// 存储新的密钥对，key_id 由数据库自动生成
@@ -699,7 +699,7 @@ fn store_key(&self, public_key: &str, secret_key: &str) -> KsResult<u32> {
 
 #### 2.4.4 密钥查询
 
-**文件**: `crates/services/ks/src/storage.rs:135-180`
+**文件**: `crates/ks/src/storage.rs:135-180`
 
 ```rust
 /// 获取公钥
@@ -753,7 +753,7 @@ pub fn get_secret_key(&self, key_id: u32) -> KsResult<Option<String>> {
 
 #### 2.4.5 密钥生成
 
-**文件**: `crates/services/ks/src/storage.rs:185-220`
+**文件**: `crates/ks/src/storage.rs:185-220`
 
 ```rust
 /// 生成新的 ECIES 密钥对
@@ -780,7 +780,7 @@ pub fn generate_key_pair(&self) -> KsResult<KeyPair> {
 
 ### 2.5 HTTP 处理器
 
-**文件**: `crates/services/ks/src/handlers.rs:1-300`
+**文件**: `crates/ks/src/handlers.rs:1-300`
 
 #### 2.5.1 KSState - 服务状态
 
@@ -830,7 +830,7 @@ impl KSState {
 
 #### 2.5.2 创建路由
 
-**文件**: `crates/services/ks/src/handlers.rs:86-92`
+**文件**: `crates/ks/src/handlers.rs:86-92`
 
 ```rust
 pub fn create_router(state: KSState) -> Router {
@@ -844,7 +844,7 @@ pub fn create_router(state: KSState) -> Router {
 
 #### 2.5.3 生成密钥处理器
 
-**文件**: `crates/services/ks/src/handlers.rs:120-180`
+**文件**: `crates/ks/src/handlers.rs:120-180`
 
 ```rust
 async fn generate_key_handler(
@@ -872,7 +872,7 @@ async fn generate_key_handler(
 
 #### 2.5.4 获取私钥处理器
 
-**文件**: `crates/services/ks/src/handlers.rs:185-230`
+**文件**: `crates/ks/src/handlers.rs:185-230`
 
 ```rust
 async fn get_secret_key_handler(
@@ -906,7 +906,7 @@ async fn get_secret_key_handler(
 
 ### 2.6 客户端
 
-**文件**: `crates/services/ks/src/client.rs:20-150`
+**文件**: `crates/ks/src/client.rs:20-150`
 
 ```rust
 pub struct Client {
@@ -983,7 +983,7 @@ impl Client {
 
 ### 2.7 错误类型
 
-**文件**: `crates/services/ks/src/error.rs:10-60`
+**文件**: `crates/ks/src/error.rs:10-60`
 
 ```rust
 #[derive(Debug, Error)]
@@ -1032,12 +1032,12 @@ impl IntoResponse for KsError {
 
 ## 3. stun - STUN 服务器
 
-**位置**: `crates/services/stun/`
+**位置**: `crates/stun/`
 **功能**: STUN 协议实现，用于 NAT 穿越
 
 ### 3.1 概述
 
-**文件**: `crates/services/stun/src/lib.rs:1-4`
+**文件**: `crates/stun/src/lib.rs:1-4`
 
 ```rust
 //! STUN 服务器实现
@@ -1047,7 +1047,7 @@ impl IntoResponse for KsError {
 
 ### 3.2 核心函数 - create_stun_server_with_shutdown
 
-**文件**: `crates/services/stun/src/lib.rs:17-71`
+**文件**: `crates/stun/src/lib.rs:17-71`
 
 ```rust
 /// 创建并运行 STUN 服务器，支持优雅关闭
@@ -1109,7 +1109,7 @@ pub async fn create_stun_server_with_shutdown(
 
 ### 3.3 STUN 消息识别
 
-**文件**: `crates/services/stun/src/lib.rs:73-80`
+**文件**: `crates/stun/src/lib.rs:73-80`
 
 ```rust
 /// 检查数据是否为 STUN 消息
@@ -1138,7 +1138,7 @@ ChannelData 前两位为 01 (0x40)
 
 ### 3.4 数据包处理
 
-**文件**: `crates/services/stun/src/lib.rs:82-113`
+**文件**: `crates/stun/src/lib.rs:82-113`
 
 ```rust
 /// 处理潜在的 STUN 数据包
@@ -1175,7 +1175,7 @@ pub async fn process_packet(
 
 ### 3.5 绑定请求处理
 
-**文件**: `crates/services/stun/src/lib.rs:115-141`
+**文件**: `crates/stun/src/lib.rs:115-141`
 
 ```rust
 async fn handle_binding_request(
@@ -1214,7 +1214,7 @@ async fn handle_binding_request(
 
 ### 3.6 错误类型
 
-**文件**: `crates/services/stun/src/error.rs:10-45`
+**文件**: `crates/stun/src/error.rs:10-45`
 
 ```rust
 #[derive(Debug, Error)]
@@ -1253,12 +1253,12 @@ impl StunError {
 
 ## 4. turn - TURN 服务器
 
-**位置**: `crates/services/turn/`
+**位置**: `crates/turn/`
 **功能**: TURN 协议实现，用于网络中继
 
 ### 4.1 概述
 
-**文件**: `crates/services/turn/src/lib.rs:1-4`
+**文件**: `crates/turn/src/lib.rs:1-4`
 
 ```rust
 //! TURN 服务器实现
@@ -1268,7 +1268,7 @@ impl StunError {
 
 ### 4.2 模块结构
 
-**文件**: `crates/services/turn/src/lib.rs:5-11`
+**文件**: `crates/turn/src/lib.rs:5-11`
 
 ```rust
 mod authenticator;        // 认证器 (带 LRU 缓存)
@@ -1280,7 +1280,7 @@ pub use error::{ErrorSeverity, TurnError};
 
 ### 4.3 创建 TURN 服务器
 
-**文件**: `crates/services/turn/src/lib.rs:24-89`
+**文件**: `crates/turn/src/lib.rs:24-89`
 
 ```rust
 /// 创建并初始化 TURN 服务器
@@ -1355,7 +1355,7 @@ pub async fn create_turn_server(
 
 ### 4.4 关闭 TURN 服务器
 
-**文件**: `crates/services/turn/src/lib.rs:91-104`
+**文件**: `crates/turn/src/lib.rs:91-104`
 
 ```rust
 pub async fn shutdown_turn_server(server: &Server) -> error::Result<()> {
@@ -1375,7 +1375,7 @@ pub async fn shutdown_turn_server(server: &Server) -> error::Result<()> {
 
 ### 4.5 Authenticator - 认证器 (带 LRU 缓存)
 
-**文件**: `crates/services/turn/src/authenticator.rs:1-198`
+**文件**: `crates/turn/src/authenticator.rs:1-198`
 
 #### 4.5.1 全局 LRU 缓存
 
@@ -1533,7 +1533,7 @@ impl AuthHandler for Authenticator {
 
 ### 4.6 错误类型
 
-**文件**: `crates/services/turn/src/error.rs:10-70`
+**文件**: `crates/turn/src/error.rs:10-70`
 
 ```rust
 #[derive(Debug, Error)]
@@ -1580,12 +1580,12 @@ impl TurnError {
 
 ## 5. signaling - WebRTC 信令服务
 
-**位置**: `crates/services/signaling/`
+**位置**: `crates/signaling/`
 **功能**: 基于 protobuf SignalingEnvelope 的 WebSocket 信令服务
 
 ### 5.1 概述
 
-**文件**: `crates/services/signaling/src/lib.rs:1-12`
+**文件**: `crates/signaling/src/lib.rs:1-12`
 
 ```rust
 //! Actrix 信令服务
@@ -1603,7 +1603,7 @@ pub use service_registry::ServiceRegistry;
 
 ### 5.2 SignalingServer - 信令服务器
 
-**文件**: `crates/services/signaling/src/server.rs:30-150`
+**文件**: `crates/signaling/src/server.rs:30-150`
 
 #### 5.2.1 结构定义
 
@@ -1783,7 +1783,7 @@ impl SignalingServerHandle {
 
 ### 5.3 GlobalCompatibilityCache - 兼容性缓存
 
-**文件**: `crates/services/signaling/src/compatibility_cache.rs:15-120`
+**文件**: `crates/signaling/src/compatibility_cache.rs:15-120`
 
 用于缓存客户端之间的媒体能力协商结果:
 
@@ -1832,7 +1832,7 @@ impl GlobalCompatibilityCache {
 
 ### 5.4 ServiceRegistry - 服务注册表
 
-**文件**: `crates/services/signaling/src/service_registry.rs:15-100`
+**文件**: `crates/signaling/src/service_registry.rs:15-100`
 
 用于服务发现和健康检查:
 
@@ -1909,7 +1909,7 @@ impl ServiceRegistry {
 
 ## 6. ais - Actor Identity Service ✅
 
-**位置**: `crates/services/ais/`
+**位置**: `crates/ais/`
 **状态**: ✅ 已启用并全面重构优化
 
 ### 6.1 功能说明
@@ -1932,7 +1932,7 @@ AIS (Actor Identity Service) 是 Actrix 系统的核心身份服务，负责：
 
 #### 6.2.1 Snowflake 序列号生成器 (sn.rs)
 
-**位置**: `crates/services/ais/src/sn.rs`
+**位置**: `crates/ais/src/sn.rs`
 
 **54-bit 序列号结构**:
 ```
@@ -1950,7 +1950,7 @@ AIS (Actor Identity Service) 是 Actrix 系统的核心身份服务，负责：
 
 **关键实现**:
 ```rust
-// crates/services/ais/src/sn.rs:99-133
+// crates/ais/src/sn.rs:99-133
 static SNOWFLAKE_STATE: AtomicU64 = AtomicU64::new(0);
 static WORKER_ID: OnceLock<u64> = OnceLock::new();
 
@@ -1975,7 +1975,7 @@ loop {
 
 #### 6.2.2 Token 签发器 (issuer.rs)
 
-**位置**: `crates/services/ais/src/issuer.rs`
+**位置**: `crates/ais/src/issuer.rs`
 
 **职责**:
 - 处理 `RegisterRequest` 并生成 `RegisterResponse`
@@ -1985,7 +1985,7 @@ loop {
 
 **密钥管理策略**:
 ```rust
-// crates/services/ais/src/issuer.rs:116-159
+// crates/ais/src/issuer.rs:116-159
 - 启动时从本地 SQLite 加载缓存密钥
 - 如果过期则从 KS 获取
 - 后台任务定期刷新（避免服务中断）
@@ -1994,7 +1994,7 @@ loop {
 
 #### 6.2.3 本地密钥缓存 (storage.rs)
 
-**位置**: `crates/services/ais/src/storage.rs`
+**位置**: `crates/ais/src/storage.rs`
 
 **数据模型**:
 ```sql
@@ -2060,7 +2060,7 @@ timeout_seconds = 30
 
 ### 6.5 测试覆盖
 
-**单元测试**: `crates/services/ais/src/**/tests`
+**单元测试**: `crates/ais/src/**/tests`
 - Snowflake 序列号生成（唯一性、并发安全）
 - Token 签发流程
 - 密钥缓存和刷新逻辑

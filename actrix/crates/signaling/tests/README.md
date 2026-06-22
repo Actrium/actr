@@ -219,7 +219,7 @@ cargo fmt --check -p signaling
 
 1. **负载均衡算法测试** (可独立测试)
    ```rust
-   // crates/services/signaling/src/load_balancer.rs
+   // crates/signaling/src/load_balancer.rs
    #[cfg(test)]
    mod tests {
        #[test]
@@ -235,7 +235,7 @@ cargo fmt --check -p signaling
 
 2. **服务注册表测试** (可独立测试)
    ```rust
-   // crates/services/signaling/src/service_registry.rs
+   // crates/signaling/src/service_registry.rs
    #[cfg(test)]
    mod tests {
        #[test]
@@ -248,7 +248,7 @@ cargo fmt --check -p signaling
 
 3. **兼容性缓存测试** (可独立测试)
    ```rust
-   // crates/services/signaling/src/compatibility_cache.rs
+   // crates/signaling/src/compatibility_cache.rs
    #[cfg(test)]
    mod tests {
        #[test]

@@ -367,8 +367,8 @@ sink = "otlp+grpc://jaeger:4317"
 - [SERVICES.md](./SERVICES.md) - 服务部署和管理
 - [CONFIGURATION.md](./CONFIGURATION.md) - 配置参考
 
-**文件**: `crates/services/ks/src/types.rs` - API 数据类型定义
-**文件**: `crates/services/ks/src/handlers.rs` - API 处理器实现
+**文件**: `crates/ks/src/types.rs` - API 数据类型定义
+**文件**: `crates/ks/src/handlers.rs` - API 处理器实现
 
 **最后验证时间**: 2025-11-03
 **代码版本**: v0.1.0+enhancements

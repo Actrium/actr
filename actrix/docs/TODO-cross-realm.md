@@ -17,9 +17,9 @@
    - relay / discovery / route-candidates / presence / registry 统一走：
      - `ActorAcl::can_discover(source_realm, target_realm, from_type, to_type)`
    - 代码：
-     - `crates/services/signaling/src/server.rs`
-     - `crates/services/signaling/src/service_registry.rs`
-     - `crates/services/signaling/src/presence.rs`
+     - `crates/signaling/src/server.rs`
+     - `crates/signaling/src/service_registry.rs`
+     - `crates/signaling/src/presence.rs`
 
 3. 类型匹配一致性修复（已落地）
    - 统一使用 `manufacturer:name`，修复部分路径只用 `name` 导致 ACL 误判的问题。
