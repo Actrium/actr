@@ -1,0 +1,123 @@
+syntax = "proto2";
+
+package admin.v1;
+
+// ============================================================================
+// Authentication credential (nonce-auth compatible)
+// ============================================================================
+
+// NonceCredential is used for authentication in all RPC requests
+// Compatible with nonce-auth library's NonceCredential structure
+message NonceCredential {
+  // Unix timestamp (second precision) for time window validation
+  required uint64 timestamp = 1;
+  // UUID v4 format random nonce to ensure request uniqueness
+  required string nonce = 2;
+  // Base64 encoded HMAC-SHA256 signature: HMAC-SHA256(secret, timestamp + nonce + payload)
+  required string signature = 3;
+}
+
+// ============================================================================
+// Resource type enumeration
+// ============================================================================
+
+enum ResourceType {
+  RESOURCE_TYPE_UNSPECIFIED = 0;
+  STUN = 1;
+  TURN = 2;
+  SIGNALING = 3;
+  AIS = 4;
+  KS = 5;
+  MFR = 6;
+}
+
+// ============================================================================
+// Configuration type enumeration
+// ============================================================================
+
+enum ConfigType {
+  CONFIG_TYPE_UNSPECIFIED = 0;
+  TURN_REALM = 1;
+  STUN_BIND_ADDRESS = 2;
+  LOG_LEVEL = 3;
+  SERVICE_ENABLED = 4;
+  CUSTOM = 99;
+}
+
+// ============================================================================
+// System metrics (shared)
+// ============================================================================
+
+message SystemMetrics {
+  // CPU usage
+  required double cpu_usage_percent = 1;
+
+  // Memory usage
+  required uint64 memory_used_bytes = 2;
+  required uint64 memory_total_bytes = 3;
+  required double memory_usage_percent = 4;
+
+  // Network traffic
+  required uint64 network_rx_bytes = 5;
+  required uint64 network_tx_bytes = 6;
+
+  // Disk usage
+  required uint64 disk_used_bytes = 7;
+  required uint64 disk_total_bytes = 8;
+
+  // System load averages
+  required double load_average_1m = 9;
+  optional double load_average_5m = 10;
+  optional double load_average_15m = 11;
+}
+
+// ============================================================================
+// Service status (shared)
+// ============================================================================
+
+message ServiceStatus {
+  required string name = 1;                 // Service identifier
+  required ResourceType type = 2;           // Service type (routing basis)
+  required bool is_healthy = 3;             // Health status (scheduling core)
+  required uint32 active_connections = 4;   // Connection count (load assessment)
+  required uint64 total_requests = 5;       // Total requests (traffic monitoring)
+  required uint64 failed_requests = 6;      // Failed requests (quality monitoring)
+  required double average_latency_ms = 7;   // Latency (performance monitoring)
+  optional string url = 8;                  // Service URL (external access)
+  optional uint32 port = 9;                 // Service port (internal services may not need)
+  optional string domain = 10;              // Service domain (not needed for internal IP access)
+}
+
+// ============================================================================
+// Realm information (shared)
+// ============================================================================
+
+message RealmInfo {
+  required uint32 realm_id = 1;            // Realm identifier (DB auto-increment, starts at 2^25)
+  required string name = 2;                 // Realm name
+  required bool enabled = 3;                // Enabled status
+  required int64 created_at = 4;            // Creation timestamp
+  optional int64 updated_at = 5;            // Update timestamp
+  // Field 6 removed (was use_servers)
+  // Field 7 removed (was version, replaced by updated_at)
+  required uint64 expires_at = 8;           // Expiration timestamp (Unix timestamp)
+  required string status = 9;               // Realm status (Active, Inactive, Suspended)
+  optional SecretRotationState secret_rotation_state = 10; // Secret rotation state
+}
+
+message ManagedRealmState {
+  required uint32 realm_id = 1;             // Superv-assigned realm identifier
+  required string name = 2;                 // Realm name
+  required bool enabled = 3;                // Enabled status
+  required string status = 4;               // Active / Inactive / Suspended
+  optional uint64 expires_at = 5;           // Expiration timestamp (Unix timestamp)
+  required string secret_current_hash = 6;  // Current realm secret hash
+  optional string secret_previous_hash = 7; // Previous realm secret hash during rotation
+  optional uint64 secret_previous_valid_until = 8; // Previous secret grace-window deadline
+}
+
+message SecretRotationState {
+  required string current_hash_preview = 1;
+  optional string previous_hash_preview = 2;
+  optional int64 previous_valid_until = 3;
+}

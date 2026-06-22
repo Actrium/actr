@@ -1,0 +1,225 @@
+syntax = "proto2";
+
+package admin.v1;
+
+import "common.proto";
+
+// ============================================================================
+// NodeAdminService - Implemented by Node, called by Admin
+// ============================================================================
+
+service NodeAdminService {
+  // ------------ Configuration management ------------
+  rpc UpdateConfig(UpdateConfigRequest) returns (UpdateConfigResponse);
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+
+  // ------------ Realm management ------------
+  rpc CreateRealm(CreateRealmRequest) returns (CreateRealmResponse);
+  rpc GetRealm(GetRealmRequest) returns (GetRealmResponse);
+  rpc UpdateRealm(UpdateRealmRequest) returns (UpdateRealmResponse);
+  rpc DeleteRealm(DeleteRealmRequest) returns (DeleteRealmResponse);
+  rpc ListRealms(ListRealmsRequest) returns (ListRealmsResponse);
+
+  // ------------ Node control ------------
+  rpc GetNodeInfo(GetNodeInfoRequest) returns (GetNodeInfoResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+
+  // ------------ Config override management (remote admin) ------------
+  rpc ListConfigOverrides(ListConfigOverridesRequest) returns (ListConfigOverridesResponse);
+  rpc SetConfigOverride(SetConfigOverrideRequest) returns (SetConfigOverrideResponse);
+  rpc DeleteConfigOverride(DeleteConfigOverrideRequest) returns (DeleteConfigOverrideResponse);
+}
+
+// ============================================================================
+// Configuration management
+// ============================================================================
+
+message UpdateConfigRequest {
+  required ConfigType config_type = 1;      // Configuration type
+  required string config_key = 2;           // Configuration key
+  required string config_value = 3;         // Configuration value
+  required bool apply_immediately = 4;      // Whether to apply immediately
+  required NonceCredential credential = 5;  // Authentication credential
+}
+
+message UpdateConfigResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional string old_value = 3;            // Old value (for rollback)
+}
+
+message GetConfigRequest {
+  required ConfigType config_type = 1;      // Configuration type
+  required string config_key = 2;           // Configuration key
+  required NonceCredential credential = 3;  // Authentication credential
+}
+
+message GetConfigResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional string config_value = 3;         // Configuration value
+}
+
+// ============================================================================
+// Realm management
+// ============================================================================
+
+// ------------ CreateRealm ------------
+
+message CreateRealmRequest {
+  optional uint32 realm_id = 1;             // Superv managed mode uses this id; local UI may omit
+  required string name = 2;                 // Realm name
+  required bool enabled = 3;                // Enabled status
+  // Field 4 removed (was use_servers)
+  required NonceCredential credential = 5;  // Authentication credential
+  // Field 6 removed (was version)
+  required uint64 expires_at = 7;           // Expiration timestamp (Unix timestamp)
+  optional string status = 8;               // Active / Inactive / Suspended
+  optional string secret_current_hash = 9;  // Current realm secret hash from superv
+  optional string secret_previous_hash = 10; // Previous realm secret hash during rotation
+  optional uint64 secret_previous_valid_until = 11; // Previous secret grace-window deadline
+}
+
+message CreateRealmResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional RealmInfo realm = 3;             // Created realm info
+}
+
+// ------------ GetRealm ------------
+
+message GetRealmRequest {
+  required uint32 realm_id = 1;            // Realm identifier
+  required NonceCredential credential = 2;  // Authentication credential
+}
+
+message GetRealmResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional RealmInfo realm = 3;             // Realm info
+}
+
+// ------------ UpdateRealm ------------
+
+message UpdateRealmRequest {
+  required uint32 realm_id = 1;            // Realm identifier
+  optional string name = 2;                 // New name (optional update)
+  optional bool enabled = 3;                // New enabled status (optional update)
+  required NonceCredential credential = 4;  // Authentication credential
+  optional string status = 5;               // Active / Inactive / Suspended
+  optional uint64 expires_at = 6;           // Expiration timestamp (Unix timestamp)
+  optional string secret_current_hash = 7;  // Current realm secret hash from superv
+  optional string secret_previous_hash = 8; // Previous realm secret hash during rotation
+  optional uint64 secret_previous_valid_until = 9; // Previous secret grace-window deadline
+}
+
+message UpdateRealmResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  optional RealmInfo realm = 3;             // Updated realm info
+}
+
+// ------------ DeleteRealm ------------
+
+message DeleteRealmRequest {
+  required uint32 realm_id = 1;            // Realm identifier
+  required NonceCredential credential = 2;  // Authentication credential
+}
+
+message DeleteRealmResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+}
+
+// ------------ ListRealms ------------
+
+message ListRealmsRequest {
+  optional uint32 page_size = 1;            // Page size
+  optional string page_token = 2;           // Page token for pagination
+  required NonceCredential credential = 3;  // Authentication credential
+}
+
+message ListRealmsResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  repeated RealmInfo realms = 3;            // Realm list
+  optional string next_page_token = 4;      // Next page token
+  required uint32 total_count = 5;          // Total count (for pagination)
+}
+
+// ============================================================================
+// Node control
+// ============================================================================
+
+message GetNodeInfoRequest {
+  required NonceCredential credential = 1;  // Authentication credential
+}
+
+message GetNodeInfoResponse {
+  required bool success = 1;                // Operation result
+  optional string error_message = 2;        // Error message on failure
+  required string node_id = 3;              // Node identifier
+  required string name = 4;                 // Node name
+  required string version = 5;              // Node version
+  required string location_tag = 6;         // Geographic location tag
+  required int64 uptime_secs = 7;           // Uptime in seconds
+  optional SystemMetrics current_metrics = 8;  // Current system metrics
+  repeated ServiceStatus services = 9;      // Service status list
+}
+
+message ShutdownRequest {
+  required bool graceful = 1;               // Whether to shutdown gracefully
+  optional int32 timeout_secs = 2;          // Graceful shutdown timeout
+  optional string reason = 3;               // Shutdown reason
+  required NonceCredential credential = 4;  // Authentication credential
+}
+
+message ShutdownResponse {
+  required bool accepted = 1;               // Whether shutdown request accepted
+  optional string error_message = 2;        // Error message on failure
+  optional int64 estimated_shutdown_time = 3;  // Estimated shutdown timestamp
+}
+
+// ============================================================================
+// Config override management (L2 dynamic overrides)
+// ============================================================================
+
+message ConfigOverrideEntry {
+  required string key_path = 1;             // Dot-separated config key
+  required string value = 2;                // Override value
+  required string updated_at = 3;           // ISO 8601 timestamp
+  required string updated_by = 4;           // Who set this override
+}
+
+message ListConfigOverridesRequest {
+  required NonceCredential credential = 1;  // Authentication credential
+}
+
+message ListConfigOverridesResponse {
+  required bool success = 1;
+  optional string error_message = 2;
+  repeated ConfigOverrideEntry overrides = 3;
+}
+
+message SetConfigOverrideRequest {
+  required string key = 1;                  // Config key to override
+  required string value = 2;               // Override value
+  optional string updated_by = 3;          // Who set this override (default: "admin")
+  required NonceCredential credential = 4; // Authentication credential
+}
+
+message SetConfigOverrideResponse {
+  required bool success = 1;
+  optional string error_message = 2;
+}
+
+message DeleteConfigOverrideRequest {
+  required string key = 1;                  // Config key to delete
+  required NonceCredential credential = 2;  // Authentication credential
+}
+
+message DeleteConfigOverrideResponse {
+  required bool success = 1;
+  optional string error_message = 2;
+  required bool deleted = 3;               // Whether a row was actually deleted
+}

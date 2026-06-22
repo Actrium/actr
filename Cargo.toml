@@ -75,6 +75,8 @@ members = [
     # === Testing Utilities ===
     "testing/mock-actrix",
     "testing/error-fixture",
+    # === actrix server (imported) ===
+    "actrix/crates/*",
 ]
 
 # === Excluded from Cargo workspace ===
@@ -93,6 +95,8 @@ exclude = [
     "tools/protoc-gen/python",
     "tools/protoc-gen/swift",
     "tools/protoc-gen/kotlin",
+    # actrix/deploy is an independent sub-workspace (own [workspace])
+    "actrix/deploy",
 ]
 
 [workspace.package]
@@ -158,6 +162,28 @@ tracing-opentelemetry = "0.31"
 
 # === WebRTC (WebRTC) ===
 webrtc = "0.14"
+
+# === actrix server deps (imported) ===
+turn_crate = { package = "turn", version = "0.11.0" }
+webrtc-util = "0.12.0"
+tonic = { version = "0.14", features = ["tls-ring"] }
+tonic-prost = "0.14"
+tonic-prost-build = "0.14"
+axum = { version = "0.8.7", features = ["json", "macros"] }
+rustls = { version = "0.23" }
+rustls-pki-types = "1.0.0"
+tokio-rustls = { version = "0.26.2", features = ["logging"] }
+rustls-pemfile = "2.0.0"
+nonce-auth = { version = "0.6.3" }
+ecies = { version = "0.2", features = ["std"] }
+reqwest = { version = "0.12.24", features = ["json"] }
+serial_test = "3.0"
+hex = "0.4.3"
+hmac = "0.12"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls",
+    "sqlite",
+] }
 
 # === Cryptography ===
 ed25519-dalek = { version = "2", features = ["rand_core"] }

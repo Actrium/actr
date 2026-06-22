@@ -1,0 +1,18 @@
+[package]
+name = "actrix-sdk"
+version = "0.1.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Unified public SDK facade for Actrix control-plane APIs"
+
+[features]
+default = []
+testing = []
+
+[dependencies]
+admin = { path = "../control", package = "actrix-admin" }
+
+[lints]
+workspace = true

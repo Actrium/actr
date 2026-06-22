@@ -1,0 +1,7 @@
+disallowed-macros = [
+  { path = "tracing::trace", reason = "Use recording macros from platform::recording instead." },
+  { path = "tracing::debug", reason = "Use recording macros from platform::recording instead." },
+  { path = "tracing::info", reason = "Use recording macros from platform::recording instead." },
+  { path = "tracing::warn", reason = "Use recording macros from platform::recording instead." },
+  { path = "tracing::error", reason = "Use recording macros from platform::recording instead." },
+]

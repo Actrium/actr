@@ -1,0 +1,38 @@
+[package]
+name = "actrix-admin"
+version = "0.1.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Admin control-plane implementation for actrix nodes"
+
+[dependencies]
+tonic = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+
+hex = { workspace = true }
+sha2 = { workspace = true }
+nonce-auth = { workspace = true }
+pwrzv = { version = "0.7.0" }
+
+sqlx = { workspace = true }
+
+platform = { path = "../platform", package = "actrix-platform" }
+actrix-proto = { path = "../contracts" }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["signal"] }
+
+[lib]
+name = "admin"
+
+[lints]
+workspace = true

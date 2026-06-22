@@ -1,0 +1,25 @@
+[package]
+name = "actrix-stun"
+version = "0.1.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "WebRTC STUN服务实现，作为aux-servers的组件"
+
+[dependencies]
+webrtc-stun = { version = "0.8.0", package = "stun" }
+
+tokio = { workspace = true, features = ["net", "signal"] }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+webrtc = { workspace = true }
+
+platform = { path = "../platform", package = "actrix-platform" }
+
+[lib]
+name = "stun"
+
+[lints]
+workspace = true
