@@ -1,11 +1,10 @@
 [package]
 name = "signaling"
-version.workspace = true
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
 description = "WebRTC信令服务实现，作为aux-servers的组件"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -31,7 +30,7 @@ uuid = { workspace = true, features = ["v4"] }
 axum = { workspace = true, features = ["ws"] }
 
 # Actrix Protocol
-actr-protocol = { workspace = true }
+actr-protocol = { version = "0.3.12" }
 # Protobuf
 prost = { workspace = true }
 prost-types = { workspace = true }
@@ -47,12 +46,12 @@ sqlx = { workspace = true }
 governor = "0.10"
 
 # OpenTelemetry (W3C trace context inject/extract)
-opentelemetry = { workspace = true, optional = true }
-tracing-opentelemetry = { workspace = true, optional = true }
+opentelemetry = { version = "0.31.0", features = ["trace"], optional = true }
+tracing-opentelemetry = { version = "0.32.0", optional = true }
 
 [dev-dependencies]
 uuid = { workspace = true, features = ["v4"] }
 tracing-subscriber = { workspace = true }
 tokio-tungstenite = { workspace = true }
-toml = { workspace = true }
+toml = { version = "0.8" }
 serial_test = "3.2"

@@ -1,9 +1,8 @@
 [package]
 name = "turn"
-version.workspace = true
+version = "0.1.2"
 edition.workspace = true
 repository.workspace = true
-keywords.workspace = true
 description = "WebRTC TURN服务实现，作为aux-servers的组件"
 license.workspace = true
 rust-version.workspace = true
@@ -31,7 +30,7 @@ base64 = { workspace = true }
 lru = "0.12"
 
 platform = { path = "../platform" }
-actr-protocol = { workspace = true }
+actr-protocol = { version = "0.3.12" }
 prost = { workspace = true }
 prost-types = { workspace = true }
 nonce-auth = { workspace = true }

@@ -1,9 +1,8 @@
 [package]
 name = "signer"
-version.workspace = true
+version = "0.1.2"
 edition.workspace = true
 repository.workspace = true
-keywords.workspace = true
 description = "Signer - Ed25519 签名密钥生成和管理服务，私钥永不离开 Signer"
 license.workspace = true
 rust-version.workspace = true
@@ -71,5 +70,5 @@ lazy_static = "1.4"
 tower = "0.5"
 hyper = "1.0"
 tempfile = { workspace = true }
-toml = { workspace = true }
+toml = { version = "0.8" }
 ed25519-dalek = { workspace = true }

@@ -1,11 +1,10 @@
 [package]
 name = "stun"
-version.workspace = true
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
 description = "WebRTC STUN服务实现，作为aux-servers的组件"
 
 [dependencies]

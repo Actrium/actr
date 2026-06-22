@@ -1,11 +1,10 @@
 [package]
 name = "actrix-sdk"
-version.workspace = true
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
 description = "Unified public SDK facade for Actrix control-plane APIs"
 
 [features]

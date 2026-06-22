@@ -1,11 +1,10 @@
 [package]
 name = "admin"
-version.workspace = true
+version = "0.1.2"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
 description = "Admin control-plane implementation for actrix nodes"
 
 [dependencies]
@@ -22,7 +21,7 @@ chrono = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
 nonce-auth = { workspace = true }
-pwrzv = { workspace = true }
+pwrzv = { version = "0.7.0" }
 
 sqlx = { workspace = true }
 
