@@ -1,6 +1,7 @@
 [package]
 name = "actrix-signer"
-version = "0.1.2"
+version.workspace = true
+publish = false
 edition.workspace = true
 repository.workspace = true
 description = "Signer - Ed25519 签名密钥生成和管理服务，私钥永不离开 Signer"

@@ -1,6 +1,7 @@
 [package]
 name = "actrix-turn"
-version = "0.1.2"
+version.workspace = true
+publish = false
 edition.workspace = true
 repository.workspace = true
 description = "WebRTC TURN服务实现，作为aux-servers的组件"
