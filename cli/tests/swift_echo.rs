@@ -239,4 +239,21 @@ fn swift_echo_full_workflow_init_install_gen() {
             .exists(),
         "ActrService.swift should remain in the app root"
     );
+
+    // `actr gen -l swift` also emits a `<Service>LifecycleAdapter.swift`
+    // scaffold implementing the Workload protocol, alongside ActrService.swift.
+    let app_dir = project_dir.join(project_name);
+    let has_lifecycle_adapter = std::fs::read_dir(&app_dir)
+        .expect("read app dir")
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .ends_with("LifecycleAdapter.swift")
+        });
+    assert!(
+        has_lifecycle_adapter,
+        "actr gen should produce a *LifecycleAdapter.swift scaffold in the app root"
+    );
 }
