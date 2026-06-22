@@ -24,8 +24,8 @@ import {
   StartDuplexStreamResponseSchema,
   StreamPayloadMode,
 } from './generated/duplex_echo_pb.js';
-import type { DuplexEchoServiceHandler } from './generated/duplex_echo_workload.js';
-import { DuplexEchoServiceDispatcher } from './generated/duplex_echo_workload.js';
+import type { DuplexEchoServiceHandler } from './generated/local_workload.js';
+import { DuplexEchoServiceDispatcher } from './generated/local_workload.js';
 
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
