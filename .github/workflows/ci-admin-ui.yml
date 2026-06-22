@@ -36,7 +36,9 @@ jobs:
           node-version: "24"
 
       - name: Setup pnpm
-        run: corepack prepare pnpm@9.15.9 --activate
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
