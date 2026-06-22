@@ -575,22 +575,6 @@ render_swift_ts_workload_app_config() {
     success "SwiftTsWorkloadApp actr.toml rendered"
 }
 
-write_swift_ts_workload_app_manifest() {
-    cat >"$TMP_APP_DIR/manifest.toml" <<EOF
-edition = 1
-exports = ["protos/local/probe.proto"]
-
-[package]
-name = "SwiftTsWorkloadApp"
-manufacturer = "${MANUFACTURER}"
-version = "0.1.0"
-description = "Actrium SwiftTsWorkloadApp iOS linked runtime"
-
-[dependencies]
-duplex_stream = { actr_type = "${MANUFACTURER}:DuplexEchoService:1.0.0" }
-EOF
-}
-
 write_swift_ts_workload_app_project_yml() {
     cat >"$TMP_APP_DIR/project.yml" <<EOF
 name: SwiftTsWorkloadApp
@@ -671,7 +655,7 @@ scaffold_swift_ts_workload_app() {
     cp -R "$SCRIPT_DIR/SwiftTsWorkloadApp" "$TMP_APP_DIR/SwiftTsWorkloadApp"
     rm -rf "$TMP_APP_DIR/SwiftTsWorkloadApp/Generated"
 
-    write_swift_ts_workload_app_manifest
+    cp "$SCRIPT_DIR/manifest.toml" "$TMP_APP_DIR/manifest.toml"
     write_swift_ts_workload_app_project_yml
     rm -f "$TMP_APP_DIR/protos/local/local.proto"
     write_probe_proto "$TMP_APP_DIR/protos/local/probe.proto"
@@ -958,11 +942,11 @@ wait_for_swift_ts_workload_result() {
             local result
             result="$(grep_app_logs "ACTR_E2E_RESULT:" | tail -1)"
             echo "swift-ts-workload echo result: $result"
-            if echo "$result" | grep -qE "ACTR_E2E_RESULT:3/3"; then
-                success "All 3 swift-ts-workload echo messages passed"
+            if echo "$result" | grep -qE "ACTR_E2E_RESULT:call=ok stream=3/3"; then
+                success "call ok and all 3 stream echo messages passed"
                 return 0
             fi
-            warn "swift-ts-workload echo incomplete: got $result, expected ACTR_E2E_RESULT:3/3"
+            warn "Incomplete: got $result, expected ACTR_E2E_RESULT:call=ok stream=3/3"
             return 1
         fi
 

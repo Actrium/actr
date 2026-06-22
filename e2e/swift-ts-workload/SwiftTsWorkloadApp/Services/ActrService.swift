@@ -374,7 +374,7 @@ private final class ProbeHandlerImpl: ProbeServiceHandler, @unchecked Sendable {
                 svc?.receivedEchoLines = result.receivedLines
             }
 
-            let expectedLines = (1...count).map { "received: echo: hello \($0)" }
+            let expectedLines = (1...count).map { "received: echo:hello \($0)" }
             let passCount = zip(result.receivedLines, expectedLines).filter { $0.0 == $0.1 }.count
             let streamOk = result.succeeded && passCount == count && result.receivedLines == expectedLines
             await MainActor.run {

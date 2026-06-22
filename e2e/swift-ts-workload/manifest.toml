@@ -1,4 +1,5 @@
 edition = 1
+exports = ["protos/local/probe.proto"]
 
 [package]
 name = "SwiftTsWorkloadApp"
