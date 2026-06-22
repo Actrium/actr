@@ -20,7 +20,7 @@ axum = { workspace = true }
 uuid = { workspace = true }
 
 ## Actr framework dependencies
-actr-protocol = { version = "0.3.12" }
+actr-protocol = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 

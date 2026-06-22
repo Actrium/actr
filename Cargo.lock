@@ -7,10 +7,10 @@ name = "actr"
 version = "0.4.0"
 dependencies = [
  "actr-config",
- "actr-framework 0.4.0",
+ "actr-framework",
  "actr-hyper",
- "actr-protocol 0.4.0",
- "actr-runtime 0.4.0",
+ "actr-protocol",
+ "actr-runtime",
  "async-trait",
 ]
 
@@ -26,8 +26,8 @@ dependencies = [
  "actr-mock-actrix",
  "actr-pack",
  "actr-platform-native",
- "actr-protocol 0.4.0",
- "actr-runtime-mailbox 0.4.0",
+ "actr-protocol",
+ "actr-runtime-mailbox",
  "actr-service-compat",
  "anyhow",
  "async-trait",
@@ -83,7 +83,7 @@ dependencies = [
 name = "actr-config"
 version = "0.4.0"
 dependencies = [
- "actr-protocol 0.4.0",
+ "actr-protocol",
  "chrono",
  "dirs",
  "serde",
@@ -99,10 +99,10 @@ name = "actr-error-fixture"
 version = "0.1.0"
 dependencies = [
  "actr-config",
- "actr-framework 0.4.0",
+ "actr-framework",
  "actr-hyper",
  "actr-mock-actrix",
- "actr-protocol 0.4.0",
+ "actr-protocol",
  "anyhow",
  "async-trait",
  "base64",
@@ -117,26 +117,9 @@ dependencies = [
 
 [[package]]
 name = "actr-framework"
-version = "0.3.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27a42178eb02840cb76d0a7164a9a7627213b37f350c01c6816c6e251b768bff"
-dependencies = [
- "actr-protocol 0.3.12",
- "anyhow",
- "async-trait",
- "bytes",
- "futures-util",
- "prost 0.14.3",
- "tracing",
- "uuid",
- "wit-bindgen 0.57.1",
-]
-
-[[package]]
-name = "actr-framework"
 version = "0.4.0"
 dependencies = [
- "actr-protocol 0.4.0",
+ "actr-protocol",
  "actr-web-abi",
  "anyhow",
  "async-trait",
@@ -161,8 +144,8 @@ dependencies = [
 name = "actr-framework-protoc-codegen"
 version = "0.4.0"
 dependencies = [
- "actr-framework 0.4.0",
- "actr-protocol 0.4.0",
+ "actr-framework",
+ "actr-protocol",
  "anyhow",
  "async-trait",
  "bytes",
@@ -181,14 +164,14 @@ name = "actr-hyper"
 version = "0.4.0"
 dependencies = [
  "actr-config",
- "actr-framework 0.4.0",
+ "actr-framework",
  "actr-hyper",
  "actr-mock-actrix",
  "actr-pack",
  "actr-platform-traits",
- "actr-protocol 0.4.0",
- "actr-runtime 0.4.0",
- "actr-runtime-mailbox 0.4.0",
+ "actr-protocol",
+ "actr-runtime",
+ "actr-runtime-mailbox",
  "actr-service-compat",
  "anyhow",
  "async-trait",
@@ -244,7 +227,7 @@ dependencies = [
 name = "actr-mock-actrix"
 version = "0.4.0"
 dependencies = [
- "actr-protocol 0.4.0",
+ "actr-protocol",
  "anyhow",
  "axum",
  "base64",
@@ -312,27 +295,6 @@ dependencies = [
 
 [[package]]
 name = "actr-protocol"
-version = "0.3.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5be2fa416cf142c34592dd2d69526563dea7c44370a965d92f3bd7be6fc449e"
-dependencies = [
- "anyhow",
- "base64",
- "bytes",
- "chrono",
- "glob",
- "prost 0.14.3",
- "prost-build",
- "prost-types",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "uniffi 0.30.0",
- "uuid",
-]
-
-[[package]]
-name = "actr-protocol"
 version = "0.4.0"
 dependencies = [
  "anyhow",
@@ -352,24 +314,10 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime"
-version = "0.3.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51f84a445e4b2fce9c04f77eb5d01d473e2461963bbc28cb3101f08b7c0ff232"
-dependencies = [
- "actr-framework 0.3.12",
- "actr-protocol 0.3.12",
- "async-trait",
- "bytes",
- "futures-util",
- "tracing",
-]
-
-[[package]]
-name = "actr-runtime"
 version = "0.4.0"
 dependencies = [
- "actr-framework 0.4.0",
- "actr-protocol 0.4.0",
+ "actr-framework",
+ "actr-protocol",
  "async-trait",
  "bytes",
  "futures-util",
@@ -378,28 +326,9 @@ dependencies = [
 
 [[package]]
 name = "actr-runtime-mailbox"
-version = "0.3.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d2873e51a019327c9738a34a1b296aab87e777c55db4ec523133739978d558e"
-dependencies = [
- "actr-protocol 0.3.12",
- "anyhow",
- "async-trait",
- "chrono",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "actr-runtime-mailbox"
 version = "0.4.0"
 dependencies = [
- "actr-protocol 0.4.0",
+ "actr-protocol",
  "anyhow",
  "async-trait",
  "chrono",
@@ -418,7 +347,7 @@ dependencies = [
 name = "actr-service-compat"
 version = "0.4.0"
 dependencies = [
- "actr-protocol 0.4.0",
+ "actr-protocol",
  "anyhow",
  "chrono",
  "proto-fingerprint",
@@ -475,9 +404,9 @@ dependencies = [
 name = "actrix"
 version = "0.1.2"
 dependencies = [
- "actr-protocol 0.3.12",
- "actr-runtime 0.3.12",
- "actr-runtime-mailbox 0.3.12",
+ "actr-protocol",
+ "actr-runtime",
+ "actr-runtime-mailbox",
  "actrix-ais",
  "actrix-mfr",
  "actrix-platform",
@@ -572,7 +501,7 @@ dependencies = [
 name = "actrix-ais"
 version = "0.1.2"
 dependencies = [
- "actr-protocol 0.3.12",
+ "actr-protocol",
  "actrix-mfr",
  "actrix-platform",
  "actrix-signer",
@@ -633,7 +562,7 @@ dependencies = [
 name = "actrix-platform"
 version = "0.1.2"
 dependencies = [
- "actr-protocol 0.3.12",
+ "actr-protocol",
  "actrix-proto",
  "actrix-signer",
  "anyhow",
@@ -699,7 +628,7 @@ dependencies = [
 name = "actrix-signaling"
 version = "0.1.2"
 dependencies = [
- "actr-protocol 0.3.12",
+ "actr-protocol",
  "actrix-platform",
  "anyhow",
  "axum",
@@ -780,7 +709,7 @@ dependencies = [
 name = "actrix-turn"
 version = "0.1.2"
 dependencies = [
- "actr-protocol 0.3.12",
+ "actr-protocol",
  "actrix-platform",
  "anyhow",
  "base64",
@@ -3546,12 +3475,12 @@ name = "libactr"
 version = "0.3.0"
 dependencies = [
  "actr-config",
- "actr-framework 0.4.0",
+ "actr-framework",
  "actr-hyper",
  "actr-mock-actrix",
  "actr-pack",
- "actr-protocol 0.4.0",
- "actr-runtime 0.4.0",
+ "actr-protocol",
+ "actr-runtime",
  "android_logger",
  "async-trait",
  "audiopus_sys",

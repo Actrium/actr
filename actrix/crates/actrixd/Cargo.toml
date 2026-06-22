@@ -106,9 +106,9 @@ reqwest = { workspace = true, features = ["json"] }
 urlencoding = "2.1"
 base64 = { workspace = true }
 libc = "0.2"
-actr-protocol = { version = "0.3.12" }
-actr-runtime = { version = "0.3.12" }
-actr-runtime-mailbox = { version = "0.3.12" }
+actr-protocol = { workspace = true }
+actr-runtime = { workspace = true }
+actr-runtime-mailbox = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
 serial_test = "3.3"
