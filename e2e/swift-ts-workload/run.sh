@@ -17,7 +17,6 @@ ACTRIX_BIN="${ACTRIX_BIN:-}"
 ACTR_CLI_MANIFEST="$REPO_ROOT/cli/Cargo.toml"
 E2E_TARGET_ROOT="$REPO_ROOT/target/e2e-cache/swift-ts-workload"
 ACTR_TARGET_DIR="$E2E_TARGET_ROOT/actr-cli"
-TEMP_SERVICE_TARGET_DIR="$E2E_TARGET_ROOT/temp-service"
 
 for cmd in cargo curl jq sqlite3 python3 perl rustc lsof; do
     require_cmd "$cmd"
@@ -958,12 +957,12 @@ wait_for_swift_ts_workload_result() {
         if grep_app_logs -q "ACTR_E2E_RESULT:"; then
             local result
             result="$(grep_app_logs "ACTR_E2E_RESULT:" | tail -1)"
-            echo "Datastream result: $result"
+            echo "swift-ts-workload echo result: $result"
             if echo "$result" | grep -qE "ACTR_E2E_RESULT:3/3"; then
                 success "All 3 swift-ts-workload echo messages passed"
                 return 0
             fi
-            warn "Datastream echo incomplete: got $result, expected ACTR_E2E_RESULT:3/3"
+            warn "swift-ts-workload echo incomplete: got $result, expected ACTR_E2E_RESULT:3/3"
             return 1
         fi
 
