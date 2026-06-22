@@ -40,3 +40,6 @@ hex = { workspace = true }
 tokio = { workspace = true, features = ["macros", "test-util"] }
 serial_test = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+
+[lib]
+name = "turn"

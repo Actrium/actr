@@ -72,3 +72,6 @@ hyper = "1.0"
 tempfile = { workspace = true }
 toml = { version = "0.8" }
 ed25519-dalek = { workspace = true }
+
+[lib]
+name = "signer"

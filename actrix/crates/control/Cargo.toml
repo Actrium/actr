@@ -30,3 +30,6 @@ actrix-proto = { path = "../contracts" }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", features = ["signal"] }
+
+[lib]
+name = "admin"

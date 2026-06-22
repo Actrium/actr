@@ -17,3 +17,6 @@ thiserror = { workspace = true }
 webrtc = { workspace = true }
 
 platform = { path = "../platform", package = "actrix-platform" }
+
+[lib]
+name = "stun"

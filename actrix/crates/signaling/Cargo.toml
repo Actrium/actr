@@ -55,3 +55,6 @@ tracing-subscriber = { workspace = true }
 tokio-tungstenite = { workspace = true }
 toml = { version = "0.8" }
 serial_test = "3.2"
+
+[lib]
+name = "signaling"
