@@ -1,0 +1,46 @@
+name: CI (actrix Admin UI)
+
+# The actrix Admin UI is a Vite/TypeScript frontend embedded into the actrixd
+# binary. It is decoupled from the Rust build (the Rust workspace builds without
+# a JS toolchain), so it gets its own job that only runs when the UI changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "actrix/crates/actrixd/admin/web/**"
+      - ".github/workflows/ci-admin-ui.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "actrix/crates/actrixd/admin/web/**"
+      - ".github/workflows/ci-admin-ui.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: actrix/crates/actrixd/admin/web
+
+jobs:
+  build:
+    name: Type-check & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup pnpm
+        run: corepack prepare pnpm@9.15.9 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `build` runs `tsc -b && vite build`, i.e. TypeScript type-check + bundle.
+      - name: Type-check and build
+        run: pnpm run build
