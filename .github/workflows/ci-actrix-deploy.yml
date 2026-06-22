@@ -1,0 +1,53 @@
+name: CI (actrix deploy)
+
+# actrix/deploy is a self-contained bootstrap CLI kept in its own sub-workspace
+# (excluded from the actr root workspace, no actr/actrix dependencies), so it
+# gets its own job that only runs when deploy changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "actrix/deploy/**"
+      - ".github/workflows/ci-actrix-deploy.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "actrix/deploy/**"
+      - ".github/workflows/ci-actrix-deploy.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: actrix/deploy
+
+jobs:
+  check:
+    name: fmt / clippy / build / test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: actrix/deploy
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build
+        run: cargo build --all-features
+
+      - name: Test
+        run: cargo test --all-features
