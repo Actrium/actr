@@ -1,0 +1,84 @@
+name: Release actrix binaries
+
+# actrix is a server application shipped as a binary (not crates.io libraries).
+# When a release is published (by the release-train, which tags v* and creates
+# the GitHub Release), build the actrix binary for each platform and attach it
+# to that same release. Triggering on `release: published` means the release
+# already exists, so there is no race with the train and no clobbering of the
+# release notes.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to (re)build and upload binaries for
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { os: ubuntu-latest, asset: actrix-linux-x86_64 }
+          - { os: macos-14, asset: actrix-macos-arm64 }
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      # Build the Admin UI so the release binary embeds the real dist
+      # (rust-embed). build.rs would also try this, but doing it explicitly
+      # keeps the release reproducible (frozen lockfile).
+      - name: Build Admin UI
+        working-directory: actrix/crates/actrixd/admin/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Build actrix (release)
+        run: cargo build --release -p actrix
+
+      - name: Stage binary
+        run: |
+          mkdir -p dist
+          cp target/release/actrix "dist/${{ matrix.target.asset }}"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "dist/${{ matrix.target.asset }}" --clobber
