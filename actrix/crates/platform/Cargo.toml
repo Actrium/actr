@@ -61,3 +61,6 @@ proc-macro2 = "1.0"
 
 [lib]
 name = "platform"
+
+[lints]
+workspace = true

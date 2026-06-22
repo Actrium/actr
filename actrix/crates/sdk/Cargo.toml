@@ -13,3 +13,6 @@ testing = []
 
 [dependencies]
 admin = { path = "../control", package = "actrix-admin" }
+
+[lints]
+workspace = true

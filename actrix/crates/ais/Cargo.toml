@@ -60,3 +60,6 @@ prost = { workspace = true }
 
 [lib]
 name = "ais"
+
+[lints]
+workspace = true

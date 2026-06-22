@@ -75,3 +75,6 @@ ed25519-dalek = { workspace = true }
 
 [lib]
 name = "signer"
+
+[lints]
+workspace = true

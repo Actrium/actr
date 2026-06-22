@@ -58,3 +58,6 @@ serial_test = "3.2"
 
 [lib]
 name = "signaling"
+
+[lints]
+workspace = true

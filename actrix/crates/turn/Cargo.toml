@@ -43,3 +43,6 @@ uuid = { workspace = true, features = ["v4"] }
 
 [lib]
 name = "turn"
+
+[lints]
+workspace = true

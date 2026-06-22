@@ -34,3 +34,6 @@ platform = { path = "../platform", package = "actrix-platform" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
 serial_test = { workspace = true }
+
+[lints]
+workspace = true

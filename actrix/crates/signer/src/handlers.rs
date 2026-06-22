@@ -97,8 +97,8 @@ impl SignerState {
     async fn maybe_cleanup_expired_keys(&self) {
         let count = self.request_counter.fetch_add(1, Ordering::Relaxed);
 
-        // 每 N 次请求检查一次
-        if count % CLEANUP_CHECK_INTERVAL != 0 {
+        // Only run the cleanup check once every N requests
+        if !count.is_multiple_of(CLEANUP_CHECK_INTERVAL) {
             return;
         }
 

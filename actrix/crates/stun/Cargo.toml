@@ -20,3 +20,6 @@ platform = { path = "../platform", package = "actrix-platform" }
 
 [lib]
 name = "stun"
+
+[lints]
+workspace = true
