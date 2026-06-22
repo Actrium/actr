@@ -78,7 +78,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-wasip2
+          targets: wasm32-wasip2,wasm32-unknown-unknown
       - name: Install Linux e2e dependencies
         run: |
           sudo apt-get update
@@ -87,6 +87,8 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
       - uses: Swatinem/rust-cache@v2
         with:
           # Distinct from package-runtime-echo's cache: the polyglot scenario
@@ -101,6 +103,8 @@ jobs:
             target/e2e-cache/polyglot-echo/linked-rust
             target/e2e-cache/polyglot-echo/wasm-rust
             target/e2e-cache/polyglot-echo/stream-server
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
