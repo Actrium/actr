@@ -421,14 +421,21 @@ async fn test_call_returns_promptly_after_connection_closed_cleanup() {
             let elapsed = start.elapsed();
             let msg = e.to_string();
             // Error is expected — cleanup severed the response channel.
+            // Depending on timing, cleanup may surface as a connection-style
+            // error or as NoRoute once all candidates are exhausted.
+            let cleanup_error = matches!(
+                &e,
+                ActrError::NotFound(msg) if msg.contains("all transport candidates exhausted")
+            ) || msg.contains("Connection")
+                || msg.contains("connection")
+                || msg.contains("DataChannel closed")
+                || msg.contains("Data channel")
+                || msg.contains("Unavailable")
+                || msg.contains("recovering");
+
             assert!(
-                msg.contains("Connection")
-                    || msg.contains("connection")
-                    || msg.contains("DataChannel closed")
-                    || msg.contains("Data channel")
-                    || msg.contains("Unavailable")
-                    || msg.contains("recovering"),
-                "expected connection error, got: {}",
+                cleanup_error,
+                "expected prompt cleanup/connection error, got: {}",
                 msg
             );
             assert!(
