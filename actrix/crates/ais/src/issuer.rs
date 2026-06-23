@@ -721,25 +721,60 @@ impl AIdIssuer {
         let type_str = actr_type.to_string_repr();
         let mfr_name = &actr_type.manufacturer;
 
-        // Path 1: check mfr_package table (with target + manifest hash defense-in-depth)
+        // Package registration must be bound to the exact manifest bytes the
+        // runner saw locally.  Without manifest_raw, AIS can only prove that
+        // "some active package has this type_str"; without target, a multi-target
+        // package lookup degrades to type-only matching.  Treat both as malformed
+        // package-auth requests instead of falling back to a broad registry lookup.
         let pool = platform::storage::db::get_database().get_pool().clone();
-        let target_ref = request.target.as_deref();
+        let target_ref = request
+            .target
+            .as_deref()
+            .filter(|target| !target.is_empty())
+            .ok_or_else(|| {
+                platform::recording::warn!(
+                    "MFR verification failed: package registration requires target; type_str={}",
+                    type_str
+                );
+                AidError::InvalidFormat
+            })?;
+        let request_manifest = request
+            .manifest_raw
+            .as_ref()
+            .filter(|manifest| !manifest.is_empty())
+            .ok_or_else(|| {
+                platform::recording::warn!(
+                    "MFR verification failed: package registration requires manifest_raw; type_str={}, target={}",
+                    type_str,
+                    target_ref
+                );
+                AidError::InvalidFormat
+            })?;
 
-        // If the request carries manifest bytes, compute SHA-256 for defense-in-depth comparison
-        let manifest_hash = request.manifest_raw.as_ref().map(|m| {
+        let published_pkg =
+            actrix_mfr::model::ActrPackage::get_by_type_and_target(&pool, &type_str, target_ref)
+                .await
+                .map_err(|e| AidError::GenerationFailed(format!("MFR lookup failed: {e}")))?;
+
+        if let Some(pkg) = published_pkg {
             use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(m.as_ref());
-            hasher.finalize().to_vec()
-        });
-        let hash_ref = manifest_hash.as_deref();
 
-        let found = actrix_mfr::manager::lookup_package(&pool, &type_str, target_ref, hash_ref)
-            .await
-            .map_err(|e| AidError::GenerationFailed(format!("MFR lookup failed: {e}")))?;
+            let request_manifest_hash = Sha256::digest(request_manifest.as_ref());
+            let stored_manifest_hash = Sha256::digest(pkg.manifest.as_bytes());
+            if request_manifest_hash[..] != stored_manifest_hash[..] {
+                platform::recording::warn!(
+                    "MFR table lookup rejected: manifest hash mismatch, type_str={}, target={}",
+                    type_str,
+                    target_ref
+                );
+                return Err(AidError::ManufacturerNotVerified);
+            }
 
-        if found {
-            platform::recording::debug!("MFR table lookup passed, type_str={}", type_str);
+            platform::recording::debug!(
+                "MFR table lookup passed, type_str={}, target={}",
+                type_str,
+                target_ref
+            );
             return Ok(());
         }
 

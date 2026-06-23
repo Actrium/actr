@@ -233,15 +233,37 @@ async fn seed_realm(realm_id: u32, name: &str, secret: Option<&str>) {
     .expect("seed realm");
 }
 
-async fn seed_active_package(manufacturer: &str, name: &str, version: &str, target: &str) {
+fn test_registry_manifest(manufacturer: &str, name: &str, version: &str, target: &str) -> Vec<u8> {
+    format!(
+        r#"manufacturer = "{manufacturer}"
+name = "{name}"
+version = "{version}"
+
+[binary]
+path = "bin/actor.wasm"
+target = "{target}"
+hash = "0000000000000000000000000000000000000000000000000000000000000000"
+"#,
+    )
+    .into_bytes()
+}
+
+async fn seed_active_package(
+    manufacturer: &str,
+    name: &str,
+    version: &str,
+    target: &str,
+) -> Vec<u8> {
     let pool = platform::storage::db::get_database().get_pool();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
+    let manifest = test_registry_manifest(manufacturer, name, version, target);
+    let manifest_str = std::str::from_utf8(&manifest).expect("test manifest is UTF-8");
 
     sqlx::query(
-        "INSERT OR REPLACE INTO mfr (name, public_key, status, created_at)
+        "INSERT OR IGNORE INTO mfr (name, public_key, status, created_at)
          VALUES (?, '', 'active', ?)",
     )
     .bind(manufacturer)
@@ -259,7 +281,7 @@ async fn seed_active_package(manufacturer: &str, name: &str, version: &str, targ
     sqlx::query(
         "INSERT OR REPLACE INTO mfr_package
          (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at)
-         VALUES (?, ?, ?, ?, ?, ?, '', '', 'active', ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, '', 'active', ?)",
     )
     .bind(mfr_id)
     .bind(manufacturer)
@@ -267,10 +289,13 @@ async fn seed_active_package(manufacturer: &str, name: &str, version: &str, targ
     .bind(version)
     .bind(format!("{manufacturer}:{name}:{version}"))
     .bind(target)
+    .bind(manifest_str)
     .bind(now)
     .execute(pool)
     .await
     .expect("seed mfr package");
+
+    manifest
 }
 
 async fn post_register(
@@ -335,7 +360,8 @@ async fn test_register_route_package_with_mfr_identity_succeeds() {
     let env = setup_test_environment().await;
     let realm_id = 22002;
     seed_realm(realm_id, "package-http-route", None).await;
-    seed_active_package("httppkg", "PackagedService", "1.0.0", "wasm32-wasip1").await;
+    let manifest_raw =
+        seed_active_package("httppkg", "PackagedService", "1.0.0", "wasm32-wasip1").await;
     let app = create_test_router(&env).await;
 
     let request = RegisterRequest {
@@ -349,7 +375,7 @@ async fn test_register_route_package_with_mfr_identity_succeeds() {
         acl: None,
         service: None,
         ws_address: None,
-        manifest_raw: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_raw)),
         mfr_signature: None,
         psk_token: None,
         target: Some("wasm32-wasip1".to_string()),
@@ -377,7 +403,8 @@ async fn test_register_route_unspecified_auth_mode_uses_package_identity() {
     let env = setup_test_environment().await;
     let realm_id = 22004;
     seed_realm(realm_id, "unspecified-http-route", None).await;
-    seed_active_package("legacyhttp", "LegacyService", "1.0.0", "wasm32-wasip1").await;
+    let manifest_raw =
+        seed_active_package("legacyhttp", "LegacyService", "1.0.0", "wasm32-wasip1").await;
     let app = create_test_router(&env).await;
 
     let request = RegisterRequest {
@@ -391,7 +418,7 @@ async fn test_register_route_unspecified_auth_mode_uses_package_identity() {
         acl: None,
         service: None,
         ws_address: None,
-        manifest_raw: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_raw)),
         mfr_signature: None,
         psk_token: None,
         target: Some("wasm32-wasip1".to_string()),
@@ -415,6 +442,180 @@ async fn test_register_route_unspecified_auth_mode_uses_package_identity() {
 
 #[tokio::test]
 #[serial]
+async fn test_register_route_published_package_without_manifest_raw_is_rejected() {
+    let env = setup_test_environment().await;
+    let realm_id = 22005;
+    seed_realm(realm_id, "published-package-missing-manifest", None).await;
+    seed_active_package(
+        "missingmanifest",
+        "PublishedService",
+        "1.0.0",
+        "wasm32-wasip1",
+    )
+    .await;
+    let app = create_test_router(&env).await;
+
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "missingmanifest".to_string(),
+            name: "PublishedService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: None,
+        mfr_signature: None,
+        psk_token: None,
+        target: Some("wasm32-wasip1".to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
+        runner_signature: None,
+        runner_signed_at: None,
+        runner_nonce: None,
+    };
+    let response = post_register(app, request, None).await;
+
+    match response.result.expect("result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 400);
+        }
+        register_response::Result::Success(_) => {
+            panic!("published package registration without manifest_raw should be rejected")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_register_route_published_package_without_target_is_rejected() {
+    let env = setup_test_environment().await;
+    let realm_id = 22006;
+    seed_realm(realm_id, "published-package-missing-target", None).await;
+    let manifest_raw = seed_active_package(
+        "missingtarget",
+        "PublishedService",
+        "1.0.0",
+        "wasm32-wasip1",
+    )
+    .await;
+    let app = create_test_router(&env).await;
+
+    let request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "missingtarget".to_string(),
+            name: "PublishedService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_raw)),
+        mfr_signature: None,
+        psk_token: None,
+        target: None,
+        auth_mode: Some(RegisterAuthMode::Package as i32),
+        runner_signature: None,
+        runner_signed_at: None,
+        runner_nonce: None,
+    };
+    let response = post_register(app, request, None).await;
+
+    match response.result.expect("result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 400);
+        }
+        register_response::Result::Success(_) => {
+            panic!("published package registration without target should be rejected")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_published_package_manifest_hash_mismatch_does_not_fall_back_to_path2() {
+    use ed25519_dalek::SigningKey;
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    seed_realm(22007, "published-package-manifest-mismatch", None).await;
+    let pool = platform::storage::db::get_database().get_pool();
+    let key = SigningKey::generate(&mut OsRng);
+    let (_mfr_id, _key_id) = seed_mfr_with_key(pool, "publishedmismatch", &key).await;
+    seed_active_package(
+        "publishedmismatch",
+        "MismatchService",
+        "1.0.0",
+        "wasm32-wasip1",
+    )
+    .await;
+
+    // This manifest is validly signed and would pass Path 2, but it is not the
+    // same manifest registered in mfr_package. A published package hash mismatch
+    // must be rejected immediately instead of falling through to Path 2.
+    let (manifest_bytes, sig_bytes) = build_signed_manifest(
+        &key,
+        "publishedmismatch",
+        "MismatchService",
+        "1.0.0",
+        "wasm32-wasip1",
+    );
+    let mut request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "publishedmismatch".to_string(),
+            name: "MismatchService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id: 22007 },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_bytes.clone())),
+        mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
+        psk_token: None,
+        target: Some("wasm32-wasip1".to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
+        runner_signature: None,
+        runner_signed_at: None,
+        runner_nonce: None,
+    };
+    sign_runner_request_at(
+        &mut request,
+        &key,
+        &manifest_bytes,
+        test_unix_now_secs(),
+        vec![0x55; 32],
+    );
+
+    let response = issuer.issue_credential(&request).await.expect("issue");
+    match response.result.expect("result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 403);
+            assert!(err.message.contains("manufacturer not verified"));
+        }
+        register_response::Result::Success(_) => {
+            panic!("published package manifest hash mismatch should not fall back to Path 2")
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
 async fn test_register_route_package_without_mfr_identity_is_still_rejected() {
     let env = setup_test_environment().await;
     let realm_id = 22003;
@@ -432,7 +633,12 @@ async fn test_register_route_package_without_mfr_identity_is_still_rejected() {
         acl: None,
         service: None,
         ws_address: None,
-        manifest_raw: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(test_registry_manifest(
+            "missing-http-mfr",
+            "PackagedService",
+            "1.0.0",
+            "wasm32-wasip1",
+        ))),
         mfr_signature: None,
         psk_token: None,
         target: Some("wasm32-wasip1".to_string()),
@@ -551,10 +757,15 @@ async fn test_package_registration_without_mfr_identity_is_still_rejected() {
         acl: None,
         service: None,
         ws_address: None,
-        manifest_raw: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(test_registry_manifest(
+            "missing-mfr-for-package-auth-test",
+            "package-workload",
+            "1.0.0",
+            "wasm32-wasip1",
+        ))),
         mfr_signature: None,
         psk_token: None,
-        target: None,
+        target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
         runner_signature: None,
         runner_signed_at: None,
@@ -598,41 +809,7 @@ async fn test_end_to_end_credential_flow() {
     .expect("Failed to create issuer");
 
     // Seed database with MFR and package data so verify_mfr_identity path-1 passes
-    {
-        let pool = platform::storage::db::get_database().get_pool();
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        sqlx::query(
-            "INSERT OR IGNORE INTO mfr (name, public_key, status, created_at) VALUES (?, '', 'active', ?)",
-        )
-        .bind("acme")
-        .bind(now)
-        .execute(pool)
-        .await
-        .expect("Failed to insert test MFR");
-
-        let mfr_id: i64 = sqlx::query_scalar("SELECT id FROM mfr WHERE name = ?")
-            .bind("acme")
-            .fetch_one(pool)
-            .await
-            .expect("Failed to get MFR id");
-
-        sqlx::query(
-            "INSERT OR IGNORE INTO mfr_package (mfr_id, manufacturer, name, version, type_str, target, manifest, signature, status, published_at) VALUES (?, ?, ?, ?, ?, ?, '', '', 'active', ?)",
-        )
-        .bind(mfr_id)
-        .bind("acme")
-        .bind("test-device")
-        .bind("1.0.0")
-        .bind("acme:test-device:1.0.0")
-        .bind("wasm32-wasip1")
-        .bind(now)
-        .execute(pool)
-        .await
-        .expect("Failed to insert test package");
-    }
+    let manifest_raw = seed_active_package("acme", "test-device", "1.0.0", "wasm32-wasip1").await;
 
     let request = RegisterRequest {
         actr_type: ActrType {
@@ -645,10 +822,10 @@ async fn test_end_to_end_credential_flow() {
         acl: None,
         service: None,
         ws_address: None,
-        manifest_raw: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_raw.clone())),
         mfr_signature: None,
         psk_token: None,
-        target: None,
+        target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
         runner_signature: None,
         runner_signed_at: None,
@@ -715,10 +892,10 @@ async fn test_end_to_end_credential_flow() {
             acl: None,
             service: None,
             ws_address: None,
-            manifest_raw: None,
+            manifest_raw: Some(prost::bytes::Bytes::from(manifest_raw.clone())),
             mfr_signature: None,
             psk_token: None,
-            target: None,
+            target: Some("wasm32-wasip1".to_string()),
             auth_mode: Some(RegisterAuthMode::Package as i32),
             runner_signature: None,
             runner_signed_at: None,
