@@ -459,6 +459,38 @@ async fn fire_credential_renewed(
     }
 }
 
+// ---- Exponential backoff with jitter ---------------------------------------
+
+struct Backoff {
+    attempt: u32,
+}
+
+impl Backoff {
+    fn new() -> Self {
+        Self { attempt: 0 }
+    }
+
+    /// Returns the next delay: 5, 10, 20, 40, 60, 60, ... seconds with
+    /// ±25% jitter, capped at 60s.
+    #[allow(dead_code)]
+    fn next(&mut self) -> Duration {
+        let base = match self.attempt {
+            0 => 5,
+            1 => 10,
+            2 => 20,
+            3 => 40,
+            _ => 60,
+        };
+        self.attempt += 1;
+
+        // Deterministic jitter: use attempt number as seed.
+        let jitter =
+            (base as f64 * 0.25 * ((self.attempt.wrapping_mul(7)) as f64 % 2.0 - 1.0)) as i64;
+        let ms = ((base * 1000) as i64 + jitter * 1000i64).max(1000);
+        Duration::from_millis(ms as u64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,37 +735,5 @@ mod tests {
         assert!(d2 >= Duration::from_secs(1));
         assert!(d3 >= Duration::from_secs(1));
         assert!(d4 <= Duration::from_secs(75)); // 60 + 25% jitter
-    }
-}
-
-// ---- Exponential backoff with jitter ---------------------------------------
-
-struct Backoff {
-    attempt: u32,
-}
-
-impl Backoff {
-    fn new() -> Self {
-        Self { attempt: 0 }
-    }
-
-    /// Returns the next delay: 5, 10, 20, 40, 60, 60, ... seconds with
-    /// ±25% jitter, capped at 60s.
-    #[allow(dead_code)]
-    fn next(&mut self) -> Duration {
-        let base = match self.attempt {
-            0 => 5,
-            1 => 10,
-            2 => 20,
-            3 => 40,
-            _ => 60,
-        };
-        self.attempt += 1;
-
-        // Deterministic jitter: use attempt number as seed.
-        let jitter =
-            (base as f64 * 0.25 * ((self.attempt.wrapping_mul(7)) as f64 % 2.0 - 1.0)) as i64;
-        let ms = ((base * 1000) as i64 + jitter * 1000i64).max(1000);
-        Duration::from_millis(ms as u64)
     }
 }

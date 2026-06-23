@@ -1713,6 +1713,7 @@ mod tests {
 
     // ─── ActorStore helpers ────────────────────────────────────────────────
 
+    #[allow(dead_code)]
     async fn open_test_store(dir: &TempDir) -> ActorStore {
         let db_path = dir.path().join("test.db");
         ActorStore::open(&db_path).await.unwrap()

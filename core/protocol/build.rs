@@ -28,6 +28,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(
             "RegisterResponse.result",
             "#[allow(clippy::large_enum_variant)]",
+        )
+        .type_attribute(
+            "RenewCredentialResponse.result",
+            "#[allow(clippy::large_enum_variant)]",
         );
 
     // Add serde and Ord/PartialOrd for core identity types
