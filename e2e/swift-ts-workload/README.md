@@ -8,7 +8,7 @@
 
 - 客户端：`actrium:SwiftTsWorkloadApp:0.1.0`（iOS 模拟器，ActrNode.linked）
 - 服务端：`actrium:DuplexEchoService:1.0.0`（TS workload，wasm32-wasip2，`actr run` 托管）
-- 信令：真实私有 actrix（本地 `ensure_actrix_available`，CI 下载 `actrix-macos-arm64`）
+- 信令：本仓库内真实 actrix（`ensure_actrix_available` 按需从 `actrix/crates/actrixd` 安装）
 
 ## 验证
 

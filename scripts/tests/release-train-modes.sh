@@ -528,6 +528,60 @@ test_publish_python_package_builds_distribution_before_upload() {
   fi
 }
 
+test_publish_python_package_uses_testpypi_for_pre_release() {
+  reset_release_train_state
+
+  local temp_dir call_log dist_file
+  temp_dir=$(mktemp -d)
+  call_log="$temp_dir/python.log"
+  dist_file="tools/protoc-gen/python/dist/framework_codegen_python-1.2.3-pre.1.tar.gz"
+
+  cat >"$temp_dir/python" <<'EOF'
+#!/usr/bin/env bash
+{
+  printf 'args:%s\n' "$*"
+  printf 'password:%s\n' "${TWINE_PASSWORD:-}"
+} >>"$RELEASE_TEST_CALL_LOG"
+exit 0
+EOF
+  chmod +x "$temp_dir/python"
+
+  python_version_visible() { return 1; }
+  build_python_distribution() {
+    mkdir -p "$(dirname "$dist_file")"
+    : >"$dist_file"
+  }
+  wait_for_visibility() { return 0; }
+  append_state() { :; }
+
+  VERSION="1.2.3-pre.1"
+  PRE_RELEASE=true
+  DRY_RUN=false
+  PYPI_API_TOKEN="pypi-token"
+  TEST_PYPI_API_TOKEN="test-pypi-token"
+  RELEASE_PYTHON_BIN="$temp_dir/python"
+  export RELEASE_TEST_CALL_LOG="$call_log"
+  RELEASE_SHA="abc123"
+
+  publish_python_package
+  rm -f "$dist_file"
+
+  if ! grep -q -- '--repository-url https://test.pypi.org/legacy/' "$call_log"; then
+    printf 'pre-release Python publish must target TestPyPI\n' >&2
+    exit 1
+  fi
+
+  if grep -q -- 'dist/\*' "$call_log"; then
+    printf 'pre-release Python publish must expand dist artifacts before calling twine\n' >&2
+    exit 1
+  fi
+
+  if ! grep -qx 'password:test-pypi-token' "$call_log"; then
+    printf 'pre-release Python publish must use TEST_PYPI_API_TOKEN\n' >&2
+    exit 1
+  fi
+}
+
 test_publish_rust_package_prepares_cli_web_assets_before_publish() {
   reset_release_train_state
 
@@ -1307,7 +1361,7 @@ test_python_release_tools_are_stage_scoped() {
 
 test_cli_release_workflows_share_one_matrix() {
   local reusable=.github/workflows/_actr-cli-release.yml
-  local manual=.github/workflows/publish-actr-cli.yml
+  local manual=.github/workflows/release-actr-cli.yml
   [[ -f "$reusable" ]] || { printf 'reusable CLI release workflow is missing\n' >&2; exit 1; }
   [[ -f "$manual" ]] || { printf 'manual CLI release workflow is missing\n' >&2; exit 1; }
 
@@ -1350,17 +1404,111 @@ test_release_train_reuses_cli_workflow() {
     printf 'release train must not retain embedded CLI workflow jobs\n' >&2
     exit 1
   fi
-  grep -q '^      cli_only:' "$workflow" || {
-    printf 'release train must expose cli_only dispatch mode\n' >&2
+  if grep -q '^      cli_only:' "$workflow"; then
+    printf 'release train must not retain cli_only dispatch mode\n' >&2
+    exit 1
+  fi
+  if grep -q '^  publish-cli-only:' "$workflow"; then
+    printf 'release train must not retain publish-cli-only bridge job\n' >&2
+    exit 1
+  fi
+  local manual=.github/workflows/release-actr-cli.yml
+  grep -q 'uses: ./\.github/workflows/_actr-cli-release.yml' "$manual" || {
+    printf 'manual CLI release workflow must call the reusable CLI workflow\n' >&2
     exit 1
   }
-  grep -q '^  publish-cli-only:' "$workflow" || {
-    printf 'release train must provide a pre-merge CLI-only publish job\n' >&2
+}
+
+test_protoc_plugin_release_workflow_is_reusable() {
+  local reusable=.github/workflows/_protoc-plugins-release.yml
+  local manual=.github/workflows/release-protoc-plugins.yml
+  [[ -f "$reusable" ]] || { printf 'reusable protoc plugins release workflow is missing\n' >&2; exit 1; }
+  [[ -f "$manual" ]] || { printf 'manual protoc plugins release workflow is missing\n' >&2; exit 1; }
+
+  grep -q '^  workflow_call:' "$reusable" || {
+    printf 'reusable protoc plugins release workflow must declare workflow_call\n' >&2
     exit 1
   }
-  if ! sed -n '/^  publish-cli-only:/,/^    secrets: inherit/p' "$workflow" \
-    | grep -q 'create_release: true'; then
-    printf 'CLI-only recovery must create a missing GitHub Release\n' >&2
+  grep -q '^  workflow_dispatch:' "$manual" || {
+    printf 'manual protoc plugins release workflow must declare workflow_dispatch\n' >&2
+    exit 1
+  }
+  grep -q 'uses: ./\.github/workflows/_protoc-plugins-release.yml' "$manual" || {
+    printf 'manual protoc plugins workflow must call the reusable workflow\n' >&2
+    exit 1
+  }
+  if grep -q '^  build-rust:' "$manual" || grep -q '^  publish:' "$manual"; then
+    printf 'manual protoc plugins workflow must not duplicate build or publish jobs\n' >&2
+    exit 1
+  fi
+}
+
+test_release_train_publishes_release_assets_in_parallel() {
+  local workflow=.github/workflows/release-train.yml
+  grep -q '^  publish-cli:' "$workflow" || {
+    printf 'release train must publish CLI assets\n' >&2
+    exit 1
+  }
+  grep -q '^  publish-actrix:' "$workflow" || {
+    printf 'release train must publish actrix assets\n' >&2
+    exit 1
+  }
+  grep -q '^  publish-protoc-plugins:' "$workflow" || {
+    printf 'release train must publish protoc plugin assets\n' >&2
+    exit 1
+  }
+  grep -q 'uses: ./\.github/workflows/_protoc-plugins-release.yml' "$workflow" || {
+    printf 'release train must call the reusable protoc plugins workflow\n' >&2
+    exit 1
+  }
+  if ! sed -n '/^  publish-protoc-plugins:/,/^    secrets: inherit/p' "$workflow" | grep -q 'create-release'; then
+    printf 'protoc plugin release assets must wait for create-release\n' >&2
+    exit 1
+  fi
+  if ! sed -n '/^  collect-report:/,/^    runs-on:/p' "$workflow" | grep -q 'publish-protoc-plugins'; then
+    printf 'release report must wait for protoc plugin release assets\n' >&2
+    exit 1
+  fi
+  if ! sed -n '/^  publish-cli:/,/^    secrets: inherit/p' "$workflow" | grep -Fq "source_ref: \${{ fromJSON(needs.context.outputs.dry_run) && needs.context.outputs.release_sha || format('v{0}', needs.context.outputs.version) }}"; then
+    printf 'CLI assets must build from release_sha during release train dry-run\n' >&2
+    exit 1
+  fi
+  if ! sed -n '/^  publish-actrix:/,/^    secrets: inherit/p' "$workflow" | grep -Fq "source_ref: \${{ fromJSON(needs.context.outputs.dry_run) && needs.context.outputs.release_sha || format('v{0}', needs.context.outputs.version) }}"; then
+    printf 'actrix assets must build from release_sha during release train dry-run\n' >&2
+    exit 1
+  fi
+  if ! sed -n '/^  publish-protoc-plugins:/,/^    secrets: inherit/p' "$workflow" | grep -Fq "source_ref: \${{ fromJSON(needs.context.outputs.dry_run) && needs.context.outputs.release_sha || format('v{0}', needs.context.outputs.version) }}"; then
+    printf 'protoc plugin assets must build from release_sha during release train dry-run\n' >&2
+    exit 1
+  fi
+  local reusable
+  for reusable in \
+    .github/workflows/_actr-cli-release.yml \
+    .github/workflows/_actrix-release.yml \
+    .github/workflows/_protoc-plugins-release.yml; do
+    if ! grep -B3 -A3 'path: tag-source' "$reusable" | grep -Fq 'if: inputs.publish'; then
+      printf '%s must skip tag checkout when publish=false\n' "$reusable" >&2
+      exit 1
+    fi
+    if ! grep -A3 'path: tag-source' "$reusable" | grep -Fq 'fetch-depth: 0'; then
+      printf '%s must keep the release tag checkout scoped and explicit\n' "$reusable" >&2
+      exit 1
+    fi
+  done
+}
+
+test_actrix_release_stages_binaries_with_bash() {
+  local workflow=.github/workflows/_actrix-release.yml
+  if ! sed -n '/name: Stage binary/,/name: Upload artifacts/p' "$workflow" | grep -q 'shell: bash'; then
+    printf 'actrix release Stage binary step must use bash for Windows runner compatibility\n' >&2
+    exit 1
+  fi
+  if grep -Fq 'name: actrix-${{ matrix.target.asset }}' "$workflow"; then
+    printf 'actrix release workflow must not double-prefix e2e artifact names\n' >&2
+    exit 1
+  fi
+  if ! grep -Fq 'name: ${{ matrix.target.asset }}' "$workflow"; then
+    printf 'actrix release workflow must publish artifact names consumed by e2e\n' >&2
     exit 1
   fi
 }
@@ -1383,6 +1531,7 @@ test_create_tag_dry_run_does_not_push
 test_main_publish_stage_skips_tag_availability_check
 test_main_validate_and_create_tag_check_absent_tag
 test_publish_python_package_builds_distribution_before_upload
+test_publish_python_package_uses_testpypi_for_pre_release
 test_publish_rust_package_prepares_cli_web_assets_before_publish
 test_publish_typescript_workload_builds_before_publish
 test_publish_typescript_package_writes_native_and_main_state
@@ -1396,6 +1545,9 @@ test_cli_zigbuild_uses_zigbuild_arguments_without_build_subcommand
 test_cli_release_state_rows_match_report_schema
 test_cli_sha256_uses_sha256sum_without_shasum
 test_cli_release_upload_asset_deletes_existing_asset_before_retry
+test_protoc_plugin_release_workflow_is_reusable
+test_release_train_publishes_release_assets_in_parallel
+test_actrix_release_stages_binaries_with_bash
 test_publish_web_workflow_has_timeout
 test_release_prepare_workflow_rejects_stale_runs
 test_release_prepare_workflow_closes_superseded_prs

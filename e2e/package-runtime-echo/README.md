@@ -13,7 +13,6 @@ This scenario validates the local package runtime flow end-to-end:
 ## Requirements
 
 - `cargo`
-- `git` if `actrix` is not already available locally
 - `curl`
 - `jq`
 - `sqlite3`
@@ -23,8 +22,7 @@ This scenario validates the local package runtime flow end-to-end:
 
 1. `ACTRIX_BIN`
 2. `actrix` from `PATH`
-3. Source code from `../actrix`
-4. Clone `https://github.com/Actrium/actrix.git` into `../actrix`, then install from `crates/actrixd`
+3. Install the in-tree `actrix/crates/actrixd` binary when `ACTRIX_BIN` is not already set
 
 The auto-install target is the default cargo user bin directory:
 

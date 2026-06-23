@@ -1,0 +1,174 @@
+name: Reusable actrix Release
+
+on:
+  workflow_call:
+    inputs:
+      tag: { required: true, type: string }
+      source_ref: { required: true, type: string }
+      publish: { required: true, type: boolean }
+      replace_assets: { required: true, type: boolean }
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Validate actrix release tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag_sha: ${{ steps.release.outputs.tag_sha }}
+      source_sha: ${{ steps.release.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+          fetch-depth: 0
+      - uses: actions/checkout@v5
+        if: inputs.publish
+        with:
+          ref: ${{ inputs.tag }}
+          path: tag-source
+          fetch-depth: 0
+      - name: Validate tag and workspace version
+        id: release
+        env:
+          TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
+            echo "::error::Expected vX.Y.Z, got $TAG"
+            exit 1
+          }
+          VERSION="${BASH_REMATCH[1]}"
+          WORKSPACE_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' source/Cargo.toml | head -1)
+          [[ "$WORKSPACE_VERSION" == "$VERSION" ]] || {
+            echo "::error::Tag $TAG contains workspace version $WORKSPACE_VERSION"
+            exit 1
+          }
+          SOURCE_SHA=$(git -C source rev-parse HEAD)
+          if [[ "$PUBLISH" == "true" ]]; then
+            TAG_SHA=$(git -C tag-source rev-parse HEAD)
+          else
+            TAG_SHA="$SOURCE_SHA"
+          fi
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+          echo "tag_sha=$TAG_SHA" >>"$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >>"$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.target.asset }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { os: ubuntu-latest, asset: actrix-linux-x86_64, exe_ext: "" }
+          - { os: ubuntu-24.04-arm, asset: actrix-linux-arm64, exe_ext: "" }
+          - { os: macos-14, asset: actrix-macos-arm64, exe_ext: "" }
+          - { os: windows-latest, asset: actrix-windows-x86_64, exe_ext: ".exe" }
+    runs-on: ${{ matrix.target.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+      - uses: actions/checkout@v5
+        with:
+          path: automation
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+
+      # Build the Admin UI so the release binary embeds the real dist
+      # (rust-embed). build.rs would also try this, but doing it explicitly
+      # keeps the release reproducible (frozen lockfile).
+      - name: Build Admin UI
+        working-directory: source/actrix/crates/actrixd/admin/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Build actrix (release)
+        run: cargo build --release -p actrix
+        working-directory: source
+
+      - name: Stage binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "source/target/release/actrix${{ matrix.target.exe_ext }}" "dist/${{ matrix.target.asset }}"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target.asset }}
+          path: dist/${{ matrix.target.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Upload actrix assets
+    if: inputs.publish
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: actrix-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify complete asset set
+        env:
+          ASSETS: actrix-linux-x86_64 actrix-linux-arm64 actrix-macos-arm64 actrix-windows-x86_64
+        run: |
+          set -euo pipefail
+          for asset in $ASSETS; do
+            test -f "dist/${asset}" || { echo "Missing asset: ${asset}" >&2; exit 1; }
+          done
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          for asset in dist/*; do
+            echo "Uploading $(basename "$asset") to $TAG"
+            gh release upload "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          done
+
+  report:
+    name: Collect actrix release state
+    if: always()
+    needs: [validate, build, publish]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        run: |
+          echo "actrix release complete for ${{ inputs.tag }}"

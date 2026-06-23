@@ -103,7 +103,7 @@ resolve_actrix_bin() {
 ensure_actrix_available() {
     local repo_root="$1"
     local actrix_repo_dir
-    actrix_repo_dir="$repo_root/../actrix"
+    actrix_repo_dir="$repo_root/actrix"
     actrix_repo_dir="$(absolute_path "$actrix_repo_dir")"
     local actrix_crate_dir="$actrix_repo_dir/crates/actrixd"
     local actrix_manifest_path="$actrix_repo_dir/crates/actrixd/Cargo.toml"
@@ -125,15 +125,6 @@ ensure_actrix_available() {
     fi
 
     require_cmd cargo
-    if [ -d "$actrix_repo_dir" ]; then
-        [ -f "$actrix_repo_dir/Cargo.toml" ] || fail "Found actrix source repo but Cargo.toml is missing: $actrix_repo_dir"
-        section "🧱 Installing actrix from source repo"
-    else
-        require_cmd git
-        section "📥 Cloning actrix source repo"
-        git clone https://github.com/Actrium/actrix.git "$actrix_repo_dir"
-    fi
-
     [ -f "$actrix_manifest_path" ] || fail "Expected actrix crate manifest is missing: $actrix_manifest_path"
 
     section "🔨 Installing actrix into cargo user bin"

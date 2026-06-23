@@ -7,7 +7,6 @@ on:
       source_ref: { required: true, type: string }
       publish: { required: true, type: boolean }
       replace_assets: { required: true, type: boolean }
-      create_release: { required: true, type: boolean }
 
 permissions:
   contents: read
@@ -31,6 +30,7 @@ jobs:
           path: source
           fetch-depth: 0
       - uses: actions/checkout@v5
+        if: inputs.publish
         with:
           ref: ${{ inputs.tag }}
           path: tag-source
@@ -39,6 +39,7 @@ jobs:
         id: release
         env:
           TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
@@ -51,9 +52,15 @@ jobs:
             echo "::error::Tag $TAG contains workspace version $WORKSPACE_VERSION"
             exit 1
           }
+          SOURCE_SHA=$(git -C source rev-parse HEAD)
+          if [[ "$PUBLISH" == "true" ]]; then
+            TAG_SHA=$(git -C tag-source rev-parse HEAD)
+          else
+            TAG_SHA="$SOURCE_SHA"
+          fi
           echo "version=$VERSION" >>"$GITHUB_OUTPUT"
-          echo "tag_sha=$(git -C tag-source rev-parse HEAD)" >>"$GITHUB_OUTPUT"
-          echo "source_sha=$(git -C source rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+          echo "tag_sha=$TAG_SHA" >>"$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >>"$GITHUB_OUTPUT"
 
   build:
     name: Build actr CLI (${{ matrix.target }})
@@ -159,7 +166,6 @@ jobs:
           set -euo pipefail
           args=(publish --tag "${{ inputs.tag }}" --assets "$GITHUB_WORKSPACE/artifacts" --state-file "$GITHUB_WORKSPACE/release-train-v${{ needs.validate.outputs.version }}.publish-cli-binaries.state.tsv")
           [[ "${{ inputs.replace_assets }}" == true ]] && args+=(--replace)
-          [[ "${{ inputs.create_release }}" == true ]] && args+=(--create-release)
           automation/scripts/release-actr-cli.sh "${args[@]}"
       - name: Upload publish state
         if: always()

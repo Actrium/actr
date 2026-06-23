@@ -1,4 +1,4 @@
-name: Publish actr CLI
+name: Release actr CLI
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ on:
         type: string
 
 concurrency:
-  group: publish-actr-cli-${{ inputs.tag }}
+  group: release-actr-cli-${{ inputs.tag }}
   cancel-in-progress: false
 
 permissions:
@@ -42,5 +42,4 @@ jobs:
       source_ref: ${{ inputs.tag }}
       publish: true
       replace_assets: true
-      create_release: false
     secrets: inherit

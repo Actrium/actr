@@ -1,23 +1,19 @@
-name: Release actrix binaries
-
-# Manually rebuild and replace actrix server binaries for an existing release.
-# For automatic release-train integration, see release-train.yml which calls
-# _actrix-release.yml directly in parallel with the CLI release.
+name: Release Protoc Plugins
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to (re)build and upload binaries for
+        description: Existing release tag to (re)build and upload protoc plugin assets for
         required: true
         type: string
 
-concurrency:
-  group: release-actrix-${{ inputs.tag }}
-  cancel-in-progress: false
-
 permissions:
   contents: write
+
+concurrency:
+  group: release-protoc-plugins-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   validate-release:
@@ -49,9 +45,9 @@ jobs:
             "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$TAG" >/dev/null
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
-  publish-actrix:
+  publish-protoc-plugins:
     needs: validate-release
-    uses: ./.github/workflows/_actrix-release.yml
+    uses: ./.github/workflows/_protoc-plugins-release.yml
     with:
       tag: ${{ needs.validate-release.outputs.tag }}
       source_ref: ${{ needs.validate-release.outputs.tag }}

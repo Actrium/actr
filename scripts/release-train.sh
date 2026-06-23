@@ -9,6 +9,7 @@ readonly LEGACY_FINAL_TAG_PREFIX="release-train-v"
 readonly PYTHON_PACKAGE_NAME="framework_codegen_python"
 readonly CRATES_IO_API="https://crates.io/api/v1/crates"
 readonly PYPI_API="https://pypi.org/pypi"
+readonly TEST_PYPI_API="https://test.pypi.org/pypi"
 
 readonly FOUNDATION_CRATES=(
   "actr-protocol"
@@ -1454,7 +1455,11 @@ crate_registry_url() {
 }
 
 python_registry_url() {
-  printf 'https://pypi.org/project/%s/%s/' "$PYTHON_PACKAGE_NAME" "$VERSION"
+  if [[ "$PRE_RELEASE" == true ]]; then
+    printf 'https://test.pypi.org/project/%s/%s/' "$PYTHON_PACKAGE_NAME" "$VERSION"
+  else
+    printf 'https://pypi.org/project/%s/%s/' "$PYTHON_PACKAGE_NAME" "$VERSION"
+  fi
 }
 
 npm_registry_url() {
@@ -1470,7 +1475,12 @@ crate_version_visible() {
 }
 
 python_version_visible() {
-  curl -A "$(registry_user_agent)" -fsSLo /dev/null "${PYPI_API}/${PYTHON_PACKAGE_NAME}/${VERSION}/json"
+  local api_url="$PYPI_API"
+  if [[ "$PRE_RELEASE" == true ]]; then
+    api_url="$TEST_PYPI_API"
+  fi
+
+  curl -A "$(registry_user_agent)" -fsSLo /dev/null "${api_url}/${PYTHON_PACKAGE_NAME}/${VERSION}/json"
 }
 
 wait_for_visibility() {
@@ -1570,8 +1580,17 @@ publish_python_package() {
     return
   fi
 
-  if [[ -z "${PYPI_API_TOKEN:-}" ]]; then
-    log_warn "Skipping ${PYTHON_PACKAGE_NAME}; PYPI_API_TOKEN not set"
+  local twine_password="${PYPI_API_TOKEN:-}"
+  if [[ "$PRE_RELEASE" == true ]]; then
+    twine_password="${TEST_PYPI_API_TOKEN:-}"
+  fi
+
+  if [[ -z "$twine_password" ]]; then
+    local token_name="PYPI_API_TOKEN"
+    if [[ "$PRE_RELEASE" == true ]]; then
+      token_name="TEST_PYPI_API_TOKEN"
+    fi
+    log_warn "Skipping ${PYTHON_PACKAGE_NAME}; ${token_name} not set"
     append_state "$PYTHON_PACKAGE_NAME" "protoc-gen" "python" "skipped" "pypi_token_missing" "$registry_url" "$RELEASE_SHA"
     return
   fi
@@ -1583,9 +1602,15 @@ publish_python_package() {
   upload_log=$(mktemp)
   (
     cd tools/protoc-gen/python
-    TWINE_USERNAME="__token__" \
-    TWINE_PASSWORD="${PYPI_API_TOKEN:-}" \
-    "$RELEASE_PYTHON_BIN" -m twine upload dist/*
+    if [[ "$PRE_RELEASE" == true ]]; then
+      TWINE_USERNAME="__token__" \
+      TWINE_PASSWORD="$twine_password" \
+      "$RELEASE_PYTHON_BIN" -m twine upload --repository-url https://test.pypi.org/legacy/ dist/*
+    else
+      TWINE_USERNAME="__token__" \
+      TWINE_PASSWORD="$twine_password" \
+      "$RELEASE_PYTHON_BIN" -m twine upload dist/*
+    fi
   ) 2>&1 | tee "$upload_log"
   local twine_status=${PIPESTATUS[0]}
 
