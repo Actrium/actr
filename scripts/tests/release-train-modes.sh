@@ -528,6 +528,50 @@ test_publish_python_package_builds_distribution_before_upload() {
   fi
 }
 
+test_publish_python_package_uses_testpypi_for_pre_release() {
+  reset_release_train_state
+
+  local temp_dir call_log
+  temp_dir=$(mktemp -d)
+  call_log="$temp_dir/python.log"
+
+  cat >"$temp_dir/python" <<'EOF'
+#!/usr/bin/env bash
+{
+  printf 'args:%s\n' "$*"
+  printf 'password:%s\n' "${TWINE_PASSWORD:-}"
+} >>"$RELEASE_TEST_CALL_LOG"
+exit 0
+EOF
+  chmod +x "$temp_dir/python"
+
+  python_version_visible() { return 1; }
+  build_python_distribution() { :; }
+  wait_for_visibility() { return 0; }
+  append_state() { :; }
+
+  VERSION="1.2.3-pre.1"
+  PRE_RELEASE=true
+  DRY_RUN=false
+  PYPI_API_TOKEN="pypi-token"
+  TEST_PYPI_API_TOKEN="test-pypi-token"
+  RELEASE_PYTHON_BIN="$temp_dir/python"
+  export RELEASE_TEST_CALL_LOG="$call_log"
+  RELEASE_SHA="abc123"
+
+  publish_python_package
+
+  if ! grep -q -- '--repository-url https://test.pypi.org/legacy/' "$call_log"; then
+    printf 'pre-release Python publish must target TestPyPI\n' >&2
+    exit 1
+  fi
+
+  if ! grep -qx 'password:test-pypi-token' "$call_log"; then
+    printf 'pre-release Python publish must use TEST_PYPI_API_TOKEN\n' >&2
+    exit 1
+  fi
+}
+
 test_publish_rust_package_prepares_cli_web_assets_before_publish() {
   reset_release_train_state
 
@@ -1307,7 +1351,7 @@ test_python_release_tools_are_stage_scoped() {
 
 test_cli_release_workflows_share_one_matrix() {
   local reusable=.github/workflows/_actr-cli-release.yml
-  local manual=.github/workflows/publish-actr-cli.yml
+  local manual=.github/workflows/release-actr-cli.yml
   [[ -f "$reusable" ]] || { printf 'reusable CLI release workflow is missing\n' >&2; exit 1; }
   [[ -f "$manual" ]] || { printf 'manual CLI release workflow is missing\n' >&2; exit 1; }
 
@@ -1383,6 +1427,7 @@ test_create_tag_dry_run_does_not_push
 test_main_publish_stage_skips_tag_availability_check
 test_main_validate_and_create_tag_check_absent_tag
 test_publish_python_package_builds_distribution_before_upload
+test_publish_python_package_uses_testpypi_for_pre_release
 test_publish_rust_package_prepares_cli_web_assets_before_publish
 test_publish_typescript_workload_builds_before_publish
 test_publish_typescript_package_writes_native_and_main_state
