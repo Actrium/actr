@@ -1,16 +1,10 @@
 name: Release actrix binaries
 
-# actrix is a server application shipped as a binary (not crates.io libraries).
-# When a release is published (by the release-train, which tags v* and creates
-# the GitHub Release), this workflow builds actrix binaries for each platform
-# and attaches them to that release.
-#
-# It can also be triggered manually via workflow_dispatch to rebuild and replace
-# binaries for an existing release.
+# Manually rebuild and replace actrix server binaries for an existing release.
+# For automatic release-train integration, see release-train.yml which calls
+# _actrix-release.yml directly in parallel with the CLI release.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -19,7 +13,7 @@ on:
         type: string
 
 concurrency:
-  group: release-actrix-${{ github.event.release.tag_name || inputs.tag }}
+  group: release-actrix-${{ inputs.tag }}
   cancel-in-progress: false
 
 permissions:
@@ -34,13 +28,10 @@ jobs:
     steps:
       - name: Resolve tag
         id: resolve
-        env:
-          EVENT_TAG: ${{ github.event.release.tag_name }}
-          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${EVENT_TAG:-${INPUT_TAG:-}}"
+          TAG="${{ inputs.tag }}"
           if [[ -z "$TAG" ]]; then
-            echo "::error::No tag provided (set via release event or workflow_dispatch input)"
+            echo "::error::No tag provided"
             exit 1
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -58,67 +49,12 @@ jobs:
             "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$TAG" >/dev/null
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
 
-  build:
-    name: ${{ matrix.target.asset }}
+  publish-actrix:
     needs: validate-release
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - { os: ubuntu-latest, asset: actrix-linux-x86_64 }
-          - { os: macos-14, asset: actrix-macos-arm64 }
-    runs-on: ${{ matrix.target.os }}
-    timeout-minutes: 30
-    env:
-      TAG: ${{ needs.validate-release.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.validate-release.outputs.tag }}
-
-      - name: Install protoc (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Install protoc (macOS)
-        if: runner.os == 'macOS'
-        run: brew install protobuf
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: Setup pnpm
-        run: |
-          corepack enable
-          corepack prepare pnpm@9.15.9 --activate
-
-      # Build the Admin UI so the release binary embeds the real dist
-      # (rust-embed). build.rs would also try this, but doing it explicitly
-      # keeps the release reproducible (frozen lockfile).
-      - name: Build Admin UI
-        working-directory: actrix/crates/actrixd/admin/web
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
-
-      - name: Build actrix (release)
-        run: cargo build --release -p actrix
-
-      - name: Stage binary
-        run: |
-          mkdir -p dist
-          cp target/release/actrix "dist/${{ matrix.target.asset }}"
-
-      - name: Upload to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$TAG" "dist/${{ matrix.target.asset }}" --clobber
+    uses: ./.github/workflows/_actrix-release.yml
+    with:
+      tag: ${{ needs.validate-release.outputs.tag }}
+      source_ref: ${{ needs.validate-release.outputs.tag }}
+      publish: true
+      replace_assets: true
+    secrets: inherit

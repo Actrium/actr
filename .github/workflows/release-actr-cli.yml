@@ -42,5 +42,4 @@ jobs:
       source_ref: ${{ inputs.tag }}
       publish: true
       replace_assets: true
-      create_release: false
     secrets: inherit
