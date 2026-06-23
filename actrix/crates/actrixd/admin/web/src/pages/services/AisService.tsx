@@ -86,7 +86,7 @@ function AisDiagram({ config }: { config: Record<string, unknown> }) {
       {/* 4. Response to client */}
       <line x1={aX + 4} y1={198} x2={cX - 4} y2={198} stroke="#10b981" strokeWidth="1.5" markerEnd="url(#ais-ag)" />
       <text x={(aX + cX) / 2} y={192} textAnchor="middle" fontSize="9" fontWeight="600" fill="#10b981">Credential</text>
-      <text x={(aX + cX) / 2} y={210} textAnchor="middle" fontSize="8" fill="#6b7280">ActrId + token + PSK</text>
+      <text x={(aX + cX) / 2} y={210} textAnchor="middle" fontSize="8" fill="#6b7280">ActrId + access/TURN + renew token</text>
 
       {/* 5. Client connects to Signaling */}
       <line x1={cX + 4} y1={240} x2={sX - 4} y2={240} stroke="#10b981" strokeWidth="1.5" markerEnd="url(#ais-ag)" />
@@ -161,8 +161,8 @@ export function AisService() {
             AIS issues identity credentials for WebRTC peers. On startup it generates a signing key
             via Signer and caches the verifying key locally. When a client registers, AIS generates
             a unique ActrId, calls Signer to Ed25519-sign the credential claims, and returns the
-            signed credential along with a PSK. The client then uses this credential to connect to
-            the Signaling server.
+            signed access credential, TURN credential, and renewal token. The client then uses the
+            access credential to connect to the Signaling server.
           </p>
           <AisDiagram config={data.config} />
 

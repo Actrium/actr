@@ -1,11 +1,13 @@
-//! AId Token 签发器
+//! AId token issuer.
 //!
-//! # 职责
+//! # Responsibilities
 //!
-//! 负责处理 `RegisterRequest` 并生成 `RegisterResponse`，包括：
-//! - 序列号分配（Snowflake 算法）
-//! - PSK 生成（客户端保管）
-//! - 密钥生命周期管理（从 KS 获取、缓存、刷新）
+//! Handles `RegisterRequest` and builds `RegisterResponse`, including:
+//! - Serial number allocation with Snowflake.
+//! - Signed access credential issuance.
+//! - Time-limited TURN credential generation.
+//! - Renewal token issuance and hash persistence.
+//! - Signing key lifecycle management through Signer.
 //!
 //! # 密钥管理策略
 //!
@@ -138,6 +140,12 @@ pub struct IssuerConfig {
     /// AIS 在加载或刷新 signing key 后，会把 verifying key 写入此目录下的
     /// `signaling_key_cache.db`，让 signaling 的 `AIdCredentialValidator` 能够验证凭证。
     pub sqlite_path: std::path::PathBuf,
+    /// Renewal token TTL in seconds.
+    pub renewal_token_ttl_secs: u64,
+    /// Renewal rotation window in seconds.
+    pub renewal_rotation_window_secs: u64,
+    /// Base64-decoded renewal token secret (at least 32 bytes).
+    pub renewal_token_secret: Vec<u8>,
 }
 
 impl Default for IssuerConfig {
@@ -151,6 +159,9 @@ impl Default for IssuerConfig {
             key_rotation_interval_secs: 86400, // 24 小时
             turn_secret: "actrix-turn-secret-change-in-production".to_string(),
             sqlite_path: std::path::PathBuf::from("."),
+            renewal_token_ttl_secs: 86400,
+            renewal_rotation_window_secs: 21600,
+            renewal_token_secret: Vec::new(),
         }
     }
 }
@@ -170,7 +181,8 @@ pub struct AIdIssuer {
     signer_client: SignerClientWrapper,
     key_storage: Arc<KeyStorage>,
     key_cache: Arc<RwLock<Option<KeyCache>>>,
-    config: IssuerConfig,
+    /// Issuer configuration (public for renewal handler access).
+    pub config: IssuerConfig,
 }
 
 impl AIdIssuer {
@@ -623,8 +635,34 @@ impl AIdIssuer {
             nanos: 0,
         });
 
-        // 生成 TURN 时效凭证（coturn --use-auth-secret 兼容格式）
+        // Generate a time-limited TURN credential compatible with coturn --use-auth-secret.
         let turn_credential = self.generate_turn_credential(&actr_id.to_string_repr(), expr_time);
+
+        if self.config.renewal_token_secret.is_empty() {
+            return Err(AidError::GenerationFailed(
+                "renewal_token_secret is required".to_string(),
+            ));
+        }
+
+        let token = self.generate_renewal_token();
+        let renewal_expires = self.calculate_renewal_expiry_time();
+
+        // Persist token hash; failure here fails the whole registration.
+        let token_hash = crate::renewal::hash_token(&token);
+        crate::renewal::insert_renewal_token(&actr_id, &token_hash, renewal_expires)
+            .await
+            .map_err(|e| {
+                AidError::GenerationFailed(format!("Failed to persist renewal token: {e}"))
+            })?;
+
+        // Run global GC for expired tokens.
+        let _ = crate::renewal::gc_expired_tokens().await;
+
+        let renewal_token = Some(Bytes::from(token));
+        let renewal_token_expires_at = Some(Timestamp {
+            seconds: renewal_expires,
+            nanos: 0,
+        });
 
         Ok(register_response::RegisterOk {
             actr_id,
@@ -634,8 +672,8 @@ impl AIdIssuer {
             signaling_heartbeat_interval_secs: self.config.signaling_heartbeat_interval_secs,
             signing_pubkey: Bytes::from(verifying_key.as_bytes().to_vec()),
             signing_key_id: key_id,
-            psk: None,
-            psk_expires_at: None,
+            renewal_token,
+            renewal_token_expires_at,
         })
     }
 
@@ -677,7 +715,6 @@ impl AIdIssuer {
         if request.actr_type.version.is_empty()
             || request.manifest_raw.is_some()
             || request.mfr_signature.is_some()
-            || request.psk_token.is_some()
         {
             return Err(AidError::InvalidFormat);
         }
@@ -897,6 +934,88 @@ impl AIdIssuer {
             .unwrap()
             .as_secs()
             + self.config.token_ttl_secs
+    }
+
+    /// 计算 renewal token 过期时间（Unix timestamp，seconds，i64 for SQLite）
+    fn calculate_renewal_expiry_time(&self) -> i64 {
+        (SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + self.config.renewal_token_ttl_secs) as i64
+    }
+
+    /// 使用 CSPRNG 生成 32 字节 renewal token
+    fn generate_renewal_token(&self) -> Vec<u8> {
+        let mut token = vec![0u8; 32];
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut token);
+        token
+    }
+
+    /// 为已有 ActrId 重新签发 credential（供 /ais/renew 使用）
+    ///
+    /// 接收已验证的 `ActrId`，不调用 `generate_actr_id()`，也不重新执行注册认证。
+    pub async fn issue_credential_for_actor(
+        &self,
+        actor_id: &ActrId,
+    ) -> Result<register_response::RegisterOk, AidError> {
+        // 确保有可用的签名密钥
+        self.ensure_key_loaded().await?;
+
+        // 生成过期时间
+        let expr_time = self.calculate_expiry_time();
+
+        // 构建 IdentityClaims
+        let claims_proto = IdentityClaims {
+            realm_id: actor_id.realm.realm_id,
+            actor_id: actor_id.to_string_repr(),
+            expires_at: expr_time,
+        };
+
+        let claims_bytes = claims_proto.encode_to_vec();
+
+        // 从缓存读取 key_id 和 verifying_key
+        let (key_id, verifying_key) = {
+            let cache = self.key_cache.read().await;
+            let cache = cache
+                .as_ref()
+                .ok_or_else(|| AidError::GenerationFailed("No key available".to_string()))?;
+            (cache.key_id, cache.verifying_key)
+        };
+
+        // 通过 KS Sign RPC 签名
+        let signature_bytes = self
+            .signer_client
+            .sign(key_id, &claims_bytes)
+            .await
+            .map_err(|e| AidError::GenerationFailed(format!("KS sign failed: {e}")))?;
+
+        let credential = AIdCredential {
+            key_id,
+            claims: Bytes::from(claims_bytes),
+            signature: Bytes::from(signature_bytes),
+        };
+
+        let credential_expires_at = Some(Timestamp {
+            seconds: expr_time as i64,
+            nanos: 0,
+        });
+
+        // 生成 TURN 时效凭证
+        let turn_credential = self.generate_turn_credential(&actor_id.to_string_repr(), expr_time);
+
+        Ok(register_response::RegisterOk {
+            actr_id: actor_id.clone(),
+            credential,
+            turn_credential,
+            credential_expires_at,
+            signaling_heartbeat_interval_secs: self.config.signaling_heartbeat_interval_secs,
+            signing_pubkey: Bytes::from(verifying_key.as_bytes().to_vec()),
+            signing_key_id: key_id,
+            renewal_token: None,
+            renewal_token_expires_at: None,
+        })
     }
 
     /// 生成 TURN 时效凭证（coturn --use-auth-secret 兼容格式）

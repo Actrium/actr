@@ -671,16 +671,17 @@ async fn handle_actr_to_server(
     // 验证 Realm 是否存在、未过期、状态正常
     let realm_id = source.realm.realm_id;
     if let Err(e) = RealmEntity::validate_realm(realm_id).await {
+        let (code, msg) = RealmEntity::map_validation_error(e);
         platform::recording::warn!(
             "⚠️  Actor {} realm 验证失败: {}",
             source.to_string_repr(),
-            e
+            msg
         );
         send_error_response(
             client_id,
             &source,
-            403,
-            &format!("Realm validation failed: {e}"),
+            code,
+            &format!("Realm validation failed: {msg}"),
             server,
             Some(request_envelope_id),
         )
@@ -730,21 +731,6 @@ async fn handle_actr_to_server(
         }
         Some(actr_to_signaling::Payload::UnregisterRequest(req)) => {
             handle_unregister(source, req, client_id, server, request_envelope_id).await?;
-        }
-        Some(actr_to_signaling::Payload::CredentialUpdateRequest(_)) => {
-            // Credential 刷新已迁移到 AIS HTTP，信令不再中转
-            platform::recording::warn!(
-                "⚠️  CredentialUpdateRequest rejected: use /ais/register HTTP endpoint instead"
-            );
-            send_error_response(
-                client_id,
-                &source,
-                410,
-                "Credential refresh via signaling is no longer supported; use /ais/register HTTP endpoint",
-                server,
-                Some(request_envelope_id),
-            )
-            .await?;
         }
         Some(actr_to_signaling::Payload::DiscoveryRequest(req)) => {
             handle_discovery_request(source, req, client_id, server, request_envelope_id).await?;
@@ -1016,16 +1002,17 @@ async fn handle_actr_relay(
     // 验证源 Actor 的 realm（存在、未过期且状态正常）
     let realm_id = source.realm.realm_id;
     if let Err(e) = RealmEntity::validate_realm(realm_id).await {
+        let (code, msg) = RealmEntity::map_validation_error(e);
         platform::recording::warn!(
             "⚠️  Actor {} realm 验证失败: {}",
             source.to_string_repr(),
-            e
+            msg
         );
         send_error_response(
             client_id,
             &source,
-            403,
-            &format!("Realm validation failed: {e}"),
+            code,
+            &format!("Realm validation failed: {msg}"),
             server,
             Some(request_envelope_id),
         )

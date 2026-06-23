@@ -1,11 +1,10 @@
-//! Actor Identity Service (AIS) - ActrId 注册和凭证签发服务
+//! Actor Identity Service (AIS) - ActrId registration and credential issuance.
 //!
-//! # 功能概述
+//! # Overview
 //!
-//! AIS 是 Actrix 系统的核心身份服务，负责：
-//! - ActrId 注册：为新 Actor 分配全局唯一的序列号
-//! - 凭证签发：生成加密的 AIdCredential Token
-//! - PSK 生成：为 Actor 与 Signaling Server 的连接生成预共享密钥
+//! AIS is the core Actrix identity service. It allocates ActrId serial numbers,
+//! issues signed AIdCredential tokens, generates time-limited TURN credentials,
+//! and returns renewal tokens for `/ais/renew`.
 //!
 //! # 架构设计
 //!
@@ -33,15 +32,17 @@
 //!         └─────────────┘
 //! ```
 //!
-//! # 核心流程
+//! # Core Flow
 //!
-//! ## 注册流程
+//! ## Registration
 //!
-//! 1. 接收 `RegisterRequest` (protobuf 格式)
-//! 2. 使用 Snowflake 算法生成 54-bit serial_number
-//! 3. 从 Signer 获取公钥，加密 Claims 生成 AIdCredential
-//! 4. 生成 256-bit PSK（客户端负责保管）
-//! 5. 返回 `RegisterResponse`（包含 ActrId + Credential + PSK）
+//! 1. Receive a protobuf `RegisterRequest`.
+//! 2. Allocate a 54-bit serial number with Snowflake.
+//! 3. Sign identity claims through Signer and build an AIdCredential.
+//! 4. Generate a time-limited TURN credential.
+//! 5. Generate and persist a renewal token hash.
+//! 6. Return `RegisterResponse` with ActrId, access credential, TURN credential,
+//!    and renewal token.
 //!
 //! ## 密钥管理
 //!
@@ -73,10 +74,10 @@
 //!
 //! # 安全考虑
 //!
-//! - **Stateless 设计**：PSK 不在服务端存储，由客户端保管
+//! - **Renewal token rotation**: renewal tokens are stored as hashes and rotated on use.
 //! - **加密传输**：Token 使用 ECIES 加密，只有持有私钥的服务才能解密
 //! - **序列号唯一性**：Snowflake 算法保证分布式环境下的全局唯一性
-//! - **密钥轮换**：支持自动密钥刷新，旧密钥在容忍期内仍可验证旧 Token
+//! - **Key rotation**: old keys remain verifiable during the tolerance window.
 //!
 //! # 配置选项
 //!
@@ -86,6 +87,7 @@
 pub mod handlers;
 pub mod issuer;
 pub mod ratelimit;
+pub mod renewal;
 pub mod signer_client_wrapper;
 mod sn;
 mod storage;
@@ -132,6 +134,21 @@ pub async fn create_ais_router_with_counters(
     platform::recording::info!("Signer gRPC client created successfully");
 
     // 创建 Issuer 配置
+    if config.server.renewal_token_secret.is_empty() {
+        anyhow::bail!("services.ais.server.renewal_token_secret is required");
+    }
+    let renewal_token_secret = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        &config.server.renewal_token_secret,
+    )
+    .context("Failed to decode services.ais.server.renewal_token_secret from base64")?;
+    if renewal_token_secret.len() < 32 {
+        anyhow::bail!(
+            "services.ais.server.renewal_token_secret must decode to at least 32 bytes, got {} byte(s)",
+            renewal_token_secret.len()
+        );
+    }
+
     let issuer_config = IssuerConfig {
         token_ttl_secs: config.server.token_ttl_secs,
         signaling_heartbeat_interval_secs: config.server.signaling_heartbeat_interval_secs,
@@ -141,6 +158,9 @@ pub async fn create_ais_router_with_counters(
         key_rotation_interval_secs: 86400, // 24 小时
         turn_secret: global_config.turn.turn_secret.clone(),
         sqlite_path: global_config.sqlite_path.clone(),
+        renewal_token_ttl_secs: config.server.renewal_token_ttl_secs,
+        renewal_rotation_window_secs: config.server.renewal_rotation_window_secs,
+        renewal_token_secret,
     };
 
     // 创建 AId Token 签发器

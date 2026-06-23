@@ -1,8 +1,18 @@
 //! AIS (Actor Identity Service) HTTP Handler
 
 use crate::{issuer::AIdIssuer, ratelimit::ip_rate_limiter};
-use actr_protocol::{ErrorResponse, RegisterRequest, RegisterResponse, register_response};
-use axum::{Router, body::Bytes, extract::State, http::HeaderMap, response::Json, routing::post};
+use actr_protocol::{
+    ErrorResponse, RegisterRequest, RegisterResponse, RenewCredentialRequest,
+    RenewCredentialResponse, register_response, renew_credential_response,
+};
+use axum::{
+    Router,
+    body::Bytes,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Json, Response},
+    routing::post,
+};
 use platform::aid::AidError;
 use platform::monitoring::ServiceCounters;
 use platform::realm::{
@@ -41,6 +51,7 @@ impl AISState {
 pub fn create_router(state: AISState) -> Router {
     Router::new()
         .route("/register", post(register_actr))
+        .route("/renew", post(renew_credential))
         .route("/health", axum::routing::get(health_check))
         .route("/rotate-key", post(rotate_key))
         .route("/current-key", axum::routing::get(get_current_key))
@@ -77,11 +88,12 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
     );
 
     // 验证 Realm 是否存在、状态正常、未过期
-    if let Err(e) = RealmEntity::validate_realm(request.realm.realm_id).await {
+    if let Err(validation_err) = RealmEntity::validate_realm(request.realm.realm_id).await {
+        let (code, message) = RealmEntity::map_validation_error(validation_err);
         let error_result = RegisterResponse {
             result: Some(register_response::Result::Error(ErrorResponse {
-                code: 403,
-                message: format!("Realm validation failed: {e}"),
+                code,
+                message: format!("Realm validation failed: {message}"),
             })),
         };
         return encode_result(error_result);
@@ -248,6 +260,174 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
     encode_result(result)
 }
 
+/// POST /ais/renew — 为已有 ActrId 续期 credentials
+///
+/// 处理流程：
+/// 1. Decode and validate `RenewCredentialRequest`.
+/// 2. Validate realm state.
+/// 3. Validate and rotate renewal token in a transaction.
+/// 4. Re-issue access and TURN credentials for the original ActrId.
+/// 5. Attach the transaction result renewal token and expiry.
+async fn renew_credential(State(state): State<AISState>, body: Bytes) -> Response {
+    let start = std::time::Instant::now();
+
+    // 1. Decode protobuf request.
+    let request = match RenewCredentialRequest::decode(body) {
+        Ok(req) => req,
+        Err(err) => {
+            platform::recording::error!("Failed to decode RenewCredentialRequest: {}", err);
+            return encode_renew_result(
+                StatusCode::BAD_REQUEST,
+                RenewCredentialResponse {
+                    result: Some(renew_credential_response::Result::Error(ErrorResponse {
+                        code: 400,
+                        message: format!("Invalid protobuf: {err}"),
+                    })),
+                },
+            );
+        }
+    };
+
+    // Validate token length (32 bytes expected).
+    if request.renewal_token.len() != 32 {
+        platform::recording::warn!(
+            "Renewal token has invalid length: {} bytes",
+            request.renewal_token.len()
+        );
+        return encode_renew_result(
+            StatusCode::BAD_REQUEST,
+            RenewCredentialResponse {
+                result: Some(renew_credential_response::Result::Error(ErrorResponse {
+                    code: 400,
+                    message: "Invalid renewal token length".to_string(),
+                })),
+            },
+        );
+    }
+
+    let actor_id = &request.actr_id;
+    platform::recording::debug!(
+        "Received renewal request for actor {}",
+        actor_id.to_string_repr()
+    );
+
+    // 2. Validate realm state.
+    if let Err(validation_err) = RealmEntity::validate_realm(actor_id.realm.realm_id).await {
+        let (code, message) = RealmEntity::map_validation_error(validation_err);
+        return encode_renew_result(
+            status_for_error_code(code),
+            RenewCredentialResponse {
+                result: Some(renew_credential_response::Result::Error(ErrorResponse {
+                    code,
+                    message: format!("Realm validation failed: {message}"),
+                })),
+            },
+        );
+    }
+
+    // 3. Validate and rotate renewal token in one transaction.
+    let issuer = &state.issuer;
+    let renewal_outcome = match crate::renewal::rotate_renewal_token(
+        actor_id,
+        &request.renewal_token,
+        &issuer.config.renewal_token_secret,
+        issuer.config.renewal_rotation_window_secs,
+        issuer.config.renewal_token_ttl_secs,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(crate::renewal::RenewalError::TokenRejected) => {
+            platform::recording::warn!(
+                "Renewal token rejected for actor {}",
+                actor_id.to_string_repr()
+            );
+            return encode_renew_result(
+                StatusCode::UNAUTHORIZED,
+                RenewCredentialResponse {
+                    result: Some(renew_credential_response::Result::Error(ErrorResponse {
+                        code: 401,
+                        message: "Renewal token invalid or expired".to_string(),
+                    })),
+                },
+            );
+        }
+        Err(crate::renewal::RenewalError::StoreError(msg)) => {
+            platform::recording::error!(
+                "Renewal store error for actor {}: {}",
+                actor_id.to_string_repr(),
+                msg
+            );
+            return encode_renew_result(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                RenewCredentialResponse {
+                    result: Some(renew_credential_response::Result::Error(ErrorResponse {
+                        code: 500,
+                        message: "Internal renewal store error".to_string(),
+                    })),
+                },
+            );
+        }
+    };
+
+    // 4. Re-issue access and TURN credentials for the original ActrId.
+    let mut register_ok = match issuer.issue_credential_for_actor(actor_id).await {
+        Ok(ok) => ok,
+        Err(err) => {
+            platform::recording::error!(
+                "Failed to re-issue credential for actor {}: {}",
+                actor_id.to_string_repr(),
+                err
+            );
+            let (code, message) = aid_error_to_response(err);
+            return encode_renew_result(
+                status_for_error_code(code),
+                RenewCredentialResponse {
+                    result: Some(renew_credential_response::Result::Error(ErrorResponse {
+                        code,
+                        message,
+                    })),
+                },
+            );
+        }
+    };
+
+    // 5. Attach renewal token and expiry.
+    let (token, expires_at) = match renewal_outcome {
+        crate::renewal::RotationOutcome::Unchanged { token, expires_at } => (
+            token,
+            Some(prost_types::Timestamp {
+                seconds: expires_at,
+                nanos: 0,
+            }),
+        ),
+        crate::renewal::RotationOutcome::Rotated { token, expires_at } => (
+            token,
+            Some(prost_types::Timestamp {
+                seconds: expires_at,
+                nanos: 0,
+            }),
+        ),
+    };
+
+    register_ok.renewal_token = Some(token);
+    register_ok.renewal_token_expires_at = expires_at;
+
+    if let Some(ref ctr) = state.counters {
+        ctr.record_request(true, start.elapsed().as_secs_f64() * 1000.0)
+            .await;
+    }
+
+    platform::recording::info!("Credential renewed for actor {}", actor_id.to_string_repr());
+
+    encode_renew_result(
+        StatusCode::OK,
+        RenewCredentialResponse {
+            result: Some(renew_credential_response::Result::Success(register_ok)),
+        },
+    )
+}
+
 /// 健康检查端点
 ///
 /// 执行以下检查：
@@ -380,12 +560,43 @@ fn encode_result(result: RegisterResponse) -> Bytes {
     Bytes::from(buf)
 }
 
-/// 将 AidError 转换为 proto ErrorResponse
-///
-/// 错误码映射策略：
-/// - 4xx: 客户端错误（格式、过期、验证失败）
-/// - 5xx: 服务端错误（生成失败、内部错误）
-fn aid_error_to_error_response(err: AidError) -> ErrorResponse {
+/// 编码 RenewCredentialResponse 为 protobuf 字节，并设置匹配的 HTTP status。
+fn encode_renew_result(status: StatusCode, result: RenewCredentialResponse) -> Response {
+    let mut buf = Vec::new();
+    let body = if let Err(err) = result.encode(&mut buf) {
+        platform::recording::error!("Failed to encode RenewCredentialResponse: {}", err);
+        let error_result = RenewCredentialResponse {
+            result: Some(renew_credential_response::Result::Error(ErrorResponse {
+                code: 500,
+                message: format!("Failed to encode response: {err}"),
+            })),
+        };
+        let mut fallback_buf = Vec::new();
+        let _ = error_result.encode(&mut fallback_buf);
+        Bytes::from(fallback_buf)
+    } else {
+        Bytes::from(buf)
+    };
+
+    (status, [("content-type", "application/x-protobuf")], body).into_response()
+}
+
+fn status_for_error_code(code: u32) -> StatusCode {
+    match code {
+        400 => StatusCode::BAD_REQUEST,
+        401 => StatusCode::UNAUTHORIZED,
+        403 => StatusCode::FORBIDDEN,
+        429 => StatusCode::TOO_MANY_REQUESTS,
+        500 => StatusCode::INTERNAL_SERVER_ERROR,
+        502 => StatusCode::BAD_GATEWAY,
+        503 => StatusCode::SERVICE_UNAVAILABLE,
+        504 => StatusCode::GATEWAY_TIMEOUT,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// 将 AidError 转换为 (code, message) 元组
+fn aid_error_to_response(err: AidError) -> (u32, String) {
     let code = match &err {
         // 客户端错误 (4xx)
         AidError::InvalidFormat => 400,
@@ -411,11 +622,17 @@ fn aid_error_to_error_response(err: AidError) -> ErrorResponse {
         AidError::InvalidSignature(_) => 500,
         AidError::DecodeFailure(_) => 500,
     };
+    (code, err.to_string())
+}
 
-    ErrorResponse {
-        code,
-        message: err.to_string(),
-    }
+/// 将 AidError 转换为 proto ErrorResponse
+///
+/// 错误码映射策略：
+/// - 4xx: 客户端错误（格式、过期、验证失败）
+/// - 5xx: 服务端错误（生成失败、内部错误）
+fn aid_error_to_error_response(err: AidError) -> ErrorResponse {
+    let (code, message) = aid_error_to_response(err);
+    ErrorResponse { code, message }
 }
 
 #[cfg(test)]
@@ -444,7 +661,6 @@ mod tests {
             ws_address: None,
             manifest_raw: None,
             mfr_signature: None,
-            psk_token: None,
             target: None,
             auth_mode: Some(RegisterAuthMode::Package as i32),
         };
@@ -476,7 +692,6 @@ mod tests {
             ws_address: None,
             manifest_raw: None,
             mfr_signature: None,
-            psk_token: None,
             target: None,
             auth_mode: Some(RegisterAuthMode::Package as i32),
         };
@@ -520,8 +735,8 @@ mod tests {
                 nanos: 0,
             }),
             signaling_heartbeat_interval_secs: 30,
-            psk: None,
-            psk_expires_at: None,
+            renewal_token: None,
+            renewal_token_expires_at: None,
         };
 
         let response = RegisterResponse {

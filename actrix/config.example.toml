@@ -172,6 +172,15 @@ key_ttl_seconds = 3600
 [services.ais.server]
 # signaling_heartbeat_interval_secs = 30  # (optional, default: 30)
 # token_ttl_secs = 3600  # (optional, default: 3600)
+# Renewal token TTL in seconds (default: 86400 = 24 hours)
+# renewal_token_ttl_secs = 86400
+# Rotation window in seconds — when remaining lifetime drops below this
+# threshold, a deterministic successor token is issued (default: 21600 = 6 hours)
+# renewal_rotation_window_secs = 21600
+# Base64-encoded secret for deterministic renewal token rotation.
+# Must decode to at least 32 bytes. Must be identical across the actrix cluster.
+# Generate: openssl rand -base64 32
+# renewal_token_secret = "..."
 
 # AIS automatically uses local KS if enabled, or configure explicitly (optional):
 # [services.ais.dependencies.ks]

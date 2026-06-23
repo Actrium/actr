@@ -73,7 +73,8 @@ SignalingEnvelope {
         result: Success {
             actr_id: ActrId,
             credential: AIdCredential,
-            psk: Option<Bytes>,
+            turn_credential: TurnCredential,
+            renewal_token: Option<Bytes>,
             credential_expires_at: Timestamp,
             signaling_heartbeat_interval_secs: u32,
         }

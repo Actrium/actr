@@ -737,6 +737,30 @@ impl ActrixConfig {
                             .to_string(),
                     );
                 }
+                // 验证 renewal_token_secret 配置
+                if ais.server.renewal_token_secret.is_empty() {
+                    errors.push("services.ais.server.renewal_token_secret is required".to_string());
+                } else {
+                    match base64::Engine::decode(
+                        &base64::engine::general_purpose::STANDARD,
+                        &ais.server.renewal_token_secret,
+                    ) {
+                        Ok(decoded) if decoded.len() >= 32 => {}
+                        Ok(decoded) => {
+                            errors.push(format!(
+                                "services.ais.server.renewal_token_secret must decode to \
+                                 at least 32 bytes, got {} byte(s)",
+                                decoded.len()
+                            ));
+                        }
+                        Err(e) => {
+                            errors.push(format!(
+                                "services.ais.server.renewal_token_secret is not valid \
+                                 base64: {e}"
+                            ));
+                        }
+                    }
+                }
             } else {
                 // AIS 位掩码已设置但 services.ais 配置缺失
                 errors.push(

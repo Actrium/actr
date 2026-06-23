@@ -18,3 +18,4 @@ pub use secret::{
     RealmSecretRotation, RealmSecretState, get_realm_secret_state, hash_realm_secret,
     rotate_realm_secret, verify_realm_secret,
 };
+pub use validation::RealmValidationError;

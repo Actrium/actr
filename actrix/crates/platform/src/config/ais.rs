@@ -32,6 +32,27 @@ pub struct AisServerConfig {
     /// 生成的 AIdCredential 的过期时间
     #[serde(default = "default_token_ttl_secs")]
     pub token_ttl_secs: u64,
+
+    /// Renewal token 有效期（秒）
+    ///
+    /// 初始签发 renewal token 时的 TTL。到达 rotation window 时
+    /// 确定性派生 successor token，旧 token 在自身 expiry 前持续有效。
+    #[serde(default = "default_renewal_token_ttl_secs")]
+    pub renewal_token_ttl_secs: u64,
+
+    /// Renewal rotation window（秒）
+    ///
+    /// 当 renewal token 剩余有效期小于此值时进入 rotation window，
+    /// 开始确定性派生 successor token。
+    #[serde(default = "default_renewal_rotation_window_secs")]
+    pub renewal_rotation_window_secs: u64,
+
+    /// Renewal token secret（base64 编码，解码后至少 32 字节）
+    ///
+    /// 用于确定性派生 successor token（HMAC-SHA256）。
+    /// 必须在同一 actrix 集群内一致。不得使用 `actrix_shared_key` 作为回退。
+    #[serde(default)]
+    pub renewal_token_secret: String,
 }
 
 /// AIS 依赖的外部服务
@@ -51,6 +72,9 @@ impl Default for AisServerConfig {
         Self {
             signaling_heartbeat_interval_secs: default_signaling_heartbeat_interval_secs(),
             token_ttl_secs: default_token_ttl_secs(),
+            renewal_token_ttl_secs: default_renewal_token_ttl_secs(),
+            renewal_rotation_window_secs: default_renewal_rotation_window_secs(),
+            renewal_token_secret: String::new(),
         }
     }
 }
@@ -63,6 +87,16 @@ fn default_signaling_heartbeat_interval_secs() -> u32 {
 /// 默认 Token 有效期：1 小时（3600 秒）
 fn default_token_ttl_secs() -> u64 {
     3600
+}
+
+/// 默认 Renewal Token 有效期：24 小时（86400 秒）
+fn default_renewal_token_ttl_secs() -> u64 {
+    86400
+}
+
+/// 默认 Renewal Rotation Window：6 小时（21600 秒）
+fn default_renewal_rotation_window_secs() -> u64 {
+    21600
 }
 
 impl AisConfig {

@@ -282,6 +282,33 @@ impl Database {
             }
         }
 
+        // AIS renewal token table — only stores SHA-256(token), never the raw token.
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS ais_renewal_token (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_id TEXT NOT NULL,
+                token_hash BLOB NOT NULL UNIQUE,
+                expires_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_ais_renewal_token_actor
+             ON ais_renewal_token(actor_id)",
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_ais_renewal_token_expires
+             ON ais_renewal_token(expires_at)",
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
