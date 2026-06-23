@@ -114,6 +114,13 @@ capture_diagnostics() {
         grep -iE "heartbeat|disconnect|registry|cleanup|ghost|acl|filter|error|warn" "$LOG_DIR/server.log" >"$diag_dir/server-filtered.log" 2>/dev/null || true
     fi
 
+    # Capture a short macOS stack sample when the wasm service host is still
+    # alive but has not registered. This keeps timeout failures actionable
+    # without changing the steady-state happy path.
+    if [ -n "${SERVER_PID:-}" ] && kill -0 "$SERVER_PID" 2>/dev/null && command -v sample >/dev/null 2>&1; then
+        sample "$SERVER_PID" 5 1 -file "$diag_dir/server.sample.txt" >/dev/null 2>&1 || true
+    fi
+
     # App logs
     if [ -f "$APP_STDOUT_LOG" ]; then
         cp "$APP_STDOUT_LOG" "$diag_dir/app-stdout.log" 2>/dev/null || true
@@ -860,9 +867,9 @@ check_service_ready() {
 
     local db_path="$SQLITE_DIR/signaling_cache.db"
     # The TS workload is a JS-on-wasm component; its first wasmtime compile +
-    # instantiate during `actr run` attach can take well over a minute, so allow
-    # a generous default registration window.
-    local timeout="${SERVICE_READY_TIMEOUT_SECONDS:-240}"
+    # instantiate during `actr run` attach can exceed four minutes on cold
+    # GitHub macOS runners, so keep a wider default registration window.
+    local timeout="${SERVICE_READY_TIMEOUT_SECONDS:-600}"
     if ! wait_for_service_registration \
         "$db_path" \
         "$REALM_ID" \

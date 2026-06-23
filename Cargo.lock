@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "actrix"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actr-protocol",
  "actr-runtime",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-admin"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actrix-platform",
  "actrix-proto",
@@ -499,7 +499,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-ais"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actr-protocol",
  "actrix-mfr",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-mfr"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actrix-platform",
  "axum",
@@ -560,7 +560,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-platform"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actr-protocol",
  "actrix-proto",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-proto"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "prost 0.14.3",
  "prost-types",
@@ -619,14 +619,14 @@ dependencies = [
 
 [[package]]
 name = "actrix-sdk"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actrix-admin",
 ]
 
 [[package]]
 name = "actrix-signaling"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actr-protocol",
  "actrix-platform",
@@ -657,7 +657,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-signer"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actrix-proto",
  "aes-gcm",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-stun"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actrix-platform",
  "anyhow",
@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "actrix-turn"
-version = "0.1.2"
+version = "0.4.0"
 dependencies = [
  "actr-protocol",
  "actrix-platform",
