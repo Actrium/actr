@@ -1135,17 +1135,7 @@ impl SwRuntime {
 
         // 2. Clear stale peer / target state so the next RPC forces
         //    a fresh discovery & WebRTC handshake.
-        self.discovered_targets.clear();
-        self.known_peers.clear();
-        self.open_channels.clear();
-        self.pending_channel_data.clear();
-        self.role_negotiated.clear();
-        self.role_assignments.clear();
-        self.pending_local_sdp_exchanges.clear();
-        self.pending_remote_sdp_exchanges.clear();
-        self.ice_restart_inflight.clear();
-        self.ice_restart_attempts.clear();
-        self.peer_connection_states.clear();
+        self.clear_peer_state_for_signaling_reconnect();
 
         // 3. Obtain credential: try restore from IndexedDB, else re-register via AIS HTTP.
         let cred_kv_ns = self.cred_kv_namespace();
@@ -1177,14 +1167,33 @@ impl SwRuntime {
         }
 
         // 4. Build signaling URL with credential and connect.
-        let url_with_cred = self.build_signaling_url_with_identity();
-        self.signaling =
-            SignalingClient::connect_with_retries(&url_with_cred, &self.reconnect_config).await?;
+        self.connect_signaling_with_current_identity().await?;
 
         log::info!(
             "[SW] [{}] Signaling reconnected (AIS HTTP credential)",
             self.client_id
         );
+        Ok(())
+    }
+
+    fn clear_peer_state_for_signaling_reconnect(&mut self) {
+        self.discovered_targets.clear();
+        self.known_peers.clear();
+        self.open_channels.clear();
+        self.pending_channel_data.clear();
+        self.role_negotiated.clear();
+        self.role_assignments.clear();
+        self.pending_local_sdp_exchanges.clear();
+        self.pending_remote_sdp_exchanges.clear();
+        self.ice_restart_inflight.clear();
+        self.ice_restart_attempts.clear();
+        self.peer_connection_states.clear();
+    }
+
+    async fn connect_signaling_with_current_identity(&mut self) -> Result<(), JsValue> {
+        let url_with_cred = self.build_signaling_url_with_identity();
+        self.signaling =
+            SignalingClient::connect_with_retries(&url_with_cred, &self.reconnect_config).await?;
         Ok(())
     }
 
@@ -1200,6 +1209,13 @@ impl SwRuntime {
             if let Some(ref tc) = self.turn_credential {
                 self.send_turn_credential_to_dom(tc)?;
             }
+            self.signaling.close();
+            self.clear_peer_state_for_signaling_reconnect();
+            self.connect_signaling_with_current_identity().await?;
+            log::info!(
+                "[SW] [{}] signaling reconnected after AIS re-registration",
+                self.client_id
+            );
             return Ok(());
         };
 

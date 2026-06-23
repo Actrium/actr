@@ -11,6 +11,7 @@ CI_GATE_WORKFLOW = ROOT / ".github/workflows/ci-gate.yml"
 CI_E2E_WORKFLOW = ROOT / ".github/workflows/ci-e2e.yml"
 RELEASE_TRAIN_WORKFLOW = ROOT / ".github/workflows/release-train.yml"
 RELEASE_TRAIN_SCRIPT = ROOT / "scripts/release-train.sh"
+CLI_TEST_SUPPORT = ROOT / "cli/src/test_support.rs"
 SWIFT_E2E_READINESS = ROOT / "e2e/swift-echo-app/lib/readiness.sh"
 
 
@@ -140,29 +141,45 @@ def test_swift_echoapp_e2e_job_present() -> None:
     assert "bash e2e/swift-echo-app/run.sh" in swift_job
 
 
-def test_e2e_actrix_artifact_download_uses_shared_script() -> None:
+def test_e2e_actrix_uses_in_tree_install_instead_of_artifact_download() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
     pkg_job = _job(workflow, "package-runtime-echo-e2e", "typescript-e2e")
     swift_job = _job(workflow, "swift-echo-app-e2e", "python-web-e2e")
 
-    # Both jobs call the shared script with arch-appropriate artifact names
-    assert "bash .github/scripts/download-actrix-artifact.sh actrix-linux-x86_64" in pkg_job
-    assert "bash .github/scripts/download-actrix-artifact.sh actrix-macos-arm64" in swift_job
+    assert "download-actrix-artifact.sh" not in workflow
+    assert "ACTR_E2E_ACTRIX_ARTIFACT" not in workflow
+    assert "ACTRIX_READ_TOKEN" not in workflow
+    assert "Actrium/actrix" not in workflow
+    assert "actions: read" not in workflow
 
-    # Linux runner gets x86_64, macOS runner gets arm64
     assert "runs-on: ubuntu-latest" in pkg_job
-    assert "actrix-linux-x86_64" in pkg_job
     assert "runs-on: macos-latest" in swift_job
-    assert "actrix-macos-arm64" in swift_job
 
 
 def test_e2e_no_private_actrix_checkout() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    common = (ROOT / "e2e/package-runtime-echo/lib/common.sh").read_text(encoding="utf-8")
+    cli_support = CLI_TEST_SUPPORT.read_text(encoding="utf-8")
 
     # No private Actrix checkout git config in any job
     assert "insteadOf" not in workflow
     assert "x-access-token" not in workflow
     assert "Configure git for private Actrix checkout" not in workflow
+    assert "Actrium/actrix" not in common
+    assert "git clone" not in common
+    assert 'actrix_repo_dir="$repo_root/actrix"' in common
+    assert "Actrium/actrix" not in cli_support
+    assert "DEFAULT_ACTRIX_REPO" not in cli_support
+    assert "ACTR_E2E_ACTRIX_REPO" not in cli_support
+    assert "ACTR_E2E_ACTRIX_REV" not in cli_support
+    assert "ACTR_E2E_ACTRIX_BIN" not in cli_support
+    assert "git clone actrix" not in cli_support
+    assert "ACTR_E2E_ACTRIX_ARTIFACT" not in cli_support
+    assert "DEFAULT_ACTRIX_ARTIFACT" not in cli_support
+    assert "latest_successful_actrix_run" not in cli_support
+    assert "try_ensure_actrix_artifact_binary" not in cli_support
+    assert 'std::env::var("ACTRIX_BIN")' in cli_support
+    assert 'workspace_root().join("actrix")' in cli_support
 
 
 def test_e2e_no_inline_archive_download_url() -> None:
@@ -172,12 +189,12 @@ def test_e2e_no_inline_archive_download_url() -> None:
     assert "archive_download_url" not in workflow
 
 
-def test_e2e_linux_deps_includes_unzip() -> None:
+def test_e2e_linux_deps_do_not_include_unused_unzip() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
     pkg_job = _job(workflow, "package-runtime-echo-e2e", "typescript-e2e")
 
-    # unzip is required by the download script on Linux
-    assert "unzip" in pkg_job
+    # actrix is installed from the in-tree source path; no artifact unzip is needed.
+    assert "unzip" not in pkg_job
 
 
 def test_e2e_linux_job_has_no_ios_rust_targets() -> None:
@@ -232,16 +249,8 @@ def test_e2e_no_call_remote_in_ffi() -> None:
     assert "callRemote" not in swift_actr_ref
 
 
-def test_download_script_explicit_empty_runs_check() -> None:
-    script = (ROOT / ".github/scripts/download-actrix-artifact.sh").read_text(encoding="utf-8")
-
-    # P2 fix: must not use jq -er on .workflow_runs[0] without an explicit
-    # empty-list guard. The script must check for empty RUN_ID and call fail
-    # with a clear message, not let jq exit silently.
-    assert 'No successful actrix CI run found' in script
-    assert 'jq -r \'.workflow_runs[0].id // ""\'' in script
-    # Must NOT use the old pattern that exits silently on empty list
-    assert 'jq -er \'.workflow_runs[0].id\'' not in script
+def test_no_actrix_release_train_artifact_download_script() -> None:
+    assert not (ROOT / ".github/scripts/download-actrix-artifact.sh").exists()
 
 
 def test_run_sh_uses_correct_signaling_cache_table() -> None:
@@ -322,11 +331,11 @@ def test_swift_datastream_job_runs_on_macos() -> None:
     assert "runs-on: macos-latest" in ds_job
 
 
-def test_swift_datastream_job_downloads_actrix_artifact() -> None:
-    """Verify the datastream job downloads the actrix macOS arm64 artifact."""
+def test_swift_datastream_job_does_not_download_actrix_artifact() -> None:
+    """Verify the datastream job builds actrix from the in-tree source path."""
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
     ds_job = _job(workflow, "swift-datastream-app-e2e", "python-web-e2e")
-    assert "bash .github/scripts/download-actrix-artifact.sh actrix-macos-arm64" in ds_job
+    assert "download-actrix-artifact.sh" not in ds_job
 
 
 def test_swift_datastream_job_builds_xcframework() -> None:
@@ -451,21 +460,21 @@ if __name__ == "__main__":
     test_release_train_verifies_ci_gate_triggered()
     test_release_train_forwards_release_context()
     test_swift_echoapp_e2e_job_present()
-    test_e2e_actrix_artifact_download_uses_shared_script()
+    test_e2e_actrix_uses_in_tree_install_instead_of_artifact_download()
     test_e2e_no_private_actrix_checkout()
     test_e2e_no_inline_archive_download_url()
-    test_e2e_linux_deps_includes_unzip()
+    test_e2e_linux_deps_do_not_include_unused_unzip()
     test_e2e_linux_job_has_no_ios_rust_targets()
     test_e2e_workspace_prebuilds_use_locked_cargo_resolution()
     test_swift_e2e_upload_artifact_on_failure()
     test_e2e_no_call_remote_in_ffi()
-    test_download_script_explicit_empty_runs_check()
+    test_no_actrix_release_train_artifact_download_script()
     test_run_sh_uses_correct_signaling_cache_table()
     test_service_readiness_rejects_missing_or_unrelated_registration()
     test_service_readiness_waits_for_exact_registration()
     test_nightly_e2e_includes_swift_datastream()
     test_swift_datastream_job_runs_on_macos()
-    test_swift_datastream_job_downloads_actrix_artifact()
+    test_swift_datastream_job_does_not_download_actrix_artifact()
     test_swift_datastream_job_builds_xcframework()
     test_swift_datastream_timeout_not_less_than_240()
     test_swift_datastream_job_not_in_pr_gate()

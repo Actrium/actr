@@ -328,16 +328,21 @@ pub async fn build_register_ok(
         signaling_heartbeat_interval_secs: 30,
         signing_pubkey: verifying_key.to_bytes().to_vec().into(),
         signing_key_id: state.ais_signing_key_id(),
-        renewal_token: Some(
-            format!("mock-renewal-token-{serial:016x}-32b")
-                .into_bytes()
-                .into(),
-        ),
+        renewal_token: Some(mock_renewal_token(serial).into()),
         renewal_token_expires_at: Some(prost_types::Timestamp {
             seconds: chrono::Utc::now().timestamp() + 86400,
             nanos: 0,
         }),
     }
+}
+
+pub(crate) fn mock_renewal_token(serial: u64) -> Vec<u8> {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"actr-mock-actrix-renewal-token-v1");
+    hasher.update(serial.to_be_bytes());
+    hasher.finalize().to_vec()
 }
 
 async fn handle_actr_to_server(
@@ -863,14 +868,14 @@ fn parse_actor_id(s: &str) -> Option<ActrId> {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_reachable_route_candidates, forward_relay_to_target, now_timestamp,
-        resolve_role_negotiation_targets,
+        build_register_ok, collect_reachable_route_candidates, forward_relay_to_target,
+        now_timestamp, resolve_role_negotiation_targets,
     };
     use crate::state::{MockState, RegisteredActor};
     use actr_protocol::prost::Message as ProstMessage;
     use actr_protocol::{
-        AIdCredential, ActrId, ActrRelay, ActrType, Realm, SessionDescription, SignalingEnvelope,
-        actr_relay, session_description::Type as SdpType, signaling_envelope,
+        AIdCredential, ActrId, ActrRelay, ActrType, Realm, RegisterRequest, SessionDescription,
+        SignalingEnvelope, actr_relay, session_description::Type as SdpType, signaling_envelope,
     };
     use axum::extract::ws::Message;
     use ed25519_dalek::SigningKey;
@@ -912,6 +917,34 @@ mod tests {
             SigningKey::from_bytes(&[43u8; 32]),
             CancellationToken::new(),
         ))
+    }
+
+    #[tokio::test]
+    async fn register_ok_uses_32_byte_renewal_token() {
+        let state = test_state();
+        let req = RegisterRequest {
+            actr_type: ActrType {
+                manufacturer: "acme".to_string(),
+                name: "EchoService".to_string(),
+                version: "0.1.0".to_string(),
+            },
+            realm: Realm { realm_id: 7 },
+            service_spec: None,
+            acl: None,
+            service: None,
+            ws_address: None,
+            manifest_raw: None,
+            mfr_signature: None,
+            target: None,
+            auth_mode: None,
+        };
+
+        let ok = build_register_ok(&req, &state).await;
+        let token = ok
+            .renewal_token
+            .expect("mock registration should include renewal token");
+
+        assert_eq!(token.len(), 32);
     }
 
     #[test]

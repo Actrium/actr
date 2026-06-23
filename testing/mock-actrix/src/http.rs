@@ -105,9 +105,9 @@ pub async fn renew_handler(
     let actor_id = &req.actr_id;
 
     // Derive the expected mock renewal token from the serial number.
-    let expected_token = format!("mock-renewal-token-{:016x}-32b", actor_id.serial_number);
+    let expected_token = signaling::mock_renewal_token(actor_id.serial_number);
 
-    if req.renewal_token.as_ref() != expected_token.as_bytes() {
+    if req.renewal_token.as_ref() != expected_token.as_slice() {
         tracing::warn!(
             serial = actor_id.serial_number,
             "mock-actrix: renewal token rejected"
@@ -148,7 +148,7 @@ pub async fn renew_handler(
     register_ok.actr_id = actor_id.clone();
     // Keep the mock renewal token bound to the preserved ActrId, not to the
     // temporary serial allocated by build_register_ok().
-    register_ok.renewal_token = Some(expected_token.into_bytes().into());
+    register_ok.renewal_token = Some(expected_token.into());
 
     let response = RenewCredentialResponse {
         result: Some(renew_credential_response::Result::Success(
