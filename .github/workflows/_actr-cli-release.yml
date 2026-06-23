@@ -7,7 +7,6 @@ on:
       source_ref: { required: true, type: string }
       publish: { required: true, type: boolean }
       replace_assets: { required: true, type: boolean }
-      create_release: { required: true, type: boolean }
 
 permissions:
   contents: read
@@ -159,7 +158,6 @@ jobs:
           set -euo pipefail
           args=(publish --tag "${{ inputs.tag }}" --assets "$GITHUB_WORKSPACE/artifacts" --state-file "$GITHUB_WORKSPACE/release-train-v${{ needs.validate.outputs.version }}.publish-cli-binaries.state.tsv")
           [[ "${{ inputs.replace_assets }}" == true ]] && args+=(--replace)
-          [[ "${{ inputs.create_release }}" == true ]] && args+=(--create-release)
           automation/scripts/release-actr-cli.sh "${args[@]}"
       - name: Upload publish state
         if: always()
