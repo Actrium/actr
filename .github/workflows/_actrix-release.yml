@@ -29,6 +29,7 @@ jobs:
           path: source
           fetch-depth: 0
       - uses: actions/checkout@v5
+        if: inputs.publish
         with:
           ref: ${{ inputs.tag }}
           path: tag-source
@@ -37,6 +38,7 @@ jobs:
         id: release
         env:
           TAG: ${{ inputs.tag }}
+          PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
           [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]] || {
@@ -49,9 +51,15 @@ jobs:
             echo "::error::Tag $TAG contains workspace version $WORKSPACE_VERSION"
             exit 1
           }
+          SOURCE_SHA=$(git -C source rev-parse HEAD)
+          if [[ "$PUBLISH" == "true" ]]; then
+            TAG_SHA=$(git -C tag-source rev-parse HEAD)
+          else
+            TAG_SHA="$SOURCE_SHA"
+          fi
           echo "version=$VERSION" >>"$GITHUB_OUTPUT"
-          echo "tag_sha=$(git -C tag-source rev-parse HEAD)" >>"$GITHUB_OUTPUT"
-          echo "source_sha=$(git -C source rev-parse HEAD)" >>"$GITHUB_OUTPUT"
+          echo "tag_sha=$TAG_SHA" >>"$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >>"$GITHUB_OUTPUT"
 
   build:
     name: ${{ matrix.target.asset }}
@@ -60,8 +68,10 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - { os: ubuntu-latest, asset: actrix-linux-x86_64 }
-          - { os: macos-14, asset: actrix-macos-arm64 }
+          - { os: ubuntu-latest, asset: actrix-linux-x86_64, exe_ext: "" }
+          - { os: ubuntu-24.04-arm, asset: actrix-linux-arm64, exe_ext: "" }
+          - { os: macos-14, asset: actrix-macos-arm64, exe_ext: "" }
+          - { os: windows-latest, asset: actrix-windows-x86_64, exe_ext: ".exe" }
     runs-on: ${{ matrix.target.os }}
     timeout-minutes: 30
     steps:
@@ -73,15 +83,10 @@ jobs:
         with:
           path: automation
 
-      - name: Install protoc (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-
-      - name: Install protoc (macOS)
-        if: runner.os == 'macOS'
-        run: brew install protobuf
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -112,14 +117,15 @@ jobs:
         working-directory: source
 
       - name: Stage binary
+        shell: bash
         run: |
           mkdir -p dist
-          cp source/target/release/actrix "dist/${{ matrix.target.asset }}"
+          cp "source/target/release/actrix${{ matrix.target.exe_ext }}" "dist/${{ matrix.target.asset }}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: actrix-${{ matrix.target.asset }}
+          name: ${{ matrix.target.asset }}
           path: dist/${{ matrix.target.asset }}
           if-no-files-found: error
 
@@ -139,7 +145,7 @@ jobs:
 
       - name: Verify complete asset set
         env:
-          ASSETS: actrix-linux-x86_64 actrix-macos-arm64
+          ASSETS: actrix-linux-x86_64 actrix-linux-arm64 actrix-macos-arm64 actrix-windows-x86_64
         run: |
           set -euo pipefail
           for asset in $ASSETS; do

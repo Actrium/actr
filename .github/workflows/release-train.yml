@@ -717,7 +717,7 @@ jobs:
     uses: ./.github/workflows/_actr-cli-release.yml
     with:
       tag: v${{ needs.context.outputs.version }}
-      source_ref: v${{ needs.context.outputs.version }}
+      source_ref: ${{ fromJSON(needs.context.outputs.dry_run) && needs.context.outputs.release_sha || format('v{0}', needs.context.outputs.version) }}
       publish: ${{ !fromJSON(needs.context.outputs.dry_run) }}
       replace_assets: true
     secrets: inherit
@@ -731,7 +731,21 @@ jobs:
     uses: ./.github/workflows/_actrix-release.yml
     with:
       tag: v${{ needs.context.outputs.version }}
-      source_ref: v${{ needs.context.outputs.version }}
+      source_ref: ${{ fromJSON(needs.context.outputs.dry_run) && needs.context.outputs.release_sha || format('v{0}', needs.context.outputs.version) }}
+      publish: ${{ !fromJSON(needs.context.outputs.dry_run) }}
+      replace_assets: true
+    secrets: inherit
+
+  # ── Publish Protoc Plugin Assets ─────────────────────────────────────────
+  publish-protoc-plugins:
+    name: Publish protoc plugin assets
+    needs:
+      - context
+      - create-release
+    uses: ./.github/workflows/_protoc-plugins-release.yml
+    with:
+      tag: v${{ needs.context.outputs.version }}
+      source_ref: ${{ fromJSON(needs.context.outputs.dry_run) && needs.context.outputs.release_sha || format('v{0}', needs.context.outputs.version) }}
       publish: ${{ !fromJSON(needs.context.outputs.dry_run) }}
       replace_assets: true
     secrets: inherit
@@ -754,6 +768,7 @@ jobs:
       - publish-typescript
       - publish-cli
       - publish-actrix
+      - publish-protoc-plugins
     runs-on: ubuntu-latest
     steps:
       - name: Checkout main
