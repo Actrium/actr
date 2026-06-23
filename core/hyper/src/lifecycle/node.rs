@@ -1336,6 +1336,9 @@ impl Inner {
                         ctx_builder,
                     ))
                 };
+            credential_manager
+                .install_hook_callback(node_hook_callback.clone())
+                .await;
 
             // Fire `on_credential_renewed` at initial registration: the
             // credential is considered "renewed" from "nothing" to the

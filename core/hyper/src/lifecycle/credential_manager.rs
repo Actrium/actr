@@ -28,7 +28,7 @@ use tokio::sync::Mutex;
 use crate::ais_client::{AisClient, RenewError};
 use crate::transport::PeerTransport;
 use crate::wire::webrtc::gate::WebRtcGate;
-use crate::wire::webrtc::{SignalingClient, WebRtcCoordinator};
+use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
 
 use super::node::CredentialState;
 use super::session_state::{SessionSnapshot, SessionState};
@@ -71,6 +71,8 @@ pub(crate) struct CredentialManager {
     inflight: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
     /// Runtime handles that must be updated after hard rebind commits.
     hard_rebind_handles: Arc<Mutex<Option<HardRebindHandles>>>,
+    /// Lifecycle callback notified after soft renewal commits.
+    hook_callback: Arc<Mutex<Option<HookCallback>>>,
 }
 
 #[derive(Clone)]
@@ -97,6 +99,7 @@ impl CredentialManager {
             renewing: Arc::new(AtomicBool::new(false)),
             inflight: Arc::new(Mutex::new(None)),
             hard_rebind_handles: Arc::new(Mutex::new(None)),
+            hook_callback: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -107,6 +110,10 @@ impl CredentialManager {
 
     pub(crate) async fn install_hard_rebind_handles(&self, handles: HardRebindHandles) {
         *self.hard_rebind_handles.lock().await = Some(handles);
+    }
+
+    pub(crate) async fn install_hook_callback(&self, callback: Option<HookCallback>) {
+        *self.hook_callback.lock().await = callback;
     }
 
     /// Entry point for all renewal triggers. Returns immediately if a
@@ -124,16 +131,19 @@ impl CredentialManager {
         let registration_ctx = self.registration_ctx.clone();
         let renewing = self.renewing.clone();
         let hard_rebind_handles = self.hard_rebind_handles.clone();
+        let hook_callback = self.hook_callback.clone();
 
         // Spawn the actual work so the caller isn't blocked.
         let handle = tokio::spawn(async move {
             let handles = hard_rebind_handles.lock().await.clone();
+            let hook_callback = hook_callback.lock().await.clone();
             let result = run_renewal_once(
                 session,
                 ais_endpoint,
                 realm_secret,
                 registration_ctx,
                 handles,
+                hook_callback,
             )
             .await;
             if let Err(err) = result {
@@ -167,6 +177,7 @@ async fn run_renewal_once(
     realm_secret: Option<String>,
     registration_ctx: RegistrationContext,
     hard_rebind_handles: Option<HardRebindHandles>,
+    hook_callback: Option<HookCallback>,
 ) -> Result<(), String> {
     let snapshot = session.snapshot().await;
 
@@ -283,6 +294,8 @@ async fn run_renewal_once(
             )
             .await;
     }
+
+    fire_credential_renewed(hook_callback.as_ref(), &credential_expires_at).await;
 
     tracing::info!(
         actor_id = %snapshot.actor_id.to_string_repr(),
@@ -435,14 +448,26 @@ fn is_expired(expires_at: i64) -> bool {
     expires_at <= now
 }
 
+async fn fire_credential_renewed(
+    hook_callback: Option<&HookCallback>,
+    expires_at: &prost_types::Timestamp,
+) {
+    if let Some(callback) = hook_callback {
+        let new_expiry =
+            SystemTime::UNIX_EPOCH + Duration::from_secs(expires_at.seconds.max(0) as u64);
+        callback(HookEvent::CredentialRenewed { new_expiry }).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use actr_protocol::{
-        AIdCredential, ActrId, ActrType, Realm, RegisterRequest, RegisterResponse, TurnCredential,
-        register_response,
+        AIdCredential, ActrId, ActrType, IdentityClaims, Realm, RegisterRequest, RegisterResponse,
+        RenewCredentialResponse, TurnCredential, register_response, renew_credential_response,
     };
     use prost::bytes::Bytes;
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
     fn actor(serial: u64) -> ActrId {
         ActrId {
@@ -460,6 +485,19 @@ mod tests {
         AIdCredential {
             key_id,
             claims: Bytes::new(),
+            signature: Bytes::from(vec![0; 64]),
+        }
+    }
+
+    fn credential_for_actor(actor_id: &ActrId, key_id: u32, expires_at: u64) -> AIdCredential {
+        let claims = IdentityClaims {
+            realm_id: actor_id.realm.realm_id,
+            actor_id: actor_id.to_string_repr(),
+            expires_at,
+        };
+        AIdCredential {
+            key_id,
+            claims: claims.encode_to_vec().into(),
             signature: Bytes::from(vec![0; 64]),
         }
     }
@@ -538,6 +576,7 @@ mod tests {
                 realm_secret: None,
             },
             None,
+            None,
         )
         .await
         .expect("hard rebind should commit new snapshot");
@@ -551,6 +590,103 @@ mod tests {
             session.phase().await,
             super::super::session_state::SessionPhase::Active
         );
+    }
+
+    #[tokio::test]
+    async fn soft_renewal_fires_credential_renewed_hook() {
+        const OLD_EXPIRY: i64 = 4_000_000_000;
+        const NEW_EXPIRY: i64 = 4_000_001_000;
+        let actor_id = actor(1);
+        let mut server = mockito::Server::new_async().await;
+        let response = RenewCredentialResponse {
+            result: Some(renew_credential_response::Result::Success(
+                register_response::RegisterOk {
+                    actr_id: actor_id.clone(),
+                    credential: credential_for_actor(&actor_id, 9, NEW_EXPIRY as u64),
+                    turn_credential: TurnCredential {
+                        username: "4000001000:actor-1".to_string(),
+                        password: "turn-password".to_string(),
+                        expires_at: NEW_EXPIRY as u64,
+                    },
+                    credential_expires_at: Some(prost_types::Timestamp {
+                        seconds: NEW_EXPIRY,
+                        nanos: 0,
+                    }),
+                    signaling_heartbeat_interval_secs: 30,
+                    signing_pubkey: Bytes::from(vec![1; 32]),
+                    signing_key_id: 9,
+                    renewal_token: Some(Bytes::from(vec![8; 32])),
+                    renewal_token_expires_at: Some(prost_types::Timestamp {
+                        seconds: NEW_EXPIRY + 1000,
+                        nanos: 0,
+                    }),
+                },
+            )),
+        };
+        let mock = server
+            .mock("POST", "/renew")
+            .with_status(200)
+            .with_header("content-type", "application/x-protobuf")
+            .with_body(response.encode_to_vec())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let session = SessionState::new(super::super::session_state::SessionSnapshot {
+            actor_id: actor_id.clone(),
+            credential: credential_for_actor(&actor_id, 1, OLD_EXPIRY as u64),
+            credential_expires_at: prost_types::Timestamp {
+                seconds: OLD_EXPIRY,
+                nanos: 0,
+            },
+            turn_credential: TurnCredential {
+                username: "4000000000:actor-1".to_string(),
+                password: "old".to_string(),
+                expires_at: OLD_EXPIRY as u64,
+            },
+            renewal_token: Bytes::from(vec![7; 32]),
+            renewal_token_expires_at: prost_types::Timestamp {
+                seconds: OLD_EXPIRY + 1000,
+                nanos: 0,
+            },
+            generation: 1,
+        });
+
+        let hook_expiry = Arc::new(AtomicU64::new(0));
+        let hook_expiry_for_cb = hook_expiry.clone();
+        let hook_callback: crate::wire::webrtc::HookCallback = Arc::new(move |event| {
+            let hook_expiry = hook_expiry_for_cb.clone();
+            Box::pin(async move {
+                if let crate::wire::webrtc::HookEvent::CredentialRenewed { new_expiry } = event {
+                    let secs = new_expiry
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("expiry should be after epoch")
+                        .as_secs();
+                    hook_expiry.store(secs, AtomicOrdering::SeqCst);
+                }
+            })
+        });
+
+        run_renewal_once(
+            session,
+            server.url(),
+            None,
+            RegistrationContext::Linked {
+                request: RegisterRequest {
+                    actr_type: actor_id.r#type.clone(),
+                    realm: actor_id.realm,
+                    ..Default::default()
+                },
+                realm_secret: None,
+            },
+            None,
+            Some(hook_callback),
+        )
+        .await
+        .expect("soft renewal should succeed");
+
+        mock.assert_async().await;
+        assert_eq!(hook_expiry.load(AtomicOrdering::SeqCst), NEW_EXPIRY as u64);
     }
 
     #[test]
