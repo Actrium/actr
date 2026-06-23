@@ -15,7 +15,7 @@ use actr_hyper::lifecycle::{
     run_network_event_reconciler, select_network_recovery_action,
 };
 use actr_hyper::outbound::PeerGate;
-use actr_hyper::test_support::TestHarness;
+use actr_hyper::test_support::{TestHarness, install_test_crypto_provider};
 use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActrId, DataStream, PayloadType, RpcEnvelope};
@@ -1190,6 +1190,8 @@ fn test_mobile_jsonl_replay_maps_real_log_shape_to_recovery_actions() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_mobile_app_kill_cleanup_then_restart_online_recovers_bidirectional_server_send() {
+    install_test_crypto_provider();
+
     init_tracing();
 
     for case in ROLE_CASES {
@@ -1310,6 +1312,8 @@ async fn test_mobile_app_kill_cleanup_then_restart_online_recovers_bidirectional
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_mobile_app_kill_restart_offline_bounds_server_send_until_online_restore() {
+    install_test_crypto_provider();
+
     init_tracing();
 
     for case in ROLE_CASES {
@@ -1435,6 +1439,8 @@ async fn test_mobile_app_kill_restart_offline_bounds_server_send_until_online_re
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_complex_mobile_event_storms_with_real_network_outage() {
+    install_test_crypto_provider();
+
     init_tracing();
 
     for case in ROLE_CASES {
@@ -1532,6 +1538,8 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bounded() {
+    install_test_crypto_provider();
+
     init_tracing();
 
     for case in ROLE_CASES {

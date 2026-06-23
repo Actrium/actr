@@ -803,7 +803,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn re_registration_updates_webrtc_coordinator_local_id() {
+    async fn credential_expiry_does_not_re_register_or_update_webrtc_local_id() {
         let initial_id = test_actor_id(1);
         let renewed_id = test_actor_id(2);
         let credential_state = CredentialState::new(test_credential(), None, None);
@@ -870,8 +870,8 @@ mod tests {
         )
         .await;
 
-        assert_eq!(updated_id, Some(renewed_id.clone()));
-        assert_eq!(coordinator.local_id_for_test(), renewed_id);
+        assert_eq!(updated_id, None);
+        assert_eq!(coordinator.local_id_for_test(), initial_id);
     }
 
     use actr_protocol::RegisterAuthMode;

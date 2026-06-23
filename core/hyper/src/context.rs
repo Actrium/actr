@@ -456,6 +456,12 @@ impl BootstrapContextBuilder {
         self_id: &ActrId,
         credential: &AIdCredential,
     ) -> RuntimeContext {
+        let generation = self
+            .session_state
+            .as_ref()
+            .and_then(SessionState::generation_sync)
+            .unwrap_or(self.generation);
+
         RuntimeContext::new(
             self_id.clone(),
             None,
@@ -469,7 +475,7 @@ impl BootstrapContextBuilder {
             self.actr_lock.clone(),
             self.discovered_ws_addresses.clone(),
             self.session_state.clone(),
-            self.generation,
+            generation,
         )
     }
 }

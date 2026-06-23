@@ -16,7 +16,9 @@ use actr_hyper::lifecycle::{
     NetworkEventProcessor, NetworkEventResult, NetworkSnapshot, NetworkTransportFlags,
     process_network_event_batch,
 };
-use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
+use actr_hyper::test_support::{
+    TestSignalingServer, create_peer_with_websocket, install_test_crypto_provider, make_actor_id,
+};
 
 fn network_snapshot(sequence: u64, available: bool) -> NetworkSnapshot {
     NetworkSnapshot {
@@ -43,6 +45,8 @@ fn network_snapshot(sequence: u64, available: bool) -> NetworkSnapshot {
 /// Test network available triggers recovery
 #[tokio::test]
 async fn test_network_available_triggers_recovery() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)
@@ -159,6 +163,8 @@ async fn test_network_available_triggers_recovery() {
 /// Test network lost cleanup
 #[tokio::test]
 async fn test_network_lost_cleanup() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)
@@ -252,6 +258,8 @@ async fn test_network_lost_cleanup() {
 /// Test result feedback mechanism
 #[tokio::test]
 async fn test_result_feedback_mechanism() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)
@@ -308,6 +316,8 @@ async fn test_result_feedback_mechanism() {
 /// Test network repeatedly changing (multiple Available/Lost cycles)
 #[tokio::test]
 async fn test_network_repeatedly_changing() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)
@@ -463,6 +473,8 @@ async fn test_network_repeatedly_changing() {
 /// Test manual cleanup_connections (no debounce, always executes)
 #[tokio::test]
 async fn test_manual_cleanup_connections() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)
@@ -540,6 +552,8 @@ async fn test_manual_cleanup_connections() {
 /// Test cleanup_connections followed by network events (recovery after manual cleanup)
 #[tokio::test]
 async fn test_cleanup_then_network_events() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)

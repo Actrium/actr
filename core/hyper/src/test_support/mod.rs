@@ -30,7 +30,8 @@ pub use harness::{TestHarness, TestPeer};
 pub use signaling::TestSignalingServer;
 pub use utils::{
     create_credential_state_for_test, create_peer_with_vnet, create_peer_with_websocket,
-    dummy_credential, make_actor_id, spawn_echo_responder, spawn_response_receiver,
+    dummy_credential, install_test_crypto_provider, make_actor_id, spawn_echo_responder,
+    spawn_response_receiver,
 };
 pub use vnet::{VNetPair, create_vnet_pair};
 pub use wait::*;

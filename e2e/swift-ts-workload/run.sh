@@ -828,6 +828,9 @@ EOF
     local server_hyper_dir="$RUN_DIR/hyper/service"
     mkdir -p "$server_hyper_dir"
 
+    # The TS component is large enough that optimized Wasmtime compilation can
+    # exceed the macOS E2E registration window on cold runners.
+    ACTR_WASM_FAST_COMPILE="${ACTR_WASM_FAST_COMPILE:-1}" \
     RUST_LOG="${RUST_LOG:-info}" \
         run_actr run -c "$SERVER_RUNTIME_PATH" --hyper-dir "$server_hyper_dir" >"$LOG_DIR/server.log" 2>&1 &
     SERVER_PID=$!
@@ -866,10 +869,10 @@ check_service_ready() {
     success "Signaling health OK"
 
     local db_path="$SQLITE_DIR/signaling_cache.db"
-    # The TS workload is a JS-on-wasm component; its first wasmtime compile +
-    # instantiate during `actr run` attach can exceed four minutes on cold
-    # GitHub macOS runners, so keep a wider default registration window.
-    local timeout="${SERVICE_READY_TIMEOUT_SECONDS:-600}"
+    # The TS workload is a large JS-on-wasm component. On cold macOS runners,
+    # Wasmtime component compilation happens before AIS/signaling registration
+    # and can take several minutes even with fast compile enabled.
+    local timeout="${SERVICE_READY_TIMEOUT_SECONDS:-900}"
     if ! wait_for_service_registration \
         "$db_path" \
         "$REALM_ID" \

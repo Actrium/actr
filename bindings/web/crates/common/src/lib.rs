@@ -12,7 +12,7 @@ pub mod types;
 pub mod wire;
 pub mod zero_copy;
 
-pub use ais_client::WebAisClient;
+pub use ais_client::{RenewError, WebAisClient};
 pub use backoff::ExponentialBackoff;
 pub use error::{WebError, WebResult};
 pub use events::{

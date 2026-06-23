@@ -3,7 +3,9 @@
 /// This test uses a real WebSocket connection with a controllable test server
 /// to simulate signaling disruption and recovery scenarios, including full
 /// WebRTC peer connection establishment and ICE restart.
-use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
+use actr_hyper::test_support::{
+    TestSignalingServer, create_peer_with_websocket, install_test_crypto_provider, make_actor_id,
+};
 use std::time::{Duration, Instant};
 use tokio::time::{sleep, timeout};
 
@@ -12,6 +14,8 @@ use tokio::time::{sleep, timeout};
 /// Test: Full ICE restart with real WebSocket signaling and WebRTC peers
 #[tokio::test]
 async fn test_full_ice_restart_with_real_signaling() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)
@@ -135,6 +139,8 @@ async fn test_full_ice_restart_with_real_signaling() {
 /// Test: ICE restart with message forwarding paused (simulates signaling connected but blocked)
 #[tokio::test]
 async fn test_ice_restart_with_paused_forwarding() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)
@@ -249,6 +255,8 @@ async fn test_ice_restart_with_paused_forwarding() {
 /// completion timeout and then an additional backoff.
 #[tokio::test]
 async fn test_answerer_request_wakes_inflight_ice_restart_retry() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)

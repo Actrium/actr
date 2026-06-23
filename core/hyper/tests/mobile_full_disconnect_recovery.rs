@@ -14,7 +14,7 @@ use actr_hyper::lifecycle::{
     NetworkTransportFlags, process_network_event_batch, select_network_recovery_action,
 };
 use actr_hyper::outbound::PeerGate;
-use actr_hyper::test_support::TestHarness;
+use actr_hyper::test_support::{TestHarness, install_test_crypto_provider};
 use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActrId, RpcEnvelope};
@@ -453,6 +453,8 @@ async fn restore_half_open_and_process_network_available(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_mobile_half_open_15s_semantics_recovers_with_ice_restart() {
+    install_test_crypto_provider();
+
     init_tracing();
 
     for case in ROLE_CASES {
@@ -498,6 +500,8 @@ async fn test_mobile_half_open_15s_semantics_recovers_with_ice_restart() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_mobile_half_open_65s_semantics_rebuilds_webrtc() {
+    install_test_crypto_provider();
+
     init_tracing();
 
     for case in ROLE_CASES {

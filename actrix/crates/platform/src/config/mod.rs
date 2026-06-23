@@ -833,6 +833,13 @@ mod tests {
     use super::*;
     use ::signer::SignerServiceConfig;
 
+    fn valid_ais_server_config() -> ais::AisServerConfig {
+        ais::AisServerConfig {
+            renewal_token_secret: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn example_config_loads_and_validates() {
         let path =
@@ -1015,7 +1022,7 @@ mod tests {
         // Test AIS service: bitmask-only control
         config.enable = 0;
         config.services.ais = Some(AisConfig {
-            server: ais::AisServerConfig::default(),
+            server: valid_ais_server_config(),
             dependencies: ais::AisDependencies::default(),
         });
         assert!(!config.is_ais_enabled());
@@ -1026,7 +1033,7 @@ mod tests {
 
         // Case 3: Bitmask set, with services.* config -> still enabled
         config.services.ais = Some(AisConfig {
-            server: ais::AisServerConfig::default(),
+            server: valid_ais_server_config(),
             dependencies: ais::AisDependencies::default(),
         });
         assert!(config.is_ais_enabled());
@@ -1080,7 +1087,7 @@ mod tests {
         });
 
         config.services.ais = Some(AisConfig {
-            server: ais::AisServerConfig::default(),
+            server: valid_ais_server_config(),
             dependencies: ais::AisDependencies { signer: None }, // 未配置 KS
         });
 
@@ -1098,7 +1105,7 @@ mod tests {
 
         // 场景 2: 显式配置 KS 客户端，应使用显式配置
         config.services.ais = Some(AisConfig {
-            server: ais::AisServerConfig::default(),
+            server: valid_ais_server_config(),
             dependencies: ais::AisDependencies {
                 signer: Some(crate::config::signer::SignerClientConfig {
                     endpoint: "http://remote-ks:8080".to_string(),
@@ -1125,7 +1132,7 @@ mod tests {
         // 场景 3: 没有本地 KS，也没有显式配置，应返回 None
         config.services.signer = None;
         config.services.ais = Some(AisConfig {
-            server: ais::AisServerConfig::default(),
+            server: valid_ais_server_config(),
             dependencies: ais::AisDependencies { signer: None },
         });
         config.enable = ENABLE_AIS; // Enable AIS via bitmask
@@ -1246,7 +1253,7 @@ mod tests {
         // Case 5: Bitmask set and services.* config present - should pass (if other validations pass)
         config.enable = ENABLE_AIS | ENABLE_SIGNER;
         config.services.ais = Some(AisConfig {
-            server: ais::AisServerConfig::default(),
+            server: valid_ais_server_config(),
             dependencies: ais::AisDependencies {
                 signer: Some(crate::config::signer::SignerClientConfig {
                     endpoint: "http://127.0.0.1:8080".to_string(),
@@ -1326,7 +1333,7 @@ mod tests {
             ..Default::default()
         });
         config.services.ais = Some(AisConfig {
-            server: ais::AisServerConfig::default(),
+            server: valid_ais_server_config(),
             dependencies: ais::AisDependencies::default(),
         });
 

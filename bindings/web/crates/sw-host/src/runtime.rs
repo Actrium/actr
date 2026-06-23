@@ -36,7 +36,7 @@ use actr_protocol::{
     signaling_to_actr,
 };
 use actr_protocol::{IceCandidate, SessionDescription, prost_types};
-use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, WebAisClient};
+use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, RenewError, WebAisClient};
 use bytes::Bytes;
 use futures::StreamExt;
 use futures::channel::{mpsc, oneshot};
@@ -843,6 +843,28 @@ impl SwRuntime {
         Ok(())
     }
 
+    async fn clear_persisted_identity_static(
+        platform: &WebPlatformProvider,
+        cred_kv_ns: &str,
+    ) -> Result<(), JsValue> {
+        let kv = platform
+            .secret_store(cred_kv_ns)
+            .await
+            .map_err(|e| JsValue::from_str(&format!("Failed to open KV store: {e}")))?;
+
+        for key in [
+            "credential",
+            "actor_id",
+            "turn_credential",
+            "renewal_token",
+            "renewal_token_expires_at",
+        ] {
+            let _ = kv.delete(key).await;
+        }
+
+        Ok(())
+    }
+
     async fn try_renew_persisted_credential_static(
         ais: &WebAisClient,
         platform: &WebPlatformProvider,
@@ -892,21 +914,35 @@ impl SwRuntime {
         let actor_id = ActrId::from_string_repr(&id_str)
             .map_err(|e| JsValue::from_str(&format!("Failed to parse actor_id: {e}")))?;
 
-        let response = ais
+        let response = match ais
             .renew_credential(RenewCredentialRequest {
                 actr_id: actor_id.clone(),
                 renewal_token: token.into(),
             })
             .await
-            .map_err(|e| JsValue::from_str(&format!("AIS renewal failed: {e}")))?;
+        {
+            Ok(response) => response,
+            Err(RenewError::TokenRejected | RenewError::InvalidRequest(_)) => {
+                log::warn!("[SW] AIS renew rejected persisted identity; clearing local identity");
+                Self::clear_persisted_identity_static(platform, cred_kv_ns).await?;
+                return Ok(None);
+            }
+            Err(e) => return Err(JsValue::from_str(&format!("AIS renewal failed: {e}"))),
+        };
 
         let ok = match response.result {
             Some(renew_credential_response::Result::Success(ok)) => ok,
             Some(renew_credential_response::Result::Error(err)) => {
                 log::warn!("[SW] AIS renew error: {}", err.message);
+                if matches!(err.code, 400 | 401) {
+                    Self::clear_persisted_identity_static(platform, cred_kv_ns).await?;
+                }
                 return Ok(None);
             }
-            None => return Ok(None),
+            None => {
+                Self::clear_persisted_identity_static(platform, cred_kv_ns).await?;
+                return Ok(None);
+            }
         };
 
         if ok.actr_id != actor_id {
@@ -1159,7 +1195,12 @@ impl SwRuntime {
         let Some((actor_id, credential, turn_credential)) =
             Self::try_renew_persisted_credential_static(&ais, &self.platform, &cred_kv_ns).await?
         else {
-            return Err(JsValue::from_str("renewal token unavailable"));
+            log::warn!("[SW] renewal token unavailable; falling back to AIS registration");
+            self.register_via_ais().await?;
+            if let Some(ref tc) = self.turn_credential {
+                self.send_turn_credential_to_dom(tc)?;
+            }
+            return Ok(());
         };
 
         self.actor_id = Some(actor_id);

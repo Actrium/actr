@@ -33,6 +33,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const ACTRIX_SHARED_KEY: &str = "0123456789abcdef0123456789abcdef";
 const DEFAULT_TOKEN_TTL: u64 = 3600;
+const RENEWAL_TOKEN_SECRET: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 /// Convenience bundle for a running actrix instance
 struct ActrixHarness {
@@ -137,6 +138,7 @@ path = "ks.db"
 [services.ais]
 [services.ais.server]
 token_ttl_secs = {token_ttl}
+renewal_token_secret = "{renewal_secret}"
 
 [services.signaling]
 [services.signaling.server]
@@ -154,6 +156,7 @@ pid = "{pid}"
         shared = ACTRIX_SHARED_KEY,
         port = port,
         token_ttl = token_ttl_secs,
+        renewal_secret = RENEWAL_TOKEN_SECRET,
         pid = dir.join("actrix.pid").display()
     )
     .expect("write config");
@@ -209,6 +212,7 @@ path = "ks.db"
 [services.ais]
 [services.ais.server]
 token_ttl_secs = {token_ttl}
+renewal_token_secret = "{renewal_secret}"
 
 [services.signaling]
 [services.signaling.server]
@@ -237,6 +241,7 @@ pid = "{pid}"
         shared = ACTRIX_SHARED_KEY,
         port = port,
         token_ttl = token_ttl_secs,
+        renewal_secret = RENEWAL_TOKEN_SECRET,
         max_concurrent = max_concurrent_per_ip,
         message_per_second = message_per_second,
         message_burst = message_burst_size,
@@ -293,6 +298,7 @@ path = "ks.db"
 [services.ais]
 [services.ais.server]
 token_ttl_secs = {token_ttl}
+renewal_token_secret = "{renewal_secret}"
 [services.ais.dependencies.signer]
 endpoint = "{ais_signer_endpoint}"
 timeout_seconds = 1
@@ -314,6 +320,7 @@ pid = "{pid}"
         shared = ACTRIX_SHARED_KEY,
         port = port,
         token_ttl = token_ttl_secs,
+        renewal_secret = RENEWAL_TOKEN_SECRET,
         ais_signer_endpoint = ais_signer_endpoint,
         pid = dir.join("actrix.pid").display()
     )

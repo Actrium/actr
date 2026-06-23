@@ -10,6 +10,10 @@ use crate::wire::webrtc::{
 use actr_protocol::{AIdCredential, ActrError, ActrId, ActrType, Realm};
 use std::sync::Arc;
 
+pub fn install_test_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 /// Create a test ActrId with the given serial number
 pub fn make_actor_id(serial_number: u64) -> ActrId {
     ActrId {
@@ -49,6 +53,8 @@ pub async fn create_peer_with_websocket(
     id: ActrId,
     server_url: &str,
 ) -> anyhow::Result<(Arc<WebRtcCoordinator>, Arc<dyn SignalingClient>)> {
+    install_test_crypto_provider();
+
     let credential_state = create_credential_state_for_test(dummy_credential());
 
     let signaling_client = WebSocketSignalingClient::connect_to_with_identity(
@@ -98,6 +104,8 @@ pub async fn create_peer_with_vnet(
     server_url: &str,
     vnet: Arc<webrtc_util::vnet::net::Net>,
 ) -> anyhow::Result<(Arc<WebRtcCoordinator>, Arc<dyn SignalingClient>)> {
+    install_test_crypto_provider();
+
     let credential_state = create_credential_state_for_test(dummy_credential());
 
     let signaling_client = WebSocketSignalingClient::connect_to_with_identity(

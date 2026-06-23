@@ -164,6 +164,9 @@ async fn setup_test_environment() -> TestEnv {
 fn default_issuer_config(temp_dir: &TempDir) -> IssuerConfig {
     IssuerConfig {
         token_ttl_secs: 3600,
+        renewal_token_ttl_secs: 24 * 60 * 60,
+        renewal_rotation_window_secs: 60 * 60,
+        renewal_token_secret: vec![0; 32],
         signaling_heartbeat_interval_secs: 30,
         key_refresh_interval_secs: 3600,
         key_storage_file: temp_dir.path().join("issuer_keys.db"),

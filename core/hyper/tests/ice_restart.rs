@@ -5,7 +5,9 @@
 //! - Rapid repeated ICE restart calls (de-duplication)
 //! - Network state change scenarios
 
-use actr_hyper::test_support::{TestSignalingServer, create_peer_with_websocket, make_actor_id};
+use actr_hyper::test_support::{
+    TestSignalingServer, create_peer_with_websocket, install_test_crypto_provider, make_actor_id,
+};
 use std::time::Duration;
 
 // ==================== Tests ====================
@@ -13,6 +15,8 @@ use std::time::Duration;
 /// Test basic ICE restart on an established connection
 #[tokio::test]
 async fn test_basic_ice_restart() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_file(true)
@@ -82,6 +86,8 @@ async fn test_basic_ice_restart() {
 /// Test rapid repeated ICE restart calls (de-duplication)
 #[tokio::test]
 async fn test_rapid_ice_restart_deduplication() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_file(true)
         .with_line_number(true)
@@ -176,6 +182,8 @@ async fn test_rapid_ice_restart_deduplication() {
 /// Test ICE restart with sequential calls (should allow second restart after first completes)
 #[tokio::test]
 async fn test_sequential_ice_restart() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_test_writer()
@@ -257,6 +265,8 @@ async fn test_sequential_ice_restart() {
 /// Test simultaneous ICE restart from both sides (glare scenario)
 #[tokio::test]
 async fn test_simultaneous_ice_restart_glare() {
+    install_test_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
         .with_test_writer()

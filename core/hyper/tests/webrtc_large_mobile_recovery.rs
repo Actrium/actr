@@ -430,6 +430,10 @@ fn is_expected_bounded_transport_failure(message: &str) -> bool {
         "channel error",
         "not opened",
         "timeout",
+        "unavailable",
+        "not found",
+        "no route",
+        "all transport candidates exhausted",
     ]
     .iter()
     .any(|needle| message.contains(needle))
