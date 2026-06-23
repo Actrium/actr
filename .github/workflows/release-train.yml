@@ -38,11 +38,6 @@ on:
         required: false
         type: boolean
         default: false
-      cli_only:
-        description: Rebuild and replace only actr CLI assets for an existing release.
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
   group: release-train-staged
@@ -71,9 +66,7 @@ jobs:
         env:
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.cli_only }}" == "true" ]]; then
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           elif printf '%s\n' "$HEAD_COMMIT_MESSAGE" | grep -qE '^chore\(release\): basic train v[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
@@ -286,6 +279,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v5
@@ -692,25 +686,10 @@ jobs:
       create_release: true
     secrets: inherit
 
-  # This bridge uses the existing release-train workflow registration so a PR
-  # branch can validate real CLI publication before the new manual workflow is
-  # merged into the default branch.
-  publish-cli-only:
-    name: Publish only actr CLI binaries
-    if: inputs.cli_only
-    uses: ./.github/workflows/_actr-cli-release.yml
-    with:
-      tag: v${{ inputs.version }}
-      source_ref: ${{ github.sha }}
-      publish: true
-      replace_assets: true
-      create_release: true
-    secrets: inherit
-
   # ── Collect Report ────────────────────────────────────────────────────
   collect-report:
     name: Collect release report
-    if: always() && !inputs.cli_only
+    if: always()
     needs:
       - context
       - create-tag
@@ -771,7 +750,7 @@ jobs:
       - context
       - collect-report
     runs-on: ubuntu-latest
-    if: always() && !inputs.cli_only
+    if: always()
     env:
       RELEASE_WEBHOOK_URL: ${{ secrets.RELEASE_WEBHOOK_URL }}
     steps:

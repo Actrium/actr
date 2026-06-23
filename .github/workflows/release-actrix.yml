@@ -2,10 +2,12 @@ name: Release actrix binaries
 
 # actrix is a server application shipped as a binary (not crates.io libraries).
 # When a release is published (by the release-train, which tags v* and creates
-# the GitHub Release), build the actrix binary for each platform and attach it
-# to that same release. Triggering on `release: published` means the release
-# already exists, so there is no race with the train and no clobbering of the
-# release notes.
+# the GitHub Release), this workflow builds actrix binaries for each platform
+# and attaches them to that release.
+#
+# It can also be triggered manually via workflow_dispatch to rebuild and replace
+# binaries for an existing release.
+
 on:
   release:
     types: [published]
@@ -14,13 +16,51 @@ on:
       tag:
         description: Existing release tag to (re)build and upload binaries for
         required: true
+        type: string
+
+concurrency:
+  group: release-actrix-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  validate-release:
+    name: Ensure release exists
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="${EVENT_TAG:-${INPUT_TAG:-}}"
+          if [[ -z "$TAG" ]]; then
+            echo "::error::No tag provided (set via release event or workflow_dispatch input)"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+      - name: Validate tag and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::Expected a stable release tag in vX.Y.Z form, got $TAG"
+            exit 1
+          }
+          git ls-remote --exit-code --tags \
+            "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$TAG" >/dev/null
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
   build:
     name: ${{ matrix.target.asset }}
+    needs: validate-release
     strategy:
       fail-fast: false
       matrix:
@@ -30,11 +70,11 @@ jobs:
     runs-on: ${{ matrix.target.os }}
     timeout-minutes: 30
     env:
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ needs.validate-release.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          ref: ${{ needs.validate-release.outputs.tag }}
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
