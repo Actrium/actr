@@ -937,6 +937,9 @@ mod tests {
             mfr_signature: None,
             target: None,
             auth_mode: None,
+            runner_signature: None,
+            runner_signed_at: None,
+            runner_nonce: None,
         };
 
         let ok = build_register_ok(&req, &state).await;
