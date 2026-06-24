@@ -815,17 +815,34 @@ mod tests {
         }
     }
 
-    struct MockServiceDiscovery;
+    struct MockServiceDiscovery {
+        service_available: bool,
+    }
     #[async_trait]
     impl ServiceDiscovery for MockServiceDiscovery {
         async fn discover_services(&self, _filter: Option<&crate::core::ServiceFilter>) -> anyhow::Result<Vec<crate::core::ServiceInfo>> { unreachable!() }
         async fn get_service_details(&self, _name: &str) -> anyhow::Result<crate::core::ServiceDetails> {
-            unreachable!()
+            if self.service_available {
+                Ok(crate::core::ServiceDetails {
+                    info: crate::core::ServiceInfo {
+                        name: "echo".into(),
+                        tags: vec![],
+                        fingerprint: "fp-echo".into(),
+                        actr_type: actr_protocol::ActrType::from_string_repr("acme:Echo:1.0.0").unwrap(),
+                        published_at: None,
+                        description: None,
+                        methods: vec![],
+                    },
+                    proto_files: vec![],
+                    dependencies: vec![],
+                })
+            } else {
+                anyhow::bail!("service not found")
+            }
         }
         async fn check_service_availability(&self, _name: &str) -> anyhow::Result<crate::core::AvailabilityStatus> {
-            // Default: service is available.
             Ok(crate::core::AvailabilityStatus {
-                is_available: true,
+                is_available: self.service_available,
                 last_seen: None,
                 health: crate::core::HealthStatus::Healthy,
             })
@@ -867,8 +884,15 @@ mod tests {
     struct MockFingerprintValidator;
     #[async_trait]
     impl FingerprintValidator for MockFingerprintValidator {
-        async fn compute_service_fingerprint(&self, _svc: &crate::core::ServiceInfo) -> anyhow::Result<crate::core::Fingerprint> { unreachable!() }
-        async fn verify_fingerprint(&self, _exp: &crate::core::Fingerprint, _act: &crate::core::Fingerprint) -> anyhow::Result<bool> { unreachable!() }
+        async fn compute_service_fingerprint(&self, svc: &crate::core::ServiceInfo) -> anyhow::Result<crate::core::Fingerprint> {
+            Ok(crate::core::Fingerprint {
+                algorithm: "sha256".into(),
+                value: svc.fingerprint.clone(),
+            })
+        }
+        async fn verify_fingerprint(&self, expected: &crate::core::Fingerprint, actual: &crate::core::Fingerprint) -> anyhow::Result<bool> {
+            Ok(expected.algorithm == actual.algorithm && expected.value == actual.value)
+        }
         async fn compute_project_fingerprint(&self, _path: &Path) -> anyhow::Result<crate::core::Fingerprint> { unreachable!() }
         async fn generate_lock_fingerprint(&self, _deps: &[ResolvedDependency]) -> anyhow::Result<crate::core::Fingerprint> { unreachable!() }
     }
@@ -877,7 +901,7 @@ mod tests {
     fn validation_pipeline_constructs_and_exposes_getters() {
         let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
         let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
-        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery { service_available: true });
         let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
         let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
 
@@ -895,7 +919,7 @@ mod tests {
     async fn validate_project_returns_early_on_invalid_config() {
         let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: false });
         let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
-        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery { service_available: true });
         let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
         let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
 
@@ -910,7 +934,7 @@ mod tests {
     async fn validate_dependencies_reports_service_availability() {
         let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
         let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
-        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery { service_available: true });
         let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
         let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
         let pipeline = ValidationPipeline::new(config, dep, sd, net, fp);
@@ -939,7 +963,7 @@ mod tests {
     async fn validate_network_connectivity_maps_reachable_and_unreachable() {
         let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
         let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
-        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery { service_available: true });
         let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
 
         let deps = vec![ResolvedDependency {
@@ -971,5 +995,55 @@ mod tests {
             .await
             .unwrap();
         assert!(!results2[0].is_reachable);
+    }
+
+    #[tokio::test]
+    async fn validate_fingerprints_covers_present_and_missing_fingerprints() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery { service_available: true });
+        let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
+        let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
+
+        let deps = vec![
+            // Dep with matching (pre-computed) fingerprint → passes without recompute.
+            ResolvedDependency {
+                spec: DependencySpec {
+                    alias: "a".into(), name: "a".into(), actr_type: None,
+                    fingerprint: Some("fp-a".into()),
+                },
+                fingerprint: "fp-a".into(),
+                proto_files: vec![],
+            },
+            // Dep with empty computed fingerprint → fetches from service discovery,
+            // then verifies against spec fingerprint (mismatch → invalid).
+            ResolvedDependency {
+                spec: DependencySpec {
+                    alias: "b".into(), name: "b".into(), actr_type: None,
+                    fingerprint: Some("fp-b".into()),
+                },
+                fingerprint: "".into(),
+                proto_files: vec![],
+            },
+            // No spec fingerprint → empty expected → is_valid = true.
+            ResolvedDependency {
+                spec: DependencySpec {
+                    alias: "c".into(), name: "c".into(), actr_type: None,
+                    fingerprint: None,
+                },
+                fingerprint: "fp-c".into(),
+                proto_files: vec![],
+            },
+        ];
+
+        let pipeline = ValidationPipeline::new(config, dep, sd, net, fp);
+        let results = pipeline.validate_fingerprints(&deps).await.unwrap();
+        assert_eq!(results.len(), 3);
+        // a: pre-computed matches → valid.
+        assert!(results[0].is_valid);
+        // b: fetched from service discovery (fingerprint="fp-echo"), spec expects "fp-b" → mismatch.
+        assert!(!results[1].is_valid);
+        // c: expected empty → valid regardless.
+        assert!(results[2].is_valid);
     }
 }
