@@ -171,10 +171,13 @@ fn rust_echo_app_scaffold() {
         "src/lib.rs",
         "README.md",
         "protos/local/local.proto",
-        ".protoc-plugin.toml",
     ] {
         assert!(dir.join(path).exists(), "{path} should exist");
     }
+    assert!(
+        !dir.join(".protoc-plugin.toml").exists(),
+        ".protoc-plugin.toml should not be generated"
+    );
 
     // -- Cargo.toml --
     let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();

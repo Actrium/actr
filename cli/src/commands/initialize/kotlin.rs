@@ -1,4 +1,4 @@
-use super::{InitContext, ProjectInitializer, create_local_proto, create_protoc_plugin_config};
+use super::{InitContext, ProjectInitializer, create_local_proto};
 use crate::error::Result;
 use crate::templates::ProjectTemplateName;
 use crate::utils::read_fixture_text;
@@ -161,8 +161,6 @@ impl KotlinInitializer {
             let rendered = apply_placeholders(&template, &replacements);
             write_file(&output_path, &rendered)?;
         }
-
-        create_protoc_plugin_config(&context.project_dir)?;
 
         // Copy gradle wrapper
         copy_gradle_wrapper(&context.project_dir)?;

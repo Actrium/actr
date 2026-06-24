@@ -76,8 +76,8 @@ fn swift_echo_init_creates_expected_files() {
         "README.md should exist"
     );
     assert!(
-        project_dir.join(".protoc-plugin.toml").exists(),
-        ".protoc-plugin.toml should exist"
+        !project_dir.join(".protoc-plugin.toml").exists(),
+        ".protoc-plugin.toml should not be generated"
     );
     assert!(
         project_dir.join("protos/local/local.proto").exists(),

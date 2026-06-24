@@ -6,7 +6,7 @@ plugins {
 
 group = "io.actrium"
 
-version = "0.1.0"
+version = "0.4.1"
 
 repositories { mavenCentral() }
 
@@ -41,6 +41,7 @@ tasks.jar {
 // Create a custom task to build the protoc plugin
 tasks.register<Jar>("protocPluginJar") {
     archiveBaseName.set("protoc-gen-actrframework-kotlin")
+    archiveVersion.set("")
     manifest {
         attributes["Main-Class"] = "io.actrium.codegen.MainKt"
     }

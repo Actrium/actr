@@ -81,11 +81,18 @@ jobs:
       - name: Build
         run: cargo build --release -p actr-framework-protoc-codegen --bin protoc-gen-actrframework --target aarch64-apple-darwin --locked
       - name: Package
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
           cp target/aarch64-apple-darwin/release/protoc-gen-actrframework dist/protoc-gen-actrframework
           chmod +x dist/protoc-gen-actrframework
+          ACTUAL_VERSION=$(dist/protoc-gen-actrframework --version | head -1 | awk '{print $NF}')
+          [[ "$ACTUAL_VERSION" == "$EXPECTED_VERSION" ]] || {
+            echo "::error::Rust plugin reports $ACTUAL_VERSION, expected $EXPECTED_VERSION"
+            exit 1
+          }
           ZIP_NAME="protoc-gen-actrframework-macos-arm64.zip"
           ( cd dist && zip -q "$ZIP_NAME" protoc-gen-actrframework )
           ( cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )
@@ -112,6 +119,17 @@ jobs:
           xcode-version: latest-stable
       - name: Build release artifact
         run: bash tools/protoc-gen/swift/scripts/build-release.sh
+      - name: Verify plugin version
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          PLUGIN=tools/protoc-gen/swift/dist/protoc-gen-actrframework-swift
+          ACTUAL_VERSION=$("$PLUGIN" --version | tail -1 | xargs)
+          [[ "$ACTUAL_VERSION" == "$EXPECTED_VERSION" ]] || {
+            echo "::error::Swift plugin reports $ACTUAL_VERSION, expected $EXPECTED_VERSION"
+            exit 1
+          }
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -170,14 +188,21 @@ jobs:
       - name: Build fat JAR
         run: (cd tools/protoc-gen/kotlin && ./gradlew protocPluginJar --no-daemon)
       - name: Package
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist/build/libs
           cp tools/protoc-gen/kotlin/protoc-gen-actrframework-kotlin dist/protoc-gen-actrframework-kotlin
-          cp tools/protoc-gen/kotlin/build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar dist/build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar
+          cp tools/protoc-gen/kotlin/build/libs/protoc-gen-actrframework-kotlin.jar dist/build/libs/protoc-gen-actrframework-kotlin.jar
           chmod +x dist/protoc-gen-actrframework-kotlin
+          ACTUAL_VERSION=$(cd dist && ./protoc-gen-actrframework-kotlin --version | awk '{print $NF}')
+          [[ "$ACTUAL_VERSION" == "$EXPECTED_VERSION" ]] || {
+            echo "::error::Kotlin plugin reports $ACTUAL_VERSION, expected $EXPECTED_VERSION"
+            exit 1
+          }
           ZIP_NAME="protoc-gen-actrframework-kotlin.zip"
-          ( cd dist && zip -q "$ZIP_NAME" protoc-gen-actrframework-kotlin build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar )
+          ( cd dist && zip -q "$ZIP_NAME" protoc-gen-actrframework-kotlin build/libs/protoc-gen-actrframework-kotlin.jar )
           ( cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -222,13 +247,19 @@ jobs:
           ( cd dist && zip -qr "$ZIP_NAME" "${ZIP_INPUTS[@]}" )
           ( cd dist && shasum -a 256 "$ZIP_NAME" > "$ZIP_NAME.sha256" )
       - name: Verify self-contained bundle
+        env:
+          EXPECTED_VERSION: ${{ needs.validate.outputs.version }}
         run: |
           set -euo pipefail
           TMPDIR="$(mktemp -d)"
           ( cd dist && unzip -q protoc-gen-actrframework-typescript.zip -d "$TMPDIR" )
           echo "Extracted contents:"
           find "$TMPDIR" -type f | sort
-          "$TMPDIR/scripts/protoc-gen-actrframework-typescript" --version
+          ACTUAL_VERSION=$("$TMPDIR/scripts/protoc-gen-actrframework-typescript" --version | awk '{print $NF}')
+          [[ "$ACTUAL_VERSION" == "$EXPECTED_VERSION" ]] || {
+            echo "::error::TypeScript plugin reports $ACTUAL_VERSION, expected $EXPECTED_VERSION"
+            exit 1
+          }
           echo "Bundle is self-contained"
       - name: Upload artifact
         uses: actions/upload-artifact@v4

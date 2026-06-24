@@ -1,4 +1,4 @@
-use super::{InitContext, ProjectInitializer, create_protoc_plugin_config, init_git_repo};
+use super::{InitContext, ProjectInitializer, init_git_repo};
 
 use crate::commands::SupportedLanguage;
 use crate::error::{ActrCliError, Result};
@@ -31,7 +31,6 @@ impl ProjectInitializer for PythonInitializer {
         template_context.is_both = context.is_both;
         template.generate(&context.project_dir, &template_context)?;
         make_build_script_executable(&context.project_dir)?;
-        create_protoc_plugin_config(&context.project_dir)?;
         init_git_repo(&context.project_dir)?;
 
         Ok(())

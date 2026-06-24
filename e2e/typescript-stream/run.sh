@@ -182,16 +182,6 @@ write_public_key() {
   cp "$project/public-key.json" "$project/dist/public-key.json"
 }
 
-write_rust_protoc_plugin_config() {
-  local project="$1"
-  cat >"$project/.protoc-plugin.toml" <<EOF_PROTOC_PLUGIN
-version = 1
-
-[plugins]
-protoc-gen-actrframework = "$ACTR_CRATE_VERSION"
-EOF_PROTOC_PLUGIN
-}
-
 write_ts_echo_impl() {
   cat >"$TS_ECHO/src/actr_service.ts" <<'EOF_TS'
 // ActrService is Implemented: This file contains a complete implementation.
@@ -398,7 +388,6 @@ EOF_PROTO
 
 write_relay_project() {
   mkdir -p "$RELAY/protos/local" "$RELAY/src"
-  write_rust_protoc_plugin_config "$RELAY"
   cat >"$RELAY/Cargo.toml" <<EOF_CARGO
 [package]
 name = "relay-service"
@@ -735,7 +724,6 @@ EOF_RELAY
 
 write_client_project() {
   mkdir -p "$CLIENT/protos/local" "$CLIENT/src"
-  write_rust_protoc_plugin_config "$CLIENT"
   cat >"$CLIENT/Cargo.toml" <<EOF_CARGO
 [package]
 name = "client-app"
