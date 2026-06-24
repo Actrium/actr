@@ -786,13 +786,17 @@ mod tests {
             Path::new(".")
         }
         async fn backup_config(&self) -> anyhow::Result<crate::core::ConfigBackup> {
-            unreachable!()
+            Ok(crate::core::ConfigBackup {
+                original_path: Path::new("manifest.toml").into(),
+                backup_path: Path::new("manifest.toml.bak").into(),
+                timestamp: std::time::SystemTime::now(),
+            })
         }
         async fn restore_backup(&self, _backup: crate::core::ConfigBackup) -> anyhow::Result<()> {
-            unreachable!()
+            Ok(())
         }
         async fn remove_backup(&self, _backup: crate::core::ConfigBackup) -> anyhow::Result<()> {
-            unreachable!()
+            Ok(())
         }
     }
 
@@ -907,13 +911,26 @@ mod tests {
         async fn get_cache_stats(&self) -> anyhow::Result<crate::core::CacheStats> { unreachable!() }
     }
 
-    struct MockProtoProcessor;
+    struct MockProtoProcessor {
+        proto_is_valid: bool,
+    }
     #[async_trait]
     impl crate::core::ProtoProcessor for MockProtoProcessor {
-        async fn discover_proto_files(&self, _path: &Path) -> anyhow::Result<Vec<crate::core::ProtoFile>> { unreachable!() }
+        async fn discover_proto_files(&self, _path: &Path) -> anyhow::Result<Vec<crate::core::ProtoFile>> {
+            Ok(vec![])
+        }
         async fn parse_proto_services(&self, _files: &[crate::core::ProtoFile]) -> anyhow::Result<Vec<crate::core::ServiceDefinition>> { unreachable!() }
         async fn generate_code(&self, _input: &Path, _output: &Path) -> anyhow::Result<crate::core::GenerationResult> { unreachable!() }
-        async fn validate_proto_syntax(&self, _files: &[crate::core::ProtoFile]) -> anyhow::Result<crate::core::ValidationReport> { unreachable!() }
+        async fn validate_proto_syntax(&self, _files: &[crate::core::ProtoFile]) -> anyhow::Result<crate::core::ValidationReport> {
+            Ok(crate::core::ValidationReport {
+                is_valid: self.proto_is_valid,
+                config_validation: crate::core::ConfigValidation { is_valid: true, errors: vec![], warnings: vec![] },
+                dependency_validation: vec![],
+                network_validation: vec![],
+                fingerprint_validation: vec![],
+                conflicts: vec![],
+            })
+        }
     }
 
     #[test]
@@ -1074,7 +1091,7 @@ mod tests {
         let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
         let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
         let cache: Arc<dyn crate::core::CacheManager> = Arc::new(MockCacheManager);
-        let proto: Arc<dyn crate::core::ProtoProcessor> = Arc::new(MockProtoProcessor);
+        let proto: Arc<dyn crate::core::ProtoProcessor> = Arc::new(MockProtoProcessor { proto_is_valid: true });
 
         let vp = ValidationPipeline::new(
             config.clone(), dep.clone(), sd.clone(), net.clone(), fp.clone(),
@@ -1095,7 +1112,7 @@ mod tests {
         let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
         let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
         let cache: Arc<dyn crate::core::CacheManager> = Arc::new(MockCacheManager);
-        let proto: Arc<dyn crate::core::ProtoProcessor> = Arc::new(MockProtoProcessor);
+        let proto: Arc<dyn crate::core::ProtoProcessor> = Arc::new(MockProtoProcessor { proto_is_valid: true });
 
         let vp = ValidationPipeline::new(config.clone(), dep.clone(), sd.clone(), net.clone(), fp.clone());
         let ip = InstallPipeline::new(vp, config, cache, proto);
@@ -1105,5 +1122,40 @@ mod tests {
         }];
         let err = ip.install_dependencies(&specs).await.unwrap_err();
         assert!(format!("{err}").contains("Dependency validation failed"));
+    }
+
+    #[tokio::test]
+    async fn install_dependencies_succeeds_with_empty_specs() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery { service_available: true });
+        let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
+        let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
+        let cache: Arc<dyn crate::core::CacheManager> = Arc::new(MockCacheManager);
+        let proto: Arc<dyn crate::core::ProtoProcessor> = Arc::new(MockProtoProcessor { proto_is_valid: true });
+
+        let vp = ValidationPipeline::new(config.clone(), dep.clone(), sd.clone(), net.clone(), fp.clone());
+        let ip = InstallPipeline::new(vp, config, cache, proto);
+        let result = ip.install_dependencies(&[]).await.unwrap();
+        assert!(result.installed_dependencies.is_empty());
+    }
+
+    #[tokio::test]
+    async fn generation_pipeline_rejects_invalid_proto_syntax() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let proto_invalid: Arc<dyn crate::core::ProtoProcessor> =
+            Arc::new(MockProtoProcessor { proto_is_valid: false });
+        let cache: Arc<dyn crate::core::CacheManager> = Arc::new(MockCacheManager);
+        let gp = GenerationPipeline::new(config, proto_invalid, cache);
+        let options = crate::core::pipelines::GenerationOptions {
+            input_path: Path::new("protos").to_path_buf(),
+            output_path: Path::new("out").to_path_buf(),
+            clean_before_generate: false,
+            generate_scaffold: false,
+            format_code: false,
+            run_checks: false,
+        };
+        let err = gp.generate_code(&options).await.unwrap_err();
+        assert!(format!("{err}").contains("Proto file syntax validation failed"));
     }
 }
