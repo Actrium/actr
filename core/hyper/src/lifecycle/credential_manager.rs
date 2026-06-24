@@ -42,14 +42,14 @@ pub(crate) enum RegistrationContext {
     /// Package-backed registration — carries the full original request
     /// including manifest bytes and MFR signature.
     ///
-    /// `resign` is the runner re-signing capability. It is `Some` when the
-    /// initial registration carried a runner proof (unpublished package). Hard
+    /// `resign` is the manufacturer re-signing capability. It is `Some` when the
+    /// initial registration carried a manufacturer proof (unpublished package). Hard
     /// rebind re-invokes it to mint a fresh proof — the original nonce was
     /// consumed by AIS on first success and cannot be reused.
     Package {
         #[allow(dead_code)]
         request: actr_protocol::RegisterRequest,
-        resign: Option<Arc<dyn crate::RunnerAuthProvider>>,
+        resign: Option<Arc<dyn crate::ManufacturerAuthProvider>>,
     },
     /// Source-linked registration — carries the request and an optional
     /// realm secret (kept in memory only, never logged).
@@ -331,10 +331,10 @@ async fn run_hard_rebind(
     let request = match registration_ctx {
         RegistrationContext::Package { request, resign } => {
             let mut request = request;
-            // The original runner proof's nonce was consumed by AIS on the
+            // The original manufacturer proof's nonce was consumed by AIS on the
             // first successful registration. Reusing it would be a replay.
             // Re-invoke the provider to mint a fresh `signed_at` + `nonce` +
-            // signature, overwriting only the three runner fields — the
+            // signature, overwriting only the three manufacturer fields — the
             // manifest bytes and MFR signature are static and stay as-is.
             if let Some(provider) = resign.as_ref() {
                 let realm_id = request.realm.realm_id;
@@ -343,10 +343,10 @@ async fn run_hard_rebind(
                 let manifest_raw = request.manifest_raw.as_deref().unwrap_or_default();
                 let fresh = provider
                     .sign(realm_id, &actr_type, &target, manifest_raw)
-                    .map_err(|e| format!("hard rebind runner re-sign failed: {e}"))?;
-                request.runner_signature = Some(bytes::Bytes::from(fresh.signature));
-                request.runner_signed_at = Some(fresh.signed_at);
-                request.runner_nonce = Some(bytes::Bytes::from(fresh.nonce));
+                    .map_err(|e| format!("hard rebind manufacturer re-sign failed: {e}"))?;
+                request.manufacturer_signature = Some(bytes::Bytes::from(fresh.signature));
+                request.manufacturer_signed_at = Some(fresh.signed_at);
+                request.manufacturer_nonce = Some(bytes::Bytes::from(fresh.nonce));
             }
             request
         }
@@ -763,32 +763,33 @@ mod tests {
         assert!(d4 <= Duration::from_secs(75)); // 60 + 25% jitter
     }
 
-    /// Hard rebind of a Package registration must re-invoke the runner auth
-    /// provider to mint a fresh proof. The initial runner nonce was consumed
+    /// Hard rebind of a Package registration must re-invoke the manufacturer auth
+    /// provider to mint a fresh proof. The initial manufacturer nonce was consumed
     /// by AIS on the first successful registration; replaying it would be
     /// rejected. This locks in the re-sign behaviour added to fix replay on
     /// hard rebind.
     #[tokio::test]
-    async fn package_hard_rebind_re_signs_runner_proof() {
+    async fn package_hard_rebind_re_signs_manufacturer_proof() {
         use actr_protocol::RegisterAuthMode;
         use std::sync::atomic::AtomicU64;
 
-        struct CountingRunnerProvider {
+        struct CountingManufacturerProvider {
             calls: Arc<AtomicU64>,
         }
-        impl crate::RunnerAuthProvider for CountingRunnerProvider {
+        impl crate::ManufacturerAuthProvider for CountingManufacturerProvider {
             fn sign(
                 &self,
                 _realm_id: u32,
                 _actr_type: &actr_protocol::ActrType,
                 _target: &str,
                 _manifest_raw: &[u8],
-            ) -> std::result::Result<crate::RunnerRegistrationAuth, crate::HyperError> {
+            ) -> std::result::Result<crate::ManufacturerRegistrationAuth, crate::HyperError>
+            {
                 let n = self.calls.fetch_add(1, AtomicOrdering::SeqCst) + 1;
                 // Deterministic fresh proof keyed by call count. The mock AIS
                 // server does not validate crypto, so the values only need to
                 // differ from the stale proof saved on the original request.
-                Ok(crate::RunnerRegistrationAuth {
+                Ok(crate::ManufacturerRegistrationAuth {
                     signature: vec![n as u8; 64],
                     signed_at: 9_999_999_999,
                     nonce: vec![n as u8; 32],
@@ -797,7 +798,7 @@ mod tests {
         }
 
         let calls = Arc::new(AtomicU64::new(0));
-        let provider: Arc<CountingRunnerProvider> = Arc::new(CountingRunnerProvider {
+        let provider: Arc<CountingManufacturerProvider> = Arc::new(CountingManufacturerProvider {
             calls: calls.clone(),
         });
 
@@ -814,7 +815,7 @@ mod tests {
             .create_async()
             .await;
 
-        // Stale runner proof (nonce 0xAA) saved on the original request — this
+        // Stale manufacturer proof (nonce 0xAA) saved on the original request — this
         // is exactly what must not be replayed to AIS.
         let request = RegisterRequest {
             actr_type: actor(1).r#type,
@@ -823,9 +824,9 @@ mod tests {
             mfr_signature: Some(Bytes::from_static(b"mfr-sig")),
             target: Some("wasm32-wasip1".to_string()),
             auth_mode: Some(RegisterAuthMode::Package as i32),
-            runner_signature: Some(Bytes::from_static(b"stale-runner-sig")),
-            runner_signed_at: Some(1),
-            runner_nonce: Some(Bytes::from_static(&[0xAA; 32])),
+            manufacturer_signature: Some(Bytes::from_static(b"stale-manufacturer-sig")),
+            manufacturer_signed_at: Some(1),
+            manufacturer_nonce: Some(Bytes::from_static(&[0xAA; 32])),
             ..Default::default()
         };
 
@@ -868,7 +869,7 @@ mod tests {
         assert_eq!(
             calls.load(AtomicOrdering::SeqCst),
             1,
-            "hard rebind must re-invoke the runner auth provider exactly once"
+            "hard rebind must re-invoke the manufacturer auth provider exactly once"
         );
     }
 }

@@ -29,18 +29,18 @@ pub use generated::webrtc::*;
 // Stateless, self-contained extensions and utilities
 pub mod actr_ext;
 pub mod error;
+pub mod manufacturer_auth;
 pub mod message;
 pub mod name;
-pub mod runner_auth;
 pub mod turn;
 pub mod uri;
 
 // Re-export key utilities for convenience
 pub use actr_ext::*;
 pub use error::*;
+pub use manufacturer_auth::*;
 pub use message::RpcRequest;
 pub use name::*;
-pub use runner_auth::*;
 
 // Re-export prost and prost_types for downstream crates
 // This ensures a single source of truth for protobuf dependencies

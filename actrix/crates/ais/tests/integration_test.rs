@@ -194,9 +194,9 @@ fn linked_register_request() -> RegisterRequest {
         mfr_signature: None,
         target: None,
         auth_mode: Some(RegisterAuthMode::Linked as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     }
 }
 
@@ -382,9 +382,9 @@ async fn test_register_route_package_with_mfr_identity_succeeds() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -424,9 +424,9 @@ async fn test_register_route_unspecified_auth_mode_uses_package_identity() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: None,
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -471,9 +471,9 @@ async fn test_register_route_published_package_without_manifest_raw_is_rejected(
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -517,9 +517,9 @@ async fn test_register_route_published_package_without_target_is_rejected() {
         mfr_signature: None,
         target: None,
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -588,11 +588,11 @@ async fn test_published_package_manifest_hash_mismatch_does_not_fall_back_to_pat
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
-    sign_runner_request_at(
+    sign_manufacturer_request_at(
         &mut request,
         &key,
         &manifest_bytes,
@@ -640,9 +640,9 @@ async fn test_register_route_package_without_mfr_identity_is_still_rejected() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -763,9 +763,9 @@ async fn test_package_registration_without_mfr_identity_is_still_rejected() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
 
     let response = issuer
@@ -822,9 +822,9 @@ async fn test_end_to_end_credential_flow() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
 
     let response = issuer
@@ -891,9 +891,9 @@ async fn test_end_to_end_credential_flow() {
             mfr_signature: None,
             target: Some("wasm32-wasip1".to_string()),
             auth_mode: Some(RegisterAuthMode::Package as i32),
-            runner_signature: None,
-            runner_signed_at: None,
-            runner_nonce: None,
+            manufacturer_signature: None,
+            manufacturer_signed_at: None,
+            manufacturer_nonce: None,
         };
 
         let rsp = issuer
@@ -1014,9 +1014,9 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
         mfr_signature: None,
         target: None,
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
     let resp = issuer
         .issue_credential(&request)
@@ -1148,7 +1148,7 @@ fn test_unix_now_secs() -> u64 {
         .as_secs()
 }
 
-fn sign_runner_request_at(
+fn sign_manufacturer_request_at(
     request: &mut RegisterRequest,
     signing_key: &ed25519_dalek::SigningKey,
     manifest_bytes: &[u8],
@@ -1164,28 +1164,29 @@ fn sign_runner_request_at(
         .expect("test request should carry target");
     let digest = Sha256::digest(manifest_bytes);
     let manifest_sha256_hex = actr_protocol::lower_hex(&digest);
-    let payload =
-        actr_protocol::build_runner_register_payload(actr_protocol::RunnerRegisterPayload {
+    let payload = actr_protocol::build_manufacturer_register_payload(
+        actr_protocol::ManufacturerRegisterPayload {
             realm_id: request.realm.realm_id,
             actr_type: &request.actr_type,
             target,
             manifest_sha256_hex: &manifest_sha256_hex,
-            runner_signed_at: signed_at,
-            runner_nonce: &nonce,
-        });
+            manufacturer_signed_at: signed_at,
+            manufacturer_nonce: &nonce,
+        },
+    );
     let signature = signing_key.sign(payload.as_bytes());
 
-    request.runner_signature = Some(prost::bytes::Bytes::from(signature.to_bytes().to_vec()));
-    request.runner_signed_at = Some(signed_at);
-    request.runner_nonce = Some(prost::bytes::Bytes::from(nonce));
+    request.manufacturer_signature = Some(prost::bytes::Bytes::from(signature.to_bytes().to_vec()));
+    request.manufacturer_signed_at = Some(signed_at);
+    request.manufacturer_nonce = Some(prost::bytes::Bytes::from(nonce));
 }
 
-fn sign_runner_request(
+fn sign_manufacturer_request(
     request: &mut RegisterRequest,
     signing_key: &ed25519_dalek::SigningKey,
     manifest_bytes: &[u8],
 ) {
-    sign_runner_request_at(
+    sign_manufacturer_request_at(
         request,
         signing_key,
         manifest_bytes,
@@ -1259,10 +1260,10 @@ async fn archive_key_to_history(
     .expect("archive key to history");
 }
 
-/// Path 2: missing runner_signature is rejected for unpublished packages.
+/// Path 2: missing manufacturer_signature is rejected for unpublished packages.
 #[tokio::test]
 #[serial]
-async fn test_path2_missing_runner_signature_rejected() {
+async fn test_path2_missing_manufacturer_signature_rejected() {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
@@ -1306,16 +1307,16 @@ async fn test_path2_missing_runner_signature_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
 
     let response = issuer.issue_credential(&request).await.expect("issue");
     match response.result.expect("result") {
         register_response::Result::Error(_) => {}
         register_response::Result::Success(_) => {
-            panic!("Path 2 without runner_signature should be rejected")
+            panic!("Path 2 without manufacturer_signature should be rejected")
         }
     }
 }
@@ -1379,13 +1380,13 @@ hash = "0000000000000000000000000000000000000000000000000000000000000000"
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
-    // Provide a valid runner proof so the request clears the five-field and
+    // Provide a valid manufacturer proof so the request clears the five-field and
     // signature checks and reaches the binary.target guard.
-    sign_runner_request(&mut request, &key, &manifest_bytes);
+    sign_manufacturer_request(&mut request, &key, &manifest_bytes);
 
     let response = issuer.issue_credential(&request).await.expect("issue");
     match response.result.expect("result") {
@@ -1401,10 +1402,10 @@ hash = "0000000000000000000000000000000000000000000000000000000000000000"
     }
 }
 
-/// Path 2: replaying the same runner_nonce is rejected after the first success.
+/// Path 2: replaying the same manufacturer_nonce is rejected after the first success.
 #[tokio::test]
 #[serial]
-async fn test_path2_runner_nonce_replay_rejected() {
+async fn test_path2_manufacturer_nonce_replay_rejected() {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
@@ -1443,11 +1444,11 @@ async fn test_path2_runner_nonce_replay_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
-    sign_runner_request_at(
+    sign_manufacturer_request_at(
         &mut request,
         &key,
         &manifest_bytes,
@@ -1473,7 +1474,7 @@ async fn test_path2_runner_nonce_replay_rejected() {
     match second.result.expect("second result") {
         register_response::Result::Error(_) => {}
         register_response::Result::Success(_) => {
-            panic!("replayed runner_nonce should be rejected")
+            panic!("replayed manufacturer_nonce should be rejected")
         }
     }
 }
@@ -1542,11 +1543,11 @@ async fn test_path2_historical_retired_key_passes() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
-    sign_runner_request(&mut request, &key_a, &manifest_bytes);
+    sign_manufacturer_request(&mut request, &key_a, &manifest_bytes);
 
     let response = issuer.issue_credential(&request).await.expect("issue");
     match response.result.expect("result") {
@@ -1627,11 +1628,11 @@ async fn test_path2_revoked_key_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
-    sign_runner_request(&mut request, &key_revoked, &manifest_bytes);
+    sign_manufacturer_request(&mut request, &key_revoked, &manifest_bytes);
 
     let response = issuer.issue_credential(&request).await.expect("issue");
     match response.result.expect("result") {
@@ -1697,11 +1698,11 @@ async fn test_path2_identity_mismatch_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
-    sign_runner_request(&mut request, &key, &manifest_bytes);
+    sign_manufacturer_request(&mut request, &key, &manifest_bytes);
 
     let response = issuer.issue_credential(&request).await.expect("issue");
     match response.result.expect("result") {
@@ -1713,7 +1714,7 @@ async fn test_path2_identity_mismatch_rejected() {
 }
 
 // ============================================================================
-// Runner signature matrix tests (组 A / B / C + dedicated cases)
+// Manufacturer signature matrix tests (组 A / B / C + dedicated cases)
 //
 // These cover the gaps left by the scenario matrix in the design doc:
 // missing-field, tamper/signature-invalidity, time-window, concurrent nonce,
@@ -1722,7 +1723,7 @@ async fn test_path2_identity_mismatch_rejected() {
 
 /// Shared Path 2 fixture: realm seeded, MFR + active key registered, and a
 /// validly signed manifest. No `mfr_package` row is seeded, so registration
-/// always falls through to Path 2 (signature + runner proof).
+/// always falls through to Path 2 (signature + manufacturer proof).
 ///
 /// `env` is held for the fixture's lifetime: dropping it would drop the
 /// embedded signer's shutdown sender, which resolves `serve_with_shutdown`
@@ -1779,7 +1780,7 @@ async fn path2_fixture(manufacturer: &str, name: &str, target: &str) -> Path2Fix
 }
 
 /// Build a Path 2 `RegisterRequest` matching the fixture's manifest, with all
-/// runner fields left empty. The caller signs (and optionally mutates) it.
+/// manufacturer fields left empty. The caller signs (and optionally mutates) it.
 fn base_path2_request(fx: &Path2Fixture, realm_id: u32) -> RegisterRequest {
     RegisterRequest {
         actr_type: ActrType {
@@ -1796,9 +1797,9 @@ fn base_path2_request(fx: &Path2Fixture, realm_id: u32) -> RegisterRequest {
         mfr_signature: Some(prost::bytes::Bytes::from(fx.sig_bytes.clone())),
         target: Some(fx.target.clone()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     }
 }
 
@@ -1828,23 +1829,23 @@ async fn post_renew(app: Router, request: RenewCredentialRequest) -> RenewCreden
 type FieldBlank<'a> = &'a dyn Fn(&mut RegisterRequest);
 type TamperMutation<'a> = &'a dyn Fn(&mut RegisterRequest, &Path2Fixture, u64);
 
-/// 组 A: any one of the runner triple missing → rejected (ManufacturerNotVerified).
+/// 组 A: any one of the manufacturer triple missing → rejected (ManufacturerNotVerified).
 /// Covers scenario-matrix #2 / #3 / #4 as a single table.
 #[tokio::test]
 #[serial]
-async fn test_path2_missing_runner_field_matrix() {
+async fn test_path2_missing_manufacturer_field_matrix() {
     let fx = path2_fixture("missfieldmfr", "MissFieldService", "wasm32-wasip1").await;
     let now = test_unix_now_secs();
 
     let cases: &[(&str, FieldBlank)] = &[
-        ("missing_signature", &|r| r.runner_signature = None),
-        ("missing_signed_at", &|r| r.runner_signed_at = None),
-        ("missing_nonce", &|r| r.runner_nonce = None),
+        ("missing_signature", &|r| r.manufacturer_signature = None),
+        ("missing_signed_at", &|r| r.manufacturer_signed_at = None),
+        ("missing_nonce", &|r| r.manufacturer_nonce = None),
     ];
 
     for (i, (label, blank)) in cases.iter().enumerate() {
         let mut request = base_path2_request(&fx, 1001);
-        sign_runner_request_at(
+        sign_manufacturer_request_at(
             &mut request,
             &fx.key,
             &fx.manifest_bytes,
@@ -1861,7 +1862,7 @@ async fn test_path2_missing_runner_field_matrix() {
                 err.code
             ),
             register_response::Result::Success(_) => {
-                panic!("case {label}: missing runner field should be rejected")
+                panic!("case {label}: missing manufacturer field should be rejected")
             }
         }
     }
@@ -1881,7 +1882,7 @@ async fn test_path2_tamper_and_signature_matrix() {
         ("control", true, &|_r, _f, _n| {}),
         ("wrong_key", false, &|r, f, n| {
             // overwrite the valid proof with one signed by an unregistered key
-            sign_runner_request_at(r, &f.wrong_key, &f.manifest_bytes, n, vec![0x21; 32]);
+            sign_manufacturer_request_at(r, &f.wrong_key, &f.manifest_bytes, n, vec![0x21; 32]);
         }),
         ("tamper_realm", false, &|r, _f, _n| r.realm.realm_id = 1002),
         ("tamper_target", false, &|r, _f, _n| {
@@ -1897,17 +1898,17 @@ async fn test_path2_tamper_and_signature_matrix() {
             r.manifest_raw = Some(prost::bytes::Bytes::from(bytes));
         }),
         ("tamper_signed_at", false, &|r, _f, n| {
-            r.runner_signed_at = Some(n + 1); // still in window, so sig mismatch is what fails
+            r.manufacturer_signed_at = Some(n + 1); // still in window, so sig mismatch is what fails
         }),
         ("tamper_nonce", false, &|r, _f, _n| {
-            r.runner_nonce = Some(prost::bytes::Bytes::from(vec![0xEE; 32]));
+            r.manufacturer_nonce = Some(prost::bytes::Bytes::from(vec![0xEE; 32]));
         }),
     ];
 
     for (i, (label, expect_success, mutation)) in cases.iter().enumerate() {
         let mut request = base_path2_request(&fx, 1001);
         let nonce = vec![i as u8 + 0x30; 32];
-        sign_runner_request_at(&mut request, &fx.key, &fx.manifest_bytes, now, nonce);
+        sign_manufacturer_request_at(&mut request, &fx.key, &fx.manifest_bytes, now, nonce);
         mutation(&mut request, &fx, now);
 
         let response = fx.issuer.issue_credential(&request).await.expect("issue");
@@ -1928,12 +1929,12 @@ async fn test_path2_tamper_and_signature_matrix() {
     }
 }
 
-/// 组 C: `runner_signed_at` time window. `verify_runner_signed_at` has two
+/// 组 C: `manufacturer_signed_at` time window. `verify_manufacturer_signed_at` has two
 /// branches (Expired / InvalidTimestamp) with zero coverage today.
 /// Covers scenario-matrix #13 / #14 plus both boundaries.
 #[tokio::test]
 #[serial]
-async fn test_path2_runner_signed_at_window_matrix() {
+async fn test_path2_manufacturer_signed_at_window_matrix() {
     let fx = path2_fixture("winmfr", "WinService", "wasm32-wasip1").await;
     let now = test_unix_now_secs();
 
@@ -1948,7 +1949,7 @@ async fn test_path2_runner_signed_at_window_matrix() {
 
     for (i, (label, signed_at, expect)) in cases.iter().enumerate() {
         let mut request = base_path2_request(&fx, 1001);
-        sign_runner_request_at(
+        sign_manufacturer_request_at(
             &mut request,
             &fx.key,
             &fx.manifest_bytes,
@@ -1973,7 +1974,7 @@ async fn test_path2_runner_signed_at_window_matrix() {
     }
 }
 
-/// #16: two concurrent registrations with the same runner nonce — the
+/// #16: two concurrent registrations with the same manufacturer nonce — the
 /// UNIQUE(manufacturer, key_id, nonce) constraint must let exactly one win.
 #[tokio::test]
 #[serial]
@@ -1983,7 +1984,7 @@ async fn test_path2_concurrent_nonce_only_one_succeeds() {
 
     let build = || {
         let mut r = base_path2_request(&fx, 1001);
-        sign_runner_request_at(&mut r, &fx.key, &fx.manifest_bytes, now, vec![0xC0; 32]);
+        sign_manufacturer_request_at(&mut r, &fx.key, &fx.manifest_bytes, now, vec![0xC0; 32]);
         r
     };
     let req_a = build();
@@ -2008,12 +2009,12 @@ async fn test_path2_concurrent_nonce_only_one_succeeds() {
     );
 }
 
-/// Path 1: a published package registration that additionally carries a runner
+/// Path 1: a published package registration that additionally carries a manufacturer
 /// triple must still succeed — Path 1 ignores the triple (registry active is
 /// authoritative). Mirrors `test_register_route_package_with_mfr_identity_succeeds`.
 #[tokio::test]
 #[serial]
-async fn test_path1_published_package_with_runner_triple_succeeds() {
+async fn test_path1_published_package_with_manufacturer_triple_succeeds() {
     let env = setup_test_environment().await;
     let realm_id = 22003;
     seed_realm(realm_id, "package-triple-route", None).await;
@@ -2036,10 +2037,10 @@ async fn test_path1_published_package_with_runner_triple_succeeds() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        // Path 1 must ignore a (bogus) runner triple.
-        runner_signature: Some(prost::bytes::Bytes::from_static(b"bogus-runner-sig")),
-        runner_signed_at: Some(test_unix_now_secs()),
-        runner_nonce: Some(prost::bytes::Bytes::from(vec![0x77; 32])),
+        // Path 1 must ignore a (bogus) manufacturer triple.
+        manufacturer_signature: Some(prost::bytes::Bytes::from_static(b"bogus-manufacturer-sig")),
+        manufacturer_signed_at: Some(test_unix_now_secs()),
+        manufacturer_nonce: Some(prost::bytes::Bytes::from(vec![0x77; 32])),
     };
     let response = post_register(app, request, None).await;
 
@@ -2049,16 +2050,16 @@ async fn test_path1_published_package_with_runner_triple_succeeds() {
             assert_eq!(ok.actr_id.r#type.manufacturer, "triplepkg");
         }
         register_response::Result::Error(err) => {
-            panic!("Path 1 should ignore runner triple, got error: {err:?}")
+            panic!("Path 1 should ignore manufacturer triple, got error: {err:?}")
         }
     }
 }
 
-/// #18: Linked auth must reject any runner triple (InvalidFormat). The triple
+/// #18: Linked auth must reject any manufacturer triple (InvalidFormat). The triple
 /// must not leak into the Linked path; Linked enforces its absence.
 #[tokio::test]
 #[serial]
-async fn test_linked_auth_with_runner_triple_rejected() {
+async fn test_linked_auth_with_manufacturer_triple_rejected() {
     let env = setup_test_environment().await;
     let realm_secret = "linked-triple-secret";
     let realm_id = 23001;
@@ -2067,28 +2068,29 @@ async fn test_linked_auth_with_runner_triple_rejected() {
 
     let mut request = linked_register_request();
     request.realm = Realm { realm_id };
-    request.runner_signature = Some(prost::bytes::Bytes::from_static(b"should-not-be-present"));
-    request.runner_signed_at = Some(test_unix_now_secs());
-    request.runner_nonce = Some(prost::bytes::Bytes::from(vec![0x88; 32]));
+    request.manufacturer_signature =
+        Some(prost::bytes::Bytes::from_static(b"should-not-be-present"));
+    request.manufacturer_signed_at = Some(test_unix_now_secs());
+    request.manufacturer_nonce = Some(prost::bytes::Bytes::from(vec![0x88; 32]));
 
     let response = post_register(app, request, Some(realm_secret)).await;
     match response.result.expect("result") {
         register_response::Result::Error(err) => assert_eq!(
             err.code, 400,
-            "Linked with runner triple should be InvalidFormat (400), got {}",
+            "Linked with manufacturer triple should be InvalidFormat (400), got {}",
             err.code
         ),
         register_response::Result::Success(_) => {
-            panic!("Linked auth should reject runner triple presence")
+            panic!("Linked auth should reject manufacturer triple presence")
         }
     }
 }
 
-/// #17: renewal_token renewal does not require (and cannot carry) a runner
+/// #17: renewal_token renewal does not require (and cannot carry) a manufacturer
 /// triple. Register a published package, then renew via `POST /ais/renew`.
 #[tokio::test]
 #[serial]
-async fn test_renewal_token_renew_without_runner_triple() {
+async fn test_renewal_token_renew_without_manufacturer_triple() {
     let env = setup_test_environment().await;
     let realm_id = 22004;
     seed_realm(realm_id, "renew-route", None).await;
@@ -2111,9 +2113,9 @@ async fn test_renewal_token_renew_without_runner_triple() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: None,
-        runner_signed_at: None,
-        runner_nonce: None,
+        manufacturer_signature: None,
+        manufacturer_signed_at: None,
+        manufacturer_nonce: None,
     };
     // `post_register` consumes the Router; clone it so the renew call hits the
     // same issuer (shared via Arc<AIdIssuer> inside AISState).
@@ -2142,7 +2144,7 @@ async fn test_renewal_token_renew_without_runner_triple() {
             assert!(!new_token.is_empty(), "renew should rotate the token");
         }
         renew_credential_response::Result::Error(err) => {
-            panic!("renewal without runner triple should succeed, got error: {err:?}")
+            panic!("renewal without manufacturer triple should succeed, got error: {err:?}")
         }
     }
 }

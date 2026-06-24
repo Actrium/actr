@@ -29,26 +29,26 @@ fn resolve_against(base: &Path, path: &Path) -> PathBuf {
     }
 }
 
-/// [`actr_hyper::RunnerAuthProvider`] backed by an MFR keychain file.
+/// [`actr_hyper::ManufacturerAuthProvider`] backed by an MFR keychain file.
 ///
 /// Holds only the key path — the private key is re-read from disk on every
 /// `sign` call, so it is never kept resident in memory and a rotated key
 /// takes effect on the next sign (initial registration or hard rebind).
-struct KeychainRunnerAuthProvider {
+struct KeychainManufacturerAuthProvider {
     key_path: PathBuf,
 }
 
-impl actr_hyper::RunnerAuthProvider for KeychainRunnerAuthProvider {
+impl actr_hyper::ManufacturerAuthProvider for KeychainManufacturerAuthProvider {
     fn sign(
         &self,
         realm_id: u32,
         actr_type: &actr_protocol::ActrType,
         target: &str,
         manifest_raw: &[u8],
-    ) -> std::result::Result<actr_hyper::RunnerRegistrationAuth, actr_hyper::HyperError> {
+    ) -> std::result::Result<actr_hyper::ManufacturerRegistrationAuth, actr_hyper::HyperError> {
         let signing_key = crate::commands::package_build::load_signing_key(&self.key_path)
             .map_err(|e| actr_hyper::HyperError::Runtime(format!("reload mfr signing key: {e}")))?;
-        actr_hyper::RunnerRegistrationAuth::sign(
+        actr_hyper::ManufacturerRegistrationAuth::sign(
             &signing_key,
             realm_id,
             actr_type,
@@ -170,15 +170,17 @@ impl RunCommand {
         info!("📡 Signaling server: {}", config.signaling_url.as_str());
         info!("🔐 Trust anchors: {} configured", config.trust.len());
 
-        let runner_provider = self.build_runner_auth_provider().map_err(|e| {
+        let manufacturer_provider = self.build_manufacturer_auth_provider().map_err(|e| {
             ActrCliError::command_error(format!(
-                "Failed to prepare runner registration signer: {e}"
+                "Failed to prepare manufacturer registration signer: {e}"
             ))
         })?;
-        if runner_provider.is_some() {
-            info!("🔏 Runner registration signer prepared from mfr.keychain");
+        if manufacturer_provider.is_some() {
+            info!("🔏 Manufacturer registration signer prepared from mfr.keychain");
         } else {
-            info!("No mfr.keychain configured; continuing without runner registration signature");
+            info!(
+                "No mfr.keychain configured; continuing without manufacturer registration signature"
+            );
         }
 
         // 6. Initialize observability
@@ -199,7 +201,7 @@ impl RunCommand {
         info!("✅ Package attached");
 
         let registered = attached
-            .register_with_runner_auth(&ais_endpoint, runner_provider)
+            .register_with_manufacturer_auth(&ais_endpoint, manufacturer_provider)
             .await
             .map_err(|e| {
                 ActrCliError::command_error(format!(
@@ -294,24 +296,24 @@ impl RunCommand {
         }
     }
 
-    /// Build a runner re-signing provider backed by the configured MFR
+    /// Build a manufacturer re-signing provider backed by the configured MFR
     /// keychain, if any.
     ///
     /// Returns `Ok(None)` when no keychain is configured (published-package or
     /// no-keychain runs). The provider does **not** hold the private key in
     /// memory — it reloads it from the keychain file on every sign call, so a
     /// rotated key takes effect on the next hard rebind without restarting.
-    fn build_runner_auth_provider(
+    fn build_manufacturer_auth_provider(
         &self,
-    ) -> anyhow::Result<Option<std::sync::Arc<dyn actr_hyper::RunnerAuthProvider>>> {
+    ) -> anyhow::Result<Option<std::sync::Arc<dyn actr_hyper::ManufacturerAuthProvider>>> {
         let cli_config = crate::config::resolver::resolve_effective_cli_config()?;
         let Some(keychain) = cli_config.mfr.keychain.as_deref() else {
             return Ok(None);
         };
         let key_path = crate::commands::package_build::resolve_key_path(None, Some(keychain))?;
-        Ok(Some(std::sync::Arc::new(KeychainRunnerAuthProvider {
-            key_path,
-        })))
+        Ok(Some(std::sync::Arc::new(
+            KeychainManufacturerAuthProvider { key_path },
+        )))
     }
 
     async fn init_hyper(
@@ -1255,14 +1257,14 @@ mod tests {
         let _ = child.wait();
     }
 
-    /// The runner re-signing provider must (a) mint a fresh random nonce on
+    /// The manufacturer re-signing provider must (a) mint a fresh random nonce on
     /// every call — so hard rebind never replays the nonce AIS consumed on the
     /// first registration — and (b) re-read the private key from the keychain
     /// file on every call, never caching it in memory.
     #[test]
-    fn keychain_runner_auth_provider_mints_fresh_proof_and_reloads_key() {
-        use super::KeychainRunnerAuthProvider;
-        use actr_hyper::RunnerAuthProvider;
+    fn keychain_manufacturer_auth_provider_mints_fresh_proof_and_reloads_key() {
+        use super::KeychainManufacturerAuthProvider;
+        use actr_hyper::ManufacturerAuthProvider;
         use actr_protocol::ActrType;
         use base64::Engine as _;
         use base64::engine::general_purpose::STANDARD as B64;
@@ -1282,7 +1284,7 @@ mod tests {
         };
         write_key(&key_path);
 
-        let provider = KeychainRunnerAuthProvider {
+        let provider = KeychainManufacturerAuthProvider {
             key_path: key_path.clone(),
         };
         let actr_type = ActrType {

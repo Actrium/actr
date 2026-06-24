@@ -72,9 +72,9 @@ use crate::storage::{KeyRecord, KeyStorage};
 ///
 /// 后台任务每隔此时间检查一次密钥是否需要刷新
 const KEY_REFRESH_CHECK_INTERVAL_SECS: u64 = 600; // 10 分钟
-const RUNNER_SIGNED_AT_MAX_AGE_SECS: u64 = 5 * 60;
-const RUNNER_SIGNED_AT_FUTURE_SKEW_SECS: u64 = 60;
-const RUNNER_NONCE_TTL_SECS: u64 = 10 * 60;
+const MANUFACTURER_SIGNED_AT_MAX_AGE_SECS: u64 = 5 * 60;
+const MANUFACTURER_SIGNED_AT_FUTURE_SKEW_SECS: u64 = 60;
+const MANUFACTURER_NONCE_TTL_SECS: u64 = 10 * 60;
 
 use actr_protocol::{
     AIdCredential, ActrId, ActrType, ErrorResponse, IdentityClaims, Realm, RegisterRequest,
@@ -718,9 +718,9 @@ impl AIdIssuer {
         if request.actr_type.version.is_empty()
             || request.manifest_raw.is_some()
             || request.mfr_signature.is_some()
-            || request.runner_signature.is_some()
-            || request.runner_signed_at.is_some()
-            || request.runner_nonce.is_some()
+            || request.manufacturer_signature.is_some()
+            || request.manufacturer_signed_at.is_some()
+            || request.manufacturer_nonce.is_some()
         {
             return Err(AidError::InvalidFormat);
         }
@@ -759,7 +759,7 @@ impl AIdIssuer {
         let mfr_name = &actr_type.manufacturer;
 
         // Package registration must be bound to the exact manifest bytes the
-        // runner saw locally.  Without manifest_raw, AIS can only prove that
+        // manufacturer saw locally.  Without manifest_raw, AIS can only prove that
         // "some active package has this type_str"; without target, a multi-target
         // package lookup degrades to type-only matching.  Treat both as malformed
         // package-auth requests instead of falling back to a broad registry lookup.
@@ -815,49 +815,54 @@ impl AIdIssuer {
             return Ok(());
         }
 
-        // Path 2: not in table -> verify package signature + runner authorization
+        // Path 2: not in table -> verify package signature + manufacturer authorization
         // (own package, not yet published).
-        let (manifest_bytes, mfr_signature, runner_signature, runner_signed_at, runner_nonce) =
-            match (
-                &request.manifest_raw,
-                &request.mfr_signature,
-                &request.runner_signature,
-                request.runner_signed_at,
-                &request.runner_nonce,
-            ) {
-                (
-                    Some(manifest_bytes),
-                    Some(mfr_signature),
-                    Some(runner_signature),
-                    Some(runner_signed_at),
-                    Some(runner_nonce),
-                ) => (
-                    manifest_bytes,
-                    mfr_signature,
-                    runner_signature,
-                    runner_signed_at,
-                    runner_nonce,
-                ),
-                _ => {
-                    platform::recording::warn!(
-                        "MFR verification failed: unpublished package requires manifest_raw, mfr_signature, runner_signature, runner_signed_at, and runner_nonce; type_str={}",
-                        type_str
-                    );
-                    return Err(AidError::ManufacturerNotVerified);
-                }
-            };
+        let (
+            manifest_bytes,
+            mfr_signature,
+            manufacturer_signature,
+            manufacturer_signed_at,
+            manufacturer_nonce,
+        ) = match (
+            &request.manifest_raw,
+            &request.mfr_signature,
+            &request.manufacturer_signature,
+            request.manufacturer_signed_at,
+            &request.manufacturer_nonce,
+        ) {
+            (
+                Some(manifest_bytes),
+                Some(mfr_signature),
+                Some(manufacturer_signature),
+                Some(manufacturer_signed_at),
+                Some(manufacturer_nonce),
+            ) => (
+                manifest_bytes,
+                mfr_signature,
+                manufacturer_signature,
+                manufacturer_signed_at,
+                manufacturer_nonce,
+            ),
+            _ => {
+                platform::recording::warn!(
+                    "MFR verification failed: unpublished package requires manifest_raw, mfr_signature, manufacturer_signature, manufacturer_signed_at, and manufacturer_nonce; type_str={}",
+                    type_str
+                );
+                return Err(AidError::ManufacturerNotVerified);
+            }
+        };
 
-        if !matches!(runner_nonce.len(), 16 | 32) {
+        if !matches!(manufacturer_nonce.len(), 16 | 32) {
             platform::recording::warn!(
-                "runner_nonce has invalid length: len={}, type_str={}",
-                runner_nonce.len(),
+                "manufacturer_nonce has invalid length: len={}, type_str={}",
+                manufacturer_nonce.len(),
                 type_str
             );
             return Err(AidError::InvalidFormat);
         }
 
         let now = Self::unix_now_secs()?;
-        Self::verify_runner_signed_at(runner_signed_at, now)?;
+        Self::verify_manufacturer_signed_at(manufacturer_signed_at, now)?;
 
         // Parse manifest using standard TOML. Reject if not valid UTF-8/TOML —
         // unparseable manifests must not bypass the identity binding check below.
@@ -994,34 +999,36 @@ impl AIdIssuer {
             let digest = Sha256::digest(manifest_bytes.as_ref());
             actr_protocol::lower_hex(&digest)
         };
-        let runner_payload =
-            actr_protocol::build_runner_register_payload(actr_protocol::RunnerRegisterPayload {
+        let manufacturer_payload = actr_protocol::build_manufacturer_register_payload(
+            actr_protocol::ManufacturerRegisterPayload {
                 realm_id: request.realm.realm_id,
                 actr_type,
                 target: manifest_target,
                 manifest_sha256_hex: &manifest_sha256_hex,
-                runner_signed_at,
-                runner_nonce: runner_nonce.as_ref(),
-            });
-        let runner_sig_b64 = base64::prelude::BASE64_STANDARD.encode(runner_signature.as_ref());
-        let runner_valid = actrix_mfr::crypto::verify_signature(
-            runner_payload.as_bytes(),
-            &runner_sig_b64,
+                manufacturer_signed_at,
+                manufacturer_nonce: manufacturer_nonce.as_ref(),
+            },
+        );
+        let manufacturer_sig_b64 =
+            base64::prelude::BASE64_STANDARD.encode(manufacturer_signature.as_ref());
+        let manufacturer_valid = actrix_mfr::crypto::verify_signature(
+            manufacturer_payload.as_bytes(),
+            &manufacturer_sig_b64,
             &mfr_info.public_key,
         )
         .map_err(|e| {
             platform::recording::warn!(
-                "runner_signature verification error: manufacturer={}, key_id={}, err={}",
+                "manufacturer_signature verification error: manufacturer={}, key_id={}, err={}",
                 mfr_name,
                 signing_key_id,
                 e
             );
-            AidError::GenerationFailed(format!("Runner signature verification error: {e}"))
+            AidError::GenerationFailed(format!("Manufacturer signature verification error: {e}"))
         })?;
 
-        if !runner_valid {
+        if !manufacturer_valid {
             platform::recording::warn!(
-                "runner_signature verification failed: manufacturer={}, key_id={}, type_str={}",
+                "manufacturer_signature verification failed: manufacturer={}, key_id={}, type_str={}",
                 mfr_name,
                 signing_key_id,
                 type_str
@@ -1029,11 +1036,17 @@ impl AIdIssuer {
             return Err(AidError::ManufacturerNotVerified);
         }
 
-        Self::consume_runner_nonce(&pool, mfr_name, &signing_key_id, runner_nonce.as_ref(), now)
-            .await?;
+        Self::consume_manufacturer_nonce(
+            &pool,
+            mfr_name,
+            &signing_key_id,
+            manufacturer_nonce.as_ref(),
+            now,
+        )
+        .await?;
 
         platform::recording::debug!(
-            "MFR manifest and runner signature verification passed, type_str={}",
+            "MFR manifest and manufacturer signature verification passed, type_str={}",
             type_str
         );
         Ok(())
@@ -1046,25 +1059,25 @@ impl AIdIssuer {
             .map_err(|e| AidError::InvalidTimestamp(format!("system clock before Unix epoch: {e}")))
     }
 
-    fn verify_runner_signed_at(signed_at: u64, now: u64) -> Result<(), AidError> {
-        if signed_at > now.saturating_add(RUNNER_SIGNED_AT_FUTURE_SKEW_SECS) {
+    fn verify_manufacturer_signed_at(signed_at: u64, now: u64) -> Result<(), AidError> {
+        if signed_at > now.saturating_add(MANUFACTURER_SIGNED_AT_FUTURE_SKEW_SECS) {
             platform::recording::warn!(
-                "runner_signed_at is too far in the future: signed_at={}, now={}, future_skew_secs={}",
+                "manufacturer_signed_at is too far in the future: signed_at={}, now={}, future_skew_secs={}",
                 signed_at,
                 now,
-                RUNNER_SIGNED_AT_FUTURE_SKEW_SECS
+                MANUFACTURER_SIGNED_AT_FUTURE_SKEW_SECS
             );
             return Err(AidError::InvalidTimestamp(
-                "runner_signed_at is too far in the future".to_string(),
+                "manufacturer_signed_at is too far in the future".to_string(),
             ));
         }
 
-        if now.saturating_sub(signed_at) > RUNNER_SIGNED_AT_MAX_AGE_SECS {
+        if now.saturating_sub(signed_at) > MANUFACTURER_SIGNED_AT_MAX_AGE_SECS {
             platform::recording::warn!(
-                "runner_signed_at outside max age: signed_at={}, now={}, max_age_secs={}",
+                "manufacturer_signed_at outside max age: signed_at={}, now={}, max_age_secs={}",
                 signed_at,
                 now,
-                RUNNER_SIGNED_AT_MAX_AGE_SECS
+                MANUFACTURER_SIGNED_AT_MAX_AGE_SECS
             );
             return Err(AidError::Expired);
         }
@@ -1072,30 +1085,32 @@ impl AIdIssuer {
         Ok(())
     }
 
-    async fn consume_runner_nonce(
+    async fn consume_manufacturer_nonce(
         pool: &sqlx::SqlitePool,
         manufacturer: &str,
         signing_key_id: &str,
-        runner_nonce: &[u8],
+        manufacturer_nonce: &[u8],
         now: u64,
     ) -> Result<(), AidError> {
         let now_i64 = i64::try_from(now)
             .map_err(|_| AidError::InvalidTimestamp("current time exceeds i64".to_string()))?;
-        let expires_at = now_i64.saturating_add(RUNNER_NONCE_TTL_SECS as i64);
+        let expires_at = now_i64.saturating_add(MANUFACTURER_NONCE_TTL_SECS as i64);
 
-        sqlx::query("DELETE FROM ais_runner_nonce WHERE expires_at < ?")
+        sqlx::query("DELETE FROM ais_manufacturer_nonce WHERE expires_at < ?")
             .bind(now_i64)
             .execute(pool)
             .await
-            .map_err(|e| AidError::GenerationFailed(format!("runner nonce cleanup failed: {e}")))?;
+            .map_err(|e| {
+                AidError::GenerationFailed(format!("manufacturer nonce cleanup failed: {e}"))
+            })?;
 
         let result = sqlx::query(
-            "INSERT INTO ais_runner_nonce (manufacturer, key_id, nonce, created_at, expires_at)
+            "INSERT INTO ais_manufacturer_nonce (manufacturer, key_id, nonce, created_at, expires_at)
              VALUES (?, ?, ?, ?, ?)",
         )
         .bind(manufacturer)
         .bind(signing_key_id)
-        .bind(runner_nonce)
+        .bind(manufacturer_nonce)
         .bind(now_i64)
         .bind(expires_at)
         .execute(pool)
@@ -1105,14 +1120,14 @@ impl AIdIssuer {
             Ok(_) => Ok(()),
             Err(sqlx::Error::Database(err)) if err.message().contains("UNIQUE") => {
                 platform::recording::warn!(
-                    "runner_nonce replay detected: manufacturer={}, key_id={}",
+                    "manufacturer_nonce replay detected: manufacturer={}, key_id={}",
                     manufacturer,
                     signing_key_id
                 );
                 Err(AidError::ManufacturerNotVerified)
             }
             Err(err) => Err(AidError::GenerationFailed(format!(
-                "runner nonce consume failed: {err}"
+                "manufacturer nonce consume failed: {err}"
             ))),
         }
     }

@@ -691,9 +691,9 @@ impl SwRuntime {
             manifest_raw: None,
             mfr_signature: None,
             target: None,
-            runner_signature: None,
-            runner_signed_at: None,
-            runner_nonce: None,
+            manufacturer_signature: None,
+            manufacturer_signed_at: None,
+            manufacturer_nonce: None,
             auth_mode: Some(RegisterAuthMode::Linked as i32),
         };
 

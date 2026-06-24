@@ -249,10 +249,11 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
-        // AIS unpublished package runner nonce table. AIS inserts after
-        // runner_signature verification; the unique index is the replay guard.
+        // AIS unpublished package manufacturer-proof nonce table. AIS inserts
+        // after manufacturer_signature verification; the unique index is the
+        // replay guard.
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS ais_runner_nonce (
+            "CREATE TABLE IF NOT EXISTS ais_manufacturer_nonce (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 manufacturer TEXT    NOT NULL,
                 key_id       TEXT    NOT NULL,
@@ -266,8 +267,8 @@ impl Database {
         .await?;
 
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_ais_runner_nonce_expires
-             ON ais_runner_nonce(expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_ais_manufacturer_nonce_expires
+             ON ais_manufacturer_nonce(expires_at)",
         )
         .execute(&self.pool)
         .await?;

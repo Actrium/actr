@@ -487,41 +487,42 @@ impl WorkloadPackage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunnerRegistrationAuth {
+pub struct ManufacturerRegistrationAuth {
     pub signature: Vec<u8>,
     pub signed_at: u64,
     pub nonce: Vec<u8>,
 }
 
-/// Re-signing capability for the runner registration proof.
+/// Re-signing capability for the manufacturer proof used in package registration.
 ///
-/// Unpublished package registration (AIS Path 2) requires a runner proof —
-/// an Ed25519 signature over the `ACTR-RUNNER-REGISTER-V1` payload that AIS
-/// verifies and whose nonce it consumes once to prevent replay. Because the
-/// nonce is single-use, the proof **cannot be reused**: hard rebind must mint
-/// a fresh `signed_at` + `nonce` + signature.
+/// Unpublished package registration (AIS Path 2) requires a manufacturer proof —
+/// an Ed25519 signature over the `ACTR-MANUFACTURER-REGISTER-V1` payload that AIS
+/// verifies with the MFR key that signed the package manifest. Its nonce is
+/// consumed once to prevent replay. Because the nonce is single-use, the proof
+/// **cannot be reused**: hard rebind must mint a fresh `signed_at` + `nonce` +
+/// signature.
 ///
 /// Rather than caching the signing key in memory, this trait is implemented by
 /// the CLI with a type that reloads the MFR private key from the keychain on
 /// every [`Self::sign`] call. AIS bootstrap calls it once for the initial
 /// registration; the credential manager calls it again on each hard rebind.
-pub trait RunnerAuthProvider: Send + Sync {
-    /// Produce a fresh runner proof for the given registration inputs.
+pub trait ManufacturerAuthProvider: Send + Sync {
+    /// Produce a fresh manufacturer proof for the given registration inputs.
     ///
-    /// `manifest_raw` is the exact manifest bytes the runner is registering
-    /// (its SHA-256 is bound into the signed payload). Implementations must
-    /// generate a new `signed_at` and random `nonce` each call.
+    /// `manifest_raw` is the exact package manifest bound into the proof
+    /// (via its SHA-256). Implementations must generate a new `signed_at` and
+    /// random `nonce` each call.
     fn sign(
         &self,
         realm_id: u32,
         actr_type: &actr_protocol::ActrType,
         target: &str,
         manifest_raw: &[u8],
-    ) -> Result<RunnerRegistrationAuth, HyperError>;
+    ) -> Result<ManufacturerRegistrationAuth, HyperError>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl RunnerRegistrationAuth {
+impl ManufacturerRegistrationAuth {
     pub fn sign(
         signing_key: &ed25519_dalek::SigningKey,
         realm_id: u32,
@@ -544,15 +545,16 @@ impl RunnerRegistrationAuth {
 
         let manifest_sha256 = Sha256::digest(manifest_raw);
         let manifest_sha256_hex = actr_protocol::lower_hex(&manifest_sha256);
-        let payload =
-            actr_protocol::build_runner_register_payload(actr_protocol::RunnerRegisterPayload {
+        let payload = actr_protocol::build_manufacturer_register_payload(
+            actr_protocol::ManufacturerRegisterPayload {
                 realm_id,
                 actr_type,
                 target,
                 manifest_sha256_hex: &manifest_sha256_hex,
-                runner_signed_at: signed_at,
-                runner_nonce: &nonce,
-            });
+                manufacturer_signed_at: signed_at,
+                manufacturer_nonce: &nonce,
+            },
+        );
         let signature = signing_key.sign(payload.as_bytes()).to_bytes().to_vec();
 
         Ok(Self {
@@ -940,20 +942,21 @@ impl Node<Attached> {
     /// exports when a package-backed attach was used. Linked attachments
     /// register from the runtime config's actor metadata instead.
     pub async fn register(self, ais_endpoint: &str) -> HyperResult<Node<Registered>> {
-        self.register_with_runner_auth(ais_endpoint, None).await
+        self.register_with_manufacturer_auth(ais_endpoint, None)
+            .await
     }
 
-    /// Register with AIS and optionally attach runner authorization for
+    /// Register with AIS and optionally attach manufacturer authorization for
     /// unpublished package registrations.
     ///
     /// When `resign` is `Some`, it is invoked once here to mint the initial
-    /// runner proof, and is then retained in the registration context so hard
+    /// manufacturer proof, and is then retained in the registration context so hard
     /// rebind can re-invoke it to mint a fresh proof (the proof's nonce is
     /// single-use on the AIS side). Linked registration ignores it.
-    pub async fn register_with_runner_auth(
+    pub async fn register_with_manufacturer_auth(
         self,
         ais_endpoint: &str,
-        resign: Option<Arc<dyn RunnerAuthProvider>>,
+        resign: Option<Arc<dyn ManufacturerAuthProvider>>,
     ) -> HyperResult<Node<Registered>> {
         let attachment = self
             .attachment
@@ -989,7 +992,7 @@ impl Node<Attached> {
         mut self,
         ais_endpoint: &str,
         service_spec: Option<ServiceSpec>,
-        resign: Option<Arc<dyn RunnerAuthProvider>>,
+        resign: Option<Arc<dyn ManufacturerAuthProvider>>,
     ) -> HyperResult<Node<Registered>> {
         let attachment = self
             .attachment
@@ -999,12 +1002,12 @@ impl Node<Attached> {
         let acl = attachment.node.config.acl.clone();
         let realm_secret = attachment.node.config.realm_secret.clone();
 
-        // Mint the initial runner proof (if a re-signing provider was supplied)
+        // Mint the initial manufacturer proof (if a re-signing provider was supplied)
         // so the same one-shot auth feeds both the saved registration context
         // and the bootstrap request. The provider itself is retained in the
         // context below so hard rebind can re-invoke it for a fresh proof
         // instead of replaying the single-use nonce.
-        let runner_auth = match (&resign, attachment.verified.as_ref()) {
+        let manufacturer_auth = match (&resign, attachment.verified.as_ref()) {
             (Some(provider), Some(verified)) => Some(provider.sign(
                 realm_id,
                 &ActrType {
@@ -1037,11 +1040,13 @@ impl Node<Attached> {
                         mfr_signature: Some(verified.sig_raw.clone().into()),
                         target: Some(manifest.binary.target.clone()),
                         auth_mode: Some(RegisterAuthMode::Package as i32),
-                        runner_signature: runner_auth
+                        manufacturer_signature: manufacturer_auth
                             .as_ref()
                             .map(|auth| bytes::Bytes::from(auth.signature.clone())),
-                        runner_signed_at: runner_auth.as_ref().map(|auth| auth.signed_at),
-                        runner_nonce: runner_auth
+                        manufacturer_signed_at: manufacturer_auth
+                            .as_ref()
+                            .map(|auth| auth.signed_at),
+                        manufacturer_nonce: manufacturer_auth
                             .as_ref()
                             .map(|auth| bytes::Bytes::from(auth.nonce.clone())),
                     },
@@ -1063,7 +1068,7 @@ impl Node<Attached> {
                     service_spec,
                     acl,
                     realm_secret: realm_secret.as_deref(),
-                    runner_auth,
+                    manufacturer_auth,
                 },
             )
             .await?
@@ -1188,7 +1193,7 @@ impl Hyper {
                 service_spec,
                 acl,
                 realm_secret: None,
-                runner_auth: None,
+                manufacturer_auth: None,
             },
         )
         .await
@@ -1352,7 +1357,7 @@ struct CredentialBootstrapRequest<'a> {
     service_spec: Option<ServiceSpec>,
     acl: Option<Acl>,
     realm_secret: Option<&'a str>,
-    runner_auth: Option<RunnerRegistrationAuth>,
+    manufacturer_auth: Option<ManufacturerRegistrationAuth>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1367,7 +1372,7 @@ async fn bootstrap_credential_inner(
         service_spec,
         acl,
         realm_secret,
-        runner_auth,
+        manufacturer_auth,
     } = request;
     let manifest = &verified.manifest;
     info!(
@@ -1419,11 +1424,11 @@ async fn bootstrap_credential_inner(
         mfr_signature: Some(verified.sig_raw.clone().into()),
         target: Some(manifest.binary.target.clone()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        runner_signature: runner_auth
+        manufacturer_signature: manufacturer_auth
             .as_ref()
             .map(|auth| bytes::Bytes::from(auth.signature.clone())),
-        runner_signed_at: runner_auth.as_ref().map(|auth| auth.signed_at),
-        runner_nonce: runner_auth
+        manufacturer_signed_at: manufacturer_auth.as_ref().map(|auth| auth.signed_at),
+        manufacturer_nonce: manufacturer_auth
             .as_ref()
             .map(|auth| bytes::Bytes::from(auth.nonce.clone())),
     };
