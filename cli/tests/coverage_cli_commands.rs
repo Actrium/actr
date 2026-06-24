@@ -25,17 +25,6 @@ fn run_actr(args: &[&str], cwd: &Path, home: &Path) -> Output {
         .expect("failed to run actr binary")
 }
 
-/// Run actr without overriding HOME (needed for gen which invokes cargo internally)
-fn run_actr_no_home(args: &[&str], cwd: &Path) -> Output {
-    Command::new(actr_bin())
-        .args(args)
-        .current_dir(cwd)
-        .env("NO_COLOR", "1")
-        .env("RUST_LOG", "off")
-        .output()
-        .expect("failed to run actr binary")
-}
-
 fn assert_success(output: &Output, context: &str) {
     assert!(
         output.status.success(),
