@@ -692,3 +692,59 @@ impl GenerationPipeline {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::DependencySpec;
+
+    #[test]
+    fn dependency_lookup_key_prefers_actr_type_over_name() {
+        let spec = DependencySpec {
+            alias: "echo".into(),
+            name: "echo-service".into(),
+            actr_type: Some(
+                actr_protocol::ActrType::from_string_repr("acme:Echo:1.0.0").unwrap(),
+            ),
+            fingerprint: None,
+        };
+        assert_eq!(
+            ValidationPipeline::dependency_lookup_key(&spec),
+            "acme:Echo:1.0.0"
+        );
+
+        let spec = DependencySpec {
+            alias: "echo".into(),
+            name: "echo-service".into(),
+            actr_type: None,
+            fingerprint: None,
+        };
+        assert_eq!(
+            ValidationPipeline::dependency_lookup_key(&spec),
+            "echo-service"
+        );
+    }
+
+    #[test]
+    fn install_result_success_is_empty() {
+        let result = InstallResult::success();
+        assert!(result.installed_dependencies.is_empty());
+        assert!(!result.updated_config);
+        assert!(!result.updated_lock_file);
+        assert_eq!(result.cache_updates, 0);
+    }
+
+    #[test]
+    fn install_result_summary_counts_deps_and_cache() {
+        let result = InstallResult {
+            installed_dependencies: vec![],
+            updated_config: true,
+            updated_lock_file: true,
+            cache_updates: 5,
+            warnings: vec![],
+        };
+        let s = result.summary();
+        assert!(s.contains("Installed 0 dependencies"));
+        assert!(s.contains("updated 5 cache entries"));
+    }
+}
