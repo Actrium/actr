@@ -25,6 +25,17 @@ fn run_actr(args: &[&str], cwd: &Path, home: &Path) -> Output {
         .expect("failed to run actr binary")
 }
 
+/// Run actr without overriding HOME (needed for gen which invokes cargo internally)
+fn run_actr_no_home(args: &[&str], cwd: &Path) -> Output {
+    Command::new(actr_bin())
+        .args(args)
+        .current_dir(cwd)
+        .env("NO_COLOR", "1")
+        .env("RUST_LOG", "off")
+        .output()
+        .expect("failed to run actr binary")
+}
+
 fn assert_success(output: &Output, context: &str) {
     assert!(
         output.status.success(),
@@ -374,4 +385,325 @@ fn pkg_keygen_writes_key_config_and_rejects_existing_key_without_force() {
         &home,
     );
     assert_success(&force, "forced pkg keygen");
+}
+
+#[test]
+fn version_prints_human_and_json_forms() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    let human = run_actr(&["version"], tmp.path(), &home);
+    assert_success(&human, "version human");
+    let human_out = clean_stdout(&human);
+    assert!(
+        human_out.starts_with("actr "),
+        "human version output:\n{human_out}"
+    );
+
+    let json = run_actr(&["version", "--json"], tmp.path(), &home);
+    assert_success(&json, "version json");
+    let json_value: serde_json::Value =
+        serde_json::from_str(clean_stdout(&json).trim()).expect("version json should parse");
+    assert!(json_value["version"].as_str().is_some(), "version field");
+    assert!(json_value["git_hash"].as_str().is_some(), "git_hash field");
+    assert!(json_value["git_date"].as_str().is_some(), "git_date field");
+}
+
+#[test]
+fn completion_emits_scripts_for_every_shell() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let output = run_actr(&["completion", shell], tmp.path(), &home);
+        assert_success(&output, &format!("completion {shell}"));
+        assert!(
+            !clean_stdout(&output).trim().is_empty(),
+            "completion {shell} produced empty output"
+        );
+    }
+}
+
+#[test]
+fn ps_reports_no_runtimes_for_isolated_hyper_dir() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    let hyper = tmp.path().join("hyper");
+    let hyper_arg = hyper.to_string_lossy().into_owned();
+
+    let output = run_actr(&["ps", "--hyper-dir", &hyper_arg], tmp.path(), &home);
+    assert_success(&output, "ps empty");
+    assert!(
+        clean_stdout(&output).contains("No detached runtimes found."),
+        "ps empty output:\n{}",
+        clean_stdout(&output)
+    );
+
+    // `--all` on an empty store should behave the same.
+    let all = run_actr(&["ps", "--all", "--hyper-dir", &hyper_arg], tmp.path(), &home);
+    assert_success(&all, "ps all empty");
+    assert!(clean_stdout(&all).contains("No detached runtimes found."));
+}
+
+#[test]
+fn runtime_lifecycle_commands_reject_short_and_unknown_wid() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    let hyper = tmp.path().join("hyper");
+    let hyper_arg = hyper.to_string_lossy().into_owned();
+
+    // Short WID prefix is rejected before any lookup.
+    let short = run_actr(
+        &["logs", "abc", "--hyper-dir", &hyper_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&short, "logs short wid");
+    assert!(
+        stderr(&short).contains("WID prefix must be at least 8 characters"),
+        "logs short wid stderr:\n{}",
+        stderr(&short)
+    );
+
+    // Unknown WID prefix → no record found, for every lifecycle command.
+    let unknown = "aaaaaaaa";
+    for cmd in ["logs", "stop", "rm", "start", "restart"] {
+        let output = run_actr(
+            &[cmd, unknown, "--hyper-dir", &hyper_arg],
+            tmp.path(),
+            &home,
+        );
+        assert_failure(&output, &format!("{cmd} unknown wid"));
+        assert!(
+            stderr(&output).contains("No runtime record found for WID prefix"),
+            "{cmd} unknown wid stderr:\n{}",
+            stderr(&output)
+        );
+    }
+}
+
+/// Generate a dev signing key via the CLI and return its path argument.
+fn gen_key(root: &Path, home: &Path) -> String {
+    let key_path = root.join("keys/dev-key.json");
+    let key_arg = key_path.to_string_lossy().into_owned();
+    let output = run_actr(&["pkg", "keygen", "--output", &key_arg], root, home);
+    assert_success(&output, "pkg keygen helper");
+    key_arg
+}
+
+#[test]
+fn dlq_list_stats_and_purge_handle_empty_database_and_bad_input() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    let db_arg = tmp.path().join("dlq.db").to_string_lossy().into_owned();
+
+    // Empty database → list reports empty.
+    let list = run_actr(&["dlq", "list", "--db", &db_arg], tmp.path(), &home);
+    assert_success(&list, "dlq list empty");
+    assert!(clean_stdout(&list).contains("DLQ is empty (no matching records)."));
+
+    // Invalid --after timestamp → rejected.
+    let bad_after = run_actr(
+        &["dlq", "list", "--db", &db_arg, "--after", "not-a-timestamp"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&bad_after, "dlq list bad after");
+    assert!(
+        stderr(&bad_after).contains("must be a valid RFC 3339 timestamp"),
+        "dlq list bad after stderr:\n{}",
+        stderr(&bad_after)
+    );
+
+    // Stats on empty database.
+    let stats = run_actr(&["dlq", "stats", "--db", &db_arg], tmp.path(), &home);
+    assert_success(&stats, "dlq stats empty");
+    let stats_out = clean_stdout(&stats);
+    assert!(stats_out.contains("DLQ Statistics"), "stats output:\n{stats_out}");
+    assert!(stats_out.contains("Total messages:           0"));
+
+    // Purge without id or --all → rejected.
+    let purge_none = run_actr(&["dlq", "purge", "--db", &db_arg], tmp.path(), &home);
+    assert_failure(&purge_none, "dlq purge none");
+    assert!(
+        stderr(&purge_none).contains("Specify a record ID, or pass --all"),
+        "dlq purge none stderr:\n{}",
+        stderr(&purge_none)
+    );
+
+    // Purge --all on empty database → purges zero.
+    let purge_all = run_actr(&["dlq", "purge", "--all", "--db", &db_arg], tmp.path(), &home);
+    assert_success(&purge_all, "dlq purge all empty");
+    assert!(clean_stdout(&purge_all).contains("Purged 0 DLQ record(s)."));
+
+    // Purge --all with bad --before → rejected.
+    let purge_bad_before = run_actr(
+        &["dlq", "purge", "--all", "--before", "nope", "--db", &db_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&purge_bad_before, "dlq purge bad before");
+    assert!(
+        stderr(&purge_bad_before).contains("must be a valid RFC 3339 timestamp"),
+        "dlq purge bad before stderr:\n{}",
+        stderr(&purge_bad_before)
+    );
+}
+
+#[test]
+fn dlq_show_and_replay_reject_invalid_uuid_and_missing_records() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    let db_arg = tmp.path().join("dlq.db").to_string_lossy().into_owned();
+
+    // Invalid UUID → rejected.
+    let bad_uuid = run_actr(
+        &["dlq", "show", "not-a-uuid", "--db", &db_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&bad_uuid, "dlq show bad uuid");
+    assert!(
+        stderr(&bad_uuid).contains("Invalid UUID: 'not-a-uuid'"),
+        "dlq show bad uuid stderr:\n{}",
+        stderr(&bad_uuid)
+    );
+
+    // Valid UUID but no record → not found.
+    let valid_uuid = "11111111-1111-1111-1111-111111111111";
+    let missing = run_actr(
+        &["dlq", "show", valid_uuid, "--db", &db_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&missing, "dlq show missing");
+    assert!(
+        stderr(&missing).contains("No DLQ record found with ID:"),
+        "dlq show missing stderr:\n{}",
+        stderr(&missing)
+    );
+
+    // Replay with missing record → not found.
+    let replay_missing = run_actr(
+        &["dlq", "replay", valid_uuid, "--db", &db_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&replay_missing, "dlq replay missing");
+    assert!(
+        stderr(&replay_missing).contains("No DLQ record found with ID:"),
+        "dlq replay missing stderr:\n{}",
+        stderr(&replay_missing)
+    );
+}
+
+#[test]
+fn pkg_sign_validates_manifest_and_signs_on_success() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    write_manifest_with_proto(tmp.path());
+    let key_arg = gen_key(tmp.path(), &home);
+
+    // Missing manifest → error.
+    let missing = run_actr(
+        &["pkg", "sign", "--manifest-path", "missing.toml", "--key", &key_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&missing, "pkg sign missing manifest");
+    assert!(stderr(&missing).contains("manifest.toml not found"));
+
+    // Invalid TOML → error.
+    fs::write(tmp.path().join("bad.toml"), "invalid = {{{").expect("write bad toml");
+    let bad = run_actr(
+        &["pkg", "sign", "--manifest-path", "bad.toml", "--key", &key_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&bad, "pkg sign bad toml");
+    assert!(stderr(&bad).contains("Invalid manifest.toml"));
+
+    // Missing [package] → error.
+    fs::write(tmp.path().join("no_package.toml"), "edition = 1\n").expect("write no_package");
+    let no_pkg = run_actr(
+        &["pkg", "sign", "--manifest-path", "no_package.toml", "--key", &key_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&no_pkg, "pkg sign no package");
+    assert!(
+        stderr(&no_pkg).contains("manifest.toml missing [package] section"),
+        "pkg sign no package stderr:\n{}",
+        stderr(&no_pkg)
+    );
+
+    // Missing manufacturer field → error.
+    fs::write(
+        tmp.path().join("partial.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write partial");
+    let partial = run_actr(
+        &["pkg", "sign", "--manifest-path", "partial.toml", "--key", &key_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&partial, "pkg sign partial");
+    assert!(
+        stderr(&partial).contains("[package].manufacturer missing"),
+        "pkg sign partial stderr:\n{}",
+        stderr(&partial)
+    );
+
+    // Valid manifest → signs successfully and writes a 64-byte signature.
+    let signed = run_actr(
+        &["pkg", "sign", "--manifest-path", "manifest.toml", "--key", &key_arg],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&signed, "pkg sign success");
+    assert!(clean_stdout(&signed).contains("Manifest signed successfully"));
+    let sig_path = tmp.path().join("manifest.sig");
+    assert!(sig_path.exists(), "manifest.sig was not written");
+    let sig_len = fs::metadata(&sig_path).expect("read sig metadata").len();
+    assert_eq!(sig_len, 64, "signature should be 64 raw Ed25519 bytes");
+}
+
+#[test]
+fn pkg_sign_without_key_reports_missing_configuration() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    write_manifest_with_proto(tmp.path());
+
+    // No --key and no config keychain → error before manifest parsing.
+    let no_key = run_actr(
+        &["pkg", "sign", "--manifest-path", "manifest.toml"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&no_key, "pkg sign no key");
+    assert!(
+        stderr(&no_key).contains("No signing key configured"),
+        "pkg sign no key stderr:\n{}",
+        stderr(&no_key)
+    );
+}
+
+#[test]
+fn pkg_verify_reports_unreadable_package() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // Nonexistent package → error before key resolution.
+    let missing = run_actr(
+        &["pkg", "verify", "--package", "nonexistent.actr"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&missing, "pkg verify missing package");
+    assert!(
+        stderr(&missing).contains("Failed to read package"),
+        "pkg verify missing stderr:\n{}",
+        stderr(&missing)
+    );
 }
