@@ -968,8 +968,18 @@ impl AIdIssuer {
             return Err(AidError::ManufacturerNotVerified);
         }
 
-        // Check target if provided in both request and manifest.
-        if let (Some(req_target), Some(manifest_target)) = (request.target.as_deref(), m_target) {
+        // The MFR-signed manifest must declare binary.target. Falling back to
+        // request.target would leave the manifest signature unbound to target,
+        // letting one signed manifest be registered under arbitrary targets.
+        // Mirror Path 1, where the registry row's target is authoritative.
+        let manifest_target = m_target.ok_or_else(|| {
+            platform::recording::warn!("MFR manifest missing binary.target; type_str={}", type_str);
+            AidError::InvalidFormat
+        })?;
+
+        // request.target is guaranteed non-empty by the entry guard; ensure it
+        // matches the target the MFR signed into the manifest.
+        if let Some(req_target) = request.target.as_deref() {
             if req_target != manifest_target {
                 platform::recording::warn!(
                     "MFR manifest target mismatch: manifest={}, request={}",
@@ -979,11 +989,6 @@ impl AIdIssuer {
                 return Err(AidError::ManufacturerNotVerified);
             }
         }
-
-        let manifest_target = m_target.or(request.target.as_deref()).ok_or_else(|| {
-            platform::recording::warn!("MFR manifest target missing, type_str={}", type_str);
-            AidError::InvalidFormat
-        })?;
         let manifest_sha256_hex = {
             use sha2::{Digest, Sha256};
             let digest = Sha256::digest(manifest_bytes.as_ref());

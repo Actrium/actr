@@ -1319,6 +1319,87 @@ async fn test_path2_missing_runner_signature_rejected() {
     }
 }
 
+/// Path 2: a manifest that does not declare `binary.target` is rejected.
+/// The MFR signature must bind target; AIS must not fall back to the
+/// request's target, otherwise one signed manifest could register under
+/// arbitrary targets.
+#[tokio::test]
+#[serial]
+async fn test_path2_manifest_without_binary_target_is_rejected() {
+    use ed25519_dalek::{Signer, SigningKey};
+    use rand::rngs::OsRng;
+
+    let env = setup_test_environment().await;
+    let signer_client = create_signer_client(&env.signer_config, &env.shared_key)
+        .await
+        .expect("signer client");
+    let issuer = AIdIssuer::new(
+        signer_client,
+        default_issuer_config(&env.issuer_temp_dir),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .expect("issuer");
+
+    let pool = platform::storage::db::get_database().get_pool();
+    seed_realm(1001, "test", None).await;
+
+    let key = SigningKey::generate(&mut OsRng);
+    let (_mfr_id, _key_id) = seed_mfr_with_key(pool, "notargetmfr", &key).await;
+
+    // Validly signed manifest that omits [binary].target.
+    let key_id = actrix_mfr::crypto::compute_key_id(&key.verifying_key().to_bytes());
+    let manifest = format!(
+        r#"manufacturer = "notargetmfr"
+name = "NoTargetService"
+version = "1.0.0"
+signing_key_id = "{key_id}"
+
+[binary]
+path = "bin/actor.wasm"
+hash = "0000000000000000000000000000000000000000000000000000000000000000"
+"#,
+    );
+    let manifest_bytes = manifest.into_bytes();
+    let sig_bytes = key.sign(&manifest_bytes).to_bytes().to_vec();
+
+    let mut request = RegisterRequest {
+        actr_type: ActrType {
+            manufacturer: "notargetmfr".to_string(),
+            name: "NoTargetService".to_string(),
+            version: "1.0.0".to_string(),
+        },
+        realm: Realm { realm_id: 1001 },
+        service_spec: None,
+        acl: None,
+        service: None,
+        ws_address: None,
+        manifest_raw: Some(prost::bytes::Bytes::from(manifest_bytes.clone())),
+        mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
+        target: Some("wasm32-wasip1".to_string()),
+        auth_mode: Some(RegisterAuthMode::Package as i32),
+        runner_signature: None,
+        runner_signed_at: None,
+        runner_nonce: None,
+    };
+    // Provide a valid runner proof so the request clears the five-field and
+    // signature checks and reaches the binary.target guard.
+    sign_runner_request(&mut request, &key, &manifest_bytes);
+
+    let response = issuer.issue_credential(&request).await.expect("issue");
+    match response.result.expect("result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(
+                err.code, 400,
+                "manifest without binary.target should be InvalidFormat (400)"
+            );
+        }
+        register_response::Result::Success(_) => {
+            panic!("manifest without binary.target should be rejected")
+        }
+    }
+}
+
 /// Path 2: replaying the same runner_nonce is rejected after the first success.
 #[tokio::test]
 #[serial]
