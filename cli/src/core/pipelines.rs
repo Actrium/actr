@@ -897,6 +897,25 @@ mod tests {
         async fn generate_lock_fingerprint(&self, _deps: &[ResolvedDependency]) -> anyhow::Result<crate::core::Fingerprint> { unreachable!() }
     }
 
+    struct MockCacheManager;
+    #[async_trait]
+    impl crate::core::CacheManager for MockCacheManager {
+        async fn get_cached_proto(&self, _name: &str) -> anyhow::Result<Option<crate::core::CachedProto>> { unreachable!() }
+        async fn cache_proto(&self, _name: &str, _protos: &[crate::core::ProtoFile]) -> anyhow::Result<()> { unreachable!() }
+        async fn invalidate_cache(&self, _name: &str) -> anyhow::Result<()> { unreachable!() }
+        async fn clear_cache(&self) -> anyhow::Result<()> { unreachable!() }
+        async fn get_cache_stats(&self) -> anyhow::Result<crate::core::CacheStats> { unreachable!() }
+    }
+
+    struct MockProtoProcessor;
+    #[async_trait]
+    impl crate::core::ProtoProcessor for MockProtoProcessor {
+        async fn discover_proto_files(&self, _path: &Path) -> anyhow::Result<Vec<crate::core::ProtoFile>> { unreachable!() }
+        async fn parse_proto_services(&self, _files: &[crate::core::ProtoFile]) -> anyhow::Result<Vec<crate::core::ServiceDefinition>> { unreachable!() }
+        async fn generate_code(&self, _input: &Path, _output: &Path) -> anyhow::Result<crate::core::GenerationResult> { unreachable!() }
+        async fn validate_proto_syntax(&self, _files: &[crate::core::ProtoFile]) -> anyhow::Result<crate::core::ValidationReport> { unreachable!() }
+    }
+
     #[test]
     fn validation_pipeline_constructs_and_exposes_getters() {
         let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
@@ -1045,5 +1064,25 @@ mod tests {
         assert!(!results[1].is_valid);
         // c: expected empty → valid regardless.
         assert!(results[2].is_valid);
+    }
+
+    #[test]
+    fn install_and_generation_pipelines_construct() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery { service_available: true });
+        let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
+        let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
+        let cache: Arc<dyn crate::core::CacheManager> = Arc::new(MockCacheManager);
+        let proto: Arc<dyn crate::core::ProtoProcessor> = Arc::new(MockProtoProcessor);
+
+        let vp = ValidationPipeline::new(
+            config.clone(), dep.clone(), sd.clone(), net.clone(), fp.clone(),
+        );
+        let ip = InstallPipeline::new(vp, config.clone(), cache.clone(), proto.clone());
+        let _ = ip.validation_pipeline();
+        let _ = ip.config_manager();
+
+        std::mem::drop(GenerationPipeline::new(config, proto, cache));
     }
 }
