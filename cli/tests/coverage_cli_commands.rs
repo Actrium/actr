@@ -707,3 +707,198 @@ fn pkg_verify_reports_unreadable_package() {
         stderr(&missing)
     );
 }
+
+#[test]
+fn gen_validates_lock_file_input_and_language_compatibility() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    write_manifest_with_proto(tmp.path());
+
+    // No lock file → error before any proto discovery.
+    let no_lock = run_actr(&["gen"], tmp.path(), &home);
+    assert_failure(&no_lock, "gen no lock");
+    assert!(
+        stderr(&no_lock).contains("manifest.lock.toml not found"),
+        "gen no lock stderr:\n{}",
+        stderr(&no_lock)
+    );
+
+    // Lock present but default input `protos` does not exist → error.
+    fs::write(tmp.path().join("manifest.lock.toml"), "").expect("write lock");
+    let bad_input = run_actr(&["gen"], tmp.path(), &home);
+    assert_failure(&bad_input, "gen bad input");
+    assert!(
+        stderr(&bad_input).contains("Input path does not exist"),
+        "gen bad input stderr:\n{}",
+        stderr(&bad_input)
+    );
+
+    // Empty protos directory → no proto files found.
+    fs::create_dir_all(tmp.path().join("protos")).expect("create protos dir");
+    let empty_protos = run_actr(&["gen"], tmp.path(), &home);
+    assert_failure(&empty_protos, "gen empty protos");
+    assert!(
+        stderr(&empty_protos).contains("No proto files found"),
+        "gen empty protos stderr:\n{}",
+        stderr(&empty_protos)
+    );
+
+    // Cargo.toml present → detected as rust; requesting swift → refused.
+    fs::write(
+        tmp.path().join("Cargo.toml"),
+        "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write cargo toml");
+    let lang_mismatch = run_actr(&["gen", "-l", "swift"], tmp.path(), &home);
+    assert_failure(&lang_mismatch, "gen lang mismatch");
+    assert!(
+        stderr(&lang_mismatch).contains("Refusing to generate"),
+        "gen lang mismatch stderr:\n{}",
+        stderr(&lang_mismatch)
+    );
+}
+
+#[test]
+fn registry_fingerprint_covers_text_no_exports_and_unsupported_format() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+    write_manifest_with_proto(tmp.path());
+
+    // Service-level text output with exports.
+    let text = run_actr(
+        &["registry", "fingerprint", "--manifest-path", "manifest.toml"],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&text, "fingerprint text");
+    assert!(
+        clean_stdout(&text).contains("Service Semantic Fingerprint"),
+        "fingerprint text output:\n{}",
+        clean_stdout(&text)
+    );
+
+    // Proto-level text output.
+    let proto_text = run_actr(
+        &[
+            "registry",
+            "fingerprint",
+            "--proto",
+            "proto/echo.proto",
+            "--format",
+            "text",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&proto_text, "fingerprint proto text");
+    assert!(clean_stdout(&proto_text).contains("Proto Semantic Fingerprint"));
+
+    // Unsupported format → error.
+    let bad_fmt = run_actr(
+        &[
+            "registry",
+            "fingerprint",
+            "--manifest-path",
+            "manifest.toml",
+            "--format",
+            "xml",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&bad_fmt, "fingerprint bad format");
+    assert!(stderr(&bad_fmt).contains("Unsupported format: xml"));
+
+    // Manifest with no exports.
+    fs::write(
+        tmp.path().join("empty.toml"),
+        "edition = 1\n\n[package]\nname = \"empty-service\"\nmanufacturer = \"acme\"\nversion = \"0.1.0\"\ndescription = \"Empty\"\n",
+    )
+    .expect("write empty manifest");
+
+    let no_exports_text = run_actr(
+        &["registry", "fingerprint", "--manifest-path", "empty.toml"],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&no_exports_text, "fingerprint no exports text");
+    assert!(clean_stdout(&no_exports_text).contains("No proto files found in exports"));
+
+    let no_exports_json = run_actr(
+        &[
+            "registry",
+            "fingerprint",
+            "--manifest-path",
+            "empty.toml",
+            "--format",
+            "json",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&no_exports_json, "fingerprint no exports json");
+    assert_eq!(first_json_object(&no_exports_json)["status"], "no_exports");
+
+    // No exports + verify → no_lock_file status.
+    let no_lock = run_actr(
+        &[
+            "registry",
+            "fingerprint",
+            "--manifest-path",
+            "empty.toml",
+            "--verify",
+            "--format",
+            "json",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&no_lock, "fingerprint no lock verify");
+    assert_eq!(first_json_object(&no_lock)["status"], "no_lock_file");
+}
+
+#[test]
+fn doc_generates_default_pages_without_manifest_and_rejects_subdir() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // No manifest.toml in cwd and none above → generate default docs.
+    let output = run_actr(&["doc", "--output", "docs-out"], tmp.path(), &home);
+    assert_success(&output, "doc no manifest");
+    assert!(
+        tmp.path().join("docs-out/index.html").exists(),
+        "default doc index.html should be generated"
+    );
+
+    // manifest.toml in a parent dir → refuse to run from a subdir.
+    let parent = tmp.path().join("parent");
+    fs::create_dir_all(parent.join("child")).expect("create parent/child");
+    fs::write(
+        parent.join("manifest.toml"),
+        "edition = 1\n\n[package]\nname = \"x\"\nmanufacturer = \"acme\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("write parent manifest");
+    let subdir = run_actr(&["doc", "--output", "docs-out"], &parent.join("child"), &home);
+    assert_failure(&subdir, "doc subdir");
+    assert!(
+        stderr(&subdir).contains("Please run 'actr doc' from the workload root"),
+        "doc subdir stderr:\n{}",
+        stderr(&subdir)
+    );
+}
+
+#[test]
+fn deps_install_requires_project_container_in_empty_dir() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // Empty directory → no manifest, so the container is minimal and the
+    // install command cannot even resolve its ConfigManager dependency.
+    let output = run_actr(&["deps", "install"], tmp.path(), &home);
+    assert_failure(&output, "deps install non-project");
+    assert!(
+        stderr(&output).contains("ConfigManager is required"),
+        "deps install non-project stderr:\n{}",
+        stderr(&output)
+    );
+}
