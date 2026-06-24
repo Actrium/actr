@@ -1307,4 +1307,19 @@ realm_id = 1001
         assert!(mappings.contains("echo.proto="));
         assert!(mappings.contains("EchoService"));
     }
+
+    #[test]
+    fn pure_helpers_produce_correct_output() {
+        let svc = scaffold_service();
+        assert_eq!(super::handler_module_name(&svc), "empty_shell");
+        assert_eq!(super::handler_impl_type(&svc), "EmptyShellImpl");
+        assert_eq!(
+            super::service_type_or_default(&svc, None, "Workload"),
+            "EmptyShellWorkload"
+        );
+        assert!(!super::message_imports(&svc).is_empty());
+        assert!(!super::handler_method_impls(&svc).is_empty());
+        // is_default_cargo_lib_rs returns false for non-default lib.rs.
+        assert!(!super::is_default_cargo_lib_rs("custom content"));
+    }
 }
