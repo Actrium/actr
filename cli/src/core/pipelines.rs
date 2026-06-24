@@ -773,7 +773,7 @@ mod tests {
             unreachable!()
         }
         async fn update_dependency(&self, _spec: &DependencySpec) -> anyhow::Result<()> {
-            unreachable!()
+            Ok(())
         }
         async fn validate_config(&self) -> anyhow::Result<ConfigValidation> {
             Ok(ConfigValidation {
@@ -804,15 +804,15 @@ mod tests {
     #[async_trait]
     impl DependencyResolver for MockDepResolver {
         async fn resolve_spec(&self, _config: &ManifestConfig) -> anyhow::Result<Vec<DependencySpec>> {
-            unreachable!()
+            Ok(vec![])
         }
         async fn resolve_dependencies(
             &self, _specs: &[DependencySpec], _service_details: &[crate::core::ServiceDetails],
         ) -> anyhow::Result<Vec<ResolvedDependency>> {
-            unreachable!()
+            Ok(vec![])
         }
         async fn check_conflicts(&self, _deps: &[ResolvedDependency]) -> anyhow::Result<Vec<crate::core::ConflictReport>> {
-            unreachable!()
+            Ok(vec![])
         }
         async fn build_dependency_graph(&self, _deps: &[ResolvedDependency]) -> anyhow::Result<crate::core::DependencyGraph> {
             unreachable!()
@@ -905,7 +905,7 @@ mod tests {
     #[async_trait]
     impl crate::core::CacheManager for MockCacheManager {
         async fn get_cached_proto(&self, _name: &str) -> anyhow::Result<Option<crate::core::CachedProto>> { unreachable!() }
-        async fn cache_proto(&self, _name: &str, _protos: &[crate::core::ProtoFile]) -> anyhow::Result<()> { unreachable!() }
+        async fn cache_proto(&self, _name: &str, _protos: &[crate::core::ProtoFile]) -> anyhow::Result<()> { Ok(()) }
         async fn invalidate_cache(&self, _name: &str) -> anyhow::Result<()> { unreachable!() }
         async fn clear_cache(&self) -> anyhow::Result<()> { unreachable!() }
         async fn get_cache_stats(&self) -> anyhow::Result<crate::core::CacheStats> { unreachable!() }
