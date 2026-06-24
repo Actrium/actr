@@ -36,6 +36,9 @@ realm = "local.actrix"
 
 [services.ais]
 
+[services.ais.server]
+renewal_token_secret = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+
 [services.signaling]
 
 [services.signaling.server]
