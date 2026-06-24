@@ -222,6 +222,118 @@ fn config_local_scope_round_trips_values_and_validates() {
 }
 
 #[test]
+fn config_global_scope_round_trips_and_list_shows_effective_values() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // Set a value in the global scope (writes to ~/.actr/config.toml).
+    let set = run_actr(
+        &["config", "--global", "set", "network.realm_id", "8372"],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&set, "config global set");
+    let global_config = home.join(".actr/config.toml");
+    assert!(
+        global_config.exists(),
+        "global config should be written"
+    );
+    let saved = fs::read_to_string(&global_config).expect("read global config");
+    assert!(saved.contains("realm_id"), "global config:\n{saved}");
+
+    let get = run_actr(
+        &["config", "--global", "get", "network.realm_id"],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&get, "config global get");
+    assert!(clean_stdout(&get).contains("8372"));
+
+    // list shows effective (merged) config.
+    let list = run_actr(&["config", "list"], tmp.path(), &home);
+    assert_success(&list, "config list");
+    let list_out = clean_stdout(&list);
+    assert!(list_out.contains("network.realm_id"), "list: {list_out}");
+    assert!(list_out.contains("mfr.manufacturer"), "list: {list_out}");
+
+    let global_unset = run_actr(
+        &["config", "--global", "unset", "network.realm_id"],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&global_unset, "config global unset");
+
+    let get_missing = run_actr(
+        &["config", "--global", "get", "network.realm_id"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&get_missing, "config global get after unset");
+}
+
+#[test]
+fn config_show_supports_yaml_and_test_validates_all_scopes() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // Show in YAML format.
+    let show = run_actr(
+        &["config", "--local", "show", "--format", "yaml"],
+        tmp.path(),
+        &home,
+    );
+    assert_success(&show, "config show yaml");
+    assert!(
+        !clean_stdout(&show).trim().is_empty(),
+        "show yaml should produce output"
+    );
+
+    // Test merged scope (both global and local are validated).
+    let test = run_actr(&["config", "test"], tmp.path(), &home);
+    assert_success(&test, "config test merged");
+    assert!(clean_stdout(&test).contains("valid"));
+
+    // Test global-only scope.
+    let test_global = run_actr(&["config", "--global", "test"], tmp.path(), &home);
+    assert_success(&test_global, "config test global");
+    assert!(clean_stdout(&test_global).contains("valid"));
+
+    // Test local-only scope.
+    let test_local = run_actr(&["config", "--local", "test"], tmp.path(), &home);
+    assert_success(&test_local, "config test local");
+    assert!(clean_stdout(&test_local).contains("valid"));
+}
+
+#[test]
+fn build_reports_missing_manifest_and_missing_binary_section() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // No manifest → error.
+    let no_manifest = run_actr(&["build"], tmp.path(), &home);
+    assert_failure(&no_manifest, "build no manifest");
+    assert!(
+        stderr(&no_manifest).contains("manifest.toml not found"),
+        "build no manifest stderr:\n{}",
+        stderr(&no_manifest)
+    );
+
+    // Manifest without [binary] → error.
+    write_manifest_with_proto(tmp.path());
+    let no_binary = run_actr(
+        &["build", "--manifest-path", "manifest.toml"],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&no_binary, "build no binary");
+    assert!(
+        stderr(&no_binary).contains("manifest.toml is missing [binary]"),
+        "build no binary stderr:\n{}",
+        stderr(&no_binary)
+    );
+}
+
+#[test]
 fn registry_fingerprint_reports_service_json_and_lock_mismatches() {
     let tmp = TempDir::new().expect("tempdir");
     let home = isolated_home(tmp.path());

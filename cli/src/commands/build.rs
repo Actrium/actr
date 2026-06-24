@@ -584,3 +584,38 @@ fn resolve_host_target() -> Result<String> {
 
     Ok(host.trim().to_string())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_semver_extracts_three_component_versions() {
+        assert_eq!(parse_semver("1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_semver("0.5.22"), Some((0, 5, 22)));
+        assert_eq!(parse_semver("1.0"), None);
+        assert_eq!(parse_semver("abc"), None);
+        assert_eq!(parse_semver(""), None);
+        // Trailing text is allowed as long as digits come first.
+        assert_eq!(parse_semver("1.2.3-beta"), Some((1, 2, 3)));
+    }
+
+    #[test]
+    fn extract_semver_finds_first_semver_in_text() {
+        assert_eq!(
+            extract_semver("wasm-component-ld 0.5.22"),
+            Some((0, 5, 22))
+        );
+        assert_eq!(
+            extract_semver("version 1.0.0 (abc 2.3.4)"),
+            Some((1, 0, 0))
+        );
+        assert_eq!(extract_semver("no version here"), None);
+    }
+
+    #[test]
+    fn format_semver_joins_with_dots() {
+        assert_eq!(format_semver((1, 2, 3)), "1.2.3");
+        assert_eq!(format_semver((0, 5, 22)), "0.5.22");
+    }
+}
