@@ -747,4 +747,229 @@ mod tests {
         assert!(s.contains("Installed 0 dependencies"));
         assert!(s.contains("updated 5 cache entries"));
     }
+
+    // ── mock trait implementations for pipeline testing ─────────────────
+
+    use crate::core::components::{
+        ConfigManager, DependencyResolver, FingerprintValidator, NetworkValidator,
+        ServiceDiscovery,
+    };
+    use crate::core::{ConfigValidation, DependencyValidation, NetworkCheckOptions};
+    use actr_config::ManifestConfig;
+    use async_trait::async_trait;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    struct MockConfig {
+        is_valid: bool,
+    }
+
+    #[async_trait]
+    impl ConfigManager for MockConfig {
+        async fn load_config(&self, _path: &Path) -> anyhow::Result<ManifestConfig> {
+            unreachable!()
+        }
+        async fn save_config(&self, _config: &ManifestConfig, _path: &Path) -> anyhow::Result<()> {
+            unreachable!()
+        }
+        async fn update_dependency(&self, _spec: &DependencySpec) -> anyhow::Result<()> {
+            unreachable!()
+        }
+        async fn validate_config(&self) -> anyhow::Result<ConfigValidation> {
+            Ok(ConfigValidation {
+                is_valid: self.is_valid,
+                errors: if self.is_valid { vec![] } else { vec!["invalid".into()] },
+                warnings: vec![],
+            })
+        }
+        fn get_project_root(&self) -> &Path {
+            Path::new(".")
+        }
+        async fn backup_config(&self) -> anyhow::Result<crate::core::ConfigBackup> {
+            unreachable!()
+        }
+        async fn restore_backup(&self, _backup: crate::core::ConfigBackup) -> anyhow::Result<()> {
+            unreachable!()
+        }
+        async fn remove_backup(&self, _backup: crate::core::ConfigBackup) -> anyhow::Result<()> {
+            unreachable!()
+        }
+    }
+
+    struct MockDepResolver;
+    #[async_trait]
+    impl DependencyResolver for MockDepResolver {
+        async fn resolve_spec(&self, _config: &ManifestConfig) -> anyhow::Result<Vec<DependencySpec>> {
+            unreachable!()
+        }
+        async fn resolve_dependencies(
+            &self, _specs: &[DependencySpec], _service_details: &[crate::core::ServiceDetails],
+        ) -> anyhow::Result<Vec<ResolvedDependency>> {
+            unreachable!()
+        }
+        async fn check_conflicts(&self, _deps: &[ResolvedDependency]) -> anyhow::Result<Vec<crate::core::ConflictReport>> {
+            unreachable!()
+        }
+        async fn build_dependency_graph(&self, _deps: &[ResolvedDependency]) -> anyhow::Result<crate::core::DependencyGraph> {
+            unreachable!()
+        }
+    }
+
+    struct MockServiceDiscovery;
+    #[async_trait]
+    impl ServiceDiscovery for MockServiceDiscovery {
+        async fn discover_services(&self, _filter: Option<&crate::core::ServiceFilter>) -> anyhow::Result<Vec<crate::core::ServiceInfo>> { unreachable!() }
+        async fn get_service_details(&self, _name: &str) -> anyhow::Result<crate::core::ServiceDetails> {
+            unreachable!()
+        }
+        async fn check_service_availability(&self, _name: &str) -> anyhow::Result<crate::core::AvailabilityStatus> {
+            // Default: service is available.
+            Ok(crate::core::AvailabilityStatus {
+                is_available: true,
+                last_seen: None,
+                health: crate::core::HealthStatus::Healthy,
+            })
+        }
+        async fn get_service_proto(&self, _name: &str) -> anyhow::Result<Vec<crate::core::ProtoFile>> { unreachable!() }
+    }
+
+    struct MockNetworkValidator {
+        reachable: bool,
+    }
+    #[async_trait]
+    impl NetworkValidator for MockNetworkValidator {
+        async fn check_connectivity(&self, _name: &str, _opts: &crate::core::NetworkCheckOptions) -> anyhow::Result<crate::core::ConnectivityStatus> {
+            Ok(crate::core::ConnectivityStatus {
+                is_reachable: self.reachable,
+                response_time_ms: if self.reachable { Some(5) } else { None },
+                error: if self.reachable { None } else { Some("unreachable".into()) },
+            })
+        }
+        async fn verify_service_health(&self, _name: &str, _opts: &crate::core::NetworkCheckOptions) -> anyhow::Result<crate::core::HealthStatus> {
+            unreachable!()
+        }
+        async fn test_latency(&self, _name: &str, _opts: &crate::core::NetworkCheckOptions) -> anyhow::Result<crate::core::LatencyInfo> {
+            unreachable!()
+        }
+        async fn batch_check(&self, names: &[String], _opts: &crate::core::NetworkCheckOptions) -> anyhow::Result<Vec<crate::core::NetworkCheckResult>> {
+            Ok(names.iter().map(|_| crate::core::NetworkCheckResult {
+                connectivity: crate::core::ConnectivityStatus {
+                    is_reachable: self.reachable,
+                    response_time_ms: if self.reachable { Some(5) } else { None },
+                    error: if self.reachable { None } else { Some("unreachable".into()) },
+                },
+                health: if self.reachable { crate::core::HealthStatus::Healthy } else { crate::core::HealthStatus::Unhealthy },
+                latency: None,
+            }).collect())
+        }
+    }
+
+    struct MockFingerprintValidator;
+    #[async_trait]
+    impl FingerprintValidator for MockFingerprintValidator {
+        async fn compute_service_fingerprint(&self, _svc: &crate::core::ServiceInfo) -> anyhow::Result<crate::core::Fingerprint> { unreachable!() }
+        async fn verify_fingerprint(&self, _exp: &crate::core::Fingerprint, _act: &crate::core::Fingerprint) -> anyhow::Result<bool> { unreachable!() }
+        async fn compute_project_fingerprint(&self, _path: &Path) -> anyhow::Result<crate::core::Fingerprint> { unreachable!() }
+        async fn generate_lock_fingerprint(&self, _deps: &[ResolvedDependency]) -> anyhow::Result<crate::core::Fingerprint> { unreachable!() }
+    }
+
+    #[test]
+    fn validation_pipeline_constructs_and_exposes_getters() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery);
+        let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
+        let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
+
+        let pipeline = ValidationPipeline::new(
+            config.clone(), dep.clone(), sd.clone(), net.clone(), fp.clone(),
+        );
+        // Getters return the stored Arcs.
+        let _ = pipeline.config_manager();
+        let _ = pipeline.dependency_resolver();
+        let _ = pipeline.service_discovery();
+        let _ = pipeline.network_validator();
+    }
+
+    #[tokio::test]
+    async fn validate_project_returns_early_on_invalid_config() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: false });
+        let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery);
+        let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
+        let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
+
+        let pipeline = ValidationPipeline::new(config, dep, sd, net, fp);
+        let report = pipeline.validate_project().await.unwrap();
+        assert!(!report.is_valid);
+        assert!(!report.config_validation.is_valid);
+        assert!(report.config_validation.errors.contains(&"invalid".to_string()));
+    }
+
+    #[tokio::test]
+    async fn validate_dependencies_reports_service_availability() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery);
+        let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
+        let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
+        let pipeline = ValidationPipeline::new(config, dep, sd, net, fp);
+
+        let specs = vec![
+            DependencySpec {
+                alias: "echo".into(),
+                name: "echo-service".into(),
+                actr_type: None,
+                fingerprint: None,
+            },
+            DependencySpec {
+                alias: "other".into(),
+                name: "other-service".into(),
+                actr_type: None,
+                fingerprint: None,
+            },
+        ];
+        let results = pipeline.validate_dependencies(&specs).await.unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_available);
+        assert!(results[1].is_available);
+    }
+
+    #[tokio::test]
+    async fn validate_network_connectivity_maps_reachable_and_unreachable() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery);
+        let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
+
+        let deps = vec![ResolvedDependency {
+            spec: DependencySpec {
+                alias: "echo".into(),
+                name: "echo".into(),
+                actr_type: None,
+                fingerprint: None,
+            },
+            fingerprint: "".into(),
+            proto_files: vec![],
+        }];
+
+        // Reachable.
+        let net_r: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
+        let pipeline = ValidationPipeline::new(config.clone(), dep.clone(), sd.clone(), net_r, fp.clone());
+        let results = pipeline
+            .validate_network_connectivity(&deps, &NetworkCheckOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_reachable);
+
+        // Unreachable.
+        let net_u: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: false });
+        let pipeline2 = ValidationPipeline::new(config, dep, sd, net_u, fp);
+        let results2 = pipeline2
+            .validate_network_connectivity(&deps, &NetworkCheckOptions::default())
+            .await
+            .unwrap();
+        assert!(!results2[0].is_reachable);
+    }
 }
