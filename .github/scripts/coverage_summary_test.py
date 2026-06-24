@@ -71,7 +71,7 @@ class CoverageSummaryTest(unittest.TestCase):
             self.assertEqual(data["aggregate"]["line_coverage"], 65.0)
             self.assertEqual(
                 [language["language"] for language in data["languages"]],
-                ["Rust", "Web Rust (host)", "TypeScript", "Kotlin"],
+                ["Rust", "Web Rust (host unit)", "TypeScript", "Kotlin"],
             )
 
 
