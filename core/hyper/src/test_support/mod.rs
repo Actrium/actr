@@ -14,8 +14,6 @@ use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_pack::PackageManifest;
 use actr_protocol::{AIdCredential, ActrId};
 use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Once;
 
 #[path = "../../tests/common/harness.rs"]
 pub mod harness;
@@ -42,16 +40,6 @@ pub use crate::transport::lane::{
     WebRtcFragmentSendEvent, WebRtcFragmentSendHook, WebRtcFragmentSendHookGuard,
     install_webrtc_fragment_send_hook_for_test,
 };
-
-#[cfg(not(target_arch = "wasm32"))]
-static RUSTLS_CRYPTO_PROVIDER_INIT: Once = Once::new();
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn install_default_crypto_provider_for_tests() {
-    RUSTLS_CRYPTO_PROVIDER_INIT.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    });
-}
 
 /// Assert whether an attached node has the runtime hook observer installed.
 ///

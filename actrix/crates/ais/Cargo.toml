@@ -37,6 +37,7 @@ sqlx = { workspace = true, default-features = false, features = ["runtime-tokio-
 
 ## Utilities
 base64 = { workspace = true }
+hex = { workspace = true }
 rand = "0.8.5"
 toml = { version = "0.8" }
 

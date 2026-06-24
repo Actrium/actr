@@ -750,19 +750,16 @@ impl AIdIssuer {
             return Err(AidError::InvalidFormat);
         }
 
-        if std::env::var_os("ACTRIX_TEST_NO_MFR_VERIFY").is_some() {
-            platform::recording::warn!("MFR identity verification bypassed by test environment");
-            return Ok(());
-        }
-
         let type_str = actr_type.to_string_repr();
         let mfr_name = &actr_type.manufacturer;
 
-        // Package registration must be bound to the exact manifest bytes the
-        // manufacturer saw locally.  Without manifest_raw, AIS can only prove that
-        // "some active package has this type_str"; without target, a multi-target
-        // package lookup degrades to type-only matching.  Treat both as malformed
-        // package-auth requests instead of falling back to a broad registry lookup.
+        // SECURITY / COMPATIBILITY: package registration must be bound to the
+        // exact manifest bytes the manufacturer saw locally. Without
+        // manifest_raw, AIS can only prove that "some active package has this
+        // type_str"; without target, a multi-target package lookup degrades to
+        // type-only matching. Treat both as malformed package-auth requests
+        // instead of falling back to a broad registry lookup.
+        // This intentionally tightens the legacy Path 1 request shape.
         let pool = platform::storage::db::get_database().get_pool().clone();
         let target_ref = request
             .target
@@ -804,6 +801,9 @@ impl AIdIssuer {
                     type_str,
                     target_ref
                 );
+                // Do not fall through to Path 2 when the published tuple exists.
+                // Rejecting here prevents a mismatched or stale manifest from
+                // downgrading into the unpublished-package authentication path.
                 return Err(AidError::ManufacturerNotVerified);
             }
 
@@ -996,8 +996,7 @@ impl AIdIssuer {
         }
         let manifest_sha256_hex = {
             use sha2::{Digest, Sha256};
-            let digest = Sha256::digest(manifest_bytes.as_ref());
-            actr_protocol::lower_hex(&digest)
+            hex::encode(Sha256::digest(manifest_bytes.as_ref()))
         };
         let manufacturer_payload = actr_protocol::build_manufacturer_register_payload(
             actr_protocol::ManufacturerRegisterPayload {
@@ -1053,9 +1052,7 @@ impl AIdIssuer {
     }
 
     fn unix_now_secs() -> Result<u64, AidError> {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
+        crate::renewal::try_now_secs()
             .map_err(|e| AidError::InvalidTimestamp(format!("system clock before Unix epoch: {e}")))
     }
 
@@ -1118,7 +1115,7 @@ impl AIdIssuer {
 
         match result {
             Ok(_) => Ok(()),
-            Err(sqlx::Error::Database(err)) if err.message().contains("UNIQUE") => {
+            Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
                 platform::recording::warn!(
                     "manufacturer_nonce replay detected: manufacturer={}, key_id={}",
                     manufacturer,

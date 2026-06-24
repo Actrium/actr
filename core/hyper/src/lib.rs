@@ -522,6 +522,33 @@ pub trait ManufacturerAuthProvider: Send + Sync {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+async fn sign_manufacturer_proof(
+    provider: Arc<dyn ManufacturerAuthProvider>,
+    realm_id: u32,
+    actr_type: ActrType,
+    target: String,
+    manifest_raw: Vec<u8>,
+) -> HyperResult<ManufacturerRegistrationAuth> {
+    tokio::task::spawn_blocking(move || provider.sign(realm_id, &actr_type, &target, &manifest_raw))
+        .await
+        .map_err(|err| HyperError::Runtime(format!("manufacturer signing task failed: {err}")))?
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn manufacturer_auth_fields(
+    auth: Option<&ManufacturerRegistrationAuth>,
+) -> (Option<bytes::Bytes>, Option<u64>, Option<bytes::Bytes>) {
+    match auth {
+        Some(auth) => (
+            Some(bytes::Bytes::from(auth.signature.clone())),
+            Some(auth.signed_at),
+            Some(bytes::Bytes::from(auth.nonce.clone())),
+        ),
+        None => (None, None, None),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl ManufacturerRegistrationAuth {
     pub fn sign(
         signing_key: &ed25519_dalek::SigningKey,
@@ -544,7 +571,7 @@ impl ManufacturerRegistrationAuth {
         rand::thread_rng().fill_bytes(&mut nonce);
 
         let manifest_sha256 = Sha256::digest(manifest_raw);
-        let manifest_sha256_hex = actr_protocol::lower_hex(&manifest_sha256);
+        let manifest_sha256_hex = hex::encode(manifest_sha256);
         let payload = actr_protocol::build_manufacturer_register_payload(
             actr_protocol::ManufacturerRegisterPayload {
                 realm_id,
@@ -941,6 +968,11 @@ impl Node<Attached> {
     /// [`RuntimeConfig`]; `service_spec` is derived from the package's proto
     /// exports when a package-backed attach was used. Linked attachments
     /// register from the runtime config's actor metadata instead.
+    ///
+    /// This convenience method does not supply a manufacturer proof. A
+    /// package-backed caller can therefore use it only for a published package
+    /// accepted through AIS Path 1. Use
+    /// [`Self::register_with_manufacturer_auth`] for an unpublished package.
     pub async fn register(self, ais_endpoint: &str) -> HyperResult<Node<Registered>> {
         self.register_with_manufacturer_auth(ais_endpoint, None)
             .await
@@ -979,6 +1011,8 @@ impl Node<Attached> {
     /// This skips package-based `service_spec` derivation for
     /// package-backed attachments. Linked attachments use the supplied
     /// `service_spec` together with the runtime config's actor metadata.
+    /// Like [`Self::register`], this convenience method supplies no
+    /// manufacturer proof and package-backed callers must use published Path 1.
     pub async fn register_with(
         self,
         ais_endpoint: &str,
@@ -1008,18 +1042,24 @@ impl Node<Attached> {
         // context below so hard rebind can re-invoke it for a fresh proof
         // instead of replaying the single-use nonce.
         let manufacturer_auth = match (&resign, attachment.verified.as_ref()) {
-            (Some(provider), Some(verified)) => Some(provider.sign(
-                realm_id,
-                &ActrType {
-                    manufacturer: verified.manifest.manufacturer.clone(),
-                    name: verified.manifest.name.clone(),
-                    version: verified.manifest.version.clone(),
-                },
-                &verified.manifest.binary.target,
-                verified.manifest_raw.as_slice(),
-            )?),
+            (Some(provider), Some(verified)) => Some(
+                sign_manufacturer_proof(
+                    Arc::clone(provider),
+                    realm_id,
+                    ActrType {
+                        manufacturer: verified.manifest.manufacturer.clone(),
+                        name: verified.manifest.name.clone(),
+                        version: verified.manifest.version.clone(),
+                    },
+                    verified.manifest.binary.target.clone(),
+                    verified.manifest_raw.clone(),
+                )
+                .await?,
+            ),
             _ => None,
         };
+        let (manufacturer_signature, manufacturer_signed_at, manufacturer_nonce) =
+            manufacturer_auth_fields(manufacturer_auth.as_ref());
 
         let registration_context = if let Some(verified) = attachment.verified.as_ref() {
             let manifest = &verified.manifest;
@@ -1040,15 +1080,9 @@ impl Node<Attached> {
                         mfr_signature: Some(verified.sig_raw.clone().into()),
                         target: Some(manifest.binary.target.clone()),
                         auth_mode: Some(RegisterAuthMode::Package as i32),
-                        manufacturer_signature: manufacturer_auth
-                            .as_ref()
-                            .map(|auth| bytes::Bytes::from(auth.signature.clone())),
-                        manufacturer_signed_at: manufacturer_auth
-                            .as_ref()
-                            .map(|auth| auth.signed_at),
-                        manufacturer_nonce: manufacturer_auth
-                            .as_ref()
-                            .map(|auth| bytes::Bytes::from(auth.nonce.clone())),
+                        manufacturer_signature,
+                        manufacturer_signed_at,
+                        manufacturer_nonce,
                     },
                     resign,
                 },
@@ -1166,6 +1200,11 @@ impl Hyper {
     /// Package bootstrap always authenticates with the MFR-signed manifest.
     /// Credential renewal uses the renewal token returned by AIS through
     /// `POST /ais/renew`, not a follow-up `/register` call.
+    ///
+    /// This legacy convenience API cannot supply a fresh manufacturer proof,
+    /// so it is suitable only for published packages accepted through AIS
+    /// Path 1. Unpublished packages must use
+    /// [`Node::<Attached>::register_with_manufacturer_auth`].
     ///
     /// ## Parameters
     ///
@@ -1413,6 +1452,9 @@ async fn bootstrap_credential_inner(
         "registering with AIS using MFR manifest"
     );
 
+    let (manufacturer_signature, manufacturer_signed_at, manufacturer_nonce) =
+        manufacturer_auth_fields(manufacturer_auth.as_ref());
+
     let req = RegisterRequest {
         actr_type,
         realm,
@@ -1424,13 +1466,9 @@ async fn bootstrap_credential_inner(
         mfr_signature: Some(verified.sig_raw.clone().into()),
         target: Some(manifest.binary.target.clone()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: manufacturer_auth
-            .as_ref()
-            .map(|auth| bytes::Bytes::from(auth.signature.clone())),
-        manufacturer_signed_at: manufacturer_auth.as_ref().map(|auth| auth.signed_at),
-        manufacturer_nonce: manufacturer_auth
-            .as_ref()
-            .map(|auth| bytes::Bytes::from(auth.nonce.clone())),
+        manufacturer_signature,
+        manufacturer_signed_at,
+        manufacturer_nonce,
     };
     let response = ais.register_with_manifest(req).await?;
 

@@ -1163,7 +1163,7 @@ fn sign_manufacturer_request_at(
         .as_deref()
         .expect("test request should carry target");
     let digest = Sha256::digest(manifest_bytes);
-    let manifest_sha256_hex = actr_protocol::lower_hex(&digest);
+    let manifest_sha256_hex = hex::encode(digest);
     let payload = actr_protocol::build_manufacturer_register_payload(
         actr_protocol::ManufacturerRegisterPayload {
             realm_id: request.realm.realm_id,
@@ -1944,7 +1944,9 @@ async fn test_path2_manufacturer_signed_at_window_matrix() {
         ("too_old", now - 600, Some(401)), // Expired (MAX_AGE = 300s)
         ("too_future", now + 300, Some(400)), // InvalidTimestamp (FUTURE_SKEW = 60s)
         ("boundary_back", now - 301, Some(401)), // first failing past boundary
-        ("boundary_future", now + 61, Some(400)), // first failing future boundary
+        // Keep this comfortably beyond the 60s allowance: using exactly now+61
+        // races the wall clock while the matrix executes and can become valid.
+        ("future_guard", now + 120, Some(400)),
     ];
 
     for (i, (label, signed_at, expect)) in cases.iter().enumerate() {

@@ -339,11 +339,32 @@ async fn run_hard_rebind(
             if let Some(provider) = resign.as_ref() {
                 let realm_id = request.realm.realm_id;
                 let actr_type = request.actr_type.clone();
-                let target = request.target.clone().unwrap_or_default();
-                let manifest_raw = request.manifest_raw.as_deref().unwrap_or_default();
-                let fresh = provider
-                    .sign(realm_id, &actr_type, &target, manifest_raw)
-                    .map_err(|e| format!("hard rebind manufacturer re-sign failed: {e}"))?;
+                let target = request
+                    .target
+                    .clone()
+                    .filter(|target| !target.is_empty())
+                    .ok_or_else(|| {
+                        "hard rebind manufacturer re-sign failed: package target is missing"
+                            .to_string()
+                    })?;
+                let manifest_raw = request
+                    .manifest_raw
+                    .as_ref()
+                    .filter(|manifest| !manifest.is_empty())
+                    .map(|manifest| manifest.to_vec())
+                    .ok_or_else(|| {
+                        "hard rebind manufacturer re-sign failed: package manifest is missing"
+                            .to_string()
+                    })?;
+                let fresh = crate::sign_manufacturer_proof(
+                    Arc::clone(provider),
+                    realm_id,
+                    actr_type,
+                    target,
+                    manifest_raw,
+                )
+                .await
+                .map_err(|e| format!("hard rebind manufacturer re-sign failed: {e}"))?;
                 request.manufacturer_signature = Some(bytes::Bytes::from(fresh.signature));
                 request.manufacturer_signed_at = Some(fresh.signed_at);
                 request.manufacturer_nonce = Some(bytes::Bytes::from(fresh.nonce));

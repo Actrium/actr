@@ -1,8 +1,8 @@
 use actr_protocol::acl_rule::{Permission, SourceRealm};
 use actr_protocol::{
-    Acl, AclRule, ActrRelay, ActrType, Realm, RegisterRequest, RegisterResponse, RoleNegotiation,
-    acl_rule, actr_relay, peer_to_signaling, register_response, route_candidates_response,
-    signaling_envelope, signaling_to_actr,
+    Acl, AclRule, ActrRelay, ActrType, Realm, RegisterAuthMode, RegisterRequest, RegisterResponse,
+    RoleNegotiation, acl_rule, actr_relay, peer_to_signaling, register_response,
+    route_candidates_response, signaling_envelope, signaling_to_actr,
 };
 use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
@@ -32,6 +32,7 @@ type WsRead = futures::stream::SplitStream<WsStream>;
 const START_TIMEOUT: Duration = Duration::from_secs(20);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const ACTRIX_SHARED_KEY: &str = "0123456789abcdef0123456789abcdef";
+const TEST_REALM_SECRET: &str = "actrix-fullstack-realm-secret";
 const DEFAULT_TOKEN_TTL: u64 = 3600;
 const RENEWAL_TOKEN_SECRET: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
@@ -400,7 +401,6 @@ fn spawn_actrix(config: &Path, log_path: &Path) -> Child {
         .arg(config)
         .stdout(Stdio::from(log_file.try_clone().expect("dup log")))
         .stderr(Stdio::from(log_file))
-        .env("ACTRIX_TEST_NO_MFR_VERIFY", "1")
         .spawn()
         .expect("spawn actrix")
 }
@@ -409,9 +409,10 @@ async fn ensure_realm(sqlite_dir: &Path, realm_id: u32) {
     let db = platform::storage::db::Database::new(sqlite_dir)
         .await
         .expect("init db");
+    let secret_hash = platform::realm::hash_realm_secret(TEST_REALM_SECRET);
     db.execute(&format!(
         "INSERT OR IGNORE INTO realm (id, name, status, enabled, created_at, secret_current)
-         VALUES ({realm_id}, 'test-realm', 'Active', 1, strftime('%s','now'), '')"
+         VALUES ({realm_id}, 'test-realm', 'Active', 1, strftime('%s','now'), '{secret_hash}')"
     ))
     .await
     .expect("insert realm");
@@ -433,7 +434,7 @@ async fn ais_register_http(
         name,
         service_spec,
         acl,
-        None,
+        Some(TEST_REALM_SECRET),
     )
     .await
 }
@@ -461,7 +462,7 @@ async fn ais_register_http_with_secret(
         manifest_raw: None,
         mfr_signature: None,
         target: None,
-        auth_mode: None,
+        auth_mode: Some(RegisterAuthMode::Linked as i32),
         manufacturer_signature: None,
         manufacturer_signed_at: None,
         manufacturer_nonce: None,
@@ -816,7 +817,7 @@ async fn actrix_end_to_end_register_and_health() {
         manifest_raw: None,
         mfr_signature: None,
         target: None,
-        auth_mode: None,
+        auth_mode: Some(RegisterAuthMode::Linked as i32),
         manufacturer_signature: None,
         manufacturer_signed_at: None,
         manufacturer_nonce: None,
@@ -825,6 +826,7 @@ async fn actrix_end_to_end_register_and_health() {
     let register_url = format!("{base}/ais/register");
     let rsp_bytes = client
         .post(&register_url)
+        .header("x-actrix-realm-secret", TEST_REALM_SECRET)
         .body(body)
         .send()
         .await
@@ -1083,7 +1085,7 @@ async fn ais_register_rejects_non_preprovisioned_realm() {
         manifest_raw: None,
         mfr_signature: None,
         target: None,
-        auth_mode: None,
+        auth_mode: Some(RegisterAuthMode::Linked as i32),
         manufacturer_signature: None,
         manufacturer_signed_at: None,
         manufacturer_nonce: None,
@@ -1217,7 +1219,7 @@ async fn ais_register_enforces_realm_secret_when_configured() {
         manifest_raw: None,
         mfr_signature: None,
         target: None,
-        auth_mode: None,
+        auth_mode: Some(RegisterAuthMode::Linked as i32),
         manufacturer_signature: None,
         manufacturer_signed_at: None,
         manufacturer_nonce: None,
@@ -1353,14 +1355,14 @@ async fn ais_health_and_endpoints_degrade_when_ks_dependency_is_unreachable() {
         manifest_raw: None,
         mfr_signature: None,
         target: None,
-        auth_mode: None,
+        auth_mode: Some(RegisterAuthMode::Linked as i32),
         manufacturer_signature: None,
         manufacturer_signed_at: None,
         manufacturer_nonce: None,
     };
     let register_resp = client
         .post(format!("{base}/ais/register"))
-        .header("x-actrix-realm-secret", "")
+        .header("x-actrix-realm-secret", TEST_REALM_SECRET)
         .body(register_req.encode_to_vec())
         .send()
         .await

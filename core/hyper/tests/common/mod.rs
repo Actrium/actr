@@ -17,13 +17,3 @@ pub use signaling::TestSignalingServer;
 pub use utils::*;
 pub use vnet::{VNetPair, create_vnet_pair};
 pub use wait::*;
-
-#[cfg(not(target_arch = "wasm32"))]
-static RUSTLS_CRYPTO_PROVIDER_INIT: std::sync::Once = std::sync::Once::new();
-
-#[cfg(not(target_arch = "wasm32"))]
-pub fn install_default_crypto_provider_for_tests() {
-    RUSTLS_CRYPTO_PROVIDER_INIT.call_once(|| {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    });
-}

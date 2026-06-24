@@ -35,18 +35,8 @@ pub fn build_manufacturer_register_payload(input: ManufacturerRegisterPayload<'_
         target = input.target,
         manifest_sha256 = input.manifest_sha256_hex,
         manufacturer_signed_at = input.manufacturer_signed_at,
-        manufacturer_nonce = lower_hex(input.manufacturer_nonce),
+        manufacturer_nonce = hex::encode(input.manufacturer_nonce),
     )
-}
-
-pub fn lower_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 #[cfg(test)]

@@ -70,10 +70,15 @@ pub fn successor_expires_at(old_expires_at: i64, ttl_secs: u64) -> i64 {
 
 /// Current Unix timestamp in seconds (truncated to i64 for SQLite).
 pub fn now_secs() -> i64 {
+    try_now_secs().unwrap_or_default() as i64
+}
+
+/// Current Unix timestamp in seconds, preserving a pre-epoch clock error for
+/// callers that must reject invalid timestamps instead of falling back to zero.
+pub fn try_now_secs() -> Result<u64, std::time::SystemTimeError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
+        .map(|duration| duration.as_secs())
 }
 
 // -------- database operations ------------------------------------------------

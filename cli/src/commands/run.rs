@@ -32,8 +32,9 @@ fn resolve_against(base: &Path, path: &Path) -> PathBuf {
 /// [`actr_hyper::ManufacturerAuthProvider`] backed by an MFR keychain file.
 ///
 /// Holds only the key path — the private key is re-read from disk on every
-/// `sign` call, so it is never kept resident in memory and a rotated key
-/// takes effect on the next sign (initial registration or hard rebind).
+/// `sign` call, so it is never kept resident in memory. After MFR key rotation,
+/// an old package can still use published Path 1, but it must be rebuilt and
+/// re-signed before it can use unpublished Path 2 again.
 struct KeychainManufacturerAuthProvider {
     key_path: PathBuf,
 }
@@ -301,8 +302,10 @@ impl RunCommand {
     ///
     /// Returns `Ok(None)` when no keychain is configured (published-package or
     /// no-keychain runs). The provider does **not** hold the private key in
-    /// memory — it reloads it from the keychain file on every sign call, so a
-    /// rotated key takes effect on the next hard rebind without restarting.
+    /// memory — it reloads it from the keychain file on every sign call. The
+    /// manifest pins Path 2 verification to its build-time key, so rotating the
+    /// MFR key requires rebuilding and re-signing that package before it can use
+    /// Path 2 again. Published Path 1 remains unaffected.
     fn build_manufacturer_auth_provider(
         &self,
     ) -> anyhow::Result<Option<std::sync::Arc<dyn actr_hyper::ManufacturerAuthProvider>>> {
@@ -1268,21 +1271,24 @@ mod tests {
         use actr_protocol::ActrType;
         use base64::Engine as _;
         use base64::engine::general_purpose::STANDARD as B64;
+        use ed25519_dalek::{Signature, SigningKey, Verifier as _};
+        use sha2::{Digest as _, Sha256};
         use std::fs;
         use std::path::Path;
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let key_path = dir.path().join("keychain.json");
-        // `load_signing_key` only needs 32 raw private-key bytes; any 32 work.
-        let write_key = |path: &Path| {
+        let write_key = |path: &Path, seed: [u8; 32]| {
+            let signing_key = SigningKey::from_bytes(&seed);
             let json = serde_json::json!({
-                "private_key": B64.encode([0x11u8; 32]),
-                "public_key": B64.encode([0x11u8; 32]),
+                "private_key": B64.encode(seed),
+                "public_key": B64.encode(signing_key.verifying_key().to_bytes()),
             });
             fs::write(path, json.to_string()).unwrap();
         };
-        write_key(&key_path);
+        let original_seed = [0x11u8; 32];
+        write_key(&key_path, original_seed);
 
         let provider = KeychainManufacturerAuthProvider {
             key_path: key_path.clone(),
@@ -1292,7 +1298,7 @@ mod tests {
             name: "svc".into(),
             version: "1.0.0".into(),
         };
-        let manifest: &[u8] = b"manifest-bytes";
+        let manifest = b"manifest-bytes";
 
         let auth_a = provider
             .sign(7, &actr_type, "wasm32-wasip1", manifest)
@@ -1312,8 +1318,33 @@ mod tests {
             "signature must differ across sign calls"
         );
 
-        // The private key is NOT cached: corrupting the keychain file must make
-        // the next sign fail. A cached key would continue to sign successfully.
+        // The private key is NOT cached. A rotated key is observed immediately.
+        // This proof can still be ignored by published Path 1, but cannot pass
+        // unpublished Path 2 for the old manifest because that manifest pins
+        // verification to its original signing_key_id.
+        let rotated_key = SigningKey::from_bytes(&[0x22u8; 32]);
+        write_key(&key_path, [0x22u8; 32]);
+        let auth_c = provider
+            .sign(7, &actr_type, "wasm32-wasip1", manifest)
+            .unwrap();
+        let manifest_sha256 = hex::encode(Sha256::digest(manifest));
+        let payload = actr_protocol::build_manufacturer_register_payload(
+            actr_protocol::ManufacturerRegisterPayload {
+                realm_id: 7,
+                actr_type: &actr_type,
+                target: "wasm32-wasip1",
+                manifest_sha256_hex: &manifest_sha256,
+                manufacturer_signed_at: auth_c.signed_at,
+                manufacturer_nonce: &auth_c.nonce,
+            },
+        );
+        let signature = Signature::from_slice(&auth_c.signature).unwrap();
+        rotated_key
+            .verifying_key()
+            .verify(payload.as_bytes(), &signature)
+            .expect("proof should be signed by the reloaded rotated key");
+
+        // Corrupting the keychain also proves each call re-reads the file.
         fs::write(&key_path, "not-json").unwrap();
         let err = provider.sign(7, &actr_type, "wasm32-wasip1", manifest);
         assert!(
