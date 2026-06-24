@@ -718,9 +718,9 @@ impl AIdIssuer {
         if request.actr_type.version.is_empty()
             || request.manifest_raw.is_some()
             || request.mfr_signature.is_some()
-            || request.manufacturer_signature.is_some()
-            || request.manufacturer_signed_at.is_some()
-            || request.manufacturer_nonce.is_some()
+            || request.manufacturer_auth_signature.is_some()
+            || request.manufacturer_auth_signed_at.is_some()
+            || request.manufacturer_auth_nonce.is_some()
         {
             return Err(AidError::InvalidFormat);
         }
@@ -820,49 +820,49 @@ impl AIdIssuer {
         let (
             manifest_bytes,
             mfr_signature,
-            manufacturer_signature,
-            manufacturer_signed_at,
-            manufacturer_nonce,
+            manufacturer_auth_signature,
+            manufacturer_auth_signed_at,
+            manufacturer_auth_nonce,
         ) = match (
             &request.manifest_raw,
             &request.mfr_signature,
-            &request.manufacturer_signature,
-            request.manufacturer_signed_at,
-            &request.manufacturer_nonce,
+            &request.manufacturer_auth_signature,
+            request.manufacturer_auth_signed_at,
+            &request.manufacturer_auth_nonce,
         ) {
             (
                 Some(manifest_bytes),
                 Some(mfr_signature),
-                Some(manufacturer_signature),
-                Some(manufacturer_signed_at),
-                Some(manufacturer_nonce),
+                Some(manufacturer_auth_signature),
+                Some(manufacturer_auth_signed_at),
+                Some(manufacturer_auth_nonce),
             ) => (
                 manifest_bytes,
                 mfr_signature,
-                manufacturer_signature,
-                manufacturer_signed_at,
-                manufacturer_nonce,
+                manufacturer_auth_signature,
+                manufacturer_auth_signed_at,
+                manufacturer_auth_nonce,
             ),
             _ => {
                 platform::recording::warn!(
-                    "MFR verification failed: unpublished package requires manifest_raw, mfr_signature, manufacturer_signature, manufacturer_signed_at, and manufacturer_nonce; type_str={}",
+                    "MFR verification failed: unpublished package requires manifest_raw, mfr_signature, manufacturer_auth_signature, manufacturer_auth_signed_at, and manufacturer_auth_nonce; type_str={}",
                     type_str
                 );
                 return Err(AidError::ManufacturerNotVerified);
             }
         };
 
-        if !matches!(manufacturer_nonce.len(), 16 | 32) {
+        if !matches!(manufacturer_auth_nonce.len(), 16 | 32) {
             platform::recording::warn!(
-                "manufacturer_nonce has invalid length: len={}, type_str={}",
-                manufacturer_nonce.len(),
+                "manufacturer_auth_nonce has invalid length: len={}, type_str={}",
+                manufacturer_auth_nonce.len(),
                 type_str
             );
             return Err(AidError::InvalidFormat);
         }
 
         let now = Self::unix_now_secs()?;
-        Self::verify_manufacturer_signed_at(manufacturer_signed_at, now)?;
+        Self::verify_manufacturer_auth_signed_at(manufacturer_auth_signed_at, now)?;
 
         // Parse manifest using standard TOML. Reject if not valid UTF-8/TOML —
         // unparseable manifests must not bypass the identity binding check below.
@@ -1004,12 +1004,12 @@ impl AIdIssuer {
                 actr_type,
                 target: manifest_target,
                 manifest_sha256_hex: &manifest_sha256_hex,
-                manufacturer_signed_at,
-                manufacturer_nonce: manufacturer_nonce.as_ref(),
+                manufacturer_auth_signed_at,
+                manufacturer_auth_nonce: manufacturer_auth_nonce.as_ref(),
             },
         );
         let manufacturer_sig_b64 =
-            base64::prelude::BASE64_STANDARD.encode(manufacturer_signature.as_ref());
+            base64::prelude::BASE64_STANDARD.encode(manufacturer_auth_signature.as_ref());
         let manufacturer_valid = actrix_mfr::crypto::verify_signature(
             manufacturer_payload.as_bytes(),
             &manufacturer_sig_b64,
@@ -1017,7 +1017,7 @@ impl AIdIssuer {
         )
         .map_err(|e| {
             platform::recording::warn!(
-                "manufacturer_signature verification error: manufacturer={}, key_id={}, err={}",
+                "manufacturer_auth_signature verification error: manufacturer={}, key_id={}, err={}",
                 mfr_name,
                 signing_key_id,
                 e
@@ -1027,7 +1027,7 @@ impl AIdIssuer {
 
         if !manufacturer_valid {
             platform::recording::warn!(
-                "manufacturer_signature verification failed: manufacturer={}, key_id={}, type_str={}",
+                "manufacturer_auth_signature verification failed: manufacturer={}, key_id={}, type_str={}",
                 mfr_name,
                 signing_key_id,
                 type_str
@@ -1035,11 +1035,11 @@ impl AIdIssuer {
             return Err(AidError::ManufacturerNotVerified);
         }
 
-        Self::consume_manufacturer_nonce(
+        Self::consume_manufacturer_auth_nonce(
             &pool,
             mfr_name,
             &signing_key_id,
-            manufacturer_nonce.as_ref(),
+            manufacturer_auth_nonce.as_ref(),
             now,
         )
         .await?;
@@ -1056,22 +1056,22 @@ impl AIdIssuer {
             .map_err(|e| AidError::InvalidTimestamp(format!("system clock before Unix epoch: {e}")))
     }
 
-    fn verify_manufacturer_signed_at(signed_at: u64, now: u64) -> Result<(), AidError> {
+    fn verify_manufacturer_auth_signed_at(signed_at: u64, now: u64) -> Result<(), AidError> {
         if signed_at > now.saturating_add(MANUFACTURER_SIGNED_AT_FUTURE_SKEW_SECS) {
             platform::recording::warn!(
-                "manufacturer_signed_at is too far in the future: signed_at={}, now={}, future_skew_secs={}",
+                "manufacturer_auth_signed_at is too far in the future: signed_at={}, now={}, future_skew_secs={}",
                 signed_at,
                 now,
                 MANUFACTURER_SIGNED_AT_FUTURE_SKEW_SECS
             );
             return Err(AidError::InvalidTimestamp(
-                "manufacturer_signed_at is too far in the future".to_string(),
+                "manufacturer_auth_signed_at is too far in the future".to_string(),
             ));
         }
 
         if now.saturating_sub(signed_at) > MANUFACTURER_SIGNED_AT_MAX_AGE_SECS {
             platform::recording::warn!(
-                "manufacturer_signed_at outside max age: signed_at={}, now={}, max_age_secs={}",
+                "manufacturer_auth_signed_at outside max age: signed_at={}, now={}, max_age_secs={}",
                 signed_at,
                 now,
                 MANUFACTURER_SIGNED_AT_MAX_AGE_SECS
@@ -1082,18 +1082,18 @@ impl AIdIssuer {
         Ok(())
     }
 
-    async fn consume_manufacturer_nonce(
+    async fn consume_manufacturer_auth_nonce(
         pool: &sqlx::SqlitePool,
         manufacturer: &str,
         signing_key_id: &str,
-        manufacturer_nonce: &[u8],
+        manufacturer_auth_nonce: &[u8],
         now: u64,
     ) -> Result<(), AidError> {
         let now_i64 = i64::try_from(now)
             .map_err(|_| AidError::InvalidTimestamp("current time exceeds i64".to_string()))?;
         let expires_at = now_i64.saturating_add(MANUFACTURER_NONCE_TTL_SECS as i64);
 
-        sqlx::query("DELETE FROM ais_manufacturer_nonce WHERE expires_at < ?")
+        sqlx::query("DELETE FROM ais_manufacturer_auth_nonce WHERE expires_at < ?")
             .bind(now_i64)
             .execute(pool)
             .await
@@ -1102,12 +1102,12 @@ impl AIdIssuer {
             })?;
 
         let result = sqlx::query(
-            "INSERT INTO ais_manufacturer_nonce (manufacturer, key_id, nonce, created_at, expires_at)
+            "INSERT INTO ais_manufacturer_auth_nonce (manufacturer, key_id, nonce, created_at, expires_at)
              VALUES (?, ?, ?, ?, ?)",
         )
         .bind(manufacturer)
         .bind(signing_key_id)
-        .bind(manufacturer_nonce)
+        .bind(manufacturer_auth_nonce)
         .bind(now_i64)
         .bind(expires_at)
         .execute(pool)
@@ -1117,7 +1117,7 @@ impl AIdIssuer {
             Ok(_) => Ok(()),
             Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {
                 platform::recording::warn!(
-                    "manufacturer_nonce replay detected: manufacturer={}, key_id={}",
+                    "manufacturer_auth_nonce replay detected: manufacturer={}, key_id={}",
                     manufacturer,
                     signing_key_id
                 );

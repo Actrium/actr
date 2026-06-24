@@ -578,8 +578,8 @@ impl ManufacturerRegistrationAuth {
                 actr_type,
                 target,
                 manifest_sha256_hex: &manifest_sha256_hex,
-                manufacturer_signed_at: signed_at,
-                manufacturer_nonce: &nonce,
+                manufacturer_auth_signed_at: signed_at,
+                manufacturer_auth_nonce: &nonce,
             },
         );
         let signature = signing_key.sign(payload.as_bytes()).to_bytes().to_vec();
@@ -1058,7 +1058,7 @@ impl Node<Attached> {
             ),
             _ => None,
         };
-        let (manufacturer_signature, manufacturer_signed_at, manufacturer_nonce) =
+        let (manufacturer_auth_signature, manufacturer_auth_signed_at, manufacturer_auth_nonce) =
             manufacturer_auth_fields(manufacturer_auth.as_ref());
 
         let registration_context = if let Some(verified) = attachment.verified.as_ref() {
@@ -1080,9 +1080,9 @@ impl Node<Attached> {
                         mfr_signature: Some(verified.sig_raw.clone().into()),
                         target: Some(manifest.binary.target.clone()),
                         auth_mode: Some(RegisterAuthMode::Package as i32),
-                        manufacturer_signature,
-                        manufacturer_signed_at,
-                        manufacturer_nonce,
+                        manufacturer_auth_signature,
+                        manufacturer_auth_signed_at,
+                        manufacturer_auth_nonce,
                     },
                     resign,
                 },
@@ -1452,7 +1452,7 @@ async fn bootstrap_credential_inner(
         "registering with AIS using MFR manifest"
     );
 
-    let (manufacturer_signature, manufacturer_signed_at, manufacturer_nonce) =
+    let (manufacturer_auth_signature, manufacturer_auth_signed_at, manufacturer_auth_nonce) =
         manufacturer_auth_fields(manufacturer_auth.as_ref());
 
     let req = RegisterRequest {
@@ -1466,9 +1466,9 @@ async fn bootstrap_credential_inner(
         mfr_signature: Some(verified.sig_raw.clone().into()),
         target: Some(manifest.binary.target.clone()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature,
-        manufacturer_signed_at,
-        manufacturer_nonce,
+        manufacturer_auth_signature,
+        manufacturer_auth_signed_at,
+        manufacturer_auth_nonce,
     };
     let response = ais.register_with_manifest(req).await?;
 

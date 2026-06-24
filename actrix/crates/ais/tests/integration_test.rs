@@ -194,9 +194,9 @@ fn linked_register_request() -> RegisterRequest {
         mfr_signature: None,
         target: None,
         auth_mode: Some(RegisterAuthMode::Linked as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     }
 }
 
@@ -382,9 +382,9 @@ async fn test_register_route_package_with_mfr_identity_succeeds() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -424,9 +424,9 @@ async fn test_register_route_unspecified_auth_mode_uses_package_identity() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: None,
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -471,9 +471,9 @@ async fn test_register_route_published_package_without_manifest_raw_is_rejected(
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -517,9 +517,9 @@ async fn test_register_route_published_package_without_target_is_rejected() {
         mfr_signature: None,
         target: None,
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -588,9 +588,9 @@ async fn test_published_package_manifest_hash_mismatch_does_not_fall_back_to_pat
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     sign_manufacturer_request_at(
         &mut request,
@@ -640,9 +640,9 @@ async fn test_register_route_package_without_mfr_identity_is_still_rejected() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     let response = post_register(app, request, None).await;
 
@@ -763,9 +763,9 @@ async fn test_package_registration_without_mfr_identity_is_still_rejected() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
 
     let response = issuer
@@ -822,9 +822,9 @@ async fn test_end_to_end_credential_flow() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
 
     let response = issuer
@@ -891,9 +891,9 @@ async fn test_end_to_end_credential_flow() {
             mfr_signature: None,
             target: Some("wasm32-wasip1".to_string()),
             auth_mode: Some(RegisterAuthMode::Package as i32),
-            manufacturer_signature: None,
-            manufacturer_signed_at: None,
-            manufacturer_nonce: None,
+            manufacturer_auth_signature: None,
+            manufacturer_auth_signed_at: None,
+            manufacturer_auth_nonce: None,
         };
 
         let rsp = issuer
@@ -1014,9 +1014,9 @@ async fn test_issuer_creation_fails_with_wrong_shared_key() {
         mfr_signature: None,
         target: None,
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     let resp = issuer
         .issue_credential(&request)
@@ -1170,15 +1170,16 @@ fn sign_manufacturer_request_at(
             actr_type: &request.actr_type,
             target,
             manifest_sha256_hex: &manifest_sha256_hex,
-            manufacturer_signed_at: signed_at,
-            manufacturer_nonce: &nonce,
+            manufacturer_auth_signed_at: signed_at,
+            manufacturer_auth_nonce: &nonce,
         },
     );
     let signature = signing_key.sign(payload.as_bytes());
 
-    request.manufacturer_signature = Some(prost::bytes::Bytes::from(signature.to_bytes().to_vec()));
-    request.manufacturer_signed_at = Some(signed_at);
-    request.manufacturer_nonce = Some(prost::bytes::Bytes::from(nonce));
+    request.manufacturer_auth_signature =
+        Some(prost::bytes::Bytes::from(signature.to_bytes().to_vec()));
+    request.manufacturer_auth_signed_at = Some(signed_at);
+    request.manufacturer_auth_nonce = Some(prost::bytes::Bytes::from(nonce));
 }
 
 fn sign_manufacturer_request(
@@ -1260,10 +1261,10 @@ async fn archive_key_to_history(
     .expect("archive key to history");
 }
 
-/// Path 2: missing manufacturer_signature is rejected for unpublished packages.
+/// Path 2: missing manufacturer_auth_signature is rejected for unpublished packages.
 #[tokio::test]
 #[serial]
-async fn test_path2_missing_manufacturer_signature_rejected() {
+async fn test_path2_missing_manufacturer_auth_signature_rejected() {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
@@ -1307,16 +1308,16 @@ async fn test_path2_missing_manufacturer_signature_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
 
     let response = issuer.issue_credential(&request).await.expect("issue");
     match response.result.expect("result") {
         register_response::Result::Error(_) => {}
         register_response::Result::Success(_) => {
-            panic!("Path 2 without manufacturer_signature should be rejected")
+            panic!("Path 2 without manufacturer_auth_signature should be rejected")
         }
     }
 }
@@ -1380,9 +1381,9 @@ hash = "0000000000000000000000000000000000000000000000000000000000000000"
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     // Provide a valid manufacturer proof so the request clears the five-field and
     // signature checks and reaches the binary.target guard.
@@ -1402,10 +1403,10 @@ hash = "0000000000000000000000000000000000000000000000000000000000000000"
     }
 }
 
-/// Path 2: replaying the same manufacturer_nonce is rejected after the first success.
+/// Path 2: replaying the same manufacturer_auth_nonce is rejected after the first success.
 #[tokio::test]
 #[serial]
-async fn test_path2_manufacturer_nonce_replay_rejected() {
+async fn test_path2_manufacturer_auth_nonce_replay_rejected() {
     use ed25519_dalek::SigningKey;
     use rand::rngs::OsRng;
 
@@ -1444,9 +1445,9 @@ async fn test_path2_manufacturer_nonce_replay_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     sign_manufacturer_request_at(
         &mut request,
@@ -1474,7 +1475,7 @@ async fn test_path2_manufacturer_nonce_replay_rejected() {
     match second.result.expect("second result") {
         register_response::Result::Error(_) => {}
         register_response::Result::Success(_) => {
-            panic!("replayed manufacturer_nonce should be rejected")
+            panic!("replayed manufacturer_auth_nonce should be rejected")
         }
     }
 }
@@ -1543,9 +1544,9 @@ async fn test_path2_historical_retired_key_passes() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     sign_manufacturer_request(&mut request, &key_a, &manifest_bytes);
 
@@ -1628,9 +1629,9 @@ async fn test_path2_revoked_key_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     sign_manufacturer_request(&mut request, &key_revoked, &manifest_bytes);
 
@@ -1698,9 +1699,9 @@ async fn test_path2_identity_mismatch_rejected() {
         mfr_signature: Some(prost::bytes::Bytes::from(sig_bytes)),
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     sign_manufacturer_request(&mut request, &key, &manifest_bytes);
 
@@ -1797,9 +1798,9 @@ fn base_path2_request(fx: &Path2Fixture, realm_id: u32) -> RegisterRequest {
         mfr_signature: Some(prost::bytes::Bytes::from(fx.sig_bytes.clone())),
         target: Some(fx.target.clone()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     }
 }
 
@@ -1838,9 +1839,13 @@ async fn test_path2_missing_manufacturer_field_matrix() {
     let now = test_unix_now_secs();
 
     let cases: &[(&str, FieldBlank)] = &[
-        ("missing_signature", &|r| r.manufacturer_signature = None),
-        ("missing_signed_at", &|r| r.manufacturer_signed_at = None),
-        ("missing_nonce", &|r| r.manufacturer_nonce = None),
+        ("missing_signature", &|r| {
+            r.manufacturer_auth_signature = None
+        }),
+        ("missing_signed_at", &|r| {
+            r.manufacturer_auth_signed_at = None
+        }),
+        ("missing_nonce", &|r| r.manufacturer_auth_nonce = None),
     ];
 
     for (i, (label, blank)) in cases.iter().enumerate() {
@@ -1898,10 +1903,10 @@ async fn test_path2_tamper_and_signature_matrix() {
             r.manifest_raw = Some(prost::bytes::Bytes::from(bytes));
         }),
         ("tamper_signed_at", false, &|r, _f, n| {
-            r.manufacturer_signed_at = Some(n + 1); // still in window, so sig mismatch is what fails
+            r.manufacturer_auth_signed_at = Some(n + 1); // still in window, so sig mismatch is what fails
         }),
         ("tamper_nonce", false, &|r, _f, _n| {
-            r.manufacturer_nonce = Some(prost::bytes::Bytes::from(vec![0xEE; 32]));
+            r.manufacturer_auth_nonce = Some(prost::bytes::Bytes::from(vec![0xEE; 32]));
         }),
     ];
 
@@ -1929,12 +1934,12 @@ async fn test_path2_tamper_and_signature_matrix() {
     }
 }
 
-/// 组 C: `manufacturer_signed_at` time window. `verify_manufacturer_signed_at` has two
+/// 组 C: `manufacturer_auth_signed_at` time window. `verify_manufacturer_auth_signed_at` has two
 /// branches (Expired / InvalidTimestamp) with zero coverage today.
 /// Covers scenario-matrix #13 / #14 plus both boundaries.
 #[tokio::test]
 #[serial]
-async fn test_path2_manufacturer_signed_at_window_matrix() {
+async fn test_path2_manufacturer_auth_signed_at_window_matrix() {
     let fx = path2_fixture("winmfr", "WinService", "wasm32-wasip1").await;
     let now = test_unix_now_secs();
 
@@ -2040,9 +2045,11 @@ async fn test_path1_published_package_with_manufacturer_triple_succeeds() {
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
         // Path 1 must ignore a (bogus) manufacturer triple.
-        manufacturer_signature: Some(prost::bytes::Bytes::from_static(b"bogus-manufacturer-sig")),
-        manufacturer_signed_at: Some(test_unix_now_secs()),
-        manufacturer_nonce: Some(prost::bytes::Bytes::from(vec![0x77; 32])),
+        manufacturer_auth_signature: Some(prost::bytes::Bytes::from_static(
+            b"bogus-manufacturer-sig",
+        )),
+        manufacturer_auth_signed_at: Some(test_unix_now_secs()),
+        manufacturer_auth_nonce: Some(prost::bytes::Bytes::from(vec![0x77; 32])),
     };
     let response = post_register(app, request, None).await;
 
@@ -2070,10 +2077,10 @@ async fn test_linked_auth_with_manufacturer_triple_rejected() {
 
     let mut request = linked_register_request();
     request.realm = Realm { realm_id };
-    request.manufacturer_signature =
+    request.manufacturer_auth_signature =
         Some(prost::bytes::Bytes::from_static(b"should-not-be-present"));
-    request.manufacturer_signed_at = Some(test_unix_now_secs());
-    request.manufacturer_nonce = Some(prost::bytes::Bytes::from(vec![0x88; 32]));
+    request.manufacturer_auth_signed_at = Some(test_unix_now_secs());
+    request.manufacturer_auth_nonce = Some(prost::bytes::Bytes::from(vec![0x88; 32]));
 
     let response = post_register(app, request, Some(realm_secret)).await;
     match response.result.expect("result") {
@@ -2115,9 +2122,9 @@ async fn test_renewal_token_renew_without_manufacturer_triple() {
         mfr_signature: None,
         target: Some("wasm32-wasip1".to_string()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
     // `post_register` consumes the Router; clone it so the renew call hits the
     // same issuer (shared via Arc<AIdIssuer> inside AISState).

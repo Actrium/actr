@@ -937,9 +937,9 @@ mod tests {
             mfr_signature: None,
             target: None,
             auth_mode: None,
-            manufacturer_signature: None,
-            manufacturer_signed_at: None,
-            manufacturer_nonce: None,
+            manufacturer_auth_signature: None,
+            manufacturer_auth_signed_at: None,
+            manufacturer_auth_nonce: None,
         };
 
         let ok = build_register_ok(&req, &state).await;

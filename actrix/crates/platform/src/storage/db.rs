@@ -250,10 +250,10 @@ impl Database {
         .await?;
 
         // AIS unpublished package manufacturer-proof nonce table. AIS inserts
-        // after manufacturer_signature verification; the unique index is the
+        // after manufacturer_auth_signature verification; the unique index is the
         // replay guard.
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS ais_manufacturer_nonce (
+            "CREATE TABLE IF NOT EXISTS ais_manufacturer_auth_nonce (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 manufacturer TEXT    NOT NULL,
                 key_id       TEXT    NOT NULL,
@@ -267,8 +267,8 @@ impl Database {
         .await?;
 
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_ais_manufacturer_nonce_expires
-             ON ais_manufacturer_nonce(expires_at)",
+            "CREATE INDEX IF NOT EXISTS idx_ais_manufacturer_auth_nonce_expires
+             ON ais_manufacturer_auth_nonce(expires_at)",
         )
         .execute(&self.pool)
         .await?;

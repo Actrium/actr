@@ -406,9 +406,9 @@ impl NetworkServiceDiscovery {
             mfr_signature: None,
             target: None,
             auth_mode: Some(RegisterAuthMode::Linked as i32),
-            manufacturer_signature: None,
-            manufacturer_signed_at: None,
-            manufacturer_nonce: None,
+            manufacturer_auth_signature: None,
+            manufacturer_auth_signed_at: None,
+            manufacturer_auth_nonce: None,
         }
     }
 }

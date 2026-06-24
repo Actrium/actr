@@ -193,13 +193,13 @@ message RegisterRequest {
   // A package launcher produces this fresh proof with the MFR key that signed
   // manifest_raw, binding the running package to its manufacturer.
   // Required only for unpublished Package Path 2 registrations.
-  optional bytes manufacturer_signature = 15;
+  optional bytes manufacturer_auth_signature = 15;
   // Unix seconds included in the manufacturer signature payload.
   // AIS accepts only a short time window to prevent long-lived replay.
-  optional uint64 manufacturer_signed_at = 16;
+  optional uint64 manufacturer_auth_signed_at = 16;
   // Random nonce included in the manufacturer signature payload.
   // AIS atomically consumes it to prevent replay inside the time window.
-  optional bytes manufacturer_nonce = 17;
+  optional bytes manufacturer_auth_nonce = 17;
 }
 
 message RegisterResponse {

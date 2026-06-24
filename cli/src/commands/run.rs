@@ -1334,8 +1334,8 @@ mod tests {
                 actr_type: &actr_type,
                 target: "wasm32-wasip1",
                 manifest_sha256_hex: &manifest_sha256,
-                manufacturer_signed_at: auth_c.signed_at,
-                manufacturer_nonce: &auth_c.nonce,
+                manufacturer_auth_signed_at: auth_c.signed_at,
+                manufacturer_auth_nonce: &auth_c.nonce,
             },
         );
         let signature = Signature::from_slice(&auth_c.signature).unwrap();

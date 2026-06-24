@@ -26,9 +26,9 @@ fn test_register_request() -> RegisterRequest {
         mfr_signature: Some(vec![0u8; 64].into()),
         target: Some("wasm32-wasip2".into()),
         auth_mode: Some(RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     }
 }
 

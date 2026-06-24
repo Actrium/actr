@@ -141,9 +141,9 @@ pub async fn renew_handler(
         mfr_signature: None,
         target: None,
         auth_mode: Some(actr_protocol::RegisterAuthMode::Package as i32),
-        manufacturer_signature: None,
-        manufacturer_signed_at: None,
-        manufacturer_nonce: None,
+        manufacturer_auth_signature: None,
+        manufacturer_auth_signed_at: None,
+        manufacturer_auth_nonce: None,
     };
 
     let mut register_ok = signaling::build_register_ok(&fake_req, &state).await;

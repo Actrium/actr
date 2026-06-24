@@ -365,9 +365,9 @@ async fn run_hard_rebind(
                 )
                 .await
                 .map_err(|e| format!("hard rebind manufacturer re-sign failed: {e}"))?;
-                request.manufacturer_signature = Some(bytes::Bytes::from(fresh.signature));
-                request.manufacturer_signed_at = Some(fresh.signed_at);
-                request.manufacturer_nonce = Some(bytes::Bytes::from(fresh.nonce));
+                request.manufacturer_auth_signature = Some(bytes::Bytes::from(fresh.signature));
+                request.manufacturer_auth_signed_at = Some(fresh.signed_at);
+                request.manufacturer_auth_nonce = Some(bytes::Bytes::from(fresh.nonce));
             }
             request
         }
@@ -845,9 +845,9 @@ mod tests {
             mfr_signature: Some(Bytes::from_static(b"mfr-sig")),
             target: Some("wasm32-wasip1".to_string()),
             auth_mode: Some(RegisterAuthMode::Package as i32),
-            manufacturer_signature: Some(Bytes::from_static(b"stale-manufacturer-sig")),
-            manufacturer_signed_at: Some(1),
-            manufacturer_nonce: Some(Bytes::from_static(&[0xAA; 32])),
+            manufacturer_auth_signature: Some(Bytes::from_static(b"stale-manufacturer-auth-sig")),
+            manufacturer_auth_signed_at: Some(1),
+            manufacturer_auth_nonce: Some(Bytes::from_static(&[0xAA; 32])),
             ..Default::default()
         };
 
