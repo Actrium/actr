@@ -41,9 +41,15 @@ use super::session_state::{SessionSnapshot, SessionState};
 pub(crate) enum RegistrationContext {
     /// Package-backed registration — carries the full original request
     /// including manifest bytes and MFR signature.
+    ///
+    /// `resign` is the runner re-signing capability. It is `Some` when the
+    /// initial registration carried a runner proof (unpublished package). Hard
+    /// rebind re-invokes it to mint a fresh proof — the original nonce was
+    /// consumed by AIS on first success and cannot be reused.
     Package {
         #[allow(dead_code)]
         request: actr_protocol::RegisterRequest,
+        resign: Option<Arc<dyn crate::RunnerAuthProvider>>,
     },
     /// Source-linked registration — carries the request and an optional
     /// realm secret (kept in memory only, never logged).
@@ -323,7 +329,27 @@ async fn run_hard_rebind(
 
     let mut ais = AisClient::new(&ais_endpoint);
     let request = match registration_ctx {
-        RegistrationContext::Package { request } => request,
+        RegistrationContext::Package { request, resign } => {
+            let mut request = request;
+            // The original runner proof's nonce was consumed by AIS on the
+            // first successful registration. Reusing it would be a replay.
+            // Re-invoke the provider to mint a fresh `signed_at` + `nonce` +
+            // signature, overwriting only the three runner fields — the
+            // manifest bytes and MFR signature are static and stay as-is.
+            if let Some(provider) = resign.as_ref() {
+                let realm_id = request.realm.realm_id;
+                let actr_type = request.actr_type.clone();
+                let target = request.target.clone().unwrap_or_default();
+                let manifest_raw = request.manifest_raw.as_deref().unwrap_or_default();
+                let fresh = provider
+                    .sign(realm_id, &actr_type, &target, manifest_raw)
+                    .map_err(|e| format!("hard rebind runner re-sign failed: {e}"))?;
+                request.runner_signature = Some(bytes::Bytes::from(fresh.signature));
+                request.runner_signed_at = Some(fresh.signed_at);
+                request.runner_nonce = Some(bytes::Bytes::from(fresh.nonce));
+            }
+            request
+        }
         RegistrationContext::Linked {
             request,
             realm_secret,

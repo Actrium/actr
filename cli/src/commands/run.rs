@@ -29,6 +29,35 @@ fn resolve_against(base: &Path, path: &Path) -> PathBuf {
     }
 }
 
+/// [`actr_hyper::RunnerAuthProvider`] backed by an MFR keychain file.
+///
+/// Holds only the key path — the private key is re-read from disk on every
+/// `sign` call, so it is never kept resident in memory and a rotated key
+/// takes effect on the next sign (initial registration or hard rebind).
+struct KeychainRunnerAuthProvider {
+    key_path: PathBuf,
+}
+
+impl actr_hyper::RunnerAuthProvider for KeychainRunnerAuthProvider {
+    fn sign(
+        &self,
+        realm_id: u32,
+        actr_type: &actr_protocol::ActrType,
+        target: &str,
+        manifest_raw: &[u8],
+    ) -> std::result::Result<actr_hyper::RunnerRegistrationAuth, actr_hyper::HyperError> {
+        let signing_key = crate::commands::package_build::load_signing_key(&self.key_path)
+            .map_err(|e| actr_hyper::HyperError::Runtime(format!("reload mfr signing key: {e}")))?;
+        actr_hyper::RunnerRegistrationAuth::sign(
+            &signing_key,
+            realm_id,
+            actr_type,
+            target,
+            manifest_raw,
+        )
+    }
+}
+
 #[derive(Args)]
 pub struct RunCommand {
     /// Runtime configuration file (defaults to ./actr.toml if not specified)
@@ -141,15 +170,13 @@ impl RunCommand {
         info!("📡 Signaling server: {}", config.signaling_url.as_str());
         info!("🔐 Trust anchors: {} configured", config.trust.len());
 
-        let runner_auth = self
-            .build_runner_registration_auth(&config, &manifest, &package_bytes)
-            .map_err(|e| {
-                ActrCliError::command_error(format!(
-                    "Failed to prepare runner registration signature: {e}"
-                ))
-            })?;
-        if runner_auth.is_some() {
-            info!("🔏 Runner registration signature prepared from mfr.keychain");
+        let runner_provider = self.build_runner_auth_provider().map_err(|e| {
+            ActrCliError::command_error(format!(
+                "Failed to prepare runner registration signer: {e}"
+            ))
+        })?;
+        if runner_provider.is_some() {
+            info!("🔏 Runner registration signer prepared from mfr.keychain");
         } else {
             info!("No mfr.keychain configured; continuing without runner registration signature");
         }
@@ -172,7 +199,7 @@ impl RunCommand {
         info!("✅ Package attached");
 
         let registered = attached
-            .register_with_runner_auth(&ais_endpoint, runner_auth)
+            .register_with_runner_auth(&ais_endpoint, runner_provider)
             .await
             .map_err(|e| {
                 ActrCliError::command_error(format!(
@@ -267,34 +294,24 @@ impl RunCommand {
         }
     }
 
-    fn build_runner_registration_auth(
+    /// Build a runner re-signing provider backed by the configured MFR
+    /// keychain, if any.
+    ///
+    /// Returns `Ok(None)` when no keychain is configured (published-package or
+    /// no-keychain runs). The provider does **not** hold the private key in
+    /// memory — it reloads it from the keychain file on every sign call, so a
+    /// rotated key takes effect on the next hard rebind without restarting.
+    fn build_runner_auth_provider(
         &self,
-        config: &actr_config::RuntimeConfig,
-        manifest: &actr_pack::PackageManifest,
-        package_bytes: &[u8],
-    ) -> anyhow::Result<Option<actr_hyper::RunnerRegistrationAuth>> {
+    ) -> anyhow::Result<Option<std::sync::Arc<dyn actr_hyper::RunnerAuthProvider>>> {
         let cli_config = crate::config::resolver::resolve_effective_cli_config()?;
         let Some(keychain) = cli_config.mfr.keychain.as_deref() else {
             return Ok(None);
         };
-
         let key_path = crate::commands::package_build::resolve_key_path(None, Some(keychain))?;
-        let signing_key = crate::commands::package_build::load_signing_key(&key_path)?;
-        let manifest_raw = actr_pack::read_manifest_raw(package_bytes)?;
-        let actr_type = actr_protocol::ActrType {
-            manufacturer: manifest.manufacturer.clone(),
-            name: manifest.name.clone(),
-            version: manifest.version.clone(),
-        };
-
-        let auth = actr_hyper::RunnerRegistrationAuth::sign(
-            &signing_key,
-            config.realm.realm_id,
-            &actr_type,
-            &manifest.binary.target,
-            manifest_raw.as_bytes(),
-        )?;
-        Ok(Some(auth))
+        Ok(Some(std::sync::Arc::new(KeychainRunnerAuthProvider {
+            key_path,
+        })))
     }
 
     async fn init_hyper(
@@ -1236,5 +1253,70 @@ mod tests {
 
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// The runner re-signing provider must (a) mint a fresh random nonce on
+    /// every call — so hard rebind never replays the nonce AIS consumed on the
+    /// first registration — and (b) re-read the private key from the keychain
+    /// file on every call, never caching it in memory.
+    #[test]
+    fn keychain_runner_auth_provider_mints_fresh_proof_and_reloads_key() {
+        use super::KeychainRunnerAuthProvider;
+        use actr_hyper::RunnerAuthProvider;
+        use actr_protocol::ActrType;
+        use base64::Engine as _;
+        use base64::engine::general_purpose::STANDARD as B64;
+        use std::fs;
+        use std::path::Path;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let key_path = dir.path().join("keychain.json");
+        // `load_signing_key` only needs 32 raw private-key bytes; any 32 work.
+        let write_key = |path: &Path| {
+            let json = serde_json::json!({
+                "private_key": B64.encode([0x11u8; 32]),
+                "public_key": B64.encode([0x11u8; 32]),
+            });
+            fs::write(path, json.to_string()).unwrap();
+        };
+        write_key(&key_path);
+
+        let provider = KeychainRunnerAuthProvider {
+            key_path: key_path.clone(),
+        };
+        let actr_type = ActrType {
+            manufacturer: "acme".into(),
+            name: "svc".into(),
+            version: "1.0.0".into(),
+        };
+        let manifest: &[u8] = b"manifest-bytes";
+
+        let auth_a = provider
+            .sign(7, &actr_type, "wasm32-wasip1", manifest)
+            .unwrap();
+        let auth_b = provider
+            .sign(7, &actr_type, "wasm32-wasip1", manifest)
+            .unwrap();
+
+        // Fresh nonce each call — the property that lets hard rebind avoid
+        // replaying the single-use nonce from the initial registration.
+        assert_ne!(
+            auth_a.nonce, auth_b.nonce,
+            "nonce must differ across sign calls"
+        );
+        assert_ne!(
+            auth_a.signature, auth_b.signature,
+            "signature must differ across sign calls"
+        );
+
+        // The private key is NOT cached: corrupting the keychain file must make
+        // the next sign fail. A cached key would continue to sign successfully.
+        fs::write(&key_path, "not-json").unwrap();
+        let err = provider.sign(7, &actr_type, "wasm32-wasip1", manifest);
+        assert!(
+            err.is_err(),
+            "sign must re-read the keychain and fail when it is corrupt"
+        );
     }
 }

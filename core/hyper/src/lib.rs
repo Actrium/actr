@@ -486,12 +486,38 @@ impl WorkloadPackage {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunnerRegistrationAuth {
     pub signature: Vec<u8>,
     pub signed_at: u64,
     pub nonce: Vec<u8>,
+}
+
+/// Re-signing capability for the runner registration proof.
+///
+/// Unpublished package registration (AIS Path 2) requires a runner proof —
+/// an Ed25519 signature over the `ACTR-RUNNER-REGISTER-V1` payload that AIS
+/// verifies and whose nonce it consumes once to prevent replay. Because the
+/// nonce is single-use, the proof **cannot be reused**: hard rebind must mint
+/// a fresh `signed_at` + `nonce` + signature.
+///
+/// Rather than caching the signing key in memory, this trait is implemented by
+/// the CLI with a type that reloads the MFR private key from the keychain on
+/// every [`Self::sign`] call. AIS bootstrap calls it once for the initial
+/// registration; the credential manager calls it again on each hard rebind.
+pub trait RunnerAuthProvider: Send + Sync {
+    /// Produce a fresh runner proof for the given registration inputs.
+    ///
+    /// `manifest_raw` is the exact manifest bytes the runner is registering
+    /// (its SHA-256 is bound into the signed payload). Implementations must
+    /// generate a new `signed_at` and random `nonce` each call.
+    fn sign(
+        &self,
+        realm_id: u32,
+        actr_type: &actr_protocol::ActrType,
+        target: &str,
+        manifest_raw: &[u8],
+    ) -> Result<RunnerRegistrationAuth, HyperError>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -920,12 +946,14 @@ impl Node<Attached> {
     /// Register with AIS and optionally attach runner authorization for
     /// unpublished package registrations.
     ///
-    /// The supplied [`RunnerRegistrationAuth`] is used only for package-backed
-    /// first registration. Linked registration and PSK renewal ignore it.
+    /// When `resign` is `Some`, it is invoked once here to mint the initial
+    /// runner proof, and is then retained in the registration context so hard
+    /// rebind can re-invoke it to mint a fresh proof (the proof's nonce is
+    /// single-use on the AIS side). Linked registration ignores it.
     pub async fn register_with_runner_auth(
         self,
         ais_endpoint: &str,
-        runner_auth: Option<RunnerRegistrationAuth>,
+        resign: Option<Arc<dyn RunnerAuthProvider>>,
     ) -> HyperResult<Node<Registered>> {
         let attachment = self
             .attachment
@@ -939,7 +967,7 @@ impl Node<Attached> {
         } else {
             None
         };
-        self.register_with_inner(ais_endpoint, service_spec, runner_auth)
+        self.register_with_inner(ais_endpoint, service_spec, resign)
             .await
     }
 
@@ -961,7 +989,7 @@ impl Node<Attached> {
         mut self,
         ais_endpoint: &str,
         service_spec: Option<ServiceSpec>,
-        runner_auth: Option<RunnerRegistrationAuth>,
+        resign: Option<Arc<dyn RunnerAuthProvider>>,
     ) -> HyperResult<Node<Registered>> {
         let attachment = self
             .attachment
@@ -970,6 +998,25 @@ impl Node<Attached> {
         let realm_id = attachment.node.config.realm.realm_id;
         let acl = attachment.node.config.acl.clone();
         let realm_secret = attachment.node.config.realm_secret.clone();
+
+        // Mint the initial runner proof (if a re-signing provider was supplied)
+        // so the same one-shot auth feeds both the saved registration context
+        // and the bootstrap request. The provider itself is retained in the
+        // context below so hard rebind can re-invoke it for a fresh proof
+        // instead of replaying the single-use nonce.
+        let runner_auth = match (&resign, attachment.verified.as_ref()) {
+            (Some(provider), Some(verified)) => Some(provider.sign(
+                realm_id,
+                &ActrType {
+                    manufacturer: verified.manifest.manufacturer.clone(),
+                    name: verified.manifest.name.clone(),
+                    version: verified.manifest.version.clone(),
+                },
+                &verified.manifest.binary.target,
+                verified.manifest_raw.as_slice(),
+            )?),
+            _ => None,
+        };
 
         let registration_context = if let Some(verified) = attachment.verified.as_ref() {
             let manifest = &verified.manifest;
@@ -998,6 +1045,7 @@ impl Node<Attached> {
                             .as_ref()
                             .map(|auth| bytes::Bytes::from(auth.nonce.clone())),
                     },
+                    resign,
                 },
             )
         } else {
