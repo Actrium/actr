@@ -754,7 +754,7 @@ mod tests {
         ConfigManager, DependencyResolver, FingerprintValidator, NetworkValidator,
         ServiceDiscovery,
     };
-    use crate::core::{ConfigValidation, DependencyValidation, NetworkCheckOptions};
+    use crate::core::{ConfigValidation, NetworkCheckOptions};
     use actr_config::ManifestConfig;
     use async_trait::async_trait;
     use std::path::Path;
@@ -1084,5 +1084,26 @@ mod tests {
         let _ = ip.config_manager();
 
         std::mem::drop(GenerationPipeline::new(config, proto, cache));
+    }
+
+    #[tokio::test]
+    async fn install_dependencies_reports_failed_validation() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let dep: Arc<dyn DependencyResolver> = Arc::new(MockDepResolver);
+        // Service unavailable → validate_dependencies returns is_available=false.
+        let sd: Arc<dyn ServiceDiscovery> = Arc::new(MockServiceDiscovery { service_available: false });
+        let net: Arc<dyn NetworkValidator> = Arc::new(MockNetworkValidator { reachable: true });
+        let fp: Arc<dyn FingerprintValidator> = Arc::new(MockFingerprintValidator);
+        let cache: Arc<dyn crate::core::CacheManager> = Arc::new(MockCacheManager);
+        let proto: Arc<dyn crate::core::ProtoProcessor> = Arc::new(MockProtoProcessor);
+
+        let vp = ValidationPipeline::new(config.clone(), dep.clone(), sd.clone(), net.clone(), fp.clone());
+        let ip = InstallPipeline::new(vp, config, cache, proto);
+
+        let specs = vec![DependencySpec {
+            alias: "echo".into(), name: "echo".into(), actr_type: None, fingerprint: None,
+        }];
+        let err = ip.install_dependencies(&specs).await.unwrap_err();
+        assert!(format!("{err}").contains("Dependency validation failed"));
     }
 }
