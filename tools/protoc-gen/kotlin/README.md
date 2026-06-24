@@ -125,7 +125,7 @@ actr gen --input=proto/ --output=src/main/java/com/example/generated --language=
 ### Generated Artifacts
 
 - `build/libs/framework-codegen-kotlin-0.1.0.jar` - Main JAR
-- `build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar` - Protoc plugin JAR
+- `build/libs/protoc-gen-actrframework-kotlin.jar` - Protoc plugin JAR
 - `protoc-gen-actrframework-kotlin` - Executable wrapper script
 
 ## Project Structure

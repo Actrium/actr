@@ -2,7 +2,6 @@ use crate::commands::SupportedLanguage;
 use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldService};
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
-use crate::plugin_config::{load_protoc_plugin_config, version_is_at_least};
 use crate::utils::command_exists;
 use actr_config::LockFile;
 use actr_protocol::ActrType;
@@ -19,8 +18,8 @@ const NPX: &str = "npx";
 const PROTOC_GEN_ES: &str = "protoc-gen-es";
 const EXPECTED_PROTOC_GEN_ES_VERSION: &str = "2.11.0";
 const PLUGIN_NAME: &str = "protoc-gen-actrframework-typescript";
-const EXPECTED_PLUGIN_VERSION: &str = "0.1.11";
-const GITHUB_RELEASE_URL_TEMPLATE: &str = "https://github.com/actor-rtc/framework-codegen-typescript/releases/download/v{}/protoc-gen-actrframework-typescript.tar.gz";
+const GITHUB_RELEASE_URL_TEMPLATE: &str =
+    "https://github.com/Actrium/actr/releases/download/v{}/protoc-gen-actrframework-typescript.zip";
 const IMPLEMENTED_MARKER: &str =
     "// ActrService is Implemented: This file contains a complete implementation.";
 const UNIMPLEMENTED_MARKER: &str =
@@ -193,7 +192,7 @@ impl LanguageGenerator for TypeScriptGenerator {
         let option_str = options.join(",");
 
         if !remote_files.is_empty() {
-            let plugin_path = self.ensure_typescript_plugin(context)?;
+            let plugin_path = self.ensure_typescript_plugin()?;
             let mut cmd = StdCommand::new(PROTOC);
             cmd.arg(format!("--proto_path={}", proto_root.display()))
                 .arg(format!(
@@ -1059,30 +1058,28 @@ impl TypeScriptGenerator {
         Ok(wrapper_path)
     }
 
-    fn ensure_typescript_plugin(&self, context: &GenContext) -> Result<PathBuf> {
-        let min_version = resolve_plugin_min_version(&context.config_path, PLUGIN_NAME)?
-            .unwrap_or_else(|| EXPECTED_PLUGIN_VERSION.to_string());
+    fn ensure_typescript_plugin(&self) -> Result<PathBuf> {
+        let required_version = env!("CARGO_PKG_VERSION");
 
         // Check system installation (Homebrew)
         if let Some(version) = self.check_installed_plugin_version()? {
-            if version_is_at_least(&version, &min_version) {
+            if version == required_version {
                 info!("✅ Using installed {PLUGIN_NAME} v{version}");
                 return self.locate_installed_plugin();
             }
 
-            // Version too low, report error
             return Err(ActrCliError::command_error(format!(
-                "Installed {PLUGIN_NAME} v{version} is lower than required v{min_version}\n\
-                 Please upgrade: brew upgrade {PLUGIN_NAME}"
+                "Installed {PLUGIN_NAME} v{version} does not match actr v{required_version}. \
+                 Install the plugin asset from the matching ACTR release."
             )));
         }
 
         // Download from GitHub Release
         info!("📦 {PLUGIN_NAME} not found in PATH, downloading from GitHub Release...");
-        let plugin_path = self.download_plugin_from_release(&min_version)?;
+        let plugin_path = self.download_plugin_from_release(required_version)?;
 
         // Verify version
-        self.ensure_required_plugin_version(&plugin_path, &min_version)?;
+        self.ensure_required_plugin_version(&plugin_path, required_version)?;
 
         Ok(plugin_path)
     }
@@ -1116,7 +1113,11 @@ impl TypeScriptGenerator {
             .map(str::to_string)
     }
 
-    fn ensure_required_plugin_version(&self, plugin_path: &Path, min_version: &str) -> Result<()> {
+    fn ensure_required_plugin_version(
+        &self,
+        plugin_path: &Path,
+        required_version: &str,
+    ) -> Result<()> {
         let output = StdCommand::new(plugin_path)
             .arg("--version")
             .output()
@@ -1137,13 +1138,13 @@ impl TypeScriptGenerator {
             )));
         };
 
-        if version_is_at_least(&version, min_version) {
-            info!("✅ {PLUGIN_NAME} version {version} satisfies minimum {min_version}");
+        if version == required_version {
+            info!("✅ {PLUGIN_NAME} version {version} matches actr version {required_version}");
             return Ok(());
         }
 
         Err(ActrCliError::command_error(format!(
-            "{PLUGIN_NAME} version {version} is lower than required {min_version}"
+            "{PLUGIN_NAME} version {version} does not match actr version {required_version}"
         )))
     }
 
@@ -1296,16 +1297,21 @@ impl TypeScriptGenerator {
                 "curl not found. Please install curl to download the plugin.".to_string(),
             ));
         }
+        if !command_exists("unzip") {
+            return Err(ActrCliError::command_error(
+                "unzip not found. Please install unzip to extract the plugin.".to_string(),
+            ));
+        }
 
         // Download
-        let tar_path = cache_dir.join("plugin.tar.gz");
+        let archive_path = cache_dir.join("plugin.zip");
 
         let output = StdCommand::new("curl")
             .arg("-L") // Follow redirects
             .arg("-f") // Return error code on failure
             .arg("--progress-bar")
             .arg("-o")
-            .arg(&tar_path)
+            .arg(&archive_path)
             .arg(&release_url)
             .output()
             .map_err(|e| ActrCliError::command_error(format!("Failed to execute curl: {}", e)))?;
@@ -1328,13 +1334,13 @@ impl TypeScriptGenerator {
             ActrCliError::command_error(format!("Failed to create extract directory: {}", e))
         })?;
 
-        let output = StdCommand::new("tar")
-            .arg("-xzf")
-            .arg(&tar_path)
+        let output = StdCommand::new("unzip")
+            .arg("-q")
+            .arg(&archive_path)
             .arg("-C")
             .arg(&extract_dir)
             .output()
-            .map_err(|e| ActrCliError::command_error(format!("Failed to execute tar: {}", e)))?;
+            .map_err(|e| ActrCliError::command_error(format!("Failed to execute unzip: {}", e)))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1347,8 +1353,9 @@ impl TypeScriptGenerator {
         // Adjust directory structure
         // Release package structure:
         //   extracted/
-        //   ├── bundle.js
-        //   └── protoc-gen-actrframework-typescript
+        //   ├── dist/bundle.js
+        //   ├── scripts/protoc-gen-actrframework-typescript
+        //   └── package.json
         //
         // Required structure (plugin script expects PROJECT_DIR/../dist/bundle.js):
         //   cache_dir/
@@ -1368,7 +1375,7 @@ impl TypeScriptGenerator {
         })?;
 
         // Move bundle.js
-        let src_bundle = extract_dir.join("bundle.js");
+        let src_bundle = extract_dir.join("dist").join("bundle.js");
         if !src_bundle.exists() {
             return Err(ActrCliError::command_error(
                 "bundle.js not found in downloaded package".to_string(),
@@ -1378,7 +1385,7 @@ impl TypeScriptGenerator {
             .map_err(|e| ActrCliError::command_error(format!("Failed to move bundle.js: {}", e)))?;
 
         // Move executable script to scripts/ directory
-        let src_plugin = extract_dir.join(PLUGIN_NAME);
+        let src_plugin = extract_dir.join("scripts").join(PLUGIN_NAME);
         if !src_plugin.exists() {
             return Err(ActrCliError::command_error(format!(
                 "{} not found in downloaded package",
@@ -1390,7 +1397,7 @@ impl TypeScriptGenerator {
         })?;
 
         // Clean up temporary files
-        std::fs::remove_file(&tar_path).ok();
+        std::fs::remove_file(&archive_path).ok();
         std::fs::remove_dir_all(&extract_dir).ok();
 
         // Set executable permissions (Unix)
@@ -1813,16 +1820,6 @@ fn extract_exported_name(line: &str, prefix: &str) -> Option<String> {
         .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
         .collect::<String>();
     (!name.is_empty()).then_some(name)
-}
-
-fn resolve_plugin_min_version(config_path: &Path, plugin_name: &str) -> Result<Option<String>> {
-    let config = load_protoc_plugin_config(config_path)?;
-    if let Some(config) = config
-        && let Some(min_version) = config.min_version(plugin_name)
-    {
-        return Ok(Some(min_version.to_string()));
-    }
-    Ok(None)
 }
 
 #[cfg(test)]

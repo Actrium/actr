@@ -8,7 +8,6 @@ pub mod commands;
 pub mod config;
 pub mod core;
 pub mod error;
-pub mod plugin_config;
 pub mod project_language;
 pub mod templates;
 #[cfg(feature = "test-utils")]

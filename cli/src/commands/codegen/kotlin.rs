@@ -60,6 +60,7 @@ impl KotlinGenerator {
         if let Ok(plugin_path) = std::env::var("ACTR_KOTLIN_PLUGIN_PATH") {
             let path = PathBuf::from(&plugin_path);
             if path.exists() {
+                self.ensure_plugin_version(&path)?;
                 debug!("Using Kotlin plugin from env: {:?}", path);
                 return Ok(path);
             }
@@ -75,7 +76,9 @@ impl KotlinGenerator {
         {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
-                return Ok(PathBuf::from(path));
+                let path = PathBuf::from(path);
+                self.ensure_plugin_version(&path)?;
+                return Ok(path);
             }
         }
 
@@ -151,29 +154,55 @@ impl KotlinGenerator {
         }
 
         // Also check the built JAR directly
-        let jar_candidates = [
-            plugin_root.join("build/libs/protoc-gen-actrframework-kotlin-0.1.0.jar"),
-            plugin_root.join("build/libs/protoc-gen-actrframework-kotlin.jar"),
-        ];
-        for candidate in jar_candidates {
-            if candidate.is_file() {
-                info!(
-                    "✅ Using workspace-local {} JAR at {}",
-                    PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN,
-                    candidate.display()
-                );
-                // Return the wrapper script path (it knows how to invoke the JAR)
-                if wrapper_script.is_file() {
-                    return Ok(Some(wrapper_script));
-                }
-                // If no wrapper script, we can't use it directly via protoc --plugin
-                break;
-            }
+        let jar_path = plugin_root.join("build/libs/protoc-gen-actrframework-kotlin.jar");
+        if jar_path.is_file() {
+            info!(
+                "✅ Built workspace-local {} JAR at {}",
+                PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN,
+                jar_path.display()
+            );
         }
 
         Err(ActrCliError::command_error(format!(
             "workspace-local {PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN} build completed but plugin not found under {}",
             plugin_root.display()
+        )))
+    }
+
+    fn ensure_plugin_version(&self, plugin_path: &Path) -> Result<()> {
+        let required_version = env!("CARGO_PKG_VERSION");
+        let output = StdCommand::new(plugin_path)
+            .arg("--version")
+            .output()
+            .map_err(|error| {
+                ActrCliError::command_error(format!(
+                    "Failed to run {PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN} --version: {error}"
+                ))
+            })?;
+
+        if !output.status.success() {
+            return Err(ActrCliError::command_error(format!(
+                "{PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN} --version failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let version = stdout
+            .split_whitespace()
+            .find(|part| part.chars().next().is_some_and(|ch| ch.is_ascii_digit()))
+            .ok_or_else(|| {
+                ActrCliError::command_error(format!(
+                    "Could not determine {PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN} version"
+                ))
+            })?;
+
+        if version == required_version {
+            return Ok(());
+        }
+
+        Err(ActrCliError::command_error(format!(
+            "{PROTOC_GEN_ACTR_FRAMEWORK_KOTLIN} version {version} does not match actr version {required_version}. Install the plugin asset from the matching ACTR release."
         )))
     }
 

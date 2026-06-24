@@ -1,6 +1,6 @@
 use crate::commands::SupportedLanguage;
 use crate::commands::initialize::traits::{InitContext, ProjectInitializer};
-use crate::commands::initialize::{create_local_proto, create_protoc_plugin_config, init_git_repo};
+use crate::commands::initialize::{create_local_proto, init_git_repo};
 use crate::error::Result;
 use crate::template::{EchoRole, ProjectTemplate, TemplateContext};
 use async_trait::async_trait;
@@ -32,7 +32,6 @@ impl ProjectInitializer for TypeScriptInitializer {
             context.template,
             context.echo_role,
         )?;
-        create_protoc_plugin_config(&context.project_dir)?;
         init_git_repo(&context.project_dir)?;
 
         Ok(())

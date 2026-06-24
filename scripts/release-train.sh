@@ -835,6 +835,62 @@ for wp in web_packages:
         if dep_name.startswith("@actrium/actr-"):
             pkg["optionalDependencies"][dep_name] = version
     wp.write_text(json.dumps(pkg, indent=2) + "\n")
+
+typescript_plugin_package = repo / "tools/protoc-gen/typescript/package.json"
+typescript_plugin_package_data = json.loads(typescript_plugin_package.read_text())
+typescript_plugin_package_data["version"] = version
+typescript_plugin_package.write_text(
+    json.dumps(typescript_plugin_package_data, indent=2) + "\n"
+)
+
+typescript_plugin_lock = repo / "tools/protoc-gen/typescript/package-lock.json"
+typescript_plugin_lock_data = json.loads(typescript_plugin_lock.read_text())
+typescript_plugin_lock_data["version"] = version
+typescript_plugin_lock_data["packages"][""]["version"] = version
+typescript_plugin_lock.write_text(
+    json.dumps(typescript_plugin_lock_data, indent=2) + "\n"
+)
+
+embedded_versions = [
+    (
+        repo / "tools/protoc-gen/swift/Sources/framework-codegen-swift/main.swift",
+        r'(static let version = ")[^"]+(")',
+        rf'\g<1>{version}\g<2>',
+        1,
+    ),
+    (
+        repo / "tools/protoc-gen/typescript/src/main.ts",
+        r'(const VERSION = ")[^"]+(";)',
+        rf'\g<1>{version}\g<2>',
+        1,
+    ),
+    (
+        repo / "tools/protoc-gen/kotlin/build.gradle.kts",
+        r'(?m)^(version = ")[^"]+(")$',
+        rf'\g<1>{version}\g<2>',
+        1,
+    ),
+    (
+        repo / "tools/protoc-gen/kotlin/src/main/kotlin/io/actrium/codegen/Main.kt",
+        r'(protoc-gen-actrframework-kotlin )[0-9]+\.[0-9]+\.[0-9]+',
+        rf'\g<1>{version}',
+        1,
+    ),
+    (
+        repo / "tools/protoc-gen/kotlin/src/main/kotlin/io/actrium/codegen/Main.kt",
+        r'(println\("    )[0-9]+\.[0-9]+\.[0-9]+("\))',
+        rf'\g<1>{version}\g<2>',
+        1,
+    ),
+]
+
+for path, pattern, replacement, expected_count in embedded_versions:
+    updated, count = re.subn(pattern, replacement, path.read_text())
+    if count != expected_count:
+        raise RuntimeError(
+            f"expected {expected_count} version replacement(s) in {path}, got {count}"
+        )
+    path.write_text(updated)
 PY
 }
 
@@ -1381,6 +1437,12 @@ stage_release_version_files() {
     testing/mock-actrix/Cargo.toml \
     tools/protoc-gen/rust/Cargo.toml \
     tools/protoc-gen/web/Cargo.toml \
+    tools/protoc-gen/swift/Sources/framework-codegen-swift/main.swift \
+    tools/protoc-gen/typescript/src/main.ts \
+    tools/protoc-gen/typescript/package.json \
+    tools/protoc-gen/typescript/package-lock.json \
+    tools/protoc-gen/kotlin/build.gradle.kts \
+    tools/protoc-gen/kotlin/src/main/kotlin/io/actrium/codegen/Main.kt \
     cli/Cargo.toml \
     tools/protoc-gen/python/pyproject.toml \
     bindings/web/packages/actr-dom/package.json \

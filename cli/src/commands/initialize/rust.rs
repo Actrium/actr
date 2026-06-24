@@ -1,6 +1,6 @@
 use crate::commands::SupportedLanguage;
+use crate::commands::initialize::create_local_proto;
 use crate::commands::initialize::traits::{InitContext, ProjectInitializer};
-use crate::commands::initialize::{create_local_proto, create_protoc_plugin_config};
 use crate::error::{ActrCliError, Result};
 use crate::template::{EchoRole, ProjectTemplate, ProjectTemplateName, TemplateContext};
 use crate::utils::read_fixture_text;
@@ -43,9 +43,6 @@ impl ProjectInitializer for RustInitializer {
                 context.echo_role,
             )?;
         }
-
-        // 3. Create .protoc-plugin.toml
-        create_protoc_plugin_config(&context.project_dir)?;
 
         Ok(())
     }

@@ -935,6 +935,26 @@ EOF
   mkdir -p "$temp_dir/bindings/typescript/actr-workload"
   printf '{"name":"@actrium/actr-workload","version":"0.2.0"}' >"$temp_dir/bindings/typescript/actr-workload/package.json"
 
+  # Create protoc plugin version sources.
+  mkdir -p \
+    "$temp_dir/tools/protoc-gen/swift/Sources/framework-codegen-swift" \
+    "$temp_dir/tools/protoc-gen/typescript/src" \
+    "$temp_dir/tools/protoc-gen/kotlin/src/main/kotlin/io/actrium/codegen"
+  printf 'struct Generator { static let version = "0.2.0" }\n' \
+    >"$temp_dir/tools/protoc-gen/swift/Sources/framework-codegen-swift/main.swift"
+  printf 'const VERSION = "0.2.0";\n' \
+    >"$temp_dir/tools/protoc-gen/typescript/src/main.ts"
+  printf '{"name":"framework-codegen-typescript","version":"0.2.0"}\n' \
+    >"$temp_dir/tools/protoc-gen/typescript/package.json"
+  printf '{"name":"framework-codegen-typescript","version":"0.2.0","lockfileVersion":3,"packages":{"":{"version":"0.2.0"}}}\n' \
+    >"$temp_dir/tools/protoc-gen/typescript/package-lock.json"
+  printf 'version = "0.2.0"\n' \
+    >"$temp_dir/tools/protoc-gen/kotlin/build.gradle.kts"
+  cat >"$temp_dir/tools/protoc-gen/kotlin/src/main/kotlin/io/actrium/codegen/Main.kt" <<'EOF'
+println("protoc-gen-actrframework-kotlin 0.2.0")
+println("    0.2.0")
+EOF
+
   update_versions
 
   # Verify optionalDependencies were synced.
@@ -951,6 +971,28 @@ EOF
   local workload_ver
   workload_ver=$(python3 -c "import json; d=json.load(open('$temp_dir/bindings/typescript/actr-workload/package.json')); print(d['version'])")
   assert_eq "0.3.0" "$workload_ver" "actr-workload version"
+
+  assert_eq \
+    'struct Generator { static let version = "0.3.0" }' \
+    "$(cat "$temp_dir/tools/protoc-gen/swift/Sources/framework-codegen-swift/main.swift")" \
+    "Swift protoc plugin version"
+  assert_eq \
+    'const VERSION = "0.3.0";' \
+    "$(cat "$temp_dir/tools/protoc-gen/typescript/src/main.ts")" \
+    "TypeScript protoc plugin source version"
+  assert_eq \
+    "0.3.0" \
+    "$(python3 -c "import json; print(json.load(open('$temp_dir/tools/protoc-gen/typescript/package-lock.json'))['packages']['']['version'])")" \
+    "TypeScript protoc plugin lock version"
+  assert_eq \
+    'version = "0.3.0"' \
+    "$(cat "$temp_dir/tools/protoc-gen/kotlin/build.gradle.kts")" \
+    "Kotlin protoc plugin Gradle version"
+  if grep -q '0\.2\.0' "$temp_dir/tools/protoc-gen/kotlin/src/main/kotlin/io/actrium/codegen/Main.kt"; then
+    printf 'Kotlin protoc plugin output versions were not synchronized\n' >&2
+    rm -rf "$temp_dir"
+    exit 1
+  fi
 
   rm -rf "$temp_dir"
 }
@@ -1441,6 +1483,14 @@ test_protoc_plugin_release_workflow_is_reusable() {
     printf 'manual protoc plugins workflow must not duplicate build or publish jobs\n' >&2
     exit 1
   fi
+
+  local language
+  for language in Rust Swift Kotlin TypeScript; do
+    grep -q "${language} plugin reports" "$reusable" || {
+      printf 'reusable protoc plugins workflow must verify the %s plugin version\n' "$language" >&2
+      exit 1
+    }
+  done
 }
 
 test_release_train_publishes_release_assets_in_parallel() {

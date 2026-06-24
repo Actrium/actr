@@ -2,7 +2,6 @@ use crate::commands::SupportedLanguage;
 use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldService};
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
-use crate::plugin_config::{load_protoc_plugin_config, version_is_at_least};
 use crate::utils::to_snake_case;
 use async_trait::async_trait;
 use std::collections::BTreeSet;
@@ -21,7 +20,7 @@ impl LanguageGenerator for RustGenerator {
         info!("🔧 Generating infrastructure code...");
 
         let prost_plugin_path = self.ensure_prost_plugin(&context.config_path)?;
-        let plugin_path = self.ensure_protoc_plugin(&context.config_path)?;
+        let plugin_path = self.ensure_protoc_plugin()?;
 
         let manufacturer = context.config.package.actr_type.manufacturer.clone();
         debug!("Using manufacturer from manifest.toml: {}", manufacturer);
@@ -591,46 +590,35 @@ impl {handler_interface} for {handler_impl} {{
         std::env::current_dir().map_err(ActrCliError::Io)
     }
 
-    fn ensure_protoc_plugin(&self, config_path: &Path) -> Result<PathBuf> {
-        const EXPECTED_VERSION: &str = "0.2.0";
+    fn ensure_protoc_plugin(&self) -> Result<PathBuf> {
         const PLUGIN_NAME: &str = "protoc-gen-actrframework";
+        let required_version = env!("CARGO_PKG_VERSION");
 
         if let Some(plugin_path) = self.try_use_local_workspace_plugin()? {
             return Ok(plugin_path);
         }
 
-        let min_version = self.resolve_plugin_min_version(PLUGIN_NAME, config_path)?;
-        let require_exact = min_version.is_none();
-        let required_version = min_version.unwrap_or_else(|| EXPECTED_VERSION.to_string());
-
         let installed_version = self.check_installed_plugin_version()?;
 
         match installed_version {
-            Some(version) if self.version_satisfies(&version, &required_version, require_exact) => {
+            Some(version) if version == required_version => {
                 info!("✅ Using installed protoc-gen-actrframework v{}", version);
                 self.locate_installed_plugin(PLUGIN_NAME)
             }
             Some(version) => {
-                if require_exact {
-                    info!(
-                        "🔄 Version mismatch: installed v{}, need v{}",
-                        version, required_version
-                    );
-                } else {
-                    info!(
-                        "🔄 Version below minimum: installed v{}, need >= v{}",
-                        version, required_version
-                    );
-                }
+                info!(
+                    "🔄 Version mismatch: installed v{}, need v{}",
+                    version, required_version
+                );
                 info!("🔨 Upgrading plugin...");
-                let path = self.install_or_upgrade_plugin(&required_version)?;
-                self.ensure_required_plugin_version(&required_version, require_exact)?;
+                let path = self.install_or_upgrade_plugin(required_version)?;
+                self.ensure_required_plugin_version(required_version)?;
                 Ok(path)
             }
             None => {
                 info!("📦 protoc-gen-actrframework not found, installing...");
-                let path = self.install_or_upgrade_plugin(&required_version)?;
-                self.ensure_required_plugin_version(&required_version, require_exact)?;
+                let path = self.install_or_upgrade_plugin(required_version)?;
+                self.ensure_required_plugin_version(required_version)?;
                 Ok(path)
             }
         }
@@ -953,38 +941,7 @@ impl {handler_interface} for {handler_impl} {{
         })
     }
 
-    fn resolve_plugin_min_version(
-        &self,
-        plugin_name: &str,
-        config_path: &Path,
-    ) -> Result<Option<String>> {
-        let config = load_protoc_plugin_config(config_path)?;
-        if let Some(config) = config
-            && let Some(min_version) = config.min_version(plugin_name)
-        {
-            info!(
-                "🔧 Using minimum version for {} from {}",
-                plugin_name,
-                config.path().display()
-            );
-            return Ok(Some(min_version.to_string()));
-        }
-        Ok(None)
-    }
-
-    fn version_satisfies(&self, installed: &str, required: &str, strict_equal: bool) -> bool {
-        if strict_equal {
-            installed == required
-        } else {
-            version_is_at_least(installed, required)
-        }
-    }
-
-    fn ensure_required_plugin_version(
-        &self,
-        required_version: &str,
-        strict_equal: bool,
-    ) -> Result<()> {
+    fn ensure_required_plugin_version(&self, required_version: &str) -> Result<()> {
         let installed_version = self.check_installed_plugin_version()?;
         let Some(installed_version) = installed_version else {
             return Err(ActrCliError::command_error(
@@ -993,21 +950,14 @@ impl {handler_interface} for {handler_impl} {{
             ));
         };
 
-        if self.version_satisfies(&installed_version, required_version, strict_equal) {
+        if installed_version == required_version {
             return Ok(());
         }
 
-        if strict_equal {
-            Err(ActrCliError::command_error(format!(
-                "protoc-gen-actrframework version {} does not match required version {}",
-                installed_version, required_version
-            )))
-        } else {
-            Err(ActrCliError::command_error(format!(
-                "protoc-gen-actrframework version {} is lower than minimum version {}",
-                installed_version, required_version
-            )))
-        }
+        Err(ActrCliError::command_error(format!(
+            "protoc-gen-actrframework version {} does not match actr version {}",
+            installed_version, required_version
+        )))
     }
 }
 
