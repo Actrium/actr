@@ -11,6 +11,16 @@ on:
         description: Existing release tag to (re)build and upload binaries for
         required: true
         type: string
+      publish:
+        description: Upload built binaries to the GitHub Release
+        required: true
+        default: true
+        type: boolean
+      replace_assets:
+        description: Replace existing release assets when publishing
+        required: true
+        default: true
+        type: boolean
 
 concurrency:
   group: release-actrix-${{ inputs.tag }}
@@ -55,6 +65,6 @@ jobs:
     with:
       tag: ${{ needs.validate-release.outputs.tag }}
       source_ref: ${{ needs.validate-release.outputs.tag }}
-      publish: true
-      replace_assets: true
+      publish: ${{ inputs.publish }}
+      replace_assets: ${{ inputs.replace_assets }}
     secrets: inherit

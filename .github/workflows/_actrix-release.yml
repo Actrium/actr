@@ -103,6 +103,30 @@ jobs:
           corepack enable
           corepack prepare pnpm@9.15.9 --activate
 
+      - name: Install OpenSSL for legacy ecies backend
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $manifest = Get-Content source/Cargo.toml -Raw
+          if ($manifest -match 'ecies\s*=\s*\{[^}]*default-features\s*=\s*false') {
+            Write-Host "ecies default features are disabled; OpenSSL is not required."
+            exit 0
+          }
+
+          $vcpkgRoot = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkgRoot) {
+            $vcpkgRoot = 'C:\vcpkg'
+          }
+          $vcpkgExe = Join-Path $vcpkgRoot 'vcpkg.exe'
+          if (-not (Test-Path $vcpkgExe)) {
+            Write-Error "vcpkg.exe not found at $vcpkgExe"
+            exit 1
+          }
+
+          "VCPKG_ROOT=$vcpkgRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCPKG_DEFAULT_TRIPLET=x64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
+          & $vcpkgExe install openssl:x64-windows-static-md
+
       # Build the Admin UI so the release binary embeds the real dist
       # (rust-embed). build.rs would also try this, but doing it explicitly
       # keeps the release reproducible (frozen lockfile).
@@ -156,11 +180,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+          REPLACE_ASSETS: ${{ inputs.replace_assets }}
         run: |
           set -euo pipefail
+          upload_args=()
+          if [[ "$REPLACE_ASSETS" == "true" ]]; then
+            upload_args+=(--clobber)
+          fi
           for asset in dist/*; do
             echo "Uploading $(basename "$asset") to $TAG"
-            gh release upload "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+            gh release upload "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" "${upload_args[@]}"
           done
 
   report:
