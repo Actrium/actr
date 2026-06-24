@@ -920,7 +920,13 @@ mod tests {
             Ok(vec![])
         }
         async fn parse_proto_services(&self, _files: &[crate::core::ProtoFile]) -> anyhow::Result<Vec<crate::core::ServiceDefinition>> { unreachable!() }
-        async fn generate_code(&self, _input: &Path, _output: &Path) -> anyhow::Result<crate::core::GenerationResult> { unreachable!() }
+        async fn generate_code(&self, _input: &Path, output: &Path) -> anyhow::Result<crate::core::GenerationResult> {
+            Ok(crate::core::GenerationResult {
+                generated_files: vec![output.to_path_buf()],
+                warnings: vec![],
+                errors: vec![],
+            })
+        }
         async fn validate_proto_syntax(&self, _files: &[crate::core::ProtoFile]) -> anyhow::Result<crate::core::ValidationReport> {
             Ok(crate::core::ValidationReport {
                 is_valid: self.proto_is_valid,
@@ -1157,5 +1163,24 @@ mod tests {
         };
         let err = gp.generate_code(&options).await.unwrap_err();
         assert!(format!("{err}").contains("Proto file syntax validation failed"));
+    }
+
+    #[tokio::test]
+    async fn generation_pipeline_succeeds_with_valid_proto() {
+        let config: Arc<dyn ConfigManager> = Arc::new(MockConfig { is_valid: true });
+        let proto_valid: Arc<dyn crate::core::ProtoProcessor> =
+            Arc::new(MockProtoProcessor { proto_is_valid: true });
+        let cache: Arc<dyn crate::core::CacheManager> = Arc::new(MockCacheManager);
+        let gp = GenerationPipeline::new(config, proto_valid, cache);
+        let options = crate::core::pipelines::GenerationOptions {
+            input_path: Path::new("protos").to_path_buf(),
+            output_path: Path::new("out").to_path_buf(),
+            clean_before_generate: true,
+            generate_scaffold: false,
+            format_code: false,
+            run_checks: false,
+        };
+        let result = gp.generate_code(&options).await.unwrap();
+        assert_eq!(result.generated_files, vec![Path::new("out").to_path_buf()]);
     }
 }
