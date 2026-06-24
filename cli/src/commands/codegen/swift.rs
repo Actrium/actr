@@ -1507,11 +1507,10 @@ mod tests {
 
         assert!(adapter.contains("ACTR: mutable scaffold"));
         assert!(adapter.contains("import Foundation"));
-        assert!(
-            adapter.contains(
-                "class EchoServiceLifecycleAdapter<Handler: EchoServiceHandler>: Workload"
-            )
-        );
+        assert!(adapter.lines().any(|line| {
+            line == "final class EchoServiceLifecycleAdapter<Handler: EchoServiceHandler>: Workload, @unchecked Sendable {"
+        }));
+        assert!(!adapter.contains("private final class EchoServiceLifecycleAdapter"));
         assert!(adapter.contains("EchoServiceWorkload<Handler>"));
         assert!(!adapter.contains("EchoServiceHandlerImpl"));
         assert!(adapter.contains("func onStart(ctx: ContextBridge) async throws"));

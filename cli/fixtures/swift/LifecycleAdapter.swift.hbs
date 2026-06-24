@@ -4,7 +4,7 @@
 import Actr
 import Foundation
 
-private final class {{SERVICE_NAME}}LifecycleAdapter<Handler: {{HANDLER_NAME}}>: Workload, @unchecked Sendable {
+final class {{SERVICE_NAME}}LifecycleAdapter<Handler: {{HANDLER_NAME}}>: Workload, @unchecked Sendable {
     private let workload: {{WORKLOAD_NAME}}<Handler>
 
     init(workload: {{WORKLOAD_NAME}}<Handler>) {
