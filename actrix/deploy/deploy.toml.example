@@ -1,0 +1,13 @@
+# actrix-deploy optional defaults.
+#
+# NOTE: not yet auto-loaded. CLI flags and environment variables
+# (ACTRIX_REPOSITORY, GITHUB_TOKEN, ACTRIX_HEALTH_WAIT_SECONDS) are
+# authoritative today; this file documents the intended future shape.
+
+repository = "Actrium/actr"
+install_dir = "/opt/actrix"
+service_name = "actrix"
+config_path = "/etc/actrix/config.toml"
+user = "actrix"
+group = "actrix"
+health_wait_seconds = 5
