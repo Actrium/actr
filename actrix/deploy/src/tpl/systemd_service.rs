@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::config::InstallConfig;
@@ -73,22 +73,52 @@ struct RuntimeListenerConfig {
 pub struct SystemdServiceTemplate {
     install_config: InstallConfig,
     config_path: std::path::PathBuf,
+    service_name: String,
 }
 
 impl SystemdServiceTemplate {
-    pub fn new(install_config: InstallConfig, config_path: std::path::PathBuf) -> Self {
+    pub fn new(
+        install_config: InstallConfig,
+        config_path: std::path::PathBuf,
+        service_name: String,
+    ) -> Self {
         Self {
             install_config,
             config_path,
+            service_name,
         }
     }
 
-    /// Generate systemd service file
-    pub fn generate_service_file(&self, service_user: &str, service_group: &str) -> Result<()> {
-        let service_name = &self.install_config.binary_name;
+    /// Generate systemd service file.
+    ///
+    /// Refuses to overwrite an existing unit unless `force_overwrite` is set,
+    /// protecting `User=`/`ProtectSystem=`/`ReadWritePaths=` hardening from
+    /// being clobbered by a re-deploy.
+    pub fn generate_service_file(
+        &self,
+        service_user: &str,
+        service_group: &str,
+        force_overwrite: bool,
+    ) -> Result<()> {
+        let service_name = &self.service_name;
         let service_file = format!("/etc/systemd/system/{}.service", service_name);
 
         println!("📄 Creating systemd service: {}", service_name);
+
+        // Overwrite guard: preserve existing hardening unless explicitly forced.
+        if Path::new(&service_file).exists() {
+            if !force_overwrite {
+                anyhow::bail!(
+                    "systemd unit already exists: {service_file}\n\
+                     Refusing to overwrite (this would discard User=/ProtectSystem=/ReadWritePaths= hardening).\n\
+                     Re-run with --force-overwrite-unit to replace it."
+                );
+            }
+            println!("⚠️  Overwriting existing unit: {service_file}");
+            println!(
+                "⚠️  Existing hardening (User=/ProtectSystem=/ReadWritePaths=) will be replaced."
+            );
+        }
 
         // Create service content
         let service_content = self.create_service_content(service_user, service_group)?;
@@ -275,6 +305,12 @@ impl SystemdServiceTemplate {
         let mut paths = BTreeSet::new();
         paths.insert(self.install_config.logs_dir().to_string_lossy().to_string());
         paths.insert(self.install_config.db_dir().to_string_lossy().to_string());
+        paths.insert(
+            self.install_config
+                .shared_dir()
+                .to_string_lossy()
+                .to_string(),
+        );
 
         match std::fs::read_to_string(&self.config_path) {
             Ok(config_text) => match toml::from_str::<RuntimeConfig>(&config_text) {

@@ -144,7 +144,23 @@ pub fn find_local_build_binary() -> Result<PathBuf> {
 }
 
 /// Deploy application as systemd service
-pub fn install_systemd_service() -> Result<()> {
+/// Optional flags for `deploy service` (fully non-interactive when all set).
+#[derive(Debug, Default, Clone)]
+pub struct ServiceArgs {
+    pub service_name: Option<String>,
+    pub install_dir: Option<PathBuf>,
+    pub config: Option<PathBuf>,
+    pub user: Option<String>,
+    pub group: Option<String>,
+    pub force_overwrite_unit: bool,
+}
+
+/// Deploy application as systemd service.
+///
+/// Accepts optional non-interactive flags; any missing value is prompted for.
+/// The service/unit name is decoupled from the binary name (always `actrix`)
+/// so multiple instances can run under distinct unit names on one host.
+pub fn install_systemd_service(args: ServiceArgs) -> Result<()> {
     match detect_service_manager() {
         ServiceManager::Systemd => {
             println!("✅ Service manager detected: systemd");
@@ -162,11 +178,12 @@ pub fn install_systemd_service() -> Result<()> {
     println!();
 
     // Configure configuration file path
-    let config_path = configure_config_path()?;
+    let config_path = configure_config_path(args.config)?;
 
     // Configure systemd service
-    let install_config = configure_service_settings()?;
-    let (service_user, service_group) = configure_service_user()?;
+    let install_config = configure_service_settings(args.install_dir)?;
+    let service_name = configure_service_name(args.service_name)?;
+    let (service_user, service_group) = configure_service_user(args.user, args.group)?;
 
     // Verify critical files exist before creating service
     verify_deployment_files(&install_config, &config_path)?;
@@ -175,22 +192,38 @@ pub fn install_systemd_service() -> Result<()> {
     configure_firewall_step(&config_path)?;
 
     // Create systemd service
-    let service_template = SystemdServiceTemplate::new(install_config, config_path);
-    service_template.generate_service_file(&service_user, &service_group)?;
+    let service_template = SystemdServiceTemplate::new(install_config, config_path, service_name);
+    service_template.generate_service_file(
+        &service_user,
+        &service_group,
+        args.force_overwrite_unit,
+    )?;
 
     Ok(())
 }
 
-/// Configure configuration file path
-fn configure_config_path() -> Result<PathBuf> {
+/// Resolve the service/unit name from a flag or prompt.
+fn configure_service_name(opt: Option<String>) -> Result<String> {
+    match opt {
+        Some(name) => Ok(name),
+        None => Ok(prompt_text("Service name", "actrix")?),
+    }
+}
+
+/// Configure configuration file path (flag or prompt).
+fn configure_config_path(opt: Option<PathBuf>) -> Result<PathBuf> {
     println!("📁 Configuration File Path");
     println!("══════════════════════════");
     println!("Specify the configuration file path for the service:");
     println!();
 
-    let config_path = prompt_text("Configuration file path", "/etc/actrix/config.toml")?;
-
-    let path = PathBuf::from(config_path);
+    let path = match opt {
+        Some(p) => p,
+        None => PathBuf::from(prompt_text(
+            "Configuration file path",
+            "/etc/actrix/config.toml",
+        )?),
+    };
 
     // Check if file exists
     if !path.exists() {
@@ -211,8 +244,8 @@ fn configure_config_path() -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Configure systemd service settings
-fn configure_service_settings() -> Result<InstallConfig> {
+/// Configure systemd service settings (flag or prompt for install dir).
+fn configure_service_settings(install_dir_opt: Option<PathBuf>) -> Result<InstallConfig> {
     println!("📋 Systemd Service Configuration");
     println!("═══════════════════════════════");
     println!("Configure service settings (press Enter for defaults):");
@@ -221,36 +254,46 @@ fn configure_service_settings() -> Result<InstallConfig> {
     let default_config = InstallConfig::default();
 
     // Installation directory
-    let install_dir = prompt_text(
-        "Installation directory",
-        &default_config.install_dir.to_string_lossy(),
-    )?;
-    let install_dir = PathBuf::from(install_dir);
+    let install_dir = match install_dir_opt {
+        Some(d) => d,
+        None => PathBuf::from(prompt_text(
+            "Installation directory",
+            &default_config.install_dir.to_string_lossy(),
+        )?),
+    };
     validate_supported_install_dir(&install_dir, "service deployment")?;
-
-    // Binary name
-    let binary_name = prompt_text("Service/binary name", &default_config.binary_name)?;
 
     println!();
 
+    // Binary name is always "actrix" (the actual binary in bin/); the unit name
+    // is configured separately via --service-name.
     Ok(InstallConfig {
         install_dir,
-        binary_name,
+        binary_name: default_config.binary_name,
         add_to_path: false, // Not relevant for systemd service
     })
 }
 
-/// Configure systemd service user and group
-fn configure_service_user() -> Result<(String, String)> {
+/// Configure systemd service user and group (flags or prompt).
+fn configure_service_user(
+    user_opt: Option<String>,
+    group_opt: Option<String>,
+) -> Result<(String, String)> {
     println!("👤 Service User Configuration");
     println!("════════════════════════════");
     println!();
 
     // Service user
-    let service_user = prompt_text("Service user", DEFAULT_SERVICE_USER)?;
+    let service_user = match user_opt {
+        Some(u) => u,
+        None => prompt_text("Service user", DEFAULT_SERVICE_USER)?,
+    };
 
     // Service group
-    let service_group = prompt_text("Service group", DEFAULT_SERVICE_GROUP)?;
+    let service_group = match group_opt {
+        Some(g) => g,
+        None => prompt_text("Service group", DEFAULT_SERVICE_GROUP)?,
+    };
 
     // Check if user exists
     if !user_exists(&service_user) {

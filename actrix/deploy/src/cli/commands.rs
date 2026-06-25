@@ -41,8 +41,27 @@ pub enum Commands {
         #[arg(long)]
         no_path: bool,
     },
-    /// Deploy systemd service
-    Service,
+    /// Deploy systemd service (flags optional; prompts for missing values)
+    Service {
+        /// Service/unit name (default: actrix)
+        #[arg(long)]
+        service_name: Option<String>,
+        /// Installation directory
+        #[arg(long)]
+        install_dir: Option<PathBuf>,
+        /// Configuration file path
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Service user
+        #[arg(long)]
+        user: Option<String>,
+        /// Service group
+        #[arg(long)]
+        group: Option<String>,
+        /// Overwrite an existing systemd unit (discards hardening)
+        #[arg(long)]
+        force_overwrite_unit: bool,
+    },
     /// Uninstall the application
     Uninstall,
 }

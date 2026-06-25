@@ -47,7 +47,21 @@ fn main() -> Result<()> {
             };
             system::install_from_source(&install_config, source, version, sha256_path, skip_verify)
         }
-        Some(Commands::Service) => system::install_systemd_service(),
+        Some(Commands::Service {
+            service_name,
+            install_dir,
+            config,
+            user,
+            group,
+            force_overwrite_unit,
+        }) => system::install_systemd_service(system::ServiceArgs {
+            service_name,
+            install_dir,
+            config,
+            user,
+            group,
+            force_overwrite_unit,
+        }),
         Some(Commands::Uninstall) => system::uninstall_application(),
     }
 }
