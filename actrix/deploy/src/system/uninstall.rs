@@ -1,40 +1,73 @@
-//! Application uninstallation utilities
+//! Application uninstallation utilities.
+//!
+//! Removal is split into separately-confirmed groups so operators can remove
+//! the service/binaries while preserving runtime data (db/logs/shared) and
+//! configuration. Defaults preserve config and data; only the systemd unit,
+//! the `releases/` binaries, and the `bin/actrix` symlink are removed by
+//! default.
 
 use anyhow::Result;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::process::Command;
+
+use crate::config::InstallConfig;
 
 const DEFAULT_SYSTEM_ACCOUNT: &str = "actrix";
 
-/// Uninstall application with selective component removal
-pub fn uninstall_application() -> Result<()> {
-    println!("🔍 Checking what's installed...");
+/// Optional flags for `deploy uninstall`.
+#[derive(Debug, Clone)]
+pub struct UninstallArgs {
+    pub install_dir: PathBuf,
+    pub service_name: Option<String>,
+}
 
-    // Check what's currently installed
-    let install_dir = "/opt/actrix";
+impl Default for UninstallArgs {
+    fn default() -> Self {
+        Self {
+            install_dir: PathBuf::from("/opt/actrix"),
+            service_name: None,
+        }
+    }
+}
+
+/// Uninstall application with selective component removal.
+pub fn uninstall_application(args: UninstallArgs) -> Result<()> {
+    let service_name = args
+        .service_name
+        .clone()
+        .unwrap_or_else(|| DEFAULT_SYSTEM_ACCOUNT.to_string());
+    let service_file = format!("/etc/systemd/system/{service_name}.service");
     let config_dir = "/etc/actrix";
-    let service_file = "/etc/systemd/system/actrix.service";
+
+    let config = InstallConfig {
+        install_dir: args.install_dir.clone(),
+        binary_name: "actrix".to_string(),
+        add_to_path: false,
+    };
+    let releases_dir = config.releases_dir();
+    let bin_link = config.binary_path();
+    let data_dirs = [config.db_dir(), config.logs_dir(), config.shared_dir()];
+
+    println!("🔍 Checking what's installed...");
+    println!("   install dir : {}", args.install_dir.display());
+    println!("   service name: {service_name}");
 
     let mut components_found = Vec::new();
-
-    if std::path::Path::new(install_dir).exists() {
+    if args.install_dir.exists() {
         components_found.push("Application files");
     }
-
     if std::path::Path::new(config_dir).exists() {
         components_found.push("Configuration files");
     }
-
-    if std::path::Path::new(service_file).exists() {
+    if std::path::Path::new(&service_file).exists() {
         components_found.push("Systemd service");
     }
-
     #[cfg(unix)]
     {
         if user_exists(DEFAULT_SYSTEM_ACCOUNT) {
             components_found.push("System user (actrix)");
         }
-
         if group_exists(DEFAULT_SYSTEM_ACCOUNT) {
             components_found.push("System group (actrix)");
         }
@@ -50,42 +83,73 @@ pub fn uninstall_application() -> Result<()> {
     for component in &components_found {
         println!("  📦 {}", component);
     }
-
     println!();
 
-    // Selective removal
     let mut removed_count = 0;
 
     // 1. Stop and remove systemd service
-    if std::path::Path::new(service_file).exists()
+    if std::path::Path::new(&service_file).exists()
         && prompt_confirm(
             "Remove systemd service? (This will stop the service if running)",
             true,
         )?
     {
-        if let Err(e) = remove_systemd_service() {
+        if let Err(e) = remove_systemd_service(&service_name, &service_file) {
             println!("⚠️  Failed to remove systemd service: {}", e);
         } else {
             removed_count += 1;
         }
     }
 
-    // 2. Remove application files
-    if std::path::Path::new(install_dir).exists()
-        && prompt_confirm("Remove application files? (/opt/actrix)", true)?
+    // 2. Remove binaries: releases/ + bin/actrix symlink (default yes)
+    let has_binaries = releases_dir.exists() || bin_link.exists();
+    if has_binaries
+        && prompt_confirm(
+            &format!(
+                "Remove binaries? ({} and {})",
+                releases_dir.display(),
+                bin_link.display()
+            ),
+            true,
+        )?
     {
-        if let Err(e) = remove_directory(install_dir) {
-            println!("⚠️  Failed to remove application files: {}", e);
-        } else {
-            println!("✅ Application files removed");
+        if let Err(e) = remove_path(&releases_dir) {
+            println!("⚠️  Failed to remove {}: {}", releases_dir.display(), e);
+        }
+        if bin_link.exists() {
+            let _ = remove_path(&bin_link);
+        }
+        println!("✅ Binaries removed");
+        removed_count += 1;
+    }
+
+    // 3. Remove runtime data: db/ logs/ shared/ (default NO — preserve)
+    let existing_data: Vec<&PathBuf> = data_dirs.iter().filter(|d| d.exists()).collect();
+    if !existing_data.is_empty() {
+        let names: Vec<String> = existing_data
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
+        if prompt_confirm(
+            &format!("Remove runtime data? ({})", names.join(", ")),
+            false,
+        )? {
+            for d in &existing_data {
+                if let Err(e) = remove_path(d) {
+                    println!("⚠️  Failed to remove {}: {}", d.display(), e);
+                }
+            }
+            println!("✅ Runtime data removed");
             removed_count += 1;
+        } else {
+            println!("ℹ️  Runtime data preserved");
         }
     }
 
-    // 3. Remove configuration files (optional)
+    // 4. Remove configuration files (default NO — preserve)
     if std::path::Path::new(config_dir).exists() {
         if prompt_confirm("Remove configuration files? (/etc/actrix)", false)? {
-            if let Err(e) = remove_directory(config_dir) {
+            if let Err(e) = remove_path(&PathBuf::from(config_dir)) {
                 println!("⚠️  Failed to remove configuration files: {}", e);
             } else {
                 println!("✅ Configuration files removed");
@@ -96,41 +160,44 @@ pub fn uninstall_application() -> Result<()> {
         }
     }
 
-    // 4. Remove system user and group
+    // 5. Remove system user and group
     #[cfg(unix)]
     {
-        if user_exists(DEFAULT_SYSTEM_ACCOUNT) {
-            if prompt_confirm(
+        if user_exists(DEFAULT_SYSTEM_ACCOUNT)
+            && prompt_confirm(
                 &format!("Remove system user '{DEFAULT_SYSTEM_ACCOUNT}'?"),
                 true,
-            )? {
-                if let Err(e) = remove_user(DEFAULT_SYSTEM_ACCOUNT) {
-                    println!("⚠️  Failed to remove user: {}", e);
-                } else {
-                    removed_count += 1;
-                }
+            )?
+        {
+            if let Err(e) = remove_user(DEFAULT_SYSTEM_ACCOUNT) {
+                println!("⚠️  Failed to remove user: {}", e);
             } else {
-                println!("ℹ️  System user preserved");
+                removed_count += 1;
             }
         }
-
-        if group_exists(DEFAULT_SYSTEM_ACCOUNT) {
-            if prompt_confirm(
+        if group_exists(DEFAULT_SYSTEM_ACCOUNT)
+            && prompt_confirm(
                 &format!("Remove system group '{DEFAULT_SYSTEM_ACCOUNT}'?"),
                 true,
-            )? {
-                if let Err(e) = remove_group(DEFAULT_SYSTEM_ACCOUNT) {
-                    println!("⚠️  Failed to remove group: {}", e);
-                } else {
-                    removed_count += 1;
-                }
+            )?
+        {
+            if let Err(e) = remove_group(DEFAULT_SYSTEM_ACCOUNT) {
+                println!("⚠️  Failed to remove group: {}", e);
             } else {
-                println!("ℹ️  System group preserved");
+                removed_count += 1;
             }
         }
     }
 
-    // Summary
+    // 6. Remove the install dir itself if now empty
+    if args.install_dir.exists()
+        && std::fs::read_dir(&args.install_dir)
+            .map(|mut r| r.next().is_none())
+            .unwrap_or(false)
+    {
+        let _ = remove_path(&args.install_dir);
+    }
+
     println!();
     if removed_count > 0 {
         println!(
@@ -162,30 +229,21 @@ fn group_exists(groupname: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn remove_systemd_service() -> Result<()> {
-    let service_name = "actrix";
-    let service_file = "/etc/systemd/system/actrix.service";
-
-    // Stop the service if running
+fn remove_systemd_service(service_name: &str, service_file: &str) -> Result<()> {
     let _ = Command::new("sudo")
         .args(["systemctl", "stop", service_name])
         .output();
-
-    // Disable the service
     let _ = Command::new("sudo")
         .args(["systemctl", "disable", service_name])
         .output();
 
-    // Remove service file
     let output = Command::new("sudo")
         .args(["rm", "-f", service_file])
         .output()?;
-
     if !output.status.success() {
         anyhow::bail!("Failed to remove systemd service file");
     }
 
-    // Reload systemd
     let _ = Command::new("sudo")
         .args(["systemctl", "daemon-reload"])
         .output();
@@ -194,20 +252,23 @@ fn remove_systemd_service() -> Result<()> {
     Ok(())
 }
 
-fn remove_directory(path: &str) -> Result<()> {
-    let output = Command::new("sudo").args(["rm", "-rf", path]).output()?;
-
+fn remove_path(path: &std::path::Path) -> Result<()> {
+    let output = Command::new("sudo")
+        .args(["rm", "-rf", &path.to_string_lossy()])
+        .output()?;
     if !output.status.success() {
-        anyhow::bail!("Failed to remove directory: {}", path);
+        anyhow::bail!(
+            "Failed to remove {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
-
     Ok(())
 }
 
 #[cfg(unix)]
 fn remove_user(username: &str) -> Result<()> {
     let output = Command::new("sudo").args(["userdel", username]).output()?;
-
     if output.status.success() {
         println!("✅ User '{}' removed successfully", username);
         Ok(())
@@ -222,14 +283,11 @@ fn remove_group(groupname: &str) -> Result<()> {
     let output = Command::new("sudo")
         .args(["groupdel", groupname])
         .output()?;
-
     if output.status.success() {
         println!("✅ Group '{}' removed successfully", groupname);
         Ok(())
     } else {
         let error = String::from_utf8_lossy(&output.stderr);
-
-        // If group doesn't exist (maybe removed when user was deleted), treat as success
         if error.contains("does not exist") {
             println!(
                 "ℹ️  Group '{}' was already removed (likely when user was deleted)",

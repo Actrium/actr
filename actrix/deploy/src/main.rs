@@ -88,7 +88,13 @@ fn main() -> Result<()> {
             restart_service,
         }) => system::rollback_command(install_dir, to, restart_service),
         Some(Commands::Status { install_dir }) => system::status_command(install_dir),
-        Some(Commands::Uninstall) => system::uninstall_application(),
+        Some(Commands::Uninstall {
+            install_dir,
+            service_name,
+        }) => system::uninstall_application(system::UninstallArgs {
+            install_dir,
+            service_name,
+        }),
     }
 }
 
