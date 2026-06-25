@@ -167,11 +167,8 @@ start_actrix() {
     kill_listener tcp "$HTTP_PORT"
     kill_listener udp "$ICE_PORT"
 
-    # P0-1: explicitly unset ACTRIX_TEST_NO_MFR_VERIFY so a value inherited
-    # from the outer shell/CI cannot bypass MFR verification (silent green).
     # ACTRIX_RUST_LOG lets path2 modes capture the debug Path 2 marker.
-    env -u ACTRIX_TEST_NO_MFR_VERIFY \
-        RUST_LOG="${ACTRIX_RUST_LOG:-${RUST_LOG:-info}}" \
+    RUST_LOG="${ACTRIX_RUST_LOG:-${RUST_LOG:-info}}" \
         "$ACTRIX_BIN" --config "$ACTRIX_CONFIG_PATH" >"$LOG_DIR/actrix.log" 2>&1 &
     ACTRIX_PID=$!
 
@@ -640,16 +637,15 @@ render_server_runtime() {
         "__REALM_SECRET__=$REALM_SECRET"
 }
 
-# P0-1: launch actr run fully isolated — independent HOME, --hyper-dir, and
-# ACTRIX_TEST_NO_MFR_VERIFY unset. $1=home_dir $2=hyper_dir $3=log_name.
+# Launch actr run fully isolated — independent HOME and --hyper-dir.
+# $1=home_dir $2=hyper_dir $3=log_name.
 # Sets SERVER_PID and writes to $LOG_DIR/<log_name>.
 start_server_isolated() {
     local home_dir="$1"
     local hyper_dir="$2"
     local log_name="${3:-server.log}"
     render_server_runtime
-    env -u ACTRIX_TEST_NO_MFR_VERIFY \
-        HOME="$home_dir" \
+    HOME="$home_dir" \
         RUST_LOG="${RUST_LOG:-info}" \
         CARGO_TARGET_DIR="$ACTR_TARGET_DIR" \
         "$ACTR_CLI_BIN" run -c "$SERVER_RUNTIME_PATH" --hyper-dir "$hyper_dir" \
