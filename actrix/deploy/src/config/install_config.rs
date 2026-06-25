@@ -29,6 +29,11 @@ impl InstallConfig {
         self.install_dir.join("bin")
     }
 
+    /// Get the releases directory path
+    pub fn releases_dir(&self) -> PathBuf {
+        self.install_dir.join("releases")
+    }
+
     /// Get the logs directory path
     pub fn logs_dir(&self) -> PathBuf {
         self.install_dir.join("logs")
@@ -39,7 +44,26 @@ impl InstallConfig {
         self.install_dir.join("db")
     }
 
-    /// Get the target binary path
+    /// Get the shared runtime data directory path
+    pub fn shared_dir(&self) -> PathBuf {
+        self.install_dir.join("shared")
+    }
+
+    /// Get the per-version binary path: `<install-dir>/releases/<version>/<binary>`.
+    ///
+    /// Version directories hold only the binary; runtime data (config, db,
+    /// logs, certs) lives outside the version directory so switching versions
+    /// never disturbs state.
+    #[allow(dead_code)] // wired up in the install/releases refactor
+    pub fn release_binary_path(&self, version: &str) -> PathBuf {
+        self.releases_dir().join(version).join(&self.binary_name)
+    }
+
+    /// Get the active binary path: `<install-dir>/bin/<binary>`.
+    ///
+    /// This is a symlink pointing at the current `releases/<version>/<binary>`.
+    /// The systemd `ExecStart` references this stable path so version switches
+    /// only require repointing the symlink, never editing the unit.
     pub fn binary_path(&self) -> PathBuf {
         self.bin_dir().join(&self.binary_name)
     }
@@ -54,6 +78,8 @@ impl InstallConfig {
         vec![
             self.install_dir.clone(),
             self.bin_dir(),
+            self.releases_dir(),
+            self.shared_dir(),
             self.logs_dir(),
             self.db_dir(),
         ]
