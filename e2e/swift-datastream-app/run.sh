@@ -48,13 +48,21 @@ DATASTREAMAPP_MARKER_BINARY="$RUN_DIR/datastreamapp-linked-identity.bin"
 DATASTREAMAPP_PACKAGE="$DIST_DIR/${MANUFACTURER}-DataStreamApp-0.1.0-${HOST_TARGET}.actr"
 APP_STDOUT_LOG="$LOG_DIR/app.stdout.log"
 APP_STDERR_LOG="$LOG_DIR/app.stderr.log"
+APP_BUNDLE_ID="io.actrium.DataStreamApp"
+APP_PROCESS_NAME="DataStreamApp"
 DIAGNOSTIC_DIR="$RUN_DIR/diagnostics"
 SANITIZED_LOG_DIR="$RUN_DIR/sanitized-logs"
+SYMBOL_DIR="$RUN_DIR/symbols"
 
 mkdir -p "$SQLITE_DIR" "$LOG_DIR" "$DIST_DIR" "$TMP_SERVICE_ROOT" "$E2E_TARGET_ROOT" "$DIAGNOSTIC_DIR" "$SANITIZED_LOG_DIR"
+rm -rf "$SCRIPT_DIR/.tmp/symbols"
 
 ACTRIX_PID=""
 SERVER_PID=""
+APP_PID=""
+APP_DSYM=""
+APP_BINARY=""
+LLDB_PID=""
 ACTR_CLI_BIN=""
 ADMIN_TOKEN=""
 SERVICE_PACKAGE=""
@@ -65,6 +73,154 @@ DEVICE_CREATED="0"
 
 # ──── Diagnostics ────
 
+app_process_is_running() {
+    [ -n "${APP_PID:-}" ] && kill -0 "$APP_PID" 2>/dev/null
+}
+
+record_app_pid_from_launch_log() {
+    APP_PID="$(
+        awk -F': ' -v bundle="$APP_BUNDLE_ID" \
+            '$1 == bundle && $2 ~ /^[0-9]+$/ { print $2; exit }' \
+            "$LOG_DIR/app.launch.log" 2>/dev/null || true
+    )"
+
+    if [ -n "$APP_PID" ]; then
+        echo "APP_PID=$APP_PID" >>"$LOG_DIR/app.launch.log"
+    else
+        warn "Unable to parse app PID from $LOG_DIR/app.launch.log"
+    fi
+}
+
+collect_app_symbols() {
+    local products_dir="$1"
+    local dsym
+    local app_binary
+
+    [ -d "$APP_DSYM" ] || fail "App dSYM not found: $APP_DSYM"
+    [ -f "$APP_BINARY" ] || fail "App executable not found: $APP_BINARY"
+
+    rm -rf "$SYMBOL_DIR"
+    mkdir -p "$SYMBOL_DIR/${APP_PROCESS_NAME}.app"
+    cp -R "$APP_DSYM" "$SYMBOL_DIR/"
+    xcrun dwarfdump --uuid "$APP_DSYM" >"$SYMBOL_DIR/uuids.txt"
+
+    while IFS= read -r -d '' dsym; do
+        [ "$dsym" = "$APP_DSYM" ] && continue
+        cp -R "$dsym" "$SYMBOL_DIR/"
+        xcrun dwarfdump --uuid "$dsym" >>"$SYMBOL_DIR/uuids.txt"
+    done < <(find "$products_dir" -type d -name "*.dSYM" -prune -print0)
+
+    for app_binary in "$APP_BINARY" "$APP_PATH"/*.debug.dylib; do
+        [ -f "$app_binary" ] || continue
+        cp "$app_binary" "$SYMBOL_DIR/${APP_PROCESS_NAME}.app/"
+        xcrun dwarfdump --uuid "$app_binary" >>"$SYMBOL_DIR/uuids.txt"
+    done
+
+    success "Debug symbols collected: $SYMBOL_DIR"
+}
+
+start_lldb_crash_capture() {
+    [ -n "${APP_PID:-}" ] || fail "Cannot attach LLDB without an app PID"
+
+    local lldb_args=(
+        --batch
+        --no-lldbinit
+        --attach-pid "$APP_PID"
+        -o "settings set target.debug-file-search-paths \"$SYMBOL_DIR\""
+        -o "process continue"
+        -k "process status"
+        -k "thread backtrace all"
+        -k "register read"
+        -k "image list -o -f"
+    )
+
+    xcrun lldb "${lldb_args[@]}" >"$LOG_DIR/app.lldb.log" 2>&1 &
+    LLDB_PID=$!
+    success "LLDB crash capture started (PID: $LLDB_PID)"
+}
+
+wait_for_lldb_capture() {
+    [ -n "${LLDB_PID:-}" ] || return 0
+
+    local elapsed=0
+    while kill -0 "$LLDB_PID" 2>/dev/null && [ "$elapsed" -lt 15 ]; do
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    if kill -0 "$LLDB_PID" 2>/dev/null; then
+        kill "$LLDB_PID" 2>/dev/null || true
+    fi
+    wait "$LLDB_PID" 2>/dev/null || true
+}
+
+capture_app_crash_reports() {
+    local diag_dir="$1"
+    local reports_dir="$HOME/Library/Logs/DiagnosticReports"
+    local dst_dir="$diag_dir/crash-reports"
+
+    [ -d "$reports_dir" ] || return 0
+    mkdir -p "$dst_dir"
+    find "$reports_dir" -maxdepth 1 -type f \
+        \( -name "*${APP_PROCESS_NAME}*.ips" -o -name "*${APP_PROCESS_NAME}*.crash" \) \
+        -exec cp {} "$dst_dir/" \; 2>/dev/null || true
+    rmdir "$dst_dir" 2>/dev/null || true
+}
+
+capture_core_simulator_logs() {
+    local diag_dir="$1"
+    local sim_logs="$HOME/Library/Developer/CoreSimulator/Devices/$DEVICE_UDID/data/Library/Logs"
+
+    [ -n "${DEVICE_UDID:-}" ] || return 0
+    [ -d "$sim_logs" ] || return 0
+    mkdir -p "$diag_dir/core-simulator-logs"
+    cp -R "$sim_logs/." "$diag_dir/core-simulator-logs/" 2>/dev/null || true
+}
+
+capture_simulator_diagnostics() {
+    local diag_dir="$1"
+    local predicate
+    local diagnose_dir="$diag_dir/simctl-diagnose"
+
+    [ -n "${DEVICE_UDID:-}" ] || return 0
+
+    predicate="process CONTAINS \"$APP_PROCESS_NAME\" OR eventMessage CONTAINS[c] \"actr\""
+    xcrun simctl spawn "$DEVICE_UDID" log show --last 10m --style compact \
+        --predicate "$predicate" \
+        >"$diag_dir/simulator-app.log" 2>"$diag_dir/simulator-app.err" || true
+
+    mkdir -p "$diagnose_dir"
+    printf '\n' | xcrun simctl diagnose -b --timeout=60 --output="$diagnose_dir" --no-archive \
+        --udid="$DEVICE_UDID" >"$diag_dir/simctl-diagnose.log" 2>&1 || true
+
+    capture_app_crash_reports "$diag_dir"
+    capture_core_simulator_logs "$diag_dir"
+}
+
+capture_app_container_logs() {
+    local diag_dir="$1"
+    local app_container
+
+    [ -n "${DEVICE_UDID:-}" ] || return 0
+
+    app_container="$(xcrun simctl get_app_container "$DEVICE_UDID" "$APP_BUNDLE_ID" data 2>/dev/null || true)"
+    if [ -n "$app_container" ] && [ -d "$app_container/Documents" ]; then
+        mkdir -p "$diag_dir/app-container"
+        find "$app_container/Documents" -maxdepth 1 -type f -name "*.log" \
+            -exec cp {} "$diag_dir/app-container/" \; 2>/dev/null || true
+        rmdir "$diag_dir/app-container" 2>/dev/null || true
+    fi
+}
+
+fail_if_app_exited_before_result() {
+    local marker_description="$1"
+
+    if [ -n "${APP_PID:-}" ] && ! app_process_is_running; then
+        echo ""
+        tail_app_logs 80
+        fail "$APP_PROCESS_NAME exited before $marker_description (APP_PID=$APP_PID)"
+    fi
+}
+
 capture_diagnostics() {
     local diag_dir="$DIAGNOSTIC_DIR"
     mkdir -p "$diag_dir"
@@ -74,6 +230,7 @@ capture_diagnostics() {
         echo "=== Process Status ==="
         echo "ACTRIX_PID=${ACTRIX_PID:-none}"
         echo "SERVER_PID=${SERVER_PID:-none}"
+        echo "APP_PID=${APP_PID:-none}"
         if [ -n "${ACTRIX_PID:-}" ] && kill -0 "$ACTRIX_PID" 2>/dev/null; then
             echo "actrix: RUNNING"
         else
@@ -83,6 +240,12 @@ capture_diagnostics() {
             echo "server: RUNNING"
         else
             echo "server: NOT RUNNING"
+        fi
+        if app_process_is_running; then
+            echo "app: RUNNING"
+            ps -p "$APP_PID" -o pid,ppid,stat,etime,command 2>/dev/null || true
+        else
+            echo "app: NOT RUNNING"
         fi
     } >"$diag_dir/process-status.txt" 2>/dev/null || true
 
@@ -117,6 +280,13 @@ capture_diagnostics() {
         grep -iE "heartbeat|disconnect|registry|cleanup|ghost|acl|filter|error|warn" "$LOG_DIR/server.log" >"$diag_dir/server-filtered.log" 2>/dev/null || true
     fi
 
+    if app_process_is_running && command -v sample >/dev/null 2>&1; then
+        sample "$APP_PID" 5 1 -file "$diag_dir/app.sample.txt" >/dev/null 2>&1 || true
+    fi
+
+    capture_simulator_diagnostics "$diag_dir"
+    capture_app_container_logs "$diag_dir"
+
     # App logs
     if [ -f "$APP_STDOUT_LOG" ]; then
         cp "$APP_STDOUT_LOG" "$diag_dir/app-stdout.log" 2>/dev/null || true
@@ -139,35 +309,35 @@ sanitize_logs_for_upload() {
         "$ADMIN_TOKEN"
     )
 
-    for file in "$src_dir"/*; do
-        [ -f "$file" ] || continue
-        local basename
-        basename="$(basename "$file")"
-        local content
-        content="$(cat "$file" 2>/dev/null || true)"
+    sanitize_one_file() {
+        local src_file="$1"
+        local dst_file="$2"
+        mkdir -p "$(dirname "$dst_file")"
+        cp "$src_file" "$dst_file" 2>/dev/null || return 0
 
-        for secret in "${secrets[@]}"; do
-            if [ -n "$secret" ]; then
-                content="${content//$secret/REDACTED}"
-            fi
-        done
+        case "$src_file" in
+            *.log|*.txt|*.json|*.ips|*.crash|*.plist|*.stdout|*.stderr|*.sample)
+                for secret in "${secrets[@]}"; do
+                    if [ -n "$secret" ]; then
+                        SECRET="$secret" perl -0pi -e 's/\Q$ENV{SECRET}\E/REDACTED/g' "$dst_file" 2>/dev/null || true
+                    fi
+                done
+                ;;
+        esac
+    }
 
-        echo "$content" >"$dst_dir/$basename"
-    done
+    if [ -d "$src_dir" ]; then
+        while IFS= read -r file; do
+            local rel_path
+            rel_path="${file#$src_dir/}"
+            sanitize_one_file "$file" "$dst_dir/$rel_path"
+        done < <(find "$src_dir" -type f)
+    fi
 
     # Copy logs but NOT keychain, runtime config, or SQLite state
     for log in "$LOG_DIR"/*.log; do
         [ -f "$log" ] || continue
-        local basename
-        basename="$(basename "$log")"
-        local content
-        content="$(cat "$log" 2>/dev/null || true)"
-        for secret in "${secrets[@]}"; do
-            if [ -n "$secret" ]; then
-                content="${content//$secret/REDACTED}"
-            fi
-        done
-        echo "$content" >"$dst_dir/$basename"
+        sanitize_one_file "$log" "$dst_dir/$(basename "$log")"
     done
 
     echo "Sanitized logs at: $dst_dir"
@@ -176,6 +346,8 @@ sanitize_logs_for_upload() {
 cleanup() {
     local status=$?
 
+    wait_for_lldb_capture
+
     # Collect diagnostics BEFORE killing processes
     if [ $status -ne 0 ] || [ "${CAPTURE_DIAGNOSTICS_ON_SUCCESS:-0}" = "1" ]; then
         capture_diagnostics || true
@@ -183,7 +355,7 @@ cleanup() {
     fi
 
     if [ -n "$DEVICE_UDID" ]; then
-        xcrun simctl terminate "$DEVICE_UDID" io.actrium.DataStreamApp 2>/dev/null || true
+        xcrun simctl terminate "$DEVICE_UDID" "$APP_BUNDLE_ID" 2>/dev/null || true
         if [ "$DEVICE_CREATED" = "1" ]; then
             xcrun simctl shutdown "$DEVICE_UDID" 2>/dev/null || true
             xcrun simctl delete "$DEVICE_UDID" 2>/dev/null || true
@@ -206,6 +378,13 @@ cleanup() {
         echo "Sanitized logs moved to: $upload_dir"
     fi
 
+    local symbol_upload_dir="$SCRIPT_DIR/.tmp/symbols"
+    if [ -d "$SYMBOL_DIR" ] && [ -n "$(ls -A "$SYMBOL_DIR" 2>/dev/null)" ]; then
+        rm -rf "$symbol_upload_dir"
+        mv "$SYMBOL_DIR" "$symbol_upload_dir"
+        echo "Debug symbols moved to: $symbol_upload_dir"
+    fi
+
     if [ $status -eq 0 ] && [ "${KEEP_TMP:-0}" != "1" ]; then
         rm -rf "$RUN_DIR"
     else
@@ -213,6 +392,9 @@ cleanup() {
         echo "Artifacts preserved at: $RUN_DIR"
         if [ -d "$upload_dir" ] && [ -n "$(ls -A "$upload_dir" 2>/dev/null)" ]; then
             echo "Sanitized logs for upload at: $upload_dir"
+        fi
+        if [ -d "$symbol_upload_dir" ] && [ -n "$(ls -A "$symbol_upload_dir" 2>/dev/null)" ]; then
+            echo "Debug symbols for upload at: $symbol_upload_dir"
         fi
     fi
 
@@ -1037,6 +1219,12 @@ options:
   deploymentTarget:
     iOS: "26.2"
 settings:
+  configs:
+    Debug:
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      GCC_GENERATE_DEBUGGING_SYMBOLS: YES
+      COPY_PHASE_STRIP: NO
+      STRIP_INSTALLED_PRODUCT: NO
   base:
     SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 packages:
@@ -1210,6 +1398,10 @@ build_datastream_app() {
         -destination "id=$DEVICE_UDID" \
         -derivedDataPath "$derived_data" \
         -configuration Debug \
+        DEBUG_INFORMATION_FORMAT=dwarf-with-dsym \
+        GCC_GENERATE_DEBUGGING_SYMBOLS=YES \
+        COPY_PHASE_STRIP=NO \
+        STRIP_INSTALLED_PRODUCT=NO \
         build \
         2>&1 | tee -a "$LOG_DIR/xcodebuild.log"
 
@@ -1219,6 +1411,9 @@ build_datastream_app() {
         tail -100 "$LOG_DIR/xcodebuild.log" >&2
         fail "DataStreamApp.app not found in build products"
     }
+    APP_DSYM="${APP_PATH}.dSYM"
+    APP_BINARY="$APP_PATH/$APP_PROCESS_NAME"
+    collect_app_symbols "$derived_data/Build/Products"
     success "App built: $APP_PATH"
 
     cd "$prev_dir"
@@ -1347,6 +1542,15 @@ install_and_launch_app() {
     section "📲 Installing and launching DataStreamApp"
     xcrun simctl install "$DEVICE_UDID" "$APP_PATH"
 
+    local launch_args=(
+        --terminate-running-process
+        "--stdout=$APP_STDOUT_LOG"
+        "--stderr=$APP_STDERR_LOG"
+    )
+    if [ "${CAPTURE_CRASH_BACKTRACE:-0}" = "1" ]; then
+        launch_args+=(--wait-for-debugger)
+    fi
+
     # Launch with direct stdout/stderr redirection. `simctl launch --console`
     # may return before the app exits when detached from the terminal, so do not
     # treat the wrapper process as the app lifetime.
@@ -1354,14 +1558,16 @@ install_and_launch_app() {
     SIMCTL_CHILD_ACTR_MANUFACTURER="${MANUFACTURER}" \
     SIMCTL_CHILD_ACTR_DATASTREAMAPP_TARGET_TYPE="${MANUFACTURER}:DuplexStreamService:1.0.0" \
     xcrun simctl launch \
-        --terminate-running-process \
-        --stdout="$APP_STDOUT_LOG" \
-        --stderr="$APP_STDERR_LOG" \
+        "${launch_args[@]}" \
         "$DEVICE_UDID" \
-        "io.actrium.DataStreamApp" \
+        "$APP_BUNDLE_ID" \
         >"$LOG_DIR/app.launch.log" 2>&1
 
-    success "App launched, waiting for datastream echo result"
+    record_app_pid_from_launch_log
+    if [ "${CAPTURE_CRASH_BACKTRACE:-0}" = "1" ]; then
+        start_lldb_crash_capture
+    fi
+    success "App launched (APP_PID=${APP_PID:-unknown}), waiting for datastream echo result"
 }
 
 # ──── Result verification ────
@@ -1396,6 +1602,7 @@ wait_for_datastream_result() {
             return 1
         fi
 
+        fail_if_app_exited_before_result "datastream echo result"
         sleep 2
         elapsed=$((elapsed + 2))
     done

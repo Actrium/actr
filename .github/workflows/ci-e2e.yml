@@ -275,6 +275,7 @@ jobs:
       - name: Run Swift EchoApp e2e
         env:
           CAPTURE_DIAGNOSTICS_ON_SUCCESS: "1"
+          CAPTURE_CRASH_BACKTRACE: "1"
         run: bash e2e/swift-echo-app/run.sh
 
       - name: Upload sanitized diagnostic logs
@@ -283,6 +284,14 @@ jobs:
         with:
           name: swift-echo-app-e2e-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: e2e/swift-echo-app/.tmp/sanitized-logs/
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Upload Swift EchoApp debug symbols
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-echo-app-e2e-symbols-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e/swift-echo-app/.tmp/symbols/
           retention-days: 7
           if-no-files-found: warn
 
@@ -353,6 +362,14 @@ jobs:
         with:
           name: swift-datastream-app-e2e-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: e2e/swift-datastream-app/.tmp/sanitized-logs/
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Upload Swift DataStreamApp debug symbols
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-datastream-app-e2e-symbols-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e/swift-datastream-app/.tmp/symbols/
           retention-days: 7
           if-no-files-found: warn
 
@@ -431,6 +448,14 @@ jobs:
         with:
           name: swift-ts-workload-e2e-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: e2e/swift-ts-workload/.tmp/sanitized-logs/
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Upload Swift TS Workload debug symbols
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-ts-workload-e2e-symbols-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e/swift-ts-workload/.tmp/symbols/
           retention-days: 7
           if-no-files-found: warn
 

@@ -225,18 +225,147 @@ def test_e2e_workspace_prebuilds_use_locked_cargo_resolution() -> None:
 
 def test_swift_e2e_upload_artifact_on_failure() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
-    swift_job = _job(workflow, "swift-echo-app-e2e", "python-web-e2e")
+    swift_jobs = {
+        "swift-echo-app-e2e": "e2e/swift-echo-app/.tmp/sanitized-logs/",
+        "swift-datastream-app-e2e": "e2e/swift-datastream-app/.tmp/sanitized-logs/",
+        "swift-ts-workload-e2e": "e2e/swift-ts-workload/.tmp/sanitized-logs/",
+    }
 
-    # Upload step runs even on failure
-    assert "if: always()" in swift_job
-    assert "actions/upload-artifact@v4" in swift_job
-    assert "retention-days: 7" in swift_job
-    # Upload path must match the fixed location used by cleanup trap
-    assert "e2e/swift-echo-app/.tmp/sanitized-logs/" in swift_job
+    for job_name, upload_path in swift_jobs.items():
+        swift_job = _job(workflow, job_name, "python-web-e2e")
+        # Upload step runs even on failure.
+        assert "if: always()" in swift_job
+        assert "actions/upload-artifact@v4" in swift_job
+        assert "retention-days: 7" in swift_job
+        # Upload path must match the fixed location used by cleanup trap.
+        assert upload_path in swift_job
 
-    run_sh = (ROOT / "e2e/swift-echo-app/run.sh").read_text(encoding="utf-8")
-    # Cleanup must output sanitized logs to the same fixed path the workflow uploads
-    assert '.tmp/sanitized-logs' in run_sh
+    for script_path in (
+        "e2e/swift-echo-app/run.sh",
+        "e2e/swift-datastream-app/run.sh",
+        "e2e/swift-ts-workload/run.sh",
+    ):
+        run_sh = (ROOT / script_path).read_text(encoding="utf-8")
+        # Cleanup must output sanitized logs to the same fixed path the workflow uploads.
+        assert ".tmp/sanitized-logs" in run_sh
+
+
+def test_swift_e2e_scripts_capture_app_diagnostics() -> None:
+    swift_scripts = {
+        "e2e/swift-echo-app/run.sh": "io.actrium.EchoApp",
+        "e2e/swift-datastream-app/run.sh": "io.actrium.DataStreamApp",
+        "e2e/swift-ts-workload/run.sh": "io.actrium.SwiftTsWorkloadApp",
+    }
+
+    for script_path, bundle_id in swift_scripts.items():
+        run_sh = (ROOT / script_path).read_text(encoding="utf-8")
+
+        assert f'APP_BUNDLE_ID="{bundle_id}"' in run_sh
+        assert 'APP_PID=""' in run_sh
+        assert "record_app_pid_from_launch_log" in run_sh
+        assert 'echo "APP_PID=${APP_PID:-none}"' in run_sh
+        assert 'ps -p "$APP_PID" -o pid,ppid,stat,etime,command' in run_sh
+        assert 'sample "$APP_PID" 5 1 -file "$diag_dir/app.sample.txt"' in run_sh
+        assert 'xcrun simctl spawn "$DEVICE_UDID" log show --last 10m --style compact' in run_sh
+        assert (
+            'printf \'\\n\' | xcrun simctl diagnose -b --timeout=60 --output="$diagnose_dir" --no-archive'
+            in run_sh
+        )
+        assert '--udid="$DEVICE_UDID"' in run_sh
+        assert "Library/Logs/DiagnosticReports" in run_sh
+        assert 'get_app_container "$DEVICE_UDID" "$APP_BUNDLE_ID" data' in run_sh
+        assert run_sh.count("fail_if_app_exited_before_result") >= 2
+        assert 'find "$src_dir" -type f' in run_sh
+
+
+def test_swift_e2e_uploads_debug_symbols_separately() -> None:
+    debug_symbol_settings = (
+        "configs:\n"
+        "    Debug:\n"
+        "      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym\n"
+        "      GCC_GENERATE_DEBUGGING_SYMBOLS: YES\n"
+        "      COPY_PHASE_STRIP: NO\n"
+        "      STRIP_INSTALLED_PRODUCT: NO"
+    )
+
+    for project_path in (
+        "e2e/swift-echo-app/project.yml",
+        "e2e/swift-datastream-app/project.yml",
+    ):
+        project_yml = (ROOT / project_path).read_text(encoding="utf-8")
+        assert debug_symbol_settings in project_yml
+
+    for script_path in (
+        "e2e/swift-echo-app/run.sh",
+        "e2e/swift-datastream-app/run.sh",
+        "e2e/swift-ts-workload/run.sh",
+    ):
+        run_sh = (ROOT / script_path).read_text(encoding="utf-8")
+        assert 'SYMBOL_DIR="$RUN_DIR/symbols"' in run_sh
+        assert 'APP_DSYM="${APP_PATH}.dSYM"' in run_sh
+        assert "DEBUG_INFORMATION_FORMAT=dwarf-with-dsym" in run_sh
+        assert "GCC_GENERATE_DEBUGGING_SYMBOLS=YES" in run_sh
+        assert "COPY_PHASE_STRIP=NO" in run_sh
+        assert "STRIP_INSTALLED_PRODUCT=NO" in run_sh
+        assert 'xcrun dwarfdump --uuid "$APP_DSYM" >"$SYMBOL_DIR/uuids.txt"' in run_sh
+        assert 'cp -R "$APP_DSYM" "$SYMBOL_DIR/"' in run_sh
+        assert 'find "$products_dir" -type d -name "*.dSYM"' in run_sh
+        assert 'for app_binary in "$APP_BINARY" "$APP_PATH"/*.debug.dylib' in run_sh
+        assert (
+            'cp "$app_binary" "$SYMBOL_DIR/${APP_PROCESS_NAME}.app/"'
+            in run_sh
+        )
+        assert 'local symbol_upload_dir="$SCRIPT_DIR/.tmp/symbols"' in run_sh
+        assert 'mv "$SYMBOL_DIR" "$symbol_upload_dir"' in run_sh
+        assert 'sanitize_logs_for_upload "$SYMBOL_DIR"' not in run_sh
+        assert 'collect_app_symbols "$derived_data/Build/Products"' in run_sh
+        assert 'CAPTURE_CRASH_BACKTRACE:-0' in run_sh
+        assert 'launch_args+=(--wait-for-debugger)' in run_sh
+        assert "start_lldb_crash_capture" in run_sh
+        assert '--attach-pid "$APP_PID"' in run_sh
+        assert "settings set target.debug-file-search-paths" in run_sh
+        assert "target symbols add" not in run_sh
+        assert '-k "thread backtrace all"' in run_sh
+        assert '-k "register read"' in run_sh
+        assert '-k "image list -o -f"' in run_sh
+        assert '"$LOG_DIR/app.lldb.log"' in run_sh
+        assert "wait_for_lldb_capture" in run_sh
+
+    for script_path in (
+        "e2e/swift-datastream-app/run.sh",
+        "e2e/swift-ts-workload/run.sh",
+    ):
+        run_sh = (ROOT / script_path).read_text(encoding="utf-8")
+        assert debug_symbol_settings in run_sh
+
+    workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
+    swift_jobs = (
+        (
+            "swift-echo-app-e2e",
+            "swift-datastream-app-e2e",
+            "e2e/swift-echo-app/.tmp/symbols/",
+        ),
+        (
+            "swift-datastream-app-e2e",
+            "swift-ts-workload-e2e",
+            "e2e/swift-datastream-app/.tmp/symbols/",
+        ),
+        (
+            "swift-ts-workload-e2e",
+            "python-web-e2e",
+            "e2e/swift-ts-workload/.tmp/symbols/",
+        ),
+    )
+    for job_name, next_job_name, symbol_path in swift_jobs:
+        swift_job = _job(workflow, job_name, next_job_name)
+        assert symbol_path in swift_job
+        assert "-symbols-${{ github.run_id }}-${{ github.run_attempt }}" in swift_job
+        assert swift_job.count("actions/upload-artifact@v4") == 2
+        assert "DerivedData" not in "\n".join(
+            line
+            for line in swift_job.splitlines()
+            if "path:" in line and ".tmp/" in line
+        )
 
 
 def test_e2e_no_call_remote_in_ffi() -> None:
@@ -467,6 +596,8 @@ if __name__ == "__main__":
     test_e2e_linux_job_has_no_ios_rust_targets()
     test_e2e_workspace_prebuilds_use_locked_cargo_resolution()
     test_swift_e2e_upload_artifact_on_failure()
+    test_swift_e2e_scripts_capture_app_diagnostics()
+    test_swift_e2e_uploads_debug_symbols_separately()
     test_e2e_no_call_remote_in_ffi()
     test_no_actrix_release_train_artifact_download_script()
     test_run_sh_uses_correct_signaling_cache_table()

@@ -4,6 +4,12 @@ options:
   deploymentTarget:
     iOS: "26.2"
 settings:
+  configs:
+    Debug:
+      DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+      GCC_GENERATE_DEBUGGING_SYMBOLS: YES
+      COPY_PHASE_STRIP: NO
+      STRIP_INSTALLED_PRODUCT: NO
   base:
     SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
 packages:
