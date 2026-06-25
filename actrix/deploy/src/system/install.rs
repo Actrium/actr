@@ -7,41 +7,72 @@ use std::process::Command;
 
 use super::dependencies::{ServiceManager, detect_service_manager};
 use super::firewall::{apply_firewall, plan_firewall};
+use crate::artifact::{ResolvedArtifact, Source, resolve};
 use crate::config::InstallConfig;
 use crate::tpl::SystemdServiceTemplate;
 
 const DEFAULT_SERVICE_USER: &str = "actrix";
 const DEFAULT_SERVICE_GROUP: &str = "actrix";
 
-/// Install application files to system directories
-pub fn install_application(config: &InstallConfig) -> Result<()> {
+/// Install actrix from a resolved binary source.
+///
+/// Resolves the artifact (download + verify, or local file), writes it to
+/// `releases/<version>/actrix`, atomically switches the `bin/actrix` symlink,
+/// and optionally adds a PATH symlink. The systemd unit is NOT touched here.
+pub fn install_from_source(
+    config: &InstallConfig,
+    source: Source,
+    version: Option<String>,
+    sha256_path: Option<PathBuf>,
+    skip_verify: bool,
+) -> Result<()> {
+    let repo = std::env::var("ACTRIX_REPOSITORY").unwrap_or_else(|_| "Actrium/actr".to_string());
+    let token = std::env::var("GITHUB_TOKEN").ok();
+
+    let artifact = resolve(
+        &source,
+        version.as_deref(),
+        sha256_path.as_deref(),
+        skip_verify,
+        &repo,
+        token.as_deref(),
+    )?;
+    install_release(&artifact, config)
+}
+
+/// Install a resolved artifact into `releases/<version>/` and switch `bin/actrix`.
+pub fn install_release(artifact: &ResolvedArtifact, config: &InstallConfig) -> Result<()> {
     validate_supported_install_dir(&config.install_dir, "installation")?;
 
     println!("Creating directory structure...");
-
-    // Create installation directories
     let directories = config.all_directories();
     for dir in &directories {
         create_directory_with_permissions(dir, 0o755)?;
     }
-
     println!("✅ Directory structure created successfully");
 
-    // Find and copy actrix binary
-    println!("Locating actrix binary...");
-    let source_binary = find_actrix_binary()?;
-    println!("📦 Found source binary: {}", source_binary.display());
+    // Version directory holds only the binary.
+    let target = config.release_binary_path(&artifact.version);
+    if let Some(parent) = target.parent() {
+        create_directory_with_permissions(parent, 0o755)?;
+    }
 
-    let target_binary = config.binary_path();
-    copy_file_with_sudo(&source_binary, &target_binary)?;
+    println!("📦 Installing actrix {} ...", artifact.version);
+    copy_file_with_sudo(&artifact.path, &target)?;
+    set_file_permissions(&target, 0o755)?;
+    println!("✅ Binary installed: {}", target.display());
 
-    // Make binary executable
-    set_file_permissions(&target_binary, 0o755)?;
-    println!("✅ Actrix binary installed to {}", target_binary.display());
+    // Atomically switch the active symlink.
+    switch_active_symlink(config, &target)?;
 
-    // Add symlink to PATH if requested
+    // Optional PATH symlink.
     if config.add_to_path {
-        add_to_path(&target_binary, &config.symlink_path())?;
+        add_to_path(&config.binary_path(), &config.symlink_path())?;
+    }
+
+    // Clean up downloaded temp file.
+    if artifact.is_temp {
+        let _ = std::fs::remove_file(&artifact.path);
     }
 
     println!();
@@ -50,9 +81,66 @@ pub fn install_application(config: &InstallConfig) -> Result<()> {
         println!("  - {}", dir.display());
     }
     println!();
-    println!("✅ Application installation completed");
+    println!(
+        "✅ Installation completed: {} -> {}",
+        config.binary_path().display(),
+        target.display()
+    );
 
     Ok(())
+}
+
+/// Atomically switch `<install-dir>/bin/actrix` to point at `target`.
+///
+/// Uses a temp symlink + `mv -Tf` so the active path is never missing and
+/// concurrent readers see either the old or new version, never a gap.
+fn switch_active_symlink(config: &InstallConfig, target: &Path) -> Result<()> {
+    let link = config.binary_path();
+    let tmp = config
+        .bin_dir()
+        .join(format!(".{}.tmp", config.binary_name));
+
+    // Remove any stale temp link.
+    let _ = Command::new("sudo")
+        .args(["rm", "-f", &tmp.to_string_lossy()])
+        .output();
+
+    let out = Command::new("sudo")
+        .args([
+            "ln",
+            "-sfn",
+            &target.to_string_lossy(),
+            &tmp.to_string_lossy(),
+        ])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "failed to create temp symlink: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+
+    let out = Command::new("sudo")
+        .args(["mv", "-Tf", &tmp.to_string_lossy(), &link.to_string_lossy()])
+        .output()?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "failed to switch active symlink: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+
+    println!(
+        "✅ Active symlink: {} -> {}",
+        link.display(),
+        target.display()
+    );
+    Ok(())
+}
+
+/// Locate the local `target/release/actrix` build (dev `--from-local-build` only).
+pub fn find_local_build_binary() -> Result<PathBuf> {
+    find_actrix_binary()
 }
 
 /// Deploy application as systemd service

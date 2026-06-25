@@ -13,7 +13,6 @@ use crate::release::{AssetKind, TagTarget, download_asset, fetch_release};
 
 /// Where the actrix binary comes from.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // consumed by the install/update refactor
 pub enum Source {
     /// A specific GitHub Release tag, e.g. `v0.4.3`.
     Tag(String),
@@ -25,7 +24,6 @@ pub enum Source {
 
 /// A resolved, verified binary ready to install.
 #[derive(Debug)]
-#[allow(dead_code)] // consumed by the install/update refactor
 pub struct ResolvedArtifact {
     /// Path to the verified binary file.
     pub path: PathBuf,
@@ -40,7 +38,6 @@ pub struct ResolvedArtifact {
 /// - `version` is required for `BinaryPath` (ignored for `Tag`/`Latest`).
 /// - `sha256_path` is required for `BinaryPath` unless `skip_verify` is set.
 /// - `repo` and `token` are used only for `Tag`/`Latest`.
-#[allow(dead_code)] // wired up in the install/update refactor
 pub fn resolve(
     source: &Source,
     version: Option<&str>,

@@ -84,7 +84,6 @@ impl ReleaseInfo {
 }
 
 /// Query the GitHub Releases API and parse the response.
-#[allow(dead_code)] // wired up in the install/update refactor
 pub fn fetch_release(repo: &str, target: &TagTarget, token: Option<&str>) -> Result<ReleaseInfo> {
     let url = match target {
         TagTarget::Latest => format!("https://api.github.com/repos/{repo}/releases/latest"),
@@ -113,7 +112,6 @@ pub fn fetch_release(repo: &str, target: &TagTarget, token: Option<&str>) -> Res
 /// When a token is present (private repo), the API `.url` is used with
 /// `Accept: application/octet-stream` + Bearer auth; otherwise the public
 /// `browser_download_url` is used directly.
-#[allow(dead_code)] // wired up in the install/update refactor
 pub fn download_asset(asset: &ReleaseAsset, token: Option<&str>, dest: &Path) -> Result<()> {
     let (url, accept) = if token.is_some() {
         (&asset.url, Some("application/octet-stream"))

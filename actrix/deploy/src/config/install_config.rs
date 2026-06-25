@@ -54,7 +54,6 @@ impl InstallConfig {
     /// Version directories hold only the binary; runtime data (config, db,
     /// logs, certs) lives outside the version directory so switching versions
     /// never disturbs state.
-    #[allow(dead_code)] // wired up in the install/releases refactor
     pub fn release_binary_path(&self, version: &str) -> PathBuf {
         self.releases_dir().join(version).join(&self.binary_name)
     }
