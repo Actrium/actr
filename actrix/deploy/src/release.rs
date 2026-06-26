@@ -1,8 +1,8 @@
 //! GitHub Release asset discovery and download.
 //!
 //! Queries the GitHub Releases API for a given repo + tag (or latest), selects
-//! the architecture-appropriate `actrix-linux-*` asset plus its `.sha256`
-//! sidecar, and downloads them via `curl`. A `GITHUB_TOKEN` (Contents: Read)
+//! the architecture-appropriate `actrix-linux-*` asset plus optional checksum
+//! metadata, and downloads them via `curl`. A `GITHUB_TOKEN` (Contents: Read)
 //! is used for private repositories and is forwarded as a Bearer header.
 
 use anyhow::{Context, Result, bail};
@@ -59,6 +59,7 @@ struct AssetJson {
     name: String,
     url: String,
     browser_download_url: String,
+    digest: Option<String>,
 }
 
 /// A resolved release asset with its download URLs.
@@ -67,6 +68,7 @@ pub struct ReleaseAsset {
     pub name: String,
     pub url: String,
     pub browser_download_url: String,
+    pub digest: Option<String>,
 }
 
 /// A fetched release: its tag plus all assets.
@@ -102,6 +104,7 @@ pub fn fetch_release(repo: &str, target: &TagTarget, token: Option<&str>) -> Res
                 name: a.name,
                 url: a.url,
                 browser_download_url: a.browser_download_url,
+                digest: a.digest,
             })
             .collect(),
     })
@@ -274,11 +277,16 @@ mod tests {
                     name: "actrix-linux-x86_64".into(),
                     url: "u1".into(),
                     browser_download_url: "b1".into(),
+                    digest: Some(
+                        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                            .into(),
+                    ),
                 },
                 ReleaseAsset {
                     name: "actrix-linux-x86_64.sha256".into(),
                     url: "u2".into(),
                     browser_download_url: "b2".into(),
+                    digest: None,
                 },
             ],
         };
@@ -292,12 +300,21 @@ mod tests {
         let body = r#"{
             "tag_name": "v0.4.3",
             "assets": [
-                {"name": "actrix-linux-x86_64", "url": "https://api", "browser_download_url": "https://b"}
+                {
+                    "name": "actrix-linux-x86_64",
+                    "url": "https://api",
+                    "browser_download_url": "https://b",
+                    "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                }
             ]
         }"#;
         let json: ReleaseJson = serde_json::from_str(body).unwrap();
         assert_eq!(json.tag_name, "v0.4.3");
         assert_eq!(json.assets.len(), 1);
+        assert_eq!(
+            json.assets[0].digest.as_deref(),
+            Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
     }
 
     #[test]

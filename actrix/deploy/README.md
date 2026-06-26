@@ -72,14 +72,14 @@ config 中的相对路径自动正确：
 ### 3. 安装 actrix 二进制
 
 ```bash
-# 方式 A：从 GitHub Release（需该 tag 带 .sha256 sidecar）
+# 方式 A：从 GitHub Release（优先用 .sha256；没有时使用 GitHub asset digest）
 sudo actrix-deploy install --tag v0.4.3 --install-dir /opt/actrix --no-path
 
-# 方式 B：本地二进制（现有 release 尚无 sidecar 时推荐）
+# 方式 B：本地二进制（离线/灰度发布）
 sudo actrix-deploy install --binary-path /root/actrix \
   --version v0.4.3 --sha256-path /root/actrix.sha256 \
   --install-dir /opt/actrix --no-path
-# 本地调试才可加 --skip-verify；Release 模式始终强制校验 .sha256
+# 本地调试才可加 --skip-verify；Release 模式始终强制 SHA-256 校验
 ```
 
 生成 `/opt/actrix/releases/v0.4.3/actrix` 与 `/opt/actrix/bin/actrix` 软链。
@@ -189,7 +189,7 @@ sudo actrix-deploy uninstall --install-dir /opt/actrix --service-name actrix2
 
 `install`/`update` 二进制来源三选一：`--tag`、`--latest`、`--binary-path`。
 
-- Release 模式（`--tag`/`--latest`）：必须下载并校验 `.sha256`，缺失或不一致即失败。
+- Release 模式（`--tag`/`--latest`）：强制 SHA-256 校验；优先使用 `.sha256` sidecar，缺失时使用 GitHub Release API 返回的 `sha256:` asset digest，二者都没有或不一致即失败。
 - 本地模式（`--binary-path`）：默认要求 `--sha256-path`；`--skip-verify` 可跳过（打印强警告，不用于生产）。
 - 开发模式（`--from-local-build`）：仅 `install` 支持，使用本机 `target/release/actrix`，自动使用 `local` version 并跳过校验。
 - `--version` 只用于本地二进制/本地构建；Release 模式使用 GitHub Release 的 tag。

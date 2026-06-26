@@ -2,15 +2,16 @@
 //!
 //! Three binary sources (`--tag`, `--latest`, `--binary-path`) are normalized
 //! into a single [`ResolvedArtifact`]: a verified local file plus its version
-//! string. Release sources download + SHA-256 verify; local sources verify
-//! against an explicit `--sha256-path` unless `--skip-verify` is given.
+//! string. Release sources download + SHA-256 verify via `.sha256` sidecar or
+//! GitHub asset digest; local sources verify against an explicit
+//! `--sha256-path` unless `--skip-verify` is given.
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::checksum::{parse_sha256_sum, verify_file};
-use crate::release::{AssetKind, TagTarget, download_asset, fetch_release};
+use crate::release::{AssetKind, ReleaseAsset, TagTarget, download_asset, fetch_release};
 
 /// Where the actrix binary comes from.
 #[derive(Debug, Clone)]
@@ -81,7 +82,7 @@ pub fn resolve(
         Source::Tag(_) | Source::Latest => {
             if skip_verify {
                 bail!(
-                    "--skip-verify is only allowed for local --binary-path / --from-local-build; GitHub Release assets must be verified with their .sha256 sidecar"
+                    "--skip-verify is only allowed for local --binary-path / --from-local-build; GitHub Release assets must be verified"
                 );
             }
 
@@ -110,18 +111,30 @@ pub fn resolve(
             download_asset(bin_asset, token, &dest)?;
 
             let sha_name = kind.sha256_asset_name();
-            let sha_asset = info
-                .find_asset(&sha_name)
-                .ok_or_else(|| anyhow::anyhow!("release {version} has no `{sha_name}` sidecar"))?;
-            let sha_dest = staging.join(&sha_name);
-            println!("⬇️  Downloading {} ...", sha_asset.name);
-            download_asset(sha_asset, token, &sha_dest)?;
-            let text = std::fs::read_to_string(&sha_dest).with_context(|| {
-                format!("failed to read downloaded sha256: {}", sha_dest.display())
-            })?;
-            let expected = parse_sha256_sum(&text)?;
+            let expected = if let Some(sha_asset) = info.find_asset(&sha_name) {
+                let sha_dest = staging.join(&sha_name);
+                println!("⬇️  Downloading {} ...", sha_asset.name);
+                download_asset(sha_asset, token, &sha_dest)?;
+                let text = std::fs::read_to_string(&sha_dest).with_context(|| {
+                    format!("failed to read downloaded sha256: {}", sha_dest.display())
+                })?;
+                let expected = parse_sha256_sum(&text)?;
+                let _ = std::fs::remove_file(&sha_dest);
+                expected
+            } else {
+                let digest = release_asset_sha256_digest(bin_asset)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "release {version} has no `{sha_name}` sidecar and asset {} has no SHA-256 digest",
+                        bin_asset.name
+                    )
+                })?;
+                println!(
+                    "ℹ️  No {sha_name} sidecar; using GitHub Release asset digest for {}.",
+                    bin_asset.name
+                );
+                digest
+            };
             verify_file(&dest, &expected)?;
-            let _ = std::fs::remove_file(&sha_dest);
             println!("✅ Checksum verified for {}", bin_asset.name);
 
             Ok(ResolvedArtifact {
@@ -136,6 +149,34 @@ pub fn resolve(
 
 fn warn_skip_verify() {
     eprintln!("⚠️  --skip-verify: SHA-256 verification bypassed. Not safe for production.");
+}
+
+fn release_asset_sha256_digest(asset: &ReleaseAsset) -> Result<Option<String>> {
+    let Some(digest) = asset
+        .digest
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+    else {
+        return Ok(None);
+    };
+    let Some(expected) = digest.strip_prefix("sha256:") else {
+        bail!(
+            "release asset {} has unsupported digest format `{digest}`; expected sha256:<hex>",
+            asset.name
+        );
+    };
+    if !is_sha256_hex(expected) {
+        bail!(
+            "release asset {} has invalid SHA-256 digest `{digest}`",
+            asset.name
+        );
+    }
+    Ok(Some(expected.to_ascii_lowercase()))
+}
+
+fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.as_bytes().iter().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Create a private (mode 0700) staging directory for release downloads.
@@ -243,5 +284,53 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("--skip-verify"));
+    }
+
+    #[test]
+    fn release_asset_digest_accepts_github_sha256() {
+        let asset = ReleaseAsset {
+            name: "actrix-linux-x86_64".into(),
+            url: "https://api".into(),
+            browser_download_url: "https://download".into(),
+            digest: Some(
+                "sha256:ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789".into(),
+            ),
+        };
+
+        assert_eq!(
+            release_asset_sha256_digest(&asset).unwrap().as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+        );
+    }
+
+    #[test]
+    fn release_asset_digest_allows_missing_digest() {
+        let asset = ReleaseAsset {
+            name: "actrix-linux-x86_64".into(),
+            url: "https://api".into(),
+            browser_download_url: "https://download".into(),
+            digest: None,
+        };
+
+        assert!(release_asset_sha256_digest(&asset).unwrap().is_none());
+    }
+
+    #[test]
+    fn release_asset_digest_rejects_unsupported_or_invalid_digest() {
+        let unsupported = ReleaseAsset {
+            name: "actrix-linux-x86_64".into(),
+            url: "https://api".into(),
+            browser_download_url: "https://download".into(),
+            digest: Some("sha512:abc".into()),
+        };
+        assert!(release_asset_sha256_digest(&unsupported).is_err());
+
+        let invalid = ReleaseAsset {
+            name: "actrix-linux-x86_64".into(),
+            url: "https://api".into(),
+            browser_download_url: "https://download".into(),
+            digest: Some("sha256:abc".into()),
+        };
+        assert!(release_asset_sha256_digest(&invalid).is_err());
     }
 }
