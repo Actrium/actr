@@ -153,10 +153,46 @@ jobs:
           path: dist/${{ matrix.target.asset }}
           if-no-files-found: error
 
+  build-deploy:
+    name: actrix-deploy-linux-${{ matrix.arch }}
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: source/actrix/deploy
+      - name: Build actrix-deploy (release)
+        working-directory: source/actrix/deploy
+        run: cargo build --release
+      - name: Stage binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "source/actrix/deploy/target/release/deploy" "dist/actrix-deploy-linux-${{ matrix.arch }}"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: actrix-deploy-linux-${{ matrix.arch }}
+          path: dist/actrix-deploy-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
   publish:
     name: Upload actrix assets
     if: inputs.publish
-    needs: [validate, build]
+    needs: [validate, build, build-deploy]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -169,11 +205,21 @@ jobs:
 
       - name: Verify complete asset set
         env:
-          ASSETS: actrix-linux-x86_64 actrix-linux-arm64 actrix-macos-arm64 actrix-windows-x86_64
+          ASSETS: actrix-linux-x86_64 actrix-linux-arm64 actrix-macos-arm64 actrix-windows-x86_64 actrix-deploy-linux-x86_64 actrix-deploy-linux-arm64
         run: |
           set -euo pipefail
           for asset in $ASSETS; do
             test -f "dist/${asset}" || { echo "Missing asset: ${asset}" >&2; exit 1; }
+          done
+
+      - name: Generate SHA-256 sidecars
+        run: |
+          set -euo pipefail
+          cd dist
+          for asset in actrix-*; do
+            [[ "$asset" == *.sha256 ]] && continue
+            sha256sum "$asset" > "$asset.sha256"
+            echo "Generated $asset.sha256"
           done
 
       - name: Upload assets to release
@@ -195,7 +241,7 @@ jobs:
   report:
     name: Collect actrix release state
     if: always()
-    needs: [validate, build, publish]
+    needs: [validate, build, build-deploy, publish]
     runs-on: ubuntu-latest
     steps:
       - name: Report
