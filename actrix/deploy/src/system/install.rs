@@ -70,9 +70,13 @@ pub fn install_release(artifact: &ResolvedArtifact, config: &InstallConfig) -> R
         add_to_path(&config.binary_path(), &config.symlink_path())?;
     }
 
-    // Clean up downloaded temp file.
+    // Clean up the private download directory (binary + sidecar).
     if artifact.is_temp {
-        let _ = std::fs::remove_file(&artifact.path);
+        if let Some(dir) = &artifact.temp_dir {
+            let _ = std::fs::remove_dir_all(dir);
+        } else {
+            let _ = std::fs::remove_file(&artifact.path);
+        }
     }
 
     println!();
@@ -104,6 +108,7 @@ pub fn update_service(
     sha256_path: Option<PathBuf>,
     skip_verify: bool,
     restart_service: Option<String>,
+    health_url: Option<String>,
 ) -> Result<()> {
     let config = InstallConfig {
         install_dir: install_dir.clone(),
@@ -111,6 +116,10 @@ pub fn update_service(
         add_to_path: false,
     };
     validate_supported_install_dir(&config.install_dir, "update")?;
+    let svc = restart_service.as_deref();
+    if let Some(name) = svc {
+        validate_service_name(name)?;
+    }
 
     let repo = std::env::var("ACTRIX_REPOSITORY").unwrap_or_else(|_| "Actrium/actr".to_string());
     let token = std::env::var("GITHUB_TOKEN").ok();
@@ -128,8 +137,9 @@ pub fn update_service(
 
     if let Some(svc) = &restart_service {
         let wait = super::service::health_wait_seconds();
-        if let Err(err) =
-            super::service::restart(svc).and_then(|_| super::service::wait_active(svc, wait))
+        let health = resolve_health_url(health_url.as_deref());
+        if let Err(err) = super::service::restart(svc)
+            .and_then(|_| super::service::wait_ready(svc, wait, health.as_deref()))
         {
             println!("❌ Service did not come up: {err}");
             match &prev {
@@ -164,6 +174,7 @@ pub fn rollback_command(
     install_dir: PathBuf,
     to_version: String,
     restart_service: Option<String>,
+    health_url: Option<String>,
 ) -> Result<()> {
     let config = InstallConfig {
         install_dir,
@@ -171,11 +182,49 @@ pub fn rollback_command(
         add_to_path: false,
     };
     validate_supported_install_dir(&config.install_dir, "rollback")?;
+    if let Some(name) = restart_service.as_deref() {
+        validate_service_name(name)?;
+    }
     super::releases::rollback_to(&config, &to_version)?;
     if let Some(svc) = &restart_service {
         super::service::restart(svc)?;
-        super::service::wait_active(svc, super::service::health_wait_seconds())?;
+        let wait = super::service::health_wait_seconds();
+        let health = resolve_health_url(health_url.as_deref());
+        super::service::wait_ready(svc, wait, health.as_deref())?;
         println!("✅ Service '{svc}' active on version {to_version}");
+    }
+    Ok(())
+}
+
+/// Resolve a readiness-probe URL from an explicit arg or `ACTRIX_HEALTH_URL`.
+///
+/// When set, `update`/`rollback` poll this HTTP endpoint (e.g.
+/// `http://127.0.0.1:8080/health`) instead of relying on `systemctl is-active`
+/// alone, so a process that is alive but not actually serving traffic is still
+/// treated as not-yet-ready and triggers rollback.
+fn resolve_health_url(explicit: Option<&str>) -> Option<String> {
+    explicit
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("ACTRIX_HEALTH_URL").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
+/// Validate a systemd unit/service name.
+///
+/// Rejects path separators, whitespace, and newlines so a crafted
+/// `--service-name` (e.g. `../foo`) cannot escape the unit directory or inject
+/// directives when interpolated into a path.
+pub(crate) fn validate_service_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("service name must not be empty");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        anyhow::bail!(
+            "invalid service name '{name}': only letters, digits, '.', '_', and '-' are allowed"
+        );
     }
     Ok(())
 }
@@ -279,10 +328,12 @@ pub fn install_systemd_service(args: ServiceArgs) -> Result<()> {
 
 /// Resolve the service/unit name from a flag or prompt.
 fn configure_service_name(opt: Option<String>) -> Result<String> {
-    match opt {
-        Some(name) => Ok(name),
-        None => Ok(prompt_text("Service name", "actrix")?),
-    }
+    let name = match opt {
+        Some(name) => name,
+        None => prompt_text("Service name", "actrix")?,
+    };
+    validate_service_name(&name)?;
+    Ok(name)
 }
 
 /// Configure configuration file path (flag or prompt).
@@ -693,8 +744,28 @@ fn configure_firewall_step(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_supported_install_dir(install_dir: &Path, operation: &str) -> Result<()> {
+pub(crate) fn validate_supported_install_dir(install_dir: &Path, operation: &str) -> Result<()> {
     let normalized = normalize_install_dir(install_dir)?;
+
+    // Reject the filesystem root and any path still containing `..` after
+    // normalization. Without this, `--install-dir /opt/actrix/../..` (which
+    // resolves to `/`) would let a later `rm -rf` walk out of the intended
+    // tree — particularly dangerous in `uninstall`.
+    if normalized == Path::new("/") {
+        anyhow::bail!(
+            "Unsupported installation directory for {}: '/'. \
+             Refusing to operate on the filesystem root.",
+            operation
+        );
+    }
+    if normalized.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        anyhow::bail!(
+            "Unsupported installation directory for {}: '{}'. \
+             Paths containing '..' are rejected; use a literal path such as '/opt/actrix'.",
+            operation,
+            normalized.display()
+        );
+    }
 
     if normalized.starts_with(Path::new("/home")) {
         anyhow::bail!(
@@ -838,5 +909,30 @@ fn prompt_confirm(prompt: &str, default: bool) -> Result<bool> {
             "n" | "no" => return Ok(false),
             _ => println!("Please enter y/yes or n/no."),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_name_rejects_traversal_and_whitespace() {
+        assert!(validate_service_name("actrix").is_ok());
+        assert!(validate_service_name("actrix-2.f").is_ok());
+        assert!(validate_service_name("../x").is_err());
+        assert!(validate_service_name("a b").is_err());
+        assert!(validate_service_name("a\nb").is_err());
+        assert!(validate_service_name("").is_err());
+        assert!(validate_service_name("a/b").is_err());
+    }
+
+    #[test]
+    fn install_dir_rejects_root_and_parent_refs() {
+        assert!(validate_supported_install_dir(Path::new("/opt/actrix"), "test").is_ok());
+        assert!(validate_supported_install_dir(Path::new("/"), "test").is_err());
+        assert!(validate_supported_install_dir(Path::new("/opt/actrix/../.."), "test").is_err());
+        assert!(validate_supported_install_dir(Path::new("/home/x/actrix"), "test").is_err());
+        assert!(validate_supported_install_dir(Path::new("/tmp/actrix"), "test").is_err());
     }
 }

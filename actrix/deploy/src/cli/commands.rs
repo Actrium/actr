@@ -97,6 +97,11 @@ pub enum Commands {
         /// Service to restart after switching (omit to switch without restarting)
         #[arg(long)]
         restart_service: Option<String>,
+        /// HTTP readiness endpoint to poll after restart, e.g.
+        /// `http://127.0.0.1:8080/health`. Falls back to `systemctl is-active`
+        /// (liveness only) when unset. Also set via `ACTRIX_HEALTH_URL`.
+        #[arg(long)]
+        health_url: Option<String>,
     },
     /// Roll bin/actrix back to a previously installed version
     Rollback {
@@ -109,6 +114,9 @@ pub enum Commands {
         /// Service to restart after rolling back
         #[arg(long)]
         restart_service: Option<String>,
+        /// HTTP readiness endpoint to poll after restart (see `update --health-url`).
+        #[arg(long)]
+        health_url: Option<String>,
     },
     /// Show the active version, symlink target, and installed versions
     Status {

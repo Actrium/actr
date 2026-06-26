@@ -1,5 +1,13 @@
 #!/bin/bash
-# Actrix Installation Script
+# Actrix Installation Script (LEGACY)
+#
+# ⚠️  DEPRECATED — kept for reference only. Prefer the `deploy` tool
+#     (`cargo install --path .` → `deploy service`/`deploy update`), which
+#     implements the releases/symlink model, SHA-256 verification, atomic
+#     binary swap, and systemd hardening. This legacy script does NONE of
+#     that: it uses a flat /opt/actrix/actrix layout with no checksum, no
+#     version pinning, and overwrites the running binary in place. Do not use
+#     it for production deployments.
 #
 # This script helps install Actrix as a systemd service
 #
@@ -7,6 +15,9 @@
 #   sudo ./install.sh [install|uninstall|update]
 
 set -e
+
+echo -e "${YELLOW}⚠️  install.sh is LEGACY and lacks checksum verification / releases model.${NC}"
+echo -e "${YELLOW}    Use the 'deploy' tool instead: deploy service / deploy update.${NC}"
 
 # Colors for output
 RED='\033[0;31m'

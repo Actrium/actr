@@ -7,6 +7,7 @@
 
 use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::checksum::{parse_sha256_sum, verify_file};
 use crate::release::{AssetKind, TagTarget, download_asset, fetch_release};
@@ -31,6 +32,9 @@ pub struct ResolvedArtifact {
     pub version: String,
     /// Whether `path` is a temporary file the caller should remove after use.
     pub is_temp: bool,
+    /// When `is_temp`, the private download directory owning `path` (binary +
+    /// sidecar). The caller removes the whole directory after installing.
+    pub temp_dir: Option<PathBuf>,
 }
 
 /// Resolve a [`Source`] into a verified [`ResolvedArtifact`].
@@ -71,6 +75,7 @@ pub fn resolve(
                 path: path.clone(),
                 version: version.to_string(),
                 is_temp: false,
+                temp_dir: None,
             })
         }
         Source::Tag(_) | Source::Latest => {
@@ -89,8 +94,12 @@ pub fn resolve(
                 anyhow::anyhow!("release {} has no asset {}", version, kind.asset_name())
             })?;
 
-            let dest =
-                std::env::temp_dir().join(format!("actrix-deploy-{version}-{}", kind.asset_name()));
+            // Download into a private mktemp(1) directory (mode 0700) rather
+            // than a predictable name under /tmp. A predictable public temp
+            // path is a symlink/race target for another local user and makes
+            // the verify-then-install step non-atomic.
+            let staging = secure_temp_dir(&version)?;
+            let dest = staging.join(kind.asset_name());
             println!("⬇️  Downloading {} ...", bin_asset.name);
             download_asset(bin_asset, token, &dest)?;
 
@@ -103,8 +112,7 @@ pub fn resolve(
                         "release {version} has no `{sha_name}` sidecar (required for verification; use --skip-verify to bypass)"
                     )
                 })?;
-                let sha_dest =
-                    std::env::temp_dir().join(format!("actrix-deploy-{version}-{sha_name}"));
+                let sha_dest = staging.join(&sha_name);
                 download_asset(sha_asset, token, &sha_dest)?;
                 let text = std::fs::read_to_string(&sha_dest).with_context(|| {
                     format!("failed to read downloaded sha256: {}", sha_dest.display())
@@ -119,6 +127,7 @@ pub fn resolve(
                 path: dest,
                 version,
                 is_temp: true,
+                temp_dir: Some(staging),
             })
         }
     }
@@ -126,6 +135,32 @@ pub fn resolve(
 
 fn warn_skip_verify() {
     eprintln!("⚠️  --skip-verify: SHA-256 verification bypassed. Not safe for production.");
+}
+
+/// Create a private (mode 0700) staging directory for release downloads.
+///
+/// Uses `mktemp -d` so the directory name is unpredictable and owned only by
+/// the invoking user, avoiding the symlink/race exposure of a fixed `/tmp`
+/// path. The whole directory is removed by the caller after install.
+fn secure_temp_dir(version: &str) -> Result<PathBuf> {
+    let sanitized = version
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>();
+    let template = format!("actrix-deploy-{sanitized}.XXXXXX");
+    let out = Command::new("mktemp")
+        .args(["-d", "-t", &template])
+        .output()
+        .context("failed to invoke mktemp")?;
+    if !out.status.success() {
+        bail!(
+            "mktemp -d failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&out.stdout).trim(),
+    ))
 }
 
 #[cfg(test)]

@@ -192,6 +192,21 @@ impl SystemdServiceTemplate {
             ""
         };
 
+        // Every value substituted into the unit must be single-line. A newline
+        // in any of them (user, group, paths from config) would let the value
+        // inject arbitrary [Service]/[Unit] directives — a unit-injection
+        // vector. The capability block is a trusted literal and is exempt.
+        for (label, value) in [
+            ("service user", service_user),
+            ("service group", service_group),
+            ("install dir", &install_dir_str),
+            ("working directory", &working_dir_str),
+            ("config path", &config_path_str),
+            ("read-write paths", &read_write_paths),
+        ] {
+            assert_single_line(label, value)?;
+        }
+
         println!("ℹ️  ReadWritePaths: {}", read_write_paths);
 
         let mut placeholders = HashMap::new();
@@ -396,8 +411,7 @@ impl SystemdServiceTemplate {
         paths.into_iter().collect()
     }
 
-    fn requires_low_port_capability(&self) -> bool {
-        const DEFAULT_HTTP_PORT: u16 = 8080;
+    fn requires_low_port_capability(&self) -> bool {        const DEFAULT_HTTP_PORT: u16 = 8080;
         const DEFAULT_HTTPS_PORT: u16 = 8443;
         const DEFAULT_ICE_PORT: u16 = 3478;
 
@@ -427,5 +441,35 @@ impl SystemdServiceTemplate {
         .into_iter()
         .flatten()
         .any(|port| port < 1024)
+    }
+}
+
+/// Reject values that span more than one line.
+///
+/// Any substituted unit field containing a newline (or other control char) can
+/// break out of its directive and inject new `[Service]`/`[Unit]` lines. The
+/// capability block is the only intentionally multi-line substitution and is
+/// not passed through this check.
+fn assert_single_line(label: &str, value: &str) -> Result<()> {
+    if value.chars().any(|c| c == '\n' || c == '\r' || c.is_control()) {
+        anyhow::bail!(
+            "invalid {label} for systemd unit: contains a newline or control character \
+             (refusing to generate a unit that could be injected via '{}')",
+            value.escape_debug()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_single_line;
+
+    #[test]
+    fn single_line_rejects_newlines_and_control_chars() {
+        assert!(assert_single_line("x", "plain-value").is_ok());
+        assert!(assert_single_line("x", "a\nb").is_err());
+        assert!(assert_single_line("x", "a\rb").is_err());
+        assert!(assert_single_line("x", "a\tb").is_err());
     }
 }

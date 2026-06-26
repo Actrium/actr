@@ -73,6 +73,7 @@ fn main() -> Result<()> {
             skip_verify,
             install_dir,
             restart_service,
+            health_url,
         }) => {
             let source = build_install_source(tag, latest, binary_path, false)?;
             system::update_service(
@@ -82,13 +83,15 @@ fn main() -> Result<()> {
                 sha256_path,
                 skip_verify,
                 restart_service,
+                health_url,
             )
         }
         Some(Commands::Rollback {
             to,
             install_dir,
             restart_service,
-        }) => system::rollback_command(install_dir, to, restart_service),
+            health_url,
+        }) => system::rollback_command(install_dir, to, restart_service, health_url),
         Some(Commands::Status { install_dir }) => system::status_command(install_dir),
         Some(Commands::Uninstall {
             install_dir,

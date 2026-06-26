@@ -33,10 +33,15 @@ impl Default for UninstallArgs {
 
 /// Uninstall application with selective component removal.
 pub fn uninstall_application(args: UninstallArgs) -> Result<()> {
+    // Uninstall runs `sudo rm -rf` against install-dir-derived paths, so it
+    // must apply the same install_dir guards as install/update/rollback — and
+    // also reject crafted service names that could escape the unit directory.
+    super::install::validate_supported_install_dir(&args.install_dir, "uninstall")?;
     let service_name = args
         .service_name
         .clone()
         .unwrap_or_else(|| DEFAULT_SYSTEM_ACCOUNT.to_string());
+    super::install::validate_service_name(&service_name)?;
     let service_file = format!("/etc/systemd/system/{service_name}.service");
     let config_dir = "/etc/actrix";
 

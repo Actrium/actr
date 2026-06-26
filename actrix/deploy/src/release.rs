@@ -124,10 +124,8 @@ pub fn download_asset(asset: &ReleaseAsset, token: Option<&str>, dest: &Path) ->
 }
 
 fn curl_text(url: &str, token: Option<&str>, accept: Option<&str>) -> Result<String> {
-    let output = Command::new("curl")
-        .args(curl_args(url, token, accept, None))
-        .output()
-        .context("failed to invoke curl")?;
+    let (args, stdin_cfg) = curl_args(url, token, accept, None);
+    let output = curl_exec(&args, stdin_cfg.as_deref())?;
     if !output.status.success() {
         bail!(
             "curl request failed: {}",
@@ -138,22 +136,47 @@ fn curl_text(url: &str, token: Option<&str>, accept: Option<&str>) -> Result<Str
 }
 
 fn curl_download(url: &str, token: Option<&str>, accept: Option<&str>, dest: &Path) -> Result<()> {
-    let status = Command::new("curl")
-        .args(curl_args(url, token, accept, Some(dest)))
-        .status()
-        .context("failed to invoke curl")?;
-    if !status.success() {
-        bail!("curl download failed with status {status}");
+    let (args, stdin_cfg) = curl_args(url, token, accept, Some(dest));
+    let output = curl_exec(&args, stdin_cfg.as_deref())?;
+    if !output.status.success() {
+        bail!(
+            "curl download failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
     }
     Ok(())
 }
 
+/// Spawn curl with the given args, optionally feeding a curl config (carrying
+/// the secret `Authorization` header) over stdin so the token never appears in
+/// argv / `ps` / `/proc`.
+fn curl_exec(args: &[String], stdin_config: Option<&str>) -> Result<std::process::Output> {
+    let mut cmd = Command::new("curl");
+    cmd.args(args);
+    if stdin_config.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+    let mut child = cmd.spawn().context("failed to invoke curl")?;
+    if let Some(cfg) = stdin_config {
+        use std::io::Write;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(cfg.as_bytes())?;
+        }
+    }
+    child.wait_with_output().context("failed to wait for curl")
+}
+
+/// Build curl args plus an optional stdin config holding the bearer token.
+///
+/// The non-secret headers (User-Agent, Accept) stay on the argv; the
+/// `Authorization` header is moved into a `--config -` blob read from stdin so
+/// the token is not visible in the process list.
 fn curl_args(
     url: &str,
     token: Option<&str>,
     accept: Option<&str>,
     output: Option<&Path>,
-) -> Vec<String> {
+) -> (Vec<String>, Option<String>) {
     let mut args: Vec<String> = vec!["-sSLf".into(), "--retry".into(), "3".into()];
     args.push("-H".into());
     args.push("User-Agent: actrix-deploy".into());
@@ -161,16 +184,21 @@ fn curl_args(
         args.push("-H".into());
         args.push(format!("Accept: {accept}"));
     }
-    if let Some(token) = token {
-        args.push("-H".into());
-        args.push(format!("Authorization: Bearer {token}"));
-    }
     if let Some(output) = output {
         args.push("-o".into());
         args.push(output.to_string_lossy().into_owned());
     }
+
+    let stdin_config = token.map(|t| {
+        // curl config file syntax: `header = "value"`. GitHub tokens are
+        // alphanumeric, so quoting is safe.
+        args.insert(0, "--config".into());
+        args.insert(1, "-".into());
+        format!("header = \"Authorization: Bearer {t}\"\n")
+    });
+
     args.push(url.into());
-    args
+    (args, stdin_config)
 }
 
 #[cfg(test)]
