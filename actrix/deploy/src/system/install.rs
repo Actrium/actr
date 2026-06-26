@@ -109,20 +109,20 @@ pub fn install_release(artifact: &ResolvedArtifact, config: &InstallConfig) -> R
     Ok(())
 }
 
-/// Upgrade actrix to a new version, optionally restarting a service.
+/// Upgrade actrix to a new version and restart the managed service.
 ///
 /// Resolves + verifies the artifact, installs it to `releases/<version>/`,
-/// switches `bin/actrix`, and — if `restart_service` is given — restarts that
-/// service and waits for it to become active. On restart failure the active
-/// symlink is rolled back to the previous version and the old service
-/// restarted. The systemd unit is never modified.
+/// switches `bin/actrix`, restarts that service, and waits for it to become
+/// active. On restart/readiness failure the active symlink is rolled back to
+/// the previous version and the old service is restarted and verified. The
+/// systemd unit is never modified.
 pub fn update_service(
     install_dir: PathBuf,
     source: Source,
     version: Option<String>,
     sha256_path: Option<PathBuf>,
     skip_verify: bool,
-    restart_service: Option<String>,
+    restart_service: String,
     health_url: Option<String>,
 ) -> Result<()> {
     let config = InstallConfig {
@@ -131,14 +131,16 @@ pub fn update_service(
         add_to_path: false,
     };
     validate_supported_install_dir(&config.install_dir, "update")?;
-    let svc = restart_service.as_deref();
-    if let Some(name) = svc {
-        validate_service_name(name)?;
-    }
+    validate_service_name(&restart_service)?;
 
     let repo = std::env::var("ACTRIX_REPOSITORY").unwrap_or_else(|_| "Actrium/actr".to_string());
     let token = std::env::var("GITHUB_TOKEN").ok();
-    let prev = super::releases::current_version(&config)?;
+    let prev = super::releases::current_version(&config)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "cannot update without an active version at {}; run `actrix-deploy install` first",
+            config.binary_path().display()
+        )
+    })?;
 
     let artifact = resolve(
         &source,
@@ -150,11 +152,11 @@ pub fn update_service(
     )?;
     validate_version_label(&artifact.version)?;
 
-    match should_skip_same_version_update(&config, &artifact, &prev) {
+    match should_skip_same_version_update(&config, &artifact, &Some(prev.clone())) {
         Ok(true) => {
             cleanup_resolved_artifact(&artifact);
             println!(
-                "ℹ️  Version {} is already installed with the same checksum; skipping update.",
+                "ℹ️  Version {} is already active with the same checksum; skipping update.",
                 artifact.version
             );
             return Ok(());
@@ -172,36 +174,31 @@ pub fn update_service(
     }
     install_result?;
 
-    if let Some(svc) = &restart_service {
-        let wait = super::service::health_wait_seconds();
-        let health = resolve_health_url(health_url.as_deref());
-        if let Err(err) = super::service::restart(svc)
-            .and_then(|_| super::service::wait_ready(svc, wait, health.as_deref()))
-        {
-            println!("❌ Service did not come up: {err}");
-            match &prev {
-                Some(prev_ver) => {
-                    // rollback_to() logs the rollback step itself.
-                    let _ = super::releases::rollback_to(&config, prev_ver);
-                    let _ = super::service::restart(svc);
-                    anyhow::bail!(
-                        "update to {} failed: service '{svc}' did not become active; rolled back to {prev_ver}",
-                        artifact.version
-                    );
-                }
-                None => {
-                    anyhow::bail!(
-                        "update to {} failed: service '{svc}' did not become active and no previous version exists to roll back to",
-                        artifact.version
-                    );
-                }
+    let health = resolve_health_url(health_url.as_deref());
+    if let Err(err) = restart_and_wait(&restart_service, health.as_deref()) {
+        println!("❌ Service did not come up on {}: {err}", artifact.version);
+        let rollback_result = super::releases::rollback_to(&config, &prev)
+            .and_then(|_| restart_and_wait(&restart_service, health.as_deref()));
+        match rollback_result {
+            Ok(()) => {
+                anyhow::bail!(
+                    "update to {} failed: service '{}' did not become ready; rolled back to {prev}. Original error: {err}",
+                    artifact.version,
+                    restart_service
+                );
             }
-        } else {
-            println!("✅ Service '{svc}' active on version {}", artifact.version);
+            Err(rollback_err) => {
+                anyhow::bail!(
+                    "update to {} failed and rollback to {prev} also failed. Original error: {err}. Rollback error: {rollback_err}",
+                    artifact.version
+                );
+            }
         }
-    } else {
-        println!("ℹ️  No --restart-service given; symlink switched, service not restarted.");
     }
+    println!(
+        "✅ Service '{}' active on version {}",
+        restart_service, artifact.version
+    );
 
     Ok(())
 }
@@ -210,7 +207,7 @@ pub fn update_service(
 pub fn rollback_command(
     install_dir: PathBuf,
     to_version: String,
-    restart_service: Option<String>,
+    restart_service: String,
     health_url: Option<String>,
 ) -> Result<()> {
     let config = InstallConfig {
@@ -220,18 +217,18 @@ pub fn rollback_command(
     };
     validate_supported_install_dir(&config.install_dir, "rollback")?;
     validate_version_label(&to_version)?;
-    if let Some(name) = restart_service.as_deref() {
-        validate_service_name(name)?;
-    }
+    validate_service_name(&restart_service)?;
     super::releases::rollback_to(&config, &to_version)?;
-    if let Some(svc) = &restart_service {
-        super::service::restart(svc)?;
-        let wait = super::service::health_wait_seconds();
-        let health = resolve_health_url(health_url.as_deref());
-        super::service::wait_ready(svc, wait, health.as_deref())?;
-        println!("✅ Service '{svc}' active on version {to_version}");
-    }
+    let health = resolve_health_url(health_url.as_deref());
+    restart_and_wait(&restart_service, health.as_deref())?;
+    println!("✅ Service '{restart_service}' active on version {to_version}");
     Ok(())
+}
+
+fn restart_and_wait(service_name: &str, health_url: Option<&str>) -> Result<()> {
+    super::service::restart(service_name)?;
+    let wait = super::service::health_wait_seconds();
+    super::service::wait_ready(service_name, wait, health_url)
 }
 
 /// Resolve a readiness-probe URL from an explicit arg or `ACTRIX_HEALTH_URL`.
@@ -696,6 +693,17 @@ fn verify_deployment_files(install_config: &InstallConfig, config_path: &Path) -
     let binary_path = install_config.binary_path();
     if binary_path.exists() {
         println!("✅ Binary file found: {}", binary_path.display());
+        match super::releases::current_version(install_config) {
+            Ok(Some(version)) => println!("✅ Active release version: {version}"),
+            Ok(None) => {
+                println!("❌ Active symlink missing: {}", binary_path.display());
+                missing_files.push(format!("Active symlink: {}", binary_path.display()));
+            }
+            Err(err) => {
+                println!("❌ Active symlink invalid: {err}");
+                missing_files.push(format!("Active symlink: {err}"));
+            }
+        }
     } else {
         println!("❌ Binary file missing: {}", binary_path.display());
         missing_files.push(format!("Binary: {}", binary_path.display()));

@@ -91,9 +91,10 @@ pub enum Commands {
         /// Installation directory
         #[arg(long, default_value = "/opt/actrix")]
         install_dir: PathBuf,
-        /// Service to restart after switching (omit to switch without restarting)
+        /// Service to restart after switching. Required so the running process
+        /// and the active symlink cannot drift apart.
         #[arg(long)]
-        restart_service: Option<String>,
+        restart_service: String,
         /// HTTP readiness endpoint to poll after restart, e.g.
         /// `http://127.0.0.1:8080/health`. Falls back to `systemctl is-active`
         /// (liveness only) when unset. Also set via `ACTRIX_HEALTH_URL`.
@@ -110,7 +111,7 @@ pub enum Commands {
         install_dir: PathBuf,
         /// Service to restart after rolling back
         #[arg(long)]
-        restart_service: Option<String>,
+        restart_service: String,
         /// HTTP readiness endpoint to poll after restart (see `update --health-url`).
         #[arg(long)]
         health_url: Option<String>,

@@ -37,6 +37,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths={{READ_WRITE_PATHS}}
+ReadOnlyPaths={{READ_ONLY_PATHS}}
 
 # Resource limits
 LimitNOFILE=65536
@@ -186,6 +187,7 @@ impl SystemdServiceTemplate {
         let working_dir_str = self.working_directory.to_string_lossy().to_string();
         let config_path_str = self.config_path.to_string_lossy().to_string();
         let read_write_paths = self.collect_read_write_paths().join(" ");
+        let read_only_paths = self.collect_read_only_paths().join(" ");
         let capability_block = if self.requires_low_port_capability() {
             "# Allow binding privileged ports (<1024) while running as non-root\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE"
         } else {
@@ -203,11 +205,13 @@ impl SystemdServiceTemplate {
             ("working directory", &working_dir_str),
             ("config path", &config_path_str),
             ("read-write paths", &read_write_paths),
+            ("read-only paths", &read_only_paths),
         ] {
             assert_single_line(label, value)?;
         }
 
         println!("ℹ️  ReadWritePaths: {}", read_write_paths);
+        println!("ℹ️  ReadOnlyPaths: {}", read_only_paths);
 
         let mut placeholders = HashMap::new();
         placeholders.insert("SERVICE_USER".to_string(), service_user.to_string());
@@ -216,6 +220,7 @@ impl SystemdServiceTemplate {
         placeholders.insert("WORKING_DIRECTORY".to_string(), working_dir_str);
         placeholders.insert("CONFIG_PATH".to_string(), config_path_str);
         placeholders.insert("READ_WRITE_PATHS".to_string(), read_write_paths);
+        placeholders.insert("READ_ONLY_PATHS".to_string(), read_only_paths);
         placeholders.insert("CAPABILITY_BLOCK".to_string(), capability_block.to_string());
 
         let mut result = SYSTEMD_SERVICE_TEMPLATE.to_string();
@@ -409,6 +414,16 @@ impl SystemdServiceTemplate {
         }
 
         paths.into_iter().collect()
+    }
+
+    fn collect_read_only_paths(&self) -> Vec<String> {
+        vec![
+            self.install_config.bin_dir().to_string_lossy().to_string(),
+            self.install_config
+                .releases_dir()
+                .to_string_lossy()
+                .to_string(),
+        ]
     }
 
     fn requires_low_port_capability(&self) -> bool {

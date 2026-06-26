@@ -5,7 +5,7 @@
 //! The systemd unit (`ExecStart=.../bin/actrix`) is never touched here.
 
 use anyhow::{Context, Result, bail};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
 use crate::config::InstallConfig;
@@ -15,6 +15,14 @@ use crate::config::InstallConfig;
 /// Uses a temp symlink + `mv -Tf` so the active path is never missing and
 /// concurrent readers see either the old or new version, never a gap.
 pub fn switch_active_symlink(config: &InstallConfig, target: &Path) -> Result<()> {
+    let version = version_from_release_binary(config, target)?;
+    if !target.exists() {
+        bail!(
+            "release {version} is not installed (missing {})",
+            target.display()
+        );
+    }
+
     let link = config.binary_path();
     let tmp = config
         .bin_dir()
@@ -61,8 +69,25 @@ pub fn switch_active_symlink(config: &InstallConfig, target: &Path) -> Result<()
 /// Read the current `bin/actrix` symlink target, if any.
 pub fn current_target(config: &InstallConfig) -> Result<Option<PathBuf>> {
     match std::fs::read_link(config.binary_path()) {
-        Ok(p) => Ok(Some(p)),
-        Err(_) => Ok(None),
+        Ok(target) => {
+            let resolved = if target.is_absolute() {
+                target
+            } else {
+                config
+                    .binary_path()
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(target)
+            };
+            Ok(Some(normalize_path(&resolved)))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to read active symlink {}",
+                config.binary_path().display()
+            )
+        }),
     }
 }
 
@@ -70,11 +95,16 @@ pub fn current_target(config: &InstallConfig) -> Result<Option<PathBuf>> {
 ///
 /// Target shape: `<install-dir>/releases/<version>/actrix` -> `<version>`.
 pub fn current_version(config: &InstallConfig) -> Result<Option<String>> {
-    Ok(current_target(config)?.and_then(|p| {
-        p.parent()
-            .and_then(|parent| parent.file_name())
-            .and_then(|n| n.to_str().map(str::to_string))
-    }))
+    let Some(target) = current_target(config)? else {
+        return Ok(None);
+    };
+    if !target.exists() {
+        bail!(
+            "invalid active binary target {}: target does not exist",
+            target.display()
+        );
+    }
+    Ok(Some(version_from_release_binary(config, &target)?))
 }
 
 /// List installed versions (subdirectories of `releases/`), sorted.
@@ -118,9 +148,86 @@ pub fn rollback_to(config: &InstallConfig, version: &str) -> Result<()> {
     Ok(())
 }
 
+fn version_from_release_binary(config: &InstallConfig, target: &Path) -> Result<String> {
+    if target.file_name().and_then(|n| n.to_str()) != Some(config.binary_name.as_str()) {
+        bail!(
+            "invalid active binary target {}: expected file name '{}'",
+            target.display(),
+            config.binary_name
+        );
+    }
+
+    let version_dir = target.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid active binary target {}: missing version directory",
+            target.display()
+        )
+    })?;
+    let version = version_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid active binary target {}: version is not valid UTF-8",
+                target.display()
+            )
+        })?;
+    if !is_valid_version_label(version) {
+        bail!(
+            "invalid active binary target {}: version label '{version}' is not supported",
+            target.display()
+        );
+    }
+
+    let releases_dir = version_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid active binary target {}: missing releases directory",
+            target.display()
+        )
+    })?;
+    if normalize_path(releases_dir) != normalize_path(&config.releases_dir()) {
+        bail!(
+            "invalid active binary target {}: expected it under {}",
+            target.display(),
+            config.releases_dir().display()
+        );
+    }
+
+    Ok(version.to_string())
+}
+
+fn is_valid_version_label(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 128
+        && version != "."
+        && version != ".."
+        && !version.contains("..")
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     fn cfg(dir: &Path) -> InstallConfig {
         InstallConfig {
@@ -150,5 +257,76 @@ mod tests {
         assert!(!has_version(&c, "v9.9.9"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn derives_current_version_from_valid_symlink() {
+        let dir = std::env::temp_dir().join(format!(
+            "actrix-deploy-current-version-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let c = cfg(&dir);
+        std::fs::create_dir_all(c.release_binary_path("v1.2.3").parent().unwrap()).unwrap();
+        std::fs::create_dir_all(c.bin_dir()).unwrap();
+        std::fs::write(c.release_binary_path("v1.2.3"), b"binary").unwrap();
+        symlink(c.release_binary_path("v1.2.3"), c.binary_path()).unwrap();
+
+        assert_eq!(current_version(&c).unwrap(), Some("v1.2.3".to_string()));
+        assert_eq!(
+            current_target(&c).unwrap(),
+            Some(c.release_binary_path("v1.2.3"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_current_symlink_outside_releases() {
+        let dir = std::env::temp_dir().join(format!(
+            "actrix-deploy-current-version-invalid-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let c = cfg(&dir);
+        std::fs::create_dir_all(c.bin_dir()).unwrap();
+        let outside = dir.join("outside/actrix");
+        std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        std::fs::write(&outside, b"binary").unwrap();
+        symlink(outside, c.binary_path()).unwrap();
+
+        assert!(current_version(&c).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_broken_current_symlink() {
+        let dir = std::env::temp_dir().join(format!(
+            "actrix-deploy-current-version-broken-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let c = cfg(&dir);
+        std::fs::create_dir_all(c.bin_dir()).unwrap();
+        symlink(c.release_binary_path("v1.2.3"), c.binary_path()).unwrap();
+
+        assert!(current_version(&c).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn current_version_is_none_without_active_symlink() {
+        let dir = std::env::temp_dir().join(format!(
+            "actrix-deploy-current-version-missing-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let c = cfg(&dir);
+        assert_eq!(current_version(&c).unwrap(), None);
     }
 }

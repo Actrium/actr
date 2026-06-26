@@ -19,6 +19,7 @@ Rust toolchain。
 
 systemd 的 `ExecStart` 固定指向 `bin/actrix`，所以切换版本只需重指软链接 + 重启服务，
 **永不修改 systemd unit**。配置、数据库、日志、证书放在版本目录之外，切换版本不影响状态。
+`update` 和 `rollback` 必须显式传 `--restart-service`，工具不会只切软链接而留下旧进程继续运行。
 
 版本目录是不可变的：同一个 `<version>` 如果已存在，只有二进制 checksum 完全一致时才复用；
 如果同版本内容不同，工具会拒绝覆盖。需要发布新内容时请使用新的 tag/version，保证回滚目标仍然可靠。
@@ -96,7 +97,7 @@ sudo actrix-deploy service \
 
 工具会：检测 systemd → 创建/确认用户组 → 校验二进制和配置 → 授权运行时目录 →
 生成加固 unit（`bin/actrix` 入口；端口 <1024 自动加 `CAP_NET_BIND_SERVICE`；
-`ProtectSystem=strict`；`ReadWritePaths` 按 config 自动算）→ daemon-reload →
+`ProtectSystem=strict`；`ReadWritePaths` 按 config 自动算；`bin/`、`releases/` 显式只读）→ daemon-reload →
 enable → start；并询问是否应用 ufw 防火墙规则。
 
 > **非 root 用户**：`service` 会把 `logs/`、`db/`、`shared/` 授权给服务用户，
@@ -169,7 +170,7 @@ sudo actrix-deploy install --from-local-build --install-dir /opt/actrix
 sudo actrix-deploy service --service-name actrix2 --install-dir /opt/actrix \
   --config /etc/actrix/config.toml --user actor-rtc --group actor-rtc
 
-# 升级（切软链接 + 可选重启；失败自动回滚到上一版本）
+# 升级（切软链接 + 重启服务；失败自动回滚到上一版本）
 sudo actrix-deploy update --tag v0.4.4 --install-dir /opt/actrix \
   --restart-service actrix2 --health-url http://127.0.0.1:8080/health
 
@@ -194,6 +195,7 @@ sudo actrix-deploy uninstall --install-dir /opt/actrix --service-name actrix2
 - `--version` 只用于本地二进制/本地构建；Release 模式使用 GitHub Release 的 tag。
 - version 只能包含字母、数字、`.`、`_`、`-`、`+`，不能包含 `/`、`\`、空白或 `..`。
 - 同一 version 内容不可变：已安装的 version 如果 checksum 不同，`install`/`update` 都会拒绝覆盖。
+- `update`/`rollback` 必须指定 `--restart-service`，确保活跃软链、运行进程和健康检查处在同一个发布动作里。
 
 ## 环境变量
 
