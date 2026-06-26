@@ -79,6 +79,12 @@ pub fn resolve(
             })
         }
         Source::Tag(_) | Source::Latest => {
+            if skip_verify {
+                bail!(
+                    "--skip-verify is only allowed for local --binary-path / --from-local-build; GitHub Release assets must be verified with their .sha256 sidecar"
+                );
+            }
+
             let target = match source {
                 Source::Latest => TagTarget::Latest,
                 Source::Tag(t) => TagTarget::Tag(t.clone()),
@@ -103,25 +109,19 @@ pub fn resolve(
             println!("⬇️  Downloading {} ...", bin_asset.name);
             download_asset(bin_asset, token, &dest)?;
 
-            if skip_verify {
-                warn_skip_verify();
-            } else {
-                let sha_name = kind.sha256_asset_name();
-                let sha_asset = info.find_asset(&sha_name).ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "release {version} has no `{sha_name}` sidecar (required for verification; use --skip-verify to bypass)"
-                    )
-                })?;
-                let sha_dest = staging.join(&sha_name);
-                download_asset(sha_asset, token, &sha_dest)?;
-                let text = std::fs::read_to_string(&sha_dest).with_context(|| {
-                    format!("failed to read downloaded sha256: {}", sha_dest.display())
-                })?;
-                let expected = parse_sha256_sum(&text)?;
-                verify_file(&dest, &expected)?;
-                let _ = std::fs::remove_file(&sha_dest);
-                println!("✅ Checksum verified for {}", bin_asset.name);
-            }
+            let sha_name = kind.sha256_asset_name();
+            let sha_asset = info
+                .find_asset(&sha_name)
+                .ok_or_else(|| anyhow::anyhow!("release {version} has no `{sha_name}` sidecar"))?;
+            let sha_dest = staging.join(&sha_name);
+            download_asset(sha_asset, token, &sha_dest)?;
+            let text = std::fs::read_to_string(&sha_dest).with_context(|| {
+                format!("failed to read downloaded sha256: {}", sha_dest.display())
+            })?;
+            let expected = parse_sha256_sum(&text)?;
+            verify_file(&dest, &expected)?;
+            let _ = std::fs::remove_file(&sha_dest);
+            println!("✅ Checksum verified for {}", bin_asset.name);
 
             Ok(ResolvedArtifact {
                 path: dest,
@@ -158,9 +158,7 @@ fn secure_temp_dir(version: &str) -> Result<PathBuf> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    Ok(PathBuf::from(
-        String::from_utf8_lossy(&out.stdout).trim(),
-    ))
+    Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
 }
 
 #[cfg(test)]
@@ -230,5 +228,19 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("--sha256-path"));
         let _ = std::fs::remove_file(&bin);
+    }
+
+    #[test]
+    fn release_source_rejects_skip_verify_before_network() {
+        let err = resolve(
+            &Source::Tag("v1.0.0".to_string()),
+            None,
+            None,
+            true,
+            "Actrium/actr",
+            None,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("--skip-verify"));
     }
 }

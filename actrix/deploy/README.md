@@ -20,6 +20,9 @@ Rust toolchain。
 systemd 的 `ExecStart` 固定指向 `bin/actrix`，所以切换版本只需重指软链接 + 重启服务，
 **永不修改 systemd unit**。配置、数据库、日志、证书放在版本目录之外，切换版本不影响状态。
 
+版本目录是不可变的：同一个 `<version>` 如果已存在，只有二进制 checksum 完全一致时才复用；
+如果同版本内容不同，工具会拒绝覆盖。需要发布新内容时请使用新的 tag/version，保证回滚目标仍然可靠。
+
 ## 安装 actrix-deploy
 
 从 GitHub Release 下载（首个版本可人工下载）：
@@ -75,7 +78,7 @@ sudo actrix-deploy install --tag v0.4.3 --install-dir /opt/actrix --no-path
 sudo actrix-deploy install --binary-path /root/actrix \
   --version v0.4.3 --sha256-path /root/actrix.sha256 \
   --install-dir /opt/actrix --no-path
-# 测试可加 --skip-verify 省去 sha256
+# 本地调试才可加 --skip-verify；Release 模式始终强制校验 .sha256
 ```
 
 生成 `/opt/actrix/releases/v0.4.3/actrix` 与 `/opt/actrix/bin/actrix` 软链。
@@ -91,16 +94,14 @@ sudo actrix-deploy service \
   --force-overwrite-unit
 ```
 
-工具会：检测 systemd → 生成加固 unit（`bin/actrix` 入口；端口 <1024 自动加
-`CAP_NET_BIND_SERVICE`；`ProtectSystem=strict`；`ReadWritePaths` 按 config 自动算）
-→ 创建用户/组 → daemon-reload → enable → start；并询问是否应用 ufw 防火墙规则。
+工具会：检测 systemd → 创建/确认用户组 → 校验二进制和配置 → 授权运行时目录 →
+生成加固 unit（`bin/actrix` 入口；端口 <1024 自动加 `CAP_NET_BIND_SERVICE`；
+`ProtectSystem=strict`；`ReadWritePaths` 按 config 自动算）→ daemon-reload →
+enable → start；并询问是否应用 ufw 防火墙规则。
 
-> **非 root 用户**：`service` 会创建 `actrix` 用户但不会 chown 文件。启动前需
-> ```bash
-> sudo chown -R actrix:actrix /opt/actrix
-> ```
-> 否则非 root 进程读不了证书、写不了 db。先跑通用 `--user root --group root` 亦可，
-> 日后再降权。
+> **非 root 用户**：`service` 会把 `logs/`、`db/`、`shared/` 授权给服务用户，
+> 但 `bin/`、`releases/` 保持 root 管理。不要 `chown -R /opt/actrix`，否则服务
+> 进程可以改自己的二进制。证书、配置文件请单独保证服务用户可读。
 >
 > **`--working-directory`**：当 config 的相对路径相对的是安装目录之外的目录时
 > （如历史部署的 `/opt/actr-project/actrix`），用它指定真实工作目录；相对路径与
@@ -122,7 +123,14 @@ sudo actrix-deploy update   --tag v0.4.4 --install-dir /opt/actrix --restart-ser
 sudo actrix-deploy rollback --to v0.4.3  --install-dir /opt/actrix --restart-service actrix
 ```
 
-升级失败自动回滚到上一版本。
+升级失败自动回滚到上一版本。生产建议加 `--health-url`，避免服务进程 active 但接口不可用：
+
+```bash
+sudo actrix-deploy update --tag v0.4.4 \
+  --install-dir /opt/actrix \
+  --restart-service actrix \
+  --health-url http://127.0.0.1:8080/health
+```
 
 ### 多实例（一台机器跑多套）
 
@@ -162,10 +170,12 @@ sudo actrix-deploy service --service-name actrix2 --install-dir /opt/actrix \
   --config /etc/actrix/config.toml --user actor-rtc --group actor-rtc
 
 # 升级（切软链接 + 可选重启；失败自动回滚到上一版本）
-sudo actrix-deploy update --tag v0.4.4 --install-dir /opt/actrix --restart-service actrix2
+sudo actrix-deploy update --tag v0.4.4 --install-dir /opt/actrix \
+  --restart-service actrix2 --health-url http://127.0.0.1:8080/health
 
 # 回滚到已安装的版本
-sudo actrix-deploy rollback --to v0.4.3 --install-dir /opt/actrix --restart-service actrix2
+sudo actrix-deploy rollback --to v0.4.3 --install-dir /opt/actrix \
+  --restart-service actrix2 --health-url http://127.0.0.1:8080/health
 
 # 查看当前版本与已安装版本
 actrix-deploy status --install-dir /opt/actrix
@@ -176,10 +186,14 @@ sudo actrix-deploy uninstall --install-dir /opt/actrix --service-name actrix2
 
 ## 二进制来源与校验
 
-`install`/`update` 三选一：`--tag`、`--latest`、`--binary-path`。
+`install`/`update` 二进制来源三选一：`--tag`、`--latest`、`--binary-path`。
 
 - Release 模式（`--tag`/`--latest`）：必须下载并校验 `.sha256`，缺失或不一致即失败。
 - 本地模式（`--binary-path`）：默认要求 `--sha256-path`；`--skip-verify` 可跳过（打印强警告，不用于生产）。
+- 开发模式（`--from-local-build`）：仅 `install` 支持，使用本机 `target/release/actrix`，自动使用 `local` version 并跳过校验。
+- `--version` 只用于本地二进制/本地构建；Release 模式使用 GitHub Release 的 tag。
+- version 只能包含字母、数字、`.`、`_`、`-`、`+`，不能包含 `/`、`\`、空白或 `..`。
+- 同一 version 内容不可变：已安装的 version 如果 checksum 不同，`install`/`update` 都会拒绝覆盖。
 
 ## 环境变量
 
@@ -187,14 +201,30 @@ sudo actrix-deploy uninstall --install-dir /opt/actrix --service-name actrix2
 |------|------|
 | `GITHUB_TOKEN` | 私有仓库下载用，仅需 Contents Read 权限。 |
 | `ACTRIX_REPOSITORY` | GitHub owner/repo，默认 `Actrium/actr`。 |
-| `ACTRIX_HEALTH_WAIT_SECONDS` | `update`/`rollback` 重启后等待服务 active 的秒数，默认 5。 |
+| `ACTRIX_HEALTH_URL` | `update`/`rollback` 重启后的 HTTP readiness 探测地址，可用 `--health-url` 覆盖。 |
+| `ACTRIX_HEALTH_WAIT_SECONDS` | `update`/`rollback` 重启后等待 ready 的秒数，默认 5，最大 300。 |
+| `ACTRIX_ALLOW_LEGACY_INSTALL_SH` | 设为 `1` 才允许执行 legacy `install.sh`。默认拒绝运行。 |
 
 ## 约束
 
 - `service` 仅支持 systemd，先检测再执行。
-- 安装目录禁止位于 `/home` 或 `/tmp`。
+- 安装目录必须是 `/opt` 下的绝对路径子目录，例如 `/opt/actrix`、`/opt/actrix-a`。
+- 安装目录会拒绝 `/`、`/opt`、`/home`、`/tmp`、`..` 和已有 symlink 组件。
+- actrix 托管二进制名固定为 `actrix`，不支持自定义 binary name。
 - `update` 永不写 systemd unit；unit 加固由 `service`/人工运维维护。
-- 服务名必须显式传入（`--service-name`），不靠默认值猜，以便单机多实例。
+- 服务名建议显式传入（`--service-name`），多实例时必须区分 unit 名。
+- 服务用户/组名会按 Linux 账号名规则校验；默认 `actrix`。
+
+## Legacy install.sh
+
+`install.sh` 仅保留用于紧急/历史恢复，不再作为正式部署入口。它没有 Release checksum、
+版本目录、软链接切换和不可变版本保护，因此默认直接退出。确需执行时必须显式设置：
+
+```bash
+ACTRIX_ALLOW_LEGACY_INSTALL_SH=1 sudo -E ./install.sh install
+```
+
+新部署和升级都应使用 `actrix-deploy install/service/update/rollback`。
 
 ## 可选配置文件
 

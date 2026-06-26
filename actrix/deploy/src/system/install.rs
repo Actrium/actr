@@ -8,6 +8,7 @@ use std::process::Command;
 use super::dependencies::{ServiceManager, detect_service_manager};
 use super::firewall::{apply_firewall, plan_firewall};
 use crate::artifact::{ResolvedArtifact, Source, resolve};
+use crate::checksum::sha256_of_file;
 use crate::config::InstallConfig;
 use crate::tpl::SystemdServiceTemplate;
 
@@ -37,12 +38,18 @@ pub fn install_from_source(
         &repo,
         token.as_deref(),
     )?;
-    install_release(&artifact, config)
+    let result = install_release(&artifact, config);
+    if result.is_err() {
+        cleanup_resolved_artifact(&artifact);
+    }
+    result
 }
 
 /// Install a resolved artifact into `releases/<version>/` and switch `bin/actrix`.
 pub fn install_release(artifact: &ResolvedArtifact, config: &InstallConfig) -> Result<()> {
     validate_supported_install_dir(&config.install_dir, "installation")?;
+    validate_binary_name(&config.binary_name)?;
+    validate_version_label(&artifact.version)?;
 
     println!("Creating directory structure...");
     let directories = config.all_directories();
@@ -57,10 +64,18 @@ pub fn install_release(artifact: &ResolvedArtifact, config: &InstallConfig) -> R
         create_directory_with_permissions(parent, 0o755)?;
     }
 
-    println!("📦 Installing actrix {} ...", artifact.version);
-    copy_file_with_sudo(&artifact.path, &target)?;
-    set_file_permissions(&target, 0o755)?;
-    println!("✅ Binary installed: {}", target.display());
+    if existing_release_matches(&target, &artifact.path, &artifact.version)? {
+        println!(
+            "ℹ️  Release {} already installed with the same checksum: {}",
+            artifact.version,
+            target.display()
+        );
+    } else {
+        println!("📦 Installing actrix {} ...", artifact.version);
+        copy_file_with_sudo(&artifact.path, &target)?;
+        set_file_permissions(&target, 0o755)?;
+        println!("✅ Binary installed: {}", target.display());
+    }
 
     // Atomically switch the active symlink.
     super::releases::switch_active_symlink(config, &target)?;
@@ -133,7 +148,29 @@ pub fn update_service(
         &repo,
         token.as_deref(),
     )?;
-    install_release(&artifact, &config)?;
+    validate_version_label(&artifact.version)?;
+
+    match should_skip_same_version_update(&config, &artifact, &prev) {
+        Ok(true) => {
+            cleanup_resolved_artifact(&artifact);
+            println!(
+                "ℹ️  Version {} is already installed with the same checksum; skipping update.",
+                artifact.version
+            );
+            return Ok(());
+        }
+        Ok(false) => {}
+        Err(err) => {
+            cleanup_resolved_artifact(&artifact);
+            return Err(err);
+        }
+    }
+
+    let install_result = install_release(&artifact, &config);
+    if install_result.is_err() {
+        cleanup_resolved_artifact(&artifact);
+    }
+    install_result?;
 
     if let Some(svc) = &restart_service {
         let wait = super::service::health_wait_seconds();
@@ -182,6 +219,7 @@ pub fn rollback_command(
         add_to_path: false,
     };
     validate_supported_install_dir(&config.install_dir, "rollback")?;
+    validate_version_label(&to_version)?;
     if let Some(name) = restart_service.as_deref() {
         validate_service_name(name)?;
     }
@@ -224,6 +262,36 @@ pub(crate) fn validate_service_name(name: &str) -> Result<()> {
     {
         anyhow::bail!(
             "invalid service name '{name}': only letters, digits, '.', '_', and '-' are allowed"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_binary_name(name: &str) -> Result<()> {
+    if name != "actrix" {
+        anyhow::bail!(
+            "unsupported binary name '{name}': actrix-deploy installs the managed binary as 'actrix'"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_version_label(version: &str) -> Result<()> {
+    if version.is_empty() {
+        anyhow::bail!("version label must not be empty");
+    }
+    if version.len() > 128 {
+        anyhow::bail!("version label is too long: max 128 bytes");
+    }
+    if version == "." || version == ".." || version.contains("..") {
+        anyhow::bail!("invalid version label '{version}': '.' and '..' segments are not allowed");
+    }
+    if !version
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
+    {
+        anyhow::bail!(
+            "invalid version label '{version}': only letters, digits, '.', '_', '-', and '+' are allowed"
         );
     }
     Ok(())
@@ -310,6 +378,8 @@ pub fn install_systemd_service(args: ServiceArgs) -> Result<()> {
 
     // Verify critical files exist before creating service
     verify_deployment_files(&install_config, &config_path)?;
+
+    configure_runtime_directory_ownership(&install_config, &service_user, &service_group)?;
 
     // Generate firewall changes and let user choose apply/skip
     configure_firewall_step(&config_path)?;
@@ -414,12 +484,14 @@ fn configure_service_user(
         Some(u) => u,
         None => prompt_text("Service user", DEFAULT_SERVICE_USER)?,
     };
+    validate_account_name("service user", &service_user)?;
 
     // Service group
     let service_group = match group_opt {
         Some(g) => g,
         None => prompt_text("Service group", DEFAULT_SERVICE_GROUP)?,
     };
+    validate_account_name("service group", &service_group)?;
 
     // Check if user exists
     if !user_exists(&service_user) {
@@ -744,7 +816,65 @@ fn configure_firewall_step(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn configure_runtime_directory_ownership(
+    install_config: &InstallConfig,
+    service_user: &str,
+    service_group: &str,
+) -> Result<()> {
+    println!("🔐 Runtime Directory Ownership");
+    println!("══════════════════════════════");
+    println!(
+        "Granting runtime write directories to {}:{} (leaving bin/ and releases/ root-owned).",
+        service_user, service_group
+    );
+
+    for dir in [
+        install_config.logs_dir(),
+        install_config.db_dir(),
+        install_config.shared_dir(),
+    ] {
+        create_directory_with_permissions(&dir, 0o755)?;
+        let output = Command::new("sudo")
+            .args([
+                "chown",
+                "-R",
+                &format!("{service_user}:{service_group}"),
+                &dir.to_string_lossy(),
+            ])
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to set ownership on {}: {}",
+                dir.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        let output = Command::new("sudo")
+            .args(["chmod", "750", &dir.to_string_lossy()])
+            .output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "Failed to set permissions on {}: {}",
+                dir.display(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    println!("✅ Runtime directories are writable by the service account");
+    println!();
+    Ok(())
+}
+
 pub(crate) fn validate_supported_install_dir(install_dir: &Path, operation: &str) -> Result<()> {
+    if !install_dir.is_absolute() {
+        anyhow::bail!(
+            "Unsupported installation directory for {}: '{}'. \
+             Use an absolute path under '/opt', such as '/opt/actrix'.",
+            operation,
+            install_dir.display()
+        );
+    }
+
     let normalized = normalize_install_dir(install_dir)?;
 
     // Reject the filesystem root and any path still containing `..` after
@@ -758,7 +888,17 @@ pub(crate) fn validate_supported_install_dir(install_dir: &Path, operation: &str
             operation
         );
     }
-    if normalized.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if normalized == Path::new("/opt") {
+        anyhow::bail!(
+            "Unsupported installation directory for {}: '/opt'. \
+             Use a dedicated child directory such as '/opt/actrix'.",
+            operation
+        );
+    }
+    if normalized
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         anyhow::bail!(
             "Unsupported installation directory for {}: '{}'. \
              Paths containing '..' are rejected; use a literal path such as '/opt/actrix'.",
@@ -787,15 +927,118 @@ pub(crate) fn validate_supported_install_dir(install_dir: &Path, operation: &str
         );
     }
 
+    if !normalized.starts_with(Path::new("/opt")) {
+        anyhow::bail!(
+            "Unsupported installation directory for {}: '{}'. \
+             actrix-deploy only manages root-owned application trees under '/opt'.",
+            operation,
+            normalized.display()
+        );
+    }
+
+    if has_existing_symlink_component(&normalized)? {
+        anyhow::bail!(
+            "Unsupported installation directory for {}: '{}'. \
+             Existing symlink components are rejected to avoid writing outside the intended tree.",
+            operation,
+            normalized.display()
+        );
+    }
+
     Ok(())
 }
 
 fn normalize_install_dir(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        Ok(path.to_path_buf())
-    } else {
-        Ok(std::env::current_dir()?.join(path))
+    Ok(path.to_path_buf())
+}
+
+fn has_existing_symlink_component(path: &Path) -> Result<bool> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => return Ok(true),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+            Err(err) => return Err(err.into()),
+        }
     }
+    Ok(false)
+}
+
+fn validate_account_name(label: &str, name: &str) -> Result<()> {
+    if name.is_empty() {
+        anyhow::bail!("{label} must not be empty");
+    }
+    if name.len() > 32 {
+        anyhow::bail!("{label} '{name}' is too long: max 32 bytes");
+    }
+
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        anyhow::bail!("invalid {label} '{name}': must start with an ASCII letter or '_'");
+    }
+
+    let rest: Vec<char> = chars.collect();
+    for (idx, c) in rest.iter().enumerate() {
+        if *c == '$' && idx == rest.len() - 1 {
+            continue;
+        }
+        if *c == '$' {
+            anyhow::bail!("invalid {label} '{name}': '$' is only allowed as the final character");
+        }
+        if !(c.is_ascii_alphanumeric() || matches!(*c, '_' | '-')) {
+            anyhow::bail!(
+                "invalid {label} '{name}': only letters, digits, '_', '-', and a final '$' are allowed"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_same_version_update(
+    config: &InstallConfig,
+    artifact: &ResolvedArtifact,
+    previous_version: &Option<String>,
+) -> Result<bool> {
+    if previous_version.as_deref() != Some(artifact.version.as_str()) {
+        return Ok(false);
+    }
+
+    existing_release_matches(
+        &config.release_binary_path(&artifact.version),
+        &artifact.path,
+        &artifact.version,
+    )
+}
+
+fn cleanup_resolved_artifact(artifact: &ResolvedArtifact) {
+    if !artifact.is_temp {
+        return;
+    }
+    if let Some(dir) = &artifact.temp_dir {
+        let _ = std::fs::remove_dir_all(dir);
+    } else {
+        let _ = std::fs::remove_file(&artifact.path);
+    }
+}
+
+fn existing_release_matches(target: &Path, incoming: &Path, version: &str) -> Result<bool> {
+    if !target.exists() {
+        return Ok(false);
+    }
+
+    let current_hash = sha256_of_file(target)?;
+    let incoming_hash = sha256_of_file(incoming)?;
+    if current_hash == incoming_hash {
+        return Ok(true);
+    }
+
+    anyhow::bail!(
+        "refusing to replace existing version {version} with different contents. \
+         Publish a new version label/tag instead so rollback can return to the previous binary.",
+    );
 }
 
 fn create_directory_with_permissions(path: &Path, mode: u32) -> Result<()> {
@@ -931,8 +1174,76 @@ mod tests {
     fn install_dir_rejects_root_and_parent_refs() {
         assert!(validate_supported_install_dir(Path::new("/opt/actrix"), "test").is_ok());
         assert!(validate_supported_install_dir(Path::new("/"), "test").is_err());
+        assert!(validate_supported_install_dir(Path::new("/opt"), "test").is_err());
         assert!(validate_supported_install_dir(Path::new("/opt/actrix/../.."), "test").is_err());
         assert!(validate_supported_install_dir(Path::new("/home/x/actrix"), "test").is_err());
         assert!(validate_supported_install_dir(Path::new("/tmp/actrix"), "test").is_err());
+        assert!(validate_supported_install_dir(Path::new("/etc/actrix"), "test").is_err());
+        assert!(validate_supported_install_dir(Path::new("actrix"), "test").is_err());
+    }
+
+    #[test]
+    fn validates_binary_version_and_account_names() {
+        assert!(validate_binary_name("actrix").is_ok());
+        assert!(validate_binary_name("../actrix").is_err());
+        assert!(validate_binary_name("actrix2").is_err());
+
+        assert!(validate_version_label("v0.4.3").is_ok());
+        assert!(validate_version_label("v0.4.3-rc.1+build_2").is_ok());
+        assert!(validate_version_label("../v0.4.3").is_err());
+        assert!(validate_version_label("v0..4").is_err());
+        assert!(validate_version_label("v0.4.3\n").is_err());
+
+        assert!(validate_account_name("user", "actrix").is_ok());
+        assert!(validate_account_name("user", "actor-rtc").is_ok());
+        assert!(validate_account_name("user", "actrix$").is_ok());
+        assert!(validate_account_name("user", "actrix$$").is_err());
+        assert!(validate_account_name("user", "1actrix").is_err());
+        assert!(validate_account_name("user", "actrix.name").is_err());
+    }
+
+    #[test]
+    fn same_version_update_skips_identical_binary_and_rejects_different_binary() {
+        let dir = std::env::temp_dir().join(format!(
+            "actrix-deploy-same-version-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = InstallConfig {
+            install_dir: dir.clone(),
+            binary_name: "actrix".to_string(),
+            add_to_path: false,
+        };
+        let installed = config.release_binary_path("v1.0.0");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, b"same").unwrap();
+
+        let incoming_same = dir.join("incoming-same");
+        std::fs::write(&incoming_same, b"same").unwrap();
+        let artifact = ResolvedArtifact {
+            path: incoming_same,
+            version: "v1.0.0".to_string(),
+            is_temp: false,
+            temp_dir: None,
+        };
+        assert!(
+            should_skip_same_version_update(&config, &artifact, &Some("v1.0.0".to_string()))
+                .unwrap()
+        );
+
+        let incoming_different = dir.join("incoming-different");
+        std::fs::write(&incoming_different, b"different").unwrap();
+        let artifact = ResolvedArtifact {
+            path: incoming_different,
+            version: "v1.0.0".to_string(),
+            is_temp: false,
+            temp_dir: None,
+        };
+        assert!(
+            should_skip_same_version_update(&config, &artifact, &Some("v1.0.0".to_string()))
+                .is_err()
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

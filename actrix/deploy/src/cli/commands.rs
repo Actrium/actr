@@ -34,9 +34,6 @@ pub enum Commands {
         /// Installation directory
         #[arg(long, default_value = "/opt/actrix")]
         install_dir: PathBuf,
-        /// Binary name
-        #[arg(long, default_value = "actrix")]
-        binary_name: String,
         /// Skip creating symlink in /usr/local/bin
         #[arg(long)]
         no_path: bool,

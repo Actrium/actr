@@ -29,12 +29,11 @@ fn main() -> Result<()> {
             skip_verify,
             from_local_build,
             install_dir,
-            binary_name,
             no_path,
         }) => {
             let install_config = InstallConfig {
                 install_dir,
-                binary_name,
+                binary_name: "actrix".to_string(),
                 add_to_path: !no_path,
             };
             let source = build_install_source(tag, latest, binary_path, from_local_build)?;

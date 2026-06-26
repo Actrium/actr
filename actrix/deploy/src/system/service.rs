@@ -78,23 +78,13 @@ fn wait_ready_with_probe(service: &str, seconds: u32, health_url: &str) -> Resul
         }
         sleep(Duration::from_secs(1));
     }
-    bail!(
-        "service '{service}' did not become ready within {seconds}s (health url: {health_url})"
-    )
+    bail!("service '{service}' did not become ready within {seconds}s (health url: {health_url})")
 }
 
 /// `true` if `url` returns an HTTP 2xx status.
 fn http_ok(url: &str) -> Result<bool> {
     let out = Command::new("curl")
-        .args([
-            "-sS",
-            "--fail",
-            "--max-time",
-            "3",
-            "-o",
-            "/dev/null",
-            url,
-        ])
+        .args(["-sS", "--fail", "--max-time", "3", "-o", "/dev/null", url])
         .output()?;
     Ok(out.status.success())
 }

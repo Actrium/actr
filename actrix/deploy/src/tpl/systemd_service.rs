@@ -411,7 +411,8 @@ impl SystemdServiceTemplate {
         paths.into_iter().collect()
     }
 
-    fn requires_low_port_capability(&self) -> bool {        const DEFAULT_HTTP_PORT: u16 = 8080;
+    fn requires_low_port_capability(&self) -> bool {
+        const DEFAULT_HTTP_PORT: u16 = 8080;
         const DEFAULT_HTTPS_PORT: u16 = 8443;
         const DEFAULT_ICE_PORT: u16 = 3478;
 
@@ -451,7 +452,10 @@ impl SystemdServiceTemplate {
 /// capability block is the only intentionally multi-line substitution and is
 /// not passed through this check.
 fn assert_single_line(label: &str, value: &str) -> Result<()> {
-    if value.chars().any(|c| c == '\n' || c == '\r' || c.is_control()) {
+    if value
+        .chars()
+        .any(|c| c == '\n' || c == '\r' || c.is_control())
+    {
         anyhow::bail!(
             "invalid {label} for systemd unit: contains a newline or control character \
              (refusing to generate a unit that could be injected via '{}')",

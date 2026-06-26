@@ -16,14 +16,19 @@
 
 set -e
 
-echo -e "${YELLOW}⚠️  install.sh is LEGACY and lacks checksum verification / releases model.${NC}"
-echo -e "${YELLOW}    Use the 'deploy' tool instead: deploy service / deploy update.${NC}"
-
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
+
+echo -e "${YELLOW}⚠️  install.sh is LEGACY and lacks checksum verification / releases model.${NC}"
+echo -e "${YELLOW}    Use the 'deploy' tool instead: deploy service / deploy update.${NC}"
+if [ "${ACTRIX_ALLOW_LEGACY_INSTALL_SH:-}" != "1" ]; then
+    echo -e "${RED}Refusing to run legacy install.sh by default.${NC}"
+    echo "Set ACTRIX_ALLOW_LEGACY_INSTALL_SH=1 only for emergency/manual legacy recovery."
+    exit 1
+fi
 
 # Configuration
 INSTALL_DIR="/opt/actrix"
