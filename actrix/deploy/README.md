@@ -1,7 +1,7 @@
 # Actrix 部署工具（actrix-deploy）
 
-`actrix-deploy` 是 actrix 服务器部署的唯一入口：从 GitHub Release 或本地二进制下载、
-校验、安装、升级和回滚 actrix，并部署 systemd 服务。不依赖目标机器上的源码或
+`actrix-deploy` 是 actrix 二进制安装与 systemd 部署的统一工具：从 GitHub Release 下载或
+使用本地二进制，校验、安装、升级和回滚 actrix，并部署 systemd 服务。不依赖目标机器上的源码或
 Rust toolchain。
 
 ## 安装模型
@@ -38,7 +38,7 @@ sudo install -m 0755 actrix-deploy-linux-x86_64 /usr/local/sbin/actrix-deploy
 ### 前置条件
 
 - systemd Linux（Ubuntu 24.04 已验证），x86_64 或 arm64，root 权限
-- 开放端口：HTTP（如 9080）、HTTPS（如 443）、ICE/TURN（3478）、relay 范围（49152-65535）
+- 开放端口：HTTP（如 8080）、HTTPS（如 443）、ICE/TURN（3478）、relay 范围（49152-65535）
 - 域名 DNS 指向本机 + TLS 证书
 - 准备好：`actrix-deploy` 工具、`actrix` 二进制、`config.toml`、证书
 
@@ -139,14 +139,6 @@ sudo actrix-deploy service --service-name actrix-b --install-dir /opt/actrix-b \
 ```
 
 两个 unit 名不同，各自独立升级/回滚，互不影响。
-
-### 已知限制
-
-- **bootstrap 缺口**：`install --tag` 需要带 `.sha256` sidecar 的 release。现有 tag 没有，
-  新部署目前用 `--binary-path`（自建二进制）或 `--skip-verify`；待 CI 重新发布带 sidecar 的
-  release 后 `--tag` 才可直接用。
-- **actrix 二进制来源**：构建机 `cargo build --release --bin actrix` 编出后传过去，或从
-  release assets 下载（缺 sidecar 时需 `--skip-verify`）。
 
 ## 命令
 
