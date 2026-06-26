@@ -136,13 +136,10 @@ fn curl_text(url: &str, token: Option<&str>, accept: Option<&str>) -> Result<Str
 }
 
 fn curl_download(url: &str, token: Option<&str>, accept: Option<&str>, dest: &Path) -> Result<()> {
-    let (args, stdin_cfg) = curl_args(url, token, accept, Some(dest));
-    let output = curl_exec(&args, stdin_cfg.as_deref())?;
-    if !output.status.success() {
-        bail!(
-            "curl download failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
+    let (args, stdin_cfg) = curl_download_args(url, token, accept, dest);
+    let status = curl_exec_streaming(&args, stdin_cfg.as_deref())?;
+    if !status.success() {
+        bail!("curl download failed with status {status}");
     }
     Ok(())
 }
@@ -164,6 +161,28 @@ fn curl_exec(args: &[String], stdin_config: Option<&str>) -> Result<std::process
         }
     }
     child.wait_with_output().context("failed to wait for curl")
+}
+
+/// Spawn curl for a download and let curl's progress bar write to stderr.
+fn curl_exec_streaming(
+    args: &[String],
+    stdin_config: Option<&str>,
+) -> Result<std::process::ExitStatus> {
+    let mut cmd = Command::new("curl");
+    cmd.args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit());
+    if stdin_config.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
+    let mut child = cmd.spawn().context("failed to invoke curl")?;
+    if let Some(cfg) = stdin_config {
+        use std::io::Write;
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(cfg.as_bytes())?;
+        }
+    }
+    child.wait().context("failed to wait for curl")
 }
 
 /// Build curl args plus an optional stdin config holding the bearer token.
@@ -192,6 +211,37 @@ fn curl_args(
     let stdin_config = token.map(|t| {
         // curl config file syntax: `header = "value"`. GitHub tokens are
         // alphanumeric, so quoting is safe.
+        args.insert(0, "--config".into());
+        args.insert(1, "-".into());
+        format!("header = \"Authorization: Bearer {t}\"\n")
+    });
+
+    args.push(url.into());
+    (args, stdin_config)
+}
+
+fn curl_download_args(
+    url: &str,
+    token: Option<&str>,
+    accept: Option<&str>,
+    output: &Path,
+) -> (Vec<String>, Option<String>) {
+    let mut args: Vec<String> = vec![
+        "-fL".into(),
+        "--progress-bar".into(),
+        "--retry".into(),
+        "3".into(),
+    ];
+    args.push("-H".into());
+    args.push("User-Agent: actrix-deploy".into());
+    if let Some(accept) = accept {
+        args.push("-H".into());
+        args.push(format!("Accept: {accept}"));
+    }
+    args.push("-o".into());
+    args.push(output.to_string_lossy().into_owned());
+
+    let stdin_config = token.map(|t| {
         args.insert(0, "--config".into());
         args.insert(1, "-".into());
         format!("header = \"Authorization: Bearer {t}\"\n")
@@ -248,5 +298,27 @@ mod tests {
         let json: ReleaseJson = serde_json::from_str(body).unwrap();
         assert_eq!(json.tag_name, "v0.4.3");
         assert_eq!(json.assets.len(), 1);
+    }
+
+    #[test]
+    fn download_args_enable_progress_without_leaking_token() {
+        let (args, cfg) = curl_download_args(
+            "https://example.com/asset",
+            Some("example-value"),
+            Some("application/octet-stream"),
+            Path::new("/tmp/asset"),
+        );
+
+        assert!(args.contains(&"--progress-bar".to_string()));
+        assert!(!args.iter().any(|arg| arg.contains("example-value")));
+        assert!(cfg.unwrap().contains("Authorization: Bearer example-value"));
+    }
+
+    #[test]
+    fn text_args_remain_silent() {
+        let (args, _cfg) = curl_args("https://example.com/api", None, None, None);
+
+        assert!(args.contains(&"-sSLf".to_string()));
+        assert!(!args.contains(&"--progress-bar".to_string()));
     }
 }

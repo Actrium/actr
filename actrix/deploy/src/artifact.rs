@@ -114,6 +114,7 @@ pub fn resolve(
                 .find_asset(&sha_name)
                 .ok_or_else(|| anyhow::anyhow!("release {version} has no `{sha_name}` sidecar"))?;
             let sha_dest = staging.join(&sha_name);
+            println!("⬇️  Downloading {} ...", sha_asset.name);
             download_asset(sha_asset, token, &sha_dest)?;
             let text = std::fs::read_to_string(&sha_dest).with_context(|| {
                 format!("failed to read downloaded sha256: {}", sha_dest.display())
