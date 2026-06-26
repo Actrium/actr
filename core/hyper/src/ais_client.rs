@@ -183,13 +183,13 @@ impl AisClient {
         let response = tokio::task::spawn(pending)
             .await
             .map_err(|e| {
-            error!(url = %url, error = %e, "AIS spawn failed");
-            HyperError::AisBootstrapFailed(format!("spawn failed: {e}"))
-        })?
-        .map_err(|e| {
-            error!(url = %url, error = %e, "AIS HTTP request failed");
-            HyperError::AisBootstrapFailed(format!("HTTP request failed: {e}"))
-        })?;
+                error!(url = %url, error = %e, "AIS spawn failed");
+                HyperError::AisBootstrapFailed(format!("spawn failed: {e}"))
+            })?
+            .map_err(|e| {
+                error!(url = %url, error = %e, "AIS HTTP request failed");
+                HyperError::AisBootstrapFailed(format!("HTTP request failed: {e}"))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
