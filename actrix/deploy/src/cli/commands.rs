@@ -121,6 +121,9 @@ pub enum Commands {
         /// Installation directory
         #[arg(long, default_value = "/opt/actrix")]
         install_dir: PathBuf,
+        /// Service to inspect for the actually running binary/version
+        #[arg(long)]
+        service_name: Option<String>,
     },
     /// Uninstall the application (selective; preserves data/config by default)
     Uninstall {

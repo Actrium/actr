@@ -20,6 +20,7 @@ Rust toolchain。
 systemd 的 `ExecStart` 固定指向 `bin/actrix`，所以切换版本只需重指软链接 + 重启服务，
 **永不修改 systemd unit**。配置、数据库、日志、证书放在版本目录之外，切换版本不影响状态。
 `update` 和 `rollback` 必须显式传 `--restart-service`，工具不会只切软链接而留下旧进程继续运行。
+重启后工具会核对 systemd `MainPID` 的真实可执行文件是否等于目标 release binary，不一致则失败并回滚。
 
 版本目录是不可变的：同一个 `<version>` 如果已存在，只有二进制 checksum 完全一致时才复用；
 如果同版本内容不同，工具会拒绝覆盖。需要发布新内容时请使用新的 tag/version，保证回滚目标仍然可靠。
@@ -111,7 +112,7 @@ enable → start；并询问是否应用 ufw 防火墙规则。
 ### 5. 验证
 
 ```bash
-deploy status --install-dir /opt/actrix            # 当前版本 + 软链 + 已装版本
+deploy status --install-dir /opt/actrix --service-name actrix  # 当前版本 + 运行版本 + 已装版本
 systemctl is-active actrix                          # active
 journalctl -u actrix -f                             # 日志
 curl -k https://localhost/ais/health                # 健康检查（端口见 config）
@@ -178,8 +179,8 @@ sudo deploy update --tag v0.4.4 --install-dir /opt/actrix \
 sudo deploy rollback --to v0.4.3 --install-dir /opt/actrix \
   --restart-service actrix2 --health-url http://127.0.0.1:8080/health
 
-# 查看当前版本与已安装版本
-deploy status --install-dir /opt/actrix
+# 查看当前版本、运行版本与已安装版本
+deploy status --install-dir /opt/actrix --service-name actrix2
 
 # 卸载（分组确认；默认保留 db/logs/shared 和配置）
 sudo deploy uninstall --install-dir /opt/actrix --service-name actrix2
@@ -195,7 +196,7 @@ sudo deploy uninstall --install-dir /opt/actrix --service-name actrix2
 - `--version` 只用于本地二进制/本地构建；Release 模式使用 GitHub Release 的 tag。
 - version 只能包含字母、数字、`.`、`_`、`-`、`+`，不能包含 `/`、`\`、空白或 `..`。
 - 同一 version 内容不可变：已安装的 version 如果 checksum 不同，`install`/`update` 都会拒绝覆盖。
-- `update`/`rollback` 必须指定 `--restart-service`，确保活跃软链、运行进程和健康检查处在同一个发布动作里。
+- `update`/`rollback` 必须指定 `--restart-service`，确保活跃软链、运行进程和健康检查处在同一个发布动作里；重启后会校验实际运行的 `/proc/$MAINPID/exe`。
 
 TODO: GitHub Release downloads currently verify SHA-256 integrity only. They do not verify publisher authenticity. Before enabling unattended auto-upgrade, add deploy-side publisher signature verification with Sigstore/cosign or GPG.
 

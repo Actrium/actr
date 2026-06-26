@@ -175,10 +175,12 @@ pub fn update_service(
     install_result?;
 
     let health = resolve_health_url(health_url.as_deref());
-    if let Err(err) = restart_and_wait(&restart_service, health.as_deref()) {
+    let target_binary = config.release_binary_path(&artifact.version);
+    if let Err(err) = restart_and_wait(&restart_service, health.as_deref(), &target_binary) {
         println!("❌ Service did not come up on {}: {err}", artifact.version);
+        let rollback_binary = config.release_binary_path(&prev);
         let rollback_result = super::releases::rollback_to(&config, &prev)
-            .and_then(|_| restart_and_wait(&restart_service, health.as_deref()));
+            .and_then(|_| restart_and_wait(&restart_service, health.as_deref(), &rollback_binary));
         match rollback_result {
             Ok(()) => {
                 anyhow::bail!(
@@ -220,15 +222,21 @@ pub fn rollback_command(
     validate_service_name(&restart_service)?;
     super::releases::rollback_to(&config, &to_version)?;
     let health = resolve_health_url(health_url.as_deref());
-    restart_and_wait(&restart_service, health.as_deref())?;
+    let target_binary = config.release_binary_path(&to_version);
+    restart_and_wait(&restart_service, health.as_deref(), &target_binary)?;
     println!("✅ Service '{restart_service}' active on version {to_version}");
     Ok(())
 }
 
-fn restart_and_wait(service_name: &str, health_url: Option<&str>) -> Result<()> {
+fn restart_and_wait(
+    service_name: &str,
+    health_url: Option<&str>,
+    expected_binary: &Path,
+) -> Result<()> {
     super::service::restart(service_name)?;
     let wait = super::service::health_wait_seconds();
-    super::service::wait_ready(service_name, wait, health_url)
+    super::service::wait_ready(service_name, wait, health_url)?;
+    super::service::assert_running_binary(service_name, expected_binary)
 }
 
 /// Resolve a readiness-probe URL from an explicit arg or `ACTRIX_HEALTH_URL`.
@@ -295,20 +303,27 @@ pub(crate) fn validate_version_label(version: &str) -> Result<()> {
 }
 
 /// Print the active version, symlink target, and installed versions.
-pub fn status_command(install_dir: PathBuf) -> Result<()> {
+pub fn status_command(install_dir: PathBuf, service_name: Option<String>) -> Result<()> {
     let config = InstallConfig {
         install_dir,
         binary_name: "actrix".to_string(),
         add_to_path: false,
     };
+    if let Some(service) = service_name.as_deref() {
+        validate_service_name(service)?;
+    }
     println!("Install dir:    {}", config.install_dir.display());
+    let current_target = super::releases::current_target(&config)?;
     match super::releases::current_version(&config)? {
         Some(v) => println!("Current version: {v}"),
         None => println!("Current version: (none — no active symlink)"),
     }
-    match super::releases::current_target(&config)? {
+    match &current_target {
         Some(t) => println!("{} -> {}", config.binary_path().display(), t.display()),
         None => println!("{} -> (missing)", config.binary_path().display()),
+    }
+    if let Some(service) = service_name {
+        print_running_service_status(&config, &service, current_target.as_deref());
     }
     let versions = super::releases::list_versions(&config)?;
     if versions.is_empty() {
@@ -317,6 +332,40 @@ pub fn status_command(install_dir: PathBuf) -> Result<()> {
         println!("Installed versions: {}", versions.join(", "));
     }
     Ok(())
+}
+
+fn print_running_service_status(
+    config: &InstallConfig,
+    service_name: &str,
+    active_target: Option<&Path>,
+) {
+    println!("Service:        {service_name}");
+    match super::service::running_binary(service_name) {
+        Ok(binary) => {
+            println!("Running binary: {}", binary.display());
+            match super::releases::version_from_binary_path(config, &canonicalize_or_self(&binary))
+            {
+                Ok(version) => println!("Running version: {version}"),
+                Err(err) => println!("Running version: (unmanaged: {err})"),
+            }
+            if let Some(active_target) = active_target
+                && canonicalize_or_self(&binary) != canonicalize_or_self(active_target)
+            {
+                println!(
+                    "⚠️  Running binary does not match active symlink target: {}",
+                    active_target.display()
+                );
+            }
+        }
+        Err(err) => {
+            println!("Running binary: (unavailable: {err})");
+            println!("Running version: (unavailable)");
+        }
+    }
+}
+
+fn canonicalize_or_self(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Locate the local `target/release/actrix` build (dev `--from-local-build` only).

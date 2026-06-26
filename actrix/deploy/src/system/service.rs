@@ -4,7 +4,8 @@
 //! came up. `update` never creates or edits systemd units — it only restarts
 //! already-deployed services.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread::sleep;
 use std::time::Duration;
@@ -63,6 +64,64 @@ pub fn wait_ready(service: &str, seconds: u32, health_url: Option<&str>) -> Resu
     }
 }
 
+/// Return the executable path currently running as a systemd service's MainPID.
+pub fn running_binary(service: &str) -> Result<PathBuf> {
+    let pid = main_pid(service)?;
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .with_context(|| format!("failed to inspect running binary for service '{service}'"))
+}
+
+/// Verify that systemd restarted the service onto the expected release binary.
+pub fn assert_running_binary(service: &str, expected_binary: &Path) -> Result<()> {
+    let actual = canonicalize_or_self(running_binary(service)?);
+    let expected = std::fs::canonicalize(expected_binary).with_context(|| {
+        format!(
+            "failed to canonicalize expected binary {}",
+            expected_binary.display()
+        )
+    })?;
+
+    if actual != expected {
+        bail!(
+            "service '{service}' is running {}, expected {}. Check that ExecStart points at the managed bin/actrix path and restart the service again.",
+            actual.display(),
+            expected.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn main_pid(service: &str) -> Result<u32> {
+    let out = Command::new("systemctl")
+        .args(["show", service, "-p", "MainPID", "--value"])
+        .output()
+        .with_context(|| format!("failed to query MainPID for service '{service}'"))?;
+    if !out.status.success() {
+        bail!(
+            "systemctl show {service} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    parse_main_pid(&out.stdout, service)
+}
+
+fn parse_main_pid(output: &[u8], service: &str) -> Result<u32> {
+    let text = String::from_utf8_lossy(output);
+    let trimmed = text.trim();
+    let pid = trimmed.parse::<u32>().with_context(|| {
+        format!("systemctl returned invalid MainPID '{trimmed}' for service '{service}'")
+    })?;
+    if pid == 0 {
+        bail!("service '{service}' has no running MainPID");
+    }
+    Ok(pid)
+}
+
+fn canonicalize_or_self(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
 fn wait_ready_with_probe(service: &str, seconds: u32, health_url: &str) -> Result<()> {
     for _ in 0..seconds {
         if is_active(service) {
@@ -98,4 +157,26 @@ pub fn health_wait_seconds() -> u32 {
         .and_then(|s| s.parse().ok())
         .map(|n: u32| n.min(MAX))
         .unwrap_or(DEFAULT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_main_pid() {
+        assert_eq!(parse_main_pid(b"1234\n", "actrix").unwrap(), 1234);
+    }
+
+    #[test]
+    fn rejects_zero_main_pid() {
+        let err = parse_main_pid(b"0\n", "actrix").unwrap_err();
+        assert!(err.to_string().contains("no running MainPID"));
+    }
+
+    #[test]
+    fn rejects_invalid_main_pid() {
+        let err = parse_main_pid(b"abc\n", "actrix").unwrap_err();
+        assert!(err.to_string().contains("invalid MainPID"));
+    }
 }

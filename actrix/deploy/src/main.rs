@@ -91,7 +91,10 @@ fn main() -> Result<()> {
             restart_service,
             health_url,
         }) => system::rollback_command(install_dir, to, restart_service, health_url),
-        Some(Commands::Status { install_dir }) => system::status_command(install_dir),
+        Some(Commands::Status {
+            install_dir,
+            service_name,
+        }) => system::status_command(install_dir, service_name),
         Some(Commands::Uninstall {
             install_dir,
             service_name,

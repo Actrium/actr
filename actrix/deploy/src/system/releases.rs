@@ -102,6 +102,11 @@ pub fn current_version(config: &InstallConfig) -> Result<Option<String>> {
     Ok(Some(version_from_release_binary(config, &target)?))
 }
 
+/// Derive a managed release version from a concrete release binary path.
+pub fn version_from_binary_path(config: &InstallConfig, target: &Path) -> Result<String> {
+    version_from_release_binary(config, target)
+}
+
 /// List installed versions (subdirectories of `releases/`), sorted.
 pub fn list_versions(config: &InstallConfig) -> Result<Vec<String>> {
     let dir = config.releases_dir();
