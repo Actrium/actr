@@ -118,7 +118,7 @@ impl AisClient {
             .body(body)
             .send();
 
-        let response = tokio::task::spawn(async move { pending.await })
+        let response = tokio::task::spawn(pending)
             .await
             .map_err(|e| RenewError::Retryable(format!("spawn failed: {e}")))?
             .map_err(|e| RenewError::Retryable(format!("HTTP request failed: {e}")))?;
@@ -180,11 +180,9 @@ impl AisClient {
         // nested combinator chain is polled inline.
         let pending = request_builder.body(body).send();
 
-        let response = tokio::task::spawn(async move {
-            pending.await
-        })
-        .await
-        .map_err(|e| {
+        let response = tokio::task::spawn(pending)
+            .await
+            .map_err(|e| {
             error!(url = %url, error = %e, "AIS spawn failed");
             HyperError::AisBootstrapFailed(format!("spawn failed: {e}"))
         })?
