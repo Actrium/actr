@@ -37,7 +37,7 @@ actr-platform-traits.workspace = true
 actr-config = { workspace = true, optional = true }
 
 # === Async Runtime (cross-platform minimal) ===
-tokio = { version = "1.48", default-features = false, features = ["sync", "macros"] }
+tokio = { version = "1.48", default-features = false, features = ["sync", "macros", "rt"] }
 async-trait.workspace = true
 futures-util.workspace = true
 

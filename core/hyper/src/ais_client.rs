@@ -108,14 +108,19 @@ impl AisClient {
 
         debug!(url = %url, body_len = body.len(), "sending AIS renew request");
 
-        let response = self
+        // Spawn onto tokio worker to avoid stack overflow on GCD cooperative
+        // queues (same root cause as do_register).
+        let pending = self
             .http
             .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .header("Accept", "application/x-protobuf")
             .body(body)
-            .send()
+            .send();
+
+        let response = tokio::task::spawn(pending)
             .await
+            .map_err(|e| RenewError::Retryable(format!("spawn failed: {e}")))?
             .map_err(|e| RenewError::Retryable(format!("HTTP request failed: {e}")))?;
 
         let status = response.status();
@@ -145,6 +150,11 @@ impl AisClient {
     ///
     /// Encodes a RegisterRequest as protobuf and POSTs it to `{endpoint}/register`,
     /// then decodes the response as RegisterResponse.
+    ///
+    /// The HTTP call is spawned onto the tokio runtime to avoid stack overflow
+    /// when polled from a GCD cooperative queue (UNIFFI async bridge context).
+    /// reqwest/hyper's deeply nested combinator chain (~140 frames of generic
+    /// state machines) exceeds GCD thread stack limits on iOS simulator.
     async fn do_register(&self, req: RegisterRequest) -> HyperResult<RegisterResponse> {
         let base = self.endpoint.to_string().trim_end_matches('/').to_string();
         let url = format!("{}/register", base);
@@ -165,10 +175,21 @@ impl AisClient {
             request_builder = request_builder.header("x-actrix-realm-secret", secret);
         }
 
-        let response = request_builder.body(body).send().await.map_err(|e| {
-            error!(url = %url, error = %e, "AIS HTTP request failed");
-            HyperError::AisBootstrapFailed(format!("HTTP request failed: {e}"))
-        })?;
+        // Spawn the HTTP work onto a tokio worker thread to avoid overflowing
+        // the GCD cooperative queue's limited stack when reqwest/hyper's deeply
+        // nested combinator chain is polled inline.
+        let pending = request_builder.body(body).send();
+
+        let response = tokio::task::spawn(pending)
+            .await
+            .map_err(|e| {
+                error!(url = %url, error = %e, "AIS spawn failed");
+                HyperError::AisBootstrapFailed(format!("spawn failed: {e}"))
+            })?
+            .map_err(|e| {
+                error!(url = %url, error = %e, "AIS HTTP request failed");
+                HyperError::AisBootstrapFailed(format!("HTTP request failed: {e}"))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
