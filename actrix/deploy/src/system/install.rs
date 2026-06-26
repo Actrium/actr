@@ -1036,6 +1036,7 @@ fn existing_release_matches(target: &Path, incoming: &Path, version: &str) -> Re
     if !target.exists() {
         return Ok(false);
     }
+    ensure_regular_file_not_symlink(target, "existing release binary")?;
 
     let current_hash = sha256_of_file(target)?;
     let incoming_hash = sha256_of_file(incoming)?;
@@ -1050,6 +1051,13 @@ fn existing_release_matches(target: &Path, incoming: &Path, version: &str) -> Re
 }
 
 fn create_directory_with_permissions(path: &Path, mode: u32) -> Result<()> {
+    if has_existing_symlink_component(path)? {
+        anyhow::bail!(
+            "Refusing to create or manage directory {} because it contains an existing symlink component",
+            path.display()
+        );
+    }
+
     if path.exists() {
         return Ok(());
     }
@@ -1065,6 +1073,24 @@ fn create_directory_with_permissions(path: &Path, mode: u32) -> Result<()> {
     }
 
     set_file_permissions(path, mode)?;
+    Ok(())
+}
+
+fn ensure_regular_file_not_symlink(path: &Path, label: &str) -> Result<()> {
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|err| anyhow::anyhow!("failed to inspect {label} {}: {err}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!(
+            "refusing to use {label} {} because it is a symlink",
+            path.display()
+        );
+    }
+    if !meta.file_type().is_file() {
+        anyhow::bail!(
+            "refusing to use {label} {} because it is not a regular file",
+            path.display()
+        );
+    }
     Ok(())
 }
 
@@ -1166,6 +1192,8 @@ fn prompt_confirm(prompt: &str, default: bool) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     #[test]
     fn service_name_rejects_traversal_and_whitespace() {
@@ -1251,6 +1279,55 @@ mod tests {
             should_skip_same_version_update(&config, &artifact, &Some("v1.0.0".to_string()))
                 .is_err()
         );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_directories_reject_symlink_components() {
+        let dir = std::env::temp_dir().join(format!(
+            "actrix-deploy-managed-dir-symlink-test-{}",
+            std::process::id()
+        ));
+        let outside = std::env::temp_dir().join(format!(
+            "actrix-deploy-managed-dir-symlink-outside-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, dir.join("releases")).unwrap();
+
+        assert!(create_directory_with_permissions(&dir.join("releases/v1.0.0"), 0o755).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn existing_release_rejects_symlink_binary() {
+        let dir = std::env::temp_dir().join(format!(
+            "actrix-deploy-release-symlink-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = InstallConfig {
+            install_dir: dir.clone(),
+            binary_name: "actrix".to_string(),
+            add_to_path: false,
+        };
+        let outside = dir.join("outside-actrix");
+        let incoming = dir.join("incoming-actrix");
+        let target = config.release_binary_path("v1.0.0");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&outside, b"same").unwrap();
+        std::fs::write(&incoming, b"same").unwrap();
+        symlink(&outside, &target).unwrap();
+
+        assert!(existing_release_matches(&target, &incoming, "v1.0.0").is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

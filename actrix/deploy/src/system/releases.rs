@@ -16,12 +16,7 @@ use crate::config::InstallConfig;
 /// concurrent readers see either the old or new version, never a gap.
 pub fn switch_active_symlink(config: &InstallConfig, target: &Path) -> Result<()> {
     let version = version_from_release_binary(config, target)?;
-    if !target.exists() {
-        bail!(
-            "release {version} is not installed (missing {})",
-            target.display()
-        );
-    }
+    ensure_release_binary(target, &version)?;
 
     let link = config.binary_path();
     let tmp = config
@@ -196,6 +191,28 @@ fn version_from_release_binary(config: &InstallConfig, target: &Path) -> Result<
     Ok(version.to_string())
 }
 
+fn ensure_release_binary(target: &Path, version: &str) -> Result<()> {
+    let meta = std::fs::symlink_metadata(target).map_err(|err| {
+        anyhow::anyhow!(
+            "release {version} is not installed or cannot be inspected ({}): {err}",
+            target.display()
+        )
+    })?;
+    if meta.file_type().is_symlink() {
+        bail!(
+            "invalid release {version}: {} is a symlink; release binaries must be regular files",
+            target.display()
+        );
+    }
+    if !meta.file_type().is_file() {
+        bail!(
+            "invalid release {version}: {} is not a regular file",
+            target.display()
+        );
+    }
+    Ok(())
+}
+
 fn is_valid_version_label(version: &str) -> bool {
     !version.is_empty()
         && version.len() <= 128
@@ -315,6 +332,27 @@ mod tests {
         symlink(c.release_binary_path("v1.2.3"), c.binary_path()).unwrap();
 
         assert!(current_version(&c).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn switch_rejects_symlink_release_binary() {
+        let dir = std::env::temp_dir().join(format!(
+            "actrix-deploy-switch-symlink-release-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let c = cfg(&dir);
+        let target = c.release_binary_path("v1.2.3");
+        let outside = dir.join("outside-actrix");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(c.bin_dir()).unwrap();
+        std::fs::write(&outside, b"binary").unwrap();
+        symlink(&outside, &target).unwrap();
+
+        assert!(switch_active_symlink(&c, &target).is_err());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
