@@ -137,7 +137,7 @@ pub fn update_service(
     let token = std::env::var("GITHUB_TOKEN").ok();
     let prev = super::releases::current_version(&config)?.ok_or_else(|| {
         anyhow::anyhow!(
-            "cannot update without an active version at {}; run `actrix-deploy install` first",
+            "cannot update without an active version at {}; run `deploy install` first",
             config.binary_path().display()
         )
     })?;
