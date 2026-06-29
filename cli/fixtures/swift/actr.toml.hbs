@@ -1,0 +1,26 @@
+edition = 1
+
+[signaling]
+url = "{{{SIGNALING_URL}}}/signaling/ws"
+
+[ais_endpoint]
+url = "{{{AIS_ENDPOINT_URL}}}"
+
+[deployment]
+realm_id = {{REALM_ID}}
+
+[discovery]
+visible = true
+
+[observability]
+filter_level = "debug"
+tracing_enabled = true
+tracing_endpoint = "http://127.0.0.1:4317"
+tracing_service_name = "{{PROJECT_NAME}}"
+
+[webrtc]
+force_relay = false
+stun_urls = {{{STUN_URLS}}}
+turn_urls = {{{TURN_URLS}}}
+
+[acl]

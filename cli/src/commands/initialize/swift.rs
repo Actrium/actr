@@ -77,11 +77,10 @@ impl ProjectInitializer for SwiftInitializer {
                 template_context.project_name_pascal
             );
         }
-        info!(
-            "  # Implement business logic in {}/ActrService.swift",
-            template_context.project_name_pascal
-        );
-        info!("  xcodegen generate");
+        info!("  # Generated/ contains immutable protocol and dispatch code");
+        info!("  # <ServiceName>HandlerImpl.swift contains your RPC implementation");
+        info!("  # <ServiceName>LifecycleAdapter.swift contains lifecycle customization");
+        info!("  # ActrService.swift contains the linked ActrNode bootstrap");
         info!("  open {}.xcodeproj", template_context.project_name_pascal);
         info!("  # If you update project.yml, rerun: xcodegen generate");
     }

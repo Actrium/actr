@@ -16,6 +16,10 @@ const ACTR_SERVICE_TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/swift/ActrService.swift.hbs"
 ));
+const HANDLER_IMPL_TEMPLATE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/swift/HandlerImpl.swift.hbs"
+));
 const LIFECYCLE_ADAPTER_TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/fixtures/swift/LifecycleAdapter.swift.hbs"
@@ -428,64 +432,28 @@ impl LanguageGenerator for SwiftGenerator {
             )));
         }
 
-        if let Some(service) = services.first_mut() {
-            service.workload_name = self
-                .extract_workload_name_for_service(&context.output, &service.name)
-                .unwrap_or_else(|| {
-                    let fallback = format!("{}Workload", service.name);
-                    warn!(
-                        "Could not find workload name for service '{}' in generated *.actor.swift files, \
-                        falling back to '{}'. Run `actr gen` infrastructure step first.",
-                        service.name, fallback
-                    );
-                    fallback
-                });
-        }
+        let service = services.first_mut().ok_or_else(|| {
+            ActrCliError::config_error(
+                "Swift linked scaffold generation requires exactly one local protobuf service. \
+                 Add a local service or use --no-scaffold for infrastructure-only generation."
+                    .to_string(),
+            )
+        })?;
+        service.workload_name = self
+            .extract_workload_name_for_service(&context.output, &service.name)
+            .unwrap_or_else(|| {
+                let fallback = format!("{}Workload", service.name);
+                warn!(
+                    "Could not find workload name for service '{}' in generated *.actor.swift files, \
+                    falling back to '{}'. Run `actr gen` infrastructure step first.",
+                    service.name, fallback
+                );
+                fallback
+            });
 
-        // 2. Determine service name for scaffolding
-        let service_name = if let Some(service) = services.first() {
-            service.name.clone()
-        } else if let Some(dep) = context.config.dependencies.first() {
-            let type_name = dep
-                .actr_type
-                .as_ref()
-                .map(|t| t.name.clone())
-                .or_else(|| dep.service.as_ref().map(|service| service.name.clone()))
-                .unwrap_or_else(|| dep.alias.clone());
-
-            debug!("Using service name from dependencies: {}", type_name);
-            type_name
-        } else {
-            // Fallback to the first proto file name
-            let guessed_name = context
-                .proto_files
-                .first()
-                .and_then(|f| f.file_stem())
-                .and_then(|s| s.to_str())
-                .map(to_pascal_case)
-                .map(|s| format!("{}Service", s))
-                .unwrap_or_else(|| "UnknownService".to_string());
-
-            debug!("Fallback to guessed service name: {}", guessed_name);
-            guessed_name
-        };
-
-        // Try to read workload name from generated local.actor.swift file
-        let workload_name = if let Some(service) = services.first() {
-            service.workload_name.clone()
-        } else {
-            self.extract_first_workload_name_from_generated_file(&context.output)
-                .unwrap_or_else(|| {
-                    let fallback =
-                        format!("{}Workload", to_pascal_case(&context.config.package.name));
-                    warn!(
-                        "Could not find workload name in generated *.actor.swift files, \
-                        falling back to '{}'. Run `actr gen` infrastructure step first.",
-                        fallback
-                    );
-                    fallback
-                })
-        };
+        let service = service.clone();
+        let service_name = service.name.clone();
+        let workload_name = service.workload_name.clone();
 
         let scaffold_content = self.generate_scaffold_content(
             &context.config.package.actr_type.manufacturer,
@@ -546,19 +514,54 @@ impl LanguageGenerator for SwiftGenerator {
             scaffold_files.push(user_file_path);
         }
 
-        // Generate the LifecycleAdapter scaffold (Workload protocol conformance).
-        // File name mirrors the class name: `<ServiceName>LifecycleAdapter.swift`.
-        let adapter_file_name = format!("{service_name}LifecycleAdapter.swift");
-        let adapter_file_path = layout
+        let scaffold_root = layout
             .as_ref()
-            .map(|l| l.app_root.join(&adapter_file_name))
+            .map(|layout| layout.app_root.clone())
             .unwrap_or_else(|| {
                 context
                     .output
                     .parent()
                     .unwrap_or_else(|| Path::new("."))
-                    .join(&adapter_file_name)
+                    .to_path_buf()
             });
+        let handler_file_path = scaffold_root.join(format!("{service_name}HandlerImpl.swift"));
+        let handler_content = self.generate_handler_impl_content(&service)?;
+        let write_handler = if !handler_file_path.exists() {
+            true
+        } else {
+            let is_scaffold =
+                self.should_overwrite_scaffold(&handler_file_path, &handler_content)?;
+            if is_scaffold {
+                info!("🔄 Overwriting Handler scaffold: {:?}", handler_file_path);
+                true
+            } else if !context.overwrite_user_code {
+                info!(
+                    "⏭️  Skipping existing Handler implementation: {:?}",
+                    handler_file_path
+                );
+                info!("💡 Use --overwrite-user-code to regenerate it.");
+                false
+            } else {
+                info!(
+                    "🔄 Overwriting existing Handler (--overwrite-user-code): {:?}",
+                    handler_file_path
+                );
+                true
+            }
+        };
+
+        if write_handler {
+            std::fs::write(&handler_file_path, &handler_content).map_err(|e| {
+                ActrCliError::config_error(format!("Failed to write Handler scaffold: {e}"))
+            })?;
+            info!("📄 Generated Handler scaffold: {:?}", handler_file_path);
+            scaffold_files.push(handler_file_path);
+        }
+
+        // Generate the LifecycleAdapter scaffold (Workload protocol conformance).
+        // File name mirrors the class name: `<ServiceName>LifecycleAdapter.swift`.
+        let adapter_file_name = format!("{service_name}LifecycleAdapter.swift");
+        let adapter_file_path = scaffold_root.join(&adapter_file_name);
 
         let adapter_content =
             self.generate_lifecycle_adapter_content(&service_name, &workload_name)?;
@@ -619,9 +622,14 @@ impl LanguageGenerator for SwiftGenerator {
             info!("🔍 Skipping xcodegen (--no-scaffold)");
             return Ok(());
         }
+
+        let Some(project_root) = self.find_xcodegen_root(context) else {
+            info!("⏭️  Skipping xcodegen: project.yml not found");
+            return Ok(());
+        };
+
         info!("🔍 Running xcodegen generate...");
         self.ensure_xcodegen_available()?;
-        let project_root = self.find_xcodegen_root(context)?;
         let output = StdCommand::new("xcodegen")
             .arg("generate")
             .current_dir(&project_root)
@@ -651,13 +659,13 @@ impl LanguageGenerator for SwiftGenerator {
         println!("\n📋 Next steps:");
         println!("1. 📖 View immutable generated code: {:?}", context.output);
         if !context.no_scaffold {
-            println!("2. ✏️  Implement business logic in ActrService.swift");
-            println!("   🔧 Customize lifecycle hooks in the LifecycleAdapter.swift scaffold");
-            println!("3. 🏗️  xcodegen generate has been run to update your Xcode project");
-            println!("4. 🚀 Open {}.xcodeproj and build", project_name);
+            println!("2. ✏️  Implement RPC methods in <ServiceName>HandlerImpl.swift");
+            println!("3. 🔧 Customize lifecycle hooks in <ServiceName>LifecycleAdapter.swift");
+            println!("4. 🔗 Review the linked node bootstrap in ActrService.swift");
+            println!("5. 🏗️  If project.yml exists and changed, run xcodegen generate");
+            println!("6. 🚀 Open {}.xcodeproj and build", project_name);
         } else {
-            println!("2. 🏗️  xcodegen generate has been run to update your Xcode project");
-            println!("3. 🚀 Open {}.xcodeproj and build", project_name);
+            println!("2. 🔗 Integrate the generated code into your Swift target");
         }
         println!("\n💡 Tip: Check the detailed user guide in the generated user code files");
     }
@@ -1163,7 +1171,7 @@ impl SwiftGenerator {
         Ok(())
     }
 
-    fn find_xcodegen_root(&self, context: &GenContext) -> Result<PathBuf> {
+    fn find_xcodegen_root(&self, context: &GenContext) -> Option<PathBuf> {
         let mut candidates = Vec::new();
         if let Ok(cwd) = std::env::current_dir() {
             candidates.push(cwd);
@@ -1184,17 +1192,7 @@ impl SwiftGenerator {
             candidates.push(parent.to_path_buf());
         }
 
-        for candidate in candidates {
-            for ancestor in candidate.ancestors() {
-                if ancestor.join("project.yml").exists() {
-                    return Ok(ancestor.to_path_buf());
-                }
-            }
-        }
-
-        Err(ActrCliError::config_error(
-            "project.yml not found; cannot run xcodegen generate",
-        ))
+        find_project_yml_ancestor(candidates)
     }
 
     fn detect_template_project_layout(
@@ -1205,7 +1203,7 @@ impl SwiftGenerator {
         if let Some(parent) = context.output.parent().and_then(|path| path.parent()) {
             candidates.push(parent.to_path_buf());
         }
-        if let Ok(project_root) = self.find_xcodegen_root(context) {
+        if let Some(project_root) = self.find_xcodegen_root(context) {
             candidates.push(project_root);
         }
 
@@ -1219,6 +1217,18 @@ impl SwiftGenerator {
 
         None
     }
+}
+
+fn find_project_yml_ancestor(candidates: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    for candidate in candidates {
+        for ancestor in candidate.ancestors() {
+            if ancestor.join("project.yml").exists() {
+                return Some(ancestor.to_path_buf());
+            }
+        }
+    }
+
+    None
 }
 
 fn looks_like_generated_swift_source(content: &str) -> bool {
@@ -1325,26 +1335,6 @@ impl SwiftGenerator {
         }
     }
 
-    /// Extract the first workload name from generated `*.actor.swift` files.
-    fn extract_first_workload_name_from_generated_file(&self, output_dir: &Path) -> Option<String> {
-        for actor_path in self.generated_actor_files(output_dir) {
-            if let Ok(content) = std::fs::read_to_string(&actor_path) {
-                for line in content.lines() {
-                    if let Some(workload_name) = self.extract_actor_name_from_line(line) {
-                        debug!(
-                            "Extracted workload name from {}: {}",
-                            actor_path.display(),
-                            workload_name
-                        );
-                        return Some(workload_name);
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
     /// Extract workload name for a specific service from generated `*.actor.swift` files.
     fn extract_workload_name_for_service(
         &self,
@@ -1444,6 +1434,28 @@ impl SwiftGenerator {
         Ok(handlebars.render_template(ACTR_SERVICE_TEMPLATE, &context)?)
     }
 
+    fn generate_handler_impl_content(&self, service: &ProtoService) -> Result<String> {
+        #[derive(Serialize)]
+        struct HandlerContext {
+            #[serde(rename = "SERVICE_NAME")]
+            service_name: String,
+            #[serde(rename = "HANDLER_NAME")]
+            handler_name: String,
+            #[serde(rename = "METHODS")]
+            methods: Vec<ProtoMethod>,
+        }
+
+        let context = HandlerContext {
+            service_name: service.name.clone(),
+            handler_name: format!("{}Handler", service.name),
+            methods: service.methods.clone(),
+        };
+
+        let mut handlebars = Handlebars::new();
+        handlebars.register_escape_fn(handlebars::no_escape);
+        Ok(handlebars.render_template(HANDLER_IMPL_TEMPLATE, &context)?)
+    }
+
     /// Render the `LifecycleAdapter.swift` scaffold — the `Workload` protocol
     /// conformance glue that every actr-swift project needs.
     ///
@@ -1488,14 +1500,56 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn sample_echo_service() -> ProtoService {
+        ProtoService {
+            name: "EchoService".to_string(),
+            package: "echo".to_string(),
+            swift_package_prefix: "Echo_".to_string(),
+            workload_name: "EchoServiceWorkload".to_string(),
+            methods: vec![ProtoMethod {
+                name: "Echo".to_string(),
+                swift_name: "echo".to_string(),
+                input_type: "Echo_EchoRequest".to_string(),
+                output_type: "Echo_EchoResponse".to_string(),
+            }],
+        }
+    }
+
     #[test]
-    fn generated_scaffold_contains_mutable_marker() {
+    fn generated_handler_impl_contains_rpc_method_stubs() {
         let generator = SwiftGenerator;
+        let handler = generator
+            .generate_handler_impl_content(&sample_echo_service())
+            .expect("render handler");
+
+        assert!(handler.contains("final class EchoServiceHandlerImpl: EchoServiceHandler"));
+        assert!(handler.contains("func echo("));
+        assert!(handler.contains("req: Echo_EchoRequest"));
+        assert!(handler.contains("async throws -> Echo_EchoResponse"));
+        assert!(handler.contains("ActrError.NotImplemented"));
+    }
+
+    #[test]
+    fn generated_scaffold_uses_linked_runtime() {
+        let generator = SwiftGenerator;
+        let service = sample_echo_service();
         let scaffold = generator
-            .generate_scaffold_content("demo", "EchoService", "EchoServiceWorkload", &[])
+            .generate_scaffold_content(
+                "demo",
+                "EchoService",
+                "EchoServiceWorkload",
+                std::slice::from_ref(&service),
+            )
             .expect("render scaffold");
 
         assert!(scaffold.contains("ACTR: mutable scaffold"));
+        assert!(scaffold.contains("resolveManifestPackageActrType"));
+        assert!(scaffold.contains("import ActrBindings"));
+        assert!(scaffold.contains("EchoServiceHandlerImpl()"));
+        assert!(scaffold.contains("EchoServiceLifecycleAdapter(handler: handler)"));
+        assert!(scaffold.contains("dynamicWorkload(lifecycle: lifecycle)"));
+        assert!(scaffold.contains("ActrNode.linked("));
+        assert!(!scaffold.contains("ActrNode.from(packageConfig:"));
     }
 
     #[test]
@@ -1518,6 +1572,28 @@ mod tests {
             "func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data"
         ));
         assert!(adapter.contains("workload.__dispatch(ctx: ctx, envelope: envelope)"));
+    }
+
+    #[test]
+    fn xcodegen_root_is_optional_for_swiftpm_layouts() {
+        let temp_dir = TempDir::new().unwrap();
+        let sources = temp_dir.path().join("Sources/ActrBridge/Generated");
+        std::fs::create_dir_all(&sources).unwrap();
+
+        assert_eq!(find_project_yml_ancestor([sources]), None);
+    }
+
+    #[test]
+    fn xcodegen_root_finds_project_yml_ancestor() {
+        let temp_dir = TempDir::new().unwrap();
+        let sources = temp_dir.path().join("App/Generated");
+        std::fs::create_dir_all(&sources).unwrap();
+        std::fs::write(temp_dir.path().join("project.yml"), "name: App\n").unwrap();
+
+        assert_eq!(
+            find_project_yml_ancestor([sources]),
+            Some(temp_dir.path().to_path_buf())
+        );
     }
 
     #[test]
@@ -1583,22 +1659,6 @@ mod tests {
             generated_file.exists(),
             "generated file should remain in Generated/"
         );
-    }
-
-    #[test]
-    fn extracts_first_workload_name_from_service_specific_actor_file() {
-        let tmp = TempDir::new().unwrap();
-        let output_dir = tmp.path();
-        std::fs::write(
-            output_dir.join("local_echo.actor.swift"),
-            "public actor LocalEchoServiceWorkload<T: LocalEchoServiceHandler> {\n",
-        )
-        .unwrap();
-
-        let generator = SwiftGenerator;
-        let workload = generator.extract_first_workload_name_from_generated_file(output_dir);
-
-        assert_eq!(workload.as_deref(), Some("LocalEchoServiceWorkload"));
     }
 
     #[test]

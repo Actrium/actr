@@ -1,76 +1,74 @@
 import Actr
+import ActrBindings
 import Foundation
 import OSLog
-import SwiftProtobuf
 import SwiftUI
 
 // ACTR: mutable scaffold
-// User-owned business scaffold. Keep Generated/ immutable and customize this file.
+// User-owned linked-runtime bootstrap. Keep Generated/ immutable and customize this file.
 
 @MainActor
 final class ActrService: ObservableObject {
     @Published var connectionStatus: ConnectionStatus = .disconnected
     @Published var errorMessage: String?
 
-    var system: ActrNode?
-    var actr: ActrRef?
+    private var node: Actr.ActrNode?
+    private var actr: Actr.ActrRef?
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "io.actrium.App",
         category: "ActrService"
     )
 
-    /// Initialize the service and its underlying actors
+    /// Initialize the linked Swift workload and start its ACTR node.
     func initialize() async throws {
         connectionStatus = .initializing
         errorMessage = nil
-        logger.info("Initializing ActrService...")
+        logger.info("Initializing linked ActrService...")
 
         do {
             let bundle = Bundle.main
-            guard let configPath = bundle.path(forResource: "manifest", ofType: "toml") else {
-                throw ActrError.Internal(msg: "manifest.toml not found in bundle")
+            guard let manifestURL = bundle.url(forResource: "manifest", withExtension: "toml") else {
+                throw Actr.ActrError.Config(msg: "manifest.toml not found in bundle")
             }
-            guard let packagePath = bundle.paths(forResourcesOfType: "actr", inDirectory: nil).first else {
-                throw ActrError.Internal(msg: "No .actr package found in bundle resources. Put one under dist/ before building.")
+            guard let configURL = bundle.url(forResource: "actr", withExtension: "toml") else {
+                throw Actr.ActrError.Config(msg: "actr.toml not found in bundle")
             }
 
-            let result = try await Task.detached(priority: .userInitiated) { () throws
-                -> (ActrNode, ActrRef) in
-                let system = try await ActrNode.from(packageConfig: configPath, packagePath: packagePath)
-                let actr = try await system.start()
-                return (system, actr)
-            }.value
+            let actorType = try ActrBindings.resolveManifestPackageActrType(
+                manifestPath: manifestURL.path
+            )
+            let handler = {{SERVICE_NAME}}HandlerImpl()
+            let lifecycle = {{SERVICE_NAME}}LifecycleAdapter(handler: handler)
+            let workload = Actr.dynamicWorkload(lifecycle: lifecycle)
+            let node = try await Actr.ActrNode.linked(
+                config: configURL,
+                type: actorType,
+                workload: workload
+            )
+            let actr = try await node.start()
 
-            let (system, actr) = result
-            self.system = system
+            self.node = node
             self.actr = actr
-
             connectionStatus = .connected
-            logger.info("ActrService initialized successfully")
-        } catch let actrError as ActrError {
-            errorMessage = "Actr Error: \(actrError.localizedDescription)"
-            connectionStatus = .error
-            logger.error("Failed to initialize: \(actrError.localizedDescription)")
-            throw actrError
+            logger.info("Linked ActrService initialized successfully")
         } catch {
-            errorMessage = "Initialization Error: \(error.localizedDescription)"
             connectionStatus = .error
-            logger.error("Failed to initialize: \(error.localizedDescription)")
+            errorMessage = error.localizedDescription
+            logger.error("Failed to initialize linked ActrService: \(error.localizedDescription)")
             throw error
         }
     }
 
-    /// Shutdown the service and cleanup resources
+    /// Stop the node and release the linked workload.
     func shutdown() async {
-        logger.info("Shutting down ActrService...")
+        logger.info("Shutting down linked ActrService...")
 
         if let actr {
             await actr.stop()
         }
 
         actr = nil
-        system = nil
-
+        node = nil
         connectionStatus = .disconnected
         errorMessage = nil
     }
@@ -93,6 +91,3 @@ extension ActrService {
         }
     }
 }
-
-// Global logger for the handlers to use
-private let logger = Logger(subsystem: "io.actrium.App", category: "Handler")

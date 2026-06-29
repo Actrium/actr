@@ -1,0 +1,19 @@
+// ACTR: mutable scaffold
+// User-owned RPC implementation. Keep Generated/ immutable and customize this file.
+
+import Actr
+import Foundation
+
+final class {{SERVICE_NAME}}HandlerImpl: {{HANDLER_NAME}} {
+    init() {}
+
+{{#each METHODS}}
+    func {{swift_name}}(
+        req: {{input_type}},
+        ctx: Context
+    ) async throws -> {{output_type}} {
+        throw ActrError.NotImplemented(msg: "{{name}} is not implemented")
+    }
+
+{{/each}}
+}

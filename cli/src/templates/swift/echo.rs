@@ -25,6 +25,11 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
         )?;
     }
     ProjectTemplate::load_file(
+        &fixtures_root.join("swift/actr.toml.hbs"),
+        files,
+        "actr.toml",
+    )?;
+    ProjectTemplate::load_file(
         &fixtures_root.join("swift/manifest.lock.toml.hbs"),
         files,
         "manifest.lock.toml",
@@ -33,11 +38,6 @@ pub fn load(files: &mut HashMap<String, String>, is_service: bool) -> Result<()>
         &fixtures_root.join("swift/gitignore.hbs"),
         files,
         ".gitignore",
-    )?;
-    ProjectTemplate::load_file(
-        &fixtures_root.join("swift/dist.keep.hbs"),
-        files,
-        "dist/.keep",
     )?;
     ProjectTemplate::load_file(
         &fixtures_root.join("swift/echo/README.md.hbs"),
