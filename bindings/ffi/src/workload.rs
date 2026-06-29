@@ -20,7 +20,7 @@ use crate::ActrResult;
 use crate::context::ContextBridge;
 use actr_framework::{
     BackpressureEvent, Bytes, Context, CredentialEvent, ErrorCategory, ErrorEvent,
-    MessageDispatcher, PeerEvent, Workload,
+    MessageDispatcher, PeerEvent, WebRtcPeerStatus, Workload,
 };
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
@@ -61,6 +61,28 @@ pub struct PeerEventBridge {
     /// `Some(true)` for WebRTC TURN-relayed, `Some(false)` for direct P2P,
     /// `None` for WebSocket (not applicable).
     pub relayed: Option<bool>,
+    /// Coarse WebRTC send-readiness state. `None` for WebSocket and old
+    /// compatibility paths where the status is not available.
+    pub status: Option<WebRtcPeerStatusBridge>,
+}
+
+#[derive(uniffi::Enum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WebRtcPeerStatusBridge {
+    Idle,
+    Connecting,
+    Connected,
+    Recovering,
+}
+
+impl From<WebRtcPeerStatus> for WebRtcPeerStatusBridge {
+    fn from(status: WebRtcPeerStatus) -> Self {
+        match status {
+            WebRtcPeerStatus::Idle => WebRtcPeerStatusBridge::Idle,
+            WebRtcPeerStatus::Connecting => WebRtcPeerStatusBridge::Connecting,
+            WebRtcPeerStatus::Connected => WebRtcPeerStatusBridge::Connected,
+            WebRtcPeerStatus::Recovering => WebRtcPeerStatusBridge::Recovering,
+        }
+    }
 }
 
 impl From<&PeerEvent> for PeerEventBridge {
@@ -68,6 +90,7 @@ impl From<&PeerEvent> for PeerEventBridge {
         Self {
             peer: ev.peer.clone().into(),
             relayed: ev.relayed,
+            status: ev.status.map(Into::into),
         }
     }
 }

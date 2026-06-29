@@ -5,7 +5,6 @@ use crate::transport::{
     ConnType, DataLane, NetworkError, NetworkResult, WebRtcDataLane, WireHandle,
 };
 use crate::transport::{ConnectionEvent, ConnectionState};
-use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
 use async_trait::async_trait;
@@ -59,8 +58,6 @@ pub(crate) struct WebRtcConnection {
     /// Event broadcaster for connection state changes
     event_tx: broadcast::Sender<ConnectionEvent>,
 
-    hook_callback: Option<HookCallback>,
-
     /// Connection session (session_id + cancel_token + close-once)
     session: ConnectionSession,
 
@@ -91,7 +88,6 @@ impl WebRtcConnection {
         peer_id: ActrId,
         peer_connection: Arc<RTCPeerConnection>,
         event_tx: broadcast::Sender<ConnectionEvent>,
-        hook_callback: Option<HookCallback>,
     ) -> Self {
         Self {
             peer_id,
@@ -102,7 +98,6 @@ impl WebRtcConnection {
             track_ssrcs: Arc::new(RwLock::new(HashMap::new())),
             lane_cache: Arc::new(RwLock::new([None, None, None, None])),
             event_tx,
-            hook_callback,
             session: ConnectionSession::new(),
             connected: Arc::new(RwLock::new(true)),
         }
@@ -175,26 +170,6 @@ impl WebRtcConnection {
             session_id: self.session.session_id,
             state: connection_state.clone(),
         });
-
-        // Invoke only the "connecting" hook here. The coordinator owns
-        // connected/disconnected readiness hooks because it can validate the
-        // current session and DataChannel sendability.
-        if let Some(cb) = &self.hook_callback {
-            let event = match connection_state {
-                ConnectionState::Connecting => Some(HookEvent::WebRtcConnectStart {
-                    peer_id: self.peer_id.clone(),
-                }),
-                _ => None,
-            };
-            if let Some(event) = event {
-                if tokio::time::timeout(std::time::Duration::from_secs(5), cb(event))
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("⚠️ HookCallback timed out (5s) for peer {:?}", self.peer_id);
-                }
-            }
-        }
 
         // For Closed state, proactively close the connection and let
         // `close()` perform all resource cleanup. Only trigger when we
@@ -1043,7 +1018,7 @@ mod tests {
                 version: "1.0.0".to_string(),
             },
         };
-        WebRtcConnection::new(peer_id, Arc::new(peer_connection), event_tx, None)
+        WebRtcConnection::new(peer_id, Arc::new(peer_connection), event_tx)
     }
 
     /// Test: multiple tasks calling close() concurrently do not deadlock

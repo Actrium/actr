@@ -24,7 +24,9 @@ use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use actr_framework::{BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent};
+use actr_framework::{
+    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent, WebRtcPeerStatus,
+};
 use actr_protocol::{ActorResult, ActrError};
 use async_trait::async_trait;
 use futures_util::FutureExt as _;
@@ -465,6 +467,7 @@ pub(crate) fn build_hook_callback(
                         let event = PeerEvent {
                             peer: peer_id,
                             relayed: None,
+                            status: Some(WebRtcPeerStatus::Connecting),
                         };
                         if let Some(observer) = observer.clone() {
                             spawn_hook("on_webrtc_connecting", async move {
@@ -478,6 +481,7 @@ pub(crate) fn build_hook_callback(
                         let event = PeerEvent {
                             peer: peer_id,
                             relayed: Some(relayed),
+                            status: Some(WebRtcPeerStatus::Connected),
                         };
                         if let Some(observer) = observer.clone() {
                             spawn_hook("on_webrtc_connected", async move {
@@ -486,11 +490,12 @@ pub(crate) fn build_hook_callback(
                         }
                     }
                 }
-                HookEvent::WebRtcDisconnected { peer_id } => {
+                HookEvent::WebRtcDisconnected { peer_id, status } => {
                     if let Some(ctx) = ctx_opt {
                         let event = PeerEvent {
                             peer: peer_id,
                             relayed: None,
+                            status: Some(status),
                         };
                         if let Some(observer) = observer.clone() {
                             spawn_hook("on_webrtc_disconnected", async move {
@@ -529,6 +534,7 @@ pub(crate) fn build_hook_callback(
                         let event = PeerEvent {
                             peer: peer_id,
                             relayed: None,
+                            status: None,
                         };
                         if let Some(observer) = observer.clone() {
                             spawn_hook("on_websocket_connecting", async move {
@@ -542,6 +548,7 @@ pub(crate) fn build_hook_callback(
                         let event = PeerEvent {
                             peer: peer_id,
                             relayed: None,
+                            status: None,
                         };
                         if let Some(observer) = observer.clone() {
                             spawn_hook("on_websocket_connected", async move {
@@ -555,6 +562,7 @@ pub(crate) fn build_hook_callback(
                         let event = PeerEvent {
                             peer: peer_id,
                             relayed: None,
+                            status: None,
                         };
                         if let Some(observer) = observer.clone() {
                             spawn_hook("on_websocket_disconnected", async move {
@@ -618,8 +626,8 @@ fn log_hook_event(event: &HookEvent) {
         HookEvent::WebRtcConnected { peer_id, relayed } => {
             tracing::info!(peer = %peer_id, relayed = *relayed, "webrtc connected");
         }
-        HookEvent::WebRtcDisconnected { peer_id } => {
-            tracing::warn!(peer = %peer_id, "webrtc disconnected");
+        HookEvent::WebRtcDisconnected { peer_id, status } => {
+            tracing::warn!(peer = %peer_id, status = ?status, "webrtc disconnected");
         }
         HookEvent::DataStreamDeliveryUncertain {
             stream_id,
@@ -964,6 +972,7 @@ mod tests {
             (
                 HookEvent::WebRtcDisconnected {
                     peer_id: test_actr_id(4),
+                    status: WebRtcPeerStatus::Recovering,
                 },
                 "on_webrtc_disconnected:peer=4:relayed=none",
             ),
@@ -1064,6 +1073,7 @@ mod tests {
         let event = PeerEvent {
             peer: test_actr_id(10),
             relayed: Some(false),
+            status: Some(WebRtcPeerStatus::Connected),
         };
 
         tokio::time::timeout(

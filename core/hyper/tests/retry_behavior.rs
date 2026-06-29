@@ -73,7 +73,7 @@ async fn wait_for_webrtc_disconnected_hook(
         );
 
         match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Some(HookEvent::WebRtcDisconnected { peer_id: got })) if &got == peer_id => {
+            Ok(Some(HookEvent::WebRtcDisconnected { peer_id: got, .. })) if &got == peer_id => {
                 return;
             }
             Ok(Some(other)) => {

@@ -89,6 +89,7 @@ fn peer_event_from_wit(e: wit::PeerEvent) -> PeerEvent {
     PeerEvent {
         peer: actr_id_from_wit(&e.peer),
         relayed: e.relayed,
+        status: None,
     }
 }
 
