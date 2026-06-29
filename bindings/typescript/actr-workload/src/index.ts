@@ -50,9 +50,7 @@ type WitActrId = Omit<ActrId, 'serialNumber'> & {
 };
 
 type WitDest =
-  | { tag: 'shell' }
-  | { tag: 'local' }
-  | { tag: 'actor'; val: WitActrId };
+  { tag: 'shell' } | { tag: 'local' } | { tag: 'actor'; val: WitActrId };
 
 type WitPayloadType = { tag: PayloadType };
 

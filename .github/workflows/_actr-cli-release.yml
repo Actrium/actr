@@ -62,9 +62,43 @@ jobs:
           echo "tag_sha=$TAG_SHA" >>"$GITHUB_OUTPUT"
           echo "source_sha=$SOURCE_SHA" >>"$GITHUB_OUTPUT"
 
+  prepare-assets:
+    name: Prepare CLI web runtime assets
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: source
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Cache wasm-pack
+        id: cache-wasm-pack
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-pack
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1
+      - name: Install wasm-pack
+        if: steps.cache-wasm-pack.outputs.cache-hit != 'true'
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Build web runtime assets
+        run: |
+          cd source
+          bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Upload prebuilt assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-web-runtime-assets
+          path: source/cli/assets/web-runtime/
+          if-no-files-found: error
+
   build:
     name: Build actr CLI (${{ matrix.target }})
-    needs: validate
+    needs: [validate, prepare-assets]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -97,15 +131,21 @@ jobs:
       - name: Set up Zig
         if: matrix.use_zig
         uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
       - name: Install cargo-zigbuild
         if: matrix.use_zig
         run: cargo install --locked cargo-zigbuild
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Download prebuilt web runtime assets
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-web-runtime-assets
+          path: source/cli/assets/web-runtime
       - name: Build and package actr CLI
         shell: bash
         env:
           ACTR_REPO_ROOT: ${{ github.workspace }}/source
+          ACTR_PREBUILT_ASSETS: "1"
           RELEASE_SHA: ${{ needs.validate.outputs.source_sha }}
         run: |
           automation/scripts/release-actr-cli.sh build \
@@ -178,7 +218,7 @@ jobs:
   report:
     name: Collect CLI release state
     if: always()
-    needs: [validate, build, publish]
+    needs: [validate, prepare-assets, build, publish]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
