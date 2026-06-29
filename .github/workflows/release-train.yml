@@ -573,6 +573,8 @@ jobs:
       - name: Setup Zig
         if: ${{ matrix.use_zig }}
         uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
 
       - name: Install dependencies
         run: npm install

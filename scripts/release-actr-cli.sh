@@ -123,8 +123,10 @@ command_build() {
 
   local repo_root cargo_args filename binary_path
   repo_root=${ACTR_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
-  log_info "Syncing CLI web runtime assets for $TARGET"
-  (cd "$repo_root" && bash bindings/web/scripts/sync-cli-assets.sh --build)
+  if [[ "${ACTR_PREBUILT_ASSETS:-}" != "1" ]]; then
+    log_info "Syncing CLI web runtime assets for $TARGET"
+    (cd "$repo_root" && bash bindings/web/scripts/sync-cli-assets.sh --build)
+  fi
   cargo_args=(--release -p actr-cli --locked --features wasm-engine)
   filename=$(binary_name)
 
