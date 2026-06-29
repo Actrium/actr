@@ -101,6 +101,7 @@ fn peer_event_from_wit(e: wit_types::PeerEvent) -> PeerEvent {
     PeerEvent {
         peer: super::context_helpers::actr_id_from_wit(&e.peer),
         relayed: e.relayed,
+        status: None,
     }
 }
 

@@ -18,10 +18,20 @@ use crate::{Context, MessageDispatcher};
 
 /// Peer-scoped event payload for transport hooks.
 ///
+/// Public WebRTC peer status exposed through observation hooks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebRtcPeerStatus {
+    Idle,
+    Connecting,
+    Connected,
+    Recovering,
+}
+
 /// Used by WebSocket and WebRTC hook callbacks to identify the remote peer
 /// involved in the state change. For WebRTC, `relayed` reports whether the
-/// selected ICE candidate pair traversed a TURN relay; for WebSocket the
-/// field is always `None` (not applicable).
+/// selected ICE candidate pair traversed a TURN relay, and `status` reports
+/// the coarse send-readiness state. For WebSocket both fields are always
+/// `None` (not applicable).
 #[derive(Debug, Clone)]
 pub struct PeerEvent {
     /// Remote peer identity.
@@ -29,6 +39,8 @@ pub struct PeerEvent {
     /// `Some(true)` if the WebRTC connection is TURN-relayed, `Some(false)` for
     /// a direct peer-to-peer connection. Always `None` for WebSocket events.
     pub relayed: Option<bool>,
+    /// Coarse WebRTC send-readiness state. Always `None` for WebSocket events.
+    pub status: Option<WebRtcPeerStatus>,
 }
 
 /// Error event payload passed to [`Workload::on_error`].

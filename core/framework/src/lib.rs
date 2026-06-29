@@ -149,7 +149,8 @@ pub use dest::Dest;
 pub use dispatcher::MessageDispatcher;
 pub use service_handler::ServiceHandler;
 pub use workload::{
-    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent, Workload,
+    BackpressureEvent, CredentialEvent, ErrorCategory, ErrorEvent, PeerEvent, WebRtcPeerStatus,
+    Workload,
 };
 
 // Re-export commonly used types for user convenience

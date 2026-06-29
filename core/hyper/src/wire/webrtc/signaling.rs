@@ -8,6 +8,7 @@ use crate::lifecycle::CredentialState;
 use crate::transport::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
+use actr_framework::WebRtcPeerStatus;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrToSignaling, GetSigningKeyRequest, PeerToSignaling, Ping, Pong,
@@ -338,6 +339,7 @@ pub enum HookEvent {
     },
     WebRtcDisconnected {
         peer_id: ActrId,
+        status: WebRtcPeerStatus,
     },
     DataStreamDeliveryUncertain {
         stream_id: String,

@@ -129,36 +129,42 @@ impl From<TestPackageHookEvent> for crate::workload::PackageHookEvent {
                 Self::WebSocketConnecting(actr_framework::PeerEvent {
                     peer,
                     relayed: None,
+                    status: None,
                 })
             }
             TestPackageHookEvent::WebSocketConnected { peer } => {
                 Self::WebSocketConnected(actr_framework::PeerEvent {
                     peer,
                     relayed: None,
+                    status: None,
                 })
             }
             TestPackageHookEvent::WebSocketDisconnected { peer } => {
                 Self::WebSocketDisconnected(actr_framework::PeerEvent {
                     peer,
                     relayed: None,
+                    status: None,
                 })
             }
             TestPackageHookEvent::WebRtcConnecting { peer } => {
                 Self::WebRtcConnecting(actr_framework::PeerEvent {
                     peer,
                     relayed: None,
+                    status: Some(actr_framework::WebRtcPeerStatus::Connecting),
                 })
             }
             TestPackageHookEvent::WebRtcConnected { peer, relayed } => {
                 Self::WebRtcConnected(actr_framework::PeerEvent {
                     peer,
                     relayed: Some(relayed),
+                    status: Some(actr_framework::WebRtcPeerStatus::Connected),
                 })
             }
             TestPackageHookEvent::WebRtcDisconnected { peer } => {
                 Self::WebRtcDisconnected(actr_framework::PeerEvent {
                     peer,
                     relayed: None,
+                    status: Some(actr_framework::WebRtcPeerStatus::Recovering),
                 })
             }
             TestPackageHookEvent::CredentialRenewed { new_expiry } => {
@@ -215,6 +221,7 @@ impl TestPackageHookObserver {
                         &actr_framework::PeerEvent {
                             peer,
                             relayed: None,
+                            status: None,
                         },
                     )
                     .await;
@@ -226,6 +233,7 @@ impl TestPackageHookObserver {
                         &actr_framework::PeerEvent {
                             peer,
                             relayed: None,
+                            status: None,
                         },
                     )
                     .await;
@@ -237,6 +245,7 @@ impl TestPackageHookObserver {
                         &actr_framework::PeerEvent {
                             peer,
                             relayed: None,
+                            status: None,
                         },
                     )
                     .await;
@@ -248,6 +257,7 @@ impl TestPackageHookObserver {
                         &actr_framework::PeerEvent {
                             peer,
                             relayed: None,
+                            status: Some(actr_framework::WebRtcPeerStatus::Connecting),
                         },
                     )
                     .await;
@@ -259,6 +269,7 @@ impl TestPackageHookObserver {
                         &actr_framework::PeerEvent {
                             peer,
                             relayed: Some(relayed),
+                            status: Some(actr_framework::WebRtcPeerStatus::Connected),
                         },
                     )
                     .await;
@@ -270,6 +281,7 @@ impl TestPackageHookObserver {
                         &actr_framework::PeerEvent {
                             peer,
                             relayed: None,
+                            status: Some(actr_framework::WebRtcPeerStatus::Recovering),
                         },
                     )
                     .await;

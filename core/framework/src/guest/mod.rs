@@ -558,6 +558,7 @@ macro_rules! entry {
                         $crate::PeerEvent {
                             peer: peer.peer,
                             relayed: peer.relayed,
+                            status: None,
                         }
                     };
 
