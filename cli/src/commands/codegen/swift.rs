@@ -460,6 +460,11 @@ impl LanguageGenerator for SwiftGenerator {
             &service_name,
             &workload_name,
             &services,
+            context
+                .config
+                .dependencies
+                .first()
+                .map(|dependency| dependency.alias.as_str()),
         )?;
 
         let layout = self.detect_template_project_layout(context);
@@ -1406,6 +1411,7 @@ impl SwiftGenerator {
         service_name: &str,
         workload_name: &str,
         services: &[ProtoService],
+        target_dependency_alias: Option<&str>,
     ) -> Result<String> {
         #[derive(Serialize)]
         struct SwiftScaffoldContext {
@@ -1419,6 +1425,8 @@ impl SwiftGenerator {
             services: Vec<ProtoService>,
             #[serde(rename = "HAS_SERVICES")]
             has_services: bool,
+            #[serde(rename = "TARGET_DEPENDENCY_ALIAS")]
+            target_dependency_alias: Option<String>,
         }
 
         let context = SwiftScaffoldContext {
@@ -1427,6 +1435,7 @@ impl SwiftGenerator {
             workload_name: workload_name.to_string(),
             services: services.to_vec(),
             has_services: !services.is_empty(),
+            target_dependency_alias: target_dependency_alias.map(str::to_string),
         };
 
         let mut handlebars = Handlebars::new();
@@ -1522,8 +1531,11 @@ mod tests {
             .generate_handler_impl_content(&sample_echo_service())
             .expect("render handler");
 
-        assert!(handler.contains("final class EchoServiceHandlerImpl: EchoServiceHandler"));
-        assert!(handler.contains("func echo("));
+        assert!(handler.contains("public final class EchoServiceHandlerImpl: EchoServiceHandler"));
+        assert!(handler.contains("private let targetType: ActrType?"));
+        assert!(handler.contains("public init(targetType: ActrType? = nil)"));
+        assert!(handler.contains("Use targetType with ctx.discover(targetType:)"));
+        assert!(handler.contains("public func echo("));
         assert!(handler.contains("req: Echo_EchoRequest"));
         assert!(handler.contains("async throws -> Echo_EchoResponse"));
         assert!(handler.contains("ActrError.NotImplemented"));
@@ -1539,13 +1551,25 @@ mod tests {
                 "EchoService",
                 "EchoServiceWorkload",
                 std::slice::from_ref(&service),
+                Some("echo-service"),
             )
             .expect("render scaffold");
 
         assert!(scaffold.contains("ACTR: mutable scaffold"));
+        assert!(scaffold.contains("public final class ActrService: ObservableObject"));
+        assert!(scaffold.contains("public init() {}"));
+        assert!(scaffold.contains("public private(set) var connectionStatus"));
+        assert!(scaffold.contains("public func initialize("));
+        assert!(scaffold.contains("manifestPath: String,"));
+        assert!(scaffold.contains("configPath: String"));
+        assert!(scaffold.contains("public func initializeFromBundle() async throws"));
+        assert!(scaffold.contains("public func shutdown() async"));
+        assert!(scaffold.contains("public enum ConnectionStatus"));
         assert!(scaffold.contains("resolveManifestPackageActrType"));
         assert!(scaffold.contains("import ActrBindings"));
-        assert!(scaffold.contains("EchoServiceHandlerImpl()"));
+        assert!(scaffold.contains("resolveManifestDependency("));
+        assert!(scaffold.contains("dependencyAlias: \"echo-service\""));
+        assert!(scaffold.contains("EchoServiceHandlerImpl(targetType: targetType)"));
         assert!(scaffold.contains("EchoServiceLifecycleAdapter(handler: handler)"));
         assert!(scaffold.contains("dynamicWorkload(lifecycle: lifecycle)"));
         assert!(scaffold.contains("ActrNode.linked("));
@@ -1562,15 +1586,24 @@ mod tests {
         assert!(adapter.contains("ACTR: mutable scaffold"));
         assert!(adapter.contains("import Foundation"));
         assert!(adapter.lines().any(|line| {
-            line == "final class EchoServiceLifecycleAdapter<Handler: EchoServiceHandler>: Workload, @unchecked Sendable {"
+            line == "public final class EchoServiceLifecycleAdapter<Handler: EchoServiceHandler>: Workload, @unchecked Sendable {"
         }));
         assert!(!adapter.contains("private final class EchoServiceLifecycleAdapter"));
         assert!(adapter.contains("EchoServiceWorkload<Handler>"));
         assert!(!adapter.contains("EchoServiceHandlerImpl"));
-        assert!(adapter.contains("func onStart(ctx: ContextBridge) async throws"));
+        assert!(adapter.contains("public func onStart(ctx: Context) async throws"));
+        assert!(adapter.contains("public func onReady(ctx: Context) async throws"));
+        assert!(adapter.contains("public func onStop(ctx: Context) async throws"));
+        assert!(
+            adapter.contains(
+                "public func onError(ctx: Context, event: ErrorEventBridge) async throws"
+            )
+        );
         assert!(adapter.contains(
-            "func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data"
+            "public func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data"
         ));
+        assert!(!adapter.contains("ctx: ContextBridge"));
+        assert!(!adapter.contains("envelope: RpcEnvelopeBridge"));
         assert!(adapter.contains("workload.__dispatch(ctx: ctx, envelope: envelope)"));
     }
 

@@ -4,34 +4,34 @@
 import Actr
 import Foundation
 
-final class {{SERVICE_NAME}}LifecycleAdapter<Handler: {{HANDLER_NAME}}>: Workload, @unchecked Sendable {
+public final class {{SERVICE_NAME}}LifecycleAdapter<Handler: {{HANDLER_NAME}}>: Workload, @unchecked Sendable {
     private let workload: {{WORKLOAD_NAME}}<Handler>
 
-    init(workload: {{WORKLOAD_NAME}}<Handler>) {
+    public init(workload: {{WORKLOAD_NAME}}<Handler>) {
         self.workload = workload
     }
 
-    convenience init(handler: Handler) {
+    public convenience init(handler: Handler) {
         self.init(workload: {{WORKLOAD_NAME}}(handler: handler))
     }
 
-    func onStart(ctx: ContextBridge) async throws {
+    public func onStart(ctx: Context) async throws {
         // TODO: Optionally customize startup logic
     }
 
-    func onReady(ctx: ContextBridge) async throws {
+    public func onReady(ctx: Context) async throws {
         // TODO: Optionally customize ready logic
     }
 
-    func onStop(ctx: ContextBridge) async throws {
+    public func onStop(ctx: Context) async throws {
         // TODO: Optionally customize shutdown logic
     }
 
-    func onError(ctx: ContextBridge, event: ErrorEventBridge) async throws {
+    public func onError(ctx: Context, event: ErrorEventBridge) async throws {
         // TODO: Optionally customize error handling
     }
 
-    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+    public func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
         return try await workload.__dispatch(ctx: ctx, envelope: envelope)
     }
 }

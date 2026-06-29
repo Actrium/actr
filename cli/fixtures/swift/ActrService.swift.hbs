@@ -8,9 +8,9 @@ import SwiftUI
 // User-owned linked-runtime bootstrap. Keep Generated/ immutable and customize this file.
 
 @MainActor
-final class ActrService: ObservableObject {
-    @Published var connectionStatus: ConnectionStatus = .disconnected
-    @Published var errorMessage: String?
+public final class ActrService: ObservableObject {
+    @Published public private(set) var connectionStatus: ConnectionStatus = .disconnected
+    @Published public private(set) var errorMessage: String?
 
     private var node: Actr.ActrNode?
     private var actr: Actr.ActrRef?
@@ -19,27 +19,33 @@ final class ActrService: ObservableObject {
         category: "ActrService"
     )
 
-    /// Initialize the linked Swift workload and start its ACTR node.
-    func initialize() async throws {
+    public init() {}
+
+    /// Initialize the linked Swift workload from runtime-generated config paths.
+    public func initialize(
+        manifestPath: String,
+        configPath: String
+    ) async throws {
         connectionStatus = .initializing
         errorMessage = nil
         logger.info("Initializing linked ActrService...")
 
         do {
-            let bundle = Bundle.main
-            guard let manifestURL = bundle.url(forResource: "manifest", withExtension: "toml") else {
-                throw Actr.ActrError.Config(msg: "manifest.toml not found in bundle")
-            }
-            guard let configURL = bundle.url(forResource: "actr", withExtension: "toml") else {
-                throw Actr.ActrError.Config(msg: "actr.toml not found in bundle")
-            }
-
             let actorType = try ActrBindings.resolveManifestPackageActrType(
-                manifestPath: manifestURL.path
+                manifestPath: manifestPath
             )
+{{#if TARGET_DEPENDENCY_ALIAS}}
+            let targetType = try ActrBindings.resolveManifestDependency(
+                manifestPath: manifestPath,
+                dependencyAlias: "{{TARGET_DEPENDENCY_ALIAS}}"
+            )
+            let handler = {{SERVICE_NAME}}HandlerImpl(targetType: targetType)
+{{else}}
             let handler = {{SERVICE_NAME}}HandlerImpl()
+{{/if}}
             let lifecycle = {{SERVICE_NAME}}LifecycleAdapter(handler: handler)
             let workload = Actr.dynamicWorkload(lifecycle: lifecycle)
+            let configURL = URL(fileURLWithPath: configPath)
             let node = try await Actr.ActrNode.linked(
                 config: configURL,
                 type: actorType,
@@ -59,8 +65,24 @@ final class ActrService: ObservableObject {
         }
     }
 
+    /// Initialize from bundled `manifest.toml` and `actr.toml` resources.
+    public func initializeFromBundle() async throws {
+        let bundle = Bundle.main
+        guard let manifestURL = bundle.url(forResource: "manifest", withExtension: "toml") else {
+            throw Actr.ActrError.Config(msg: "manifest.toml not found in bundle")
+        }
+        guard let configURL = bundle.url(forResource: "actr", withExtension: "toml") else {
+            throw Actr.ActrError.Config(msg: "actr.toml not found in bundle")
+        }
+
+        try await initialize(
+            manifestPath: manifestURL.path,
+            configPath: configURL.path
+        )
+    }
+
     /// Stop the node and release the linked workload.
-    func shutdown() async {
+    public func shutdown() async {
         logger.info("Shutting down linked ActrService...")
 
         if let actr {
@@ -75,13 +97,13 @@ final class ActrService: ObservableObject {
 }
 
 extension ActrService {
-    enum ConnectionStatus {
+    public enum ConnectionStatus {
         case disconnected
         case initializing
         case connected
         case error
 
-        var description: String {
+        public var description: String {
             switch self {
             case .disconnected: return "Disconnected"
             case .initializing: return "Initializing..."

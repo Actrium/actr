@@ -4,11 +4,17 @@
 import Actr
 import Foundation
 
-final class {{SERVICE_NAME}}HandlerImpl: {{HANDLER_NAME}} {
-    init() {}
+public final class {{SERVICE_NAME}}HandlerImpl: {{HANDLER_NAME}} {
+    // Use targetType with ctx.discover(targetType:) when forwarding local RPCs
+    // to a remote dependency declared in manifest.toml.
+    private let targetType: ActrType?
+
+    public init(targetType: ActrType? = nil) {
+        self.targetType = targetType
+    }
 
 {{#each METHODS}}
-    func {{swift_name}}(
+    public func {{swift_name}}(
         req: {{input_type}},
         ctx: Context
     ) async throws -> {{output_type}} {
