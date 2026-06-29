@@ -105,12 +105,7 @@ impl LanguageGenerator for RustGenerator {
         Ok(())
     }
 
-    async fn validate_code(&self, context: &GenContext) -> Result<()> {
-        if context.skip_validation {
-            info!("⏭️  Skipped code validation (--skip-validation)");
-            return Ok(());
-        }
-
+    async fn validate_code(&self, _context: &GenContext) -> Result<()> {
         info!("🔍 Validating generated code...");
 
         let project_root = self.find_project_root()?;

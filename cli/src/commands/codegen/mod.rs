@@ -37,6 +37,10 @@ impl GeneratorFactory {
     }
 }
 
+fn should_validate(skip_validation: bool) -> bool {
+    !skip_validation
+}
+
 pub async fn execute_codegen(language: SupportedLanguage, context: &GenContext) -> Result<()> {
     let generator = GeneratorFactory::get_generator(language);
 
@@ -50,7 +54,11 @@ pub async fn execute_codegen(language: SupportedLanguage, context: &GenContext) 
         generator.format_code(context, &all_files).await?;
     }
 
-    generator.validate_code(context).await?;
+    if should_validate(context.skip_validation) {
+        generator.validate_code(context).await?;
+    } else {
+        info!("⏭️  Skipped code validation (--skip-validation)");
+    }
 
     info!("Code generation completed");
 
@@ -63,6 +71,16 @@ pub async fn execute_codegen(language: SupportedLanguage, context: &GenContext) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skips_validation_when_requested() {
+        assert!(!should_validate(true));
+    }
+
+    #[test]
+    fn runs_validation_by_default() {
+        assert!(should_validate(false));
+    }
 
     #[test]
     fn generator_factory_returns_all_languages() {
