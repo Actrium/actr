@@ -6822,4 +6822,33 @@ mod tests {
         // Fifth: None (max retries reached)
         assert_eq!(backoff.next(), None);
     }
+
+    #[test]
+    fn codec_to_payload_type_maps_known_and_unknown() {
+        assert_eq!(WebRtcCoordinator::codec_to_payload_type("VP8"), 96);
+        assert_eq!(WebRtcCoordinator::codec_to_payload_type("H264"), 97);
+        assert_eq!(WebRtcCoordinator::codec_to_payload_type("VP9"), 98);
+        assert_eq!(WebRtcCoordinator::codec_to_payload_type("OPUS"), 111);
+        // Case-insensitive.
+        assert_eq!(WebRtcCoordinator::codec_to_payload_type("h264"), 97);
+        assert_eq!(WebRtcCoordinator::codec_to_payload_type("opus"), 111);
+        // Unknown codec falls back to 96 (VP8 default).
+        assert_eq!(WebRtcCoordinator::codec_to_payload_type("AV1"), 96);
+        assert_eq!(WebRtcCoordinator::codec_to_payload_type(""), 96);
+    }
+
+    #[test]
+    fn is_ipv4_candidate_allowed_filters_ipv6_and_accepts_ipv4() {
+        // IPv6 candidates are rejected.
+        assert!(!is_ipv4_candidate_allowed("candidate:... fe80::1 ..."));
+        assert!(!is_ipv4_candidate_allowed("candidate:... udp6 ..."));
+        assert!(!is_ipv4_candidate_allowed("candidate:... ::1 ..."));
+
+        // IPv4 candidates are accepted (loopback, private, public).
+        assert!(is_ipv4_candidate_allowed("candidate:... 127.0.0.1 ..."));
+        assert!(is_ipv4_candidate_allowed("candidate:... 192.168.1.10 ..."));
+        assert!(is_ipv4_candidate_allowed("candidate:... 10.0.0.5 ..."));
+        // No IPv6 marker → accepted.
+        assert!(is_ipv4_candidate_allowed("candidate:... 203.0.113.7 udp ..."));
+    }
 }

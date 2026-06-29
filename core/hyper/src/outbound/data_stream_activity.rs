@@ -350,4 +350,42 @@ mod tests {
         assert_eq!(old_session.len(), 1);
         assert!(removed_session.is_empty());
     }
+
+    #[test]
+    fn remove_stream_unknown_peer_is_noop() {
+        let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+        let peer = actr_id(999);
+        let now = Instant::now();
+        tracker.remove_stream(&peer, "never");
+        assert_eq!(
+            tracker.record_state(&peer, "never", 1, now),
+            DataStreamRecordState::Missing
+        );
+    }
+
+    #[test]
+    fn remove_stream_session_unknown_peer_is_noop() {
+        let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+        let peer = actr_id(998);
+        let now = Instant::now();
+        tracker.remove_stream_session(&peer, "never", 1);
+        assert_eq!(
+            tracker.record_state(&peer, "never", 1, now),
+            DataStreamRecordState::Missing
+        );
+    }
+
+    #[test]
+    fn remove_stream_session_unknown_stream_for_known_peer_is_noop() {
+        let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+        let peer = actr_id(7);
+        let now = Instant::now();
+        tracker.record_stream(&peer, "exists", 1, now);
+
+        tracker.remove_stream_session(&peer, "missing", 1);
+        assert_eq!(
+            tracker.record_state(&peer, "exists", 1, now + Duration::from_secs(1)),
+            DataStreamRecordState::Fresh
+        );
+    }
 }
