@@ -2,7 +2,6 @@ use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
 use crate::utils::{command_exists, to_snake_case};
 use actr_config::LockFile;
-use actr_protocol::ActrType;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -544,9 +543,15 @@ impl KotlinGenerator {
         &self,
         services: &[ServiceInfo],
         kotlin_package: &str,
+        context: &GenContext,
     ) -> Result<String> {
         let local_services: Vec<_> = services.iter().filter(|s| s.is_local).collect();
         let remote_services: Vec<_> = services.iter().filter(|s| !s.is_local).collect();
+        let manifest_resolver_import = if remote_services.is_empty() {
+            ""
+        } else {
+            "import io.actrium.actr.resolveManifestDependency\n"
+        };
 
         let mut code = String::new();
 
@@ -571,11 +576,13 @@ import io.actrium.actr.ActrType
 import io.actrium.actr.ContextBridge
 import io.actrium.actr.PayloadType
 import io.actrium.actr.RpcEnvelopeBridge
+{manifest_resolver_import}
 
 "#,
             local_count = local_services.len(),
             remote_count = remote_services.len(),
             kotlin_package = kotlin_package,
+            manifest_resolver_import = manifest_resolver_import,
         ));
 
         // Import protobuf message types for all services
@@ -614,7 +621,10 @@ import io.actrium.actr.RpcEnvelopeBridge
 
         // Generate RemoteServiceRegistry for remote service discovery
         if !remote_services.is_empty() {
-            code.push_str(&self.generate_remote_service_registry(&remote_services)?);
+            let dependency_aliases = self.remote_dependency_aliases_by_type(context);
+            code.push_str(
+                &self.generate_remote_service_registry(&remote_services, &dependency_aliases)?,
+            );
             code.push('\n');
         }
 
@@ -646,20 +656,38 @@ interface UnifiedHandler : {} {{
     }
 
     /// Generate RemoteServiceRegistry for managing remote service discovery
-    fn generate_remote_service_registry(&self, remote_services: &[&ServiceInfo]) -> Result<String> {
+    fn remote_dependency_aliases_by_type(&self, context: &GenContext) -> HashMap<String, String> {
+        context
+            .config
+            .dependencies
+            .iter()
+            .filter_map(|dependency| {
+                dependency
+                    .actr_type
+                    .as_ref()
+                    .map(|actr_type| (actr_type.to_string_repr(), dependency.alias.clone()))
+            })
+            .collect()
+    }
+
+    fn generate_remote_service_registry(
+        &self,
+        remote_services: &[&ServiceInfo],
+        dependency_aliases_by_type: &HashMap<String, String>,
+    ) -> Result<String> {
         let mut code = String::new();
 
         code.push_str(
             r#"/**
- * Remote Service Route prefixes and their corresponding actor types
+ * Remote Service Route prefixes and their manifest dependency aliases
  *
  * Used by UnifiedDispatcher to route requests to remote services.
  */
 object RemoteServiceRegistry {
     /**
-     * Map of route key prefix to actor type for remote services
+     * Map of route key prefix to manifest dependency alias for remote services.
      */
-    val remoteRoutes: Map<String, ActrType> = mapOf(
+    val remoteRouteAliases: Map<String, String> = mapOf(
 "#,
         );
 
@@ -670,21 +698,17 @@ object RemoteServiceRegistry {
                     service.service_name
                 ))
             })?;
-            let actor_type = ActrType::from_string_repr(actor_type_raw).map_err(|e| {
+            let dependency_alias = dependency_aliases_by_type.get(actor_type_raw).ok_or_else(|| {
                 ActrCliError::config_error(format!(
-                    "Invalid remote actr_type '{}' for service '{}': {}",
-                    actor_type_raw, service.service_name, e
+                    "Missing manifest dependency alias for remote service '{}' with actr_type '{}'",
+                    service.service_name, actor_type_raw
                 ))
             })?;
             // Extract service base name without "Service" suffix for route key
             let service_base = service.service_name.replace("Service", "");
             code.push_str(&format!(
-                "        \"{}.{}\" to ActrType(manufacturer = \"{}\", name = \"{}\", version = \"{}\"),\n",
-                service.proto_package,
-                service_base,
-                actor_type.manufacturer,
-                actor_type.name,
-                actor_type.version
+                "        \"{}.{}\" to \"{}\",\n",
+                service.proto_package, service_base, dependency_alias
             ));
         }
 
@@ -695,14 +719,24 @@ object RemoteServiceRegistry {
      * Check if a route key belongs to a remote service
      */
     fun isRemoteRoute(routeKey: String): Boolean {
-        return remoteRoutes.keys.any { routeKey.startsWith(it) }
+        return remoteRouteAliases.keys.any { routeKey.startsWith(it) }
     }
 
     /**
-     * Get the actor type for a remote route
+     * Resolve remote route targets from a runtime manifest.
      */
-    fun getActorType(routeKey: String): ActrType? {
-        return remoteRoutes.entries.find { routeKey.startsWith(it.key) }?.value
+    fun resolveRemoteTargets(manifestPath: String): Map<String, ActrType> {
+        return remoteRouteAliases.mapValues { (_, alias) ->
+            resolveManifestDependency(manifestPath, alias)
+        }
+    }
+
+    /**
+     * Get the actor type for a remote route from runtime-resolved targets.
+     */
+    fun getActorType(routeKey: String, remoteTargets: Map<String, ActrType>): ActrType? {
+        val routePrefix = remoteRouteAliases.keys.find { routeKey.startsWith(it) }
+        return routePrefix?.let { remoteTargets[it] }
     }
 }
 "#,
@@ -746,7 +780,7 @@ object RemoteServiceRegistry {
             // Check if this is a remote service call
             RemoteServiceRegistry.isRemoteRoute(routeKey) -> {
                 // Get target actor type and discover it
-                val actrType = RemoteServiceRegistry.getActorType(routeKey)
+                val actrType = RemoteServiceRegistry.getActorType(routeKey, remoteTargets)
                     ?: throw IllegalArgumentException("Unknown remote route: $routeKey")
 
                 val targetId = resolveRemoteActor(ctx, actrType)
@@ -801,8 +835,8 @@ object RemoteServiceRegistry {
      *
      * Call this in your Workload's onStart method to pre-discover remote actors.
      */
-    suspend fun discoverRemoteServices(ctx: ContextBridge) {
-        for ((_, actrType) in RemoteServiceRegistry.remoteRoutes) {
+    suspend fun discoverRemoteServices(ctx: ContextBridge, remoteTargets: Map<String, ActrType>) {
+        for ((_, actrType) in remoteTargets) {
             if (!discoveredActors.containsKey(actrType)) {
                 val actorId = ctx.discover(actrType)
                 discoveredActors[actrType] = actorId
@@ -817,6 +851,11 @@ object RemoteServiceRegistry {
         discoveredActors.clear()
     }
 "#
+        } else {
+            ""
+        };
+        let remote_targets_param = if has_remote {
+            "remoteTargets: Map<String, ActrType>,\n        "
         } else {
             ""
         };
@@ -841,6 +880,7 @@ object UnifiedDispatcher {{
      */
     suspend fun dispatch(
         {handler_param}ctx: ContextBridge,
+        {remote_targets_param}
         envelope: RpcEnvelopeBridge
     ): ByteArray {{
         val routeKey = envelope.routeKey
@@ -854,6 +894,7 @@ object UnifiedDispatcher {{
 "#,
             discovered_actors_field = discovered_actors_field,
             handler_param = handler_param,
+            remote_targets_param = remote_targets_param,
             local_dispatch_cases = local_dispatch_cases,
             remote_dispatch = remote_dispatch,
         )
@@ -934,7 +975,8 @@ impl LanguageGenerator for KotlinGenerator {
         );
 
         // Generate unified infrastructure file
-        let unified_code = self.generate_unified_infrastructure(&services, &kotlin_package)?;
+        let unified_code =
+            self.generate_unified_infrastructure(&services, &kotlin_package, context)?;
         let unified_file = context.output.join("unified_actor.kt");
         std::fs::write(&unified_file, &unified_code).map_err(|e| {
             ActrCliError::config_error(format!("Failed to write unified_actor.kt: {e}"))
@@ -1103,13 +1145,35 @@ fn generate_unified_workload_scaffold(services: &[ServiceInfo], kotlin_package: 
         r#"
         // Discover all remote services
         Log.i(TAG, "📡 Discovering remote services...")
-        UnifiedDispatcher.discoverRemoteServices(ctx)
+        UnifiedDispatcher.discoverRemoteServices(ctx, remoteTargets)
         Log.i(TAG, "✅ Remote services discovered")"#
     } else {
         ""
     };
 
+    let remote_registry_import = if has_remote {
+        format!("\nimport {}.RemoteServiceRegistry", kotlin_package)
+    } else {
+        String::new()
+    };
+
+    let remote_constructor_params = if has_remote {
+        "manifestPath: String? = null,\n    remoteTargets: Map<String, ActrType> = emptyMap(),\n    "
+    } else {
+        ""
+    };
+
+    let remote_targets_field = if has_remote {
+        r#"
+    private val remoteTargets: Map<String, ActrType> =
+        manifestPath?.let(RemoteServiceRegistry::resolveRemoteTargets) ?: remoteTargets
+"#
+    } else {
+        ""
+    };
+
     let dispatch_handler = if has_local { "handler, " } else { "" };
+    let dispatch_remote_targets = if has_remote { "remoteTargets, " } else { "" };
 
     format!(
         r#"/**
@@ -1123,6 +1187,7 @@ package {base_package}
 
 import android.util.Log
 import {kotlin_package}.UnifiedDispatcher{handler_import}
+{remote_registry_import}
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
 import io.actrium.actr.ContextBridge
@@ -1147,6 +1212,7 @@ import io.actrium.actr.WorkloadLifecycleBridge
  */
 class UnifiedWorkload(
     {handler_field}
+    {remote_constructor_params}
     private val realmId: UInt = 2368266035u
 ) : WorkloadLifecycleBridge {{
 
@@ -1159,6 +1225,7 @@ class UnifiedWorkload(
         serialNumber = System.currentTimeMillis().toULong(),
         type = ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
     )
+{remote_targets_field}
 
     override suspend fun onStart(ctx: ContextBridge) {{
         Log.i(TAG, "UnifiedWorkload.onStart"){discover_call}
@@ -1189,7 +1256,7 @@ class UnifiedWorkload(
         Log.i(TAG, "   request_id: ${{envelope.requestId}}")
         Log.i(TAG, "   payload size: ${{envelope.payload.size}} bytes")
 
-        return UnifiedDispatcher.dispatch({dispatch_handler}ctx, envelope)
+        return UnifiedDispatcher.dispatch({dispatch_handler}ctx, {dispatch_remote_targets}envelope)
     }}
 
     /**
@@ -1213,9 +1280,13 @@ class UnifiedWorkload(
         base_package = base_package,
         kotlin_package = kotlin_package,
         handler_import = handler_import,
+        remote_registry_import = remote_registry_import,
         handler_field = handler_field,
+        remote_constructor_params = remote_constructor_params,
+        remote_targets_field = remote_targets_field,
         discover_call = discover_call,
         dispatch_handler = dispatch_handler,
+        dispatch_remote_targets = dispatch_remote_targets,
     )
 }
 
@@ -1328,4 +1399,80 @@ class MyUnifiedHandler : UnifiedHandler {{
         imports = imports,
         method_impls = method_impls,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remote_echo_service() -> ServiceInfo {
+        ServiceInfo {
+            service_name: "EchoService".to_string(),
+            proto_package: "echo".to_string(),
+            proto_file_name: "echo.proto".to_string(),
+            is_local: false,
+            remote_target_type: Some("acme:EchoService:1.0.0".to_string()),
+            methods: vec![MethodInfo {
+                name: "Echo".to_string(),
+                request_type: "EchoRequest".to_string(),
+                response_type: "EchoResponse".to_string(),
+            }],
+            needs_outer_class_suffix: false,
+        }
+    }
+
+    fn local_client_service() -> ServiceInfo {
+        ServiceInfo {
+            service_name: "ClientService".to_string(),
+            proto_package: "client".to_string(),
+            proto_file_name: "client.proto".to_string(),
+            is_local: true,
+            remote_target_type: None,
+            methods: vec![MethodInfo {
+                name: "Send".to_string(),
+                request_type: "SendRequest".to_string(),
+                response_type: "SendResponse".to_string(),
+            }],
+            needs_outer_class_suffix: false,
+        }
+    }
+
+    #[test]
+    fn remote_service_registry_uses_manifest_dependency_aliases() {
+        let generator = KotlinGenerator;
+        let service = remote_echo_service();
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "acme:EchoService:1.0.0".to_string(),
+            "echo-service".to_string(),
+        );
+
+        let content = generator
+            .generate_remote_service_registry(&[&service], &aliases)
+            .expect("render remote registry");
+
+        assert!(content.contains("val remoteRouteAliases: Map<String, String>"));
+        assert!(content.contains("\"echo.Echo\" to \"echo-service\""));
+        assert!(content.contains("resolveManifestDependency(manifestPath, alias)"));
+        assert!(
+            content
+                .contains("getActorType(routeKey: String, remoteTargets: Map<String, ActrType>)")
+        );
+        assert!(!content.contains("ActrType(manufacturer"));
+        assert!(!content.contains("remoteRoutes: Map<String, ActrType>"));
+    }
+
+    #[test]
+    fn unified_workload_resolves_remote_targets_from_manifest_path() {
+        let services = vec![local_client_service(), remote_echo_service()];
+        let content = generate_unified_workload_scaffold(&services, "com.example.generated");
+
+        assert!(content.contains("manifestPath: String? = null"));
+        assert!(content.contains("remoteTargets: Map<String, ActrType> = emptyMap()"));
+        assert!(content.contains("RemoteServiceRegistry::resolveRemoteTargets"));
+        assert!(content.contains("UnifiedDispatcher.discoverRemoteServices(ctx, remoteTargets)"));
+        assert!(
+            content.contains("UnifiedDispatcher.dispatch(handler, ctx, remoteTargets, envelope)")
+        );
+    }
 }
