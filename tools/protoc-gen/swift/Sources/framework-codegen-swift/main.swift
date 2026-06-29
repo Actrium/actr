@@ -205,7 +205,11 @@ struct ActrFrameworkGenerator {
 
           /// \(pkgName) workload wrapper - automatically generated for empty local proto
           \(accessModifier)actor \(workloadName) {
-              \(accessModifier)init() {}
+              private let remoteTargets: [String: ActrType]
+
+              \(accessModifier)init(remoteTargets: [String: ActrType] = [:]) {
+                  self.remoteTargets = remoteTargets
+              }
           }
 
           extension \(workloadName) {
@@ -227,7 +231,7 @@ struct ActrFrameworkGenerator {
         }
 
         // Generate forwarding cases for each actr_type
-        for (actrTypeStr, services) in servicesByActrType.sorted(by: { $0.key < $1.key }) {
+        for (_, services) in servicesByActrType.sorted(by: { $0.key < $1.key }) {
           var routeKeysForThisType: [String] = []
           for service in services {
             routeKeysForThisType.append(contentsOf: service.routeKeys)
@@ -239,7 +243,7 @@ struct ActrFrameworkGenerator {
             content += """
 
                       case \(routeKeysList):
-                          let targetType = try ActrType.fromStringRepr("\(actrTypeStr)")
+                          let targetType = try remoteTargetType(for: envelope.routeKey)
                           let targetId = try await ctx.discover(targetType: targetType)
                           return try await ctx.call(
                               target: targetId,
@@ -255,6 +259,13 @@ struct ActrFrameworkGenerator {
                   default:
                       throw ActrError.UnknownRoute(msg: "Unknown route: \\(envelope.routeKey)")
                   }
+              }
+
+              private func remoteTargetType(for routeKey: String) throws -> ActrType {
+                  guard let targetType = remoteTargets[routeKey] else {
+                      throw ActrError.UnknownRoute(msg: "No remote target configured for route: \\(routeKey)")
+                  }
+                  return targetType
               }
           }
 
@@ -321,9 +332,11 @@ struct ActrFrameworkGenerator {
               /// \(serviceName) workload wrapper - wraps the user's handler implementation
               \(accessModifier)actor \(workloadName)<T: \(handlerProtocol)> {
                   \(accessModifier)let handler: T
+                  private let remoteTargets: [String: ActrType]
 
-                  \(accessModifier)init(handler: T) {
+                  \(accessModifier)init(handler: T, remoteTargets: [String: ActrType] = [:]) {
                       self.handler = handler
+                      self.remoteTargets = remoteTargets
                   }
               }
 
@@ -367,7 +380,7 @@ struct ActrFrameworkGenerator {
             }
 
             // Generate forwarding cases for each actr_type
-            for (actrTypeStr, services) in servicesByActrType.sorted(by: { $0.key < $1.key }) {
+            for (_, services) in servicesByActrType.sorted(by: { $0.key < $1.key }) {
               var routeKeysForThisType: [String] = []
               for service in services {
                 routeKeysForThisType.append(contentsOf: service.routeKeys)
@@ -379,7 +392,7 @@ struct ActrFrameworkGenerator {
                 content += """
 
                   case \(routeKeysList):
-                      let targetType = try ActrType.fromStringRepr("\(actrTypeStr)")
+                      let targetType = try remoteTargetType(for: envelope.routeKey)
                       let targetId = try await ctx.discover(targetType: targetType)
                       return try await ctx.call(
                           target: targetId,
@@ -396,6 +409,13 @@ struct ActrFrameworkGenerator {
                           throw ActrError.UnknownRoute(msg: "Unknown route: \\(envelope.routeKey)")
                       }
                   }
+
+              private func remoteTargetType(for routeKey: String) throws -> ActrType {
+                  guard let targetType = remoteTargets[routeKey] else {
+                      throw ActrError.UnknownRoute(msg: "No remote target configured for route: \\(routeKey)")
+                  }
+                  return targetType
+              }
               }
 
               """

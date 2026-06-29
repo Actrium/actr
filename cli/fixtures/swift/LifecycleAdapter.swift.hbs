@@ -15,6 +15,10 @@ public final class {{SERVICE_NAME}}LifecycleAdapter<Handler: {{HANDLER_NAME}}>: 
         self.init(workload: {{WORKLOAD_NAME}}(handler: handler))
     }
 
+    public convenience init(handler: Handler, remoteTargets: [String: ActrType]) {
+        self.init(workload: {{WORKLOAD_NAME}}(handler: handler, remoteTargets: remoteTargets))
+    }
+
     public func onStart(ctx: Context) async throws {
         // TODO: Optionally customize startup logic
     }

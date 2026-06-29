@@ -1,5 +1,4 @@
 import Actr
-import ActrBindings
 import Foundation
 import OSLog
 import SwiftUI
@@ -31,19 +30,30 @@ public final class ActrService: ObservableObject {
         logger.info("Initializing linked ActrService...")
 
         do {
-            let actorType = try ActrBindings.resolveManifestPackageActrType(
+            let actorType = try resolveManifestPackageActrType(
                 manifestPath: manifestPath
             )
-{{#if TARGET_DEPENDENCY_ALIAS}}
-            let targetType = try ActrBindings.resolveManifestDependency(
+{{#if REMOTE_TARGETS}}
+{{#each REMOTE_TARGETS}}
+            let {{variable_name}} = try resolveManifestDependency(
                 manifestPath: manifestPath,
-                dependencyAlias: "{{TARGET_DEPENDENCY_ALIAS}}"
+                dependencyAlias: "{{alias}}"
             )
+{{/each}}
+            let remoteTargets: [String: ActrType] = [
+{{#each REMOTE_TARGET_ROUTES}}
+                "{{route_key}}": {{variable_name}},
+{{/each}}
+            ]
+            let targetType = {{FIRST_REMOTE_TARGET_VARIABLE}}
             let handler = {{SERVICE_NAME}}HandlerImpl(targetType: targetType)
 {{else}}
             let handler = {{SERVICE_NAME}}HandlerImpl()
 {{/if}}
-            let lifecycle = {{SERVICE_NAME}}LifecycleAdapter(handler: handler)
+            let lifecycle = {{SERVICE_NAME}}LifecycleAdapter(
+                handler: handler{{#if REMOTE_TARGETS}},
+                remoteTargets: remoteTargets{{/if}}
+            )
             let workload = Actr.dynamicWorkload(lifecycle: lifecycle)
             let configURL = URL(fileURLWithPath: configPath)
             let node = try await Actr.ActrNode.linked(

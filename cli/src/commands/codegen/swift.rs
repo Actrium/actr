@@ -454,17 +454,14 @@ impl LanguageGenerator for SwiftGenerator {
         let service = service.clone();
         let service_name = service.name.clone();
         let workload_name = service.workload_name.clone();
+        let remote_targets = self.remote_targets_for_scaffold(context)?;
 
         let scaffold_content = self.generate_scaffold_content(
             &context.config.package.actr_type.manufacturer,
             &service_name,
             &workload_name,
             &services,
-            context
-                .config
-                .dependencies
-                .first()
-                .map(|dependency| dependency.alias.as_str()),
+            &remote_targets,
         )?;
 
         let layout = self.detect_template_project_layout(context);
@@ -1240,6 +1237,32 @@ fn looks_like_generated_swift_source(content: &str) -> bool {
     content.contains(PROTOBUF_GENERATED_HEADER) || content.contains(ACTR_FRAMEWORK_GENERATED_HEADER)
 }
 
+fn lower_camel_identifier_from_alias(alias: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+
+    for ch in alias.chars() {
+        if ch.is_ascii_alphanumeric() {
+            if result.is_empty() {
+                result.push(ch.to_ascii_lowercase());
+            } else if capitalize_next {
+                result.push(ch.to_ascii_uppercase());
+                capitalize_next = false;
+            } else {
+                result.push(ch);
+            }
+        } else {
+            capitalize_next = !result.is_empty();
+        }
+    }
+
+    if result.is_empty() {
+        "target".to_string()
+    } else {
+        result
+    }
+}
+
 #[derive(Serialize, Clone)]
 struct ProtoService {
     name: String,
@@ -1255,6 +1278,19 @@ struct ProtoMethod {
     swift_name: String,
     input_type: String,
     output_type: String,
+}
+
+#[derive(Serialize, Clone)]
+struct RemoteTarget {
+    alias: String,
+    variable_name: String,
+    routes: Vec<RemoteTargetRoute>,
+}
+
+#[derive(Serialize, Clone)]
+struct RemoteTargetRoute {
+    route_key: String,
+    variable_name: String,
 }
 
 impl SwiftGenerator {
@@ -1405,13 +1441,79 @@ impl SwiftGenerator {
         }
     }
 
+    fn remote_targets_for_scaffold(&self, context: &GenContext) -> Result<Vec<RemoteTarget>> {
+        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Swift)?;
+        let dependency_actr_types = context
+            .config
+            .dependencies
+            .iter()
+            .filter_map(|dependency| {
+                dependency
+                    .actr_type
+                    .as_ref()
+                    .map(|actr_type| actr_type.to_string_repr())
+            })
+            .collect::<Vec<_>>();
+
+        for service in &catalog.remote_services {
+            let Some(service_actr_type) = &service.actr_type else {
+                continue;
+            };
+            if !dependency_actr_types
+                .iter()
+                .any(|dependency_actr_type| dependency_actr_type == service_actr_type)
+            {
+                return Err(ActrCliError::config_error(format!(
+                    "Missing manifest dependency alias for remote service '{}' with actr_type '{}'",
+                    service.name, service_actr_type
+                )));
+            }
+        }
+
+        let mut targets = Vec::new();
+
+        for dependency in &context.config.dependencies {
+            let Some(dependency_actr_type) = &dependency.actr_type else {
+                continue;
+            };
+            let dependency_actr_type = dependency_actr_type.to_string_repr();
+            let variable_name = format!(
+                "{}TargetType",
+                lower_camel_identifier_from_alias(&dependency.alias)
+            );
+            let routes: Vec<RemoteTargetRoute> = catalog
+                .remote_services
+                .iter()
+                .filter(|service| {
+                    service.actr_type.as_deref() == Some(dependency_actr_type.as_str())
+                })
+                .flat_map(|service| {
+                    service.methods.iter().map(|method| RemoteTargetRoute {
+                        route_key: method.route_key.clone(),
+                        variable_name: variable_name.clone(),
+                    })
+                })
+                .collect();
+
+            if !routes.is_empty() {
+                targets.push(RemoteTarget {
+                    alias: dependency.alias.clone(),
+                    variable_name,
+                    routes,
+                });
+            }
+        }
+
+        Ok(targets)
+    }
+
     fn generate_scaffold_content(
         &self,
         manufacturer: &str,
         service_name: &str,
         workload_name: &str,
         services: &[ProtoService],
-        target_dependency_alias: Option<&str>,
+        remote_targets: &[RemoteTarget],
     ) -> Result<String> {
         #[derive(Serialize)]
         struct SwiftScaffoldContext {
@@ -1425,9 +1527,18 @@ impl SwiftGenerator {
             services: Vec<ProtoService>,
             #[serde(rename = "HAS_SERVICES")]
             has_services: bool,
-            #[serde(rename = "TARGET_DEPENDENCY_ALIAS")]
-            target_dependency_alias: Option<String>,
+            #[serde(rename = "REMOTE_TARGETS")]
+            remote_targets: Vec<RemoteTarget>,
+            #[serde(rename = "REMOTE_TARGET_ROUTES")]
+            remote_target_routes: Vec<RemoteTargetRoute>,
+            #[serde(rename = "FIRST_REMOTE_TARGET_VARIABLE")]
+            first_remote_target_variable: Option<String>,
         }
+
+        let remote_target_routes = remote_targets
+            .iter()
+            .flat_map(|target| target.routes.iter().cloned())
+            .collect::<Vec<_>>();
 
         let context = SwiftScaffoldContext {
             manufacturer: manufacturer.to_string(),
@@ -1435,7 +1546,11 @@ impl SwiftGenerator {
             workload_name: workload_name.to_string(),
             services: services.to_vec(),
             has_services: !services.is_empty(),
-            target_dependency_alias: target_dependency_alias.map(str::to_string),
+            remote_targets: remote_targets.to_vec(),
+            remote_target_routes,
+            first_remote_target_variable: remote_targets
+                .first()
+                .map(|target| target.variable_name.clone()),
         };
 
         let mut handlebars = Handlebars::new();
@@ -1545,13 +1660,21 @@ mod tests {
     fn generated_scaffold_uses_linked_runtime() {
         let generator = SwiftGenerator;
         let service = sample_echo_service();
+        let remote_targets = vec![RemoteTarget {
+            alias: "echo-service".to_string(),
+            variable_name: "echoServiceTargetType".to_string(),
+            routes: vec![RemoteTargetRoute {
+                route_key: "echo.EchoService.Echo".to_string(),
+                variable_name: "echoServiceTargetType".to_string(),
+            }],
+        }];
         let scaffold = generator
             .generate_scaffold_content(
                 "demo",
                 "EchoService",
                 "EchoServiceWorkload",
                 std::slice::from_ref(&service),
-                Some("echo-service"),
+                &remote_targets,
             )
             .expect("render scaffold");
 
@@ -1566,11 +1689,15 @@ mod tests {
         assert!(scaffold.contains("public func shutdown() async"));
         assert!(scaffold.contains("public enum ConnectionStatus"));
         assert!(scaffold.contains("resolveManifestPackageActrType"));
-        assert!(scaffold.contains("import ActrBindings"));
+        assert!(!scaffold.contains("import ActrBindings"));
+        assert!(!scaffold.contains("ActrBindings.resolveManifest"));
         assert!(scaffold.contains("resolveManifestDependency("));
         assert!(scaffold.contains("dependencyAlias: \"echo-service\""));
+        assert!(scaffold.contains("let remoteTargets: [String: ActrType] = ["));
+        assert!(scaffold.contains("\"echo.EchoService.Echo\": echoServiceTargetType"));
         assert!(scaffold.contains("EchoServiceHandlerImpl(targetType: targetType)"));
-        assert!(scaffold.contains("EchoServiceLifecycleAdapter(handler: handler)"));
+        assert!(scaffold.contains("EchoServiceLifecycleAdapter("));
+        assert!(scaffold.contains("remoteTargets: remoteTargets"));
         assert!(scaffold.contains("dynamicWorkload(lifecycle: lifecycle)"));
         assert!(scaffold.contains("ActrNode.linked("));
         assert!(!scaffold.contains("ActrNode.from(packageConfig:"));

@@ -11,4 +11,4 @@ Empty Actrium Swift app shell.
 5. Use the generated `ActrService.swift` linked-node bootstrap from your UI.
 6. Run `xcodegen generate` after editing `project.yml`.
 
-`manifest.toml` defines package identity and dependencies. `actr.toml` defines runtime and network settings. The iOS scaffold uses `ActrNode.linked`; it does not load a `.actr` package.
+`manifest.toml` defines package identity and dependencies. `actr.toml` defines runtime and network settings. The iOS scaffold uses `ActrNode.linked`; it does not load a `.actr` package. When remote dependencies exist, `ActrService.swift` resolves their targets from `manifest.toml`.

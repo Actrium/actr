@@ -66,11 +66,7 @@ let package = Package(
         ),
     ],
     dependencies: [
-        .package(
-            name: "SwiftProtobuf",
-            url: "https://github.com/apple/swift-protobuf.git",
-            .upToNextMinor(from: "1.32.0")
-        ),
+        .package(url: "https://github.com/apple/swift-protobuf.git", .upToNextMinor(from: "1.32.0")),
     ],
     targets: [
         actrBinaryTarget,
@@ -93,7 +89,7 @@ let package = Package(
                 "ActrFFI",
                 "ActrBindings",
                 "ActrFFILib",
-                .product(name: "SwiftProtobuf", package: "SwiftProtobuf"),
+                .product(name: "SwiftProtobuf", package: "swift-protobuf"),
             ],
             linkerSettings: [
                 .linkedFramework("SystemConfiguration"),
