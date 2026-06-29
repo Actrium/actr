@@ -21,9 +21,7 @@ declare module 'actr:workload/host@0.1.0' {
   };
 
   type Dest =
-    | { tag: 'shell' }
-    | { tag: 'local' }
-    | { tag: 'actor'; val: ActrId };
+    { tag: 'shell' } | { tag: 'local' } | { tag: 'actor'; val: ActrId };
 
   type DataStream = {
     streamId: string;
