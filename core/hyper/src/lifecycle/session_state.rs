@@ -302,4 +302,64 @@ mod tests {
         assert!(!state.is_current_generation(1).await);
         assert!(state.is_current_generation(2).await);
     }
+
+    #[tokio::test]
+    async fn phase_transitions_cover_all_states() {
+        let state = SessionState::new(SessionSnapshot::empty_with_id(test_actor_id(), 1));
+        assert_eq!(state.phase().await, SessionPhase::Active);
+
+        state.enter_rebinding().await;
+        assert_eq!(state.phase().await, SessionPhase::Rebinding);
+
+        state.set_active().await;
+        assert_eq!(state.phase().await, SessionPhase::Active);
+
+        state.set_realm_unavailable().await;
+        assert_eq!(state.phase().await, SessionPhase::RealmUnavailable);
+    }
+
+    #[tokio::test]
+    async fn sync_readers_return_some_when_unlocked() {
+        let state = SessionState::new(SessionSnapshot::empty_with_id(test_actor_id(), 7));
+        // No contending lock held → try_read succeeds.
+        assert_eq!(
+            state.actor_id_sync().map(|i| i.serial_number),
+            Some(42)
+        );
+        assert_eq!(state.generation_sync(), Some(7));
+    }
+
+    #[tokio::test]
+    async fn snapshot_clone_and_credential_accessors_reflect_state() {
+        let state = SessionState::new(SessionSnapshot::empty_with_id(test_actor_id(), 3));
+
+        // Full snapshot clone carries the generation.
+        assert_eq!(state.snapshot().await.generation, 3);
+
+        // Default-constructed accessors on an empty snapshot.
+        assert_eq!(state.credential_expires_at().await, Timestamp::default());
+        assert!(state.renewal_token().await.is_empty());
+        assert_eq!(
+            state.renewal_token_expires_at().await,
+            Timestamp::default()
+        );
+        assert_eq!(state.credential().await, AIdCredential::default());
+        assert_eq!(
+            state.turn_credential().await,
+            TurnCredential::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_hard_rebind_returns_previous_snapshot() {
+        let state = SessionState::new(SessionSnapshot::empty_with_id(test_actor_id(), 1));
+        let prev = state
+            .commit_hard_rebind(SessionSnapshot::empty_with_id(test_actor_id(), 5))
+            .await;
+        // Returned snapshot is the pre-rebind one (generation 1).
+        assert_eq!(prev.generation, 1);
+        // New current generation reflects the committed snapshot.
+        assert_eq!(state.generation().await, 5);
+        assert!(state.is_current_generation(5).await);
+    }
 }

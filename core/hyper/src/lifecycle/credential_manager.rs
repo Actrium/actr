@@ -893,4 +893,79 @@ mod tests {
             "hard rebind must re-invoke the manufacturer auth provider exactly once"
         );
     }
+
+    #[test]
+    fn is_expired_past_and_future() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // Far past → expired.
+        assert!(is_expired(now - 3600));
+        assert!(is_expired(0));
+
+        // Exactly now → expired (<=).
+        assert!(is_expired(now));
+
+        // Far future → not expired.
+        assert!(!is_expired(now + 3600));
+    }
+
+    #[tokio::test]
+    async fn fire_credential_renewed_invokes_callback_with_expiry() {
+        use std::sync::Mutex;
+
+        let captured: Arc<Mutex<Option<std::time::SystemTime>>> = Arc::new(Mutex::new(None));
+        let cap = captured.clone();
+        let cb: HookCallback = Arc::new(move |event| {
+            let cap = cap.clone();
+            Box::pin(async move {
+                if let HookEvent::CredentialRenewed { new_expiry } = event {
+                    *cap.lock().unwrap() = Some(new_expiry);
+                }
+            })
+        });
+
+        let expires_at = prost_types::Timestamp { seconds: 1000, nanos: 0 };
+        fire_credential_renewed(Some(&cb), &expires_at).await;
+
+        let got = captured.lock().unwrap().take();
+        let expected = SystemTime::UNIX_EPOCH + Duration::from_secs(1000);
+        assert_eq!(got, Some(expected));
+    }
+
+    #[tokio::test]
+    async fn fire_credential_renewed_none_callback_is_noop() {
+        // No callback installed → no panic, no work.
+        fire_credential_renewed(
+            None,
+            &prost_types::Timestamp { seconds: 5, nanos: 0 },
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn fire_credential_renewed_clamps_negative_seconds_to_zero() {
+        use std::sync::Mutex;
+
+        let captured: Arc<Mutex<Option<std::time::SystemTime>>> = Arc::new(Mutex::new(None));
+        let cap = captured.clone();
+        let cb: HookCallback = Arc::new(move |event| {
+            let cap = cap.clone();
+            Box::pin(async move {
+                if let HookEvent::CredentialRenewed { new_expiry } = event {
+                    *cap.lock().unwrap() = Some(new_expiry);
+                }
+            })
+        });
+
+        // Negative seconds (malformed/epoch) must clamp to 0 → UNIX_EPOCH.
+        fire_credential_renewed(
+            Some(&cb),
+            &prost_types::Timestamp { seconds: -100, nanos: 0 },
+        )
+        .await;
+        assert_eq!(*captured.lock().unwrap(), Some(SystemTime::UNIX_EPOCH));
+    }
 }

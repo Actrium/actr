@@ -2316,4 +2316,112 @@ mod tests {
             result
         );
     }
+
+    // ── pure helper functions ───────────────────────────────────────────────
+
+    use actr_protocol::{ActrType, Realm, RegisterAuthMode};
+
+    fn runtime_config_with_ws(port: Option<u16>, host: Option<&str>) -> actr_config::RuntimeConfig {
+        actr_config::RuntimeConfig {
+            package: actr_config::PackageInfo {
+                name: "linked".into(),
+                actr_type: ActrType {
+                    manufacturer: "mfr".into(),
+                    name: "Linked".into(),
+                    version: "1.0.0".into(),
+                },
+                description: None,
+                authors: vec![],
+                license: None,
+            },
+            signaling_url: url::Url::parse("ws://127.0.0.1:9/signaling/ws").unwrap(),
+            realm: Realm { realm_id: 1 },
+            ais_endpoint: "http://127.0.0.1:9/ais".into(),
+            realm_secret: None,
+            visible_in_discovery: true,
+            acl: None,
+            mailbox_path: None,
+            scripts: std::collections::HashMap::new(),
+            webrtc: actr_config::WebRtcConfig::default(),
+            websocket_listen_port: port,
+            websocket_advertised_host: host.map(|h| h.to_string()),
+            observability: actr_config::ObservabilityConfig {
+                filter_level: "info".into(),
+                tracing_enabled: false,
+                tracing_endpoint: String::new(),
+                tracing_service_name: "test".into(),
+            },
+            config_dir: std::path::PathBuf::from("."),
+            trust: vec![],
+            package_path: None,
+            web: None,
+        }
+    }
+
+    #[test]
+    fn build_linked_register_request_includes_ws_address_when_port_set() {
+        let cfg = runtime_config_with_ws(Some(8090), Some("example.com"));
+        let req = build_linked_register_request(&cfg, None);
+        assert_eq!(req.actr_type, cfg.actr_type().clone());
+        assert_eq!(req.realm, cfg.realm);
+        assert_eq!(req.auth_mode, Some(RegisterAuthMode::Linked as i32));
+        assert_eq!(req.ws_address.as_deref(), Some("ws://example.com:8090"));
+    }
+
+    #[test]
+    fn build_linked_register_request_omits_ws_address_without_port() {
+        let cfg = runtime_config_with_ws(None, None);
+        let req = build_linked_register_request(&cfg, None);
+        assert!(req.ws_address.is_none());
+        // Default host fallback only applies when port is Some.
+    }
+
+    #[test]
+    fn build_linked_register_request_defaults_host_to_localhost() {
+        let cfg = runtime_config_with_ws(Some(7000), None);
+        let req = build_linked_register_request(&cfg, None);
+        assert_eq!(req.ws_address.as_deref(), Some("ws://127.0.0.1:7000"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn is_compatible_native_target_validates_host_triple() {
+        // The current host triple must be accepted.
+        let host = format!(
+            "{}-unknown-{}",
+            std::env::consts::ARCH,
+            if std::env::consts::OS == "macos" { "darwin" } else { std::env::consts::OS }
+        );
+        assert!(is_compatible_native_target(&host));
+
+        // Bogus / too-short triples are rejected.
+        assert!(!is_compatible_native_target("not-a-triple"));
+        assert!(!is_compatible_native_target("only-two"));
+        assert!(!is_compatible_native_target(""));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn detect_binary_kind_rejects_unsupported_target() {
+        let manifest = actr_pack::PackageManifest {
+            manufacturer: "m".into(),
+            name: "n".into(),
+            version: "1.0.0".into(),
+            binary: actr_pack::BinaryEntry {
+                path: "bin/x".into(),
+                target: "bogus-arch-unknown-os".into(),
+                hash: String::new(),
+                size: None,
+                kind: None,
+            },
+            signature_algorithm: "ed25519".into(),
+            signing_key_id: None,
+            resources: vec![],
+            proto_files: vec![],
+            lock_file: None,
+            metadata: actr_pack::ManifestMetadata::default(),
+        };
+        let err = detect_binary_kind(&manifest).unwrap_err();
+        assert!(matches!(err, HyperError::InvalidManifest(_)));
+    }
 }

@@ -1161,4 +1161,44 @@ mod tests {
             "pending entry must be removed after response"
         );
     }
+
+    #[tokio::test]
+    async fn send_response_returns_false_for_unknown_peer() {
+        // A gate with no inbound connections: send_response must return
+        // Ok(false) (not an error) so callers can fall back to another transport.
+        let (_tx, rx) = tokio::sync::mpsc::channel::<InboundWsConn>(1);
+        let gate = WebSocketGate::new(
+            rx,
+            Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            Arc::new(DataStreamRegistry::new()),
+            None,
+        );
+        let sent = gate
+            .send_response(&test_actor_id(1), RpcEnvelope::default())
+            .await
+            .unwrap();
+        assert!(!sent, "unknown peer should yield Ok(false)");
+    }
+
+    #[tokio::test]
+    async fn send_response_returns_false_when_sink_is_none() {
+        // A peer entry exists but its sink slot is None (connection dropped its
+        // write-half): send_response must return Ok(false), not error.
+        let (_tx, rx) = tokio::sync::mpsc::channel::<InboundWsConn>(1);
+        let gate = WebSocketGate::new(
+            rx,
+            Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            Arc::new(DataStreamRegistry::new()),
+            None,
+        );
+        // Insert a None sink for the peer.
+        let peer = test_actor_id(2);
+        let sink: WsSink = Arc::new(tokio::sync::Mutex::new(None));
+        gate.inbound_sinks.write().await.insert(peer.clone(), sink);
+        let sent = gate
+            .send_response(&peer, RpcEnvelope::default())
+            .await
+            .unwrap();
+        assert!(!sent, "None sink should yield Ok(false)");
+    }
 }
