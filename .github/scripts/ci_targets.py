@@ -95,6 +95,15 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             reasons.append(f"web_runtime_asset:{path}")
             continue
 
+        if path in (
+            "cli/src/commands/codegen/kotlin.rs",
+            "cli/tests/kotlin_echo.rs",
+        ) or path.startswith("cli/fixtures/kotlin/"):
+            targets["rust_core"] = True
+            targets["kotlin_binding"] = True
+            reasons.append(f"kotlin_codegen:{path}")
+            continue
+
         if path.startswith(("src/", "cli/", "bindings/ffi/")):
             targets["rust_core"] = True
             reasons.append(f"rust_workspace:{path}")

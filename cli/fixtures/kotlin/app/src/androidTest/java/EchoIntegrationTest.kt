@@ -76,7 +76,8 @@ class EchoIntegrationTest {
             // === Start Client ===
             Log.i(TAG, "🚀 Starting EchoClient...")
             val clientWorkload = UnifiedWorkload()
-            val clientNode = clientSystem.attach(clientWorkload)
+            val lifecycle = UnifiedLifecycleAdapter(clientWorkload)
+            val clientNode = clientSystem.attach(lifecycle.toDynamicWorkload())
             clientRef = clientNode.start()
             Log.i(TAG, "✅ Client started: ${clientRef.actorId().serialNumber}")
 

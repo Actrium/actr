@@ -110,7 +110,8 @@ class MainActivity : AppCompatActivity() {
                 val remoteTargets =
                     RemoteServiceRegistry.resolveRemoteTargets(configPath)
                 val clientWorkload = UnifiedWorkload(remoteTargets = remoteTargets)
-                val clientNode = clientSystem.attach(clientWorkload)
+                val lifecycle = UnifiedLifecycleAdapter(clientWorkload)
+                val clientNode = clientSystem.attach(lifecycle.toDynamicWorkload())
                 clientRef = clientNode.start()
                 Log.i(TAG, "✅ Client started: ${clientRef?.actorId()?.serialNumber}")
 

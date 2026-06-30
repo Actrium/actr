@@ -91,8 +91,9 @@ class DataStreamIntegrationTest {
                 handler = handler,
                 remoteTargets = remoteTargets,
             )
+            val lifecycle = UnifiedLifecycleAdapter(clientWorkload)
 
-            val clientNode = clientSystem.attach(clientWorkload)
+            val clientNode = clientSystem.attach(lifecycle.toDynamicWorkload())
             clientRef = clientNode.start()
             Log.i(TAG, "Client started: ${clientRef.actorId().serialNumber}")
 
