@@ -38,20 +38,48 @@ pub mod vtable;
 /// Decode a dynclib `WebRtcPeerStatus` discriminant (see
 /// [`dynclib_abi::webrtc_peer_status`]) into the framework enum. Used by the
 /// `entry!` macro when materialising [`crate::PeerEvent`] from `PeerEventV1`.
-pub fn peer_status_from_v1(status: u32) -> crate::WebRtcPeerStatus {
+pub fn peer_status_from_v1(status: u32) -> Option<crate::WebRtcPeerStatus> {
     use crate::guest::dynclib_abi::webrtc_peer_status as st;
     match status {
-        st::IDLE => crate::WebRtcPeerStatus::Idle,
-        st::CONNECTING => crate::WebRtcPeerStatus::Connecting,
-        st::CONNECTED => crate::WebRtcPeerStatus::Connected,
-        st::RECOVERING => crate::WebRtcPeerStatus::Recovering,
+        st::IDLE => Some(crate::WebRtcPeerStatus::Idle),
+        st::CONNECTING => Some(crate::WebRtcPeerStatus::Connecting),
+        st::CONNECTED => Some(crate::WebRtcPeerStatus::Connected),
+        st::RECOVERING => Some(crate::WebRtcPeerStatus::Recovering),
         other => {
             tracing::warn!(
                 discriminant = other,
-                "unknown dynclib WebRtcPeerStatus discriminant; falling back to Idle"
+                "unknown dynclib WebRtcPeerStatus discriminant; dropping peer status"
             );
-            crate::WebRtcPeerStatus::Idle
+            None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_status_from_v1_drops_unknown_discriminants() {
+        use crate::guest::dynclib_abi::webrtc_peer_status as st;
+
+        assert_eq!(
+            peer_status_from_v1(st::IDLE),
+            Some(crate::WebRtcPeerStatus::Idle)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::CONNECTING),
+            Some(crate::WebRtcPeerStatus::Connecting)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::CONNECTED),
+            Some(crate::WebRtcPeerStatus::Connected)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::RECOVERING),
+            Some(crate::WebRtcPeerStatus::Recovering)
+        );
+        assert_eq!(peer_status_from_v1(u32::MAX), None);
     }
 }
 
@@ -580,7 +608,7 @@ macro_rules! entry {
                             relayed: peer.relayed,
                             status: peer
                                 .status
-                                .map($crate::guest::peer_status_from_v1),
+                                .and_then($crate::guest::peer_status_from_v1),
                         }
                     };
 

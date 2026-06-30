@@ -1,11 +1,13 @@
 #![cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
 
+#[cfg(feature = "dynclib-engine")]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(feature = "dynclib-engine")]
 use std::sync::LazyLock;
 use std::time::{Duration, UNIX_EPOCH};
 
+use actr_framework::WebRtcPeerStatus;
 use actr_hyper::test_support::{TestPackageHookEvent, runtime_context_with_host_transport};
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrError, ActrId, ActrType, PayloadType, Realm};
@@ -94,8 +96,18 @@ fn package_hook_cases() -> Vec<(TestPackageHookEvent, &'static str)> {
             "on_webrtc_connected:peer=1:relayed=true:status=connected",
         ),
         (
-            TestPackageHookEvent::WebRtcDisconnected { peer },
+            TestPackageHookEvent::WebRtcDisconnected {
+                peer: peer.clone(),
+                status: WebRtcPeerStatus::Recovering,
+            },
             "on_webrtc_disconnected:peer=1:relayed=none:status=recovering",
+        ),
+        (
+            TestPackageHookEvent::WebRtcDisconnected {
+                peer,
+                status: WebRtcPeerStatus::Idle,
+            },
+            "on_webrtc_disconnected:peer=1:relayed=none:status=idle",
         ),
         (
             TestPackageHookEvent::CredentialRenewed { new_expiry: expiry },
