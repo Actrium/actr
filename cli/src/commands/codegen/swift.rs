@@ -8,6 +8,7 @@ use actr_config::LockFile;
 use async_trait::async_trait;
 use handlebars::Handlebars;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
@@ -1249,6 +1250,9 @@ fn lower_camel_identifier_from_alias(alias: &str) -> String {
     for ch in alias.chars() {
         if ch.is_ascii_alphanumeric() {
             if result.is_empty() {
+                if ch.is_ascii_digit() {
+                    result.push_str("target");
+                }
                 result.push(ch.to_ascii_lowercase());
             } else if capitalize_next {
                 result.push(ch.to_ascii_uppercase());
@@ -1265,6 +1269,18 @@ fn lower_camel_identifier_from_alias(alias: &str) -> String {
         "target".to_string()
     } else {
         result
+    }
+}
+
+fn remote_target_variable_name(alias: &str, used_names: &mut HashMap<String, usize>) -> String {
+    let base_name = lower_camel_identifier_from_alias(alias);
+    let count = used_names.entry(base_name.clone()).or_insert(0);
+    *count += 1;
+
+    if *count == 1 {
+        format!("{base_name}TargetType")
+    } else {
+        format!("{base_name}{count}TargetType")
     }
 }
 
@@ -1426,14 +1442,15 @@ impl SwiftGenerator {
             .files
             .iter()
             .filter(|file| file.side == ProtoSide::Local)
-            .find_map(|file| {
+            .map(|file| {
                 let package = file.package.trim();
                 if package.is_empty() {
-                    Some("Client".to_string())
+                    "Client".to_string()
                 } else {
-                    Some(to_pascal_case(package))
+                    to_pascal_case(package)
                 }
             })
+            .next()
             .unwrap_or_else(|| "Client".to_string());
 
         format!("{workload_stem}Workload")
@@ -1523,16 +1540,15 @@ impl SwiftGenerator {
         }
 
         let mut targets = Vec::new();
+        let mut used_variable_names = HashMap::new();
 
         for dependency in &context.config.dependencies {
             let Some(dependency_actr_type) = &dependency.actr_type else {
                 continue;
             };
             let dependency_actr_type = dependency_actr_type.to_string_repr();
-            let variable_name = format!(
-                "{}TargetType",
-                lower_camel_identifier_from_alias(&dependency.alias)
-            );
+            let variable_name =
+                remote_target_variable_name(&dependency.alias, &mut used_variable_names);
             let routes: Vec<RemoteTargetRoute> = catalog
                 .remote_services
                 .iter()
@@ -1780,6 +1796,55 @@ mod tests {
         assert!(scaffold.contains("dynamicWorkload(lifecycle: lifecycle)"));
         assert!(!scaffold.contains("HandlerImpl"));
         assert!(!scaffold.contains("targetType ="));
+    }
+
+    #[test]
+    fn swift_runtime_config_template_has_valid_defaults() {
+        let template = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/swift/actr.toml.hbs"
+        ));
+
+        assert!(
+            !template.contains("\n[acl]\n"),
+            "empty [acl] tables fail runtime config parsing"
+        );
+        assert!(
+            template.contains("[hyper.trust]") || template.contains("[[trust]]"),
+            "linked Swift runtimes must declare an explicit trust policy"
+        );
+    }
+
+    #[test]
+    fn remote_target_variable_names_are_swift_safe_and_unique() {
+        let mut used = std::collections::HashMap::new();
+        let names = ["foo-bar", "foo_bar", "foo.bar", "1service", "!!!"]
+            .into_iter()
+            .map(|alias| remote_target_variable_name(alias, &mut used))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            vec![
+                "fooBarTargetType",
+                "fooBar2TargetType",
+                "fooBar3TargetType",
+                "target1serviceTargetType",
+                "targetTargetType",
+            ]
+        );
+    }
+
+    #[test]
+    fn echo_content_view_uses_generated_actr_service_api() {
+        let content_view = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/swift/echo/ContentView.swift.hbs"
+        ));
+
+        assert!(content_view.contains("initializeFromBundle()"));
+        assert!(!content_view.contains("actrService.initialize()"));
+        assert!(!content_view.contains("sendEcho("));
     }
 
     #[test]

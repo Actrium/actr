@@ -9,6 +9,9 @@ url = "{{{AIS_ENDPOINT_URL}}}"
 [deployment]
 realm_id = {{REALM_ID}}
 
+[hyper.trust]
+kind = "dev_only"
+
 [discovery]
 visible = true
 
@@ -22,5 +25,3 @@ tracing_service_name = "{{PROJECT_NAME}}"
 force_relay = false
 stun_urls = {{{STUN_URLS}}}
 turn_urls = {{{TURN_URLS}}}
-
-[acl]
