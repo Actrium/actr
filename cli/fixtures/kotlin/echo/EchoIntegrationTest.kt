@@ -14,6 +14,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
+import {{PACKAGE_NAME}}.generated.RemoteServiceRegistry
 
 /**
  * {{PROJECT_NAME_PASCAL}} Echo Integration Test
@@ -75,7 +76,9 @@ class EchoIntegrationTest {
 
             // === Start Client ===
             Log.i(TAG, "🚀 Starting EchoClient...")
-            val clientWorkload = UnifiedWorkload()
+            val remoteTargets =
+                RemoteServiceRegistry.resolveRemoteTargets(configPath)
+            val clientWorkload = UnifiedWorkload(remoteTargets = remoteTargets)
             val clientNode = clientSystem.attach(clientWorkload)
             clientRef = clientNode.start()
             Log.i(TAG, "✅ Client started: ${clientRef.actorId().serialNumber}")

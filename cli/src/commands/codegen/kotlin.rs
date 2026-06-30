@@ -726,8 +726,13 @@ object RemoteServiceRegistry {
      * Resolve remote route targets from a runtime manifest.
      */
     fun resolveRemoteTargets(manifestPath: String): Map<String, ActrType> {
+        val targetsByAlias = remoteRouteAliases.values
+            .toSet()
+            .associateWith { alias ->
+                resolveManifestDependency(manifestPath, alias)
+            }
         return remoteRouteAliases.mapValues { (_, alias) ->
-            resolveManifestDependency(manifestPath, alias)
+            targetsByAlias.getValue(alias)
         }
     }
 
@@ -1151,25 +1156,34 @@ fn generate_unified_workload_scaffold(services: &[ServiceInfo], kotlin_package: 
         ""
     };
 
-    let remote_registry_import = if has_remote {
-        format!("\nimport {}.RemoteServiceRegistry", kotlin_package)
-    } else {
-        String::new()
-    };
-
     let remote_constructor_params = if has_remote {
-        "manifestPath: String? = null,\n    remoteTargets: Map<String, ActrType> = emptyMap(),\n    "
+        "private val remoteTargets: Map<String, ActrType>,\n    "
     } else {
         ""
     };
 
-    let remote_targets_field = if has_remote {
-        r#"
-    private val remoteTargets: Map<String, ActrType> =
-        manifestPath?.let(RemoteServiceRegistry::resolveRemoteTargets) ?: remoteTargets
+    let usage_example = match (has_local, has_remote) {
+        (true, true) => format!(
+            r#" * val handler = MyUnifiedHandler()
+ * val remoteTargets =
+ *     {kotlin_package}.RemoteServiceRegistry.resolveRemoteTargets(manifestPath)
+ * val workload = UnifiedWorkload(
+ *     handler = handler,
+ *     remoteTargets = remoteTargets,
+ * )
 "#
-    } else {
-        ""
+        ),
+        (false, true) => format!(
+            r#" * val remoteTargets =
+ *     {kotlin_package}.RemoteServiceRegistry.resolveRemoteTargets(manifestPath)
+ * val workload = UnifiedWorkload(remoteTargets = remoteTargets)
+"#
+        ),
+        (true, false) => {
+            " * val handler = MyUnifiedHandler()\n * val workload = UnifiedWorkload(handler)\n"
+                .to_string()
+        }
+        (false, false) => " * val workload = UnifiedWorkload()\n".to_string(),
     };
 
     let dispatch_handler = if has_local { "handler, " } else { "" };
@@ -1187,7 +1201,6 @@ package {base_package}
 
 import android.util.Log
 import {kotlin_package}.UnifiedDispatcher{handler_import}
-{remote_registry_import}
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
 import io.actrium.actr.ContextBridge
@@ -1205,8 +1218,7 @@ import io.actrium.actr.WorkloadLifecycleBridge
  *
  * Usage:
  * ```kotlin
- * val handler = MyUnifiedHandler()
- * val workload = UnifiedWorkload(handler)
+{usage_example}
  * val dynamicWorkload = workload.toDynamicWorkload()
  * ```
  */
@@ -1225,7 +1237,6 @@ class UnifiedWorkload(
         serialNumber = System.currentTimeMillis().toULong(),
         type = ActrType(manufacturer = "acme", name = "UnifiedActor", version = "1.0.0")
     )
-{remote_targets_field}
 
     override suspend fun onStart(ctx: ContextBridge) {{
         Log.i(TAG, "UnifiedWorkload.onStart"){discover_call}
@@ -1280,10 +1291,9 @@ class UnifiedWorkload(
         base_package = base_package,
         kotlin_package = kotlin_package,
         handler_import = handler_import,
-        remote_registry_import = remote_registry_import,
         handler_field = handler_field,
         remote_constructor_params = remote_constructor_params,
-        remote_targets_field = remote_targets_field,
+        usage_example = usage_example,
         discover_call = discover_call,
         dispatch_handler = dispatch_handler,
         dispatch_remote_targets = dispatch_remote_targets,
@@ -1454,6 +1464,9 @@ mod tests {
         assert!(content.contains("val remoteRouteAliases: Map<String, String>"));
         assert!(content.contains("\"echo.Echo\" to \"echo-service\""));
         assert!(content.contains("resolveManifestDependency(manifestPath, alias)"));
+        assert!(content.contains(".toSet()"));
+        assert!(content.contains(".associateWith { alias ->"));
+        assert!(content.contains("targetsByAlias.getValue(alias)"));
         assert!(
             content
                 .contains("getActorType(routeKey: String, remoteTargets: Map<String, ActrType>)")
@@ -1463,16 +1476,53 @@ mod tests {
     }
 
     #[test]
-    fn unified_workload_resolves_remote_targets_from_manifest_path() {
+    fn unified_workload_requires_pre_resolved_remote_targets() {
         let services = vec![local_client_service(), remote_echo_service()];
         let content = generate_unified_workload_scaffold(&services, "com.example.generated");
 
-        assert!(content.contains("manifestPath: String? = null"));
-        assert!(content.contains("remoteTargets: Map<String, ActrType> = emptyMap()"));
-        assert!(content.contains("RemoteServiceRegistry::resolveRemoteTargets"));
+        assert!(content.contains("private val remoteTargets: Map<String, ActrType>,"));
+        assert!(!content.contains("manifestPath: String?"));
+        assert!(!content.contains("remoteTargets: Map<String, ActrType> = emptyMap()"));
+        assert!(!content.contains("manifestPath?.let"));
+        assert!(content.contains(
+            "com.example.generated.RemoteServiceRegistry.resolveRemoteTargets(manifestPath)"
+        ));
+        assert!(content.contains("remoteTargets = remoteTargets"));
+        assert!(!content.contains("\n\\\n"));
         assert!(content.contains("UnifiedDispatcher.discoverRemoteServices(ctx, remoteTargets)"));
         assert!(
             content.contains("UnifiedDispatcher.dispatch(handler, ctx, remoteTargets, envelope)")
         );
+    }
+
+    #[test]
+    fn local_only_workload_does_not_require_remote_targets() {
+        let content =
+            generate_unified_workload_scaffold(&[local_client_service()], "com.example.generated");
+
+        assert!(!content.contains("private val remoteTargets"));
+        assert!(!content.contains("resolveRemoteTargets"));
+        assert!(content.contains("val workload = UnifiedWorkload(handler)"));
+    }
+
+    #[test]
+    fn kotlin_bootstrap_fixtures_inject_manifest_resolved_targets() {
+        for fixture in [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fixtures/kotlin/echo/MainActivity.kt"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fixtures/kotlin/echo/EchoIntegrationTest.kt"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fixtures/kotlin/data-stream/DataStreamIntegrationTest.kt"
+            )),
+        ] {
+            assert!(fixture.contains("RemoteServiceRegistry.resolveRemoteTargets("));
+            assert!(fixture.contains("remoteTargets = remoteTargets"));
+        }
     }
 }
