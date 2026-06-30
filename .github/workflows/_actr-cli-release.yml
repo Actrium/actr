@@ -58,9 +58,11 @@ jobs:
           else
             TAG_SHA="$SOURCE_SHA"
           fi
-          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
-          echo "tag_sha=$TAG_SHA" >>"$GITHUB_OUTPUT"
-          echo "source_sha=$SOURCE_SHA" >>"$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "tag_sha=$TAG_SHA"
+            echo "source_sha=$SOURCE_SHA"
+          } >>"$GITHUB_OUTPUT"
 
   prepare-assets:
     name: Prepare CLI web runtime assets
