@@ -25,10 +25,10 @@ premature garbage collection.
 
 | Method | Description |
 |--------|-------------|
-| `suspend fun fromPackageFile(configPath: String, packagePath: String): ActrNode` | Create from TOML config + `.actr` package file paths |
-| `suspend fun fromPackageFileWithMonitoring(configPath, packagePath, context, scope, onNetworkStatusLog): ActrNode` | Create a package-backed node with retained `NetworkEventHandle` + started `NetworkMonitor` |
-| `suspend fun fromPackageFile(configURL: URL, packageURL: URL): ActrNode` | URL-based overload — validates file URLs |
-| `suspend fun fromPackageFileWithMonitoring(configURL, packageURL, context, scope, onNetworkStatusLog): ActrNode` | URL-based monitored package-backed overload |
+| `suspend fun fromPackageFile(configPath: String, packagePath: String, observers: RuntimeObservers? = null): ActrNode` | Create from TOML config + `.actr` package file paths; pass `observers` to observe transport readiness |
+| `suspend fun fromPackageFileWithMonitoring(configPath, packagePath, context, scope, onNetworkStatusLog, observers: RuntimeObservers? = null): ActrNode` | Create a package-backed node with retained `NetworkEventHandle` + started `NetworkMonitor`; pass `observers` for transport readiness |
+| `suspend fun fromPackageFile(configURL: URL, packageURL: URL, observers: RuntimeObservers? = null): ActrNode` | URL-based overload — validates file URLs; passes `observers` through |
+| `suspend fun fromPackageFileWithMonitoring(configURL, packageURL, context, scope, onNetworkStatusLog, observers: RuntimeObservers? = null): ActrNode` | URL-based monitored package-backed overload; passes `observers` through |
 | `suspend fun linked(configPath: String, actorType: ActrType, workload: DynamicWorkload): ActrNode` | Create a linked node with a Kotlin workload |
 | `suspend fun linkedWithMonitoring(configPath, actorType, workload, context, scope, onNetworkStatusLog): ActrNode` | Create a linked node with retained network monitoring |
 | `suspend fun linked(configURL: URL, actorType: ActrType, workload: DynamicWorkload): ActrNode` | URL-based linked overload |
@@ -53,8 +53,8 @@ premature garbage collection.
 
 | Function | Description |
 |----------|-------------|
-| `suspend fun createActrNode(configPath, packagePath): ActrNode` | Alias for `ActrNode.fromPackageFile` |
-| `suspend fun createActrNodeWithMonitoring(configPath, packagePath, context, scope, onNetworkStatusLog): ActrNode` | Alias for `ActrNode.fromPackageFileWithMonitoring` |
+| `suspend fun createActrNode(configPath, packagePath, observers: RuntimeObservers? = null): ActrNode` | Alias for `ActrNode.fromPackageFile` |
+| `suspend fun createActrNodeWithMonitoring(configPath, packagePath, context, scope, onNetworkStatusLog, observers: RuntimeObservers? = null): ActrNode` | Alias for `ActrNode.fromPackageFileWithMonitoring` |
 | `suspend fun linked(configPath, actorType, workload): ActrNode` | Alias for `ActrNode.linked` |
 | `suspend fun linkedWithMonitoring(configPath, actorType, workload, context, scope, onNetworkStatusLog): ActrNode` | Alias for `ActrNode.linkedWithMonitoring` |
 
@@ -205,6 +205,44 @@ fun dynamicWorkload(
 ```
 
 - `DynamicWorkload` typealias for `io.actrium.actr.DynamicWorkload`
+
+---
+
+### RuntimeObservers (package-backed)
+
+Host-side observers for a package-backed runtime. Unlike [`DynamicWorkload`](#workload)
+observers (which belong to a Kotlin-owned linked workload), `RuntimeObservers` let a
+mobile shell observe transport readiness while the `.actr` package guest keeps owning
+actor dispatch.
+
+**Type aliases:**
+
+- `typealias RuntimeObservers = io.actrium.actr.RuntimeObservers`
+- `typealias PeerEvent = io.actrium.actr.PeerEventBridge`
+- `typealias WebRtcPeerStatus = io.actrium.actr.WebRtcPeerStatusBridge`
+
+**Factory:**
+
+```kotlin
+fun runtimeObservers(
+    signaling: SignalingObserverBridge? = null,
+    websocket: WebSocketObserverBridge? = null,
+    webrtc: WebRtcObserverBridge? = null,
+    credential: CredentialObserverBridge? = null,
+    mailbox: MailboxObserverBridge? = null,
+): RuntimeObservers
+```
+
+Pass the result to any package-backed factory (`fromPackageFile`,
+`fromPackageFileWithMonitoring`, `createActrNode`, `createActrNodeWithMonitoring`).
+When `observers` is non-null the node uses the observer-aware native constructor
+(`newFromPackageFileWithObservers`); the `ActrNode` and `ActrRef` retain the
+`RuntimeObservers` to prevent the host callbacks from being garbage-collected early.
+
+**`PeerEvent.status`:** `WebRtcPeerStatus` (`IDLE`, `CONNECTING`, `CONNECTED`,
+`RECOVERING`) for WebRTC peers; `null` for WebSocket peers and old compatibility
+paths where send-readiness does not apply. `PeerEvent.relayed` is `Some(true)` for
+TURN-relayed WebRTC, `Some(false)` for direct P2P, and `null` for WebSocket.
 
 ---
 
@@ -500,7 +538,7 @@ The low-level API is in `io.actrium.actr` and consists of UniFFI-generated bindi
 | `ErrorEventBridge` | `source: String`, `category: ErrorCategoryBridge`, `context: String`, `timestampMs: Long` |
 | `BackpressureEventBridge` | `queueLen: ULong`, `threshold: ULong` |
 | `CredentialEventBridge` | `newExpiryMs: Long` |
-| `PeerEventBridge` | `peer: ActrId`, `relayed: Boolean?` |
+| `PeerEventBridge` | `peer: ActrId`, `relayed: Boolean?`, `status: WebRtcPeerStatusBridge?` |
 | `MediaSample` | `trackId: String`, `data: ByteArray`, `timestampUs: ULong` |
 
 ### Key Generated Enums
@@ -515,6 +553,7 @@ The low-level API is in `io.actrium.actr` and consists of UniFFI-generated bindi
 | `CleanupReason` | `APP_TERMINATING`, `USER_LOGOUT`, `STALE_CONNECTION_SUSPECTED`, `MANUAL_RESET` |
 | `ReconnectReason` | `NETWORK_PATH_CHANGED`, `LONG_BACKGROUND`, `PROBE_FAILED`, `MANUAL_RECONNECT`, `STALE_CONNECTION_SUSPECTED` |
 | `MediaType` | `AUDIO`, `VIDEO` |
+| `WebRtcPeerStatusBridge` | `IDLE`, `CONNECTING`, `CONNECTED`, `RECOVERING` |
 
 ### Observer Callback Interfaces
 

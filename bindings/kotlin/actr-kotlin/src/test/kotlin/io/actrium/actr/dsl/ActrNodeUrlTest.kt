@@ -52,4 +52,34 @@ class ActrNodeUrlTest {
 
             assertTrue("config URL must be a file URL" in error.message.orEmpty())
         }
+
+    @Test
+    fun `package URL overload with observers rejects non-file config URL before native creation`() =
+        runTest {
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    ActrNode.fromPackageFile(
+                        configURL = URL("https://example.com/actr.toml"),
+                        packageURL = URL("file:/tmp/app.actr"),
+                        observers = RuntimeObservers(NoHandle),
+                    )
+                }
+
+            assertTrue("configURL must be a file URL" in error.message.orEmpty())
+        }
+
+    @Test
+    fun `top-level package URL overload with observers rejects non-file package URL before native creation`() =
+        runTest {
+            val error =
+                assertFailsWith<IllegalArgumentException> {
+                    createActrNode(
+                        configURL = URL("file:/tmp/actr.toml"),
+                        packageURL = URL("https://example.com/app.actr"),
+                        observers = RuntimeObservers(NoHandle),
+                    )
+                }
+
+            assertTrue("packageURL must be a file URL" in error.message.orEmpty())
+        }
 }

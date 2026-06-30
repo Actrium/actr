@@ -156,6 +156,44 @@ val server = ref.discoverOne("acme:EchoService:1.0.0")
 ref.stop()
 ```
 
+### Package-backed Runtime Observers
+
+A package-backed node (`.actr` guest owns actor dispatch) can still observe
+transport readiness for UI state and retry decisions. Build a `RuntimeObservers`
+and pass it to any package-backed factory:
+
+```kotlin
+import io.actrium.actr.ContextBridge
+import io.actrium.actr.WebRtcObserverBridge
+import io.actrium.actr.dsl.*
+
+val observers = runtimeObservers(
+    webrtc = object : WebRtcObserverBridge {
+        override suspend fun onConnecting(ctx: ContextBridge, event: PeerEvent) {
+            // event.status == WebRtcPeerStatus.CONNECTING
+        }
+        override suspend fun onConnected(ctx: ContextBridge, event: PeerEvent) {
+            // event.status == WebRtcPeerStatus.CONNECTED (or RECOVERING after a drop)
+        }
+        override suspend fun onDisconnected(ctx: ContextBridge, event: PeerEvent) {
+            // event.status == WebRtcPeerStatus.IDLE
+        }
+    },
+)
+
+// observers is optional on every package-backed factory
+val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr", observers = observers)
+// or with monitoring:
+// val node = ActrNode.fromPackageFileWithMonitoring(..., observers = observers)
+```
+
+`PeerEvent.status` is a `WebRtcPeerStatus` (`CONNECTING`, `CONNECTED`, `RECOVERING`,
+`IDLE`) for WebRTC peers and `null` for WebSocket peers, where send-readiness does
+not apply. The `ActrNode`/`ActrRef` retain the `RuntimeObservers` so the host
+callbacks are not garbage-collected early. See
+[docs/api.md](docs/api.md#runtimeobservers-package-backed) for the full observer
+surface (signaling, WebSocket, WebRTC, credential, mailbox).
+
 ### Linked (Kotlin-native) Workload
 
 ```kotlin
