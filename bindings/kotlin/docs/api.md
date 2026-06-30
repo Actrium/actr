@@ -236,13 +236,15 @@ fun runtimeObservers(
 Pass the result to any package-backed factory (`fromPackageFile`,
 `fromPackageFileWithMonitoring`, `createActrNode`, `createActrNodeWithMonitoring`).
 When `observers` is non-null the node uses the observer-aware native constructor
-(`newFromPackageFileWithObservers`); the `ActrNode` and `ActrRef` retain the
-`RuntimeObservers` to prevent the host callbacks from being garbage-collected early.
+(`newFromPackageFileWithObservers`). The `ActrNode` and `ActrRef` retain the
+`RuntimeObservers` as a defense-in-depth measure mirroring `retainedWorkload` —
+UniFFI's callback handle map is what actually keeps the host callbacks alive, so
+this retention is not required for callback liveness.
 
 **`PeerEvent.status`:** `WebRtcPeerStatus` (`IDLE`, `CONNECTING`, `CONNECTED`,
 `RECOVERING`) for WebRTC peers; `null` for WebSocket peers and old compatibility
-paths where send-readiness does not apply. `PeerEvent.relayed` is `Some(true)` for
-TURN-relayed WebRTC, `Some(false)` for direct P2P, and `null` for WebSocket.
+paths where send-readiness does not apply. `PeerEvent.relayed` is `true` for
+TURN-relayed WebRTC, `false` for direct P2P, and `null` for WebSocket.
 
 ---
 

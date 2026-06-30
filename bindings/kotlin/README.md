@@ -189,8 +189,9 @@ val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr", observers = 
 
 `PeerEvent.status` is a `WebRtcPeerStatus` (`CONNECTING`, `CONNECTED`, `RECOVERING`,
 `IDLE`) for WebRTC peers and `null` for WebSocket peers, where send-readiness does
-not apply. The `ActrNode`/`ActrRef` retain the `RuntimeObservers` so the host
-callbacks are not garbage-collected early. See
+not apply. The `ActrNode`/`ActrRef` retain the `RuntimeObservers` as a
+defense-in-depth measure mirroring `retainedWorkload` — UniFFI's callback handle
+map is what actually keeps the host callbacks alive. See
 [docs/api.md](docs/api.md#runtimeobservers-package-backed) for the full observer
 surface (signaling, WebSocket, WebRTC, credential, mailbox).
 
