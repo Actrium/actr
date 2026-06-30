@@ -34,6 +34,21 @@ class CiTargetsTest(unittest.TestCase):
             reasons,
         )
 
+    def test_kotlin_codegen_paths_trigger_rust_and_kotlin_checks(self) -> None:
+        paths = (
+            "cli/src/commands/codegen/kotlin.rs",
+            "cli/tests/kotlin_echo.rs",
+            "cli/fixtures/kotlin/echo/MainActivity.kt",
+        )
+
+        for path in paths:
+            with self.subTest(path=path):
+                targets, reasons = ci_targets.detect_targets([path], full_run=False)
+
+                self.assertTrue(targets["rust_core"])
+                self.assertTrue(targets["kotlin_binding"])
+                self.assertIn(f"kotlin_codegen:{path}", reasons)
+
 
 if __name__ == "__main__":
     unittest.main()

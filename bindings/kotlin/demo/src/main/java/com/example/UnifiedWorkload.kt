@@ -11,31 +11,31 @@ import android.util.Log
 import com.example.generated.UnifiedDispatcher
 import com.example.generated.UnifiedHandler
 import io.actrium.actr.ContextBridge
-import io.actrium.actr.DynamicWorkload
 import io.actrium.actr.ErrorEventBridge
 import io.actrium.actr.RpcEnvelopeBridge
-import io.actrium.actr.WorkloadLifecycleBridge
 
 /**
  * Unified Workload lifecycle scaffold
  *
- * This handles dispatch and lifecycle callbacks for the linked Android client.
+ * This handles dispatch and lifecycle-like callbacks for the linked Android client.
+ * UnifiedLifecycleAdapter wraps it for the SDK-facing lifecycle bridge.
  *
  * Usage:
  * ```kotlin
  * val handler = MyUnifiedHandler()
  * val workload = UnifiedWorkload(handler)
- * val dynamicWorkload = workload.toDynamicWorkload()
+ * val lifecycle = UnifiedLifecycleAdapter(workload)
+ * val dynamicWorkload = lifecycle.toDynamicWorkload()
  * ```
  */
 class UnifiedWorkload(
     private val handler: UnifiedHandler,
-) : WorkloadLifecycleBridge {
+) {
     companion object {
         private const val TAG = "UnifiedWorkload"
     }
 
-    override suspend fun onStart(ctx: ContextBridge) {
+    suspend fun onStart(ctx: ContextBridge) {
         Log.i(TAG, "UnifiedWorkload.onStart")
         // Discover all remote services
         Log.i(TAG, "📡 Discovering remote services...")
@@ -43,15 +43,15 @@ class UnifiedWorkload(
         Log.i(TAG, "✅ Remote services discovered")
     }
 
-    override suspend fun onReady(ctx: ContextBridge) {
+    suspend fun onReady(ctx: ContextBridge) {
         Log.i(TAG, "UnifiedWorkload.onReady")
     }
 
-    override suspend fun onStop(ctx: ContextBridge) {
+    suspend fun onStop(ctx: ContextBridge) {
         Log.i(TAG, "UnifiedWorkload.onStop")
     }
 
-    override suspend fun onError(
+    suspend fun onError(
         ctx: ContextBridge,
         event: ErrorEventBridge,
     ) {
@@ -65,7 +65,7 @@ class UnifiedWorkload(
      * - Local handler methods for local service routes
      * - Remote actors for remote service routes
      */
-    override suspend fun dispatch(
+    suspend fun dispatch(
         ctx: ContextBridge,
         envelope: RpcEnvelopeBridge,
     ): ByteArray {
@@ -76,17 +76,4 @@ class UnifiedWorkload(
 
         return UnifiedDispatcher.dispatch(handler, ctx, envelope)
     }
-
-    /**
-     * Create a DynamicWorkload from this lifecycle scaffold.
-     */
-    fun toDynamicWorkload(): DynamicWorkload =
-        DynamicWorkload(
-            lifecycle = this,
-            signaling = null,
-            websocket = null,
-            webrtc = null,
-            credential = null,
-            mailbox = null,
-        )
 }

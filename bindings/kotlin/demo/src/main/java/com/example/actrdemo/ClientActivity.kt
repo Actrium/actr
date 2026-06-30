@@ -18,6 +18,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.MyUnifiedHandler
+import com.example.UnifiedLifecycleAdapter
 import com.example.UnifiedWorkload
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
@@ -258,11 +259,12 @@ class ClientActivity : AppCompatActivity() {
                 val actorType = resolveActorType(manifestPath)
                 Log.i(TAG, "Actor type from manifest: ${actorType.manufacturer}:${actorType.name}:${actorType.version}")
                 val workload = UnifiedWorkload(MyUnifiedHandler())
+                val lifecycle = UnifiedLifecycleAdapter(workload)
                 val system =
                     linkedWithMonitoring(
                         configPath = configPath,
                         actorType = actorType,
-                        workload = workload.toDynamicWorkload(),
+                        workload = lifecycle.toDynamicWorkload(),
                         context = this@ClientActivity,
                         scope = lifecycleScope,
                         onNetworkStatusLog = { message ->
