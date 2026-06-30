@@ -35,6 +35,26 @@
 pub mod dynclib_abi;
 pub mod vtable;
 
+/// Decode a dynclib `WebRtcPeerStatus` discriminant (see
+/// [`dynclib_abi::webrtc_peer_status`]) into the framework enum. Used by the
+/// `entry!` macro when materialising [`crate::PeerEvent`] from `PeerEventV1`.
+pub fn peer_status_from_v1(status: u32) -> crate::WebRtcPeerStatus {
+    use crate::guest::dynclib_abi::webrtc_peer_status as st;
+    match status {
+        st::IDLE => crate::WebRtcPeerStatus::Idle,
+        st::CONNECTING => crate::WebRtcPeerStatus::Connecting,
+        st::CONNECTED => crate::WebRtcPeerStatus::Connected,
+        st::RECOVERING => crate::WebRtcPeerStatus::Recovering,
+        other => {
+            tracing::warn!(
+                discriminant = other,
+                "unknown dynclib WebRtcPeerStatus discriminant; falling back to Idle"
+            );
+            crate::WebRtcPeerStatus::Idle
+        }
+    }
+}
+
 // The Component Model wasm runtime glue is gated on `not(feature = "web")`
 // so the `wasm32-unknown-unknown` + `web` target (which routes through
 // `actr-web-abi` instead) does not link the wit-bindgen host imports that
@@ -558,7 +578,9 @@ macro_rules! entry {
                         $crate::PeerEvent {
                             peer: peer.peer,
                             relayed: peer.relayed,
-                            status: None,
+                            status: peer
+                                .status
+                                .map($crate::guest::peer_status_from_v1),
                         }
                     };
 

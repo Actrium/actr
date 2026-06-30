@@ -72,30 +72,30 @@ fn package_hook_cases() -> Vec<(TestPackageHookEvent, &'static str)> {
         ),
         (
             TestPackageHookEvent::WebSocketConnecting { peer: peer.clone() },
-            "on_websocket_connecting:peer=1:relayed=none",
+            "on_websocket_connecting:peer=1:relayed=none:status=none",
         ),
         (
             TestPackageHookEvent::WebSocketConnected { peer: peer.clone() },
-            "on_websocket_connected:peer=1:relayed=none",
+            "on_websocket_connected:peer=1:relayed=none:status=none",
         ),
         (
             TestPackageHookEvent::WebSocketDisconnected { peer: peer.clone() },
-            "on_websocket_disconnected:peer=1:relayed=none",
+            "on_websocket_disconnected:peer=1:relayed=none:status=none",
         ),
         (
             TestPackageHookEvent::WebRtcConnecting { peer: peer.clone() },
-            "on_webrtc_connecting:peer=1:relayed=none",
+            "on_webrtc_connecting:peer=1:relayed=none:status=connecting",
         ),
         (
             TestPackageHookEvent::WebRtcConnected {
                 peer: peer.clone(),
                 relayed: true,
             },
-            "on_webrtc_connected:peer=1:relayed=true",
+            "on_webrtc_connected:peer=1:relayed=true:status=connected",
         ),
         (
             TestPackageHookEvent::WebRtcDisconnected { peer },
-            "on_webrtc_disconnected:peer=1:relayed=none",
+            "on_webrtc_disconnected:peer=1:relayed=none:status=recovering",
         ),
         (
             TestPackageHookEvent::CredentialRenewed { new_expiry: expiry },
