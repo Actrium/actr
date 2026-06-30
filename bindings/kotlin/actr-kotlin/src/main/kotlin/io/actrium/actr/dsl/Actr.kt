@@ -172,7 +172,7 @@ class ActrNode private constructor(
     /** Defense-in-depth retention mirroring [retainedWorkload]. UniFFI's callback-interface
      *  handle map is what actually keeps host observer callbacks alive, so this field is not
      *  required for callback liveness — it is retained for lifecycle symmetry with the workload
-     *  model and released when the node/ref is closed. */
+     *  model and follows the wrapper object's lifetime (close() does not clear it). */
     private val retainedObservers: RuntimeObservers? = null,
     private val networkResources: ManagedNetworkResources? = null,
 ) : AutoCloseable {
