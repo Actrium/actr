@@ -141,12 +141,13 @@ fn kotlin_echo_init_fails_if_directory_exists() {
     );
 }
 
-/// Verify that the Kotlin codegen scaffold includes linked workload support.
+/// Verify that the Kotlin codegen scaffold separates business workload state
+/// from the SDK-facing lifecycle adapter.
 ///
 /// This test checks that:
-/// 1. `actr gen -l kotlin` produces UnifiedWorkload.kt with linked workload APIs
-/// 2. The generated workload class implements WorkloadLifecycleBridge (not WorkloadBridge)
-/// 3. A `toDynamicWorkload()` method is generated for use with `linked()`
+/// 1. `actr gen -l kotlin` produces UnifiedWorkload.kt as a plain user scaffold
+/// 2. `actr gen -l kotlin` produces UnifiedLifecycleAdapter.kt
+/// 3. The adapter implements WorkloadLifecycleBridge and exposes toDynamicWorkload()
 #[test]
 #[ignore = "Requires protoc and protoc-gen-actrframework-kotlin plugin"]
 fn kotlin_gen_produces_linked_workload_scaffold() {
@@ -174,36 +175,58 @@ fn kotlin_gen_produces_linked_workload_scaffold() {
         String::from_utf8_lossy(&gen_out.stderr)
     );
 
-    // Find the generated UnifiedWorkload.kt scaffold
     let output_dir = project_dir.join("app/src/main/java/com/example");
     let workload_file = output_dir.join("UnifiedWorkload.kt");
+    let adapter_file = output_dir.join("UnifiedLifecycleAdapter.kt");
 
-    if workload_file.exists() {
-        let content = std::fs::read_to_string(&workload_file).expect("read UnifiedWorkload.kt");
+    assert!(
+        workload_file.exists(),
+        "actr gen should produce UnifiedWorkload.kt at {:?}",
+        workload_file
+    );
+    assert!(
+        adapter_file.exists(),
+        "actr gen should produce UnifiedLifecycleAdapter.kt at {:?}",
+        adapter_file
+    );
 
-        // Verify linked workload patterns
-        assert!(
-            content.contains("WorkloadLifecycleBridge"),
-            "UnifiedWorkload should implement WorkloadLifecycleBridge for linked mode, got:\n{content}"
-        );
-        assert!(
-            content.contains("onReady"),
-            "UnifiedWorkload should override onReady (required by WorkloadLifecycleBridge), got:\n{content}"
-        );
-        assert!(
-            content.contains("onError"),
-            "UnifiedWorkload should override onError (required by WorkloadLifecycleBridge), got:\n{content}"
-        );
-        assert!(
-            content.contains("DynamicWorkload"),
-            "UnifiedWorkload should reference DynamicWorkload for linked mode, got:\n{content}"
-        );
-        assert!(
-            content.contains("toDynamicWorkload"),
-            "UnifiedWorkload should have toDynamicWorkload() helper method, got:\n{content}"
-        );
-    }
-    // If the scaffold file doesn't exist (e.g., no_scaffold flag), that's also acceptable
+    let workload = std::fs::read_to_string(&workload_file).expect("read UnifiedWorkload.kt");
+    assert!(
+        !workload.contains("WorkloadLifecycleBridge"),
+        "UnifiedWorkload should not implement WorkloadLifecycleBridge, got:\n{workload}"
+    );
+    assert!(
+        !workload.contains("fun toDynamicWorkload(): DynamicWorkload"),
+        "UnifiedWorkload should not create DynamicWorkload directly, got:\n{workload}"
+    );
+    assert!(
+        workload.contains(
+            "suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray"
+        ),
+        "UnifiedWorkload should keep dispatch delegation, got:\n{workload}"
+    );
+
+    let adapter = std::fs::read_to_string(&adapter_file).expect("read UnifiedLifecycleAdapter.kt");
+    assert!(
+        adapter.contains("WorkloadLifecycleBridge"),
+        "UnifiedLifecycleAdapter should implement WorkloadLifecycleBridge, got:\n{adapter}"
+    );
+    assert!(
+        adapter.contains("onReady"),
+        "UnifiedLifecycleAdapter should override onReady, got:\n{adapter}"
+    );
+    assert!(
+        adapter.contains("onError"),
+        "UnifiedLifecycleAdapter should override onError, got:\n{adapter}"
+    );
+    assert!(
+        adapter.contains("DynamicWorkload"),
+        "UnifiedLifecycleAdapter should reference DynamicWorkload, got:\n{adapter}"
+    );
+    assert!(
+        adapter.contains("toDynamicWorkload"),
+        "UnifiedLifecycleAdapter should expose toDynamicWorkload(), got:\n{adapter}"
+    );
 }
 
 /// Verify that `actr gen -l kotlin` produces per-service actor files
