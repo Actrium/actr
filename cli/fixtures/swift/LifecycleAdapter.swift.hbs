@@ -4,6 +4,7 @@
 import Actr
 import Foundation
 
+{{#if HAS_SERVICES}}
 public final class {{SERVICE_NAME}}LifecycleAdapter<Handler: {{HANDLER_NAME}}>: Workload, @unchecked Sendable {
     private let workload: {{WORKLOAD_NAME}}<Handler>
 
@@ -18,6 +19,18 @@ public final class {{SERVICE_NAME}}LifecycleAdapter<Handler: {{HANDLER_NAME}}>: 
     public convenience init(handler: Handler, remoteTargets: [String: ActrType]) {
         self.init(workload: {{WORKLOAD_NAME}}(handler: handler, remoteTargets: remoteTargets))
     }
+{{else}}
+public final class {{SERVICE_NAME}}LifecycleAdapter: Workload, @unchecked Sendable {
+    private let workload: {{WORKLOAD_NAME}}
+
+    public init(workload: {{WORKLOAD_NAME}}) {
+        self.workload = workload
+    }
+
+    public convenience init(remoteTargets: [String: ActrType] = [:]) {
+        self.init(workload: {{WORKLOAD_NAME}}(remoteTargets: remoteTargets))
+    }
+{{/if}}
 
     public func onStart(ctx: Context) async throws {
         // TODO: Optionally customize startup logic

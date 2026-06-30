@@ -140,17 +140,16 @@ fn swift_echo_init_creates_expected_files() {
 
 #[test]
 #[cfg_attr(not(target_os = "macos"), ignore = "Requires macOS and xcodegen")]
-fn swift_echo_manifest_has_signaling_url() {
+fn swift_echo_actr_toml_has_signaling_url() {
     let tmp = TempDir::new().unwrap();
     let project_dir = init_swift_echo(tmp.path(), "SignalingApp");
 
-    let actr_toml =
-        std::fs::read_to_string(project_dir.join("manifest.toml")).expect("read manifest.toml");
+    let actr_toml = std::fs::read_to_string(project_dir.join("actr.toml")).expect("read actr.toml");
 
     // The template always appends /signaling/ws; input is normalized.
     assert!(
         actr_toml.contains("wss://actrix1.develenv.com/signaling/ws"),
-        "manifest.toml should contain the full signaling URL with /signaling/ws path, got:\n{actr_toml}"
+        "actr.toml should contain the full signaling URL with /signaling/ws path, got:\n{actr_toml}"
     );
 }
 

@@ -45,6 +45,9 @@ public final class ActrService: ObservableObject {
                 "{{route_key}}": {{variable_name}},
 {{/each}}
             ]
+{{/if}}
+{{#if HAS_SERVICES}}
+{{#if REMOTE_TARGETS}}
             let targetType = {{FIRST_REMOTE_TARGET_VARIABLE}}
             let handler = {{SERVICE_NAME}}HandlerImpl(targetType: targetType)
 {{else}}
@@ -54,6 +57,9 @@ public final class ActrService: ObservableObject {
                 handler: handler{{#if REMOTE_TARGETS}},
                 remoteTargets: remoteTargets{{/if}}
             )
+{{else}}
+            let lifecycle = {{SERVICE_NAME}}LifecycleAdapter({{#if REMOTE_TARGETS}}remoteTargets: remoteTargets{{/if}})
+{{/if}}
             let workload = Actr.dynamicWorkload(lifecycle: lifecycle)
             let configURL = URL(fileURLWithPath: configPath)
             let node = try await Actr.ActrNode.linked(
