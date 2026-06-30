@@ -173,10 +173,10 @@ val observers = runtimeObservers(
             // event.status == WebRtcPeerStatus.CONNECTING
         }
         override suspend fun onConnected(ctx: ContextBridge, event: PeerEvent) {
-            // event.status == WebRtcPeerStatus.CONNECTED (or RECOVERING after a drop)
+            // event.status == WebRtcPeerStatus.CONNECTED
         }
         override suspend fun onDisconnected(ctx: ContextBridge, event: PeerEvent) {
-            // event.status == WebRtcPeerStatus.IDLE
+            // event.status == WebRtcPeerStatus.RECOVERING or WebRtcPeerStatus.IDLE
         }
     },
 )
