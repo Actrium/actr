@@ -58,9 +58,11 @@ jobs:
           else
             TAG_SHA="$SOURCE_SHA"
           fi
-          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
-          echo "tag_sha=$TAG_SHA" >>"$GITHUB_OUTPUT"
-          echo "source_sha=$SOURCE_SHA" >>"$GITHUB_OUTPUT"
+          {
+            echo "version=$VERSION"
+            echo "tag_sha=$TAG_SHA"
+            echo "source_sha=$SOURCE_SHA"
+          } >>"$GITHUB_OUTPUT"
 
   prepare-assets:
     name: Prepare CLI web runtime assets
@@ -75,6 +77,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+          version: ${{ env.PROTOC_VERSION }}
       - name: Cache wasm-pack
         id: cache-wasm-pack
         uses: actions/cache@v4
