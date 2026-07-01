@@ -1,32 +1,37 @@
 //! Build script for `actr-hyper`.
 //!
-//! When the `wasm-engine` feature is enabled, compiles the
+//! When the `wasm-engine` + `test-utils` features are both enabled (the
+//! integration-test configuration, never a publish build), compiles the
 //! `wasm_actor_fixture` guest crate (`tests/wasm_actor_fixture/`) to a
-//! wasm32-wasip2 Component Model component and exposes its bytes to the
-//! integration tests via the `ACTR_WASM_FIXTURE` env var plus the
-//! `actr_wasm_fixture_available` cfg. Tests then `include_bytes!` the built
-//! artifact instead of carrying a 15k-line hex blob in source.
+//! wasm32-wasip2 Component Model component and exposes its bytes via the
+//! `ACTR_WASM_FIXTURE` env var + `actr_wasm_fixture_available` cfg. Tests
+//! then `include_bytes!` the built artifact instead of carrying a 15k-line
+//! hex blob in source.
 //!
-//! Requires the `wasm32-wasip2` rustup target and `wasm-component-ld`
-//! (>= 0.5.22) on `PATH` or in `~/.cargo/bin`. CI installs both; a local
-//! developer without them gets a `cargo:warning` and the fixture tests are
-//! compiled out via the `actr_wasm_fixture_available` cfg gate — no
-//! committed binary blob is needed.
+//! Requires the `wasm32-wasip2` target and `wasm-component-ld` (>= 0.5.22).
+//! A local build without them skips with a `cargo:warning` (the fixture
+//! tests are compiled out); CI sets `ACTR_REQUIRE_WASM_FIXTURE=1` to make a
+//! missing toolchain a hard failure so the tests can't silently go green.
 
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
-    // Declare the custom cfg unconditionally so the test files gating on
-    // `actr_wasm_fixture_available` don't trip `unexpected_cfgs` — even when
-    // the wasm toolchain is absent and the cfg is never actually set.
-    println!("cargo:rustc-check-cfg=cfg(actr_wasm_fixture_available)");
+    // Declare the custom cfg unconditionally so `unexpected_cfgs` doesn't fire
+    // on the test files gating on it, even when this script skips.
+    println!("cargo::rustc-check-cfg=cfg(actr_wasm_fixture_available)");
 
-    // Only build the fixture when the wasm-engine feature is on; otherwise
-    // the consuming tests are `#[cfg(feature = "wasm-engine")]`-gated out
-    // anyway and there is nothing to do.
-    if env::var_os("CARGO_FEATURE_WASM_ENGINE").is_none() {
+    // Re-run when the gating env vars change.
+    println!("cargo::rerun-if-env-changed=WASM_COMPONENT_LD");
+    println!("cargo::rerun-if-env-changed=ACTR_REQUIRE_WASM_FIXTURE");
+
+    // Only compile the fixture for the integration-test configuration: both
+    // wasm-engine and test-utils must be on. `test-utils` is a dev/test
+    // feature (not enabled by `cargo package`), so publish builds skip this.
+    if env::var_os("CARGO_FEATURE_WASM_ENGINE").is_none()
+        || env::var_os("CARGO_FEATURE_TEST_UTILS").is_none()
+    {
         return;
     }
 
@@ -35,7 +40,15 @@ fn main() {
     let guest_dir = manifest_dir.join("tests/wasm_actor_fixture");
     let wit = manifest_dir.join("../framework/wit/actr-workload.wit");
 
-    // Rebuild when the guest source, its manifest, or the WIT contract moves.
+    // Publish builds (`cargo package`) strip `tests/`, so the guest source is
+    // absent — skip silently rather than fail. This is expected, not an error.
+    if !guest_dir.join("Cargo.toml").exists() {
+        return;
+    }
+
+    let require = env::var_os("ACTR_REQUIRE_WASM_FIXTURE").is_some();
+
+    // Rebuild when inputs change.
     println!(
         "cargo:rerun-if-changed={}",
         guest_dir.join("src/lib.rs").display()
@@ -44,12 +57,17 @@ fn main() {
         "cargo:rerun-if-changed={}",
         guest_dir.join("Cargo.toml").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        guest_dir.join("Cargo.lock").display()
+    );
     println!("cargo:rerun-if-changed={}", wit.display());
 
     let ld = match find_wasm_component_ld() {
         Some(path) => path,
         None => {
-            emit_toolchain_warning(
+            missing_toolchain(
+                require,
                 "wasm-component-ld was not found on PATH or in ~/.cargo/bin",
                 "cargo install wasm-component-ld --version 0.5.22",
             );
@@ -58,28 +76,43 @@ fn main() {
     };
 
     if !target_installed("wasm32-wasip2") {
-        emit_toolchain_warning(
-            "the wasm32-wasip2 rustup target is not installed",
+        missing_toolchain(
+            require,
+            "the wasm32-wasip2 target is not installed",
             "rustup target add wasm32-wasip2",
         );
         return;
     }
 
+    let cargo = env::var_os("CARGO").expect("CARGO set by cargo");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
     // Isolated target-dir so the nested `cargo build` never contends for the
     // host workspace's target-dir locks (the guest is its own workspace).
     let guest_target_dir = out_dir.join("wasm-guest-target");
 
-    let rustflags = format!("-Clinker={}", ld.display());
-    let status = Command::new("cargo")
-        .args(["build", "--release", "--target", "wasm32-wasip2"])
+    // Pin the Component Model linker via the target-specific env (highest
+    // precedence) and strip any inherited RUSTFLAGS so they can't override it
+    // (see Cargo's build.rustflags precedence).
+    let status = Command::new(&cargo)
+        .args([
+            "build",
+            "--locked",
+            "--release",
+            "--target",
+            "wasm32-wasip2",
+        ])
         .current_dir(&guest_dir)
-        .env("RUSTFLAGS", &rustflags)
+        .env("CARGO_TARGET_WASM32_WASIP2_LINKER", &ld)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env("CARGO_TARGET_DIR", &guest_target_dir)
         .status()
         .expect("failed to spawn `cargo build` for wasm_actor_fixture");
     if !status.success() {
-        panic!("`cargo build` of wasm_actor_fixture (wasm32-wasip2) failed");
+        panic!(
+            "`cargo build` of wasm_actor_fixture (wasm32-wasip2) failed; \
+             set ACTR_REQUIRE_WASM_FIXTURE=1 locally to reproduce"
+        );
     }
 
     let wasm = guest_target_dir.join("wasm32-wasip2/release/wasm_actor_fixture.wasm");
@@ -90,38 +123,44 @@ fn main() {
     let dest = out_dir.join("wasm_actor_fixture.wasm");
     std::fs::copy(&wasm, &dest).expect("failed to copy built wasm fixture into OUT_DIR");
 
-    println!("cargo:rustc-env=ACTR_WASM_FIXTURE={}", dest.display());
-    println!("cargo:rustc-cfg=actr_wasm_fixture_available");
+    println!("cargo::rustc-env=ACTR_WASM_FIXTURE={}", dest.display());
+    println!("cargo::rustc-cfg=actr_wasm_fixture_available");
 }
 
-/// Emit a `cargo:warning` explaining the wasm toolchain gap and that the
-/// fixture tests will be compiled out, so a missing local toolchain never
-/// hard-fails the build.
-fn emit_toolchain_warning(reason: &str, install_hint: &str) {
-    println!("cargo:warning=wasm-engine feature is on but {reason};");
+/// Handle a missing wasm toolchain: hard-fail when `require` (CI), otherwise
+/// emit a `cargo:warning` and skip so a missing local toolchain never fails.
+fn missing_toolchain(require: bool, reason: &str, install_hint: &str) {
+    if require {
+        panic!(
+            "ACTR_REQUIRE_WASM_FIXTURE is set but {reason}; install with \
+             `{install_hint}` (fixture tests cannot be compiled out in CI)"
+        );
+    }
+    println!("cargo:warning=wasm fixture toolchain missing: {reason};");
     println!("cargo:warning=  install with: `{install_hint}`");
     println!("cargo:warning=  wasm_actor_fixture integration tests will be compiled out.");
+    println!("cargo:warning=  (set ACTR_REQUIRE_WASM_FIXTURE=1 to make this a hard error)");
 }
 
-/// Locate `wasm-component-ld`, honouring an explicit `WASM_COMPONENT_LD`
-/// override (mirrors the old `build.sh`), then `PATH`, then `~/.cargo/bin`.
+/// Locate `wasm-component-ld`. An explicit `WASM_COMPONENT_LD` override is
+/// honoured as-is: if it points nowhere the toolchain is treated as
+/// unavailable (no silent fallback), so `WASM_COMPONENT_LD=/nonexistent`
+/// deterministically forces the skip / require path. Without an override,
+/// `PATH` then `~/.cargo/bin` are consulted.
 fn find_wasm_component_ld() -> Option<PathBuf> {
     if let Some(path) = env::var_os("WASM_COMPONENT_LD") {
         let path = PathBuf::from(path);
-        if path.is_file() {
-            return Some(path);
+        return if path.is_file() { Some(path) } else { None };
+    }
+    find_in_path("wasm-component-ld").or_else(|| {
+        let home = env::var_os("HOME")?;
+        let candidate = PathBuf::from(home).join(".cargo/bin/wasm-component-ld");
+        if candidate.is_file() {
+            Some(candidate)
+        } else {
+            None
         }
-    }
-    if let Some(path) = find_in_path("wasm-component-ld") {
-        return Some(path);
-    }
-    let home = env::var_os("HOME")?;
-    let candidate = PathBuf::from(home).join(".cargo/bin/wasm-component-ld");
-    if candidate.is_file() {
-        Some(candidate)
-    } else {
-        None
-    }
+    })
 }
 
 fn find_in_path(cmd: &str) -> Option<PathBuf> {
@@ -131,18 +170,21 @@ fn find_in_path(cmd: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// Check whether the `wasm32-wasip2` target std libs are installed by looking
+/// in the rustc sysroot (works with non-rustup toolchains, unlike
+/// `rustup target list`).
 fn target_installed(target: &str) -> bool {
-    let output = match Command::new("rustup")
-        .args(["target", "list", "--installed"])
-        .output()
-    {
+    let rustc = env::var("RUSTC").unwrap_or_else(|_| String::from("rustc"));
+    let output = match Command::new(&rustc).args(["--print", "sysroot"]).output() {
         Ok(output) => output,
         Err(_) => return false,
     };
     if !output.status.success() {
         return false;
     }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|line| line.trim() == target)
+    let sysroot = String::from_utf8_lossy(&output.stdout);
+    PathBuf::from(sysroot.trim())
+        .join("lib/rustlib")
+        .join(target)
+        .exists()
 }

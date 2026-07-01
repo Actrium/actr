@@ -75,6 +75,10 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
+      # Fail the build if core/hyper/build.rs can't compile the wasm fixture
+      # (missing wasm32-wasip2 / wasm-component-ld) rather than silently
+      # compiling the fixture tests out.
+      ACTR_REQUIRE_WASM_FIXTURE: "1"
     steps:
       - uses: actions/checkout@v5
       - name: Setup Rust
@@ -125,6 +129,10 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
+      # Fail the build if core/hyper/build.rs can't compile the wasm fixture
+      # (missing wasm32-wasip2 / wasm-component-ld) rather than silently
+      # compiling the fixture tests out.
+      ACTR_REQUIRE_WASM_FIXTURE: "1"
     steps:
       - uses: actions/checkout@v5
       - name: Setup Rust
