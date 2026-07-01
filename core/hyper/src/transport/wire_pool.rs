@@ -576,10 +576,10 @@ mod tests {
         .await;
 
         // Await broadcast: ready set should contain WebSocket.
-        let ready = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if rx.borrow().contains(&ConnType::WebSocket) {
-                    return ();
+                    return;
                 }
                 let _ = tokio::time::timeout(Duration::from_millis(50), rx.changed()).await;
             }
@@ -587,7 +587,6 @@ mod tests {
         .await
         .expect("ready broadcast should fire within 2s");
 
-        let _ = ready;
         // get_connection now returns the Ready handle.
         assert!(pool.get_connection(ConnType::WebSocket).await.is_some());
         assert!(pool.has_live_candidate(&[ConnType::WebSocket]).await);

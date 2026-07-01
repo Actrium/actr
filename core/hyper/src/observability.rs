@@ -199,6 +199,32 @@ where
         .with_ansi(enable_ansi)
 }
 
+#[cfg(feature = "opentelemetry")]
+fn build_otel_provider(config: &ObservabilityConfig) -> ActorResult<SdkTracerProvider> {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(config.tracing_endpoint.clone())
+        .build()
+        .map_err(|e| {
+            actr_protocol::ActrError::Internal(format!("OTLP exporter build failed: {e}"))
+        })?;
+
+    let resource = Resource::builder()
+        .with_service_name(config.tracing_service_name.clone())
+        .with_attributes([KeyValue::new("telemetry.sdk.language", "rust")])
+        .build();
+
+    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
+        .build();
+
+    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
+    opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
+
+    Ok(tracer_provider)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,30 +283,4 @@ mod tests {
         };
         let _guard = init_observability(&bad).unwrap();
     }
-}
-
-#[cfg(feature = "opentelemetry")]
-fn build_otel_provider(config: &ObservabilityConfig) -> ActorResult<SdkTracerProvider> {
-    let exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(config.tracing_endpoint.clone())
-        .build()
-        .map_err(|e| {
-            actr_protocol::ActrError::Internal(format!("OTLP exporter build failed: {e}"))
-        })?;
-
-    let resource = Resource::builder()
-        .with_service_name(config.tracing_service_name.clone())
-        .with_attributes([KeyValue::new("telemetry.sdk.language", "rust")])
-        .build();
-
-    let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
-        .with_resource(resource)
-        .with_batch_exporter(exporter)
-        .build();
-
-    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
-    opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-
-    Ok(tracer_provider)
 }
