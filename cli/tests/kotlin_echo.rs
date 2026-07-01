@@ -147,7 +147,7 @@ fn kotlin_echo_init_fails_if_directory_exists() {
 /// This test checks that:
 /// 1. `actr gen -l kotlin` produces UnifiedWorkload.kt as a plain user scaffold
 /// 2. `actr gen -l kotlin` produces UnifiedLifecycleAdapter.kt
-/// 3. The adapter implements WorkloadLifecycleBridge and exposes toDynamicWorkload()
+/// 3. The adapter implements the high-level Workload alias and exposes toDynamicWorkload()
 #[test]
 #[ignore = "Requires protoc and protoc-gen-actrframework-kotlin plugin"]
 fn kotlin_gen_produces_linked_workload_scaffold() {
@@ -200,16 +200,15 @@ fn kotlin_gen_produces_linked_workload_scaffold() {
         "UnifiedWorkload should not create DynamicWorkload directly, got:\n{workload}"
     );
     assert!(
-        workload.contains(
-            "suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray"
-        ),
+        workload
+            .contains("suspend fun dispatch(ctx: ActrContext, envelope: RpcEnvelope): ByteArray"),
         "UnifiedWorkload should keep dispatch delegation, got:\n{workload}"
     );
 
     let adapter = std::fs::read_to_string(&adapter_file).expect("read UnifiedLifecycleAdapter.kt");
     assert!(
-        adapter.contains("WorkloadLifecycleBridge"),
-        "UnifiedLifecycleAdapter should implement WorkloadLifecycleBridge, got:\n{adapter}"
+        adapter.contains(") : Workload"),
+        "UnifiedLifecycleAdapter should implement Workload, got:\n{adapter}"
     );
     assert!(
         adapter.contains("onReady"),

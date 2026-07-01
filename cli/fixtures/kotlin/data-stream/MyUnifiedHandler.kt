@@ -15,10 +15,10 @@ import stream_server.StreamClientOuterClass.PrepareClientStreamRequest
 import stream_server.StreamClientOuterClass.PrepareClientStreamResponse
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
 import io.actrium.actr.DataStream
 import io.actrium.actr.DataStreamCallback
 import io.actrium.actr.PayloadType
+import io.actrium.actr.dsl.ActrContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -48,7 +48,7 @@ class MyUnifiedHandler : UnifiedHandler {
      */
     override suspend fun prepare_client_stream(
         request: PrepareClientStreamRequest,
-        ctx: ContextBridge
+        ctx: ActrContext
     ): PrepareClientStreamResponse {
         val streamId = request.streamId
         val expectedCount = request.expectedCount
@@ -93,7 +93,7 @@ class MyUnifiedHandler : UnifiedHandler {
      */
     override suspend fun start_stream(
         request: ClientStartStreamRequest,
-        ctx: ContextBridge
+        ctx: ActrContext
     ): ClientStartStreamResponse {
         val clientId = request.clientId
         val streamId = request.streamId

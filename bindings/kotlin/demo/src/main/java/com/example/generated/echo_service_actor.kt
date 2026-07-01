@@ -8,7 +8,7 @@
  */
 package com.example.generated
 
-import io.actrium.actr.dsl.Context
+import io.actrium.actr.dsl.ActrContext
 import io.actrium.actr.dsl.RpcEnvelope
 
 // Import protobuf message types
@@ -23,7 +23,7 @@ import echo.Echo.*
  * Example:
  * ```kotlin
  * class MyEchoService : EchoServiceHandler {
- *     override suspend fun echo(request: EchoRequest, ctx: Context): EchoResponse {
+ *     override suspend fun echo(request: EchoRequest, ctx: ActrContext): EchoResponse {
  *         // Business logic here
  *         return EchoResponse.newBuilder().build()
  *     }
@@ -36,7 +36,7 @@ interface EchoServiceHandler {
      */
     suspend fun echo(
         request: EchoRequest,
-        ctx: Context,
+        ctx: ActrContext,
     ): EchoResponse
 }
 
@@ -57,7 +57,7 @@ object EchoServiceDispatcher {
      */
     suspend fun dispatch(
         handler: EchoServiceHandler,
-        ctx: Context,
+        ctx: ActrContext,
         envelope: RpcEnvelope,
     ): ByteArray =
         when (envelope.routeKey) {

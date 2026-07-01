@@ -7,7 +7,7 @@ import io.actrium.actr.ActrType
 import io.actrium.actr.DataStream
 import io.actrium.actr.DataStreamCallback
 import io.actrium.actr.PayloadType
-import io.actrium.actr.dsl.Context
+import io.actrium.actr.dsl.ActrContext
 import io.actrium.actr.dsl.withRetry
 import kotlinx.coroutines.delay
 
@@ -29,7 +29,7 @@ class MyUnifiedHandler : UnifiedHandler {
 
     override suspend fun start_stream(
         request: local.StreamClientOuterClass.ClientStartStreamRequest,
-        ctx: Context,
+        ctx: ActrContext,
     ): local.StreamClientOuterClass.ClientStartStreamResponse {
         val clientId = request.clientId
         val sessionId = request.sessionId

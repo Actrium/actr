@@ -7,7 +7,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-class PeerEventBridgeTest {
+class AliasesTest {
     private val peer = ActrId(Realm(7u), 1uL, ActrType("acme", "Echo", "1.0.0"))
 
     @Test
@@ -18,6 +18,14 @@ class PeerEventBridgeTest {
     @Test
     fun `WebRtcPeerStatus aliases the generated WebRtcPeerStatusBridge`() {
         assertEquals(io.actrium.actr.WebRtcPeerStatusBridge::class, WebRtcPeerStatus::class)
+    }
+
+    @Test
+    fun `event and error aliases expose generated records`() {
+        assertEquals(io.actrium.actr.ErrorEventBridge::class, ErrorEvent::class)
+        assertEquals(io.actrium.actr.ErrorCategoryBridge::class, ErrorCategory::class)
+        assertEquals(io.actrium.actr.CredentialEventBridge::class, CredentialEvent::class)
+        assertEquals(io.actrium.actr.BackpressureEventBridge::class, BackpressureEvent::class)
     }
 
     @Test

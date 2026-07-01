@@ -3,7 +3,6 @@ package io.actrium.actr.dsl
 
 import io.actrium.actr.ActrException
 import io.actrium.actr.ActrId
-import io.actrium.actr.ContextBridge
 import io.actrium.actr.ErrorKind
 import io.actrium.actr.AppLifecycleState
 import io.actrium.actr.CleanupReason
@@ -87,25 +86,25 @@ suspend fun ActrRef.discoverCatching(
 ): Result<List<ActrId>> = runCatching { discover(typeString, count) }
 
 // ============================================================================
-// ContextBridge Extensions — convenience wrappers with default parameters
+// ActrContext Extensions — convenience wrappers with default parameters
 // ============================================================================
 
 /**
- * Convenience wrapper around [ContextBridge.callRaw] with default parameters.
+ * Convenience wrapper around [ActrContext.callRaw] with default parameters.
  *
  * Equivalent to:
  * ```kotlin
  * ctx.callRaw(target, routeKey, PayloadType.RPC_RELIABLE, payload, 30000L)
  * ```
  *
- * @param target Target actor ID (obtained via [ContextBridge.discover])
+ * @param target Target actor ID (obtained via [ActrContext.discover])
  * @param routeKey RPC route key (e.g., "echo.EchoService.Echo")
  * @param payload Serialized request payload
  * @param payloadType Transmission type (default: RPC_RELIABLE)
  * @param timeoutMs Timeout in milliseconds (default: 30000)
  * @return Response bytes
  */
-suspend fun ContextBridge.call(
+suspend fun ActrContext.call(
     target: ActrId,
     routeKey: String,
     payload: ByteArray,

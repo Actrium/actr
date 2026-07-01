@@ -2,12 +2,8 @@ package io.actrium.actr.dsl
 
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
-import io.actrium.actr.ErrorCategoryBridge
-import io.actrium.actr.ErrorEventBridge
 import io.actrium.actr.NoHandle
 import io.actrium.actr.Realm
-import io.actrium.actr.RpcEnvelopeBridge
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -18,16 +14,16 @@ import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class WorkloadDslTest {
-    private val ctx = ContextBridge(NoHandle)
+    private val ctx = ActrContext(NoHandle)
 
     @Test
     fun `workload builder accepts string type and forwards lifecycle handlers`() =
         runTest {
             val calls = mutableListOf<String>()
             val error =
-                ErrorEventBridge(
+                ErrorEvent(
                     source = "handler failed",
-                    category = ErrorCategoryBridge.HANDLER_ERROR,
+                    category = ErrorCategory.HANDLER_ERROR,
                     context = "dispatch",
                     timestampMs = 1234L,
                 )
@@ -116,7 +112,7 @@ class WorkloadDslTest {
                 assertFailsWith<IllegalStateException> {
                     workload.dispatch(
                         ctx,
-                        RpcEnvelopeBridge("echo.Echo", byteArrayOf(1, 2, 3), "req-1"),
+                        RpcEnvelope("echo.Echo", byteArrayOf(1, 2, 3), "req-1"),
                     )
                 }
 
@@ -141,9 +137,9 @@ class WorkloadDslTest {
             workload.onReady(ctx)
             workload.onError(
                 ctx,
-                ErrorEventBridge(
+                ErrorEvent(
                     source = "ignored",
-                    category = ErrorCategoryBridge.HANDLER_ERROR,
+                    category = ErrorCategory.HANDLER_ERROR,
                     context = "test",
                     timestampMs = 5678L,
                 ),
@@ -154,7 +150,7 @@ class WorkloadDslTest {
                 assertFailsWith<IllegalStateException> {
                     workload.dispatch(
                         ctx,
-                        RpcEnvelopeBridge("echo.Echo", byteArrayOf(), "req-2"),
+                        RpcEnvelope("echo.Echo", byteArrayOf(), "req-2"),
                     )
                 }
 

@@ -3,33 +3,21 @@ package io.actrium.actr.dsl
 
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
-import io.actrium.actr.CredentialObserverBridge
 import io.actrium.actr.DataStream
-import io.actrium.actr.ErrorEventBridge
-import io.actrium.actr.MailboxObserverBridge
 import io.actrium.actr.PayloadType
-import io.actrium.actr.RpcEnvelopeBridge
-import io.actrium.actr.SignalingObserverBridge
-import io.actrium.actr.WebRtcObserverBridge
-import io.actrium.actr.WebSocketObserverBridge
-import io.actrium.actr.WorkloadLifecycleBridge
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicReference
-import io.actrium.actr.DynamicWorkload as DynamicWorkloadGenerated
-
-typealias DynamicWorkload = DynamicWorkloadGenerated
 
 fun dynamicWorkload(
-    lifecycle: WorkloadLifecycleBridge,
-    signaling: SignalingObserverBridge? = null,
-    websocket: WebSocketObserverBridge? = null,
-    webrtc: WebRtcObserverBridge? = null,
-    credential: CredentialObserverBridge? = null,
-    mailbox: MailboxObserverBridge? = null,
+    lifecycle: Workload,
+    signaling: SignalingObserver? = null,
+    websocket: WebSocketObserver? = null,
+    webrtc: WebRtcObserver? = null,
+    credential: CredentialObserver? = null,
+    mailbox: MailboxObserver? = null,
 ): DynamicWorkload =
-    DynamicWorkloadGenerated(
+    DynamicWorkload(
         lifecycle = lifecycle,
         signaling = signaling,
         websocket = websocket,
@@ -64,11 +52,11 @@ fun dynamicWorkload(
 open class SimpleWorkload(
     private val realmId: UInt,
     private val type: ActrType,
-    private val onStartHandler: suspend (ContextBridge) -> Unit = {},
-    private val onStopHandler: suspend (ContextBridge) -> Unit = {},
-    private val onReadyHandler: suspend (ContextBridge) -> Unit = {},
-    private val onErrorHandler: suspend (ContextBridge, ErrorEventBridge) -> Unit = { _, _ -> },
-) : WorkloadLifecycleBridge {
+    private val onStartHandler: suspend (ActrContext) -> Unit = {},
+    private val onStopHandler: suspend (ActrContext) -> Unit = {},
+    private val onReadyHandler: suspend (ActrContext) -> Unit = {},
+    private val onErrorHandler: suspend (ActrContext, ErrorEvent) -> Unit = { _, _ -> },
+) : Workload {
     /** Channel for sending DataStream requests from UI to workload. */
     private val dataStreamChannel = Channel<DataStreamRequest>(Channel.UNLIMITED)
 
@@ -93,10 +81,10 @@ open class SimpleWorkload(
     constructor(
         realmId: UInt,
         typeString: String,
-        onStartHandler: suspend (ContextBridge) -> Unit = {},
-        onStopHandler: suspend (ContextBridge) -> Unit = {},
-        onReadyHandler: suspend (ContextBridge) -> Unit = {},
-        onErrorHandler: suspend (ContextBridge, ErrorEventBridge) -> Unit = { _, _ -> },
+        onStartHandler: suspend (ActrContext) -> Unit = {},
+        onStopHandler: suspend (ActrContext) -> Unit = {},
+        onReadyHandler: suspend (ActrContext) -> Unit = {},
+        onErrorHandler: suspend (ActrContext, ErrorEvent) -> Unit = { _, _ -> },
     ) : this(realmId, typeString.toActrType(), onStartHandler, onStopHandler, onReadyHandler, onErrorHandler)
 
     /** Create a SimpleWorkload with named parameters. */
@@ -105,10 +93,10 @@ open class SimpleWorkload(
         manufacturer: String,
         name: String,
         version: String,
-        onStartHandler: suspend (ContextBridge) -> Unit = {},
-        onStopHandler: suspend (ContextBridge) -> Unit = {},
-        onReadyHandler: suspend (ContextBridge) -> Unit = {},
-        onErrorHandler: suspend (ContextBridge, ErrorEventBridge) -> Unit = { _, _ -> },
+        onStartHandler: suspend (ActrContext) -> Unit = {},
+        onStopHandler: suspend (ActrContext) -> Unit = {},
+        onReadyHandler: suspend (ActrContext) -> Unit = {},
+        onErrorHandler: suspend (ActrContext, ErrorEvent) -> Unit = { _, _ -> },
     ) : this(
         realm,
         ActrType(manufacturer = manufacturer, name = name, version = version),
@@ -144,7 +132,7 @@ open class SimpleWorkload(
         dataStreamChannel.send(DataStreamRequest(target, dataStream))
     }
 
-    override suspend fun onStart(ctx: ContextBridge) {
+    override suspend fun onStart(ctx: ActrContext) {
         // Start a coroutine to handle DataStream requests
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
             for (request in dataStreamChannel) {
@@ -165,17 +153,17 @@ open class SimpleWorkload(
         onStartHandler(ctx)
     }
 
-    override suspend fun onReady(ctx: ContextBridge) {
+    override suspend fun onReady(ctx: ActrContext) {
         onReadyHandler(ctx)
     }
 
-    override suspend fun onStop(ctx: ContextBridge) {
+    override suspend fun onStop(ctx: ActrContext) {
         onStopHandler(ctx)
     }
 
     override suspend fun onError(
-        ctx: ContextBridge,
-        event: ErrorEventBridge,
+        ctx: ActrContext,
+        event: ErrorEvent,
     ) {
         onErrorHandler(ctx, event)
     }
@@ -196,11 +184,11 @@ open class SimpleWorkload(
      * @throws IllegalStateException if dispatch is not implemented
      */
     override suspend fun dispatch(
-        ctx: ContextBridge,
-        envelope: RpcEnvelopeBridge,
+        ctx: ActrContext,
+        envelope: RpcEnvelope,
     ): ByteArray =
         throw IllegalStateException(
-            "dispatch() must be implemented by subclass or use a custom WorkloadLifecycleBridge",
+            "dispatch() must be implemented by subclass or use a custom Workload",
         )
 }
 
@@ -229,10 +217,10 @@ inline fun workload(builder: WorkloadBuilder.() -> Unit): SimpleWorkload = Workl
 class WorkloadBuilder {
     var realm: UInt = 0u
     private var _type: ActrType? = null
-    private var startHandler: suspend (ContextBridge) -> Unit = {}
-    private var readyHandler: suspend (ContextBridge) -> Unit = {}
-    private var stopHandler: suspend (ContextBridge) -> Unit = {}
-    private var errorHandler: suspend (ContextBridge, ErrorEventBridge) -> Unit = { _, _ -> }
+    private var startHandler: suspend (ActrContext) -> Unit = {}
+    private var readyHandler: suspend (ActrContext) -> Unit = {}
+    private var stopHandler: suspend (ActrContext) -> Unit = {}
+    private var errorHandler: suspend (ActrContext, ErrorEvent) -> Unit = { _, _ -> }
 
     /** Set the actor type from a string. */
     var type: String
@@ -260,7 +248,7 @@ class WorkloadBuilder {
      *
      * @param handler Function called when the workload starts, receives the context
      */
-    fun onStart(handler: suspend (ctx: ContextBridge) -> Unit) {
+    fun onStart(handler: suspend (ctx: ActrContext) -> Unit) {
         startHandler = handler
     }
 
@@ -269,7 +257,7 @@ class WorkloadBuilder {
      *
      * @param handler Function called when the node becomes ready, receives the context
      */
-    fun onReady(handler: suspend (ctx: ContextBridge) -> Unit) {
+    fun onReady(handler: suspend (ctx: ActrContext) -> Unit) {
         readyHandler = handler
     }
 
@@ -278,7 +266,7 @@ class WorkloadBuilder {
      *
      * @param handler Function called when the workload stops, receives the context
      */
-    fun onStop(handler: suspend (ctx: ContextBridge) -> Unit) {
+    fun onStop(handler: suspend (ctx: ActrContext) -> Unit) {
         stopHandler = handler
     }
 
@@ -287,7 +275,7 @@ class WorkloadBuilder {
      *
      * @param handler Function called when the runtime reports a workload error
      */
-    fun onError(handler: suspend (ctx: ContextBridge, event: ErrorEventBridge) -> Unit) {
+    fun onError(handler: suspend (ctx: ActrContext, event: ErrorEvent) -> Unit) {
         errorHandler = handler
     }
 
@@ -314,11 +302,11 @@ class WorkloadBuilder {
  *     realm = 2281844430u,
  *     type = "acme:my-service"
  * ) {
- *     override suspend fun onStart(ctx: ContextBridge) {
+ *     override suspend fun onStart(ctx: ActrContext) {
  *         // Custom start logic
  *     }
  *
- *     override suspend fun onStop(ctx: ContextBridge) {
+ *     override suspend fun onStop(ctx: ActrContext) {
  *         // Custom stop logic
  *     }
  * }
@@ -327,7 +315,7 @@ class WorkloadBuilder {
 abstract class RoutedWorkload(
     private val realmId: UInt,
     private val type: ActrType,
-) : WorkloadLifecycleBridge {
+) : Workload {
     constructor(realmId: UInt, typeString: String) : this(realmId, typeString.toActrType())
 
     /**
@@ -351,24 +339,24 @@ abstract class RoutedWorkload(
     fun getTargetServerId(): ActrId? = targetServerId.get()
 
     /** Called when the workload starts. Override to add custom logic. */
-    override suspend fun onStart(ctx: ContextBridge) {
+    override suspend fun onStart(ctx: ActrContext) {
         // Default: do nothing
     }
 
     /** Called when the workload is ready. Override to add custom logic. */
-    override suspend fun onReady(ctx: ContextBridge) {
+    override suspend fun onReady(ctx: ActrContext) {
         // Default: do nothing
     }
 
     /** Called when the workload stops. Override to add custom logic. */
-    override suspend fun onStop(ctx: ContextBridge) {
+    override suspend fun onStop(ctx: ActrContext) {
         // Default: do nothing
     }
 
     /** Called when the runtime reports a workload error. Override to add custom logic. */
     override suspend fun onError(
-        ctx: ContextBridge,
-        event: ErrorEventBridge,
+        ctx: ActrContext,
+        event: ErrorEvent,
     ) {
         // Default: do nothing
     }
@@ -385,7 +373,7 @@ abstract class RoutedWorkload(
      * @throws IllegalStateException if dispatch is not implemented
      */
     override suspend fun dispatch(
-        ctx: ContextBridge,
-        envelope: RpcEnvelopeBridge,
+        ctx: ActrContext,
+        envelope: RpcEnvelope,
     ): ByteArray = throw IllegalStateException("dispatch() must be overridden in subclass")
 }

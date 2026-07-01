@@ -22,12 +22,12 @@ import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
 import io.actrium.actr.ActrType
 import io.actrium.actr.CleanupReason
-import io.actrium.actr.ContextBridge
-import io.actrium.actr.ErrorEventBridge
-import io.actrium.actr.RpcEnvelopeBridge
-import io.actrium.actr.WorkloadLifecycleBridge
+import io.actrium.actr.dsl.ActrContext
 import io.actrium.actr.dsl.ActrNode
 import io.actrium.actr.dsl.ActrRef
+import io.actrium.actr.dsl.ErrorEvent
+import io.actrium.actr.dsl.RpcEnvelope
+import io.actrium.actr.dsl.Workload
 import io.actrium.actr.dsl.dynamicWorkload
 import io.actrium.actr.dsl.linkedWithMonitoring
 import io.actrium.demo.R
@@ -281,44 +281,43 @@ class ServerActivity : AppCompatActivity() {
     }
 
     /**
-     * EchoService workload — implements both the [WorkloadLifecycleBridge] contract
+     * EchoService workload — implements both the [Workload] contract
      * (lifecycle methods) and the [EchoServiceHandler] contract (business logic).
      *
-     * Per the 0.3.x design: Workload methods use ContextBridge / RpcEnvelopeBridge;
-     * Handler methods use Context (= ContextBridge, same type).
+     * Workload and handler methods use the Kotlin DSL's application-facing aliases.
      */
     private class EchoServerWorkload :
-        WorkloadLifecycleBridge,
+        Workload,
         EchoServiceHandler {
-        // -- Workload lifecycle (ContextBridge per design doc Section 5) --
-        override suspend fun onStart(ctx: ContextBridge) {
+        // -- Workload lifecycle --
+        override suspend fun onStart(ctx: ActrContext) {
             Log.i(TAG, "EchoServerWorkload.onStart")
         }
 
-        override suspend fun onReady(ctx: ContextBridge) {
+        override suspend fun onReady(ctx: ActrContext) {
             Log.i(TAG, "EchoServerWorkload.onReady")
         }
 
-        override suspend fun onStop(ctx: ContextBridge) {
+        override suspend fun onStop(ctx: ActrContext) {
             Log.i(TAG, "EchoServerWorkload.onStop")
         }
 
         override suspend fun onError(
-            ctx: ContextBridge,
-            event: ErrorEventBridge,
+            ctx: ActrContext,
+            event: ErrorEvent,
         ) {
             Log.e(TAG, "EchoServerWorkload.onError: $event")
         }
 
         override suspend fun dispatch(
-            ctx: ContextBridge,
-            envelope: RpcEnvelopeBridge,
+            ctx: ActrContext,
+            envelope: RpcEnvelope,
         ): ByteArray = EchoServiceDispatcher.dispatch(this, ctx, envelope)
 
-        // -- Handler method (Context per design doc Section 5; ContextBridge is the same type) --
+        // -- Handler method --
         override suspend fun echo(
             request: EchoRequest,
-            ctx: ContextBridge,
+            ctx: ActrContext,
         ): EchoResponse = EchoResponse.newBuilder().setReply("Echo: ${request.message}").build()
     }
 

@@ -1,29 +1,25 @@
-package com.example.generated
+package io.actrium.actr.dsl
 
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
-import io.actrium.actr.ErrorEventBridge
-import io.actrium.actr.RpcEnvelopeBridge
-import io.actrium.actr.WorkloadLifecycleBridge
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
 /**
- * Unit tests for WorkloadLifecycleBridge — the Kotlin equivalent of Swift's
- * StaticWorkloadProbe used in DynamicWorkloadTests.
+ * Unit tests for [Workload], the Kotlin equivalent of Swift's StaticWorkloadProbe used in
+ * DynamicWorkloadTests.
  *
- * These tests verify that the bridge interface contract is correct and
- * basic implementations compile. Full E2E tests with mock-actrix require
- * the native libactr.so and run via UnifiedIntegrationTest (androidTest).
+ * These tests verify that the high-level interface contract is correct and basic implementations
+ * compile. Full E2E tests with mock-actrix require the native libactr.so and run via
+ * UnifiedIntegrationTest (androidTest).
  */
 class DynamicWorkloadTest {
 
     /**
-     * Minimal WorkloadLifecycleBridge implementation for testing,
-     * mirroring Swift's StaticWorkloadProbe pattern.
+     * Minimal [Workload] implementation for testing, mirroring Swift's StaticWorkloadProbe
+     * pattern.
      */
-    private class TestWorkloadProbe : WorkloadLifecycleBridge {
+    private class TestWorkloadProbe : Workload {
         var startCount = 0
         var readyCount = 0
         var stopCount = 0
@@ -31,23 +27,23 @@ class DynamicWorkloadTest {
         var dispatchCount = 0
         val dispatchedPayloads = mutableListOf<ByteArray>()
 
-        override suspend fun onStart(ctx: ContextBridge) {
+        override suspend fun onStart(ctx: ActrContext) {
             startCount++
         }
 
-        override suspend fun onReady(ctx: ContextBridge) {
+        override suspend fun onReady(ctx: ActrContext) {
             readyCount++
         }
 
-        override suspend fun onStop(ctx: ContextBridge) {
+        override suspend fun onStop(ctx: ActrContext) {
             stopCount++
         }
 
-        override suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge) {
+        override suspend fun onError(ctx: ActrContext, event: ErrorEvent) {
             errorCount++
         }
 
-        override suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray {
+        override suspend fun dispatch(ctx: ActrContext, envelope: RpcEnvelope): ByteArray {
             dispatchCount++
             dispatchedPayloads.add(envelope.payload)
             return "echo:${envelope.payload.decodeToString()}".toByteArray()
@@ -55,14 +51,14 @@ class DynamicWorkloadTest {
     }
 
     @Test
-    fun `WorkloadLifecycleBridge can be implemented`() {
+    fun `Workload can be implemented`() {
         val probe = TestWorkloadProbe()
         assertNotNull(probe)
         assertEquals(0, probe.startCount)
     }
 
     @Test
-    fun `WorkloadLifecycleBridge tracks lifecycle state changes`() {
+    fun `Workload tracks lifecycle state changes`() {
         val probe = TestWorkloadProbe()
         // Initial state
         assertEquals(0, probe.startCount)
@@ -87,5 +83,20 @@ class DynamicWorkloadTest {
         assertEquals("acme", clientType.manufacturer)
         assertEquals("UnifiedActor", clientType.name)
         assertEquals("1.0.0", clientType.version)
+    }
+
+    @Test
+    fun `dynamicWorkload factory exposes high-level aliases`() {
+        // Compile-time signature check. The factory is not invoked because construction calls
+        // into native code, which JVM unit tests cannot exercise.
+        val factory: (
+            Workload,
+            SignalingObserver?,
+            WebSocketObserver?,
+            WebRtcObserver?,
+            CredentialObserver?,
+            MailboxObserver?,
+        ) -> DynamicWorkload = ::dynamicWorkload
+        assertNotNull(factory)
     }
 }

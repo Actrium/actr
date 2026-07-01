@@ -131,7 +131,7 @@ suspend inline fun <Req, Resp> ActrRef.call(
 
 ---
 
-### ContextBridge
+### ActrContext
 
 Context passed to workload callbacks. Provides methods for inter-actor communication from within a workload.
 
@@ -152,7 +152,7 @@ Context passed to workload callbacks. Provides methods for inter-actor communica
 
 ```kotlin
 // Convenience call with defaults (RPC_RELIABLE, 30s timeout)
-suspend fun ContextBridge.call(
+suspend fun ActrContext.call(
     target: ActrId,
     routeKey: String,
     payload: ByteArray,
@@ -163,19 +163,36 @@ suspend fun ContextBridge.call(
 
 ---
 
+### Application-facing aliases
+
+The DSL centralizes its public aliases in `Aliases.kt`. Application code should use these names
+instead of importing transport-oriented types from the generated package:
+
+| Type | Purpose |
+|------|---------|
+| `ActrContext` | Workload and observer callback context |
+| `RpcEnvelope` | Incoming RPC route, payload, and request identifier |
+| `Workload` | Lifecycle and dispatch callback interface |
+| `ErrorEvent` / `ErrorCategory` | Runtime error details and classification |
+| `CredentialEvent` / `BackpressureEvent` | Credential and mailbox events |
+| `PeerEvent` / `WebRtcPeerStatus` | Peer identity and WebRTC readiness |
+| `SignalingObserver` | Signaling lifecycle callbacks |
+| `WebSocketObserver` / `WebRtcObserver` | Peer transport callbacks |
+| `CredentialObserver` / `MailboxObserver` | Credential and mailbox callbacks |
+
+---
+
 ### Workload
 
-Type alias: `typealias Workload = WorkloadLifecycleBridge`
-
-Core callback interface for Kotlin-native workloads:
+Application-facing callback interface for Kotlin-native workloads:
 
 ```kotlin
-interface WorkloadLifecycleBridge {
-    suspend fun onStart(ctx: ContextBridge)
-    suspend fun onReady(ctx: ContextBridge)
-    suspend fun onStop(ctx: ContextBridge)
-    suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge)
-    suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray
+interface Workload {
+    suspend fun onStart(ctx: ActrContext)
+    suspend fun onReady(ctx: ActrContext)
+    suspend fun onStop(ctx: ActrContext)
+    suspend fun onError(ctx: ActrContext, event: ErrorEvent)
+    suspend fun dispatch(ctx: ActrContext, envelope: RpcEnvelope): ByteArray
 }
 ```
 
@@ -195,16 +212,16 @@ inline fun workload(builder: WorkloadBuilder.() -> Unit): SimpleWorkload
 
 // Composite workload with optional observers
 fun dynamicWorkload(
-    lifecycle: WorkloadLifecycleBridge,
-    signaling: SignalingObserverBridge? = null,
-    websocket: WebSocketObserverBridge? = null,
-    webrtc: WebRtcObserverBridge? = null,
-    credential: CredentialObserverBridge? = null,
-    mailbox: MailboxObserverBridge? = null,
+    lifecycle: Workload,
+    signaling: SignalingObserver? = null,
+    websocket: WebSocketObserver? = null,
+    webrtc: WebRtcObserver? = null,
+    credential: CredentialObserver? = null,
+    mailbox: MailboxObserver? = null,
 ): DynamicWorkload
 ```
 
-- `DynamicWorkload` typealias for `io.actrium.actr.DynamicWorkload`
+- `DynamicWorkload` is the application-facing composite workload type.
 
 ---
 
@@ -215,21 +232,21 @@ observers (which belong to a Kotlin-owned linked workload), `RuntimeObservers` l
 mobile shell observe transport readiness while the `.actr` package guest keeps owning
 actor dispatch.
 
-**Type aliases:**
+**Application-facing types:**
 
-- `typealias RuntimeObservers = io.actrium.actr.RuntimeObservers`
-- `typealias PeerEvent = io.actrium.actr.PeerEventBridge`
-- `typealias WebRtcPeerStatus = io.actrium.actr.WebRtcPeerStatusBridge`
+- `RuntimeObservers` bundles optional host-side callbacks.
+- `PeerEvent` identifies the peer and its current transport state.
+- `WebRtcPeerStatus` reports WebRTC send readiness.
 
 **Factory:**
 
 ```kotlin
 fun runtimeObservers(
-    signaling: SignalingObserverBridge? = null,
-    websocket: WebSocketObserverBridge? = null,
-    webrtc: WebRtcObserverBridge? = null,
-    credential: CredentialObserverBridge? = null,
-    mailbox: MailboxObserverBridge? = null,
+    signaling: SignalingObserver? = null,
+    websocket: WebSocketObserver? = null,
+    webrtc: WebRtcObserver? = null,
+    credential: CredentialObserver? = null,
+    mailbox: MailboxObserver? = null,
 ): RuntimeObservers
 ```
 

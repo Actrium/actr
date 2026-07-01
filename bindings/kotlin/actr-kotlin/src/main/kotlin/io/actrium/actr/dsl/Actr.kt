@@ -35,74 +35,15 @@ import io.actrium.actr.ActrId
 import io.actrium.actr.ActrRefWrapper
 import io.actrium.actr.ActrType
 import io.actrium.actr.CleanupReason
-import io.actrium.actr.CredentialObserverBridge
-import io.actrium.actr.DynamicWorkload
-import io.actrium.actr.MailboxObserverBridge
-import io.actrium.actr.NetworkEventHandleWrapper
 import io.actrium.actr.PayloadType
 import io.actrium.actr.ReconnectReason
-import io.actrium.actr.SignalingObserverBridge
-import io.actrium.actr.WebRtcObserverBridge
-import io.actrium.actr.WebSocketObserverBridge
-import io.actrium.actr.WorkloadLifecycleBridge
 import io.actrium.actr.ActrNode as ActrNodeGenerated
 import kotlinx.coroutines.CoroutineScope
 import java.net.URL
 
 // ============================================================================
-// Type Aliases — provide DSL-friendly names for remaining generated types
-// ============================================================================
-
-/** Re-export of context bridge as [Context] — aligns with the design doc convention
- * that handler interfaces use `Context`, not `ContextBridge`. */
-typealias Context = io.actrium.actr.ContextBridge
-
-/** Re-export of RPC envelope bridge as [RpcEnvelope] — aligns with design doc naming. */
-typealias RpcEnvelope = io.actrium.actr.RpcEnvelopeBridge
-
-/** Handle for network event callbacks. Used for platform integration. */
-typealias NetworkEventHandle = NetworkEventHandleWrapper
-
-/** Workload callback interface for handling lifecycle events. */
-typealias Workload = WorkloadLifecycleBridge
-
-/** Callback interface for forwarding tracing log events to the host.
- * Register via [setLogCallback] before starting the actr node. */
-typealias LogCallback = io.actrium.actr.LogCallback
-
-/** Callback interface for incoming DataStream chunks. */
-typealias DataStreamCallback = io.actrium.actr.DataStreamCallback
-
-/** A single media sample (audio/video frame). */
-typealias MediaSample = io.actrium.actr.MediaSample
-
-/** Callback interface for incoming media tracks. */
-typealias MediaTrackCallback = io.actrium.actr.MediaTrackCallback
-
-/** Media type enumeration (audio/video). */
-typealias MediaType = io.actrium.actr.MediaType
-
-/** Opus audio encoder. */
-typealias OpusEncoder = io.actrium.actr.OpusEncoder
-
-// ============================================================================
 // Runtime Observers — package-backed host observer convenience
 // ============================================================================
-
-/** Re-export of [io.actrium.actr.RuntimeObservers] — host-side observers for a
- * package-backed runtime. Pass to [ActrNode.fromPackageFile] to observe transport
- * readiness (signaling, WebSocket, WebRTC, credential, mailbox) without owning
- * actor dispatch, which stays with the package guest. */
-typealias RuntimeObservers = io.actrium.actr.RuntimeObservers
-
-/** Re-export of [io.actrium.actr.PeerEventBridge] as [PeerEvent] — peer-scoped
- * event payload delivered to WebSocket/WebRTC observer callbacks. */
-typealias PeerEvent = io.actrium.actr.PeerEventBridge
-
-/** Re-export of [io.actrium.actr.WebRtcPeerStatusBridge] as [WebRtcPeerStatus] —
- * coarse WebRTC send-readiness state carried by [PeerEvent.status]. `null` for
- * WebSocket peers and old compatibility paths where the status is unavailable. */
-typealias WebRtcPeerStatus = io.actrium.actr.WebRtcPeerStatusBridge
 
 // ---------------------------------------------------------------------------
 // Maintenance: runtimeObservers(...) below and dynamicWorkload(...) in Workload.kt
@@ -122,10 +63,10 @@ typealias WebRtcPeerStatus = io.actrium.actr.WebRtcPeerStatusBridge
  * Example:
  * ```kotlin
  * val observers = runtimeObservers(
- *     webrtc = object : WebRtcObserverBridge {
- *         override suspend fun onConnecting(ctx: ContextBridge, event: PeerEvent) { /* … */ }
- *         override suspend fun onConnected(ctx: ContextBridge, event: PeerEvent) { /* … */ }
- *         override suspend fun onDisconnected(ctx: ContextBridge, event: PeerEvent) { /* … */ }
+ *     webrtc = object : WebRtcObserver {
+ *         override suspend fun onConnecting(ctx: ActrContext, event: PeerEvent) { /* … */ }
+ *         override suspend fun onConnected(ctx: ActrContext, event: PeerEvent) { /* … */ }
+ *         override suspend fun onDisconnected(ctx: ActrContext, event: PeerEvent) { /* … */ }
  *     },
  * )
  * val node = ActrNode.fromPackageFile("config.toml", "dist/app.actr", observers = observers)
@@ -139,11 +80,11 @@ typealias WebRtcPeerStatus = io.actrium.actr.WebRtcPeerStatusBridge
  * @return A new [RuntimeObservers] instance
  */
 fun runtimeObservers(
-    signaling: SignalingObserverBridge? = null,
-    websocket: WebSocketObserverBridge? = null,
-    webrtc: WebRtcObserverBridge? = null,
-    credential: CredentialObserverBridge? = null,
-    mailbox: MailboxObserverBridge? = null,
+    signaling: SignalingObserver? = null,
+    websocket: WebSocketObserver? = null,
+    webrtc: WebRtcObserver? = null,
+    credential: CredentialObserver? = null,
+    mailbox: MailboxObserver? = null,
 ): RuntimeObservers =
     RuntimeObservers(
         signaling = signaling,

@@ -19,7 +19,7 @@ import local.StreamClientOuterClass.*
 import echo.Echo.*
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.dsl.Context
+import io.actrium.actr.dsl.ActrContext
 import io.actrium.actr.PayloadType
 import io.actrium.actr.dsl.RpcEnvelope
 
@@ -69,7 +69,7 @@ object UnifiedDispatcher {
     private val discoveredActors = mutableMapOf<ActrType, ActrId>()
 
     private suspend fun resolveRemoteActor(
-        ctx: Context,
+        ctx: ActrContext,
         actrType: ActrType,
     ): ActrId =
         discoveredActors[actrType] ?: ctx.discover(actrType).also {
@@ -85,7 +85,7 @@ object UnifiedDispatcher {
      *
      * Call this in your Workload's onStart method to pre-discover remote actors.
      */
-    suspend fun discoverRemoteServices(ctx: Context) {
+    suspend fun discoverRemoteServices(ctx: ActrContext) {
         for ((_, actrType) in RemoteServiceRegistry.remoteRoutes) {
             if (!discoveredActors.containsKey(actrType)) {
                 try {
@@ -113,7 +113,7 @@ object UnifiedDispatcher {
      */
     suspend fun dispatch(
         handler: UnifiedHandler,
-        ctx: Context,
+        ctx: ActrContext,
         envelope: RpcEnvelope,
     ): ByteArray {
         val routeKey = envelope.routeKey

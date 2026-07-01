@@ -56,7 +56,7 @@ class KotlinActorGenerator(
         val outerClassName = getProtoOuterClassName()
 
         return buildString {
-            appendLine("import io.actrium.actr.dsl.Context")
+            appendLine("import io.actrium.actr.dsl.ActrContext")
             appendLine("import io.actrium.actr.dsl.RpcEnvelope")
             appendLine()
             // Import the protobuf outer class
@@ -81,7 +81,7 @@ class KotlinActorGenerator(
             |    /**
             |     * RPC method: ${method.name}
             |     */
-            |    suspend fun $methodName(request: $inputType, ctx: Context): $outputType
+            |    suspend fun $methodName(request: $inputType, ctx: ActrContext): $outputType
             """.trimMargin()
                 }
 
@@ -94,7 +94,7 @@ class KotlinActorGenerator(
             | * Example:
             | * ```kotlin
             | * class My$serviceName : $handlerName {
-            | *     override suspend fun methodName(request: RequestType, ctx: Context): ResponseType {
+            | *     override suspend fun methodName(request: RequestType, ctx: ActrContext): ResponseType {
             | *         // Business logic here
             | *         return ResponseType.newBuilder().build()
             | *     }
@@ -145,7 +145,7 @@ class KotlinActorGenerator(
             |     */
             |    suspend fun dispatch(
             |        handler: $handlerName,
-            |        ctx: Context,
+            |        ctx: ActrContext,
             |        envelope: RpcEnvelope
             |    ): ByteArray {
             |        return when (envelope.routeKey) {

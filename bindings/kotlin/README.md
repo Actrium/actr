@@ -78,6 +78,7 @@ actr-kotlin/
 │   └── src/main/kotlin/io/actrium/actr/
 │       ├── actr.kt           # UniFFI-generated bindings (raw FFI layer)
 │       └── dsl/              # High-level Kotlin-idiomatic API
+│           ├── Aliases.kt    # Central application-facing type aliases
 │           ├── Actr.kt       # ActrNode/ActrRef wrapper classes + factory fns
 │           ├── Types.kt      # Type builders (ActrType, ActrId, DataStream)
 │           ├── Extensions.kt # Error handling, retry, context helpers
@@ -163,19 +164,17 @@ transport readiness for UI state and retry decisions. Build a `RuntimeObservers`
 and pass it to any package-backed factory:
 
 ```kotlin
-import io.actrium.actr.ContextBridge
-import io.actrium.actr.WebRtcObserverBridge
 import io.actrium.actr.dsl.*
 
 val observers = runtimeObservers(
-    webrtc = object : WebRtcObserverBridge {
-        override suspend fun onConnecting(ctx: ContextBridge, event: PeerEvent) {
+    webrtc = object : WebRtcObserver {
+        override suspend fun onConnecting(ctx: ActrContext, event: PeerEvent) {
             // event.status == WebRtcPeerStatus.CONNECTING
         }
-        override suspend fun onConnected(ctx: ContextBridge, event: PeerEvent) {
+        override suspend fun onConnected(ctx: ActrContext, event: PeerEvent) {
             // event.status == WebRtcPeerStatus.CONNECTED
         }
-        override suspend fun onDisconnected(ctx: ContextBridge, event: PeerEvent) {
+        override suspend fun onDisconnected(ctx: ActrContext, event: PeerEvent) {
             // event.status == WebRtcPeerStatus.RECOVERING or WebRtcPeerStatus.IDLE
         }
     },
@@ -199,12 +198,12 @@ surface (signaling, WebSocket, WebRTC, credential, mailbox).
 
 ```kotlin
 // Implement your workload
-class MyWorkload : WorkloadLifecycleBridge {
-    override suspend fun onStart(ctx: ContextBridge) { /* init */ }
-    override suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray {
+class MyWorkload : Workload {
+    override suspend fun onStart(ctx: ActrContext) { /* init */ }
+    override suspend fun dispatch(ctx: ActrContext, envelope: RpcEnvelope): ByteArray {
         // Handle incoming RPC
     }
-    override suspend fun onStop(ctx: ContextBridge) { /* cleanup */ }
+    override suspend fun onStop(ctx: ActrContext) { /* cleanup */ }
 }
 
 // Create and start
@@ -307,7 +306,10 @@ val echoType = manifest.resolveDependency("EchoService")
 | `Manifest` | Parsed manifest.toml — typed access to package identity and dependency resolution |
 | `ActrNode` | High-level node wrapper — creates and starts actors |
 | `ActrRef` | Running actor reference — RPC, discovery, lifecycle |
-| `ContextBridge` | Workload context — call/discover/send from within a workload |
+| `ActrContext` | Workload context — call/discover/send from within a workload |
+| `Workload` | Lifecycle and dispatch callbacks for a Kotlin-owned workload |
+| `RpcEnvelope` | Incoming RPC route, payload, and request identifier |
+| `WebRtcObserver` | WebRTC peer readiness callbacks |
 | `RpcRequest<Req, Resp>` | Type-safe RPC contract (route + serialize/deserialize) |
 | `DynamicWorkload` | Composite workload with lifecycle + optional observers |
 | `NetworkEventHandle` | Platform network/lifecycle event callbacks |

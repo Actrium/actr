@@ -19,18 +19,18 @@ private actor DispatchRecorder {
     }
 }
 
-private final class StaticWorkloadProbe: WorkloadLifecycleBridge, @unchecked Sendable {
+private final class StaticWorkloadProbe: Workload, @unchecked Sendable {
     private let recorder = DispatchRecorder()
 
-    func onStart(ctx _: ContextBridge) async throws {}
+    func onStart(ctx _: Context) async throws {}
 
-    func onReady(ctx _: ContextBridge) async throws {}
+    func onReady(ctx _: Context) async throws {}
 
-    func onStop(ctx _: ContextBridge) async throws {}
+    func onStop(ctx _: Context) async throws {}
 
-    func onError(ctx _: ContextBridge, event _: ErrorEventBridge) async throws {}
+    func onError(ctx _: Context, event _: ErrorEvent) async throws {}
 
-    func dispatch(ctx _: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+    func dispatch(ctx _: Context, envelope: RpcEnvelope) async throws -> Data {
         await recorder.append(DispatchRecord(routeKey: envelope.routeKey, payload: envelope.payload))
 
         let payload = String(data: envelope.payload, encoding: .utf8) ?? ""
@@ -53,18 +53,18 @@ private final class StaticWorkloadProbe: WorkloadLifecycleBridge, @unchecked Sen
     }
 }
 
-private final class RuntimeObserverProbe: SignalingObserverBridge, WebRtcObserverBridge, @unchecked Sendable {
-    func onConnecting(ctx _: ContextBridge?) async {}
+private final class RuntimeObserverProbe: SignalingObserver, WebRTCObserver, @unchecked Sendable {
+    func onConnecting(ctx _: Context?) async {}
 
-    func onConnected(ctx _: ContextBridge?) async {}
+    func onConnected(ctx _: Context?) async {}
 
-    func onDisconnected(ctx _: ContextBridge) async {}
+    func onDisconnected(ctx _: Context) async {}
 
-    func onConnecting(ctx _: ContextBridge, event _: PeerEventBridge) async {}
+    func onConnecting(ctx _: Context, event _: PeerEvent) async {}
 
-    func onConnected(ctx _: ContextBridge, event _: PeerEventBridge) async {}
+    func onConnected(ctx _: Context, event _: PeerEvent) async {}
 
-    func onDisconnected(ctx _: ContextBridge, event _: PeerEventBridge) async {}
+    func onDisconnected(ctx _: Context, event _: PeerEvent) async {}
 }
 
 @Suite(.serialized)
@@ -96,9 +96,9 @@ private struct DynamicWorkloadTests {
         }
     }
 
-    @Test func dynamicWorkloadAcceptsSwiftLifecycleBridgeForLinkedNodeApi() async throws {
+    @Test func dynamicWorkloadAcceptsSwiftLifecycleForLinkedNodeApi() async throws {
         let lifecycle = StaticWorkloadProbe()
-        let workload = DynamicWorkload(
+        let workload = dynamicWorkload(
             lifecycle: lifecycle,
             signaling: nil,
             websocket: nil,
@@ -120,13 +120,13 @@ private struct DynamicWorkloadTests {
     }
 
     @Test
-    func linkedNodeDispatchesLocalTellToSwiftLifecycleBridge() async throws {
+    func linkedNodeDispatchesLocalTellToSwiftLifecycle() async throws {
         guard ProcessInfo.processInfo.environment["ACTR_SWIFT_LINKED_RUNTIME_E2E"] == "1" else {
             return
         }
 
         let lifecycle = StaticWorkloadProbe()
-        let workload = DynamicWorkload(
+        let workload = dynamicWorkload(
             lifecycle: lifecycle,
             signaling: nil,
             websocket: nil,

@@ -8,7 +8,7 @@
  */
 package com.example.generated
 
-import io.actrium.actr.dsl.Context
+import io.actrium.actr.dsl.ActrContext
 import io.actrium.actr.dsl.RpcEnvelope
 import local.StreamClientOuterClass.ClientStartStreamRequest
 import local.StreamClientOuterClass.ClientStartStreamResponse
@@ -24,7 +24,7 @@ interface StreamClientHandler {
      */
     suspend fun start_stream(
         request: ClientStartStreamRequest,
-        ctx: Context,
+        ctx: ActrContext,
     ): ClientStartStreamResponse
 }
 
@@ -44,7 +44,7 @@ object StreamClientDispatcher {
      */
     suspend fun dispatch(
         handler: StreamClientHandler,
-        ctx: Context,
+        ctx: ActrContext,
         envelope: RpcEnvelope,
     ): ByteArray =
         when (envelope.routeKey) {

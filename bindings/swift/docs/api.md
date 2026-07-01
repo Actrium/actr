@@ -153,24 +153,18 @@ Package-backed hosts can install observer callbacks without implementing actor
 dispatch:
 
 ```swift
-final class RtcObserver: WebRtcObserverBridge {
-    func onConnecting(ctx: ContextBridge, event: PeerEventBridge) async {}
-    func onConnected(ctx: ContextBridge, event: PeerEventBridge) async {}
-    func onDisconnected(ctx: ContextBridge, event: PeerEventBridge) async {}
+final class RTCObserver: WebRTCObserver {
+    func onConnecting(ctx: Context, event: PeerEvent) async {}
+    func onConnected(ctx: Context, event: PeerEvent) async {}
+    func onDisconnected(ctx: Context, event: PeerEvent) async {}
 }
 
-let observers = RuntimeObservers(
-    signaling: nil,
-    websocket: nil,
-    webrtc: RtcObserver(),
-    credential: nil,
-    mailbox: nil
-)
+let observers = runtimeObservers(webrtc: RTCObserver())
 ```
 
-`SignalingObserverBridge.onConnected` means the runtime is connected to the
+`SignalingObserver.onConnected` means the runtime is connected to the
 signaling service. It does **not** mean a target actor is send-ready.
-`WebRtcObserverBridge.onConnected(ctx:event:)` is the target-scoped readiness
+`WebRTCObserver.onConnected(ctx:event:)` is the target-scoped readiness
 signal for the peer in `event.peer`; retry saved user intent only by issuing a
 fresh `call`/`tell` after that peer-specific callback.
 
@@ -289,7 +283,7 @@ public enum ActrError: Swift.Error, Equatable, Hashable {
 `ConnectionNotReady` is returned when runtime preflight rejects a send before it
 enters any transport queue. The message was not sent and was not queued by
 ACTR. UI/business code should retain the user intent and issue a fresh send
-after `WebRtcObserverBridge.onConnected(ctx:event:)` fires for the same target.
+after `WebRTCObserver.onConnected(ctx:event:)` fires for the same target.
 `ConnectionNotReadyInfo.retryAfterMs` is a fallback probe delay, not an
 authoritative readiness signal.
 
@@ -377,7 +371,9 @@ A concurrency-safe reference to a running ACTR actor. This is an `actor` type, p
 
 ### Exposed Types
 
-The following types are available in the `Actr` module:
+The following types are available in the `Actr` module. Public aliases are
+centralized in `Sources/Actr/Aliases.swift`; application code should use the
+Swift-facing names below.
 
 - `ActrError`
 - `ActrId`
@@ -387,9 +383,20 @@ The following types are available in the `Actr` module:
 - `DataStream`
 - `DataStreamCallback`
 - `MetadataEntry`
-- `Context` (alias of `ContextBridge`)
-- `RpcEnvelope` (alias of `RpcEnvelopeBridge`)
-- `Workload` (alias of `WorkloadBridge`, low-level only)
+- `Context`
+- `RpcEnvelope`
+- `Workload`
+- `ErrorEvent`
+- `ErrorCategory`
+- `PeerEvent`
+- `WebRTCPeerStatus`
+- `CredentialEvent`
+- `BackpressureEvent`
+- `SignalingObserver`
+- `WebSocketObserver`
+- `WebRTCObserver`
+- `CredentialObserver`
+- `MailboxObserver`
 - `RpcRequest` (built into `Actr`)
 
 ## API Comparison

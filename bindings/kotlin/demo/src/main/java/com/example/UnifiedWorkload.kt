@@ -10,9 +10,9 @@ package com.example
 import android.util.Log
 import com.example.generated.UnifiedDispatcher
 import com.example.generated.UnifiedHandler
-import io.actrium.actr.ContextBridge
-import io.actrium.actr.ErrorEventBridge
-import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.dsl.ActrContext
+import io.actrium.actr.dsl.ErrorEvent
+import io.actrium.actr.dsl.RpcEnvelope
 
 /**
  * Unified Workload lifecycle scaffold
@@ -35,7 +35,7 @@ class UnifiedWorkload(
         private const val TAG = "UnifiedWorkload"
     }
 
-    suspend fun onStart(ctx: ContextBridge) {
+    suspend fun onStart(ctx: ActrContext) {
         Log.i(TAG, "UnifiedWorkload.onStart")
         // Discover all remote services
         Log.i(TAG, "📡 Discovering remote services...")
@@ -43,17 +43,17 @@ class UnifiedWorkload(
         Log.i(TAG, "✅ Remote services discovered")
     }
 
-    suspend fun onReady(ctx: ContextBridge) {
+    suspend fun onReady(ctx: ActrContext) {
         Log.i(TAG, "UnifiedWorkload.onReady")
     }
 
-    suspend fun onStop(ctx: ContextBridge) {
+    suspend fun onStop(ctx: ActrContext) {
         Log.i(TAG, "UnifiedWorkload.onStop")
     }
 
     suspend fun onError(
-        ctx: ContextBridge,
-        event: ErrorEventBridge,
+        ctx: ActrContext,
+        event: ErrorEvent,
     ) {
         Log.e(TAG, "UnifiedWorkload.onError: $event")
     }
@@ -66,8 +66,8 @@ class UnifiedWorkload(
      * - Remote actors for remote service routes
      */
     suspend fun dispatch(
-        ctx: ContextBridge,
-        envelope: RpcEnvelopeBridge,
+        ctx: ActrContext,
+        envelope: RpcEnvelope,
     ): ByteArray {
         Log.i(TAG, "🔀 dispatch() called")
         Log.i(TAG, "   route_key: ${envelope.routeKey}")

@@ -573,9 +573,9 @@ package {kotlin_package}
 
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
 import io.actrium.actr.PayloadType
-import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.dsl.ActrContext
+import io.actrium.actr.dsl.RpcEnvelope
 {manifest_resolver_import}
 
 "#,
@@ -827,7 +827,7 @@ object RemoteServiceRegistry {
     // Cache for discovered remote actors
     private val discoveredActors = mutableMapOf<ActrType, ActrId>()
 
-    private suspend fun resolveRemoteActor(ctx: ContextBridge, actrType: ActrType): ActrId {
+    private suspend fun resolveRemoteActor(ctx: ActrContext, actrType: ActrType): ActrId {
         return discoveredActors[actrType] ?: ctx.discover(actrType).also { discoveredActors[actrType] = it }
     }
 
@@ -840,7 +840,7 @@ object RemoteServiceRegistry {
      *
      * Call this in your Workload's onStart method to pre-discover remote actors.
      */
-    suspend fun discoverRemoteServices(ctx: ContextBridge, remoteTargets: Map<String, ActrType>) {
+    suspend fun discoverRemoteServices(ctx: ActrContext, remoteTargets: Map<String, ActrType>) {
         for ((_, actrType) in remoteTargets) {
             if (!discoveredActors.containsKey(actrType)) {
                 val actorId = ctx.discover(actrType)
@@ -879,14 +879,14 @@ object UnifiedDispatcher {{
      * Dispatch an RPC envelope to the appropriate handler or remote service
      *
      * @param handler The unified handler implementation (for local services)
-     * @param ctx The context bridge for making remote calls
+     * @param ctx The actor context for making remote calls
      * @param envelope The RPC envelope containing the request
      * @return The serialized response bytes
      */
     suspend fun dispatch(
-        {handler_param}ctx: ContextBridge,
+        {handler_param}ctx: ActrContext,
         {remote_targets_param}
-        envelope: RpcEnvelopeBridge
+        envelope: RpcEnvelope
     ): ByteArray {{
         val routeKey = envelope.routeKey
 
@@ -1220,9 +1220,9 @@ package {base_package}
 import android.util.Log
 import {kotlin_package}.UnifiedDispatcher{handler_import}
 import io.actrium.actr.ActrType
-import io.actrium.actr.ContextBridge
-import io.actrium.actr.ErrorEventBridge
-import io.actrium.actr.RpcEnvelopeBridge
+import io.actrium.actr.dsl.ActrContext
+import io.actrium.actr.dsl.ErrorEvent
+import io.actrium.actr.dsl.RpcEnvelope
 
 /**
  * Unified Workload lifecycle scaffold
@@ -1246,19 +1246,19 @@ class UnifiedWorkload(
         private const val TAG = "UnifiedWorkload"
     }}
 
-    suspend fun onStart(ctx: ContextBridge) {{
+    suspend fun onStart(ctx: ActrContext) {{
         Log.i(TAG, "UnifiedWorkload.onStart"){discover_call}
     }}
 
-    suspend fun onReady(ctx: ContextBridge) {{
+    suspend fun onReady(ctx: ActrContext) {{
         Log.i(TAG, "UnifiedWorkload.onReady")
     }}
 
-    suspend fun onStop(ctx: ContextBridge) {{
+    suspend fun onStop(ctx: ActrContext) {{
         Log.i(TAG, "UnifiedWorkload.onStop")
     }}
 
-    suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge) {{
+    suspend fun onError(ctx: ActrContext, event: ErrorEvent) {{
         Log.e(TAG, "UnifiedWorkload.onError: $event")
     }}
 
@@ -1269,7 +1269,7 @@ class UnifiedWorkload(
      * - Local handler methods for local service routes
      * - Remote actors for remote service routes
      */
-    suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray {{
+    suspend fun dispatch(ctx: ActrContext, envelope: RpcEnvelope): ByteArray {{
         Log.i(TAG, "🔀 dispatch() called")
         Log.i(TAG, "   route_key: ${{envelope.routeKey}}")
         Log.i(TAG, "   request_id: ${{envelope.requestId}}")
@@ -1306,38 +1306,39 @@ fn generate_unified_lifecycle_adapter_scaffold(kotlin_package: &str) -> String {
  */
 package {base_package}
 
-import io.actrium.actr.ContextBridge
-import io.actrium.actr.DynamicWorkload
-import io.actrium.actr.ErrorEventBridge
-import io.actrium.actr.RpcEnvelopeBridge
-import io.actrium.actr.WorkloadLifecycleBridge
+import io.actrium.actr.dsl.ActrContext
+import io.actrium.actr.dsl.DynamicWorkload
+import io.actrium.actr.dsl.ErrorEvent
+import io.actrium.actr.dsl.RpcEnvelope
+import io.actrium.actr.dsl.Workload
+import io.actrium.actr.dsl.dynamicWorkload
 
 class UnifiedLifecycleAdapter(
     private val workload: UnifiedWorkload
-) : WorkloadLifecycleBridge {{
+) : Workload {{
 
-    override suspend fun onStart(ctx: ContextBridge) {{
+    override suspend fun onStart(ctx: ActrContext) {{
         workload.onStart(ctx)
     }}
 
-    override suspend fun onReady(ctx: ContextBridge) {{
+    override suspend fun onReady(ctx: ActrContext) {{
         workload.onReady(ctx)
     }}
 
-    override suspend fun onStop(ctx: ContextBridge) {{
+    override suspend fun onStop(ctx: ActrContext) {{
         workload.onStop(ctx)
     }}
 
-    override suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge) {{
+    override suspend fun onError(ctx: ActrContext, event: ErrorEvent) {{
         workload.onError(ctx, event)
     }}
 
-    override suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray {{
+    override suspend fun dispatch(ctx: ActrContext, envelope: RpcEnvelope): ByteArray {{
         return workload.dispatch(ctx, envelope)
     }}
 
     fun toDynamicWorkload(): DynamicWorkload {{
-        return DynamicWorkload(
+        return dynamicWorkload(
             lifecycle = this,
             signaling = null,
             websocket = null,
@@ -1400,10 +1401,10 @@ package {base_package}
      * Handle {} request for {} service
      *
      * @param request The {} request message
-     * @param ctx Context bridge for actor operations
+     * @param ctx Actor context for actor operations
      * @return {} response message
      */
-    override suspend fun {}(request: {}, ctx: ContextBridge): {} {{
+    override suspend fun {}(request: {}, ctx: ActrContext): {} {{
         TODO("Not yet implemented")
     }}
 "#,
@@ -1439,7 +1440,7 @@ package {base_package}
 
 import android.util.Log
 import {kotlin_package}.UnifiedHandler
-import io.actrium.actr.ContextBridge
+import io.actrium.actr.dsl.ActrContext
 {imports}
 
 /**
@@ -1534,15 +1535,15 @@ mod tests {
 
         assert!(content.contains("class UnifiedWorkload("));
         assert!(content.contains("private val remoteTargets: Map<String, ActrType>,"));
-        assert!(content.contains("suspend fun onStart(ctx: ContextBridge)"));
-        assert!(content.contains("suspend fun onReady(ctx: ContextBridge)"));
-        assert!(content.contains("suspend fun onStop(ctx: ContextBridge)"));
+        assert!(content.contains("suspend fun onStart(ctx: ActrContext)"));
+        assert!(content.contains("suspend fun onReady(ctx: ActrContext)"));
+        assert!(content.contains("suspend fun onStop(ctx: ActrContext)"));
+        assert!(content.contains("suspend fun onError(ctx: ActrContext, event: ErrorEvent)"));
         assert!(
-            content.contains("suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge)")
+            content.contains(
+                "suspend fun dispatch(ctx: ActrContext, envelope: RpcEnvelope): ByteArray"
+            )
         );
-        assert!(content.contains(
-            "suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray"
-        ));
         assert!(content.contains("UnifiedDispatcher.discoverRemoteServices(ctx, remoteTargets)"));
         assert!(
             content.contains("UnifiedDispatcher.dispatch(handler, ctx, remoteTargets, envelope)")
@@ -1579,29 +1580,29 @@ mod tests {
         assert!(content.contains("package com.example"));
         assert!(content.contains("class UnifiedLifecycleAdapter("));
         assert!(content.contains("private val workload: UnifiedWorkload"));
-        assert!(content.contains(") : WorkloadLifecycleBridge"));
-        assert!(content.contains("import io.actrium.actr.ContextBridge"));
-        assert!(content.contains("import io.actrium.actr.DynamicWorkload"));
-        assert!(content.contains("import io.actrium.actr.ErrorEventBridge"));
-        assert!(content.contains("import io.actrium.actr.RpcEnvelopeBridge"));
-        assert!(content.contains("import io.actrium.actr.WorkloadLifecycleBridge"));
-        assert!(content.contains("override suspend fun onStart(ctx: ContextBridge)"));
+        assert!(content.contains(") : Workload"));
+        assert!(content.contains("import io.actrium.actr.dsl.ActrContext"));
+        assert!(content.contains("import io.actrium.actr.dsl.DynamicWorkload"));
+        assert!(content.contains("import io.actrium.actr.dsl.ErrorEvent"));
+        assert!(content.contains("import io.actrium.actr.dsl.RpcEnvelope"));
+        assert!(content.contains("import io.actrium.actr.dsl.Workload"));
+        assert!(content.contains("import io.actrium.actr.dsl.dynamicWorkload"));
+        assert!(content.contains("override suspend fun onStart(ctx: ActrContext)"));
         assert!(content.contains("workload.onStart(ctx)"));
-        assert!(content.contains("override suspend fun onReady(ctx: ContextBridge)"));
+        assert!(content.contains("override suspend fun onReady(ctx: ActrContext)"));
         assert!(content.contains("workload.onReady(ctx)"));
-        assert!(content.contains("override suspend fun onStop(ctx: ContextBridge)"));
+        assert!(content.contains("override suspend fun onStop(ctx: ActrContext)"));
         assert!(content.contains("workload.onStop(ctx)"));
         assert!(
-            content.contains(
-                "override suspend fun onError(ctx: ContextBridge, event: ErrorEventBridge)"
-            )
+            content.contains("override suspend fun onError(ctx: ActrContext, event: ErrorEvent)")
         );
         assert!(content.contains("workload.onError(ctx, event)"));
         assert!(content.contains(
-            "override suspend fun dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge): ByteArray"
+            "override suspend fun dispatch(ctx: ActrContext, envelope: RpcEnvelope): ByteArray"
         ));
         assert!(content.contains("return workload.dispatch(ctx, envelope)"));
         assert!(content.contains("fun toDynamicWorkload(): DynamicWorkload"));
+        assert!(content.contains("return dynamicWorkload("));
         assert!(content.contains("lifecycle = this"));
     }
 

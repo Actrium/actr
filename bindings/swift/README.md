@@ -25,7 +25,12 @@ Package-backed Swift hosts can pass `RuntimeObservers` to
 `ActrNode.from(packageConfig:packagePath:observers:)` to receive signaling and
 target-scoped WebRTC readiness callbacks. Treat signaling connection as
 service availability only; retry saved user intent with a fresh send after the
-matching `WebRtcObserverBridge.onConnected(ctx:event:)` target callback.
+matching `WebRTCObserver.onConnected(ctx:event:)` target callback.
+
+Application code importing `Actr` uses Swift-facing names such as `Context`,
+`Workload`, `RpcEnvelope`, `PeerEvent`, `WebRTCObserver`, and
+`WebRTCPeerStatus`. The corresponding transport-oriented types remain available
+through the low-level `ActrBindings` module.
 
 ## Workspace Layout
 
