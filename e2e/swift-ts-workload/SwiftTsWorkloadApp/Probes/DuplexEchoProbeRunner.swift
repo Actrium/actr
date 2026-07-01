@@ -6,10 +6,10 @@ import SwiftProtobuf
 final class DuplexEchoProbeRunner: @unchecked Sendable {
     typealias StreamEchoLogHandler = @Sendable (_ logLine: String, _ receivedLine: String?) async -> Void
 
-    private let ctx: ContextBridge
+    private let ctx: Context
     private let target: ActrId
 
-    init(ctx: ContextBridge, target: ActrId) {
+    init(ctx: Context, target: ActrId) {
         self.ctx = ctx
         self.target = target
     }

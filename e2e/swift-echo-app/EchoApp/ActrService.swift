@@ -31,13 +31,8 @@ final class ActrService: ObservableObject {
             let echoServiceTarget = "actrium:EchoService:1.0.0"
             let actorType = ActrType(manufacturer: "actrium", name: "EchoApp", version: "0.1.0")
 
-            let workload = DynamicWorkload(
-                lifecycle: LocalEchoServiceLifecycleAdapter(targetType: echoServiceTarget),
-                signaling: nil,
-                websocket: nil,
-                webrtc: nil,
-                credential: nil,
-                mailbox: nil
+            let workload = Actr.dynamicWorkload(
+                lifecycle: LocalEchoServiceLifecycleAdapter(targetType: echoServiceTarget)
             )
             linkedWorkload = workload
             let node = try await ActrNode.linked(config: configURL, type: actorType, workload: workload)
@@ -157,17 +152,17 @@ private final class LocalEchoServiceLifecycleAdapter: Workload, @unchecked Senda
         self.workload = LocalEchoServiceWorkload(handler: LocalEchoServiceHandlerImpl(targetType: targetType))
     }
 
-    func onStart(ctx: ContextBridge) async throws {}
+    func onStart(ctx: Context) async throws {}
 
-    func onReady(ctx: ContextBridge) async throws {}
+    func onReady(ctx: Context) async throws {}
 
-    func onStop(ctx: ContextBridge) async throws {}
+    func onStop(ctx: Context) async throws {}
 
-    func onError(ctx: ContextBridge, event: ErrorEventBridge) async throws {
+    func onError(ctx: Context, event: ErrorEvent) async throws {
         print("LocalEchoServiceLifecycleAdapter error: \(event)")
     }
 
-    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+    func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
         return try await workload.__dispatch(ctx: ctx, envelope: envelope)
     }
 }

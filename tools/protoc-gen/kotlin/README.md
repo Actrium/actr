@@ -54,15 +54,15 @@ The plugin generates:
 ```kotlin
 // Handler interface (user implements this)
 interface LocalFileServiceHandler {
-    suspend fun send_file(request: SendFileRequest, ctx: ContextBridge): SendFileResponse
+    suspend fun send_file(request: SendFileRequest, ctx: ActrContext): SendFileResponse
 }
 
 // Dispatcher object (zero-overhead routing)
 object LocalFileServiceDispatcher {
     suspend fun dispatch(
         handler: LocalFileServiceHandler,
-        ctx: ContextBridge,
-        envelope: RpcEnvelopeBridge
+        ctx: ActrContext,
+        envelope: RpcEnvelope
     ): ByteArray {
         return when (envelope.routeKey) {
             "local_file.LocalFileService.SendFile" -> {

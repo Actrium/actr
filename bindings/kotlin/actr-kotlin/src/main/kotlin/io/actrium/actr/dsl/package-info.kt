@@ -9,7 +9,7 @@
  * ```
  *
  * This gives you access to:
- * - Type aliases: ActrNode, ActrRef, Workload, Context, RpcEnvelope, LogCallback,
+ * - Type aliases: ActrNode, ActrRef, Workload, ActrContext, RpcEnvelope, LogCallback,
  *   DataStreamCallback, MediaSample, MediaTrackCallback, MediaType, OpusEncoder
  * - DSL builders: actrType(), actrId(), dataStream(), workload()
  * - Extensions: String.toActrType(), ActrRef.discover(String), etc.

@@ -60,15 +60,15 @@ public final class EchoServiceHandlerImpl: EchoServiceHandler {
 private final class EchoServiceLifecycleAdapter: Workload, @unchecked Sendable {
     private let workload = EchoServiceWorkload(handler: EchoServiceHandlerImpl())
 
-    func onStart(ctx _: ContextBridge) async throws {}
+    func onStart(ctx _: Context) async throws {}
 
-    func onReady(ctx _: ContextBridge) async throws {}
+    func onReady(ctx _: Context) async throws {}
 
-    func onStop(ctx _: ContextBridge) async throws {}
+    func onStop(ctx _: Context) async throws {}
 
-    func onError(ctx _: ContextBridge, event _: ErrorEventBridge) async throws {}
+    func onError(ctx _: Context, event _: ErrorEvent) async throws {}
 
-    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+    func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
         return try await workload.__dispatch(ctx: ctx, envelope: envelope)
     }
 }
@@ -83,14 +83,7 @@ struct EchoServiceCLI {
             name: "EchoService",
             version: "1.0.0"
         )
-        let workload = DynamicWorkload(
-            lifecycle: EchoServiceLifecycleAdapter(),
-            signaling: nil,
-            websocket: nil,
-            webrtc: nil,
-            credential: nil,
-            mailbox: nil
-        )
+        let workload = dynamicWorkload(lifecycle: EchoServiceLifecycleAdapter())
 
         let system = try await ActrNode.linked(
             config: configPath,
@@ -121,17 +114,17 @@ import SwiftProtobuf
 private final class EchoAppLifecycleAdapter: Workload, @unchecked Sendable {
     private let workload = EchoAppWorkload()
 
-    func onStart(ctx _: ContextBridge) async throws {}
+    func onStart(ctx _: Context) async throws {}
 
-    func onReady(ctx _: ContextBridge) async throws {}
+    func onReady(ctx _: Context) async throws {}
 
-    func onStop(ctx _: ContextBridge) async throws {}
+    func onStop(ctx _: Context) async throws {}
 
-    func onError(ctx _: ContextBridge, event: ErrorEventBridge) async throws {
+    func onError(ctx _: Context, event: ErrorEvent) async throws {
         print("EchoAppLifecycleAdapter error: \(event)")
     }
 
-    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+    func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
         return try await workload.__dispatch(ctx: ctx, envelope: envelope)
     }
 }
@@ -146,14 +139,7 @@ struct EchoAppCLI {
             name: "EchoApp",
             version: "1.0.0"
         )
-        let workload = DynamicWorkload(
-            lifecycle: EchoAppLifecycleAdapter(),
-            signaling: nil,
-            websocket: nil,
-            webrtc: nil,
-            credential: nil,
-            mailbox: nil
-        )
+        let workload = dynamicWorkload(lifecycle: EchoAppLifecycleAdapter())
         let system = try await ActrNode.linked(config: configPath, type: actorType, workload: workload)
         let actr = try await system.start()
 

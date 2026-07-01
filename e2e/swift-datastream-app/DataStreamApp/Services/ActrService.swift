@@ -105,13 +105,8 @@ final class ActrService: ObservableObject {
             let actorType = ActrType(manufacturer: manufacturer, name: "DataStreamApp", version: "0.1.0")
 
             let handler = ProbeHandlerImpl(service: self)
-            let workload = DynamicWorkload(
-                lifecycle: ProbeLifecycleAdapter(workload: ProbeServiceWorkload(handler: handler)),
-                signaling: nil,
-                websocket: nil,
-                webrtc: nil,
-                credential: nil,
-                mailbox: nil
+            let workload = Actr.dynamicWorkload(
+                lifecycle: ProbeLifecycleAdapter(workload: ProbeServiceWorkload(handler: handler))
             )
 
             setLogCallback(callback: ActrLogHandler(service: self))
@@ -414,15 +409,15 @@ private final class ProbeLifecycleAdapter: Workload, @unchecked Sendable {
         self.workload = workload
     }
 
-    func onStart(ctx: ContextBridge) async throws {}
-    func onReady(ctx: ContextBridge) async throws {}
-    func onStop(ctx: ContextBridge) async throws {}
+    func onStart(ctx: Context) async throws {}
+    func onReady(ctx: Context) async throws {}
+    func onStop(ctx: Context) async throws {}
 
-    func onError(ctx: ContextBridge, event: ErrorEventBridge) async throws {
+    func onError(ctx: Context, event: ErrorEvent) async throws {
         fileLog("[DataStreamApp] ProbeLifecycleAdapter error: \(event)")
     }
 
-    func dispatch(ctx: ContextBridge, envelope: RpcEnvelopeBridge) async throws -> Data {
+    func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
         try await workload.__dispatch(ctx: ctx, envelope: envelope)
     }
 }

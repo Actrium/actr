@@ -1866,14 +1866,13 @@ mod tests {
         assert!(adapter.contains("public func onReady(ctx: Context) async throws"));
         assert!(adapter.contains("public func onStop(ctx: Context) async throws"));
         assert!(
-            adapter.contains(
-                "public func onError(ctx: Context, event: ErrorEventBridge) async throws"
-            )
+            adapter.contains("public func onError(ctx: Context, event: ErrorEvent) async throws")
         );
         assert!(adapter.contains(
             "public func dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data"
         ));
         assert!(!adapter.contains("ctx: ContextBridge"));
+        assert!(!adapter.contains("event: ErrorEventBridge"));
         assert!(!adapter.contains("envelope: RpcEnvelopeBridge"));
         assert!(adapter.contains("workload.__dispatch(ctx: ctx, envelope: envelope)"));
     }

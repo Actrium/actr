@@ -32,7 +32,7 @@ final class AudioCaptureWorkload: @unchecked Sendable {
         let actrNode = try await ActrNode.from(tomlConfig: configURL)
         self.node = actrNode
 
-        let workload = AudioCaptureWorkloadBridge(owner: self)
+        let workload = AudioCaptureWorkloadAdapter(owner: self)
         let spawned = try actrNode.spawn(workload: workload)
         let actrRef = try await spawned.start()
         self.actrRef = actrRef
@@ -152,9 +152,9 @@ private actor MediaSender {
     }
 }
 
-// MARK: - WorkloadBridge implementation
+// MARK: - Workload implementation
 
-private final class AudioCaptureWorkloadBridge: Workload, @unchecked Sendable {
+private final class AudioCaptureWorkloadAdapter: Workload, @unchecked Sendable {
     private weak var owner: AudioCaptureWorkload?
 
     init(owner: AudioCaptureWorkload) {
