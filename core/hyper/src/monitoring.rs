@@ -436,8 +436,10 @@ mod tests {
 
     #[test]
     fn record_metric_disabled_is_noop() {
-        let mut cfg = MonitoringConfig::default();
-        cfg.enabled = false;
+        let cfg = MonitoringConfig {
+            enabled: false,
+            ..MonitoringConfig::default()
+        };
         let mut m = BasicMonitor::new(cfg);
         m.record_metric(cpu_metric(0.5)).unwrap();
         assert!(m.get_metrics("cpu_usage", 60).unwrap().is_empty());

@@ -234,8 +234,10 @@ mod tests {
 
     #[test]
     fn disabled_limits_always_available() {
-        let mut cfg = ResourceConfig::default();
-        cfg.enable_limits = false;
+        let cfg = ResourceConfig {
+            enable_limits: false,
+            ..ResourceConfig::default()
+        };
         let rm = ResourceManager::new(cfg, ResourceQuota::default());
 
         // Even an absurd request is "available" when limits are off.

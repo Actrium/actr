@@ -118,6 +118,9 @@ fn language_key(language: SupportedLanguage) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
+fn _proto_model_is_retained_for_generation_ordering(_proto_model: &ProtoModel) {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,15 +156,11 @@ mod tests {
         assert!(catalog.has_any_methods());
 
         assert!(
-            ScaffoldCatalog {
+            !ScaffoldCatalog {
                 local_services: vec![],
                 remote_services: vec![]
             }
             .has_any_methods()
-                == false
         );
     }
 }
-
-#[allow(dead_code)]
-fn _proto_model_is_retained_for_generation_ordering(_proto_model: &ProtoModel) {}
