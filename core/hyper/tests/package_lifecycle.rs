@@ -12,7 +12,7 @@ use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use tempfile::TempDir;
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 #[path = "wasm_actor_fixture.rs"]
 mod wasm_actor_fixture;
 
@@ -151,7 +151,7 @@ async fn assert_package_on_start_failure(
     server.shutdown().await;
 }
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn attach_wasm_package_invokes_on_start_and_aborts_on_error() {
     let signing_key = SigningKey::generate(&mut OsRng);
