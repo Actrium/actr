@@ -1300,7 +1300,9 @@ mod tests {
         .await;
 
         assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 0);
-        let result = rx.await.expect("oneshot must be resolved for explicit Response");
+        let result = rx
+            .await
+            .expect("oneshot must be resolved for explicit Response");
         assert!(result.is_ok());
     }
 }
