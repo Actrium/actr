@@ -185,8 +185,6 @@ impl Gate {
         stream_id: &str,
         data: Bytes,
     ) -> ActorResult<()> {
-        ensure_stream_payload_type(payload_type)?;
-
         match self {
             Gate::Host(gate) => {
                 gate.send_data_stream(target, payload_type, stream_id, data)
