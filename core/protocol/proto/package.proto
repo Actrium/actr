@@ -18,10 +18,9 @@ message MetadataEntry {
 // Direction of an RpcEnvelope on the wire.
 //
 // Receivers route explicitly on this field instead of inferring
-// request-vs-response from pending-state. Legacy peers that predate this
-// field produce envelopes without it; receivers treat absence (or
-// DIRECTION_UNSPECIFIED) as "unknown" and fall back to the pending-map
-// inference, preserving backward compatibility.
+// request-vs-response from pending-state. Absence, DIRECTION_UNSPECIFIED,
+// and unknown future values are invalid on the current wire protocol;
+// receivers should warn and drop instead of guessing from local pending state.
 //
 // Senders MUST set this on every envelope they construct.
 //
@@ -31,7 +30,7 @@ message MetadataEntry {
 // enqueued as a new call. The orphan-drop log includes route_key to make
 // such mislabels diagnosable.
 enum Direction {
-    DIRECTION_UNSPECIFIED = 0;  // Default / legacy peer — route via fallback inference
+    DIRECTION_UNSPECIFIED = 0;  // Invalid default / missing direction sentinel
     DIRECTION_REQUEST = 1;      // A new RPC call addressed to a handler
     DIRECTION_RESPONSE = 2;     // A reply (success payload or ErrorResponse) to a prior request
 }

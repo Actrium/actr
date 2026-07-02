@@ -169,6 +169,7 @@ async fn setup_connected_peers(
         request_id: format!("setup_connect_{}_{}", from_serial, to_serial),
         route_key: "test.ping".to_string(),
         payload: Some(Bytes::from("ping")),
+        direction: Some(Direction::Request as i32),
         timeout_ms: 15_000,
         ..Default::default()
     };
@@ -220,6 +221,7 @@ async fn send_and_verify(
         request_id: request_id.to_string(),
         route_key: "test.large_echo".to_string(),
         payload: Some(Bytes::from(data.to_vec())),
+        direction: Some(Direction::Request as i32),
         timeout_ms: timeout.as_millis() as i64,
         ..Default::default()
     };
@@ -542,6 +544,7 @@ async fn test_bidirectional_large_data() {
         request_id: "bidir2_setup".to_string(),
         route_key: "test.ping".to_string(),
         payload: Some(Bytes::from("ping")),
+        direction: Some(Direction::Request as i32),
         timeout_ms: 15_000,
         ..Default::default()
     };

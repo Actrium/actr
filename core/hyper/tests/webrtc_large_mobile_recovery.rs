@@ -247,6 +247,7 @@ async fn setup_mobile_to_server_with_serials(
             request_id: format!("mobile_setup_ping_{setup_attempt}"),
             route_key: "test.setup".to_string(),
             payload: Some(Bytes::from_static(b"ping")),
+            direction: Some(Direction::Request as i32),
             timeout_ms: 5_000,
             ..Default::default()
         };
@@ -294,6 +295,7 @@ fn spawn_large_request(
             request_id,
             route_key: "test.large_echo".to_string(),
             payload: Some(Bytes::from(data)),
+            direction: Some(Direction::Request as i32),
             timeout_ms,
             ..Default::default()
         };
