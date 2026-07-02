@@ -669,4 +669,166 @@ realm_id = 1
 
         assert_eq!(node.runtime_config().actr_type(), &actor_type);
     }
+
+    // ── resolve_path ────────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_path_keeps_absolute_and_joins_relative() {
+        let base = Path::new("/etc/app");
+        // Absolute path is returned verbatim, ignoring base.
+        let abs = resolve_path(base, "/var/keys/pub.json");
+        assert_eq!(abs, PathBuf::from("/var/keys/pub.json"));
+
+        // Relative path is joined under base.
+        let rel = resolve_path(base, "keys/pub.json");
+        assert_eq!(rel, PathBuf::from("/etc/app/keys/pub.json"));
+    }
+
+    // ── load_static_pubkey_bytes (b64 + file branches) ──────────────────────
+
+    fn b64_of(bytes: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn load_pubkey_from_valid_b64_32_bytes() {
+        let raw = [7u8; 32];
+        let got = load_static_pubkey_bytes(None, Some(b64_of(&raw))).unwrap();
+        assert_eq!(got, raw.to_vec());
+    }
+
+    #[test]
+    fn load_pubkey_invalid_b64_errors() {
+        let err =
+            load_static_pubkey_bytes(None, Some("not!!valid!!b64@@".to_string())).unwrap_err();
+        assert!(err.to_string().contains("pubkey_b64"));
+    }
+
+    #[test]
+    fn load_pubkey_b64_wrong_length_errors() {
+        // 16 bytes is not an Ed25519 public key.
+        let err = load_static_pubkey_bytes(None, Some(b64_of(&[0u8; 16]))).unwrap_err();
+        assert!(err.to_string().contains("32 bytes"));
+    }
+
+    #[test]
+    fn load_pubkey_neither_file_nor_b64_errors() {
+        let err = load_static_pubkey_bytes(None, None).unwrap_err();
+        assert!(err.to_string().contains("pubkey_file"));
+    }
+
+    #[test]
+    fn load_pubkey_from_json_file_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw = [9u8; 32];
+        let json = format!("{{\"public_key\": \"{}\"}}", b64_of(&raw));
+        let path = dir.path().join("key.json");
+        std::fs::write(&path, json).unwrap();
+
+        let got = load_static_pubkey_bytes(Some(path.clone()), None).unwrap();
+        assert_eq!(got, raw.to_vec());
+    }
+
+    #[test]
+    fn load_pubkey_file_missing_public_key_field_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key.json");
+        std::fs::write(&path, "{\"other\": \"value\"}").unwrap();
+
+        let err = load_static_pubkey_bytes(Some(path.clone()), None).unwrap_err();
+        assert!(err.to_string().contains("public_key"));
+    }
+
+    #[test]
+    fn load_pubkey_file_wrong_key_length_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = format!("{{\"public_key\": \"{}\"}}", b64_of(&[0u8; 10]));
+        let path = dir.path().join("key.json");
+        std::fs::write(&path, json).unwrap();
+
+        let err = load_static_pubkey_bytes(Some(path), None).unwrap_err();
+        assert!(err.to_string().contains("32-byte"));
+    }
+
+    #[test]
+    fn load_pubkey_file_not_json_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("key.json");
+        std::fs::write(&path, "this is not json {{{").unwrap();
+
+        let err = load_static_pubkey_bytes(Some(path), None).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"));
+    }
+
+    // ── HyperConfig builders & Debug ────────────────────────────────────────
+
+    #[test]
+    fn hyper_config_builders_apply_overrides() {
+        let cfg = stub_config("/data")
+            .with_storage_template("{data_dir}/custom")
+            .with_credential_expiry_warning(Duration::from_secs(120))
+            .with_mailbox_backpressure_threshold(Some(2048));
+
+        assert_eq!(cfg.storage_path_template, "{data_dir}/custom");
+        assert_eq!(cfg.credential_expiry_warning, Duration::from_secs(120));
+        assert_eq!(cfg.mailbox_backpressure_threshold, Some(2048));
+        assert_eq!(cfg.resolved_mailbox_backpressure_threshold(), 2048);
+    }
+
+    #[test]
+    fn resolved_mailbox_threshold_defaults_when_unset() {
+        let cfg = stub_config("/data");
+        assert_eq!(
+            cfg.resolved_mailbox_backpressure_threshold(),
+            DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn hyper_config_debug_formats_without_panic() {
+        let cfg = stub_config("/data");
+        let s = format!("{cfg:?}");
+        assert!(s.contains("HyperConfig"));
+        assert!(s.contains("data_dir"));
+        assert!(s.contains("credential_expiry_warning"));
+    }
+
+    // ── NamespaceResolver env-var substitution ──────────────────────────────
+
+    #[test]
+    fn resolve_env_var_substitution() {
+        // Unique var name to avoid cross-test coupling.
+        // env (de)mutation is `unsafe` in edition 2024.
+        unsafe { std::env::set_var("ACTR_COV_TEST_VAR", "envvalue") };
+        let config = stub_config("/tmp");
+        let resolver = NamespaceResolver::new(&config, "id").unwrap();
+        let path = resolver
+            .resolve("{env.ACTR_COV_TEST_VAR}/data")
+            .expect("env var should substitute");
+        assert_eq!(path, PathBuf::from("envvalue/data"));
+        unsafe { std::env::remove_var("ACTR_COV_TEST_VAR") };
+    }
+
+    #[test]
+    fn resolve_missing_env_var_errors() {
+        let config = stub_config("/tmp");
+        let resolver = NamespaceResolver::new(&config, "id").unwrap();
+        let err = resolver
+            .resolve("{env.ACTR_DEFINITELY_MISSING_VAR_XYZ}")
+            .unwrap_err();
+        assert!(matches!(err, HyperError::TemplateVariable(_)));
+        assert!(
+            err.to_string()
+                .contains("env.ACTR_DEFINITELY_MISSING_VAR_XYZ")
+        );
+    }
+
+    #[test]
+    fn resolve_plain_string_without_placeholders() {
+        let config = stub_config("/tmp");
+        let resolver = NamespaceResolver::new(&config, "id").unwrap();
+        let path = resolver.resolve("/plain/path/no/vars").unwrap();
+        assert_eq!(path, PathBuf::from("/plain/path/no/vars"));
+    }
 }

@@ -1412,4 +1412,20 @@ mod tests {
             "Restore should reset reconnect backoff before the quick connect attempt"
         );
     }
+
+    #[test]
+    fn snapshot_is_offline_and_should_restore() {
+        let offline = snapshot(1, NetworkAvailability::Unavailable);
+        assert!(offline.is_offline());
+        assert!(!offline.should_restore());
+
+        let online = snapshot(2, NetworkAvailability::Available);
+        assert!(!online.is_offline());
+        assert!(online.should_restore());
+
+        // Unknown is neither offline (not Unavailable) nor restorable (not Available).
+        let unknown = snapshot(3, NetworkAvailability::Unknown);
+        assert!(!unknown.is_offline());
+        assert!(!unknown.should_restore());
+    }
 }

@@ -532,4 +532,147 @@ mod tests {
         // Hash should be 16 hex characters
         assert_eq!(hash1.len(), 16);
     }
+
+    #[tokio::test]
+    async fn load_returns_none_when_file_absent() {
+        let dir = TempDir::new().unwrap();
+        assert!(CompatLockFile::load(dir.path()).await.unwrap().is_none());
+        assert!(!CompatLockFile::exists(dir.path()).await);
+    }
+
+    #[tokio::test]
+    async fn remove_returns_false_when_absent_and_true_when_present() {
+        let dir = TempDir::new().unwrap();
+        assert!(!CompatLockFile::remove(dir.path()).await.unwrap());
+
+        let mut lf = CompatLockFile::new();
+        lf.upsert_entry(NegotiationEntry::new(
+            "svc".into(),
+            "old".into(),
+            "new".into(),
+            CompatibilityCheck::BackwardCompatible,
+        ));
+        lf.save(dir.path()).await.unwrap();
+        assert!(CompatLockFile::remove(dir.path()).await.unwrap());
+        assert!(!CompatLockFile::exists(dir.path()).await);
+    }
+
+    #[tokio::test]
+    async fn save_creates_missing_base_dir() {
+        let dir = TempDir::new().unwrap();
+        let nested = dir.path().join("deeply/nested/missing");
+        let mut lf = CompatLockFile::new();
+        lf.upsert_entry(NegotiationEntry::new(
+            "svc".into(),
+            "a".into(),
+            "b".into(),
+            CompatibilityCheck::BackwardCompatible,
+        ));
+        lf.save(&nested).await.unwrap();
+        assert!(CompatLockFile::exists(&nested).await);
+    }
+
+    #[test]
+    fn find_entry_and_find_valid_entry_semantics() {
+        let mut lf = CompatLockFile::new();
+        lf.upsert_entry(NegotiationEntry::new(
+            "present".into(),
+            "a".into(),
+            "b".into(),
+            CompatibilityCheck::BackwardCompatible,
+        ));
+        lf.negotiation.push(NegotiationEntry {
+            service_name: "expired".into(),
+            requested_fingerprint: "a".into(),
+            resolved_fingerprint: "b".into(),
+            compatibility_check: CompatibilityCheck::BackwardCompatible,
+            negotiated_at: Utc::now() - Duration::hours(48),
+            expires_at: Utc::now() - Duration::hours(1),
+        });
+
+        assert!(lf.find_entry("present").is_some());
+        assert!(lf.find_entry("expired").is_some());
+        assert!(lf.find_entry("missing").is_none());
+
+        assert!(lf.find_valid_entry("present").is_some());
+        assert!(lf.find_valid_entry("expired").is_none());
+    }
+
+    #[test]
+    fn upsert_entry_replaces_existing_name() {
+        let mut lf = CompatLockFile::new();
+        lf.upsert_entry(NegotiationEntry::new(
+            "svc".into(),
+            "old".into(),
+            "v1".into(),
+            CompatibilityCheck::BackwardCompatible,
+        ));
+        lf.upsert_entry(NegotiationEntry::new(
+            "svc".into(),
+            "new".into(),
+            "v2".into(),
+            CompatibilityCheck::BreakingChanges,
+        ));
+        assert_eq!(lf.negotiation.len(), 1);
+        assert_eq!(lf.find_entry("svc").unwrap().requested_fingerprint, "new");
+        assert_eq!(lf.find_entry("svc").unwrap().resolved_fingerprint, "v2");
+    }
+
+    #[test]
+    fn cleanup_expired_removes_only_expired_entries() {
+        let mut lf = CompatLockFile::new();
+        lf.upsert_entry(NegotiationEntry::new(
+            "alive".into(),
+            "a".into(),
+            "b".into(),
+            CompatibilityCheck::BackwardCompatible,
+        ));
+        lf.negotiation.push(NegotiationEntry {
+            service_name: "dead".into(),
+            requested_fingerprint: "a".into(),
+            resolved_fingerprint: "b".into(),
+            compatibility_check: CompatibilityCheck::BackwardCompatible,
+            negotiated_at: Utc::now() - Duration::hours(48),
+            expires_at: Utc::now() - Duration::hours(1),
+        });
+
+        let removed = lf.cleanup_expired();
+        assert_eq!(removed, 1);
+        assert_eq!(lf.negotiation.len(), 1);
+        assert_eq!(lf.negotiation[0].service_name, "alive");
+    }
+
+    #[test]
+    fn is_expired_reflects_expires_at() {
+        let fresh = NegotiationEntry::new(
+            "s".into(),
+            "a".into(),
+            "b".into(),
+            CompatibilityCheck::BackwardCompatible,
+        );
+        assert!(!fresh.is_expired());
+
+        let stale = NegotiationEntry {
+            service_name: "s".into(),
+            requested_fingerprint: "a".into(),
+            resolved_fingerprint: "b".into(),
+            compatibility_check: CompatibilityCheck::BackwardCompatible,
+            negotiated_at: Utc::now() - Duration::hours(48),
+            expires_at: Utc::now() - Duration::hours(1),
+        };
+        assert!(stale.is_expired());
+    }
+
+    #[test]
+    fn compatibility_check_display_covers_all_variants() {
+        assert_eq!(CompatibilityCheck::ExactMatch.to_string(), "exact_match");
+        assert_eq!(
+            CompatibilityCheck::BackwardCompatible.to_string(),
+            "backward_compatible"
+        );
+        assert_eq!(
+            CompatibilityCheck::BreakingChanges.to_string(),
+            "breaking_changes"
+        );
+    }
 }

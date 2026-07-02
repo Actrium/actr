@@ -610,4 +610,63 @@ mod tests {
             "unexpected error: {err:?}"
         );
     }
+
+    #[test]
+    fn is_closed_like_error_matches_closed_variants() {
+        // Direct ConnectionClosed variant.
+        assert!(is_closed_like_error(&NetworkError::ConnectionClosed(
+            "x".into()
+        )));
+
+        // String-message variants whose text contains a closed-like phrase.
+        let closed_phrases = [
+            "connection closed",
+            "peer connection closed",
+            "datachannel closed",
+            "data channel closed",
+            "websocket connection closed",
+            "non-established state",
+            "the link was closed by peer",
+        ];
+        for phrase in closed_phrases {
+            assert!(
+                is_closed_like_error(&NetworkError::WebRtcError(phrase.to_string())),
+                "should match closed-like phrase: {phrase}"
+            );
+        }
+
+        // Case-insensitive.
+        assert!(is_closed_like_error(&NetworkError::ConnectionError(
+            "Connection CLOSED".to_string()
+        )));
+    }
+
+    #[test]
+    fn is_closed_like_error_rejects_unrelated_and_other_variants() {
+        // Unrelated message text → false.
+        assert!(!is_closed_like_error(&NetworkError::WebRtcError(
+            "timeout".to_string()
+        )));
+        assert!(!is_closed_like_error(&NetworkError::SendError(
+            "queue full".to_string()
+        )));
+
+        // Variants not in the match list → false even with closed text.
+        assert!(!is_closed_like_error(&NetworkError::TimeoutError(
+            "connection closed".to_string()
+        )));
+        assert!(!is_closed_like_error(&NetworkError::IceError(
+            "closed".to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn has_healthy_connection_false_when_no_connections() {
+        // Empty DestTransport has no ready connections → not healthy.
+        let t = DestTransport::new(Dest::Shell, vec![]).await.unwrap();
+        assert!(!t.has_healthy_connection().await);
+        // watch_ready returns a live receiver (empty initially).
+        let rx = t.watch_ready();
+        assert!(rx.borrow().is_empty());
+    }
 }

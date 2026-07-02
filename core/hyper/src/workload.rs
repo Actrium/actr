@@ -1284,4 +1284,105 @@ mod tests {
         let linked = Workload::Linked(handle);
         assert!(format!("{:?}", linked).starts_with("Workload::Linked"));
     }
+
+    // ── Workload::Linked lifecycle + dispatch branches ──────────────────────
+    //
+    // The Linked arm of on_start/on_ready/on_stop/dispatch_envelope forwards
+    // to the linked handle. Drive them with a real EchoWorkload adapter so the
+    // forwarding path (and the handle's default hooks) actually executes.
+
+    fn linked_echo() -> Workload {
+        let handle: Arc<dyn LinkedWorkloadHandle> = WorkloadAdapter::new(EchoWorkload {
+            suffix: "-ok".to_string(),
+        });
+        Workload::Linked(handle)
+    }
+
+    fn dummy_host_abi() -> HostAbiFn {
+        Arc::new(|_op: HostOperation| Box::pin(async { HostOperationResult::Done }))
+    }
+
+    fn invocation(serial: u64) -> InvocationContext {
+        InvocationContext {
+            self_id: make_id(serial),
+            caller_id: None,
+            request_id: "lifecycle-test".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn linked_lifecycle_hooks_resolve_ok() {
+        let mut wl = linked_echo();
+        let ctx = test_runtime_context(1);
+        let abi = dummy_host_abi();
+
+        wl.on_start(ctx.clone(), invocation(1), &abi).await.unwrap();
+        wl.on_ready(ctx.clone(), invocation(1), &abi).await.unwrap();
+        wl.on_stop(ctx, invocation(1), &abi).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn linked_dispatch_envelope_forwards_to_handle() {
+        let mut wl = linked_echo();
+        let ctx = test_runtime_context(2);
+        let abi = dummy_host_abi();
+
+        // EchoWorkload dispatch succeeds for route_key "echo" — exercises the
+        // Linked forwarding arm of dispatch_envelope.
+        let envelope = RpcEnvelope {
+            route_key: "echo".to_string(),
+            payload: Some(Bytes::from_static(b"hi")),
+            ..Default::default()
+        };
+        let result = wl
+            .dispatch_envelope(envelope, ctx, invocation(2), &abi)
+            .await
+            .unwrap();
+        assert_eq!(result, Bytes::from_static(b"hi-ok"));
+    }
+
+    #[test]
+    fn package_hook_event_request_ids_are_unique_and_namespaced() {
+        let peer = PeerEvent {
+            peer: make_id(5),
+            relayed: Some(true),
+            status: None,
+        };
+        let cred = CredentialEvent {
+            new_expiry: std::time::SystemTime::UNIX_EPOCH,
+        };
+        let bp = BackpressureEvent {
+            queue_len: 4,
+            threshold: 10,
+        };
+
+        let events = [
+            PackageHookEvent::SignalingConnecting,
+            PackageHookEvent::SignalingConnected,
+            PackageHookEvent::SignalingDisconnected,
+            PackageHookEvent::WebSocketConnecting(peer.clone()),
+            PackageHookEvent::WebSocketConnected(peer.clone()),
+            PackageHookEvent::WebSocketDisconnected(peer.clone()),
+            PackageHookEvent::WebRtcConnecting(peer.clone()),
+            PackageHookEvent::WebRtcConnected(peer.clone()),
+            PackageHookEvent::WebRtcDisconnected(peer),
+            PackageHookEvent::CredentialRenewed(cred.clone()),
+            PackageHookEvent::CredentialExpiring(cred),
+            PackageHookEvent::MailboxBackpressure(bp),
+        ];
+
+        let ids: Vec<&str> = events.iter().map(|e| e.request_id()).collect();
+
+        // Every id is non-empty and lives under the hook:on_ namespace.
+        for id in &ids {
+            assert!(id.starts_with("hook:on_"), "unexpected id: {id}");
+        }
+
+        // All twelve ids are distinct.
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), before, "request ids must be unique: {ids:?}");
+    }
 }

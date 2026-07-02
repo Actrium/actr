@@ -7,6 +7,7 @@
 //! - Block new requests to peers being cleaned up (closing_peers)
 
 use super::data_stream_activity::{DataStreamActivityTracker, DataStreamRecordState};
+use super::ensure_stream_payload_type;
 use crate::transport::{
     ConnectionEvent, ConnectionState, Dest, DestTransportRef, PayloadTypeExt, PeerTransport,
     WireIdentity,
@@ -1230,6 +1231,8 @@ impl PeerGate {
             payload_type,
             data.len()
         );
+
+        ensure_stream_payload_type(payload_type)?;
 
         // // Check if target is being cleaned up
         // if self.closing_peers.read().await.contains(target) {
