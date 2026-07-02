@@ -56,9 +56,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          # wasm32-wasip2 is required for the Component Model guest
-          # fixture rebuilt by core/hyper/tests/wasm_actor_fixture/build.sh
-          # under --all-features (wasm-engine).
+          # wasm32-wasip2 is required for the Component Model guest fixture
+          # rebuilt by core/hyper/build.rs under --all-features (wasm-engine).
           targets: wasm32-wasip2,wasm32-unknown-unknown
       - name: Install protoc
         uses: arduino/setup-protoc@v3
