@@ -23,7 +23,9 @@ use crate::wire::webrtc::SignalingClient;
 use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{AIdCredential, ActrId, DataStream, IdentityClaims, PayloadType, RpcEnvelope};
+use actr_protocol::{
+    AIdCredential, ActrId, DataStream, Direction, IdentityClaims, PayloadType, RpcEnvelope,
+};
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use ed25519_dalek::{Signature, Verifier as Ed25519Verifier};
@@ -182,6 +184,22 @@ impl WebSocketGate {
     ) {
         let request_id = envelope.request_id.clone();
 
+        // Route on the explicit `direction` field when the peer sets it.
+        // Legacy peers predate the field (Unspecified); for them we preserve
+        // the original pending-map inference. Fix for #255: an envelope
+        // explicitly marked Response whose pending entry is already gone
+        // (caller timed out) is dropped as an orphan — never enqueued as a
+        // new request.
+        let direction = envelope
+            .direction
+            .and_then(|d| Direction::try_from(d).ok())
+            .unwrap_or(Direction::Unspecified);
+
+        if matches!(direction, Direction::Request) {
+            Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id).await;
+            return;
+        }
+
         let mut pending = pending_requests.write().await;
         if let Some((target, response_tx)) = pending.remove(&request_id) {
             drop(pending);
@@ -204,24 +222,48 @@ impl WebSocketGate {
             let _ = response_tx.send(result);
         } else {
             drop(pending);
-            tracing::debug!("📥 WS Received RPC Request: request_id={}", request_id);
-
-            let priority = match payload_type {
-                PayloadType::RpcSignal => MessagePriority::High,
-                _ => MessagePriority::Normal,
-            };
-
-            match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
-                Ok(msg_id) => {
-                    tracing::debug!(
-                        "✅ WS RPC message enqueued: msg_id={}, priority={:?}",
-                        msg_id,
-                        priority
+            match direction {
+                Direction::Response => {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "rpc.orphan_response_dropped: late WS RPC response with no pending request; dropping"
                     );
                 }
-                Err(e) => {
-                    tracing::error!("❌ WS Mailbox enqueue failed: {:?}", e);
+                Direction::Unspecified => {
+                    Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id)
+                        .await;
                 }
+                Direction::Request => unreachable!("Request branch handled above"),
+            }
+        }
+    }
+
+    /// Enqueue an inbound RPC request to the Mailbox. Shared by the
+    /// explicit-Request path and the legacy (Unspecified) inference path.
+    async fn enqueue_request(
+        from_bytes: Vec<u8>,
+        data: Bytes,
+        payload_type: PayloadType,
+        mailbox: Arc<dyn Mailbox>,
+        request_id: &str,
+    ) {
+        tracing::debug!("📥 WS Received RPC Request: request_id={}", request_id);
+
+        let priority = match payload_type {
+            PayloadType::RpcSignal => MessagePriority::High,
+            _ => MessagePriority::Normal,
+        };
+
+        match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
+            Ok(msg_id) => {
+                tracing::debug!(
+                    "✅ WS RPC message enqueued: msg_id={}, priority={:?}",
+                    msg_id,
+                    priority
+                );
+            }
+            Err(e) => {
+                tracing::error!("❌ WS Mailbox enqueue failed: {:?}", e);
             }
         }
     }
@@ -1160,5 +1202,105 @@ mod tests {
             !pending.read().await.contains_key("req-5"),
             "pending entry must be removed after response"
         );
+    }
+
+    /// An explicit Response whose pending entry was already removed (caller
+    /// timed out) must NOT be enqueued as a new request — the #255 fix.
+    #[tokio::test]
+    async fn handle_envelope_explicit_response_with_no_pending_is_dropped_not_enqueued() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+
+        let mut envelope = make_rpc_envelope("late-1");
+        envelope.direction = Some(actr_protocol::Direction::Response as i32);
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebSocketGate::handle_envelope(
+            envelope,
+            vec![],
+            bytes::Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending,
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            0,
+            "orphan late response must not be enqueued as a new request"
+        );
+    }
+
+    /// An explicit Request is enqueued even when a pending entry happens to
+    /// exist for the same request_id — direction wins over pending inference.
+    #[tokio::test]
+    async fn handle_envelope_explicit_request_always_enqueues() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+        // A stale pending entry with the same id must NOT divert an explicit
+        // request into the response path, and must not be consumed.
+        let (tx, _rx) = oneshot::channel();
+        pending
+            .write()
+            .await
+            .insert("req-stale".to_string(), (test_actor_id(9), tx));
+
+        let mut envelope = make_rpc_envelope("req-stale");
+        envelope.direction = Some(actr_protocol::Direction::Request as i32);
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebSocketGate::handle_envelope(
+            envelope,
+            vec![],
+            bytes::Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending.clone(),
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(
+            mailbox.enqueue_count.load(Ordering::SeqCst),
+            1,
+            "explicit Request must be enqueued"
+        );
+        assert!(
+            pending.read().await.contains_key("req-stale"),
+            "explicit Request must not consume the pending entry"
+        );
+    }
+
+    /// An explicit Response with a matching pending entry still wakes the
+    /// caller — direction routing preserves the response fast path.
+    #[tokio::test]
+    async fn handle_envelope_explicit_response_with_pending_wakes_caller() {
+        let mailbox = CapturingMailbox::new();
+        let pending = empty_pending();
+        let actor = test_actor_id(7);
+        let (tx, rx) = oneshot::channel();
+        pending
+            .write()
+            .await
+            .insert("req-resp".to_string(), (actor, tx));
+
+        let mut envelope = make_rpc_envelope("req-resp");
+        envelope.payload = Some(bytes::Bytes::from("resp"));
+        envelope.direction = Some(actr_protocol::Direction::Response as i32);
+        let data = actr_protocol::prost::Message::encode_to_vec(&envelope);
+
+        WebSocketGate::handle_envelope(
+            envelope,
+            vec![],
+            bytes::Bytes::from(data),
+            PayloadType::RpcReliable,
+            pending,
+            mailbox.clone(),
+        )
+        .await;
+
+        assert_eq!(mailbox.enqueue_count.load(Ordering::SeqCst), 0);
+        let result = rx.await.expect("oneshot must be resolved for explicit Response");
+        assert!(result.is_ok());
     }
 }

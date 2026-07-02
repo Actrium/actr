@@ -6,7 +6,7 @@
 use std::rc::Rc;
 
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrId, ActrType, MetadataEntry, RpcEnvelope, RpcRequest};
+use actr_protocol::{ActorResult, ActrId, ActrType, Direction, MetadataEntry, RpcEnvelope, RpcRequest};
 use bytes::Bytes;
 
 use crate::WebContext;
@@ -115,6 +115,7 @@ impl WebContext for RuntimeContext {
             route_key: route_key.to_string(),
             payload: Some(Bytes::from(payload.to_vec())),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: Some(self.traceparent.clone()),
             tracestate: Some(self.tracestate.clone()),
             request_id,
@@ -165,6 +166,7 @@ impl WebContext for RuntimeContext {
             route_key,
             payload: Some(payload),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: Some(self.traceparent.clone()),
             tracestate: Some(self.tracestate.clone()),
             request_id,
@@ -210,6 +212,7 @@ impl WebContext for RuntimeContext {
             route_key,
             payload: Some(payload),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: Some(self.traceparent.clone()),
             tracestate: Some(self.tracestate.clone()),
             request_id: js_sys::Math::random().to_string(), // Simplified ID generation.

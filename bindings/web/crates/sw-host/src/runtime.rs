@@ -29,7 +29,7 @@ use std::sync::Arc;
 use actr_mailbox_web::{IndexedDbMailbox, Mailbox, MessageRecord};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Ping, RegisterAuthMode,
+    AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Direction, Ping, RegisterAuthMode,
     RegisterRequest, RenewCredentialRequest, RoleNegotiation, RouteCandidatesRequest, RpcEnvelope,
     ServiceAvailabilityState, SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling,
     renew_credential_response, route_candidates_request, session_description, signaling_envelope,
@@ -2370,8 +2370,32 @@ impl SwRuntime {
         let envelope = RpcEnvelope::decode(&payload.data[..])
             .map_err(|e| JsValue::from_str(&format!("Failed to decode RpcEnvelope: {e}")))?;
 
+        // Route on the explicit `direction` field when the peer sets it;
+        // fall back to pending-map inference for legacy peers. Fix for
+        // #255: an explicit Response whose pending entry is already gone
+        // (caller timed out) is an orphan — drop it, never enqueue it as
+        // a new request.
+        let direction = envelope
+            .direction
+            .and_then(|d| Direction::try_from(d).ok())
+            .unwrap_or(Direction::Unspecified);
+
+        if matches!(direction, Direction::Response)
+            && !self.pending_rpcs.contains_key(&envelope.request_id)
+        {
+            log::warn!(
+                "[SW] rpc.orphan_response_dropped: late response request_id={} with no pending request; dropping",
+                envelope.request_id
+            );
+            return Ok(());
+        }
+
         // Check whether this is a response to one of our outbound requests.
-        let is_response = self.pending_rpcs.contains_key(&envelope.request_id);
+        let is_response = match direction {
+            Direction::Request => false,
+            Direction::Response => true,
+            Direction::Unspecified => self.pending_rpcs.contains_key(&envelope.request_id),
+        };
 
         if is_response {
             // Fast path: process the response directly.
@@ -3136,6 +3160,7 @@ pub async fn register_client(
                                 route_key: route_key.clone(),
                                 payload: Some(Bytes::from(response_bytes)),
                                 error: None,
+                                direction: Some(Direction::Response as i32),
                                 traceparent: None,
                                 tracestate: None,
                                 request_id: request_id.clone(),
@@ -3156,6 +3181,7 @@ pub async fn register_client(
                                     code: 500,
                                     message: err,
                                 }),
+                                direction: Some(Direction::Response as i32),
                                 traceparent: None,
                                 tracestate: None,
                                 request_id: request_id.clone(),
@@ -3552,6 +3578,7 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
             route_key: route_key.clone(),
             payload: Some(Bytes::from(payload_bytes)),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: request_id.clone(),

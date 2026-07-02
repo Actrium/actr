@@ -7,7 +7,7 @@
 
 use crate::transport::HostTransport;
 use actr_framework::Bytes;
-use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, Direction, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
 /// HostGate - Inproc transport adapter (outbound)
@@ -164,6 +164,7 @@ impl HostGate {
             route_key: "fast_path.data_stream".to_string(),
             payload: Some(data),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: uuid::Uuid::new_v4().to_string(),
