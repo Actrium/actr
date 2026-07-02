@@ -1,13 +1,13 @@
 use super::*;
 use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
-use crate::lifecycle::hooks::{build_hook_callback, HookContextBuilder, WorkloadHookObserverRef};
+use crate::lifecycle::hooks::{HookContextBuilder, WorkloadHookObserverRef, build_hook_callback};
 use crate::outbound::{Gate, HostGate};
 use crate::transport::HostTransport;
 use crate::wire::webrtc::{
     HookEvent, ReconnectConfig, SignalingClient, SignalingConfig, WebSocketSignalingClient,
 };
-use actr_framework::test_support::DummyContext;
 use actr_framework::Context as FrameworkContext;
+use actr_framework::test_support::DummyContext;
 use actr_protocol::{AIdCredential, ActrId, ActrType, Realm};
 use tokio::sync::mpsc;
 
