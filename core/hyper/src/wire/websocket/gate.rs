@@ -224,8 +224,10 @@ impl WebSocketGate {
             drop(pending);
             match direction {
                 Direction::Response => {
+                    let peer = Self::peer_for_log(&from_bytes);
                     tracing::warn!(
                         request_id = %request_id,
+                        peer = %peer,
                         "rpc.orphan_response_dropped: late WS RPC response with no pending request; dropping"
                     );
                 }
@@ -236,6 +238,16 @@ impl WebSocketGate {
                 Direction::Request => unreachable!("Request branch handled above"),
             }
         }
+    }
+
+    fn peer_for_log(from_bytes: &[u8]) -> String {
+        if from_bytes.is_empty() {
+            return "unavailable".to_string();
+        }
+
+        ActrId::decode(from_bytes)
+            .map(|peer| format!("{peer:?}"))
+            .unwrap_or_else(|e| format!("decode_failed:{e}"))
     }
 
     /// Enqueue an inbound RPC request to the Mailbox. Shared by the

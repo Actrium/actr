@@ -2361,7 +2361,7 @@ impl SwRuntime {
     /// - RPC responses with a pending request -> handled directly (fast path, about 1-3 ms)
     /// - Inbound RPC requests -> `Mailbox` -> `MailboxProcessor` (state path, about 30-40 ms)
     fn handle_fast_path(&mut self, payload: FastPathPayload) -> Result<(), JsValue> {
-        let (_, channel_id) = parse_peer_and_channel(&payload.stream_id);
+        let (peer_id, channel_id) = parse_peer_and_channel(&payload.stream_id);
 
         if matches!(channel_id, 2 | 3) {
             return self.handle_data_stream(payload);
@@ -2384,8 +2384,11 @@ impl SwRuntime {
             && !self.pending_rpcs.contains_key(&envelope.request_id)
         {
             log::warn!(
-                "[SW] rpc.orphan_response_dropped: late response request_id={} with no pending request; dropping",
-                envelope.request_id
+                "[SW] rpc.orphan_response_dropped: late response request_id={} peer={} channel={} stream_id={} with no pending request; dropping",
+                envelope.request_id,
+                peer_id,
+                channel_id,
+                payload.stream_id
             );
             return Ok(());
         }
