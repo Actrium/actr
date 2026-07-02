@@ -7,11 +7,15 @@ fn transient_network_errors() {
     let cases = [
         NetworkError::ConnectionError("x".into()),
         NetworkError::ConnectionClosed("x".into()),
+        NetworkError::PeerConnectionClosed("x".into()),
         NetworkError::ChannelClosed("x".into()),
+        NetworkError::DataChannelClosed("x".into()),
+        NetworkError::DataChannelNotOpen { state: "x".into() },
         NetworkError::SendError("x".into()),
         NetworkError::NetworkUnreachableError("x".into()),
         NetworkError::ResourceExhaustedError("x".into()),
         NetworkError::WebSocketError("x".into()),
+        NetworkError::WebSocketClosed("x".into()),
         NetworkError::SignalingError("x".into()),
         NetworkError::WebRtcError("x".into()),
         NetworkError::NatTraversalError("x".into()),
@@ -67,6 +71,39 @@ fn internal_network_errors() {
         assert_eq!(e.kind(), ErrorKind::Internal, "{e} should be Internal");
         assert!(!e.is_retryable());
         assert!(!e.requires_dlq());
+    }
+}
+
+#[test]
+fn closed_like_network_errors_are_structural() {
+    let closed_like = [
+        NetworkError::ConnectionClosed("x".into()),
+        NetworkError::PeerConnectionClosed("x".into()),
+        NetworkError::DataChannelClosed("x".into()),
+        NetworkError::DataChannelNotOpen {
+            state: "Closing".into(),
+        },
+        NetworkError::WebSocketClosed("x".into()),
+    ];
+
+    for e in &closed_like {
+        assert!(e.is_closed_like(), "{e} should be closed-like");
+    }
+
+    let generic_with_closed_text = [
+        NetworkError::ConnectionError("not actually closed".into()),
+        NetworkError::WebRtcError("not actually closed".into()),
+        NetworkError::DataChannelError("not actually closed".into()),
+        NetworkError::WebSocketError("not actually closed".into()),
+        NetworkError::SendError("not actually closed".into()),
+        NetworkError::ChannelClosed("not a stale transport lane".into()),
+    ];
+
+    for e in &generic_with_closed_text {
+        assert!(
+            !e.is_closed_like(),
+            "{e} should not be closed-like based on message text"
+        );
     }
 }
 
@@ -144,10 +181,22 @@ fn category_covers_all_variants() {
         ),
         (NetworkError::NatTraversalError("x".into()), "nat_traversal"),
         (NetworkError::DataChannelError("x".into()), "data_channel"),
+        (
+            NetworkError::DataChannelClosed("x".into()),
+            "data_channel_closed",
+        ),
+        (
+            NetworkError::DataChannelNotOpen { state: "x".into() },
+            "data_channel_not_open",
+        ),
         (NetworkError::IceError("x".into()), "ice"),
         (NetworkError::DtlsError("x".into()), "dtls"),
         (NetworkError::StunTurnError("x".into()), "stun_turn"),
         (NetworkError::WebSocketError("x".into()), "websocket"),
+        (
+            NetworkError::WebSocketClosed("x".into()),
+            "websocket_closed",
+        ),
         (
             NetworkError::ConnectionNotFound("x".into()),
             "connection_not_found",
@@ -155,6 +204,10 @@ fn category_covers_all_variants() {
         (
             NetworkError::ConnectionClosed("x".into()),
             "connection_closed",
+        ),
+        (
+            NetworkError::PeerConnectionClosed("x".into()),
+            "peer_connection_closed",
         ),
         (NetworkError::NotImplemented("x".into()), "not_implemented"),
         (NetworkError::ChannelClosed("x".into()), "channel_closed"),
@@ -205,12 +258,16 @@ fn severity_is_within_1_to_10_for_all_variants() {
         NetworkError::ServiceDiscoveryError("x".into()),
         NetworkError::NatTraversalError("x".into()),
         NetworkError::DataChannelError("x".into()),
+        NetworkError::DataChannelClosed("x".into()),
+        NetworkError::DataChannelNotOpen { state: "x".into() },
         NetworkError::IceError("x".into()),
         NetworkError::DtlsError("x".into()),
         NetworkError::StunTurnError("x".into()),
         NetworkError::WebSocketError("x".into()),
+        NetworkError::WebSocketClosed("x".into()),
         NetworkError::ConnectionNotFound("x".into()),
         NetworkError::ConnectionClosed("x".into()),
+        NetworkError::PeerConnectionClosed("x".into()),
         NetworkError::NotImplemented("x".into()),
         NetworkError::ChannelClosed("x".into()),
         NetworkError::SendError("x".into()),

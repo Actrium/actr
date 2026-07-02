@@ -48,6 +48,7 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
+use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use webrtc::data_channel::RTCDataChannel;
@@ -481,9 +482,7 @@ impl DataLane for WebRtcDataLane {
                 break;
             }
             if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing {
-                return Err(NetworkError::DataChannelError(format!(
-                    "DataChannel closed: {state:?}"
-                )));
+                return Err(NetworkError::DataChannelClosed(format!("{state:?}")));
             }
             if start.elapsed() > INITIAL_CONNECTION_TIMEOUT {
                 return Err(NetworkError::DataChannelError(format!(
@@ -502,10 +501,18 @@ impl DataLane for WebRtcDataLane {
             encode_fragment_header(&mut buf, msg_id, 0, 1);
             buf.extend_from_slice(&data);
             let frame = bytes::Bytes::from(buf);
-            self.data_channel
-                .send(&frame)
-                .await
-                .map_err(|e| NetworkError::DataChannelError(format!("Send failed: {e}")))?;
+            self.data_channel.send(&frame).await.map_err(|e| {
+                let state = self.data_channel.ready_state();
+                if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing {
+                    NetworkError::DataChannelClosed(format!("{state:?}: {e}"))
+                } else if state != RTCDataChannelState::Open {
+                    NetworkError::DataChannelNotOpen {
+                        state: format!("{state:?}: {e}"),
+                    }
+                } else {
+                    NetworkError::DataChannelError(format!("Send failed: {e}"))
+                }
+            })?;
             #[cfg(feature = "test-utils")]
             notify_webrtc_fragment_sent_for_test(WebRtcFragmentSendEvent {
                 msg_id,
@@ -542,9 +549,21 @@ impl DataLane for WebRtcDataLane {
                 buf.extend_from_slice(chunk);
                 let frame = bytes::Bytes::from(buf);
                 self.data_channel.send(&frame).await.map_err(|e| {
-                    NetworkError::DataChannelError(format!(
-                        "Send fragment {frag_index} failed: {e}"
-                    ))
+                    let state = self.data_channel.ready_state();
+                    if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing
+                    {
+                        NetworkError::DataChannelClosed(format!(
+                            "{state:?}: fragment {frag_index}: {e}"
+                        ))
+                    } else if state != RTCDataChannelState::Open {
+                        NetworkError::DataChannelNotOpen {
+                            state: format!("{state:?}: fragment {frag_index}: {e}"),
+                        }
+                    } else {
+                        NetworkError::DataChannelError(format!(
+                            "Send fragment {frag_index} failed: {e}"
+                        ))
+                    }
                 })?;
                 #[cfg(feature = "test-utils")]
                 notify_webrtc_fragment_sent_for_test(WebRtcFragmentSendEvent {
@@ -703,7 +722,12 @@ impl DataLane for WebSocketDataLane {
         if let Some(s) = sink_opt.as_mut() {
             s.send(WsMessage::Binary(buf.into()))
                 .await
-                .map_err(|e| NetworkError::SendError(format!("WebSocket send failed: {e}")))?;
+                .map_err(|e| match e {
+                    WsError::ConnectionClosed | WsError::AlreadyClosed => {
+                        NetworkError::WebSocketClosed(e.to_string())
+                    }
+                    other => NetworkError::SendError(format!("WebSocket send failed: {other}")),
+                })?;
 
             tracing::trace!(
                 "WebSocket sent {} bytes (type={:?})",
@@ -712,7 +736,7 @@ impl DataLane for WebSocketDataLane {
             );
             Ok(())
         } else {
-            Err(NetworkError::ConnectionError(
+            Err(NetworkError::WebSocketClosed(
                 "WebSocket not connected".to_string(),
             ))
         }

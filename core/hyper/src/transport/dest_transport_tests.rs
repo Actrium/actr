@@ -103,14 +103,14 @@ impl WireHandle for FakeWire {
 
     async fn get_lane(&self, _payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
         if self.lane_closed {
-            return Err(NetworkError::DataChannelError(
-                "DataChannel closed".to_string(),
+            return Err(NetworkError::DataChannelClosed(
+                "test lane closed".to_string(),
             ));
         }
         if self.lane_non_established {
-            return Err(NetworkError::WebRtcError(
-                "sending payload data in non-Established state".to_string(),
-            ));
+            return Err(NetworkError::DataChannelNotOpen {
+                state: "non-Established".to_string(),
+            });
         }
         Ok(Arc::new(FakeLane {
             send_count: Arc::clone(&self.send_count),
@@ -230,53 +230,59 @@ async fn non_established_webrtc_candidate_is_evicted() {
     );
 }
 
-#[test]
-fn is_closed_like_error_matches_closed_variants() {
-    // Direct ConnectionClosed variant.
-    assert!(is_closed_like_error(&NetworkError::ConnectionClosed(
-        "x".into()
-    )));
-
-    // String-message variants whose text contains a closed-like phrase.
-    let closed_phrases = [
-        "connection closed",
-        "peer connection closed",
-        "datachannel closed",
-        "data channel closed",
-        "websocket connection closed",
-        "non-established state",
-        "the link was closed by peer",
-    ];
-    for phrase in closed_phrases {
-        assert!(
-            is_closed_like_error(&NetworkError::WebRtcError(phrase.to_string())),
-            "should match closed-like phrase: {phrase}"
-        );
+#[tokio::test]
+async fn generic_error_with_closed_text_does_not_trigger_stale_self_heal() {
+    #[derive(Debug)]
+    struct GenericClosedTextWire {
+        connected: AtomicBool,
     }
 
-    // Case-insensitive.
-    assert!(is_closed_like_error(&NetworkError::ConnectionError(
-        "Connection CLOSED".to_string()
-    )));
-}
+    #[async_trait]
+    impl WireHandle for GenericClosedTextWire {
+        fn connection_type(&self) -> ConnType {
+            ConnType::WebRTC
+        }
 
-#[test]
-fn is_closed_like_error_rejects_unrelated_and_other_variants() {
-    // Unrelated message text → false.
-    assert!(!is_closed_like_error(&NetworkError::WebRtcError(
-        "timeout".to_string()
-    )));
-    assert!(!is_closed_like_error(&NetworkError::SendError(
-        "queue full".to_string()
-    )));
+        fn priority(&self) -> u8 {
+            1
+        }
 
-    // Variants not in the match list → false even with closed text.
-    assert!(!is_closed_like_error(&NetworkError::TimeoutError(
-        "connection closed".to_string()
-    )));
-    assert!(!is_closed_like_error(&NetworkError::IceError(
-        "closed".to_string()
-    )));
+        async fn connect(&self) -> NetworkResult<()> {
+            self.connected.store(true, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn is_connected(&self) -> bool {
+            self.connected.load(Ordering::Relaxed)
+        }
+
+        async fn close(&self) -> NetworkResult<()> {
+            self.connected.store(false, Ordering::Relaxed);
+            Ok(())
+        }
+
+        async fn get_lane(&self, _payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+            Err(NetworkError::WebRtcError(
+                "validation failed: closed is only payload text".to_string(),
+            ))
+        }
+    }
+
+    let transport = test_transport(vec![Arc::new(GenericClosedTextWire {
+        connected: AtomicBool::new(false),
+    })])
+    .await;
+
+    let result = timeout(
+        Duration::from_millis(200),
+        transport.send_with_identity(PayloadType::RpcReliable, b"payload"),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "generic error text containing 'closed' should not mark the candidate failed"
+    );
 }
 
 #[tokio::test]
