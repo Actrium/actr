@@ -1364,17 +1364,16 @@ fn doc_generates_default_pages_without_manifest_and_rejects_subdir() {
 }
 
 #[test]
-fn deps_install_requires_project_container_in_empty_dir() {
+fn deps_install_in_empty_dir_fails_without_writing_project_config() {
     let tmp = TempDir::new().expect("tempdir");
     let home = isolated_home(tmp.path());
 
-    // Empty directory → no manifest, so the container is minimal and the
-    // install command cannot even resolve its ConfigManager dependency.
+    // Empty directory → no manifest, so the command must fail without mutating
+    // project-local config. Avoid asserting the internal DI error text.
     let output = run_actr(&["deps", "install"], tmp.path(), &home);
     assert_failure(&output, "deps install non-project");
     assert!(
-        stderr(&output).contains("ConfigManager is required"),
-        "deps install non-project stderr:\n{}",
-        stderr(&output)
+        !tmp.path().join(".actr/config.toml").exists(),
+        "deps install in an empty directory must not write project config"
     );
 }

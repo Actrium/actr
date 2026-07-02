@@ -5,6 +5,7 @@
 //! - Used for intra-process communication (e.g., Shell <-> Workload)
 //! - Support PayloadType routing (default Reliable)
 
+use super::ensure_stream_payload_type;
 use crate::transport::HostTransport;
 use actr_framework::Bytes;
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
@@ -158,6 +159,8 @@ impl HostGate {
             data.len()
         );
 
+        ensure_stream_payload_type(payload_type)?;
+
         // Wrap in RpcEnvelope for transport
         #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
         let mut envelope = RpcEnvelope {
@@ -283,17 +286,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_data_stream_reliable_succeeds() {
-        // Reliable lane exists by default, so send_data_stream with
-        // PayloadType::RpcReliable resolves Ok (stream_id ignored for reliable).
+    async fn send_data_stream_rejects_non_stream_payload_type() {
         let gate = gate();
-        gate.send_data_stream(
-            &ActrId::default(),
-            PayloadType::RpcReliable,
-            "any-stream",
-            Bytes::from_static(b"data"),
-        )
-        .await
-        .unwrap();
+        let err = gate
+            .send_data_stream(
+                &ActrId::default(),
+                PayloadType::RpcReliable,
+                "any-stream",
+                Bytes::from_static(b"data"),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ActrError::InvalidArgument(_)));
     }
 }

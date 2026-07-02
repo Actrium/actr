@@ -614,10 +614,10 @@ async fn two_nodes_connect_over_webrtc() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn node_survives_signaling_pause_and_resume() {
-    // Pause then resume signaling forwarding while the node runs. This drives
-    // the signaling client's disconnect detection + auto-reconnect path
-    // (WebSocketSignalingClient reconnect logic), a large uncovered surface.
+async fn node_remains_running_during_signaling_pause_and_resume_smoke() {
+    // Pause then resume signaling forwarding while the node runs. This is a
+    // bounded smoke test for the signaling disruption path; it does not assert
+    // detailed reconnect state transitions.
     let mut server = TestSignalingServer::start().await.expect("server start");
     let dir = TempDir::new().unwrap();
 
@@ -645,7 +645,7 @@ async fn node_survives_signaling_pause_and_resume() {
     server.pause_forwarding();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     server.resume_forwarding();
-    // Give the auto-reconnect logic time to run.
+    // Give background signaling logic time to run.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(!actr.is_shutting_down());
 
@@ -655,10 +655,9 @@ async fn node_survives_signaling_pause_and_resume() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn node_survives_signaling_blackhole_io() {
-    // Blackhole WebSocket I/O (drop packets without closing) to drive the
-    // signaling client's heartbeat-timeout disconnect path, distinct from
-    // pause_forwarding.
+async fn node_handles_signaling_blackhole_io_without_panic_smoke() {
+    // Blackhole WebSocket I/O (drop packets without closing) to exercise the
+    // heartbeat-timeout disruption path as a bounded smoke test.
     let mut server = TestSignalingServer::start().await.expect("server start");
     let dir = TempDir::new().unwrap();
 
@@ -693,9 +692,10 @@ async fn node_survives_signaling_blackhole_io() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_nodes_drop_ice_candidates_triggers_restart() {
-    // Dropping ICE candidates between two connected nodes forces ICE
-    // connectivity failure and the coordinator's ICE-restart recovery path.
+async fn two_nodes_drop_ice_candidates_returns_bounded_rpc_result() {
+    // Dropping ICE candidates between two connected nodes disrupts connectivity;
+    // this test asserts the RPC resolves with either success or a transport-class
+    // error instead of hanging.
     let mut server = TestSignalingServer::start().await.expect("server start");
     let dir_a = TempDir::new().unwrap();
     let dir_b = TempDir::new().unwrap();
@@ -753,8 +753,7 @@ async fn two_nodes_drop_ice_candidates_triggers_restart() {
         .await
         .unwrap();
 
-    // Drop ICE candidates to disrupt connectivity, then attempt a call which
-    // drives the ICE-restart / connection-rebuild path.
+    // Drop ICE candidates to disrupt connectivity, then attempt a bounded call.
     server.drop_next_ice_candidates(3);
     let target = discover_required(&caller_actr, &echo_type, &echo_id).await;
 
@@ -827,7 +826,7 @@ async fn linked_node_registers_with_realm_secret() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn linked_node_run_with_acl_and_scripts_config() {
-    // A non-trivial scripts config exercises the runtime config plumbing.
+    // Non-default ACL and scripts config exercises the runtime config plumbing.
     let mut server = TestSignalingServer::start().await.expect("server start");
     let dir = TempDir::new().unwrap();
 
@@ -839,6 +838,7 @@ async fn linked_node_run_with_acl_and_scripts_config() {
     .unwrap();
 
     let mut cfg = runtime_config(&dir, &server, "AclNode");
+    cfg.acl = Some(actr_protocol::Acl { rules: vec![] });
     cfg.scripts
         .insert("greet".to_string(), "echo hi".to_string());
 
