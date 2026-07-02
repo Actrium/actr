@@ -20,6 +20,19 @@ use actr_framework::{Bytes, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
+fn ensure_stream_payload_type(payload_type: PayloadType) -> ActorResult<()> {
+    if !matches!(
+        payload_type,
+        PayloadType::StreamReliable | PayloadType::StreamLatencyFirst
+    ) {
+        return Err(ActrError::InvalidArgument(format!(
+            "send_data_stream requires a stream payload type, got {payload_type:?}"
+        )));
+    }
+
+    Ok(())
+}
+
 /// Gate enum for outbound messaging.
 ///
 /// # Design Principles
@@ -173,6 +186,8 @@ impl Gate {
         stream_id: &str,
         data: Bytes,
     ) -> ActorResult<()> {
+        ensure_stream_payload_type(payload_type)?;
+
         match self {
             Gate::Host(gate) => {
                 gate.send_data_stream(target, payload_type, stream_id, data)

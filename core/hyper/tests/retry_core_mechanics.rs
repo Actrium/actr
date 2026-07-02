@@ -1812,6 +1812,29 @@ async fn unrecoverable_rpc_send_failure_clears_pending_without_waiting_for_deadl
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_data_stream_rejects_non_stream_payload_type_before_transport() {
+    let (gate, lane, _stats, _transport) =
+        gate_with_lane_and_transport(ScriptedLane::new(vec![Ok(())]), Duration::ZERO);
+    let target = make_actor_id(2);
+
+    let err = gate
+        .send_data_stream(
+            &target,
+            PayloadType::RpcReliable,
+            "not-a-stream-lane",
+            Bytes::from_static(b"stream-payload"),
+        )
+        .await
+        .expect_err("non-stream payload must be rejected before transport send");
+
+    assert!(matches!(err, actr_protocol::ActrError::InvalidArgument(_)));
+    assert!(
+        lane.sent_payloads().is_empty(),
+        "invalid DataStream payload must not be sent through transport"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unrecoverable_data_stream_send_failure_is_explicit_and_bounded() {
     let (gate, lane, _stats, _transport) = gate_with_lane_and_transport(
         ScriptedLane::new(vec![Err(NetworkError::ChannelClosed(
