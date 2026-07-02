@@ -5,6 +5,7 @@
 //! - Used for intra-process communication (e.g., Shell <-> Workload)
 //! - Support PayloadType routing (default Reliable)
 
+use super::ensure_stream_payload_type;
 use crate::transport::HostTransport;
 use actr_framework::Bytes;
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
@@ -158,6 +159,8 @@ impl HostGate {
             data.len()
         );
 
+        ensure_stream_payload_type(payload_type)?;
+
         // Wrap in RpcEnvelope for transport
         #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
         let mut envelope = RpcEnvelope {
@@ -183,3 +186,7 @@ impl HostGate {
             .map_err(|e| ActrError::Unavailable(e.to_string()))
     }
 }
+
+#[cfg(test)]
+#[path = "host_gate_tests.rs"]
+mod tests;

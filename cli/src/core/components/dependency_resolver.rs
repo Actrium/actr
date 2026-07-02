@@ -140,3 +140,7 @@ impl DependencyResolver for DefaultDependencyResolver {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "dependency_resolver_tests.rs"]
+mod tests;

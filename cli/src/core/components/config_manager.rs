@@ -231,3 +231,7 @@ fn resolve_project_root(config_path: &Path) -> PathBuf {
         .expect("Config path must have a parent directory")
         .to_path_buf()
 }
+
+#[cfg(test)]
+#[path = "config_manager_tests.rs"]
+mod tests;

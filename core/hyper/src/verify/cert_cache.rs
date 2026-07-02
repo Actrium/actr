@@ -188,55 +188,5 @@ impl MfrCertCache {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn cache_returns_cached_key_without_http() {
-        use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
-
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let verifying_key = signing_key.verifying_key();
-        let key_b64 = base64::engine::general_purpose::STANDARD.encode(verifying_key.to_bytes());
-
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("GET", "/mfr/test-mfr/verifying_key")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(format!(r#"{{"public_key":"{key_b64}"}}"#))
-            .expect(1) // only called once, second time hits cache
-            .create_async()
-            .await;
-
-        let cache = MfrCertCache::new(server.url());
-
-        // first miss -> calls HTTP
-        let k1 = cache.get_or_fetch("test-mfr", None).await.unwrap();
-        // second hit -> no HTTP call
-        let k2 = cache.get_or_fetch("test-mfr", None).await.unwrap();
-
-        mock.assert_async().await;
-        assert_eq!(k1.to_bytes(), k2.to_bytes());
-        assert_eq!(k1.to_bytes(), verifying_key.to_bytes());
-    }
-
-    #[tokio::test]
-    async fn fetch_fails_on_404() {
-        let mut server = mockito::Server::new_async().await;
-        let _mock = server
-            .mock("GET", "/mfr/unknown-mfr/verifying_key")
-            .with_status(404)
-            .create_async()
-            .await;
-
-        let cache = MfrCertCache::new(server.url());
-        let result = cache.get_or_fetch("unknown-mfr", None).await;
-
-        assert!(
-            matches!(result, Err(HyperError::UntrustedManufacturer(_))),
-            "404 should return UntrustedManufacturer, actual: {result:?}"
-        );
-    }
-}
+#[path = "cert_cache_tests.rs"]
+mod tests;

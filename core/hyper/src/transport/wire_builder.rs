@@ -409,51 +409,5 @@ impl WireBuilder for DefaultWireBuilder {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::transport::ConnType;
-    use actr_protocol::ActrId;
-
-    #[tokio::test]
-    async fn test_no_ws_connection_without_discovery() {
-        // WebSocket URLs come only from service discovery; without a discovery record no WS connection should be created.
-        let config = DefaultWireBuilderConfig {
-            enable_websocket: true,
-            enable_webrtc: false,
-            local_id_hex: "deadbeef".to_string(),
-            discovered_ws_addresses: Arc::new(RwLock::new(HashMap::new())),
-            credential_state: None,
-            session_state: None,
-            pending_requests: None,
-        };
-        let factory = DefaultWireBuilder::new(None, config);
-        let dest = Dest::actor(ActrId::default());
-        let connections = factory.create_connections(&dest).await.unwrap();
-        assert!(connections.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_ws_connection_from_discovery() {
-        // A discovered address should allow a WS connection to be created.
-        let map = Arc::new(RwLock::new(HashMap::new()));
-        let actor_id = ActrId::default();
-        map.write()
-            .await
-            .insert(actor_id.clone(), "ws://localhost:9001".to_string());
-
-        let config = DefaultWireBuilderConfig {
-            enable_websocket: true,
-            enable_webrtc: false,
-            local_id_hex: "deadbeef".to_string(),
-            discovered_ws_addresses: map,
-            credential_state: None,
-            session_state: None,
-            pending_requests: None,
-        };
-        let factory = DefaultWireBuilder::new(None, config);
-        let dest = Dest::actor(actor_id);
-        let connections = factory.create_connections(&dest).await.unwrap();
-        assert_eq!(connections.len(), 1);
-        assert_eq!(connections[0].connection_type(), ConnType::WebSocket);
-    }
-}
+#[path = "wire_builder_tests.rs"]
+mod tests;

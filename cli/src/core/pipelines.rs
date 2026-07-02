@@ -692,3 +692,7 @@ impl GenerationPipeline {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "pipelines_tests.rs"]
+mod tests;

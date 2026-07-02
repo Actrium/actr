@@ -405,3 +405,7 @@ impl ErrorReporter {
         output.join("\n")
     }
 }
+
+#[cfg(test)]
+#[path = "error_tests.rs"]
+mod tests;

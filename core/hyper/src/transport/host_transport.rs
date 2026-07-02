@@ -496,3 +496,7 @@ impl HostTransport {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "host_transport_tests.rs"]
+mod tests;

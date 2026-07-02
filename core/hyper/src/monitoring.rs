@@ -351,3 +351,7 @@ impl Monitor for BasicMonitor {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "monitoring_tests.rs"]
+mod tests;

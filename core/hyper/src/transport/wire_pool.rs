@@ -426,3 +426,7 @@ impl WirePool {
         self.closed.load(Ordering::Relaxed)
     }
 }
+
+#[cfg(test)]
+#[path = "wire_pool_tests.rs"]
+mod tests;

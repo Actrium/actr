@@ -584,3 +584,7 @@ fn resolve_host_target() -> Result<String> {
 
     Ok(host.trim().to_string())
 }
+
+#[cfg(test)]
+#[path = "build_tests.rs"]
+mod tests;

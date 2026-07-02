@@ -2562,40 +2562,5 @@ impl Inner {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn connection_not_ready_has_distinct_wire_code() {
-        let err = ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(1200, 6000));
-
-        assert_eq!(protocol_error_to_code(&err), 10011);
-    }
-
-    #[test]
-    fn connection_not_ready_wire_code_roundtrips_variant_and_retry_hint() {
-        let err = wire_code_to_actr_error(
-            10011,
-            "connection not ready: retry_after_ms=Some(4800)".to_string(),
-        );
-
-        match err {
-            ActrError::ConnectionNotReady(info) => {
-                assert_eq!(info.retry_after_ms, Some(4800));
-            }
-            other => panic!("expected ConnectionNotReady, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn connection_not_ready_wire_code_handles_missing_retry_hint() {
-        let err = wire_code_to_actr_error(10011, "connection not ready".to_string());
-
-        match err {
-            ActrError::ConnectionNotReady(info) => {
-                assert_eq!(info.retry_after_ms, None);
-            }
-            other => panic!("expected ConnectionNotReady, got {other:?}"),
-        }
-    }
-}
+#[path = "node_tests.rs"]
+mod tests;

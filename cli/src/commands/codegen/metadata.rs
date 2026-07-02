@@ -151,3 +151,7 @@ fn build_method_metadata(method: &MethodModel) -> MethodMetadata {
         route_key: method.route_key.clone(),
     }
 }
+
+#[cfg(test)]
+#[path = "metadata_tests.rs"]
+mod tests;

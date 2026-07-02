@@ -191,3 +191,7 @@ pub struct ResourceUsageRatio {
     /// Disk usage ratio (0.0-1.0)
     pub disk_ratio: f64,
 }
+
+#[cfg(test)]
+#[path = "resource_tests.rs"]
+mod tests;

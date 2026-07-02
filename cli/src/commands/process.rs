@@ -85,3 +85,7 @@ pub(crate) fn is_process_alive(pid: u32) -> bool {
 pub(crate) fn is_process_alive(_pid: u32) -> bool {
     false
 }
+
+#[cfg(test)]
+#[path = "process_tests.rs"]
+mod tests;

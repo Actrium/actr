@@ -345,3 +345,7 @@ pub trait Command: Send + Sync {
     /// Command description
     fn description(&self) -> &str;
 }
+
+#[cfg(test)]
+#[path = "container_tests.rs"]
+mod tests;

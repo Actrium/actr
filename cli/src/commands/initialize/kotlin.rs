@@ -497,3 +497,7 @@ exit 1
     info!("📦 Created Gradle wrapper configuration");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "kotlin_tests.rs"]
+mod tests;

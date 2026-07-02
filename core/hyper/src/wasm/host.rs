@@ -937,3 +937,7 @@ impl WasmWorkload {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "host_tests.rs"]
+mod tests;

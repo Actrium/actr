@@ -224,3 +224,7 @@ fn build_otel_provider(config: &ObservabilityConfig) -> ActorResult<SdkTracerPro
 
     Ok(tracer_provider)
 }
+
+#[cfg(test)]
+#[path = "observability_tests.rs"]
+mod tests;

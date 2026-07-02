@@ -91,3 +91,7 @@ impl DataStreamRegistry {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "data_stream_registry_tests.rs"]
+mod tests;

@@ -654,3 +654,7 @@ impl DynClibWorkload {
             .await
     }
 }
+
+#[cfg(test)]
+#[path = "host_tests.rs"]
+mod tests;

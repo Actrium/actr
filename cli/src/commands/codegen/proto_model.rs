@@ -326,3 +326,7 @@ fn extract_declared_type_name(line: &str, prefix: &str) -> Option<String> {
         .find(|segment| !segment.is_empty())?;
     Some(name.to_string())
 }
+
+#[cfg(test)]
+#[path = "proto_model_tests.rs"]
+mod tests;

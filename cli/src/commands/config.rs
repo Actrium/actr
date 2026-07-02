@@ -646,26 +646,5 @@ fn value_to_u32(v: &Value, key: &str) -> Result<u32> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_full_toml_document_as_value_table() {
-        let value = parse_toml_document_value(
-            r#"
-[mfr]
-manufacturer = "demo1"
-
-[network]
-realm_id = 2368266035
-"#,
-            ".actr/config.toml",
-        )
-        .expect("config TOML should parse");
-
-        assert_eq!(
-            ConfigCommand::get_nested_value(&value, "mfr.manufacturer"),
-            Some(&Value::String("demo1".to_string()))
-        );
-    }
-}
+#[path = "config_tests.rs"]
+mod tests;

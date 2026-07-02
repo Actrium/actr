@@ -154,3 +154,7 @@ impl CacheManager for DefaultCacheManager {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "cache_manager_tests.rs"]
+mod tests;

@@ -120,3 +120,7 @@ fn language_key(language: SupportedLanguage) -> &'static str {
 
 #[allow(dead_code)]
 fn _proto_model_is_retained_for_generation_ordering(_proto_model: &ProtoModel) {}
+
+#[cfg(test)]
+#[path = "scaffold_tests.rs"]
+mod tests;

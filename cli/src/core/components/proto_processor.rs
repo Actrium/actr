@@ -73,3 +73,7 @@ impl ProtoProcessor for DefaultProtoProcessor {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "proto_processor_tests.rs"]
+mod tests;

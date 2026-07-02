@@ -318,3 +318,7 @@ async fn build_minimal_container() -> Result<ServiceContainer> {
     container = container.register_user_interface(Arc::new(ConsoleUI::new()));
     Ok(container)
 }
+
+#[cfg(test)]
+#[path = "cli_tests.rs"]
+mod tests;

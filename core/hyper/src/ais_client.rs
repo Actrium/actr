@@ -236,3 +236,7 @@ fn classify_renew_status(status: u16, retry_after: Option<Duration>) -> RenewErr
         other => RenewError::Protocol(format!("unexpected AIS renew status {other}")),
     }
 }
+
+#[cfg(test)]
+#[path = "ais_client_tests.rs"]
+mod tests;

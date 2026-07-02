@@ -98,3 +98,7 @@ impl FingerprintValidator for DefaultFingerprintValidator {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "fingerprint_validator_tests.rs"]
+mod tests;

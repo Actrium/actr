@@ -153,3 +153,7 @@ fn create_swiftpm_registry_config(project_dir: &Path) -> Result<()> {
     info!("📦 Created Swift Package Manager registry configuration");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "swift_tests.rs"]
+mod tests;

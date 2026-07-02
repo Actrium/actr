@@ -108,3 +108,7 @@ pub async fn execute_initialize(language: SupportedLanguage, context: &InitConte
     initializer.print_next_steps(context);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

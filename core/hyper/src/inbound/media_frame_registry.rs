@@ -127,3 +127,7 @@ impl MediaFrameRegistry {
         self.callbacks.len()
     }
 }
+
+#[cfg(test)]
+#[path = "media_frame_registry_tests.rs"]
+mod tests;
