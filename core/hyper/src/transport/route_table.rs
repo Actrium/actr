@@ -43,6 +43,14 @@ pub(crate) enum DataLaneType {
 
 /// PayloadType routing extension
 pub(crate) trait PayloadTypeExt {
+    /// Whether this payload type carries a `DataStream` chunk.
+    ///
+    /// Only `StreamReliable` and `StreamLatencyFirst` are permitted on the
+    /// `send_data_stream` path; centralizing the classification here keeps the
+    /// stream-type set in one place as it is referenced from several call sites.
+    #[allow(clippy::wrong_self_convention)]
+    fn is_stream(self) -> bool;
+
     /// Get the list of supported DataLane types (ordered by priority)
     fn data_lane_types(self) -> &'static [DataLaneType];
 
@@ -57,6 +65,14 @@ pub(crate) trait PayloadTypeExt {
 }
 
 impl PayloadTypeExt for PayloadType {
+    #[inline]
+    fn is_stream(self) -> bool {
+        matches!(
+            self,
+            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst
+        )
+    }
+
     #[inline]
     fn retry_policy(self) -> RetryPolicy {
         match self {

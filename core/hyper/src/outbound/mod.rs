@@ -20,11 +20,10 @@ use actr_framework::{Bytes, MediaSample};
 use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use std::sync::Arc;
 
+use crate::transport::PayloadTypeExt;
+
 fn ensure_stream_payload_type(payload_type: PayloadType) -> ActorResult<()> {
-    if !matches!(
-        payload_type,
-        PayloadType::StreamReliable | PayloadType::StreamLatencyFirst
-    ) {
+    if !payload_type.is_stream() {
         return Err(ActrError::InvalidArgument(format!(
             "send_data_stream requires a stream payload type, got {payload_type:?}"
         )));
