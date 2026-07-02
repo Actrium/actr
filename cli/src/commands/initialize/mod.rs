@@ -110,19 +110,5 @@ pub async fn execute_initialize(language: SupportedLanguage, context: &InitConte
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn factory_returns_all_languages() {
-        for lang in [
-            SupportedLanguage::Rust,
-            SupportedLanguage::Python,
-            SupportedLanguage::Swift,
-            SupportedLanguage::Kotlin,
-            SupportedLanguage::TypeScript,
-        ] {
-            let _ = InitializerFactory::get_initializer(lang).unwrap();
-        }
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;
