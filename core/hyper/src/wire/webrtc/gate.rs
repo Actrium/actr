@@ -8,7 +8,7 @@ use crate::inbound::DataStreamRegistry;
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{self, ActrId, DataStream, PayloadType, RpcEnvelope};
+use actr_protocol::{self, ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use std::collections::HashMap;
@@ -100,7 +100,24 @@ impl WebRtcGate {
     ) {
         let request_id = envelope.request_id.clone();
 
-        // Determine if Response or Request
+        // Route on the explicit `direction` field when the peer sets it.
+        // Legacy peers predate the field (Unspecified); for them we preserve
+        // the original pending-map inference. Fix for #255: an envelope
+        // explicitly marked Response whose pending entry is already gone
+        // (caller timed out) is dropped as an orphan — never enqueued as a
+        // new request.
+        let direction = envelope
+            .direction
+            .and_then(|d| Direction::try_from(d).ok())
+            .unwrap_or(Direction::Unspecified);
+
+        if matches!(direction, Direction::Request) {
+            // Explicit request — enqueue directly, skip pending lookup.
+            Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id).await;
+            return;
+        }
+
+        // Direction::Response or Direction::Unspecified: consult pending map.
         let mut pending = pending_requests.write().await;
         if let Some((target, response_tx)) = pending.remove(&request_id) {
             // Response - Wake up waiting caller (bypassing disk, fast path)
@@ -124,31 +141,58 @@ impl WebRtcGate {
             };
             let _ = response_tx.send(result);
         } else {
-            // Request - Enqueue to Mailbox (pass raw bytes, zero overhead)
             drop(pending); // Release lock
-            tracing::debug!("📥 Received RPC Request: request_id={}", request_id);
-
-            // Determine priority based on PayloadType
-            let priority = match payload_type {
-                PayloadType::RpcSignal => MessagePriority::High,
-                PayloadType::RpcReliable => MessagePriority::Normal,
-                _ => MessagePriority::Normal,
-            };
-
-            tracing::info!(request_id = %request_id, "rpc.mailbox.enqueue");
-            // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
-            // Convert Bytes to Vec<u8> (Mailbox uses Vec)
-            match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
-                Ok(msg_id) => {
-                    tracing::debug!(
-                        "✅ RPC message enqueued to Mailbox: msg_id={}, priority={:?}",
-                        msg_id,
-                        priority
+            match direction {
+                Direction::Response => {
+                    // Orphan/late response: pending entry was removed (caller
+                    // timed out). Drop instead of enqueueing as a new request.
+                    tracing::warn!(
+                        request_id = %request_id,
+                        "rpc.orphan_response_dropped: late RPC response with no pending request; dropping"
                     );
                 }
-                Err(e) => {
-                    tracing::error!("❌ Mailbox enqueue failed: {:?}", e);
+                Direction::Unspecified => {
+                    // Legacy peer (no direction): infer as new request.
+                    Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id)
+                        .await;
                 }
+                Direction::Request => unreachable!("Request branch handled above"),
+            }
+        }
+    }
+
+    /// Enqueue an inbound RPC request to the Mailbox with priority derived
+    /// from the inbound `PayloadType`. Shared by the explicit-Request path
+    /// and the legacy (Unspecified) inference path.
+    async fn enqueue_request(
+        from_bytes: Vec<u8>,
+        data: Bytes,
+        payload_type: PayloadType,
+        mailbox: Arc<dyn Mailbox>,
+        request_id: &str,
+    ) {
+        tracing::debug!("📥 Received RPC Request: request_id={}", request_id);
+
+        // Determine priority based on PayloadType
+        let priority = match payload_type {
+            PayloadType::RpcSignal => MessagePriority::High,
+            PayloadType::RpcReliable => MessagePriority::Normal,
+            _ => MessagePriority::Normal,
+        };
+
+        tracing::info!(request_id = %request_id, "rpc.mailbox.enqueue");
+        // Enqueue to Mailbox (from_bytes and data are original bytes, zero overhead)
+        // Convert Bytes to Vec<u8> (Mailbox uses Vec)
+        match mailbox.enqueue(from_bytes, data.to_vec(), priority).await {
+            Ok(msg_id) => {
+                tracing::debug!(
+                    "✅ RPC message enqueued to Mailbox: msg_id={}, priority={:?}",
+                    msg_id,
+                    priority
+                );
+            }
+            Err(e) => {
+                tracing::error!("❌ Mailbox enqueue failed: {:?}", e);
             }
         }
     }

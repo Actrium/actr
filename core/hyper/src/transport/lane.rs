@@ -937,6 +937,7 @@ mod tests {
             metadata: vec![],
             timeout_ms: 30000,
             error: None,
+            direction: Some(actr_protocol::Direction::Request as i32),
         };
         lane.send_envelope(envelope.clone()).await.unwrap();
 
@@ -963,6 +964,7 @@ mod tests {
             metadata: vec![],
             timeout_ms: 30000,
             error: None,
+            direction: Some(actr_protocol::Direction::Request as i32),
         };
         lane.send_envelope(envelope.clone()).await.unwrap();
 
@@ -989,6 +991,7 @@ mod tests {
             metadata: vec![],
             timeout_ms: 30000,
             error: None,
+            direction: Some(actr_protocol::Direction::Request as i32),
         };
         lane.send_envelope(envelope.clone()).await.unwrap();
 

@@ -2,7 +2,7 @@
 //!
 //! Web-specific HostGate for communication between actors inside the Service Worker.
 
-use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, Direction, PayloadType, RpcEnvelope};
 use bytes::Bytes;
 use futures::channel::oneshot;
 use parking_lot::Mutex;
@@ -164,6 +164,7 @@ impl HostGate {
             route_key: "__fast_path_data_stream__".to_string(),
             payload: Some(data),
             error: None,
+            direction: Some(Direction::Request as i32),
             traceparent: None,
             tracestate: None,
             request_id: format!("ds-{}", js_sys::Math::random()),
