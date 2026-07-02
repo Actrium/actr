@@ -1246,17 +1246,10 @@ impl PeerGate {
         let dest = Self::actr_id_to_dest(target);
         self.preflight_send(target, &dest).await?;
 
-        let tracks_data_stream = matches!(
-            payload_type,
-            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst
-        );
-
-        let stream_session_id = if tracks_data_stream {
-            if let Some(coordinator) = &self.webrtc_coordinator {
-                coordinator.get_peer_session_id(target).await
-            } else {
-                None
-            }
+        // `ensure_stream_payload_type` above guarantees `payload_type` is a
+        // stream variant, so every call tracks an active data stream unconditionally.
+        let stream_session_id = if let Some(coordinator) = &self.webrtc_coordinator {
+            coordinator.get_peer_session_id(target).await
         } else {
             None
         };
@@ -1282,26 +1275,24 @@ impl PeerGate {
             ))),
         };
 
-        if tracks_data_stream {
-            if result.is_err() {
-                if recorded_before_send && let Some(session_id) = stream_session_id {
-                    self.active_data_streams
-                        .write()
-                        .await
-                        .remove_stream_session(target, stream_id, session_id);
-                }
-            } else if stream_session_id.is_none()
-                && let Some(coordinator) = &self.webrtc_coordinator
-            {
-                if let Some(session_id) = coordinator.get_peer_session_id(target).await {
-                    self.record_active_data_stream_if_needed(
-                        target,
-                        stream_id,
-                        session_id,
-                        Instant::now(),
-                    )
-                    .await;
-                }
+        if result.is_err() {
+            if recorded_before_send && let Some(session_id) = stream_session_id {
+                self.active_data_streams
+                    .write()
+                    .await
+                    .remove_stream_session(target, stream_id, session_id);
+            }
+        } else if stream_session_id.is_none()
+            && let Some(coordinator) = &self.webrtc_coordinator
+        {
+            if let Some(session_id) = coordinator.get_peer_session_id(target).await {
+                self.record_active_data_stream_if_needed(
+                    target,
+                    stream_id,
+                    session_id,
+                    Instant::now(),
+                )
+                .await;
             }
         }
 
