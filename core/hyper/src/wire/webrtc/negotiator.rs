@@ -7,8 +7,9 @@ use crate::transport::NetworkResult;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 
-#[cfg(feature = "test-utils")]
 use std::sync::Arc;
+use tokio::sync::OnceCell;
+use webrtc::ice::udp_mux::UDPMux;
 #[cfg(feature = "test-utils")]
 use webrtc::util::vnet::net::Net;
 
@@ -22,6 +23,11 @@ pub(crate) struct WebRtcNegotiator {
     config: WebRtcConfig,
     /// Latest credential state (updated on register/renew, contains TurnCredential)
     credential_state: CredentialState,
+    /// Process-shared ICE UDP mux: a single UDP socket reused by every
+    /// RTCPeerConnection this negotiator creates, so ICE gathering no longer
+    /// opens a fresh socket per interface per connection. Lazily bound on first
+    /// use; shared across clones via the outer `Arc`.
+    udp_mux: Arc<OnceCell<Arc<dyn UDPMux + Send + Sync>>>,
     /// Optional virtual network for integration testing.
     /// When set, RTCPeerConnection will use this VNet instead of real OS networking.
     #[cfg(feature = "test-utils")]
@@ -37,9 +43,49 @@ impl WebRtcNegotiator {
         Self {
             config,
             credential_state,
+            udp_mux: Arc::new(OnceCell::new()),
             #[cfg(feature = "test-utils")]
             vnet: None,
         }
+    }
+
+    /// Get (or lazily bind) the process-shared ICE UDP mux. A single UDP socket
+    /// is bound the first time this is called and reused by every subsequent
+    /// RTCPeerConnection, so the process's UDP socket count stays O(1) instead of
+    /// growing one-per-interface per connection (which otherwise leaks fds for
+    /// the process lifetime, since the per-connection sockets are not released
+    /// when a peer connection is closed). Honors a configured fixed UDP port when
+    /// present, else lets the OS assign one.
+    async fn shared_udp_mux(&self) -> NetworkResult<Arc<dyn UDPMux + Send + Sync>> {
+        use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
+
+        let mux = self
+            .udp_mux
+            .get_or_try_init(|| async {
+                let port = self
+                    .config
+                    .advanced
+                    .udp_ports
+                    .map(|(min, _max)| min)
+                    .unwrap_or(0);
+                let socket = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
+                    .await
+                    .map_err(|e| {
+                        crate::transport::NetworkError::Other(anyhow::anyhow!(
+                            "failed to bind shared ICE UDP mux socket: {e}"
+                        ))
+                    })?;
+                let local = socket.local_addr().ok();
+                let mux: Arc<dyn UDPMux + Send + Sync> =
+                    UDPMuxDefault::new(UDPMuxParams::new(socket));
+                tracing::info!(
+                    ?local,
+                    "🔌 Bound shared ICE UDP mux (one socket for all peers)"
+                );
+                Ok::<_, crate::transport::NetworkError>(mux)
+            })
+            .await?;
+        Ok(mux.clone())
     }
 
     /// Set the virtual network for testing.
@@ -218,6 +264,19 @@ impl WebRtcNegotiator {
             tracing::info!("🎭 Using default WebRTC configuration (Offerer mode)");
         }
 
+        // Route all ICE UDP through one process-shared muxed socket instead of the
+        // default per-connection ephemeral sockets, so connection churn cannot
+        // exhaust the fd table. Under VNet (tests) the virtual transport is used
+        // instead, so the mux is skipped.
+        #[cfg(feature = "test-utils")]
+        let use_shared_mux = self.vnet.is_none();
+        #[cfg(not(feature = "test-utils"))]
+        let use_shared_mux = true;
+        if use_shared_mux {
+            use webrtc::ice::udp_network::UDPNetwork;
+            setting_engine.set_udp_network(UDPNetwork::Muxed(self.shared_udp_mux().await?));
+        }
+
         // Create API with MediaEngine and SettingEngine
         let api = APIBuilder::new()
             .with_media_engine(media_engine)
@@ -285,7 +344,6 @@ impl WebRtcNegotiator {
         setting_engine: &mut webrtc::api::setting_engine::SettingEngine,
         remote_fixed: bool,
     ) -> NetworkResult<()> {
-        use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
         use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 
         let advanced = &self.config.advanced;
@@ -293,19 +351,10 @@ impl WebRtcNegotiator {
         // Determine if local has fixed configuration
         let local_fixed = advanced.udp_ports.is_some() && !advanced.public_ips.is_empty();
 
-        // Apply UDP port strategy
-        if let Some((min, max)) = advanced.udp_ports {
-            let ephemeral = EphemeralUDP::new(min, max).map_err(|e| {
-                crate::transport::NetworkError::Other(anyhow::anyhow!(
-                    "Failed to create EphemeralUDP: {}",
-                    e
-                ))
-            })?;
-            setting_engine.set_udp_network(UDPNetwork::Ephemeral(ephemeral));
-            tracing::info!("🔧 UDP port range: {}-{}", min, max);
-        } else {
-            tracing::info!("🔧 Using default random UDP ports");
-        }
+        // UDP networking (including any configured fixed port) is handled by the
+        // process-shared muxed socket set in create_peer_connection; see
+        // shared_udp_mux. The per-connection ephemeral socket strategy previously
+        // applied here is what leaked one UDP fd per interface per connection.
 
         // Apply NAT 1:1 mapping based on local and remote configuration
         if !advanced.public_ips.is_empty() {
