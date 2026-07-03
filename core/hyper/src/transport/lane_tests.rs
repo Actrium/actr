@@ -1,6 +1,47 @@
 use super::*;
 use bytes::Bytes;
 
+#[test]
+fn test_stream_closed_send_error_wins_over_stale_open_state() {
+    let error = webrtc::Error::Data(webrtc::data::Error::Sctp(
+        webrtc::sctp::Error::ErrStreamClosed,
+    ));
+
+    let classified =
+        classify_data_channel_send_error(error, RTCDataChannelState::Open, "Send failed");
+
+    assert!(matches!(classified, NetworkError::DataChannelClosed(_)));
+    assert!(classified.is_closed_like());
+}
+
+#[test]
+fn test_non_established_send_error_wins_over_stale_open_state() {
+    let error = webrtc::Error::Data(webrtc::data::Error::Sctp(
+        webrtc::sctp::Error::ErrPayloadDataStateNotExist,
+    ));
+
+    let classified =
+        classify_data_channel_send_error(error, RTCDataChannelState::Open, "Send failed");
+
+    assert!(matches!(
+        classified,
+        NetworkError::DataChannelNotOpen { .. }
+    ));
+    assert!(classified.is_closed_like());
+}
+
+#[test]
+fn test_unrelated_send_error_remains_data_channel_error_while_open() {
+    let classified = classify_data_channel_send_error(
+        webrtc::Error::ErrUnknownType,
+        RTCDataChannelState::Open,
+        "Send failed",
+    );
+
+    assert!(matches!(classified, NetworkError::DataChannelError(_)));
+    assert!(!classified.is_closed_like());
+}
+
 // ── Fragment header encode / decode ───────────────────────────────────────
 
 #[test]

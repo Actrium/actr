@@ -52,6 +52,7 @@ use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
 // ── WebRTC DataChannel fragmentation constants ────────────────────────────────
 
@@ -469,11 +470,57 @@ impl WebRtcDataLane {
     }
 }
 
+fn classify_data_channel_send_error(
+    error: webrtc::Error,
+    state: RTCDataChannelState,
+    operation: &str,
+) -> NetworkError {
+    use webrtc::{data, sctp};
+
+    let is_closed = matches!(
+        &error,
+        webrtc::Error::ErrConnectionClosed
+            | webrtc::Error::ErrClosedPipe
+            | webrtc::Error::Data(data::Error::ErrStreamClosed)
+            | webrtc::Error::Data(data::Error::Sctp(
+                sctp::Error::ErrStreamClosed
+                    | sctp::Error::ErrAssociationClosedBeforeConn
+                    | sctp::Error::ErrAssociationHandshakeClosed
+            ))
+            | webrtc::Error::Sctp(
+                sctp::Error::ErrStreamClosed
+                    | sctp::Error::ErrAssociationClosedBeforeConn
+                    | sctp::Error::ErrAssociationHandshakeClosed
+            )
+    );
+    let is_not_open = matches!(
+        &error,
+        webrtc::Error::ErrDataChannelNotOpen
+            | webrtc::Error::ErrSCTPNotEstablished
+            | webrtc::Error::Data(data::Error::Sctp(sctp::Error::ErrPayloadDataStateNotExist))
+            | webrtc::Error::Sctp(sctp::Error::ErrPayloadDataStateNotExist)
+    );
+    let detail = format!("{operation}: {error}");
+
+    if is_closed
+        || matches!(
+            state,
+            RTCDataChannelState::Closed | RTCDataChannelState::Closing
+        )
+    {
+        NetworkError::DataChannelClosed(format!("{state:?}: {detail}"))
+    } else if is_not_open || state != RTCDataChannelState::Open {
+        NetworkError::DataChannelNotOpen {
+            state: format!("{state:?}: {detail}"),
+        }
+    } else {
+        NetworkError::DataChannelError(detail)
+    }
+}
+
 #[async_trait]
 impl DataLane for WebRtcDataLane {
     async fn send(&self, data: bytes::Bytes) -> NetworkResult<()> {
-        use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-
         // Keep the lane wait aligned with initial WebRTC connection readiness.
         let start = tokio::time::Instant::now();
         loop {
@@ -501,17 +548,12 @@ impl DataLane for WebRtcDataLane {
             encode_fragment_header(&mut buf, msg_id, 0, 1);
             buf.extend_from_slice(&data);
             let frame = bytes::Bytes::from(buf);
-            self.data_channel.send(&frame).await.map_err(|e| {
-                let state = self.data_channel.ready_state();
-                if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing {
-                    NetworkError::DataChannelClosed(format!("{state:?}: {e}"))
-                } else if state != RTCDataChannelState::Open {
-                    NetworkError::DataChannelNotOpen {
-                        state: format!("{state:?}: {e}"),
-                    }
-                } else {
-                    NetworkError::DataChannelError(format!("Send failed: {e}"))
-                }
+            self.data_channel.send(&frame).await.map_err(|error| {
+                classify_data_channel_send_error(
+                    error,
+                    self.data_channel.ready_state(),
+                    "Send failed",
+                )
             })?;
             #[cfg(feature = "test-utils")]
             notify_webrtc_fragment_sent_for_test(WebRtcFragmentSendEvent {
@@ -548,22 +590,12 @@ impl DataLane for WebRtcDataLane {
                 encode_fragment_header(&mut buf, msg_id, frag_index as u16, total_frags);
                 buf.extend_from_slice(chunk);
                 let frame = bytes::Bytes::from(buf);
-                self.data_channel.send(&frame).await.map_err(|e| {
-                    let state = self.data_channel.ready_state();
-                    if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing
-                    {
-                        NetworkError::DataChannelClosed(format!(
-                            "{state:?}: fragment {frag_index}: {e}"
-                        ))
-                    } else if state != RTCDataChannelState::Open {
-                        NetworkError::DataChannelNotOpen {
-                            state: format!("{state:?}: fragment {frag_index}: {e}"),
-                        }
-                    } else {
-                        NetworkError::DataChannelError(format!(
-                            "Send fragment {frag_index} failed: {e}"
-                        ))
-                    }
+                self.data_channel.send(&frame).await.map_err(|error| {
+                    classify_data_channel_send_error(
+                        error,
+                        self.data_channel.ready_state(),
+                        &format!("Send fragment {frag_index} failed"),
+                    )
                 })?;
                 #[cfg(feature = "test-utils")]
                 notify_webrtc_fragment_sent_for_test(WebRtcFragmentSendEvent {
