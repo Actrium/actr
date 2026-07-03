@@ -1766,9 +1766,7 @@ impl WebRtcCoordinator {
     ///
     /// This method identifies peers that should be cleaned up based on:
     /// - Failed/Closed state duration exceeding threshold
-    ///
-    /// Note: ICE restart failures and Disconnected states are handled automatically
-    /// by the ICE restart mechanism, so we don't need to check them here.
+    /// - Disconnected state past the ICE-restart budget with no restart in flight
     async fn check_and_cleanup_stale_connections(&self) {
         let peers_to_cleanup: Vec<(ActrId, String)> = {
             let peers = self.peers.read().await;
@@ -1781,13 +1779,28 @@ impl WebRtcCoordinator {
                     let current_state = state.peer_connection.connection_state();
                     let duration_since_change = now.duration_since(state.last_state_change);
 
-                    // Cleanup condition: Failed/Closed state for too long
-                    // These are terminal states that won't recover automatically
-                    if matches!(
+                    // Terminal states (Failed/Closed) that won't recover on their own.
+                    let terminal_stale = matches!(
                         current_state,
                         RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
-                    ) && duration_since_change > MAX_FAILED_DURATION
-                    {
+                    ) && duration_since_change > MAX_FAILED_DURATION;
+
+                    // A peer stuck in Disconnected past the ICE-restart budget with no
+                    // restart in flight will not recover on its own. Unlike Failed/Closed
+                    // it was previously left untouched here (on the assumption the ICE
+                    // restart mechanism would take it to a terminal state), but when ICE
+                    // restart exhausts without reaching Failed the peer lingers forever —
+                    // and with it the RTCPeerConnection and the per-interface ICE UDP
+                    // sockets it holds, leaking fds for the process lifetime. Reap it too.
+                    // The `!ice_restart_inflight` guard avoids killing a peer mid-recovery;
+                    // MAX_FAILED_DURATION (60s) already exceeds the ICE restart budget
+                    // (ICE_RESTART_MAX_TOTAL_DURATION).
+                    let disconnected_stale =
+                        matches!(current_state, RTCPeerConnectionState::Disconnected)
+                            && duration_since_change > MAX_FAILED_DURATION
+                            && !state.ice_restart_inflight;
+
+                    if terminal_stale || disconnected_stale {
                         let reason = format!(
                             "{:?} for {}s",
                             current_state,
