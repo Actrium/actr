@@ -162,7 +162,7 @@ impl WebRtcGate {
         }
 
         ActrId::decode(from_bytes)
-            .map(|peer| format!("{peer:?}"))
+            .map(|peer| peer.to_string_repr())
             .unwrap_or_else(|e| format!("decode_failed:{e}"))
     }
 
@@ -389,7 +389,7 @@ impl WebRtcGate {
     pub async fn send_response(
         &self,
         target: &ActrId,
-        response_envelope: RpcEnvelope,
+        mut response_envelope: RpcEnvelope,
     ) -> ActorResult<()> {
         // Fill actr_id span field at runtime
         #[cfg(feature = "opentelemetry")]
@@ -399,6 +399,8 @@ impl WebRtcGate {
                 tracing::Span::current().record("actr_id", tracing::field::display(id));
             }
         }
+        response_envelope.direction = Some(Direction::Response as i32);
+
         // Serialize RpcEnvelope (Protobuf)
         let mut buf = Vec::new();
         response_envelope

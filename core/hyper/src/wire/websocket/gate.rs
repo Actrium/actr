@@ -128,7 +128,11 @@ impl WebSocketGate {
     /// (not an error) when no inbound connection from `peer` is known — the
     /// caller should fall back to another transport (e.g. `WebRtcGate`).
     /// Returns `Ok(true)` on a successful send.
-    pub async fn send_response(&self, peer: &ActrId, envelope: RpcEnvelope) -> ActorResult<bool> {
+    pub async fn send_response(
+        &self,
+        peer: &ActrId,
+        mut envelope: RpcEnvelope,
+    ) -> ActorResult<bool> {
         let sink_opt = {
             let map = self.inbound_sinks.read().await;
             map.get(peer).cloned()
@@ -138,6 +142,8 @@ impl WebSocketGate {
             Some(s) => s,
             None => return Ok(false),
         };
+
+        envelope.direction = Some(Direction::Response as i32);
 
         // Serialize envelope
         let mut payload_buf = Vec::new();
@@ -238,7 +244,7 @@ impl WebSocketGate {
         }
 
         ActrId::decode(from_bytes)
-            .map(|peer| format!("{peer:?}"))
+            .map(|peer| peer.to_string_repr())
             .unwrap_or_else(|e| format!("decode_failed:{e}"))
     }
 
