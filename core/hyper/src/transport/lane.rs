@@ -30,7 +30,7 @@
 //! When `total_frags == 1` the message fits in a single DataChannel message;
 //! the receiver strips the header and returns the payload directly.
 
-use super::error::{NetworkError, NetworkResult};
+use super::error::{NetworkError, NetworkResult, is_tungstenite_closed};
 use crate::INITIAL_CONNECTION_TIMEOUT;
 use actr_protocol::PayloadType;
 use async_trait::async_trait;
@@ -48,7 +48,6 @@ use std::sync::{Mutex as StdMutex, OnceLock};
 use std::time::Instant;
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, mpsc};
-use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use webrtc::data_channel::RTCDataChannel;
@@ -510,9 +509,7 @@ fn classify_data_channel_send_error(
     {
         NetworkError::DataChannelClosed(format!("{state:?}: {detail}"))
     } else if is_not_open || state != RTCDataChannelState::Open {
-        NetworkError::DataChannelNotOpen {
-            state: format!("{state:?}: {detail}"),
-        }
+        NetworkError::DataChannelNotOpen(format!("{state:?}: {detail}"))
     } else {
         NetworkError::DataChannelError(detail)
     }
@@ -752,14 +749,13 @@ impl DataLane for WebSocketDataLane {
         // 2. Send to WebSocket
         let mut sink_opt = self.sink.lock().await;
         if let Some(s) = sink_opt.as_mut() {
-            s.send(WsMessage::Binary(buf.into()))
-                .await
-                .map_err(|e| match e {
-                    WsError::ConnectionClosed | WsError::AlreadyClosed => {
-                        NetworkError::WebSocketClosed(e.to_string())
-                    }
-                    other => NetworkError::SendError(format!("WebSocket send failed: {other}")),
-                })?;
+            s.send(WsMessage::Binary(buf.into())).await.map_err(|e| {
+                if is_tungstenite_closed(&e) {
+                    NetworkError::WebSocketClosed(e.to_string())
+                } else {
+                    NetworkError::SendError(format!("WebSocket send failed: {e}"))
+                }
+            })?;
 
             tracing::trace!(
                 "WebSocket sent {} bytes (type={:?})",

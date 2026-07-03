@@ -10,7 +10,7 @@ fn transient_network_errors() {
         NetworkError::PeerConnectionClosed("x".into()),
         NetworkError::ChannelClosed("x".into()),
         NetworkError::DataChannelClosed("x".into()),
-        NetworkError::DataChannelNotOpen { state: "x".into() },
+        NetworkError::DataChannelNotOpen("x".into()),
         NetworkError::SendError("x".into()),
         NetworkError::NetworkUnreachableError("x".into()),
         NetworkError::ResourceExhaustedError("x".into()),
@@ -80,9 +80,7 @@ fn closed_like_network_errors_are_structural() {
         NetworkError::ConnectionClosed("x".into()),
         NetworkError::PeerConnectionClosed("x".into()),
         NetworkError::DataChannelClosed("x".into()),
-        NetworkError::DataChannelNotOpen {
-            state: "Closing".into(),
-        },
+        NetworkError::DataChannelNotOpen("Closing".into()),
         NetworkError::WebSocketClosed("x".into()),
     ];
 
@@ -186,7 +184,7 @@ fn category_covers_all_variants() {
             "data_channel_closed",
         ),
         (
-            NetworkError::DataChannelNotOpen { state: "x".into() },
+            NetworkError::DataChannelNotOpen("x".into()),
             "data_channel_not_open",
         ),
         (NetworkError::IceError("x".into()), "ice"),
@@ -259,7 +257,7 @@ fn severity_is_within_1_to_10_for_all_variants() {
         NetworkError::NatTraversalError("x".into()),
         NetworkError::DataChannelError("x".into()),
         NetworkError::DataChannelClosed("x".into()),
-        NetworkError::DataChannelNotOpen { state: "x".into() },
+        NetworkError::DataChannelNotOpen("x".into()),
         NetworkError::IceError("x".into()),
         NetworkError::DtlsError("x".into()),
         NetworkError::StunTurnError("x".into()),

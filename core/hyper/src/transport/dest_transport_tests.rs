@@ -135,9 +135,9 @@ impl WireHandle for FakeWire {
             ));
         }
         if self.lane_non_established {
-            return Err(NetworkError::DataChannelNotOpen {
-                state: "non-Established".to_string(),
-            });
+            return Err(NetworkError::DataChannelNotOpen(
+                "non-Established".to_string(),
+            ));
         }
         Ok(Arc::new(FakeLane {
             send_count: Arc::clone(&self.send_count),

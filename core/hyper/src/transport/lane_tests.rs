@@ -23,10 +23,7 @@ fn test_non_established_send_error_wins_over_stale_open_state() {
     let classified =
         classify_data_channel_send_error(error, RTCDataChannelState::Open, "Send failed");
 
-    assert!(matches!(
-        classified,
-        NetworkError::DataChannelNotOpen { .. }
-    ));
+    assert!(matches!(classified, NetworkError::DataChannelNotOpen(_)));
     assert!(classified.is_closed_like());
 }
 

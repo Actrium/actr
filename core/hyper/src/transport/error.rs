@@ -75,8 +75,8 @@ pub enum NetworkError {
     DataChannelClosed(String),
 
     /// Data channel exists but is not currently open/sendable
-    #[error("Data channel not open: {state}")]
-    DataChannelNotOpen { state: String },
+    #[error("Data channel not open: {0}")]
+    DataChannelNotOpen(String),
 
     /// Broadcast error
     #[error("Broadcast error: {0}")]
@@ -168,7 +168,7 @@ impl Classify for NetworkError {
             | NetworkError::PeerConnectionClosed(_)
             | NetworkError::ChannelClosed(_)
             | NetworkError::DataChannelClosed(_)
-            | NetworkError::DataChannelNotOpen { .. }
+            | NetworkError::DataChannelNotOpen(_)
             | NetworkError::SendError(_)
             | NetworkError::NetworkUnreachableError(_)
             | NetworkError::ResourceExhaustedError(_)
@@ -236,7 +236,7 @@ impl NetworkError {
             NetworkError::NatTraversalError(_) => "nat_traversal",
             NetworkError::DataChannelError(_) => "data_channel",
             NetworkError::DataChannelClosed(_) => "data_channel_closed",
-            NetworkError::DataChannelNotOpen { .. } => "data_channel_not_open",
+            NetworkError::DataChannelNotOpen(_) => "data_channel_not_open",
             NetworkError::IceError(_) => "ice",
             NetworkError::DtlsError(_) => "dtls",
             NetworkError::StunTurnError(_) => "stun_turn",
@@ -294,7 +294,7 @@ impl NetworkError {
             | NetworkError::PeerConnectionClosed(_)
             | NetworkError::ChannelClosed(_)
             | NetworkError::DataChannelClosed(_)
-            | NetworkError::DataChannelNotOpen { .. }
+            | NetworkError::DataChannelNotOpen(_)
             | NetworkError::WebSocketClosed(_)
             | NetworkError::SendError(_)
             | NetworkError::NoRoute(_)
@@ -318,15 +318,55 @@ impl NetworkError {
     /// `ChannelClosed` is intentionally excluded: it is a generic in-process
     /// channel failure and existing non-RPC send paths surface it directly
     /// instead of treating it as a stale WebRTC lane to self-heal.
+    ///
+    /// Exhaustive by design (mirrors `kind`/`category`/`severity`): adding a
+    /// new `NetworkError` variant forces the author to decide its closed-like
+    /// status here, so a future closed-transport variant cannot silently miss
+    /// stale-candidate self-heal.
     pub fn is_closed_like(&self) -> bool {
-        matches!(
-            self,
+        match self {
+            // Transport is gone / not sendable: self-heal by evicting the stale candidate.
             NetworkError::ConnectionClosed(_)
-                | NetworkError::PeerConnectionClosed(_)
-                | NetworkError::DataChannelClosed(_)
-                | NetworkError::DataChannelNotOpen { .. }
-                | NetworkError::WebSocketClosed(_)
-        )
+            | NetworkError::PeerConnectionClosed(_)
+            | NetworkError::DataChannelClosed(_)
+            | NetworkError::DataChannelNotOpen(_)
+            | NetworkError::WebSocketClosed(_) => true,
+
+            // Not a stale-transport signal.
+            NetworkError::ConnectionError(_)
+            | NetworkError::SignalingError(_)
+            | NetworkError::WebRtcError(_)
+            | NetworkError::ProtocolError(_)
+            | NetworkError::SerializationError(_)
+            | NetworkError::DeserializationError(_)
+            | NetworkError::TimeoutError(_)
+            | NetworkError::AuthenticationError(_)
+            | NetworkError::CredentialExpired(_)
+            | NetworkError::PermissionError(_)
+            | NetworkError::ConfigurationError(_)
+            | NetworkError::ResourceExhaustedError(_)
+            | NetworkError::NetworkUnreachableError(_)
+            | NetworkError::ServiceDiscoveryError(_)
+            | NetworkError::NatTraversalError(_)
+            | NetworkError::DataChannelError(_)
+            | NetworkError::BroadcastError(_)
+            | NetworkError::IceError(_)
+            | NetworkError::DtlsError(_)
+            | NetworkError::StunTurnError(_)
+            | NetworkError::WebSocketError(_)
+            | NetworkError::ConnectionNotFound(_)
+            | NetworkError::NotImplemented(_)
+            | NetworkError::ChannelClosed(_)
+            | NetworkError::SendError(_)
+            | NetworkError::NoRoute(_)
+            | NetworkError::InvalidOperation(_)
+            | NetworkError::InvalidArgument(_)
+            | NetworkError::ChannelNotFound(_)
+            | NetworkError::IoError(_)
+            | NetworkError::UrlParseError(_)
+            | NetworkError::JsonError(_)
+            | NetworkError::Other(_) => false,
+        }
     }
 }
 
@@ -382,15 +422,25 @@ impl From<webrtc::Error> for NetworkError {
     }
 }
 
+/// Whether a tungstenite WebSocket error indicates the connection is closed.
+///
+/// Shared by `From<WsError>` and the WebSocket lane send path so the
+/// closed-variant set (`ConnectionClosed` / `AlreadyClosed`) is declared once.
+pub(crate) fn is_tungstenite_closed(err: &tokio_tungstenite::tungstenite::Error) -> bool {
+    matches!(
+        err,
+        tokio_tungstenite::tungstenite::Error::ConnectionClosed
+            | tokio_tungstenite::tungstenite::Error::AlreadyClosed
+    )
+}
+
 /// Convert from WebSocket error
 impl From<tokio_tungstenite::tungstenite::Error> for NetworkError {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
-        match err {
-            tokio_tungstenite::tungstenite::Error::ConnectionClosed
-            | tokio_tungstenite::tungstenite::Error::AlreadyClosed => {
-                NetworkError::WebSocketClosed(err.to_string())
-            }
-            other => NetworkError::WebSocketError(other.to_string()),
+        if is_tungstenite_closed(&err) {
+            NetworkError::WebSocketClosed(err.to_string())
+        } else {
+            NetworkError::WebSocketError(err.to_string())
         }
     }
 }
