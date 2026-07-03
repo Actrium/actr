@@ -351,7 +351,7 @@ impl WebSocketConnection {
     ) -> NetworkResult<Arc<dyn DataLane>> {
         // Check connection status
         if !*self.connected.read().await {
-            return Err(NetworkError::ConnectionError(
+            return Err(NetworkError::WebSocketClosed(
                 "WebSocket connection closed".to_string(),
             ));
         }

@@ -30,7 +30,7 @@
 //! When `total_frags == 1` the message fits in a single DataChannel message;
 //! the receiver strips the header and returns the payload directly.
 
-use super::error::{NetworkError, NetworkResult};
+use super::error::{NetworkError, NetworkResult, is_tungstenite_closed};
 use crate::INITIAL_CONNECTION_TIMEOUT;
 use actr_protocol::PayloadType;
 use async_trait::async_trait;
@@ -51,6 +51,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 
 // ── WebRTC DataChannel fragmentation constants ────────────────────────────────
 
@@ -468,11 +469,55 @@ impl WebRtcDataLane {
     }
 }
 
+fn classify_data_channel_send_error(
+    error: webrtc::Error,
+    state: RTCDataChannelState,
+    operation: &str,
+) -> NetworkError {
+    use webrtc::{data, sctp};
+
+    let is_closed = matches!(
+        &error,
+        webrtc::Error::ErrConnectionClosed
+            | webrtc::Error::ErrClosedPipe
+            | webrtc::Error::Data(data::Error::ErrStreamClosed)
+            | webrtc::Error::Data(data::Error::Sctp(
+                sctp::Error::ErrStreamClosed
+                    | sctp::Error::ErrAssociationClosedBeforeConn
+                    | sctp::Error::ErrAssociationHandshakeClosed
+            ))
+            | webrtc::Error::Sctp(
+                sctp::Error::ErrStreamClosed
+                    | sctp::Error::ErrAssociationClosedBeforeConn
+                    | sctp::Error::ErrAssociationHandshakeClosed
+            )
+    );
+    let is_not_open = matches!(
+        &error,
+        webrtc::Error::ErrDataChannelNotOpen
+            | webrtc::Error::ErrSCTPNotEstablished
+            | webrtc::Error::Data(data::Error::Sctp(sctp::Error::ErrPayloadDataStateNotExist))
+            | webrtc::Error::Sctp(sctp::Error::ErrPayloadDataStateNotExist)
+    );
+    let detail = format!("{operation}: {error}");
+
+    if is_closed
+        || matches!(
+            state,
+            RTCDataChannelState::Closed | RTCDataChannelState::Closing
+        )
+    {
+        NetworkError::DataChannelClosed(format!("{state:?}: {detail}"))
+    } else if is_not_open || state != RTCDataChannelState::Open {
+        NetworkError::DataChannelNotOpen(format!("{state:?}: {detail}"))
+    } else {
+        NetworkError::DataChannelError(detail)
+    }
+}
+
 #[async_trait]
 impl DataLane for WebRtcDataLane {
     async fn send(&self, data: bytes::Bytes) -> NetworkResult<()> {
-        use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-
         // Keep the lane wait aligned with initial WebRTC connection readiness.
         let start = tokio::time::Instant::now();
         loop {
@@ -481,9 +526,7 @@ impl DataLane for WebRtcDataLane {
                 break;
             }
             if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing {
-                return Err(NetworkError::DataChannelError(format!(
-                    "DataChannel closed: {state:?}"
-                )));
+                return Err(NetworkError::DataChannelClosed(format!("{state:?}")));
             }
             if start.elapsed() > INITIAL_CONNECTION_TIMEOUT {
                 return Err(NetworkError::DataChannelError(format!(
@@ -502,10 +545,13 @@ impl DataLane for WebRtcDataLane {
             encode_fragment_header(&mut buf, msg_id, 0, 1);
             buf.extend_from_slice(&data);
             let frame = bytes::Bytes::from(buf);
-            self.data_channel
-                .send(&frame)
-                .await
-                .map_err(|e| NetworkError::DataChannelError(format!("Send failed: {e}")))?;
+            self.data_channel.send(&frame).await.map_err(|error| {
+                classify_data_channel_send_error(
+                    error,
+                    self.data_channel.ready_state(),
+                    "Send failed",
+                )
+            })?;
             #[cfg(feature = "test-utils")]
             notify_webrtc_fragment_sent_for_test(WebRtcFragmentSendEvent {
                 msg_id,
@@ -541,10 +587,12 @@ impl DataLane for WebRtcDataLane {
                 encode_fragment_header(&mut buf, msg_id, frag_index as u16, total_frags);
                 buf.extend_from_slice(chunk);
                 let frame = bytes::Bytes::from(buf);
-                self.data_channel.send(&frame).await.map_err(|e| {
-                    NetworkError::DataChannelError(format!(
-                        "Send fragment {frag_index} failed: {e}"
-                    ))
+                self.data_channel.send(&frame).await.map_err(|error| {
+                    classify_data_channel_send_error(
+                        error,
+                        self.data_channel.ready_state(),
+                        &format!("Send fragment {frag_index} failed"),
+                    )
                 })?;
                 #[cfg(feature = "test-utils")]
                 notify_webrtc_fragment_sent_for_test(WebRtcFragmentSendEvent {
@@ -701,9 +749,13 @@ impl DataLane for WebSocketDataLane {
         // 2. Send to WebSocket
         let mut sink_opt = self.sink.lock().await;
         if let Some(s) = sink_opt.as_mut() {
-            s.send(WsMessage::Binary(buf.into()))
-                .await
-                .map_err(|e| NetworkError::SendError(format!("WebSocket send failed: {e}")))?;
+            s.send(WsMessage::Binary(buf.into())).await.map_err(|e| {
+                if is_tungstenite_closed(&e) {
+                    NetworkError::WebSocketClosed(e.to_string())
+                } else {
+                    NetworkError::SendError(format!("WebSocket send failed: {e}"))
+                }
+            })?;
 
             tracing::trace!(
                 "WebSocket sent {} bytes (type={:?})",
@@ -712,7 +764,7 @@ impl DataLane for WebSocketDataLane {
             );
             Ok(())
         } else {
-            Err(NetworkError::ConnectionError(
+            Err(NetworkError::WebSocketClosed(
                 "WebSocket not connected".to_string(),
             ))
         }

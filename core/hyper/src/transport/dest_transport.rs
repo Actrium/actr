@@ -124,16 +124,38 @@ impl DestTransport {
                             let payload = bytes::Bytes::copy_from_slice(data);
                             let result = lane.send(payload.clone()).await;
 
-                            // If DataChannel is closed, drop cache and retry once.
-                            if let Err(NetworkError::DataChannelError(msg)) = &result {
-                                if msg.contains("closed") {
+                            // If the WebRTC lane went stale after selection, drop
+                            // the cached lane and retry once before surfacing the error.
+                            if let Err(e) = &result {
+                                if conn_type == ConnType::WebRTC && e.is_closed_like() {
                                     tracing::warn!(
-                                        "♻️ DataChannel closed for {:?}, invalidating lane and retrying once",
-                                        payload_type
+                                        "♻️ WebRTC lane closed-like error for {:?}, invalidating lane and retrying once: {}",
+                                        payload_type,
+                                        e,
                                     );
                                     conn.invalidate_lane(payload_type).await;
-                                    if let Ok(new_lane) = conn.get_lane(payload_type).await {
-                                        return new_lane.send(payload).await.map(|_| wire_identity);
+                                    match conn.get_lane(payload_type).await {
+                                        Ok(new_lane) => {
+                                            return new_lane
+                                                .send(payload)
+                                                .await
+                                                .map(|_| wire_identity);
+                                        }
+                                        Err(retry_err) => {
+                                            if conn_type == ConnType::WebRTC
+                                                && retry_err.is_closed_like()
+                                            {
+                                                self.evict_closed_like_connection(
+                                                    &conn,
+                                                    conn_type,
+                                                    payload_type,
+                                                    "retry get_lane",
+                                                )
+                                                .await;
+                                                continue 'send;
+                                            }
+                                            return Err(retry_err);
+                                        }
                                     }
                                 }
                             }
@@ -142,36 +164,16 @@ impl DestTransport {
                         }
                         Err(e) => {
                             let is_closed_like =
-                                conn_type == ConnType::WebRTC && is_closed_like_error(&e);
+                                conn_type == ConnType::WebRTC && e.is_closed_like();
 
                             if is_closed_like {
-                                tracing::warn!(
-                                    "❌ get_lane returned closed-like error for {:?}, invalidating lane",
-                                    conn_type
-                                );
-                                conn.invalidate_lane(payload_type).await;
-
-                                // Stale self-heal: if the wire still carries the same
-                                // identity, mark it Failed so the outer loop can re-read
-                                // readiness and retry/fallback without waiting on a
-                                // watch update that may never arrive.
-                                let wire_identity = conn.identity();
-                                let changed = match wire_identity.as_ref() {
-                                    Some(identity) => {
-                                        self.conn_mgr
-                                            .mark_connection_closed_if_same(conn_type, identity)
-                                            .await
-                                    }
-                                    None => false,
-                                };
-                                tracing::warn!(
-                                    "♻️ DestTransport stale self-heal: payload_type={:?}, conn_type={:?}, expected_identity={:?}, changed={}",
-                                    payload_type,
+                                self.evict_closed_like_connection(
+                                    &conn,
                                     conn_type,
-                                    wire_identity,
-                                    changed
-                                );
-
+                                    payload_type,
+                                    "get_lane",
+                                )
+                                .await;
                                 continue 'send;
                             }
                             tracing::warn!("❌ Failed to get DataLane: {:?}: {}", lane_type, e);
@@ -209,6 +211,40 @@ impl DestTransport {
 
             tracing::debug!("🔔 Connection status updated, retrying...");
         }
+    }
+
+    async fn evict_closed_like_connection(
+        &self,
+        conn: &Arc<dyn WireHandle>,
+        conn_type: ConnType,
+        payload_type: PayloadType,
+        source: &'static str,
+    ) {
+        tracing::warn!(
+            "❌ {source} returned closed-like error for {:?}, invalidating lane",
+            conn_type
+        );
+        conn.invalidate_lane(payload_type).await;
+
+        // Stale self-heal: if the wire still carries the same identity, mark it
+        // Failed so the outer loop can re-read readiness and retry/fallback
+        // without waiting on a watch update that may never arrive.
+        let wire_identity = conn.identity();
+        let changed = match wire_identity.as_ref() {
+            Some(identity) => {
+                self.conn_mgr
+                    .mark_connection_closed_if_same(conn_type, identity)
+                    .await
+            }
+            None => false,
+        };
+        tracing::warn!(
+            "♻️ DestTransport stale self-heal: payload_type={:?}, conn_type={:?}, expected_identity={:?}, changed={}",
+            payload_type,
+            conn_type,
+            wire_identity,
+            changed
+        );
     }
 
     /// Retry failed connections (smart reconnect)
@@ -346,33 +382,6 @@ fn candidate_conn_types(lane_types: &[DataLaneType]) -> Vec<ConnType> {
         }
     }
     conn_types
-}
-
-/// Heuristic: errors that indicate the underlying transport is gone.
-// FIXME: Replace heuristic substring matching with precise error discrimination (typed
-// `NetworkError` variants, stable error codes, or structured payloads). Parsing display strings is
-// brittle and risks false positives when unrelated messages contain substrings like "closed".
-fn is_closed_like_error(e: &NetworkError) -> bool {
-    fn contains_closed_like(msg: &str) -> bool {
-        let msg = msg.to_ascii_lowercase();
-        msg.contains("connection closed")
-            || msg.contains("peer connection closed")
-            || msg.contains("datachannel closed")
-            || msg.contains("data channel closed")
-            || msg.contains("websocket connection closed")
-            || msg.contains("non-established state")
-            || msg.contains("closed")
-    }
-
-    match e {
-        NetworkError::ConnectionClosed(_) => true,
-        NetworkError::ConnectionError(msg)
-        | NetworkError::WebRtcError(msg)
-        | NetworkError::DataChannelError(msg)
-        | NetworkError::WebSocketError(msg)
-        | NetworkError::SendError(msg) => contains_closed_like(msg),
-        _ => false,
-    }
 }
 
 #[cfg(test)]

@@ -511,7 +511,18 @@ impl WebRtcConnection {
         let data_channel = self
             .peer_connection
             .create_data_channel(label, Some(dc_config))
-            .await?;
+            .await
+            .map_err(|e| {
+                let state = self.peer_connection.connection_state();
+                if matches!(
+                    state,
+                    RTCPeerConnectionState::Closed | RTCPeerConnectionState::Failed
+                ) {
+                    NetworkError::PeerConnectionClosed(format!("{state:?}: {e}"))
+                } else {
+                    NetworkError::WebRtcError(e.to_string())
+                }
+            })?;
 
         // Register on_open callback to send DataChannelOpened event
         let event_tx_for_open = self.event_tx.clone();
