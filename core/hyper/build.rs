@@ -90,17 +90,23 @@ fn main() {
     // host workspace's target-dir locks (the guest is its own workspace).
     let guest_target_dir = out_dir.join("wasm-guest-target");
 
+    // The guest is a separate workspace that path-depends on the framework
+    // crates, so its Cargo.lock pins their versions. A routine workspace version
+    // bump (driven by the release train, which does not know about this nested
+    // lock) would make a `--locked` build hard-fail here and break CI on every
+    // release. So we do NOT pass `--locked`: cargo resolves against the committed
+    // lock and only rewrites it when a bump left it stale. The committed lock is
+    // a resolution hint, not an enforced pin. To keep the build from dirtying the
+    // source tree (cargo writes Cargo.lock next to the manifest), snapshot the
+    // committed lock and restore it if the build rewrote it.
+    let guest_lock = guest_dir.join("Cargo.lock");
+    let lock_snapshot = std::fs::read(&guest_lock).ok();
+
     // Pin the Component Model linker via the target-specific env (highest
     // precedence) and strip any inherited RUSTFLAGS so they can't override it
     // (see Cargo's build.rustflags precedence).
     let status = Command::new(&cargo)
-        .args([
-            "build",
-            "--locked",
-            "--release",
-            "--target",
-            "wasm32-wasip2",
-        ])
+        .args(["build", "--release", "--target", "wasm32-wasip2"])
         .current_dir(&guest_dir)
         .env("CARGO_TARGET_WASM32_WASIP2_LINKER", &ld)
         .env_remove("RUSTFLAGS")
@@ -108,6 +114,15 @@ fn main() {
         .env("CARGO_TARGET_DIR", &guest_target_dir)
         .status()
         .expect("failed to spawn `cargo build` for wasm_actor_fixture");
+
+    // Restore the committed lock if cargo updated it, so the build leaves the
+    // working tree untouched.
+    if let Some(snapshot) = &lock_snapshot {
+        if std::fs::read(&guest_lock).ok().as_deref() != Some(snapshot.as_slice()) {
+            let _ = std::fs::write(&guest_lock, snapshot);
+        }
+    }
+
     if !status.success() {
         panic!(
             "`cargo build` of wasm_actor_fixture (wasm32-wasip2) failed; \

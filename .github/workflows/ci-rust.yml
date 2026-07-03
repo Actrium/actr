@@ -8,6 +8,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   PROTOC_VERSION: "29.3"
+  # Fail the build if core/hyper/build.rs can't compile the wasm fixture
+  # (missing wasm32-wasip2 / wasm-component-ld) rather than silently compiling
+  # the fixture tests out — symmetric with ci-gate.yml.
+  ACTR_REQUIRE_WASM_FIXTURE: "1"
 
 jobs:
   format:
