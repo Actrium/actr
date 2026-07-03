@@ -21,6 +21,20 @@ type PendingRequestsMap =
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
 
+/// Why an inbound `RpcEnvelope.direction` could not be routed.
+///
+/// `direction_for_routing` returns this so the caller can decode the peer
+/// (for diagnostics) only on the drop path, never on the happy path.
+#[derive(Debug)]
+enum DirectionError {
+    /// `direction` field absent from the envelope.
+    Missing,
+    /// `direction` present but `DIRECTION_UNSPECIFIED`.
+    Unspecified,
+    /// `direction` present but not a known variant.
+    Unknown,
+}
+
 /// WebRTC Gate - OutboundGate implementation
 ///
 /// # Responsibilities
@@ -104,14 +118,26 @@ impl WebRtcGate {
     ) {
         let request_id = envelope.request_id.clone();
 
-        let peer = Self::peer_for_log(&from_bytes);
-        let Some(direction) = Self::direction_for_routing(
-            envelope.direction,
-            &request_id,
-            &envelope.route_key,
-            &peer,
-        ) else {
-            return;
+        let direction = match Self::direction_for_routing(envelope.direction) {
+            Ok(direction) => direction,
+            Err(error) => {
+                // Drop path only: decode the peer lazily for diagnostics.
+                let peer = Self::peer_for_log(&from_bytes);
+                let reason = match error {
+                    DirectionError::Missing => "missing",
+                    DirectionError::Unspecified => "unspecified",
+                    DirectionError::Unknown => "unknown",
+                };
+                tracing::warn!(
+                    request_id = %request_id,
+                    peer = %peer,
+                    route_key = %envelope.route_key,
+                    direction = ?envelope.direction,
+                    reason = %reason,
+                    "rpc.invalid_direction_dropped: invalid RpcEnvelope.direction; dropping"
+                );
+                return;
+            }
         };
 
         if matches!(direction, Direction::Request) {
@@ -147,6 +173,7 @@ impl WebRtcGate {
             drop(pending); // Release lock
             // Orphan/late response: pending entry was removed (caller timed
             // out). Drop instead of enqueueing as a new request.
+            let peer = Self::peer_for_log(&from_bytes);
             tracing::warn!(
                 request_id = %request_id,
                 peer = %peer,
@@ -166,45 +193,20 @@ impl WebRtcGate {
             .unwrap_or_else(|e| format!("decode_failed:{e}"))
     }
 
-    fn direction_for_routing(
-        raw_direction: Option<i32>,
-        request_id: &str,
-        route_key: &str,
-        peer: &str,
-    ) -> Option<Direction> {
+    /// Classify an inbound `RpcEnvelope.direction` into a routable direction
+    /// or a `DirectionError`.
+    ///
+    /// Pure: performs no logging and no peer decode. The caller handles
+    /// diagnostics on the drop path so the happy path stays free of
+    /// `ActrId::decode` + `to_string_repr()`.
+    fn direction_for_routing(raw_direction: Option<i32>) -> Result<Direction, DirectionError> {
         match raw_direction {
             Some(raw) => match Direction::try_from(raw) {
-                Ok(direction @ (Direction::Request | Direction::Response)) => Some(direction),
-                Ok(Direction::Unspecified) => {
-                    tracing::warn!(
-                        request_id = %request_id,
-                        peer = %peer,
-                        route_key = %route_key,
-                        direction = raw,
-                        "rpc.invalid_direction_dropped: RpcEnvelope.direction is Unspecified; dropping"
-                    );
-                    None
-                }
-                Err(_) => {
-                    tracing::warn!(
-                        request_id = %request_id,
-                        peer = %peer,
-                        route_key = %route_key,
-                        direction = raw,
-                        "rpc.invalid_direction_dropped: unknown RpcEnvelope.direction; dropping"
-                    );
-                    None
-                }
+                Ok(direction @ (Direction::Request | Direction::Response)) => Ok(direction),
+                Ok(Direction::Unspecified) => Err(DirectionError::Unspecified),
+                Err(_) => Err(DirectionError::Unknown),
             },
-            None => {
-                tracing::warn!(
-                    request_id = %request_id,
-                    peer = %peer,
-                    route_key = %route_key,
-                    "rpc.invalid_direction_dropped: missing RpcEnvelope.direction; dropping"
-                );
-                None
-            }
+            None => Err(DirectionError::Missing),
         }
     }
 
