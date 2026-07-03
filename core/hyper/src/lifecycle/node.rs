@@ -1912,38 +1912,45 @@ impl Inner {
                                         #[cfg(feature = "opentelemetry")]
                                         let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
 
+                                        // A `tell` (fire-and-forget) sets `timeout_ms == 0` to
+                                        // signal it wants no reply. Run the handler for its side
+                                        // effects, but do not send a response — an unwanted reply
+                                        // becomes an orphan response on the caller (#262).
+                                        let expects_response = envelope.timeout_ms != 0;
                                         match handle_incoming_fut.await {
                                             Ok(response_bytes) => {
-                                                // Send RESPONSE back via workload_to_shell
-                                                // Keep same route_key (no prefix needed - separate channels!)
-                                                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                let mut response_envelope = RpcEnvelope {
-                                                    route_key: envelope.route_key.clone(),
-                                                    payload: Some(response_bytes),
-                                                    error: None,
-                                                    direction: Some(Direction::Response as i32),
-                                                    traceparent: None,
-                                                    tracestate: None,
-                                                    request_id: request_id.clone(),
-                                                    metadata: Vec::new(),
-                                                    timeout_ms: 30000,
-                                                };
-                                                // Inject tracing context
-                                                #[cfg(feature = "opentelemetry")]
-                                                inject_span_context_to_rpc(&span, &mut response_envelope);
+                                                if expects_response {
+                                                    // Send RESPONSE back via workload_to_shell
+                                                    // Keep same route_key (no prefix needed - separate channels!)
+                                                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                                                    let mut response_envelope = RpcEnvelope {
+                                                        route_key: envelope.route_key.clone(),
+                                                        payload: Some(response_bytes),
+                                                        error: None,
+                                                        direction: Some(Direction::Response as i32),
+                                                        traceparent: None,
+                                                        tracestate: None,
+                                                        request_id: request_id.clone(),
+                                                        metadata: Vec::new(),
+                                                        timeout_ms: 30000,
+                                                    };
+                                                    // Inject tracing context
+                                                    #[cfg(feature = "opentelemetry")]
+                                                    inject_span_context_to_rpc(&span, &mut response_envelope);
 
-                                                // Send via Guest → Shell channel
-                                                let send_response_fut = response_tx.send_message(PayloadType::RpcReliable, None, response_envelope);
-                                                #[cfg(feature = "opentelemetry")]
-                                                let send_response_fut = send_response_fut.instrument(span.clone());
-                                                if let Err(e) = send_response_fut.await {
-                                                    tracing::error!(
-                                                        severity = 7,
-                                                        error_category = "transport_error",
-                                                        request_id = %request_id,
-                                                        "❌ Failed to send RESPONSE to Shell: {:?}",
-                                                        e
-                                                    );
+                                                    // Send via Guest → Shell channel
+                                                    let send_response_fut = response_tx.send_message(PayloadType::RpcReliable, None, response_envelope);
+                                                    #[cfg(feature = "opentelemetry")]
+                                                    let send_response_fut = send_response_fut.instrument(span.clone());
+                                                    if let Err(e) = send_response_fut.await {
+                                                        tracing::error!(
+                                                            severity = 7,
+                                                            error_category = "transport_error",
+                                                            request_id = %request_id,
+                                                            "❌ Failed to send RESPONSE to Shell: {:?}",
+                                                            e
+                                                        );
+                                                    }
                                                 }
                                             }
                                             Err(e) => {
@@ -1956,38 +1963,43 @@ impl Inner {
                                                     e
                                                 );
 
-                                                // Send error response (system-level error on envelope)
-                                                let error_response = actr_protocol::ErrorResponse {
-                                                    code: protocol_error_to_code(&e),
-                                                    message: e.to_string(),
-                                                };
-                                                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                let mut error_envelope = RpcEnvelope {
-                                                    route_key: envelope.route_key.clone(),
-                                                    payload: None,
-                                                    error: Some(error_response),
-                                                    direction: Some(Direction::Response as i32),
-                                                    traceparent: envelope.traceparent.clone(),
-                                                    tracestate: envelope.tracestate.clone(),
-                                                    request_id: request_id.clone(),
-                                                    metadata: Vec::new(),
-                                                    timeout_ms: 30000,
-                                                };
-                                                // Inject tracing context
-                                                #[cfg(feature = "opentelemetry")]
-                                                inject_span_context_to_rpc(&span, &mut error_envelope);
+                                                // Keep the local error log above for every failure,
+                                                // but skip sending an error envelope for a `tell`:
+                                                // the caller registered no pending entry to receive it.
+                                                if expects_response {
+                                                    // Send error response (system-level error on envelope)
+                                                    let error_response = actr_protocol::ErrorResponse {
+                                                        code: protocol_error_to_code(&e),
+                                                        message: e.to_string(),
+                                                    };
+                                                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                                                    let mut error_envelope = RpcEnvelope {
+                                                        route_key: envelope.route_key.clone(),
+                                                        payload: None,
+                                                        error: Some(error_response),
+                                                        direction: Some(Direction::Response as i32),
+                                                        traceparent: envelope.traceparent.clone(),
+                                                        tracestate: envelope.tracestate.clone(),
+                                                        request_id: request_id.clone(),
+                                                        metadata: Vec::new(),
+                                                        timeout_ms: 30000,
+                                                    };
+                                                    // Inject tracing context
+                                                    #[cfg(feature = "opentelemetry")]
+                                                    inject_span_context_to_rpc(&span, &mut error_envelope);
 
-                                                let send_error_response_fut = response_tx.send_message(PayloadType::RpcReliable, None, error_envelope);
-                                                #[cfg(feature = "opentelemetry")]
-                                                let send_error_response_fut = send_error_response_fut.instrument(span);
-                                                if let Err(send_err) = send_error_response_fut.await {
-                                                    tracing::error!(
-                                                        severity = 7,
-                                                        error_category = "transport_error",
-                                                        request_id = %request_id,
-                                                        "❌ Failed to send ERROR response to Shell: {:?}",
-                                                        send_err
-                                                    );
+                                                    let send_error_response_fut = response_tx.send_message(PayloadType::RpcReliable, None, error_envelope);
+                                                    #[cfg(feature = "opentelemetry")]
+                                                    let send_error_response_fut = send_error_response_fut.instrument(span);
+                                                    if let Err(send_err) = send_error_response_fut.await {
+                                                        tracing::error!(
+                                                            severity = 7,
+                                                            error_category = "transport_error",
+                                                            request_id = %request_id,
+                                                            "❌ Failed to send ERROR response to Shell: {:?}",
+                                                            send_err
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
@@ -2342,10 +2354,16 @@ impl Inner {
                                                     }
                                                 }
 
+                                                // A `tell` (fire-and-forget) sets `timeout_ms == 0`
+                                                // to signal it wants no reply. Run the handler for
+                                                // its side effects, but do not send a response — an
+                                                // unwanted reply becomes an orphan response on the
+                                                // caller (#262).
+                                                let expects_response = envelope.timeout_ms != 0;
                                                 match handle_incoming_fut.await {
                                                     Ok(response_bytes) => {
                                                         match caller_id_result {
-                                                            Ok(caller) => {
+                                                            Ok(caller) if expects_response => {
                                                                 // Construct response RpcEnvelope (reuse request_id!)
                                                                 #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
                                                                 let mut response_envelope = RpcEnvelope {
@@ -2381,6 +2399,9 @@ impl Inner {
                                                                 );
                                                                 send_fut.await;
                                                             }
+                                                            // `tell` handled successfully: side
+                                                            // effects ran, no reply is sent.
+                                                            Ok(_) => {}
                                                             Err(e) => {
                                                                 tracing::error!(
                                                                     severity = 8,
@@ -2415,8 +2436,13 @@ impl Inner {
 
                                                         // Send error envelope back to caller so it
                                                         // receives a structured error rather than
-                                                        // waiting until its deadline fires.
-                                                        if let Ok(caller) = caller_id_result {
+                                                        // waiting until its deadline fires. A `tell`
+                                                        // (timeout_ms == 0) registered no pending
+                                                        // entry, so skip the reply — the local error
+                                                        // log above still records the failure (#262).
+                                                        if let (true, Ok(caller)) =
+                                                            (expects_response, caller_id_result)
+                                                        {
                                                             let error_response = actr_protocol::ErrorResponse {
                                                                 code: protocol_error_to_code(&e),
                                                                 message: e.to_string(),
