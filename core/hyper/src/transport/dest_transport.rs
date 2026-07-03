@@ -134,8 +134,28 @@ impl DestTransport {
                                         e,
                                     );
                                     conn.invalidate_lane(payload_type).await;
-                                    if let Ok(new_lane) = conn.get_lane(payload_type).await {
-                                        return new_lane.send(payload).await.map(|_| wire_identity);
+                                    match conn.get_lane(payload_type).await {
+                                        Ok(new_lane) => {
+                                            return new_lane
+                                                .send(payload)
+                                                .await
+                                                .map(|_| wire_identity);
+                                        }
+                                        Err(retry_err) => {
+                                            if conn_type == ConnType::WebRTC
+                                                && retry_err.is_closed_like()
+                                            {
+                                                self.evict_closed_like_connection(
+                                                    &conn,
+                                                    conn_type,
+                                                    payload_type,
+                                                    "retry get_lane",
+                                                )
+                                                .await;
+                                                continue 'send;
+                                            }
+                                            return Err(retry_err);
+                                        }
                                     }
                                 }
                             }
@@ -147,33 +167,13 @@ impl DestTransport {
                                 conn_type == ConnType::WebRTC && e.is_closed_like();
 
                             if is_closed_like {
-                                tracing::warn!(
-                                    "❌ get_lane returned closed-like error for {:?}, invalidating lane",
-                                    conn_type
-                                );
-                                conn.invalidate_lane(payload_type).await;
-
-                                // Stale self-heal: if the wire still carries the same
-                                // identity, mark it Failed so the outer loop can re-read
-                                // readiness and retry/fallback without waiting on a
-                                // watch update that may never arrive.
-                                let wire_identity = conn.identity();
-                                let changed = match wire_identity.as_ref() {
-                                    Some(identity) => {
-                                        self.conn_mgr
-                                            .mark_connection_closed_if_same(conn_type, identity)
-                                            .await
-                                    }
-                                    None => false,
-                                };
-                                tracing::warn!(
-                                    "♻️ DestTransport stale self-heal: payload_type={:?}, conn_type={:?}, expected_identity={:?}, changed={}",
-                                    payload_type,
+                                self.evict_closed_like_connection(
+                                    &conn,
                                     conn_type,
-                                    wire_identity,
-                                    changed
-                                );
-
+                                    payload_type,
+                                    "get_lane",
+                                )
+                                .await;
                                 continue 'send;
                             }
                             tracing::warn!("❌ Failed to get DataLane: {:?}: {}", lane_type, e);
@@ -211,6 +211,40 @@ impl DestTransport {
 
             tracing::debug!("🔔 Connection status updated, retrying...");
         }
+    }
+
+    async fn evict_closed_like_connection(
+        &self,
+        conn: &Arc<dyn WireHandle>,
+        conn_type: ConnType,
+        payload_type: PayloadType,
+        source: &'static str,
+    ) {
+        tracing::warn!(
+            "❌ {source} returned closed-like error for {:?}, invalidating lane",
+            conn_type
+        );
+        conn.invalidate_lane(payload_type).await;
+
+        // Stale self-heal: if the wire still carries the same identity, mark it
+        // Failed so the outer loop can re-read readiness and retry/fallback
+        // without waiting on a watch update that may never arrive.
+        let wire_identity = conn.identity();
+        let changed = match wire_identity.as_ref() {
+            Some(identity) => {
+                self.conn_mgr
+                    .mark_connection_closed_if_same(conn_type, identity)
+                    .await
+            }
+            None => false,
+        };
+        tracing::warn!(
+            "♻️ DestTransport stale self-heal: payload_type={:?}, conn_type={:?}, expected_identity={:?}, changed={}",
+            payload_type,
+            conn_type,
+            wire_identity,
+            changed
+        );
     }
 
     /// Retry failed connections (smart reconnect)

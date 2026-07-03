@@ -7,12 +7,18 @@ use tokio::time::{Duration, timeout};
 #[derive(Debug)]
 struct FakeLane {
     send_count: Arc<AtomicUsize>,
+    send_closed: bool,
 }
 
 #[async_trait]
 impl DataLane for FakeLane {
     async fn send(&self, _data: bytes::Bytes) -> NetworkResult<()> {
         self.send_count.fetch_add(1, Ordering::Relaxed);
+        if self.send_closed {
+            return Err(NetworkError::DataChannelClosed(
+                "test send closed".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -26,8 +32,11 @@ struct FakeWire {
     conn_type: ConnType,
     connect_fails: bool,
     lane_closed: bool,
+    lane_send_closed: bool,
     lane_non_established: bool,
+    retry_get_lane_closed_after_invalidate: bool,
     connected: AtomicBool,
+    invalidated: AtomicBool,
     send_count: Arc<AtomicUsize>,
     identity: Option<WireIdentity>,
 }
@@ -38,8 +47,11 @@ impl FakeWire {
             conn_type,
             connect_fails: false,
             lane_closed: false,
+            lane_send_closed: false,
             lane_non_established: false,
+            retry_get_lane_closed_after_invalidate: false,
             connected: AtomicBool::new(false),
+            invalidated: AtomicBool::new(false),
             send_count: Arc::new(AtomicUsize::new(0)),
             identity: None,
         }
@@ -55,8 +67,18 @@ impl FakeWire {
         self
     }
 
+    fn lane_send_closed(mut self) -> Self {
+        self.lane_send_closed = true;
+        self
+    }
+
     fn lane_non_established(mut self) -> Self {
         self.lane_non_established = true;
+        self
+    }
+
+    fn retry_get_lane_closed_after_invalidate(mut self) -> Self {
+        self.retry_get_lane_closed_after_invalidate = true;
         self
     }
 
@@ -102,6 +124,11 @@ impl WireHandle for FakeWire {
     }
 
     async fn get_lane(&self, _payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+        if self.retry_get_lane_closed_after_invalidate && self.invalidated.load(Ordering::Relaxed) {
+            return Err(NetworkError::PeerConnectionClosed(
+                "test peer connection closed".to_string(),
+            ));
+        }
         if self.lane_closed {
             return Err(NetworkError::DataChannelClosed(
                 "test lane closed".to_string(),
@@ -114,7 +141,12 @@ impl WireHandle for FakeWire {
         }
         Ok(Arc::new(FakeLane {
             send_count: Arc::clone(&self.send_count),
+            send_closed: self.lane_send_closed,
         }))
+    }
+
+    async fn invalidate_lane(&self, _payload_type: PayloadType) {
+        self.invalidated.store(true, Ordering::Relaxed);
     }
 
     fn identity(&self) -> Option<WireIdentity> {
@@ -133,6 +165,36 @@ async fn test_transport(connections: Vec<Arc<dyn WireHandle>>) -> DestTransport 
         conn_mgr.add_connection(conn).await;
     }
     DestTransport { conn_mgr }
+}
+
+#[tokio::test]
+async fn retry_get_lane_closed_after_send_closed_falls_back_to_websocket() {
+    let peer_id = actr_protocol::ActrId::default();
+    let websocket_sends = Arc::new(AtomicUsize::new(0));
+    let transport = test_transport(vec![
+        Arc::new(
+            FakeWire::new(ConnType::WebRTC)
+                .lane_send_closed()
+                .retry_get_lane_closed_after_invalidate()
+                .with_identity(WireIdentity::WebRtc {
+                    peer_id,
+                    session_id: 9,
+                }),
+        ),
+        Arc::new(FakeWire::new(ConnType::WebSocket).with_send_count(Arc::clone(&websocket_sends))),
+    ])
+    .await;
+
+    let identity = timeout(
+        Duration::from_secs(1),
+        transport.send_with_identity(PayloadType::RpcReliable, b"payload"),
+    )
+    .await
+    .expect("send should not hang")
+    .expect("closed WebRTC retry should be evicted and WebSocket fallback should send");
+
+    assert!(identity.is_none());
+    assert_eq!(websocket_sends.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]
