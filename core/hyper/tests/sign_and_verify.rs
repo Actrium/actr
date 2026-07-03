@@ -6,7 +6,7 @@
 //! 3. .actr package: wrong key → signature verification failed
 //! 4. Unsigned bytes → InvalidManifest (unrecognized format)
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 use actr_hyper::BinaryKind;
 use actr_hyper::test_support::inspect_workload_package;
 use actr_hyper::{Hyper, HyperConfig, HyperError, StaticTrust, WorkloadPackage};
@@ -21,7 +21,7 @@ fn minimal_wasm() -> Vec<u8> {
     b"\0asm\x01\x00\x00\x00".to_vec()
 }
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 mod wasm_actor_fixture;
 
 /// Returns the Phase-1 Component Model fixture bytes embedded in
@@ -30,7 +30,7 @@ mod wasm_actor_fixture;
 /// Commit 2 switched the host to `Component::from_binary`. The fresh
 /// Component exposes the `actr:workload/workload@0.1.0` world and loads
 /// cleanly through `WasmHost::compile`.
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 fn echo_guest_wasm() -> Vec<u8> {
     wasm_actor_fixture::WASM_ACTOR_FIXTURE.to_vec()
 }
@@ -191,7 +191,7 @@ async fn verify_rejects_unknown_format() {
     assert!(matches!(result, Err(HyperError::InvalidManifest(_))));
 }
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 #[tokio::test]
 async fn load_workload_package_selects_wasm_backend() {
     let signing_key = SigningKey::generate(&mut OsRng);

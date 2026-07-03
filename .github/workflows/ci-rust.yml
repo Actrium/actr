@@ -8,6 +8,10 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   PROTOC_VERSION: "29.3"
+  # Fail the build if core/hyper/build.rs can't compile the wasm fixture
+  # (missing wasm32-wasip2 / wasm-component-ld) rather than silently compiling
+  # the fixture tests out — symmetric with ci-gate.yml.
+  ACTR_REQUIRE_WASM_FIXTURE: "1"
 
 jobs:
   format:
@@ -56,9 +60,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          # wasm32-wasip2 is required for the Component Model guest
-          # fixture rebuilt by core/hyper/tests/wasm_actor_fixture/build.sh
-          # under --all-features (wasm-engine).
+          # wasm32-wasip2 is required for the Component Model guest fixture
+          # rebuilt by core/hyper/build.rs under --all-features (wasm-engine).
           targets: wasm32-wasip2,wasm32-unknown-unknown
       - name: Install protoc
         uses: arduino/setup-protoc@v3

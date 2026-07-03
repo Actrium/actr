@@ -12,9 +12,9 @@ use actr_hyper::test_support::{TestPackageHookEvent, runtime_context_with_host_t
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
 use actr_protocol::{ActrError, ActrId, ActrType, PayloadType, Realm};
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 use actr_hyper::test_support::instantiate_wasm_workload;
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 use actr_hyper::wasm::WasmHost;
 
 #[cfg(feature = "dynclib-engine")]
@@ -24,7 +24,7 @@ use actr_hyper::dynclib::DynclibHost;
 #[cfg(feature = "dynclib-engine")]
 use actr_hyper::test_support::instantiate_dynclib_workload;
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 #[path = "wasm_actor_fixture.rs"]
 mod wasm_actor_fixture;
 
@@ -195,7 +195,7 @@ async fn assert_recorded_hooks(
     }
 }
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wasm_package_receives_runtime_hook_events() {
     let host =
@@ -217,7 +217,7 @@ async fn wasm_package_receives_runtime_hook_events() {
     assert_recorded_hooks(rx, expected).await;
 }
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wasm_package_observer_bridge_reaches_guest_hooks() {
     let host =
@@ -239,7 +239,7 @@ async fn wasm_package_observer_bridge_reaches_guest_hooks() {
     recorder.abort();
 }
 
-#[cfg(feature = "wasm-engine")]
+#[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wasm_package_receives_on_ready_and_on_stop() {
     let host =

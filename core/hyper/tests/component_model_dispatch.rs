@@ -21,7 +21,7 @@
 //!   overhead number is directly comparable to the spike's 1.1 ms/call
 //!   baseline.
 
-#![cfg(feature = "wasm-engine")]
+#![cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
