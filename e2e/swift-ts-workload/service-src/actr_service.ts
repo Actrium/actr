@@ -134,7 +134,7 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
     ];
 
     await sendDataStream(
-      { actor: sender },
+      { peer: sender },
       {
         streamId: state.serviceToClientStreamId,
         sequence: ackSequence,

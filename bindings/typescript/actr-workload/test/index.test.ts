@@ -81,12 +81,12 @@ describe('@actrium/actr-workload', () => {
     ).rejects.toThrow('No stream callback registered for stream-1');
   });
 
-  it('sends data streams using WIT-shaped actor destinations', async () => {
+  it('sends data streams using WIT-shaped peer destinations', async () => {
     const { host, runtime } = await loadRuntime();
-    const actor = testActorId(9);
+    const peer = testActorId(9);
 
     await runtime.sendDataStream(
-      { actor },
+      { peer },
       testChunk({
         sequence: 4,
         timestampMs: 5678,
@@ -97,9 +97,9 @@ describe('@actrium/actr-workload', () => {
     expect(host.hostCalls.sendDataStream).toEqual([
       {
         target: {
-          tag: 'actor',
+          tag: 'peer',
           val: {
-            ...actor,
+            ...peer,
             serialNumber: 9n,
           },
         },
@@ -115,23 +115,23 @@ describe('@actrium/actr-workload', () => {
     ]);
   });
 
-  it('sends data streams using shell and local destinations', async () => {
+  it('sends data streams using host and workload destinations', async () => {
     const { host, runtime } = await loadRuntime();
 
     await runtime.sendDataStream(
-      'shell',
-      testChunk({ streamId: 'shell-stream' }),
+      'host',
+      testChunk({ streamId: 'host-stream' }),
       runtime.PayloadType.StreamLatencyFirst,
     );
     await runtime.sendDataStream(
-      'local',
-      testChunk({ streamId: 'local-stream' }),
+      'workload',
+      testChunk({ streamId: 'workload-stream' }),
       runtime.PayloadType.StreamReliable,
     );
 
     expect(host.hostCalls.sendDataStream.map((call) => call.target)).toEqual([
-      { tag: 'shell' },
-      { tag: 'local' },
+      { tag: 'host' },
+      { tag: 'workload' },
     ]);
     expect(
       host.hostCalls.sendDataStream.map((call) => call.payloadType),
@@ -143,7 +143,7 @@ describe('@actrium/actr-workload', () => {
     const buffer = new Uint8Array([9, 8, 7]).buffer;
 
     await runtime.sendDataStream(
-      { actor: testActorId(11n) },
+      { peer: testActorId(11n) },
       {
         streamId: 'array-buffer-stream',
         sequence: 12,
@@ -152,7 +152,7 @@ describe('@actrium/actr-workload', () => {
       runtime.PayloadType.StreamLatencyFirst,
     );
     await runtime.sendDataStream(
-      { actor: testActorId(12n) },
+      { peer: testActorId(12n) },
       {
         streamId: 'array-like-stream',
         sequence: 13,

@@ -150,7 +150,7 @@ let chunk = DataStream {
 };
 
 // Send to receiver
-let dest = Dest::Actor(receiver_id);
+let dest = Dest::Peer(receiver_id);
 ctx.send_data_stream(&dest, chunk).await?;
 ```
 

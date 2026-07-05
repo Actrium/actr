@@ -48,7 +48,7 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
       const incoming = textDecoder.decode(toUint8Array(chunk.payload));
 
       await sendDataStream(
-        { actor: sender },
+        { peer: sender },
         {
           streamId: replyStreamId,
           sequence: BigInt(chunk.sequence) + 1n,

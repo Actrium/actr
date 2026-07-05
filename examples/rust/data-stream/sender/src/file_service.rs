@@ -69,7 +69,7 @@ impl LocalFileServiceHandler for MyFileService {
         };
 
         let start_resp: StartTransferResponse = ctx
-            .call(&Dest::Actor(receiver_id.clone()), start_req)
+            .call(&Dest::Peer(receiver_id.clone()), start_req)
             .await?;
         if !start_resp.ready {
             return Ok(SendFileResponse { success: false });
@@ -89,7 +89,7 @@ impl LocalFileServiceHandler for MyFileService {
                 timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
             };
 
-            ctx.send_data_stream(&Dest::Actor(receiver_id.clone()), data_stream, actr_protocol::PayloadType::StreamReliable)
+            ctx.send_data_stream(&Dest::Peer(receiver_id.clone()), data_stream, actr_protocol::PayloadType::StreamReliable)
                 .await?;
 
             let progress = ((i + 1) as f64 / chunks.len() as f64 * 100.0) as u32;
@@ -112,7 +112,7 @@ impl LocalFileServiceHandler for MyFileService {
         };
 
         let end_resp: EndTransferResponse =
-            ctx.call(&Dest::Actor(receiver_id.clone()), end_req).await?;
+            ctx.call(&Dest::Peer(receiver_id.clone()), end_req).await?;
 
         info!("✅ EndTransfer RPC succeeded!");
         info!("📊 Transfer Statistics:");
