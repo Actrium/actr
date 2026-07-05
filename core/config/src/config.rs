@@ -275,6 +275,30 @@ type UdpPorts = Option<(u16, u16)>;
 pub struct WebRtcAdvancedConfig {
     /// UDP port policy
     pub udp_ports: UdpPorts,
+    /// Fixed local UDP port for a process-shared ICE UDP mux (opt-in).
+    ///
+    /// When set, every peer connection routes its ICE traffic through one
+    /// shared UDP socket bound to this port, so the process's UDP socket
+    /// count stays O(1) regardless of connection churn (otherwise ICE
+    /// gathering opens one socket per local interface per connection).
+    ///
+    /// Trade-off: in webrtc-ice 0.14, muxed mode skips server-reflexive
+    /// (srflx) candidate gathering entirely — only host (and TURN relay)
+    /// candidates are produced. This option is therefore intended for
+    /// multi-homed servers that are directly reachable (public IP / NAT 1:1)
+    /// or have a TURN relay configured. Nodes behind NAT that rely on STUN
+    /// for connectivity should leave it unset (the default), which uses
+    /// per-connection ephemeral UDP sockets.
+    ///
+    /// Lifecycle note: the mux socket is bound lazily on first use and held
+    /// for the lifetime of the WebRTC coordinator; it is never closed. ICE
+    /// restarts change the local ufrag and only the current ufrag is removed
+    /// from the mux on agent close, so stale ufrag entries can accumulate
+    /// across many restarts (bounded memory growth, no fd growth).
+    ///
+    /// Mutually exclusive with `udp_ports`: when both are set the shared mux
+    /// wins and `udp_ports` is ignored (a warning is logged at runtime).
+    pub ice_udp_mux_port: Option<u16>,
     /// NAT 1:1 public IP mapping
     pub public_ips: Vec<String>,
     /// ICE host candidate acceptance min wait (ms)
@@ -299,6 +323,7 @@ impl Default for WebRtcAdvancedConfig {
     fn default() -> Self {
         Self {
             udp_ports: UdpPorts::default(),
+            ice_udp_mux_port: None,
             public_ips: Vec::new(),
             ice_host_acceptance_min_wait: 0,
             ice_srflx_acceptance_min_wait: 20,
