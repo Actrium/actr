@@ -997,10 +997,6 @@ impl LanguageGenerator for KotlinGenerator {
     }
 
     async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
-        if context.no_scaffold {
-            return Ok(vec![]);
-        }
-
         info!("📝 Generating Kotlin user code scaffold...");
 
         let mut generated_files = Vec::new();

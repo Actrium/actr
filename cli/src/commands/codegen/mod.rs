@@ -43,7 +43,17 @@ fn should_validate(skip_validation: bool) -> bool {
 
 pub async fn execute_codegen(language: SupportedLanguage, context: &GenContext) -> Result<()> {
     let generator = GeneratorFactory::get_generator(language);
+    run_codegen_pipeline(language, generator.as_ref(), context).await
+}
 
+/// Runs the language-independent generation pipeline. All `GenContext` flag
+/// gates (`no_scaffold`, `no_format`, `skip_validation`) are enforced here so
+/// individual generators never need to re-check them.
+async fn run_codegen_pipeline(
+    language: SupportedLanguage,
+    generator: &dyn LanguageGenerator,
+    context: &GenContext,
+) -> Result<()> {
     let mut all_files = generator.generate_infrastructure(context).await?;
     let metadata = ActrGenMetadata::from_proto_model(language, &context.proto_model);
     write_metadata(&context.output, &metadata)?;
