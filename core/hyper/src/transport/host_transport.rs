@@ -52,13 +52,14 @@
 //! }
 //! ```
 
+use super::correlation::{CompleteOutcome, RpcCorrelation};
 use super::{DataLane, MpscLane, NetworkError, NetworkResult};
 use actr_framework::Bytes;
 use actr_protocol::{ActrError, PayloadType, RpcEnvelope};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 /// Host Transport - manages intra-process transport (mpsc channels)
 ///
@@ -87,10 +88,9 @@ pub struct HostTransport {
     /// Lane cache (avoid repeated creation)
     lane_cache: Arc<RwLock<HashMap<LaneKey, Arc<dyn DataLane>>>>,
 
-    /// Pending requests (request/response matching)
-    /// Sender can receive either success (Bytes) or error (ProtocolError)
-    pending_requests:
-        Arc<RwLock<HashMap<String, oneshot::Sender<actr_protocol::ActorResult<Bytes>>>>>,
+    /// Pending requests (request/response matching); entries are removed on
+    /// every send_request exit path via the RAII guard, and by complete_*.
+    correlation: RpcCorrelation<()>,
 }
 
 /// Channel pair (tx + rx)
@@ -132,7 +132,7 @@ impl HostTransport {
             latency_first_channels: Arc::new(RwLock::new(HashMap::new())),
             media_track_channels: Arc::new(RwLock::new(HashMap::new())),
             lane_cache: Arc::new(RwLock::new(HashMap::new())),
-            pending_requests: Arc::new(RwLock::new(HashMap::new())),
+            correlation: RpcCorrelation::new(),
         }
     }
 
@@ -311,15 +311,11 @@ impl HostTransport {
         identifier: Option<String>,
         envelope: RpcEnvelope,
     ) -> actr_protocol::ActorResult<Bytes> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        // Register pending request
-        let request_id = envelope.request_id.clone();
+        // Register the pending entry first; the guard removes it on every
+        // exit path below (lane lookup failure, send failure, timeout), so
+        // unanswered requests cannot accumulate in the map.
         let timeout_ms = envelope.timeout_ms;
-        self.pending_requests
-            .write()
-            .await
-            .insert(request_id, response_tx);
+        let pending = self.correlation.register(envelope.request_id.clone(), ());
 
         // Send
         let lane = self
@@ -331,11 +327,7 @@ impl HostTransport {
             .map_err(ActrError::from)?;
 
         // Wait for response
-        let timeout_duration = Duration::from_millis(timeout_ms as u64);
-        tokio::time::timeout(timeout_duration, response_rx)
-            .await
-            .map_err(|_| ActrError::TimedOut)?
-            .map_err(|_| ActrError::Unavailable("Response channel closed".into()))?
+        pending.wait(Duration::from_millis(timeout_ms as u64)).await
     }
 
     /// Send one-way message
@@ -403,15 +395,14 @@ impl HostTransport {
         request_id: &str,
         response_bytes: Bytes,
     ) -> NetworkResult<()> {
-        let mut pending = self.pending_requests.write().await;
-        if let Some(tx) = pending.remove(request_id) {
-            let _ = tx.send(Ok(response_bytes));
-            tracing::debug!("Completed pending request: {}", request_id);
-            Ok(())
-        } else {
-            Err(NetworkError::InvalidArgument(format!(
+        match self.correlation.complete(request_id, Ok(response_bytes)) {
+            CompleteOutcome::Completed => {
+                tracing::debug!("Completed pending request: {}", request_id);
+                Ok(())
+            }
+            CompleteOutcome::Orphan => Err(NetworkError::InvalidArgument(format!(
                 "No pending request found for id: {request_id}"
-            )))
+            ))),
         }
     }
 
@@ -421,59 +412,44 @@ impl HostTransport {
     /// - `Ok(())`: Successfully sent error to waiting sender
     /// - `Err(NetworkError)`: No pending request found with this ID
     pub async fn complete_error(&self, request_id: &str, error: ActrError) -> NetworkResult<()> {
-        let mut pending = self.pending_requests.write().await;
-        if let Some(tx) = pending.remove(request_id) {
-            let _ = tx.send(Err(error));
-            tracing::debug!("Completed pending request with error: {}", request_id);
-            Ok(())
-        } else {
-            Err(NetworkError::InvalidArgument(format!(
+        match self.correlation.complete(request_id, Err(error)) {
+            CompleteOutcome::Completed => {
+                tracing::debug!("Completed pending request with error: {}", request_id);
+                Ok(())
+            }
+            CompleteOutcome::Orphan => Err(NetworkError::InvalidArgument(format!(
                 "No pending request found for id: {request_id}"
-            )))
+            ))),
         }
     }
 
     /// Handle response matching (returns true if it was a response)
     #[cfg(feature = "test-utils")]
     async fn try_complete_response(&self, envelope: &RpcEnvelope) -> bool {
-        let mut pending = self.pending_requests.write().await;
-        if let Some(tx) = pending.remove(&envelope.request_id) {
-            // Check if response or error
-            match (&envelope.payload, &envelope.error) {
-                (Some(payload), None) => {
-                    let _ = tx.send(Ok(payload.clone()));
-                    tracing::debug!("Completed pending request: {}", envelope.request_id);
-                }
-                (None, Some(error)) => {
-                    // Reconstruct the precise ActrError variant from the wire code
-                    // so test-utils tests observe the same classification production
-                    // call sites do — not a flat Unavailable.
-                    let protocol_err = crate::lifecycle::node::wire_code_to_actr_error(
-                        error.code,
-                        error.message.clone(),
-                    );
-                    let _ = tx.send(Err(protocol_err));
-                    tracing::debug!(
-                        "Completed pending request with error: {}",
-                        envelope.request_id
-                    );
-                }
-                _ => {
-                    tracing::error!(
-                        "Invalid RpcEnvelope: both payload and error present or both absent"
-                    );
-                    let _ = tx.send(Err(ActrError::DecodeFailure(
-                        "Invalid RpcEnvelope: payload and error fields inconsistent".to_string(),
-                    )));
-                }
+        // Reconstructs the precise ActrError variant from the wire code so
+        // test-utils tests observe the same classification production call
+        // sites do — not a flat Unavailable.
+        let result = super::correlation::envelope_response_to_result(
+            envelope.payload.clone(),
+            envelope.error.clone(),
+        );
+        match self.correlation.complete(&envelope.request_id, result) {
+            CompleteOutcome::Completed => {
+                tracing::debug!("Completed pending request: {}", envelope.request_id);
+                true
             }
-            true
-        } else {
-            false
+            // No pending entry: the envelope is a request, not a response.
+            CompleteOutcome::Orphan => false,
         }
     }
 
     // ========== Helper methods ==========
+
+    /// Number of in-flight pending requests (leak regression checks).
+    #[cfg(test)]
+    fn pending_len(&self) -> usize {
+        self.correlation.len()
+    }
 
     #[cfg(feature = "test-utils")]
     async fn recv_from_channel(
