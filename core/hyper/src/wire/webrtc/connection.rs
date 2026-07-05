@@ -346,6 +346,24 @@ impl WebRtcConnection {
             }
         };
 
+        // Break the RTCPeerConnection <-> handler reference cycle so the peer
+        // connection can actually be dropped after cleanup. The state-change and
+        // data-channel handlers installed on the peer connection each capture a
+        // strong `WebRtcConnection` clone, which itself owns an
+        // `Arc<RTCPeerConnection>` -- so the connection keeps itself alive through
+        // its own callbacks. `RTCPeerConnection::close()` closes the ICE transport
+        // but does NOT clear these handlers, and in webrtc 0.14 the ICE agent's
+        // per-interface UDP sockets are released on drop, not on close(). Without
+        // clearing the handlers the connection never drops, so those sockets leak
+        // for the life of the process and eventually exhaust the fd limit.
+        // Replacing the handlers with no-ops drops the captured clones and breaks
+        // the cycle, so releasing the last `Arc<RTCPeerConnection>` frees the
+        // sockets.
+        self.peer_connection
+            .on_peer_connection_state_change(Box::new(move |_state| Box::pin(async move {})));
+        self.peer_connection
+            .on_data_channel(Box::new(move |_dc| Box::pin(async move {})));
+
         // Clear each cache under a dedicated lock scope
         {
             let mut cache = self.lane_cache.write().await;
