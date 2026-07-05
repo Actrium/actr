@@ -653,6 +653,28 @@ impl Inner {
         .await;
     }
 
+    /// Whether the inbound envelope is an explicit fire-and-forget tell.
+    ///
+    /// This is the ONLY tell marker: receivers never infer tell-ness from
+    /// `timeout_ms == 0` (see the wire contract in `package.proto`).
+    pub(crate) fn envelope_is_tell(envelope: &RpcEnvelope) -> bool {
+        envelope.direction == Some(Direction::Tell as i32)
+    }
+
+    /// Direction-based routing decision for the server dispatch loops.
+    ///
+    /// Returns `Some(direction)` for the two dispatchable kinds (`Request`,
+    /// `Tell`). Everything else — missing, `Unspecified`, `Response`
+    /// (mislabel: responses are routed to pending maps by the gates and
+    /// never reach a dispatch loop), or unknown future values — yields
+    /// `None`, which the loops warn about and drop.
+    pub(crate) fn dispatchable_direction(raw_direction: Option<i32>) -> Option<Direction> {
+        match raw_direction.map(Direction::try_from) {
+            Some(Ok(direction @ (Direction::Request | Direction::Tell))) => Some(direction),
+            _ => None,
+        }
+    }
+
     fn duplicate_wait_timeout(timeout_ms: i64) -> Duration {
         if timeout_ms > 0 {
             Duration::from_millis(timeout_ms as u64)
@@ -758,7 +780,15 @@ impl Inner {
             )));
         }
 
-        // 0.2. Deduplication: return cached response for retried request_ids
+        // 0.2. Deduplication: return cached response for retried request_ids.
+        //
+        // TELL envelopes keep their dedup entry (retry protection for
+        // RpcReliable's up-to-5 same-request_id attempts), but their
+        // duplicate handling differs: no caller is waiting for a reply, so
+        // a duplicate arriving while the original is still in flight is
+        // dropped immediately instead of blocking the receive loop for
+        // `duplicate_wait_timeout` (which maps 0 to the 30 s DEDUP_TTL).
+        let is_tell = Self::envelope_is_tell(&envelope);
         let outcome = {
             self.dedup_state
                 .lock()
@@ -768,6 +798,14 @@ impl Inner {
         match outcome {
             DedupOutcome::Fresh => {} // proceed normally
             DedupOutcome::InFlight(waiter) => {
+                if is_tell {
+                    tracing::debug!(
+                        request_id = %envelope.request_id,
+                        route_key = %envelope.route_key,
+                        "duplicate tell in-flight; dropping duplicate immediately (fire-and-forget)"
+                    );
+                    return Ok(Bytes::new());
+                }
                 tracing::debug!(
                     request_id = %envelope.request_id,
                     route_key = %envelope.route_key,
@@ -836,11 +874,21 @@ impl Inner {
             ),
         }
 
-        // 3. Store completed result in dedup cache before returning
+        // 3. Store completed result in dedup cache before returning.
+        //
+        // Completion happens on handler Err too, so a retried request (or
+        // tell) observes the recorded failure instead of re-running the
+        // handler. For a successful TELL the response bytes are never sent,
+        // so cache empty bytes instead of retaining the unsent payload for
+        // the full DEDUP_TTL.
+        let cached = match (&result, is_tell) {
+            (Ok(_), true) => Ok(Bytes::new()),
+            _ => result.clone(),
+        };
         self.dedup_state
             .lock()
             .await
-            .complete(&envelope.request_id, result.clone());
+            .complete(&envelope.request_id, cached);
 
         result
     }
@@ -1898,6 +1946,28 @@ impl Inner {
                                     Ok(envelope) => {
                                         let request_id = envelope.request_id.clone();
                                         tracing::debug!("📨 Guest received REQUEST from Shell: request_id={}", request_id);
+
+                                        // Route strictly on the explicit direction label:
+                                        // Request runs the handler and sends a response;
+                                        // Tell runs the handler for its side effects but
+                                        // sends nothing — an unwanted reply becomes an
+                                        // orphan response on the caller (#262). Anything
+                                        // else (missing / Unspecified / Response / unknown)
+                                        // is invalid on a dispatch lane: warn and drop.
+                                        // timeout_ms is never consulted for tell-ness.
+                                        let expects_response = match Inner::dispatchable_direction(envelope.direction) {
+                                            Some(direction) => direction != Direction::Tell,
+                                            None => {
+                                                tracing::warn!(
+                                                    request_id = %request_id,
+                                                    route_key = %envelope.route_key,
+                                                    direction = ?envelope.direction,
+                                                    "rpc.invalid_direction_dropped: non-dispatchable RpcEnvelope.direction on Shell → Guest lane; dropping"
+                                                );
+                                                continue;
+                                            }
+                                        };
+
                                         // Extract and set tracing context from envelope
                                         #[cfg(feature = "opentelemetry")]
                                         let span = {
@@ -1912,11 +1982,6 @@ impl Inner {
                                         #[cfg(feature = "opentelemetry")]
                                         let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
 
-                                        // A `tell` (fire-and-forget) sets `timeout_ms == 0` to
-                                        // signal it wants no reply. Run the handler for its side
-                                        // effects, but do not send a response — an unwanted reply
-                                        // becomes an orphan response on the caller (#262).
-                                        let expects_response = envelope.timeout_ms != 0;
                                         match handle_incoming_fut.await {
                                             Ok(response_bytes) => {
                                                 if expects_response {
@@ -2275,6 +2340,39 @@ impl Inner {
                                                 tracing::info!(request_id = %request_id, queue_latency_ms = queue_latency_ms, "rpc.mailbox.dequeued");
 
                                                 tracing::debug!("📦 Processing message: request_id={}", request_id);
+
+                                                // Route strictly on the explicit direction label:
+                                                // Request runs the handler and sends a response;
+                                                // Tell runs the handler but suppresses the reply —
+                                                // an unwanted reply becomes an orphan response on
+                                                // the caller (#262). Anything else (missing /
+                                                // Unspecified / Response / unknown) is invalid in
+                                                // the dispatch mailbox: warn, ack (to avoid
+                                                // redelivery), and drop. timeout_ms is never
+                                                // consulted for tell-ness.
+                                                let expects_response = match Inner::dispatchable_direction(envelope.direction) {
+                                                    Some(direction) => direction != Direction::Tell,
+                                                    None => {
+                                                        tracing::warn!(
+                                                            request_id = %request_id,
+                                                            route_key = %envelope.route_key,
+                                                            direction = ?envelope.direction,
+                                                            "rpc.invalid_direction_dropped: non-dispatchable RpcEnvelope.direction in mailbox; dropping"
+                                                        );
+                                                        if let Err(e) = mailbox.ack(msg_record.id).await {
+                                                            tracing::error!(
+                                                                severity = 9,
+                                                                error_category = "mailbox_error",
+                                                                request_id = %request_id,
+                                                                message_id = %msg_record.id,
+                                                                "❌ Mailbox ACK failed for dropped envelope: {:?}",
+                                                                e
+                                                            );
+                                                        }
+                                                        continue;
+                                                    }
+                                                };
+
                                                 #[cfg(feature = "opentelemetry")]
                                                 let span = {
                                                     let actr_id_str = node.actor_id.as_ref().map(|id| id.to_string()).unwrap_or_default();
@@ -2354,12 +2452,6 @@ impl Inner {
                                                     }
                                                 }
 
-                                                // A `tell` (fire-and-forget) sets `timeout_ms == 0`
-                                                // to signal it wants no reply. Run the handler for
-                                                // its side effects, but do not send a response — an
-                                                // unwanted reply becomes an orphan response on the
-                                                // caller (#262).
-                                                let expects_response = envelope.timeout_ms != 0;
                                                 match handle_incoming_fut.await {
                                                     Ok(response_bytes) => {
                                                         match caller_id_result {
@@ -2437,7 +2529,7 @@ impl Inner {
                                                         // Send error envelope back to caller so it
                                                         // receives a structured error rather than
                                                         // waiting until its deadline fires. A `tell`
-                                                        // (timeout_ms == 0) registered no pending
+                                                        // (Direction::Tell) registered no pending
                                                         // entry, so skip the reply — the local error
                                                         // log above still records the failure (#262).
                                                         if let (true, Ok(caller)) =

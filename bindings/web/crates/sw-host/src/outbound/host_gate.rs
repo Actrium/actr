@@ -127,6 +127,9 @@ impl HostGate {
     }
 
     /// Send a one-way message without waiting for a response.
+    ///
+    /// One-way traffic carries the explicit `Direction::Tell` label so the
+    /// receiver runs the handler without replying.
     pub async fn send_message(
         &self,
         target: &ActrId,
@@ -138,7 +141,7 @@ impl HostGate {
             envelope.request_id
         );
 
-        envelope.direction = Some(Direction::Request as i32);
+        envelope.direction = Some(Direction::Tell as i32);
 
         // Fetch and invoke the message_handler.
         let guard = self.message_handler.lock();
@@ -172,11 +175,13 @@ impl HostGate {
         );
 
         // Temporarily send through RpcEnvelope. This can be optimized further later.
+        // DataStream chunks are one-way traffic, hence the Tell label
+        // (send_message stamps it again, but keep the construction honest).
         let envelope = RpcEnvelope {
             route_key: "__fast_path_data_stream__".to_string(),
             payload: Some(data),
             error: None,
-            direction: Some(Direction::Request as i32),
+            direction: Some(Direction::Tell as i32),
             traceparent: None,
             tracestate: None,
             request_id: format!("ds-{}", js_sys::Math::random()),
@@ -265,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn send_message_stamps_request_direction() {
+    fn send_message_stamps_tell_direction() {
         futures::executor::block_on(async {
             let gate = HostGate::new();
             let captured = Rc::new(RefCell::new(None));
@@ -280,7 +285,7 @@ mod tests {
                 direction: Some(Direction::Response as i32),
                 ..Default::default()
             };
-            envelope.payload = Some(Bytes::from_static(b"request"));
+            envelope.payload = Some(Bytes::from_static(b"message"));
 
             gate.send_message(&ActrId::default(), envelope)
                 .await
@@ -290,7 +295,8 @@ mod tests {
                 .borrow_mut()
                 .take()
                 .expect("message handler should receive envelope");
-            assert_eq!(received.direction, Some(Direction::Request as i32));
+            // One-way traffic carries the explicit fire-and-forget label.
+            assert_eq!(received.direction, Some(Direction::Tell as i32));
         });
     }
 }

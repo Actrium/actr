@@ -194,8 +194,9 @@ impl WebSocketGate {
     }
 
     /// Handle RpcEnvelope: explicit Response wakes the waiting party,
-    /// explicit Request enqueues into Mailbox. Missing, Unspecified, or
-    /// unknown direction values are invalid and dropped.
+    /// explicit Request or Tell enqueues into Mailbox (the dispatch loop
+    /// suppresses the reply for Tell). Missing, Unspecified, or unknown
+    /// direction values are invalid and dropped.
     async fn handle_envelope(
         envelope: RpcEnvelope,
         from_bytes: Vec<u8>,
@@ -228,7 +229,7 @@ impl WebSocketGate {
             }
         };
 
-        if matches!(direction, Direction::Request) {
+        if matches!(direction, Direction::Request | Direction::Tell) {
             Self::enqueue_request(from_bytes, data, payload_type, mailbox, &request_id).await;
             return;
         }
@@ -284,7 +285,9 @@ impl WebSocketGate {
     fn direction_for_routing(raw_direction: Option<i32>) -> Result<Direction, DirectionError> {
         match raw_direction {
             Some(raw) => match Direction::try_from(raw) {
-                Ok(direction @ (Direction::Request | Direction::Response)) => Ok(direction),
+                Ok(direction @ (Direction::Request | Direction::Response | Direction::Tell)) => {
+                    Ok(direction)
+                }
                 Ok(Direction::Unspecified) => Err(DirectionError::Unspecified),
                 Err(_) => Err(DirectionError::Unknown),
             },
@@ -292,7 +295,7 @@ impl WebSocketGate {
         }
     }
 
-    /// Enqueue an explicit inbound RPC request to the Mailbox.
+    /// Enqueue an explicit inbound RPC request or tell to the Mailbox.
     async fn enqueue_request(
         from_bytes: Vec<u8>,
         data: Bytes,

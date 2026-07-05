@@ -1007,6 +1007,12 @@ impl PeerGate {
     ) -> ActorResult<Bytes> {
         let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
 
+        // 0. Sender-side deadline validation (#254): reject non-positive
+        // timeouts before registering pending state. This also prevents the
+        // `as u64` sign wrap that would turn a negative timeout into an
+        // effectively infinite one.
+        let timeout = crate::transport::validate_rpc_timeout_ms(envelope.timeout_ms)?;
+
         // 1. Convert ActrId to Dest and fail fast during recovery before
         // registering pending_requests.
         let dest = Self::actr_id_to_dest(target);
@@ -1026,7 +1032,6 @@ impl PeerGate {
 
         // 5. Unified timeout: covers both retry + wait-for-response
         //    so the user-perceived latency never exceeds envelope.timeout_ms.
-        let timeout = std::time::Duration::from_millis(envelope.timeout_ms as u64);
         let request_id = envelope.request_id.clone();
         let sent_transport = Arc::new(Mutex::new(None));
         let sent_transport_for_send = Arc::clone(&sent_transport);
@@ -1114,6 +1119,10 @@ impl PeerGate {
     }
 
     /// Send one-way message with specified PayloadType.
+    ///
+    /// One-way traffic is stamped `Direction::Tell`: the receiver dispatches
+    /// the envelope but MUST NOT reply, and no pending entry is registered
+    /// on this side.
     #[cfg_attr(
         feature = "opentelemetry",
         tracing::instrument(
@@ -1131,7 +1140,7 @@ impl PeerGate {
         payload_type: PayloadType,
         envelope: RpcEnvelope,
     ) -> ActorResult<()> {
-        let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
+        let envelope = Self::stamp_envelope_direction(envelope, Direction::Tell);
         let data = Self::serialize_envelope(&envelope);
         let dest = Self::actr_id_to_dest(target);
         self.preflight_send(target, &dest).await?;
@@ -1340,5 +1349,12 @@ mod tests {
             Direction::Response,
         );
         assert_eq!(response.direction, Some(Direction::Response as i32));
+
+        // One-way message path: stamps Tell even over a stale Request label.
+        let tell = PeerGate::stamp_envelope_direction(
+            envelope_with_direction(Some(Direction::Request as i32)),
+            Direction::Tell,
+        );
+        assert_eq!(tell.direction, Some(Direction::Tell as i32));
     }
 }

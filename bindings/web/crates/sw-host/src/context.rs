@@ -193,6 +193,12 @@ impl WebContext for RuntimeContext {
     }
 
     async fn tell<R: RpcRequest>(&self, target: &ActrId, message: R) -> ActorResult<()> {
+        // 1. Encode the message and delegate to the shared raw tell path.
+        let payload = message.encode_to_vec();
+        self.tell_raw(target, R::route_key(), &payload).await
+    }
+
+    async fn tell_raw(&self, target: &ActrId, route_key: &str, payload: &[u8]) -> ActorResult<()> {
         if let Some(bridge) = &self.bridge {
             if let Err(error) = bridge.ensure_connection(target).await {
                 log::warn!(
@@ -203,18 +209,15 @@ impl WebContext for RuntimeContext {
             }
         }
 
-        // 1. Encode the message.
-        let payload: Bytes = message.encode_to_vec().into();
-
-        // 2. Fetch the route key.
-        let route_key = R::route_key().to_string();
-
-        // 3. Build an `RpcEnvelope` with fire-and-forget semantics.
+        // Build an `RpcEnvelope` with fire-and-forget semantics: the
+        // explicit `Direction::Tell` label tells the receiver to run the
+        // handler without replying. timeout_ms stays 0 as documented filler
+        // — it is no longer a tell marker.
         let envelope = RpcEnvelope {
-            route_key,
-            payload: Some(payload),
+            route_key: route_key.to_string(),
+            payload: Some(Bytes::from(payload.to_vec())),
             error: None,
-            direction: Some(Direction::Request as i32),
+            direction: Some(Direction::Tell as i32),
             traceparent: Some(self.traceparent.clone()),
             tracestate: Some(self.tracestate.clone()),
             request_id: js_sys::Math::random().to_string(), // Simplified ID generation.
@@ -222,10 +225,10 @@ impl WebContext for RuntimeContext {
                 key: "sender_actr_id".to_string(),
                 value: self.self_id.to_string_repr(),
             }],
-            timeout_ms: 0, // `0` means do not wait for a response.
+            timeout_ms: 0,
         };
 
-        // 4. Send through the gate.
+        // Send through the gate without registering a pending entry.
         self.gate.send_message(target, envelope).await
     }
 

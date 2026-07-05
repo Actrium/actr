@@ -61,6 +61,27 @@ impl PeerGate {
         envelope
     }
 
+    /// Ensure a one-way send carries an explicit, valid direction label.
+    ///
+    /// `send_message` is a pass-through for two kinds of traffic: fire-and-
+    /// forget tells (already stamped `Direction::Tell` by the context tell
+    /// paths) and request envelopes relayed by `System::init_message_handler`
+    /// (already stamped `Direction::Request` by `HostGate::send_request`).
+    /// It therefore preserves an existing valid label and only defaults
+    /// unlabeled or Unspecified traffic to `default`.
+    fn ensure_envelope_direction(mut envelope: RpcEnvelope, default: Direction) -> RpcEnvelope {
+        let valid = matches!(
+            envelope.direction.map(Direction::try_from),
+            Some(Ok(Direction::Request
+                | Direction::Response
+                | Direction::Tell))
+        );
+        if !valid {
+            envelope.direction = Some(default as i32);
+        }
+        envelope
+    }
+
     /// Send a request and wait for the response.
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
@@ -99,8 +120,12 @@ impl PeerGate {
     }
 
     /// Send a one-way message without waiting for a response.
+    ///
+    /// Unlabeled envelopes default to `Direction::Tell` (fire-and-forget);
+    /// envelopes relayed with an explicit label (e.g. `Request` from the
+    /// `System` message-handler path) keep it.
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
-        let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
+        let envelope = Self::ensure_envelope_direction(envelope, Direction::Tell);
 
         log::debug!(
             "PeerGate::send_message to {:?}, request_id={}",
@@ -196,5 +221,33 @@ mod tests {
             Direction::Request,
         );
         assert_eq!(request.direction, Some(Direction::Request as i32));
+    }
+
+    #[test]
+    fn ensure_envelope_direction_defaults_unlabeled_traffic_to_tell() {
+        // Unlabeled / Unspecified one-way traffic gets the fire-and-forget label.
+        let tell =
+            PeerGate::ensure_envelope_direction(envelope_with_direction(None), Direction::Tell);
+        assert_eq!(tell.direction, Some(Direction::Tell as i32));
+
+        let tell = PeerGate::ensure_envelope_direction(
+            envelope_with_direction(Some(Direction::Unspecified as i32)),
+            Direction::Tell,
+        );
+        assert_eq!(tell.direction, Some(Direction::Tell as i32));
+
+        // Relayed request envelopes (System message-handler path) keep their label.
+        let request = PeerGate::ensure_envelope_direction(
+            envelope_with_direction(Some(Direction::Request as i32)),
+            Direction::Tell,
+        );
+        assert_eq!(request.direction, Some(Direction::Request as i32));
+
+        // Explicit tells stay tells.
+        let tell = PeerGate::ensure_envelope_direction(
+            envelope_with_direction(Some(Direction::Tell as i32)),
+            Direction::Tell,
+        );
+        assert_eq!(tell.direction, Some(Direction::Tell as i32));
     }
 }
