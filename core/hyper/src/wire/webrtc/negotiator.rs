@@ -23,10 +23,11 @@ pub(crate) struct WebRtcNegotiator {
     config: WebRtcConfig,
     /// Latest credential state (updated on register/renew, contains TurnCredential)
     credential_state: CredentialState,
-    /// Process-shared ICE UDP mux: a single UDP socket reused by every
+    /// Process-shared ICE UDP mux, used only when `ice_udp_mux_port` is
+    /// configured (opt-in): a single UDP socket reused by every
     /// RTCPeerConnection this negotiator creates, so ICE gathering no longer
-    /// opens a fresh socket per interface per connection. Lazily bound on first
-    /// use; shared across clones via the outer `Arc`.
+    /// opens a fresh socket per interface per connection. Lazily bound on
+    /// first use; shared across clones via the outer `Arc`.
     udp_mux: Arc<OnceCell<Arc<dyn UDPMux + Send + Sync>>>,
     /// Optional virtual network for integration testing.
     /// When set, RTCPeerConnection will use this VNet instead of real OS networking.
@@ -40,6 +41,15 @@ impl WebRtcNegotiator {
     /// - `config`: WebRTC configuration
     /// - `credential_state`: shared credential state containing TurnCredential
     pub fn new(config: WebRtcConfig, credential_state: CredentialState) -> Self {
+        if config.advanced.ice_udp_mux_port.is_some() && config.advanced.udp_ports.is_some() {
+            tracing::warn!(
+                ice_udp_mux_port = ?config.advanced.ice_udp_mux_port,
+                udp_ports = ?config.advanced.udp_ports,
+                "Both ice_udp_mux_port and udp_ports (port range) are configured; \
+                 they are mutually exclusive — the shared ICE UDP mux takes \
+                 precedence and the UDP port range is ignored"
+            );
+        }
         Self {
             config,
             credential_state,
@@ -50,24 +60,23 @@ impl WebRtcNegotiator {
     }
 
     /// Get (or lazily bind) the process-shared ICE UDP mux. A single UDP socket
-    /// is bound the first time this is called and reused by every subsequent
-    /// RTCPeerConnection, so the process's UDP socket count stays O(1) instead of
-    /// growing one-per-interface per connection (which otherwise leaks fds for
-    /// the process lifetime, since the per-connection sockets are not released
-    /// when a peer connection is closed). Honors a configured fixed UDP port when
-    /// present, else lets the OS assign one.
-    async fn shared_udp_mux(&self) -> NetworkResult<Arc<dyn UDPMux + Send + Sync>> {
+    /// is bound on the configured `ice_udp_mux_port` the first time this is
+    /// called and reused by every subsequent RTCPeerConnection, so the
+    /// process's UDP socket count stays O(1) instead of growing
+    /// one-per-interface per connection.
+    ///
+    /// Lifecycle: the mux socket (and its read task) is held for the lifetime
+    /// of the coordinator that owns this negotiator; `UDPMux::close` is never
+    /// called. ICE restarts change the local ufrag, and agent close only
+    /// removes the current ufrag from the mux, so stale ufrag entries can
+    /// accumulate in the mux across many restarts — bounded memory growth,
+    /// no fd growth.
+    async fn shared_udp_mux(&self, port: u16) -> NetworkResult<Arc<dyn UDPMux + Send + Sync>> {
         use webrtc::ice::udp_mux::{UDPMuxDefault, UDPMuxParams};
 
         let mux = self
             .udp_mux
             .get_or_try_init(|| async {
-                let port = self
-                    .config
-                    .advanced
-                    .udp_ports
-                    .map(|(min, _max)| min)
-                    .unwrap_or(0);
                 let socket = tokio::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, port))
                     .await
                     .map_err(|e| {
@@ -264,17 +273,26 @@ impl WebRtcNegotiator {
             tracing::info!("🎭 Using default WebRTC configuration (Offerer mode)");
         }
 
-        // Route all ICE UDP through one process-shared muxed socket instead of the
-        // default per-connection ephemeral sockets, so connection churn cannot
-        // exhaust the fd table. Under VNet (tests) the virtual transport is used
-        // instead, so the mux is skipped.
-        #[cfg(feature = "test-utils")]
-        let use_shared_mux = self.vnet.is_none();
-        #[cfg(not(feature = "test-utils"))]
-        let use_shared_mux = true;
-        if use_shared_mux {
-            use webrtc::ice::udp_network::UDPNetwork;
-            setting_engine.set_udp_network(UDPNetwork::Muxed(self.shared_udp_mux().await?));
+        // Opt-in shared ICE UDP mux (`ice_udp_mux_port`): route all ICE UDP
+        // through one process-shared muxed socket instead of per-connection
+        // ephemeral sockets, so connection churn cannot exhaust the fd table.
+        // NOT the default: in webrtc-ice 0.14, muxed mode skips
+        // server-reflexive (srflx) candidate gathering entirely (host and
+        // TURN relay candidates only), so it is only suitable for nodes that
+        // are directly reachable or have TURN configured; NAT-ed nodes
+        // relying on STUN must keep the default ephemeral sockets. Under
+        // VNet (tests) the virtual transport is used instead, so the mux is
+        // skipped.
+        if let Some(mux_port) = self.config.advanced.ice_udp_mux_port {
+            #[cfg(feature = "test-utils")]
+            let use_shared_mux = self.vnet.is_none();
+            #[cfg(not(feature = "test-utils"))]
+            let use_shared_mux = true;
+            if use_shared_mux {
+                use webrtc::ice::udp_network::UDPNetwork;
+                setting_engine
+                    .set_udp_network(UDPNetwork::Muxed(self.shared_udp_mux(mux_port).await?));
+            }
         }
 
         // Create API with MediaEngine and SettingEngine
@@ -344,6 +362,7 @@ impl WebRtcNegotiator {
         setting_engine: &mut webrtc::api::setting_engine::SettingEngine,
         remote_fixed: bool,
     ) -> NetworkResult<()> {
+        use webrtc::ice::udp_network::{EphemeralUDP, UDPNetwork};
         use webrtc::ice_transport::ice_candidate_type::RTCIceCandidateType;
 
         let advanced = &self.config.advanced;
@@ -351,10 +370,31 @@ impl WebRtcNegotiator {
         // Determine if local has fixed configuration
         let local_fixed = advanced.udp_ports.is_some() && !advanced.public_ips.is_empty();
 
-        // UDP networking (including any configured fixed port) is handled by the
-        // process-shared muxed socket set in create_peer_connection; see
-        // shared_udp_mux. The per-connection ephemeral socket strategy previously
-        // applied here is what leaked one UDP fd per interface per connection.
+        // Apply UDP port strategy. When the shared ICE UDP mux is enabled
+        // (ice_udp_mux_port), it takes precedence: create_peer_connection
+        // overrides the UDP network with the muxed socket for every role, and
+        // configuring an ephemeral port range here would be dead config.
+        if let Some((min, max)) = advanced.udp_ports {
+            if advanced.ice_udp_mux_port.is_some() {
+                tracing::warn!(
+                    "🔧 UDP port range {}-{} ignored: ice_udp_mux_port is set and \
+                     the shared ICE UDP mux takes precedence",
+                    min,
+                    max
+                );
+            } else {
+                let ephemeral = EphemeralUDP::new(min, max).map_err(|e| {
+                    crate::transport::NetworkError::Other(anyhow::anyhow!(
+                        "Failed to create EphemeralUDP: {}",
+                        e
+                    ))
+                })?;
+                setting_engine.set_udp_network(UDPNetwork::Ephemeral(ephemeral));
+                tracing::info!("🔧 UDP port range: {}-{}", min, max);
+            }
+        } else {
+            tracing::info!("🔧 Using default random UDP ports");
+        }
 
         // Apply NAT 1:1 mapping based on local and remote configuration
         if !advanced.public_ips.is_empty() {
@@ -548,3 +588,7 @@ impl WebRtcNegotiator {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "negotiator_tests.rs"]
+mod tests;

@@ -515,8 +515,13 @@ impl ParserV1 {
         let ice_prflx_acceptance_min_wait = raw.ice_prflx_acceptance_min_wait.unwrap_or(40);
         let ice_relay_acceptance_min_wait = raw.ice_relay_acceptance_min_wait.unwrap_or(100);
 
+        // Note: udp_ports and ice_udp_mux_port are mutually exclusive; the
+        // conflict is tolerated here (the crate has no logging facility) and
+        // warned about at runtime by the WebRTC negotiator, where the shared
+        // mux takes precedence and udp_ports is ignored.
         let advanced = WebRtcAdvancedConfig {
             udp_ports,
+            ice_udp_mux_port: raw.ice_udp_mux_port,
             public_ips,
             ice_host_acceptance_min_wait,
             ice_srflx_acceptance_min_wait,
@@ -842,5 +847,51 @@ manufacturer = "acme"
         // ManifestConfig fields are present; no execution_mode field exists on ManifestConfig
         assert_eq!(config.package.name, "test");
         assert_eq!(config.package.actr_type.manufacturer, "acme");
+    }
+
+    #[test]
+    fn test_parse_webrtc_ice_udp_mux_port() {
+        let tmpdir = TempDir::new().unwrap();
+        let parser = ParserV1::new(tmpdir.path().join("actr.toml"));
+
+        // Default: unset (mux disabled, per-connection ephemeral UDP)
+        let raw = crate::raw::RawWebRtcConfig::default();
+        let config = parser.parse_webrtc(&raw).unwrap();
+        assert_eq!(config.advanced.ice_udp_mux_port, None);
+
+        // Explicitly set: plumbed through to the resolved config
+        let raw = crate::raw::RawWebRtcConfig {
+            ice_udp_mux_port: Some(19302),
+            ..Default::default()
+        };
+        let config = parser.parse_webrtc(&raw).unwrap();
+        assert_eq!(config.advanced.ice_udp_mux_port, Some(19302));
+
+        // Coexists with a port range: both are resolved; precedence (mux wins,
+        // udp_ports ignored with a warning) is enforced by the negotiator.
+        let raw = crate::raw::RawWebRtcConfig {
+            ice_udp_mux_port: Some(19302),
+            port_range_start: Some(50000),
+            port_range_end: Some(50100),
+            ..Default::default()
+        };
+        let config = parser.parse_webrtc(&raw).unwrap();
+        assert_eq!(config.advanced.ice_udp_mux_port, Some(19302));
+        assert_eq!(config.advanced.udp_ports, Some((50000, 50100)));
+    }
+
+    #[test]
+    fn test_ice_udp_mux_port_deserializes_from_toml() {
+        let raw: crate::raw::RawWebRtcConfig = toml::from_str(
+            r#"
+ice_udp_mux_port = 3478
+"#,
+        )
+        .unwrap();
+        assert_eq!(raw.ice_udp_mux_port, Some(3478));
+
+        // Absent field defaults to None (backward compatible)
+        let raw: crate::raw::RawWebRtcConfig = toml::from_str("").unwrap();
+        assert_eq!(raw.ice_udp_mux_port, None);
     }
 }

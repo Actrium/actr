@@ -77,6 +77,50 @@ const CONNECTION_FACTORY_MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_FAILED_DURATION: Duration = Duration::from_secs(60); // 1 minute
+/// How long a peer may sit in `Disconnected` before the health check reaps it.
+///
+/// Deliberately larger than the ICE restart budget
+/// (`ICE_RESTART_MAX_TOTAL_DURATION` = 60s, measured from the restart trigger,
+/// which is at or after the transition into Disconnected): a legitimate
+/// recovery either succeeds — leaving Disconnected and resetting
+/// `last_state_change` — or exhausts its budget and self-cleans within 60s of
+/// the transition. Anything still Disconnected past 90s (budget + margin) is
+/// unrecoverable (answerer-side peers never run a restart task; offerer-side
+/// tasks can be aborted by `clear_pending_restarts`) and would otherwise pin
+/// its RTCPeerConnection — and the ICE UDP sockets it holds — forever.
+const MAX_DISCONNECTED_DURATION: Duration = Duration::from_secs(90);
+
+/// Decide whether the health check should reap a peer, given its real-time
+/// connection state and how long it has been in that state.
+///
+/// - `Failed`/`Closed` are terminal and reaped after `MAX_FAILED_DURATION`.
+/// - `Disconnected` is reaped after `MAX_DISCONNECTED_DURATION` (90s), which
+///   strictly exceeds the ICE restart budget — see the constant's docs.
+///   The `ice_restart_inflight` flag is deliberately NOT consulted here: it is
+///   a per-attempt flag (false between backoff attempts and always false on
+///   the answerer side), so it cannot distinguish "recovering" from "stuck";
+///   worse, a flag stuck at `true` (e.g. a restart task aborted after setting
+///   it) would suppress reaping forever and recreate the very leak this check
+///   exists to stop. The generous time threshold is the actual guard.
+///
+/// Returns the cleanup reason, or `None` if the peer should be kept.
+fn stale_peer_reap_reason(
+    current_state: RTCPeerConnectionState,
+    duration_since_change: Duration,
+) -> Option<String> {
+    let threshold = match current_state {
+        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => MAX_FAILED_DURATION,
+        RTCPeerConnectionState::Disconnected => MAX_DISCONNECTED_DURATION,
+        _ => return None,
+    };
+    (duration_since_change > threshold).then(|| {
+        format!(
+            "{:?} for {}s",
+            current_state,
+            duration_since_change.as_secs()
+        )
+    })
+}
 
 /// Per-peer negotiation state (role, ready signals)
 /// Consolidates multiple related fields into a single lock to reduce contention.
@@ -1990,11 +2034,11 @@ impl WebRtcCoordinator {
 
     /// Start health check task to clean up stale connections
     ///
-    /// Periodically checks peer connection states and cleans up:
-    /// - Connections in Failed/Closed state for too long (> 1 minutes)
-    ///
-    /// Note: Disconnected states and ICE restart failures are handled automatically
-    /// by the existing ICE restart mechanism, so we only check terminal states here.
+    /// Periodically checks real-time peer connection states and cleans up:
+    /// - connections in Failed/Closed state for longer than `MAX_FAILED_DURATION`
+    /// - connections stuck in Disconnected for longer than
+    ///   `MAX_DISCONNECTED_DURATION` (past the ICE restart budget, so the
+    ///   restart mechanism can no longer bring them back)
     fn spawn_health_check_task(self: &Arc<Self>) -> JoinHandle<()> {
         let coordinator = Arc::downgrade(self);
 
@@ -2020,8 +2064,15 @@ impl WebRtcCoordinator {
     /// Check and cleanup stale peer connections
     ///
     /// This method identifies peers that should be cleaned up based on:
-    /// - Failed/Closed state duration exceeding threshold
-    /// - Disconnected state past the ICE-restart budget with no restart in flight
+    /// - Failed/Closed state duration exceeding `MAX_FAILED_DURATION`
+    /// - Disconnected state duration exceeding `MAX_DISCONNECTED_DURATION`
+    ///   (past the ICE restart budget; see `stale_peer_reap_reason`)
+    ///
+    /// A peer stuck in Disconnected past the restart budget will not recover
+    /// on its own: when ICE restart exhausts without reaching Failed (or never
+    /// runs, on the answerer side) the peer lingers forever — and with it the
+    /// RTCPeerConnection and the per-interface ICE UDP sockets it holds,
+    /// leaking fds for the process lifetime.
     async fn check_and_cleanup_stale_connections(&self) {
         let peers_to_cleanup: Vec<(ActrId, String)> = {
             let peers = self.peers.read().await;
@@ -2034,40 +2085,9 @@ impl WebRtcCoordinator {
                     let current_state = state.peer_connection.connection_state();
                     let duration_since_change = now.duration_since(state.last_state_change);
 
-                    // Terminal states (Failed/Closed) that won't recover on their own.
-                    let terminal_stale = matches!(
-                        current_state,
-                        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
-                    ) && duration_since_change > MAX_FAILED_DURATION;
-
-                    // A peer stuck in Disconnected past the ICE-restart budget with no
-                    // restart in flight will not recover on its own. Unlike Failed/Closed
-                    // it was previously left untouched here (on the assumption the ICE
-                    // restart mechanism would take it to a terminal state), but when ICE
-                    // restart exhausts without reaching Failed the peer lingers forever —
-                    // and with it the RTCPeerConnection and the per-interface ICE UDP
-                    // sockets it holds, leaking fds for the process lifetime. Reap it too.
-                    // The `!ice_restart_inflight` guard avoids killing a peer mid-recovery;
-                    // MAX_FAILED_DURATION (60s) already exceeds the ICE restart budget
-                    // (ICE_RESTART_MAX_TOTAL_DURATION).
-                    let disconnected_stale =
-                        matches!(current_state, RTCPeerConnectionState::Disconnected)
-                            && duration_since_change > MAX_FAILED_DURATION
-                            && !state.ice_restart_inflight;
-
-                    if terminal_stale || disconnected_stale {
-                        let reason = format!(
-                            "{:?} for {}s",
-                            current_state,
-                            duration_since_change.as_secs()
-                        );
-
-                        tracing::warn!("🧹 Marking peer {} for cleanup: {}", peer_id, reason);
-
-                        Some((peer_id.clone(), reason))
-                    } else {
-                        None
-                    }
+                    let reason = stale_peer_reap_reason(current_state, duration_since_change)?;
+                    tracing::warn!("🧹 Marking peer {} for cleanup: {}", peer_id, reason);
+                    Some((peer_id.clone(), reason))
                 })
                 .collect()
         };

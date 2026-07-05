@@ -224,6 +224,77 @@ async fn test_stress_concurrent_close() {
     }
 }
 
+/// Regression test: close() must release the RTCPeerConnection object graph.
+///
+/// The coordinator installs on_peer_connection_state_change / on_data_channel
+/// handlers that capture a strong `WebRtcConnection` clone, which owns the
+/// `Arc<RTCPeerConnection>` — a reference cycle through the connection's own
+/// callbacks. Both data-channel registration paths additionally install
+/// dc.on_close handlers stored on the channel itself (self-cycle; the answerer
+/// path historically captured the whole WebRtcConnection too). In webrtc 0.14
+/// the ICE agent's UDP sockets are freed on drop, not on close(), so any
+/// surviving strong reference leaks fds for the process lifetime.
+///
+/// Deterministic, no network I/O: handler installation and the cleanup in
+/// close() are both synchronous with respect to this test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_close_releases_peer_connection() {
+    let conn = create_test_connection().await;
+    let pc = Arc::clone(&conn.peer_connection);
+    let weak_pc = Arc::downgrade(&pc);
+
+    // Coordinator-shaped handlers: strong WebRtcConnection captures, exactly
+    // like install_restart_handler (offerer) and the answerer inline handlers.
+    let conn_for_state = conn.clone();
+    pc.on_peer_connection_state_change(Box::new(move |state| {
+        let conn = conn_for_state.clone();
+        Box::pin(async move {
+            conn.handle_state_change(state).await;
+        })
+    }));
+    let conn_for_dc = conn.clone();
+    pc.on_data_channel(Box::new(move |_dc| {
+        let conn = conn_for_dc.clone();
+        Box::pin(async move {
+            let _ = conn.session_id();
+        })
+    }));
+
+    // Offerer path: create a lane (installs on_open/on_error/on_close/on_message
+    // on a locally created data channel).
+    let lane = conn
+        .get_lane(PayloadType::RpcReliable)
+        .await
+        .expect("lane creation should succeed");
+
+    // Answerer path: register an externally provided data channel
+    // (register_received_data_channel installs its own handler set).
+    let received_dc = pc
+        .create_data_channel("received-probe", None)
+        .await
+        .expect("data channel should be created");
+    let (message_tx, _message_rx) = mpsc::unbounded_channel();
+    let received_lane = conn
+        .register_received_data_channel(received_dc, PayloadType::RpcSignal, message_tx)
+        .await
+        .expect("received data channel should register");
+
+    conn.close().await.expect("close should succeed");
+
+    // Drop every strong reference held by the test itself; after close() has
+    // cleared the handlers and caches, these must be the last ones.
+    drop(lane);
+    drop(received_lane);
+    drop(pc);
+    drop(conn);
+
+    assert!(
+        weak_pc.upgrade().is_none(),
+        "RTCPeerConnection must be dropped after close(); a surviving strong \
+         reference means a handler still captures the connection (fd leak)"
+    );
+}
+
 /// Regression test: close() with concurrent invalidate_lane() does not block due to lock order inversion
 ///
 /// This test simulates a historically reproduced sequence:
