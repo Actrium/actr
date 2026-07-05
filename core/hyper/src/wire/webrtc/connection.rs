@@ -196,21 +196,6 @@ impl WebRtcConnection {
         Ok(())
     }
 
-    /// Broadcast DataChannel closed event
-    ///
-    /// Unlike the old AtomicBool-based notification, this broadcasts to all
-    /// subscribers every time a DataChannel closes.
-    fn notify_data_channel_closed(&self, payload_type: PayloadType) {
-        //
-        // The cleanup will be handled by the caller (close() or cleanup_cancelled_connection).
-        // We only broadcast the event here to notify upper layers.
-        let _ = self.event_tx.send(ConnectionEvent::DataChannelClosed {
-            peer_id: self.peer_id.clone(),
-            session_id: self.session.session_id,
-            payload_type,
-        });
-    }
-
     /// Return a snapshot of the current DataChannel cache.
     ///
     /// Used by the coordinator to query `buffered_amount` on abnormal disconnect.
@@ -360,10 +345,34 @@ impl WebRtcConnection {
         // Replacing the handlers with no-ops drops the captured clones and breaks
         // the cycle, so releasing the last `Arc<RTCPeerConnection>` frees the
         // sockets.
+        //
+        // Handlers are cleared only AFTER the pc.close() await above, so the
+        // final state-change event may or may not be observed — nothing
+        // downstream relies on it: the ConnectionClosed broadcast above already
+        // drives coordinator cleanup (the peers-map entry is removed first),
+        // and the health check polls connection_state() directly instead of
+        // listening for state-change events.
         self.peer_connection
             .on_peer_connection_state_change(Box::new(move |_state| Box::pin(async move {})));
         self.peer_connection
             .on_data_channel(Box::new(move |_dc| Box::pin(async move {})));
+
+        // Also clear the handlers installed on every cached data channel. These
+        // closures are stored on the channel itself: on_close holds connection
+        // state (and historically a whole WebRtcConnection clone), and
+        // on_message holds the lane's receive-channel sender. Replacing them
+        // with capture-free no-ops breaks the channel self-cycles and lets the
+        // receive loops terminate, so the channels (and anything they pin) can
+        // actually be dropped once the caches below are cleared.
+        {
+            let channels = self.data_channels.read().await.clone();
+            for channel in channels.into_iter().flatten() {
+                channel.on_close(Box::new(|| Box::pin(async {})));
+                channel.on_open(Box::new(|| Box::pin(async {})));
+                channel.on_message(Box::new(|_msg| Box::pin(async {})));
+                channel.on_error(Box::new(|_err| Box::pin(async {})));
+            }
+        }
 
         // Clear each cache under a dedicated lock scope
         {
@@ -492,15 +501,10 @@ impl WebRtcConnection {
         Ok(lane)
     }
 
-    /// Invalidate cached lane/DataChannel for given payload type.
-    ///
-    /// Used when the underlying DataChannel has transitioned to Closed and needs
-    /// to be recreated on next `get_lane` call.
-    pub async fn invalidate_lane(&self, payload_type: PayloadType) {
-        self.invalidate_lane_internal(payload_type).await;
-    }
-
-    /// Internal implementation of invalidate_lane
+    /// Internal implementation of invalidate_lane (see the `WireHandle` impl):
+    /// invalidates the cached lane/DataChannel for the given payload type when
+    /// the underlying DataChannel has transitioned to Closed and needs to be
+    /// recreated on the next `get_lane` call.
     async fn invalidate_lane_internal(&self, payload_type: PayloadType) {
         let idx = payload_type as usize;
         let mut cache = self.lane_cache.write().await;
@@ -584,7 +588,10 @@ impl WebRtcConnection {
         let payload_type_for_close = payload_type;
         let label_for_close = label;
         let channel_id_for_close = channel_id;
-        let dc_for_close = Arc::clone(&data_channel);
+        // Weak: this closure is stored on the data channel itself, so a strong
+        // clone would form a self-cycle that keeps the channel (and its SCTP
+        // stream state) alive forever.
+        let dc_for_close = Arc::downgrade(&data_channel);
         data_channel.on_close(Box::new(move || {
             let session = session_for_close.clone();
             let lane_cache = lane_cache_for_close.clone();
@@ -594,7 +601,7 @@ impl WebRtcConnection {
             let payload_type = payload_type_for_close;
             let label = label_for_close;
             let channel_id = channel_id_for_close;
-            let dc = dc_for_close.clone();
+            let dc_weak = dc_for_close.clone();
             Box::pin(async move {
                 // Guard: if session is cancelled (connection already cleaned up),
                 // skip all side effects to avoid corrupting a new connection
@@ -607,8 +614,13 @@ impl WebRtcConnection {
                     return;
                 }
 
-                // Query buffered_amount at the moment of close to surface potential data loss.
-                let buffered = dc.buffered_amount().await;
+                // Query buffered_amount at the moment of close to surface potential
+                // data loss. If the channel is already gone, nothing was buffered
+                // from our point of view.
+                let buffered = match dc_weak.upgrade() {
+                    Some(dc) => dc.buffered_amount().await,
+                    None => 0,
+                };
                 if buffered > 0 {
                     tracing::warn!(
                         channel = %label,
@@ -865,24 +877,55 @@ impl WebRtcConnection {
             Box::pin(async move {})
         }));
 
-        // Set close handler
-        let this_for_close = self.clone();
+        // Set close handler. Capture individual fields instead of `self`: this
+        // closure is stored on the data channel, and a strong `WebRtcConnection`
+        // clone owns the `Arc<RTCPeerConnection>`, so capturing `self` would keep
+        // the whole peer-connection graph (including its ICE UDP sockets) alive
+        // through the channel's own callback. Mirrors create_lane_internal.
+        let session_for_close = self.session.clone();
+        let lane_cache_for_close = self.lane_cache.clone();
+        let data_channels_for_close = self.data_channels.clone();
+        let event_tx_for_close = self.event_tx.clone();
+        let peer_id_for_close = self.peer_id.clone();
+        let sid_for_close = self.session.session_id;
         let payload_type_for_close = payload_type;
         let label_for_close = label.clone();
-        let dc_for_close = Arc::clone(&data_channel);
+        // Weak: a strong clone of the channel inside its own handler would be a
+        // self-cycle that keeps the channel alive forever.
+        let dc_for_close = Arc::downgrade(&data_channel);
 
         data_channel.on_close(Box::new(move || {
-            let this = this_for_close.clone();
+            let session = session_for_close.clone();
+            let lane_cache = lane_cache_for_close.clone();
+            let data_channels = data_channels_for_close.clone();
+            let event_tx = event_tx_for_close.clone();
+            let peer_id = peer_id_for_close.clone();
             let payload_type = payload_type_for_close;
             let label = label_for_close.clone();
-            let dc = dc_for_close.clone();
+            let dc_weak = dc_for_close.clone();
 
             Box::pin(async move {
-                // Query buffered_amount at the moment of close to surface potential data loss.
-                let buffered = dc.buffered_amount().await;
+                // Guard: if session is cancelled (connection already cleaned up),
+                // skip all side effects to avoid corrupting a new connection
+                if session.is_cancelled() {
+                    tracing::debug!(
+                        "🚫 DC.on_close (received) session {} cancelled, ignoring for {:?}",
+                        sid_for_close,
+                        payload_type
+                    );
+                    return;
+                }
+
+                // Query buffered_amount at the moment of close to surface potential
+                // data loss. If the channel is already gone, nothing was buffered
+                // from our point of view.
+                let buffered = match dc_weak.upgrade() {
+                    Some(dc) => dc.buffered_amount().await,
+                    None => 0,
+                };
                 if buffered > 0 {
                     tracing::warn!(
-                        peer_id = %this.peer_id,
+                        peer_id = %peer_id,
                         channel = %label,
                         payload_type = ?payload_type,
                         buffered_bytes = buffered,
@@ -897,9 +940,21 @@ impl WebRtcConnection {
                     );
                 }
                 // Invalidate cached lane when DataChannel closes
-                this.invalidate_lane(payload_type).await;
-                // Broadcast DataChannelClosed event (sync, no await needed)
-                this.notify_data_channel_closed(payload_type);
+                let idx = payload_type as usize;
+                {
+                    let mut cache = lane_cache.write().await;
+                    cache[idx] = None;
+                }
+                {
+                    let mut channels = data_channels.write().await;
+                    channels[idx] = None;
+                }
+                // Broadcast DataChannelClosed event
+                let _ = event_tx.send(ConnectionEvent::DataChannelClosed {
+                    peer_id,
+                    session_id: sid_for_close,
+                    payload_type,
+                });
             })
         }));
 
