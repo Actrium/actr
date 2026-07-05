@@ -11,6 +11,7 @@
 //! 4. **Error propagation**: Workload handler error propagated to Shell
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use actr_framework::{Bytes, Context, MessageDispatcher, Workload};
 use actr_hyper::outbound::HostGate;
@@ -83,6 +84,16 @@ struct InprocTestHarness {
     shell_gate: Arc<HostGate>,
     /// Shutdown signal
     shutdown_token: CancellationToken,
+    /// Number of times the Workload handler actually ran (its side effect).
+    /// Incremented once per inbound envelope, regardless of `call` vs `tell`.
+    handler_runs: Arc<AtomicUsize>,
+    /// Number of envelopes observed on the Shell response lane. A `call`
+    /// produces exactly one; a `tell` (suppressed reply) produces zero.
+    responses_seen: Arc<AtomicUsize>,
+    /// Receives one item after the Workload finishes handling each inbound
+    /// envelope, so `tell` tests can await the side effect deterministically
+    /// (buffered channel — no lost wakeups, no polling with sleeps).
+    handled_rx: tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<()>>,
     /// Background task handles
     _task_handles: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -115,6 +126,10 @@ impl InprocTestHarness {
             .await
             .expect("failed to get Workload receive lane");
 
+        let handler_runs = Arc::new(AtomicUsize::new(0));
+        let handler_runs_loop = handler_runs.clone();
+        let (handled_tx, handled_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+
         let workload_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -125,58 +140,79 @@ impl InprocTestHarness {
                                 let request_id = envelope.request_id.clone();
                                 let route_key = envelope.route_key.clone();
 
-                                // Dispatch to Workload (use a mock context)
+                                // Dispatch to Workload (use a mock context). This runs the
+                                // handler for its side effects unconditionally — including
+                                // for a `tell` — exactly as the production receive loop does.
                                 let ctx = MockContext;
                                 let result = <DoubleDispatcher as MessageDispatcher>::dispatch(
                                     &workload,
                                     envelope.clone(),
                                     &ctx,
                                 ).await;
+                                handler_runs_loop.fetch_add(1, Ordering::SeqCst);
+
+                                // A `tell` (fire-and-forget) sets `timeout_ms == 0` to signal
+                                // it wants no reply. Run the handler for its side effects, but
+                                // do not send a response — an unwanted reply becomes an orphan
+                                // response on the caller (#262). Mirrors the guard added to the
+                                // node.rs guest/peer receive loops.
+                                let expects_response = envelope.timeout_ms != 0;
 
                                 match result {
                                     Ok(response_bytes) => {
-                                        let response_envelope = RpcEnvelope {
-                                            route_key: route_key.clone(),
-                                            payload: Some(response_bytes),
-                                            error: None,
-                                            direction: Some(actr_protocol::Direction::Response as i32),
-                                            traceparent: None,
-                                            tracestate: None,
-                                            request_id: request_id.clone(),
-                                            metadata: Vec::new(),
-                                            timeout_ms: 30000,
-                                        };
-                                        if let Err(e) = response_tx
-                                            .send_message(PayloadType::RpcReliable, None, response_envelope)
-                                            .await
-                                        {
-                                            tracing::error!("failed to send response: {:?}", e);
+                                        if expects_response {
+                                            let response_envelope = RpcEnvelope {
+                                                route_key: route_key.clone(),
+                                                payload: Some(response_bytes),
+                                                error: None,
+                                                direction: Some(actr_protocol::Direction::Response as i32),
+                                                traceparent: None,
+                                                tracestate: None,
+                                                request_id: request_id.clone(),
+                                                metadata: Vec::new(),
+                                                timeout_ms: 30000,
+                                            };
+                                            if let Err(e) = response_tx
+                                                .send_message(PayloadType::RpcReliable, None, response_envelope)
+                                                .await
+                                            {
+                                                tracing::error!("failed to send response: {:?}", e);
+                                            }
                                         }
                                     }
                                     Err(e) => {
-                                        let error_response = actr_protocol::ErrorResponse {
-                                            code: error_to_code(&e),
-                                            message: e.to_string(),
-                                        };
-                                        let error_envelope = RpcEnvelope {
-                                            route_key: route_key.clone(),
-                                            payload: None,
-                                            error: Some(error_response),
-                                            direction: Some(actr_protocol::Direction::Response as i32),
-                                            traceparent: None,
-                                            tracestate: None,
-                                            request_id: request_id.clone(),
-                                            metadata: Vec::new(),
-                                            timeout_ms: 30000,
-                                        };
-                                        if let Err(e) = response_tx
-                                            .send_message(PayloadType::RpcReliable, None, error_envelope)
-                                            .await
-                                        {
-                                            tracing::error!("failed to send error response: {:?}", e);
+                                        // Keep the local error log for every failure, but skip
+                                        // sending an error envelope back for a `tell`.
+                                        tracing::error!("workload handler failed: {:?}", e);
+                                        if expects_response {
+                                            let error_response = actr_protocol::ErrorResponse {
+                                                code: error_to_code(&e),
+                                                message: e.to_string(),
+                                            };
+                                            let error_envelope = RpcEnvelope {
+                                                route_key: route_key.clone(),
+                                                payload: None,
+                                                error: Some(error_response),
+                                                direction: Some(actr_protocol::Direction::Response as i32),
+                                                traceparent: None,
+                                                tracestate: None,
+                                                request_id: request_id.clone(),
+                                                metadata: Vec::new(),
+                                                timeout_ms: 30000,
+                                            };
+                                            if let Err(e) = response_tx
+                                                .send_message(PayloadType::RpcReliable, None, error_envelope)
+                                                .await
+                                            {
+                                                tracing::error!("failed to send error response: {:?}", e);
+                                            }
                                         }
                                     }
                                 }
+
+                                // Signal that this envelope has been fully handled
+                                // (side effect done, reply decision made).
+                                let _ = handled_tx.send(());
                             }
                             Err(e) => {
                                 tracing::error!("workload receive error: {:?}", e);
@@ -198,6 +234,9 @@ impl InprocTestHarness {
             .await
             .expect("failed to get Shell receive lane");
 
+        let responses_seen = Arc::new(AtomicUsize::new(0));
+        let responses_seen_loop = responses_seen.clone();
+
         let shell_receive_handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -205,6 +244,9 @@ impl InprocTestHarness {
                     envelope_result = response_rx_lane.recv_envelope() => {
                         match envelope_result {
                             Ok(envelope) => {
+                                // Count every envelope that reaches the Shell response lane.
+                                // A suppressed `tell` reply never arrives here.
+                                responses_seen_loop.fetch_add(1, Ordering::SeqCst);
                                 match (envelope.payload, envelope.error) {
                                     (Some(payload), None) => {
                                         if let Err(e) = request_mgr
@@ -243,6 +285,9 @@ impl InprocTestHarness {
         Self {
             shell_gate,
             shutdown_token,
+            handler_runs,
+            responses_seen,
+            handled_rx: tokio::sync::Mutex::new(handled_rx),
             _task_handles: vec![workload_handle, shell_receive_handle],
         }
     }
@@ -262,6 +307,51 @@ impl InprocTestHarness {
             timeout_ms: 5000,
         };
         self.shell_gate.send_request(&actor_id, envelope).await
+    }
+
+    /// Send a fire-and-forget `tell` from Shell to Workload.
+    ///
+    /// Mirrors `RuntimeContext::tell`: `timeout_ms == 0` signals that no reply
+    /// is expected, and the message is dispatched via `send_message` (no
+    /// pending response entry is registered on the sender side).
+    async fn tell_raw(&self, route_key: &str, payload: Vec<u8>) -> ActorResult<()> {
+        let actor_id = test_actor_id();
+        let envelope = RpcEnvelope {
+            route_key: route_key.to_string(),
+            payload: Some(Bytes::from(payload)),
+            error: None,
+            direction: Some(actr_protocol::Direction::Request as i32),
+            traceparent: None,
+            tracestate: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
+            metadata: Vec::new(),
+            timeout_ms: 0, // Zero means no response is expected.
+        };
+        self.shell_gate.send_message(&actor_id, envelope).await
+    }
+
+    /// Number of times the Workload handler ran (its observable side effect).
+    fn handler_runs(&self) -> usize {
+        self.handler_runs.load(Ordering::SeqCst)
+    }
+
+    /// Number of envelopes that reached the Shell response lane.
+    fn responses_seen(&self) -> usize {
+        self.responses_seen.load(Ordering::SeqCst)
+    }
+
+    /// Await the completion of the next handled inbound envelope, bounded by
+    /// `timeout`. Deterministic (buffered channel), so no sleeps are needed.
+    ///
+    /// # Panics
+    /// Panics if no envelope is handled within `timeout`.
+    async fn await_handled(&self, timeout: std::time::Duration) {
+        let mut rx = self.handled_rx.lock().await;
+        match tokio::time::timeout(timeout, rx.recv()).await {
+            Ok(Some(())) => {}
+            Ok(None) => panic!("workload loop terminated before handling the envelope"),
+            Err(_) => panic!("timed out waiting for the workload to handle the envelope"),
+        }
     }
 
     /// Shutdown and clean up
@@ -538,6 +628,102 @@ async fn concurrent_calls() {
     for h in handles {
         h.await.expect("task should not panic");
     }
+
+    harness.shutdown();
+}
+
+/// Test 7: a `tell` runs the handler but sends NO response (#262).
+///
+/// The receive loop must run the handler for its side effects even for a
+/// fire-and-forget `tell` (`timeout_ms == 0`), but it must NOT emit a reply.
+/// An unwanted reply would arrive as an orphan response on the caller.
+#[tokio::test]
+async fn tell_runs_handler_but_sends_no_response() {
+    let harness = InprocTestHarness::build().await;
+
+    // Baseline: nothing handled, nothing on the response lane yet.
+    assert_eq!(harness.handler_runs(), 0);
+    assert_eq!(harness.responses_seen(), 0);
+
+    // Fire-and-forget `tell` to a served route.
+    harness
+        .tell_raw("test/double", 21i32.to_le_bytes().to_vec())
+        .await
+        .expect("tell send should succeed");
+
+    // Wait deterministically for the workload to finish handling it.
+    harness
+        .await_handled(std::time::Duration::from_secs(5))
+        .await;
+
+    // The handler ran (side effect observed) ...
+    assert_eq!(
+        harness.handler_runs(),
+        1,
+        "the tell handler must run for its side effects"
+    );
+    // ... but no response envelope was emitted back to the Shell.
+    assert_eq!(
+        harness.responses_seen(),
+        0,
+        "a tell must not produce a response envelope (#262)"
+    );
+
+    harness.shutdown();
+}
+
+/// Test 8: a `tell` whose handler errors still sends NO error response.
+///
+/// The local error is logged (visible in the loop), but no error envelope is
+/// sent back — the caller registered no pending entry to receive it.
+#[tokio::test]
+async fn tell_with_handler_error_sends_no_error_response() {
+    let harness = InprocTestHarness::build().await;
+
+    harness
+        .tell_raw("test/error", vec![])
+        .await
+        .expect("tell send should succeed");
+
+    harness
+        .await_handled(std::time::Duration::from_secs(5))
+        .await;
+
+    assert_eq!(
+        harness.handler_runs(),
+        1,
+        "the failing tell handler must still run"
+    );
+    assert_eq!(
+        harness.responses_seen(),
+        0,
+        "a tell must not produce an error response envelope (#262)"
+    );
+
+    harness.shutdown();
+}
+
+/// Test 9 (regression guard): a `call` to the same route still gets its
+/// RESPONSE and completes normally. The tell suppression must not affect the
+/// request/response path.
+#[tokio::test]
+async fn call_still_receives_its_response() {
+    let harness = InprocTestHarness::build().await;
+
+    let resp = harness
+        .call_raw("test/double", 21i32.to_le_bytes().to_vec())
+        .await
+        .expect("call should succeed");
+    let val = i32::from_le_bytes([resp[0], resp[1], resp[2], resp[3]]);
+    assert_eq!(val, 42, "21 * 2 should be 42");
+
+    // Exactly one response envelope reached the Shell response lane.
+    assert_eq!(harness.handler_runs(), 1, "the call handler ran once");
+    assert_eq!(
+        harness.responses_seen(),
+        1,
+        "a call must receive exactly one response envelope"
+    );
 
     harness.shutdown();
 }
