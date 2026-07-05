@@ -1112,6 +1112,65 @@ fn codec_to_payload_type_maps_known_and_unknown() {
 }
 
 #[test]
+fn stale_peer_reap_uses_dedicated_disconnected_threshold() {
+    use RTCPeerConnectionState::*;
+
+    // Terminal states (Failed/Closed) are reaped after MAX_FAILED_DURATION (60s).
+    assert!(stale_peer_reap_reason(Failed, Duration::from_secs(61)).is_some());
+    assert!(stale_peer_reap_reason(Closed, Duration::from_secs(61)).is_some());
+    assert!(stale_peer_reap_reason(Failed, Duration::from_secs(59)).is_none());
+    assert!(stale_peer_reap_reason(Closed, Duration::from_secs(59)).is_none());
+
+    // Disconnected gets the dedicated 90s threshold (restart budget + margin):
+    // reaped past 90s ...
+    assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(91)).is_some());
+    // ... but NOT at the terminal-state threshold, where an ICE restart
+    // (60s budget, measured from its trigger, not from the state change)
+    // may still legitimately be recovering the peer ...
+    assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(61)).is_none());
+    assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(90)).is_none());
+    // ... and a fresh Disconnected peer is never touched.
+    assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(5)).is_none());
+
+    // Healthy/transient states are never reaped, no matter how old.
+    for state in [New, Connecting, Connected] {
+        assert!(
+            stale_peer_reap_reason(state, Duration::from_secs(3600)).is_none(),
+            "{state:?} must never be reaped"
+        );
+    }
+}
+
+/// The health check reads the REAL-TIME connection state from the
+/// RTCPeerConnection, not the cached `current_state`, so a peer whose pc is
+/// healthy must survive even with an ancient `last_state_change`.
+#[tokio::test]
+async fn health_check_keeps_healthy_peer_with_stale_timestamp() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "exchange-hc").await;
+
+    // Backdate the state-change timestamp far past every reap threshold.
+    // (checked_sub keeps the test valid on hosts with a short Instant epoch;
+    // the fallback leaves the timestamp fresh, which still must not reap.)
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&peer_id).expect("peer should exist");
+        state.last_state_change = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(std::time::Instant::now);
+    }
+
+    coordinator.check_and_cleanup_stale_connections().await;
+
+    assert!(
+        coordinator.peers.read().await.contains_key(&peer_id),
+        "a peer whose RTCPeerConnection reports a healthy state (New) must \
+         not be reaped regardless of last_state_change age"
+    );
+}
+
+#[test]
 fn is_ipv4_candidate_allowed_filters_ipv6_and_accepts_ipv4() {
     // IPv6 candidates are rejected.
     assert!(!is_ipv4_candidate_allowed("candidate:... fe80::1 ..."));
