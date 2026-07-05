@@ -10,6 +10,7 @@
 
 mod backoff;
 mod connection_event;
+pub(crate) mod correlation;
 mod dest_transport;
 mod error;
 mod host_transport;
