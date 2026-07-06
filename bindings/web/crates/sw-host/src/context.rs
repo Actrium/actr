@@ -269,7 +269,7 @@ impl WebContext for RuntimeContext {
         _callback: Box<dyn FnMut(Bytes) + 'static>,
     ) -> ActorResult<()> {
         // Media-track fast path is intentionally not wired on the web target
-        // (see core/framework/src/web/context.rs §"DataStream / MediaTrack
+        // (see core/framework/src/web/context.rs §"DataChunk / MediaTrack
         // fast paths"). Returning Unavailable is consistent with the
         // framework `WebContext` shape so callers fail loud rather than
         // believe a registration that did nothing.
@@ -309,7 +309,7 @@ impl WebContext for RuntimeContext {
 
         // Send fast-path data through the gate.
         self.gate
-            .send_data_stream(
+            .send_data_chunk(
                 target,
                 actr_protocol::PayloadType::MediaRtp,
                 Bytes::from(payload),
@@ -317,14 +317,14 @@ impl WebContext for RuntimeContext {
             .await
     }
 
-    async fn send_data_stream(
+    async fn send_data_chunk(
         &self,
         target: &ActrId,
         stream_id: &str,
         data: Bytes,
     ) -> ActorResult<()> {
         log::debug!(
-            "[Context] send_data_stream: target={:?}, stream_id={}, size={}",
+            "[Context] send_data_chunk: target={:?}, stream_id={}, size={}",
             target,
             stream_id,
             data.len()
@@ -340,7 +340,7 @@ impl WebContext for RuntimeContext {
 
         // Send fast-path data through the gate (defaulting to STREAM_RELIABLE).
         self.gate
-            .send_data_stream(
+            .send_data_chunk(
                 target,
                 actr_protocol::PayloadType::StreamReliable,
                 Bytes::from(payload),

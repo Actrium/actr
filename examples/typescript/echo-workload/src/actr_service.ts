@@ -2,7 +2,7 @@ import {
   PayloadType,
   defineWorkload,
   registerStream,
-  sendDataStream,
+  sendDataChunk,
   toUint8Array,
   unregisterStream,
 } from '@actrium/actr-workload';
@@ -47,7 +47,7 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
     await registerStream(inboundStreamId, async (chunk, sender) => {
       const incoming = textDecoder.decode(toUint8Array(chunk.payload));
 
-      await sendDataStream(
+      await sendDataChunk(
         { peer: sender },
         {
           streamId: replyStreamId,

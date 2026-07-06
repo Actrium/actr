@@ -1,4 +1,4 @@
-use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample as FrameworkMediaSample};
+use actr_framework::{Bytes, Context, DataChunk, Dest, MediaSample as FrameworkMediaSample};
 use actr_hyper::context::RuntimeContext;
 use actr_protocol::{ActrId, PayloadType};
 use async_trait::async_trait;
@@ -8,14 +8,14 @@ use std::sync::Arc;
 use crate::error::run_on_tokio_runtime;
 use crate::{ActrError, ActrResult};
 
-/// Callback interface for DataStream events.
+/// Callback interface for DataChunk events.
 #[uniffi::export(callback_interface)]
 #[async_trait]
-pub trait DataStreamCallback: Send + Sync + 'static {
-    /// Handle an incoming DataStream chunk.
+pub trait DataChunkCallback: Send + Sync + 'static {
+    /// Handle an incoming DataChunk.
     async fn on_stream(
         &self,
-        chunk: crate::types::DataStream,
+        chunk: crate::types::DataChunk,
         sender: crate::types::ActrId,
     ) -> ActrResult<()>;
 }
@@ -129,39 +129,39 @@ impl ContextBridge {
         .await
     }
 
-    /// Send a DataStream to a remote actor (Fast Path)
+    /// Send a DataChunk to a remote actor (Fast Path)
     ///
     /// # Arguments
     /// - `target`: Target actor ID
-    /// - `chunk`: DataStream containing stream_id, sequence, payload, etc.
+    /// - `chunk`: DataChunk containing stream_id, sequence, payload, etc.
     /// - `payload_type`: Stream lane selection for delivery guarantees.
-    pub async fn send_data_stream(
+    pub async fn send_data_chunk(
         &self,
         target: crate::types::ActrId,
-        chunk: crate::types::DataStream,
+        chunk: crate::types::DataChunk,
         payload_type: crate::types::PayloadType,
     ) -> crate::error::ActrResult<()> {
         let target_id: ActrId = target.into();
-        let chunk: DataStream = chunk.into();
+        let chunk: DataChunk = chunk.into();
         let payload_type: PayloadType = payload_type.into();
         self.inner
-            .send_data_stream(&Dest::Peer(target_id), chunk, payload_type)
+            .send_data_chunk(&Dest::Peer(target_id), chunk, payload_type)
             .await?;
         Ok(())
     }
 
-    /// Register a DataStream callback for a stream ID.
+    /// Register a DataChunk callback for a stream ID.
     pub async fn register_stream(
         &self,
         stream_id: String,
-        callback: Box<dyn DataStreamCallback>,
+        callback: Box<dyn DataChunkCallback>,
     ) -> crate::error::ActrResult<()> {
-        let callback: Arc<dyn DataStreamCallback> = Arc::from(callback);
+        let callback: Arc<dyn DataChunkCallback> = Arc::from(callback);
         self.inner
             .register_stream(stream_id, move |chunk, sender| {
                 let callback = callback.clone();
                 Box::pin(async move {
-                    let chunk: crate::types::DataStream = chunk.into();
+                    let chunk: crate::types::DataChunk = chunk.into();
                     let sender: crate::types::ActrId = sender.into();
                     callback
                         .on_stream(chunk, sender)
@@ -173,7 +173,7 @@ impl ContextBridge {
         Ok(())
     }
 
-    /// Unregister a DataStream callback for a stream ID.
+    /// Unregister a DataChunk callback for a stream ID.
     pub async fn unregister_stream(&self, stream_id: String) -> crate::error::ActrResult<()> {
         self.inner.unregister_stream(&stream_id).await?;
         Ok(())

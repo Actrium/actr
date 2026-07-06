@@ -541,7 +541,7 @@ TinyGo → WASM          rustc → WASM          Emscripten → WASM
 - ✅ WebRTC Coordinator (DOM 侧 TS 实现)
 - ✅ `FastPathForwarder` 通过 `fast_path_data` 把 DOM 数据转发到 SW
 - ✅ SW `handle_dom_fast_path` 调用 `runtime.handle_fast_path`
-- ⚠️ DataStream / MediaTrack 的更完整场景覆盖仍需补齐
+- ⚠️ DataChunk / MediaTrack 的更完整场景覆盖仍需补齐
 - **目标**：Fast Path 统一模式，延迟以当前 benchmark 为准
 
 ### Phase 3: 性能优化（规划中）

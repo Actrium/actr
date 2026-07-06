@@ -1,6 +1,6 @@
 import {
   registerStream as hostRegisterStream,
-  sendDataStream as hostSendDataStream,
+  sendDataChunk as hostSendDataChunk,
   unregisterStream as hostUnregisterStream,
 } from 'actr:workload/host@0.1.0';
 
@@ -35,7 +35,7 @@ export interface MetadataEntry {
   value: string;
 }
 
-export interface DataStream {
+export interface DataChunk {
   streamId: string;
   sequence: bigint | number;
   payload: PayloadBytes;
@@ -54,8 +54,8 @@ type WitDest =
 
 type WitPayloadType = { tag: PayloadType };
 
-type WitDataStream = Omit<
-  DataStream,
+type WitDataChunk = Omit<
+  DataChunk,
   'sequence' | 'payload' | 'metadata' | 'timestampMs'
 > & {
   sequence: bigint;
@@ -75,7 +75,7 @@ export const PayloadType = {
 export type PayloadType = (typeof PayloadType)[keyof typeof PayloadType];
 
 export type StreamCallback = (
-  chunk: DataStream,
+  chunk: DataChunk,
   sender: ActrId,
 ) => void | Promise<void>;
 
@@ -87,7 +87,7 @@ export interface Workload {
   onReady?(): void | Promise<void>;
   onStop?(): void | Promise<void>;
   onError?(message: string): void | Promise<void>;
-  onDataStream?(chunk: DataStream, sender: ActrId): void | Promise<void>;
+  onDataChunk?(chunk: DataChunk, sender: ActrId): void | Promise<void>;
 }
 
 export function defineWorkload(workload: Workload): Workload {
@@ -125,7 +125,7 @@ function toWitDest(dest: Dest): WitDest {
   };
 }
 
-function toWitDataStream(chunk: DataStream): WitDataStream {
+function toWitDataChunk(chunk: DataChunk): WitDataChunk {
   return {
     streamId: chunk.streamId,
     sequence: BigInt(chunk.sequence),
@@ -149,18 +149,18 @@ export async function unregisterStream(streamId: string): Promise<void> {
   await hostUnregisterStream(streamId);
 }
 
-export async function sendDataStream(
+export async function sendDataChunk(
   target: Dest,
-  chunk: DataStream,
+  chunk: DataChunk,
   payloadType: PayloadType,
 ): Promise<void> {
-  await hostSendDataStream(toWitDest(target), toWitDataStream(chunk), {
+  await hostSendDataChunk(toWitDest(target), toWitDataChunk(chunk), {
     tag: payloadType,
   } satisfies WitPayloadType);
 }
 
-export async function __dispatchDataStream(
-  chunk: DataStream,
+export async function __dispatchDataChunk(
+  chunk: DataChunk,
   sender: ActrId,
 ): Promise<void> {
   const callback = streamCallbacks.get(chunk.streamId);

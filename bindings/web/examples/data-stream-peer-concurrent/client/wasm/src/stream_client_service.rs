@@ -59,13 +59,13 @@ async fn start_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<V
         .map_err(|e| format!("Failed to decode StartStreamRequest: {}", e))?;
 
     log::info!(
-        "[DataStreamClient] start_stream: client_id={} stream_id={} message_count={}",
+        "[DataChunkClient] start_stream: client_id={} stream_id={} message_count={}",
         req.client_id,
         req.stream_id,
         req.message_count
     );
     log::info!(
-        "[DataStreamClient] discovering server type: {}",
+        "[DataChunkClient] discovering server type: {}",
         server_type()
     );
 
@@ -81,7 +81,7 @@ async fn start_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<V
                 .and_then(|n| n.parse::<u32>().ok())
                 .unwrap_or_default();
             log::info!(
-                "[DataStreamClient] client received {}/{} on {}: {}",
+                "[DataChunkClient] client received {}/{} on {}: {}",
                 seq,
                 receive_expected_count,
                 receive_stream_id,
@@ -97,7 +97,7 @@ async fn start_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<V
         .await
         .map_err(|e| format!("discover failed: {}", e))?;
 
-    log::info!("[DataStreamClient] discovered server: {}", server_id);
+    log::info!("[DataChunkClient] discovered server: {}", server_id);
 
     let prepare_req = serde_json::to_vec(&PrepareServerStreamRequest {
         stream_id: req.stream_id.clone(),
@@ -108,7 +108,7 @@ async fn start_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<V
     let prepare_resp_bytes = ctx
         .call_raw(
             &server_id,
-            "data_stream.StreamServer.PrepareStream",
+            "data_chunk.StreamServer.PrepareStream",
             &prepare_req,
             30000,
         )
@@ -136,21 +136,21 @@ async fn start_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result<V
         for i in 1..=message_count {
             let message = format!("[client {}] message {}", client_id, i);
             log::info!(
-                "[DataStreamClient] client sending {}/{} on {}: {}",
+                "[DataChunkClient] client sending {}/{} on {}: {}",
                 i,
                 message_count,
                 stream_id,
                 message
             );
             if let Err(error) = ctx_clone
-                .send_data_stream(
+                .send_data_chunk(
                     &server_id_clone,
                     &stream_id,
                     Bytes::from(message.into_bytes()),
                 )
                 .await
             {
-                log::error!("[DataStreamClient] send_data_stream failed: {}", error);
+                log::error!("[DataChunkClient] send_data_chunk failed: {}", error);
                 break;
             }
             TimeoutFuture::new(700).await;

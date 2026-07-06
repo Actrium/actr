@@ -1,8 +1,8 @@
 use super::*;
 use std::sync::Mutex;
 
-fn chunk(stream_id: &str) -> DataStream {
-    DataStream {
+fn chunk(stream_id: &str) -> DataChunk {
+    DataChunk {
         stream_id: stream_id.to_string(),
         sequence: 1,
         payload: Default::default(),

@@ -1,7 +1,7 @@
 # Swift TS Workload E2E
 
 验证 iOS Swift linked app 与 TypeScript workload 服务的 `call`（Echo RPC）和
-`stream`（duplex DataStream echo）通讯。服务端行为移植自
+`stream`（duplex DataChunk echo）通讯。服务端行为移植自
 `demo2_duplex_stream_service`，编排骨架 fork 自 `swift-datastream-app`。
 
 ## 架构

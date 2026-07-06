@@ -30,7 +30,7 @@ use actr_framework::MediaSample;
 /// 2. **One-way message (`send_message`)**
 ///    - Send directly without waiting for a response
 ///
-/// 3. **DataStream (Fast Path)**
+/// 3. **DataChunk (Fast Path)**
 ///    - Bypass serialization and pass bytes directly
 pub struct HostGate {
     /// Pending requests: request_id → oneshot sender
@@ -156,26 +156,26 @@ impl HostGate {
         }
     }
 
-    /// Send a DataStream through the Fast Path.
+    /// Send a DataChunk through the Fast Path.
     ///
     /// # Parameters
     /// - `target`: Target actor ID
     /// - `payload_type`: PayloadType (`StreamReliable` or `StreamLatencyFirst`)
-    /// - `data`: Serialized DataStream bytes
-    pub async fn send_data_stream(
+    /// - `data`: Serialized DataChunk bytes
+    pub async fn send_data_chunk(
         &self,
         target: &ActrId,
         _payload_type: PayloadType,
         data: Bytes,
     ) -> ActorResult<()> {
         log::debug!(
-            "HostGate::send_data_stream to {:?}, size={} bytes",
+            "HostGate::send_data_chunk to {:?}, size={} bytes",
             target,
             data.len()
         );
 
         // Temporarily send through RpcEnvelope. This can be optimized further later.
-        // DataStream chunks are one-way traffic, hence the Tell label
+        // DataChunk messages are one-way traffic, hence the Tell label
         // (send_message stamps it again, but keep the construction honest).
         let envelope = RpcEnvelope {
             route_key: "__fast_path_data_stream__".to_string(),

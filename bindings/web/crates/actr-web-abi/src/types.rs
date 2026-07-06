@@ -59,9 +59,9 @@ pub struct CredentialEvent {
     pub new_expiry: Timestamp,
 }
 
-/// Lowered from WIT `record data-stream`.
+/// Lowered from WIT `record data-chunk`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataStream {
+pub struct DataChunk {
     #[serde(rename = "stream-id")]
     pub stream_id: String,
     pub sequence: u64,

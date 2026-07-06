@@ -620,7 +620,7 @@ internal open class UniffiForeignFutureResultVoid(
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
     fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
-internal interface UniffiCallbackInterfaceDataStreamCallbackMethod0 : com.sun.jna.Callback {
+internal interface UniffiCallbackInterfaceDataChunkCallbackMethod0 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`chunk`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
 }
 internal interface UniffiCallbackInterfaceMediaTrackCallbackMethod0 : com.sun.jna.Callback {
@@ -681,18 +681,18 @@ internal interface UniffiCallbackInterfaceWorkloadLifecycleBridgeMethod4 : com.s
     fun callback(`uniffiHandle`: Long,`ctx`: Long,`envelope`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteRustBuffer,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,)
 }
 @Structure.FieldOrder("uniffiFree", "uniffiClone", "onStream")
-internal open class UniffiVTableCallbackInterfaceDataStreamCallback(
+internal open class UniffiVTableCallbackInterfaceDataChunkCallback(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
     @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-    @JvmField internal var `onStream`: UniffiCallbackInterfaceDataStreamCallbackMethod0? = null,
+    @JvmField internal var `onStream`: UniffiCallbackInterfaceDataChunkCallbackMethod0? = null,
 ) : Structure() {
     class UniffiByValue(
         `uniffiFree`: UniffiCallbackInterfaceFree? = null,
         `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-        `onStream`: UniffiCallbackInterfaceDataStreamCallbackMethod0? = null,
-    ): UniffiVTableCallbackInterfaceDataStreamCallback(`uniffiFree`,`uniffiClone`,`onStream`,), Structure.ByValue
+        `onStream`: UniffiCallbackInterfaceDataChunkCallbackMethod0? = null,
+    ): UniffiVTableCallbackInterfaceDataChunkCallback(`uniffiFree`,`uniffiClone`,`onStream`,), Structure.ByValue
 
-   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceDataStreamCallback) {
+   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceDataChunkCallback) {
         `uniffiFree` = other.`uniffiFree`
         `uniffiClone` = other.`uniffiClone`
         `onStream` = other.`onStream`
@@ -933,7 +933,7 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_remove_media_track(
     ): Short
-    external fun uniffi_actr_checksum_method_contextbridge_send_data_stream(
+    external fun uniffi_actr_checksum_method_contextbridge_send_data_chunk(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_send_media_sample(
     ): Short
@@ -985,7 +985,7 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_constructor_runtimeobservers_new(
     ): Short
-    external fun uniffi_actr_checksum_method_datastreamcallback_on_stream(
+    external fun uniffi_actr_checksum_method_datachunkcallback_on_stream(
     ): Short
     external fun uniffi_actr_checksum_method_mediatrackcallback_on_sample(
     ): Short
@@ -1042,7 +1042,7 @@ internal object UniffiLib {
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "actr"))
         uniffiCallbackInterfaceCredentialObserverBridge.register(this)
-        uniffiCallbackInterfaceDataStreamCallback.register(this)
+        uniffiCallbackInterfaceDataChunkCallback.register(this)
         uniffiCallbackInterfaceLogCallback.register(this)
         uniffiCallbackInterfaceMailboxObserverBridge.register(this)
         uniffiCallbackInterfaceMediaTrackCallback.register(this)
@@ -1068,7 +1068,7 @@ external fun uniffi_actr_fn_method_contextbridge_register_stream(`ptr`: Long,`st
 ): Long
 external fun uniffi_actr_fn_method_contextbridge_remove_media_track(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,
 ): Long
-external fun uniffi_actr_fn_method_contextbridge_send_data_stream(`ptr`: Long,`target`: RustBuffer.ByValue,`chunk`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,
+external fun uniffi_actr_fn_method_contextbridge_send_data_chunk(`ptr`: Long,`target`: RustBuffer.ByValue,`chunk`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_actr_fn_method_contextbridge_send_media_sample(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,`sample`: RustBuffer.ByValue,
 ): Long
@@ -1144,7 +1144,7 @@ external fun uniffi_actr_fn_free_runtimeobservers(`handle`: Long,uniffi_out_err:
 ): Unit
 external fun uniffi_actr_fn_constructor_runtimeobservers_new(`signaling`: RustBuffer.ByValue,`websocket`: RustBuffer.ByValue,`webrtc`: RustBuffer.ByValue,`credential`: RustBuffer.ByValue,`mailbox`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
 ): Long
-external fun uniffi_actr_fn_init_callback_vtable_datastreamcallback(`vtable`: UniffiVTableCallbackInterfaceDataStreamCallback,
+external fun uniffi_actr_fn_init_callback_vtable_datachunkcallback(`vtable`: UniffiVTableCallbackInterfaceDataChunkCallback,
 ): Unit
 external fun uniffi_actr_fn_init_callback_vtable_mediatrackcallback(`vtable`: UniffiVTableCallbackInterfaceMediaTrackCallback,
 ): Unit
@@ -1328,13 +1328,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_actr_checksum_method_contextbridge_register_media_track() != 43039.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_register_stream() != 21623.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_register_stream() != 56804.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_contextbridge_remove_media_track() != 43937.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_send_data_stream() != 33554.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_send_data_chunk() != 60974.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_contextbridge_send_media_sample() != 63657.toShort()) {
@@ -1346,7 +1346,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_actr_checksum_method_contextbridge_unregister_media_track() != 52187.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_contextbridge_unregister_stream() != 65290.toShort()) {
+    if (lib.uniffi_actr_checksum_method_contextbridge_unregister_stream() != 31891.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_opusencoder_encode() != 35920.toShort()) {
@@ -1412,7 +1412,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_actr_checksum_constructor_runtimeobservers_new() != 44140.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_datastreamcallback_on_stream() != 53144.toShort()) {
+    if (lib.uniffi_actr_checksum_method_datachunkcallback_on_stream() != 33678.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_mediatrackcallback_on_sample() != 56040.toShort()) {
@@ -2935,9 +2935,9 @@ public interface ContextBridgeInterface {
     suspend fun `registerMediaTrack`(`trackId`: kotlin.String, `callback`: MediaTrackCallback)
     
     /**
-     * Register a DataStream callback for a stream ID.
+     * Register a DataChunk callback for a stream ID.
      */
-    suspend fun `registerStream`(`streamId`: kotlin.String, `callback`: DataStreamCallback)
+    suspend fun `registerStream`(`streamId`: kotlin.String, `callback`: DataChunkCallback)
     
     /**
      * Remove a media track from the WebRTC connection with the target.
@@ -2945,14 +2945,14 @@ public interface ContextBridgeInterface {
     suspend fun `removeMediaTrack`(`target`: ActrId, `trackId`: kotlin.String)
     
     /**
-     * Send a DataStream to a remote actor (Fast Path)
+     * Send a DataChunk to a remote actor (Fast Path)
      *
      * # Arguments
      * - `target`: Target actor ID
-     * - `chunk`: DataStream containing stream_id, sequence, payload, etc.
+     * - `chunk`: DataChunk containing stream_id, sequence, payload, etc.
      * - `payload_type`: Stream lane selection for delivery guarantees.
      */
-    suspend fun `sendDataStream`(`target`: ActrId, `chunk`: DataStream, `payloadType`: PayloadType)
+    suspend fun `sendDataChunk`(`target`: ActrId, `chunk`: DataChunk, `payloadType`: PayloadType)
     
     /**
      * Send a media sample via WebRTC native RTP track
@@ -2976,7 +2976,7 @@ public interface ContextBridgeInterface {
     suspend fun `unregisterMediaTrack`(`trackId`: kotlin.String)
     
     /**
-     * Unregister a DataStream callback for a stream ID.
+     * Unregister a DataChunk callback for a stream ID.
      */
     suspend fun `unregisterStream`(`streamId`: kotlin.String)
     
@@ -3198,16 +3198,16 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
 
     
     /**
-     * Register a DataStream callback for a stream ID.
+     * Register a DataChunk callback for a stream ID.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    override suspend fun `registerStream`(`streamId`: kotlin.String, `callback`: DataStreamCallback) {
+    override suspend fun `registerStream`(`streamId`: kotlin.String, `callback`: DataChunkCallback) {
         return uniffiRustCallAsync(
         callWithHandle { uniffiHandle ->
             UniffiLib.uniffi_actr_fn_method_contextbridge_register_stream(
                 uniffiHandle,
-                FfiConverterString.lower(`streamId`),FfiConverterTypeDataStreamCallback.lower(`callback`),
+                FfiConverterString.lower(`streamId`),FfiConverterTypeDataChunkCallback.lower(`callback`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
@@ -3248,21 +3248,21 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
 
     
     /**
-     * Send a DataStream to a remote actor (Fast Path)
+     * Send a DataChunk to a remote actor (Fast Path)
      *
      * # Arguments
      * - `target`: Target actor ID
-     * - `chunk`: DataStream containing stream_id, sequence, payload, etc.
+     * - `chunk`: DataChunk containing stream_id, sequence, payload, etc.
      * - `payload_type`: Stream lane selection for delivery guarantees.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
-    override suspend fun `sendDataStream`(`target`: ActrId, `chunk`: DataStream, `payloadType`: PayloadType) {
+    override suspend fun `sendDataChunk`(`target`: ActrId, `chunk`: DataChunk, `payloadType`: PayloadType) {
         return uniffiRustCallAsync(
         callWithHandle { uniffiHandle ->
-            UniffiLib.uniffi_actr_fn_method_contextbridge_send_data_stream(
+            UniffiLib.uniffi_actr_fn_method_contextbridge_send_data_chunk(
                 uniffiHandle,
-                FfiConverterTypeActrId.lower(`target`),FfiConverterTypeDataStream.lower(`chunk`),FfiConverterTypePayloadType.lower(`payloadType`),
+                FfiConverterTypeActrId.lower(`target`),FfiConverterTypeDataChunk.lower(`chunk`),FfiConverterTypePayloadType.lower(`payloadType`),
             )
         },
         { future, callback, continuation -> UniffiLib.ffi_actr_rust_future_poll_void(future, callback, continuation) },
@@ -3359,7 +3359,7 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
 
     
     /**
-     * Unregister a DataStream callback for a stream ID.
+     * Unregister a DataChunk callback for a stream ID.
      */
     @Throws(ActrException::class)
     @Suppress("ASSIGNED_BUT_NEVER_ACCESSED_VARIABLE")
@@ -4800,14 +4800,14 @@ public object FfiConverterTypeCredentialEventBridge: FfiConverterRustBuffer<Cred
 
 
 /**
- * DataStream for fast-path data transmission
+ * DataChunk for fast-path data transmission
  *
  * Used for streaming application data (non-media):
  * - File transfer chunks
  * - Game state updates
  * - Custom protocol streams
  */
-data class DataStream (
+data class DataChunk (
     /**
      * Stream identifier (globally unique)
      */
@@ -4845,9 +4845,9 @@ data class DataStream (
 /**
  * @suppress
  */
-public object FfiConverterTypeDataStream: FfiConverterRustBuffer<DataStream> {
-    override fun read(buf: ByteBuffer): DataStream {
-        return DataStream(
+public object FfiConverterTypeDataChunk: FfiConverterRustBuffer<DataChunk> {
+    override fun read(buf: ByteBuffer): DataChunk {
+        return DataChunk(
             FfiConverterString.read(buf),
             FfiConverterULong.read(buf),
             FfiConverterByteArray.read(buf),
@@ -4856,7 +4856,7 @@ public object FfiConverterTypeDataStream: FfiConverterRustBuffer<DataStream> {
         )
     }
 
-    override fun allocationSize(value: DataStream) = (
+    override fun allocationSize(value: DataChunk) = (
             FfiConverterString.allocationSize(value.`streamId`) +
             FfiConverterULong.allocationSize(value.`sequence`) +
             FfiConverterByteArray.allocationSize(value.`payload`) +
@@ -4864,7 +4864,7 @@ public object FfiConverterTypeDataStream: FfiConverterRustBuffer<DataStream> {
             FfiConverterOptionalLong.allocationSize(value.`timestampMs`)
     )
 
-    override fun write(value: DataStream, buf: ByteBuffer) {
+    override fun write(value: DataChunk, buf: ByteBuffer) {
             FfiConverterString.write(value.`streamId`, buf)
             FfiConverterULong.write(value.`sequence`, buf)
             FfiConverterByteArray.write(value.`payload`, buf)
@@ -4994,7 +4994,7 @@ public object FfiConverterTypeMediaSample: FfiConverterRustBuffer<MediaSample> {
 
 
 /**
- * Metadata entry for DataStream
+ * Metadata entry for DataChunk
  */
 data class MetadataEntry (
     var `key`: kotlin.String
@@ -6064,7 +6064,7 @@ public object FfiConverterTypeNetworkEvent : FfiConverterRustBuffer<NetworkEvent
  * Determines which WebRTC channel/track to use for data transmission:
  * - `RpcReliable`: Reliable ordered channel (default for RPC)
  * - `RpcSignal`: Signaling channel for RPC
- * - `StreamReliable`: Reliable stream for DataStream
+ * - `StreamReliable`: Reliable stream for DataChunk
  * - `StreamLatencyFirst`: Low-latency stream (may drop packets)
  * - `MediaRtp`: Native RTP track for media
  */
@@ -6299,14 +6299,14 @@ public object FfiConverterTypeCredentialObserverBridge: FfiConverterCallbackInte
 
 
 /**
- * Callback interface for DataStream events.
+ * Callback interface for DataChunk events.
  */
-public interface DataStreamCallback {
+public interface DataChunkCallback {
     
     /**
-     * Handle an incoming DataStream chunk.
+     * Handle an incoming DataChunk chunk.
      */
-    suspend fun `onStream`(`chunk`: DataStream, `sender`: ActrId)
+    suspend fun `onStream`(`chunk`: DataChunk, `sender`: ActrId)
     
     companion object
 }
@@ -6314,13 +6314,13 @@ public interface DataStreamCallback {
 
 
 // Put the implementation in an object so we don't pollute the top-level namespace
-internal object uniffiCallbackInterfaceDataStreamCallback {
-    internal object `onStream`: UniffiCallbackInterfaceDataStreamCallbackMethod0 {
+internal object uniffiCallbackInterfaceDataChunkCallback {
+    internal object `onStream`: UniffiCallbackInterfaceDataChunkCallbackMethod0 {
         override fun callback(`uniffiHandle`: Long,`chunk`: RustBuffer.ByValue,`sender`: RustBuffer.ByValue,`uniffiFutureCallback`: UniffiForeignFutureCompleteVoid,`uniffiCallbackData`: Long,`uniffiOutDroppedCallback`: UniffiForeignFutureDroppedCallbackStruct,) {
-            val uniffiObj = FfiConverterTypeDataStreamCallback.handleMap.get(uniffiHandle)
+            val uniffiObj = FfiConverterTypeDataChunkCallback.handleMap.get(uniffiHandle)
             val makeCall = suspend { ->
                 uniffiObj.`onStream`(
-                    FfiConverterTypeDataStream.lift(`chunk`),
+                    FfiConverterTypeDataChunk.lift(`chunk`),
                     FfiConverterTypeActrId.lift(`sender`),
                 )
             }
@@ -6351,17 +6351,17 @@ internal object uniffiCallbackInterfaceDataStreamCallback {
 
     internal object uniffiFree: UniffiCallbackInterfaceFree {
         override fun callback(handle: Long) {
-            FfiConverterTypeDataStreamCallback.handleMap.remove(handle)
+            FfiConverterTypeDataChunkCallback.handleMap.remove(handle)
         }
     }
 
     internal object uniffiClone: UniffiCallbackInterfaceClone {
         override fun callback(handle: Long): Long {
-            return FfiConverterTypeDataStreamCallback.handleMap.clone(handle)
+            return FfiConverterTypeDataChunkCallback.handleMap.clone(handle)
         }
     }
 
-    internal var vtable = UniffiVTableCallbackInterfaceDataStreamCallback.UniffiByValue(
+    internal var vtable = UniffiVTableCallbackInterfaceDataChunkCallback.UniffiByValue(
         uniffiFree,
         uniffiClone,
         `onStream`,
@@ -6370,7 +6370,7 @@ internal object uniffiCallbackInterfaceDataStreamCallback {
     // Registers the foreign callback with the Rust side.
     // This method is generated for each callback interface.
     internal fun register(lib: UniffiLib) {
-        lib.uniffi_actr_fn_init_callback_vtable_datastreamcallback(vtable)
+        lib.uniffi_actr_fn_init_callback_vtable_datachunkcallback(vtable)
     }
 }
 
@@ -6379,7 +6379,7 @@ internal object uniffiCallbackInterfaceDataStreamCallback {
  *
  * @suppress
  */
-public object FfiConverterTypeDataStreamCallback: FfiConverterCallbackInterface<DataStreamCallback>()
+public object FfiConverterTypeDataChunkCallback: FfiConverterCallbackInterface<DataChunkCallback>()
 
 
 

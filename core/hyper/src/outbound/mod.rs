@@ -25,7 +25,7 @@ use crate::transport::PayloadTypeExt;
 fn ensure_stream_payload_type(payload_type: PayloadType) -> ActorResult<()> {
     if !payload_type.is_stream() {
         return Err(ActrError::InvalidArgument(format!(
-            "send_data_stream requires a stream payload type, got {payload_type:?}"
+            "send_data_chunk requires a stream payload type, got {payload_type:?}"
         )));
     }
 
@@ -35,7 +35,7 @@ fn ensure_stream_payload_type(payload_type: PayloadType) -> ActorResult<()> {
 /// Reject non-RPC payload types on the call/tell entry points.
 ///
 /// Only `RpcReliable` and `RpcSignal` may carry an `RpcEnvelope`; stream and
-/// media payload types must use `send_data_stream` / `send_media_sample`.
+/// media payload types must use `send_data_chunk` / `send_media_sample`.
 pub(crate) fn ensure_rpc_payload_type(payload_type: PayloadType) -> ActorResult<()> {
     if !payload_type.is_rpc() {
         return Err(ActrError::InvalidArgument(format!(
@@ -179,20 +179,20 @@ impl Gate {
         }
     }
 
-    /// Send a `DataStream` over the Fast Path.
+    /// Send a `DataChunk` over the Fast Path.
     ///
     /// # Parameters
     ///
     /// - `target`: target actor ID
     /// - `payload_type`: `PayloadType` such as `StreamReliable` or `StreamLatencyFirst`
-    /// - `stream_id`: `DataStream` identifier already known before serialization
-    /// - `data`: serialized `DataStream` bytes
+    /// - `stream_id`: `DataChunk` identifier already known before serialization
+    /// - `data`: serialized `DataChunk` bytes
     ///
     /// # Semantics
     ///
     /// - Host: sends through an `mpsc` channel
     /// - Peer: sends through WebRTC DataChannel or WebSocket
-    pub(crate) async fn send_data_stream(
+    pub(crate) async fn send_data_chunk(
         &self,
         target: &ActrId,
         payload_type: actr_protocol::PayloadType,
@@ -201,11 +201,11 @@ impl Gate {
     ) -> ActorResult<()> {
         match self {
             Gate::Host(gate) => {
-                gate.send_data_stream(target, payload_type, stream_id, data)
+                gate.send_data_chunk(target, payload_type, stream_id, data)
                     .await
             }
             Gate::Peer(gate) => {
-                gate.send_data_stream(target, payload_type, stream_id, data)
+                gate.send_data_chunk(target, payload_type, stream_id, data)
                     .await
             }
         }

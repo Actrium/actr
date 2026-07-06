@@ -63,9 +63,9 @@ pub(crate) struct Inner {
     /// not initialized yet")` — see `RuntimeContext::select_gate`.
     pub(crate) outproc_gate: Option<Gate>,
 
-    /// DataStream callback registry shared between the inbound WebRTC / WS
+    /// DataChunk callback registry shared between the inbound WebRTC / WS
     /// gates (which dispatch into it) and `RuntimeContext`
-    /// (register_stream / send_data_stream).
+    /// (register_stream / send_data_chunk).
     pub(crate) data_stream_registry: Arc<DataStreamRegistry>,
 
     /// MediaTrack callback registry shared between WebRTC media tracks and
@@ -256,7 +256,7 @@ async fn host_operation_handler(
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
     use actr_framework::guest::dynclib_abi::code as abi_code;
     use actr_framework::{Context as _, Dest};
-    use actr_protocol::{DataStream, PayloadType};
+    use actr_protocol::{DataChunk, PayloadType};
 
     /// Map `ActrError` to ABI error code, preserving semantics for guest-side discrimination
     fn actr_error_to_code(err: &ActrError) -> i32 {
@@ -352,7 +352,7 @@ async fn host_operation_handler(
             let callback_ctx = ctx.clone();
             let callback_workload_dispatch = workload_dispatch.clone();
             match ctx
-                .register_stream(stream_id, move |chunk: DataStream, sender| {
+                .register_stream(stream_id, move |chunk: DataChunk, sender| {
                     let ctx_for_executor = callback_ctx.clone();
                     let workload_dispatch = callback_workload_dispatch.clone();
                     Box::pin(async move {
@@ -373,7 +373,7 @@ async fn host_operation_handler(
                             });
                         let mut guard = workload_dispatch.lock().await;
                         guard
-                            .dispatch_data_stream(chunk, sender, invocation, &call_executor)
+                            .dispatch_data_chunk(chunk, sender, invocation, &call_executor)
                             .await
                     })
                 })
@@ -395,11 +395,11 @@ async fn host_operation_handler(
             }
         },
 
-        HostOperation::SendDataStream(req) => {
+        HostOperation::SendDataChunk(req) => {
             let dest = match decode_dest(&req.dest) {
                 Some(d) => d,
                 None => {
-                    tracing::error!("send_data_stream: dest decode failed");
+                    tracing::error!("send_data_chunk: dest decode failed");
                     return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
                 }
             };
@@ -408,21 +408,21 @@ async fn host_operation_handler(
                     PayloadType::try_from(req.payload_type).expect("checked payload type")
                 }
                 Ok(other) => {
-                    tracing::error!(?other, "send_data_stream: invalid stream payload type");
+                    tracing::error!(?other, "send_data_chunk: invalid stream payload type");
                     return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
                 }
                 Err(_) => {
                     tracing::error!(
                         payload_type = req.payload_type,
-                        "send_data_stream: unknown payload type"
+                        "send_data_chunk: unknown payload type"
                     );
                     return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
                 }
             };
-            match ctx.send_data_stream(&dest, req.chunk, payload_type).await {
+            match ctx.send_data_chunk(&dest, req.chunk, payload_type).await {
                 Ok(()) => HostOperationResult::Done,
                 Err(e) => {
-                    tracing::error!("send_data_stream failed: {e:?}");
+                    tracing::error!("send_data_chunk failed: {e:?}");
                     HostOperationResult::Error(actr_error_to_code(&e))
                 }
             }
@@ -535,7 +535,7 @@ async fn stream_callback_host_operation_handler(
             Ok(()) => HostOperationResult::Done,
             Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
         },
-        HostOperation::SendDataStream(req) => {
+        HostOperation::SendDataChunk(req) => {
             let dest = match decode_dest(&req.dest) {
                 Some(d) => d,
                 None => return HostOperationResult::Error(abi_code::PROTOCOL_ERROR),
@@ -546,7 +546,7 @@ async fn stream_callback_host_operation_handler(
                 }
                 Ok(_) | Err(_) => return HostOperationResult::Error(abi_code::PROTOCOL_ERROR),
             };
-            match ctx.send_data_stream(&dest, req.chunk, payload_type).await {
+            match ctx.send_data_chunk(&dest, req.chunk, payload_type).await {
                 Ok(()) => HostOperationResult::Done,
                 Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
             }

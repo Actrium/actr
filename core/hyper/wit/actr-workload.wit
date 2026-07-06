@@ -86,7 +86,7 @@ interface types {
         value: string,
     }
 
-    record data-stream {
+    record data-chunk {
         stream-id: string,
         sequence: u64,
         payload: list<u8>,
@@ -205,7 +205,7 @@ interface types {
 // `async fn` at the Rust surface.
 
 interface host {
-    use types.{actr-id, actr-type, actr-error, data-stream, dest, payload-type};
+    use types.{actr-id, actr-type, actr-error, data-chunk, dest, payload-type};
 
     // Typed-routed call: host forwards to the destination, returning the
     // encoded response payload.
@@ -237,9 +237,9 @@ interface host {
 
     unregister-stream: func(stream-id: string) -> result<_, actr-error>;
 
-    send-data-stream: func(
+    send-data-chunk: func(
         target: dest,
-        chunk: data-stream,
+        chunk: data-chunk,
         payload-type: payload-type,
     ) -> result<_, actr-error>;
 
@@ -276,7 +276,7 @@ interface workload {
         rpc-envelope,
         actr-error,
         actr-id,
-        data-stream,
+        data-chunk,
         peer-event,
         error-event,
         credential-event,
@@ -328,9 +328,9 @@ interface workload {
 
     on-mailbox-backpressure: func(event: backpressure-event);
 
-    // ── Fast path: DataStream ────────────────────────────────────────────
+    // ── Fast path: DataChunk ────────────────────────────────────────────
 
-    on-data-stream: func(chunk: data-stream, sender: actr-id) -> result<_, actr-error>;
+    on-data-chunk: func(chunk: data-chunk, sender: actr-id) -> result<_, actr-error>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────

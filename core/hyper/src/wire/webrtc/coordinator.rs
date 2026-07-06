@@ -3632,7 +3632,7 @@ impl WebRtcCoordinator {
     ///
     /// IMPORTANT: We need to listen to ALL PayloadTypes, not just RpcReliable:
     /// - RpcReliable, RpcSignal: for RPC messages
-    /// - StreamReliable, StreamLatencyFirst: for DataStream messages
+    /// - StreamReliable, StreamLatencyFirst: for DataChunk messages
     async fn start_peer_receive_loop(
         &self,
         peer_id: ActrId,

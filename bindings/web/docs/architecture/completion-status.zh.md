@@ -90,7 +90,7 @@
 
 **关键差异**:
 - 功能对等，actr-web 依赖异步 Web API
-- PeerGate 完整实现：send_request/send_message/send_data_stream/handle_response/register_actor
+- PeerGate 完整实现：send_request/send_message/send_data_chunk/handle_response/register_actor
 - DomBridge 过渡方案已移除，直接使用完整传输栈
 
 ---
@@ -218,12 +218,12 @@
 
 ## ⚡ 三、Fast Path 支持
 
-### DataStream (数据流)
+### DataChunk (数据流)
 
 | 特性 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
 | **DataStreamRegistry** | ✅ 完整 (~150 行) | ⚠️ 框架 (~100 行) | **40%** |
-| **send_data_stream()** | ✅ | ✅ 已实现 (PeerGate + RuntimeContext) | **85%** |
+| **send_data_chunk()** | ✅ | ✅ 已实现 (PeerGate + RuntimeContext) | **85%** |
 | **register_stream()** | ✅ | ⚠️ 基础实现 | **35%** |
 | **回调并发执行** | ✅ Tokio spawn | ❌ 未实现 | **0%** |
 | **流式 API** | ✅ | ❌ | 0% |
@@ -275,7 +275,7 @@
 | **Echo (基础 RPC)** | ✅ `shell-actr-echo/` | ✅ `echo/` (真实实现) | **90%** |
 | - 客户端 | ✅ Rust | ✅ React + TS + gRPC-Web | 95% |
 | - 服务端 | ✅ Rust | ✅ Rust Tonic gRPC | 100% |
-| **DataStream (流式传输)** | ✅ `data-stream/` | ❌ 未实现 | **0%** |
+| **DataChunk (流式传输)** | ✅ `data-stream/` | ❌ 未实现 | **0%** |
 | **MediaRelay (媒体中继)** | ✅ `media-relay/` | ❌ 未实现 | **0%** |
 | **Hello World** | ❌ | ✅ `hello-world/` | **N/A** |
 
@@ -325,7 +325,7 @@
 | **WebSocket 连接** | ✅ | ⚠️ | **40%** | 🟡 中 |
 | **Inproc 通信** | ✅ Tokio mpsc | ✅ PostMessage | **85%** | 🔴 高 |
 | **路由表** | ✅ | ✅ RouteTable (~300 行) | **90%** | ✅ 已完成 |
-| **DataStream** | ✅ | ⚠️ 框架 | **40%** | 🟡 中 |
+| **DataChunk** | ✅ | ⚠️ 框架 | **40%** | 🟡 中 |
 | **MediaTrack** | ✅ | ⚠️ 框架 | **35%** | 🟢 低 |
 | **Actor 生命周期** | ✅ | ❌ | **10%** | 🟡 中 |
 | **代码生成** | ✅ actr-cli | ✅ Option U WIT codegen + `.wbg` guest bundle | 当前已接入 | 🟡 中 |
@@ -417,10 +417,10 @@
 | ~~完善 WebRTC 连接逻辑~~ | ~~5-7 天~~ | ✅ 已完成 |
 | ~~实现调度器~~ | ~~3-5 天~~ | ✅ 已完成 |
 | ~~实现 RouteTable~~ | ~~2-3 天~~ | ✅ 已完成 |
-| 完善 Fast Path (DataStream) | 3-4 天 | 🟡 中 |
+| 完善 Fast Path (DataChunk) | 3-4 天 | 🟡 中 |
 | 完善 ActrNode 启动流程 | 4-5 天 | 🟡 中 |
 | 补充 E2E 测试 | 3-4 天 | 🟡 中 |
-| 创建 DataStream 示例 | 2-3 天 | 🟢 低 |
+| 创建 DataChunk 示例 | 2-3 天 | 🟢 低 |
 | **剩余总计** | **12-16 天** | - |
 
 ### 达到生产就绪 - 95% 完成度
@@ -501,7 +501,7 @@
 #### 🎯 短期目标 (1-2 周) - 完善 MVP
 
 1. **清理遗留代码** (send_rpc_to_remote)
-2. **完善 Fast Path 集成** (DataStream)
+2. **完善 Fast Path 集成** (DataChunk)
 3. **补充关键测试** (E2E)
 
 #### 🚀 中期目标 (1 月) - 生产就绪

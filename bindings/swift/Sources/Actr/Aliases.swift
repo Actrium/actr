@@ -63,8 +63,8 @@ public typealias ErrorKind = ActrBindings.ErrorKind
 
 // MARK: - Streams and media
 
-public typealias DataStream = ActrBindings.DataStream
-public typealias DataStreamCallback = ActrBindings.DataStreamCallback
+public typealias DataChunk = ActrBindings.DataChunk
+public typealias DataChunkCallback = ActrBindings.DataChunkCallback
 public typealias MediaSample = ActrBindings.MediaSample
 public typealias MediaType = ActrBindings.MediaType
 public typealias MediaTrackCallback = ActrBindings.MediaTrackCallback

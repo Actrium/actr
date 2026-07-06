@@ -799,7 +799,7 @@ suspend fun ActrRef.awaitShutdown() {
 // ============================================================================
 
 /**
- * Send a DataStream built with DSL syntax.
+ * Send a DataChunk built with DSL syntax.
  *
  * Example:
  * ```kotlin
@@ -816,8 +816,8 @@ suspend fun ActrRef.awaitShutdown() {
  */
 suspend fun SimpleWorkload.sendStream(
     target: ActrId,
-    builder: DataStreamBuilder.() -> Unit,
+    builder: DataChunkBuilder.() -> Unit,
 ) {
-    val dataStream = DataStreamBuilder().apply(builder).build()
-    sendDataStream(target, dataStream)
+    val dataChunk = DataChunkBuilder().apply(builder).build()
+    sendDataChunk(target, dataChunk)
 }

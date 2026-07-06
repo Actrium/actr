@@ -46,11 +46,11 @@ impl<T> SendPtr<T> {
 }
 
 use actr_framework::guest::vtable::HostVTable;
-use actr_protocol::{ActrId, DataStream};
+use actr_protocol::{ActrId, DataChunk};
 
 use crate::workload::{
     HostAbiFn, HostOperation, HostOperationResult, InvocationContext, PackageHookEvent,
-    encode_guest_data_stream_request, encode_guest_handle_request, encode_guest_hook_request,
+    encode_guest_data_chunk_request, encode_guest_handle_request, encode_guest_hook_request,
     encode_guest_lifecycle_request,
 };
 
@@ -543,13 +543,13 @@ impl DynclibInstance {
             .await
     }
 
-    pub(crate) async fn handle_data_stream(
+    pub(crate) async fn handle_data_chunk(
         &mut self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender: ActrId,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<()> {
-        let request_owned = encode_guest_data_stream_request(chunk, sender).map_err(|code| {
+        let request_owned = encode_guest_data_chunk_request(chunk, sender).map_err(|code| {
             DynclibError::DispatchFailed(format!(
                 "guest data stream frame serialization failed: {code}"
             ))
@@ -602,14 +602,14 @@ impl DynClibWorkload {
             .await
     }
 
-    pub(crate) async fn handle_data_stream(
+    pub(crate) async fn handle_data_chunk(
         &mut self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender: ActrId,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<()> {
         self.instance
-            .handle_data_stream(chunk, sender, call_executor)
+            .handle_data_chunk(chunk, sender, call_executor)
             .await
     }
 

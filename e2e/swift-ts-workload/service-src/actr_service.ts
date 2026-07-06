@@ -3,10 +3,10 @@ import {
   PayloadType,
   defineWorkload,
   registerStream,
-  sendDataStream,
+  sendDataChunk,
   unregisterStream,
   type ActrId,
-  type DataStream,
+  type DataChunk,
   type MetadataEntry,
 } from '@actrium/actr-workload';
 
@@ -112,7 +112,7 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
     });
   }
 
-  private async onClientChunk(chunk: DataStream, sender: ActrId): Promise<void> {
+  private async onClientChunk(chunk: DataChunk, sender: ActrId): Promise<void> {
     const sessionId = sessionIdByClientStreamId.get(chunk.streamId);
     const state = sessionId ? sessionsById.get(sessionId) : undefined;
     if (!state) {
@@ -133,7 +133,7 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
       { key: 'source_stream_id', value: chunk.streamId },
     ];
 
-    await sendDataStream(
+    await sendDataChunk(
       { peer: sender },
       {
         streamId: state.serviceToClientStreamId,

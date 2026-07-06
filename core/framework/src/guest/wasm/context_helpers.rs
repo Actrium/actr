@@ -5,7 +5,7 @@
 //! whole `Context`-trait impl surface. Every helper is a one-shot pure
 //! conversion with no I/O or async side effects.
 
-use actr_protocol::{ActrId, ActrType, DataStream, MetadataEntry, PayloadType, Realm};
+use actr_protocol::{ActrId, ActrType, DataChunk, MetadataEntry, PayloadType, Realm};
 
 use crate::Dest;
 
@@ -73,8 +73,8 @@ pub(crate) fn payload_type_to_wit(payload_type: PayloadType) -> wit_types::Paylo
     }
 }
 
-pub(crate) fn data_stream_to_wit(chunk: DataStream) -> wit_types::DataStream {
-    wit_types::DataStream {
+pub(crate) fn data_chunk_to_wit(chunk: DataChunk) -> wit_types::DataChunk {
+    wit_types::DataChunk {
         stream_id: chunk.stream_id,
         sequence: chunk.sequence,
         payload: chunk.payload.to_vec(),
@@ -90,8 +90,8 @@ pub(crate) fn data_stream_to_wit(chunk: DataStream) -> wit_types::DataStream {
     }
 }
 
-pub(crate) fn data_stream_from_wit(chunk: wit_types::DataStream) -> DataStream {
-    DataStream {
+pub(crate) fn data_chunk_from_wit(chunk: wit_types::DataChunk) -> DataChunk {
+    DataChunk {
         stream_id: chunk.stream_id,
         sequence: chunk.sequence,
         payload: chunk.payload.into(),

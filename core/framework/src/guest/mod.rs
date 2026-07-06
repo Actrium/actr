@@ -78,7 +78,7 @@ pub mod __wasm_macro_support {
     // prefix to poke at.
     pub use super::wasm::adapter::{
         WorkloadCell, run_dispatch, run_on_credential_expiring, run_on_credential_renewed,
-        run_on_data_stream, run_on_error, run_on_mailbox_backpressure, run_on_ready,
+        run_on_data_chunk, run_on_error, run_on_mailbox_backpressure, run_on_ready,
         run_on_signaling_connected, run_on_signaling_connecting, run_on_signaling_disconnected,
         run_on_start, run_on_stop, run_on_webrtc_connected, run_on_webrtc_connecting,
         run_on_webrtc_disconnected, run_on_websocket_connected, run_on_websocket_connecting,
@@ -86,7 +86,7 @@ pub mod __wasm_macro_support {
     };
     pub use super::wasm::generated::actr::workload::types::{
         ActrError as WitActrError, ActrId as WitActrId, BackpressureEvent as WitBackpressureEvent,
-        CredentialEvent as WitCredentialEvent, DataStream as WitDataStream,
+        CredentialEvent as WitCredentialEvent, DataChunk as WitDataChunk,
         ErrorEvent as WitErrorEvent, PeerEvent as WitPeerEvent, RpcEnvelope as WitRpcEnvelope,
     };
     pub use super::wasm::generated::exports::actr::workload::workload::Guest;
@@ -320,14 +320,14 @@ macro_rules! entry {
                     .await
                 }
 
-                async fn on_data_stream(
-                    chunk: $crate::guest::__wasm_macro_support::WitDataStream,
+                async fn on_data_chunk(
+                    chunk: $crate::guest::__wasm_macro_support::WitDataChunk,
                     sender: $crate::guest::__wasm_macro_support::WitActrId,
                 ) -> ::core::result::Result<
                     (),
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_on_data_stream(chunk, sender).await
+                    $crate::guest::__wasm_macro_support::run_on_data_chunk(chunk, sender).await
                 }
             }
 
@@ -696,8 +696,8 @@ macro_rules! entry {
                     return $crate::guest::dynclib_abi::code::SUCCESS;
                 }
 
-                if frame.op == $crate::guest::dynclib_abi::op::GUEST_DATA_STREAM {
-                    let payload = match <$crate::guest::dynclib_abi::GuestDataStreamV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
+                if frame.op == $crate::guest::dynclib_abi::op::GUEST_DATA_CHUNK {
+                    let payload = match <$crate::guest::dynclib_abi::GuestDataChunkV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
                         Ok(payload) => payload,
                         Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                     };

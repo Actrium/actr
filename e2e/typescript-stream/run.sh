@@ -190,7 +190,7 @@ import {
   PayloadType,
   defineWorkload,
   registerStream,
-  sendDataStream,
+  sendDataChunk,
   unregisterStream,
 } from '@actrium/actr-workload';
 
@@ -245,7 +245,7 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
     await registerStream(inboundStreamId, async (chunk, sender) => {
       const incoming = textDecoder.decode(toUint8Array(chunk.payload));
       console.log(`typescript echo: stream ${inboundStreamId} ${incoming}`);
-      await sendDataStream(
+      await sendDataChunk(
         { actor: sender },
         {
           streamId: replyStreamId,
@@ -511,7 +511,7 @@ use crate::generated::echo::{
 };
 use crate::generated::relay::{RelayRequest, RelayResponse};
 use crate::generated::relay_actor::RelayServiceHandler;
-use actr_framework::{Context, DataStream, Dest};
+use actr_framework::{Context, DataChunk, Dest};
 use actr_protocol::{ActrError, ActrId, ActrType, ActorResult, MetadataEntry, PayloadType};
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -695,9 +695,9 @@ async fn start_stream_round_trip<C: Context>(
         )));
     }
 
-    ctx.send_data_stream(
+    ctx.send_data_chunk(
         &Dest::Actor(echo_actor),
-        DataStream {
+        DataChunk {
             stream_id: inbound_stream_id,
             sequence: 1,
             payload: Bytes::from(outbound_message.to_string()),

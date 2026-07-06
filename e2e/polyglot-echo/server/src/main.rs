@@ -3,13 +3,13 @@
 //! Registers as `polyglot:EchoStreamService:1.0.0` under mock-actrix and
 //! serves two control RPCs:
 //!
-//! - `EchoStreamService.StartServerStream`: push N DataStream chunks to the
+//! - `EchoStreamService.StartServerStream`: push N DataChunks to the
 //!   caller's registered `stream_id`.
 //! - `EchoStreamService.SetupBidi`: register a server-side receive stream;
 //!   echo each incoming chunk back to the caller's receive stream.
 //!
 //! Because this server runs as a **linked workload** (not a cdylib loaded by
-//! `actr run`), `ctx` is a full `RuntimeContext` with working DataStream
+//! `actr run`), `ctx` is a full `RuntimeContext` with working DataChunk
 //! send / receive / register APIs.
 //!
 //! Inputs:
@@ -26,7 +26,7 @@ use actr_config::ConfigParser;
 use actr_framework::{Context as RtContext, MessageDispatcher, Workload as RtWorkload};
 use actr_hyper::Node;
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, DataStream, PayloadType, RpcEnvelope, RpcRequest,
+    ActorResult, ActrError, ActrId, DataChunk, PayloadType, RpcEnvelope, RpcRequest,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -114,7 +114,7 @@ impl MessageDispatcher for StreamServerDispatcher {
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
-/// Server-streaming: push `chunk_count` DataStream chunks to the caller's
+/// Server-streaming: push `chunk_count` DataChunks to the caller's
 /// `client_stream_id`.
 async fn handle_start_server_stream<C: RtContext>(
     req: StartServerStreamRequest,
@@ -142,7 +142,7 @@ async fn handle_start_server_stream<C: RtContext>(
     tokio::spawn(async move {
         for seq in 0..count {
             let payload = format!("{text}:{seq}").into_bytes();
-            let chunk = DataStream {
+            let chunk = DataChunk {
                 stream_id: stream_id.clone(),
                 sequence: seq as u64,
                 payload: Bytes::from(payload),
@@ -150,10 +150,10 @@ async fn handle_start_server_stream<C: RtContext>(
                 timestamp_ms: None,
             };
             if let Err(e) = ctx_clone
-                .send_data_stream(&dest, chunk, PayloadType::StreamReliable)
+                .send_data_chunk(&dest, chunk, PayloadType::StreamReliable)
                 .await
             {
-                warn!(seq, error = ?e, "server-stream: send_data_stream failed");
+                warn!(seq, error = ?e, "server-stream: send_data_chunk failed");
                 break;
             }
             info!(seq, "server-stream: chunk sent");
@@ -165,7 +165,7 @@ async fn handle_start_server_stream<C: RtContext>(
 }
 
 /// Bidi: register a receiver on `server_rx_stream_id`; echo each incoming
-/// DataStream chunk back to `client_rx_stream_id`.
+/// DataChunk back to `client_rx_stream_id`.
 async fn handle_setup_bidi<C: RtContext>(
     req: SetupBidiRequest,
     ctx: &C,
@@ -188,14 +188,14 @@ async fn handle_setup_bidi<C: RtContext>(
 
     ctx.register_stream(
         req.server_rx_stream_id.clone(),
-        move |chunk: DataStream, sender_id: ActrId| {
+        move |chunk: DataChunk, sender_id: ActrId| {
             let ctx_inner = ctx_clone.clone();
             let dest_inner = dest.clone();
             let reply_stream_id = client_rx_id.clone();
             Box::pin(async move {
                 let seq = chunk.sequence;
                 info!(seq, from = ?sender_id, "bidi: chunk received, echoing");
-                let echo_chunk = DataStream {
+                let echo_chunk = DataChunk {
                     stream_id: reply_stream_id,
                     sequence: seq,
                     payload: chunk.payload,
@@ -203,7 +203,7 @@ async fn handle_setup_bidi<C: RtContext>(
                     timestamp_ms: None,
                 };
                 if let Err(e) = ctx_inner
-                    .send_data_stream(&dest_inner, echo_chunk, PayloadType::StreamReliable)
+                    .send_data_chunk(&dest_inner, echo_chunk, PayloadType::StreamReliable)
                     .await
                 {
                     warn!(seq, error = ?e, "bidi: echo failed");

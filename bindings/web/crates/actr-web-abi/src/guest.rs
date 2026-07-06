@@ -72,8 +72,8 @@ extern "C" {
         request_id: JsValue,
         stream_id: JsValue,
     ) -> Result<js_sys::Promise, JsValue>;
-    #[wasm_bindgen(catch, js_name = "actrHostSendDataStream")]
-    fn __actr_host_send_data_stream(
+    #[wasm_bindgen(catch, js_name = "actrHostSendDataChunk")]
+    fn __actr_host_send_data_chunk(
         request_id: JsValue,
         target: JsValue,
         chunk: JsValue,
@@ -235,16 +235,16 @@ pub async fn register_stream_with_request_id(
     Ok(__out)
 }
 
-/// Guest-side wrapper for WIT `host.send-data-stream`.
+/// Guest-side wrapper for WIT `host.send-data-chunk`.
 ///
 /// The `request_id` first parameter threads per-dispatch context
 /// through to the SW host (Phase 6 γ-unified §3.4). Callers are
 /// expected to pass `Context::request_id()`; manual construction
 /// is discouraged.
-pub async fn send_data_stream_with_request_id(
+pub async fn send_data_chunk_with_request_id(
     request_id: &str,
     target: Dest,
-    chunk: DataStream,
+    chunk: DataChunk,
     payload_type: PayloadType,
 ) -> Result<Result<(), ActrError>, JsValue> {
     let __js_request_id = JsValue::from_str(request_id);
@@ -252,7 +252,7 @@ pub async fn send_data_stream_with_request_id(
     let __js_arg1 = serde_wasm_bindgen::to_value(&chunk).map_err(serde_err)?;
     let __js_arg2 = serde_wasm_bindgen::to_value(&payload_type).map_err(serde_err)?;
     let __js_promise =
-        __actr_host_send_data_stream(__js_request_id, __js_arg0, __js_arg1, __js_arg2)?;
+        __actr_host_send_data_chunk(__js_request_id, __js_arg0, __js_arg1, __js_arg2)?;
     let __js_result = JsFuture::from(__js_promise).await?;
     let __out = serde_wasm_bindgen::from_value(__js_result).map_err(serde_err)?;
     Ok(__out)

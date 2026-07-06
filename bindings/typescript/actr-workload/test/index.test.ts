@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ActrId,
-  DataStream,
+  DataChunk,
   StreamCallback,
   Workload,
 } from '../src/index.js';
@@ -27,7 +27,7 @@ function testActorId(serialNumber: number | bigint = 7n): ActrId {
   };
 }
 
-function testChunk(overrides: Partial<DataStream> = {}): DataStream {
+function testChunk(overrides: Partial<DataChunk> = {}): DataChunk {
   return {
     streamId: 'stream-1',
     sequence: 3n,
@@ -56,14 +56,14 @@ describe('@actrium/actr-workload', () => {
     const { host, runtime } = await loadRuntime();
     const chunk = testChunk();
     const sender = testActorId();
-    const received: Array<{ chunk: DataStream; sender: ActrId }> = [];
+    const received: Array<{ chunk: DataChunk; sender: ActrId }> = [];
     const callback: StreamCallback = async (incoming, from) => {
       await Promise.resolve();
       received.push({ chunk: incoming, sender: from });
     };
 
     await runtime.registerStream('stream-1', callback);
-    await runtime.__dispatchDataStream(chunk, sender);
+    await runtime.__dispatchDataChunk(chunk, sender);
 
     expect(host.hostCalls.registerStream).toEqual(['stream-1']);
     expect(received).toEqual([{ chunk, sender }]);
@@ -77,7 +77,7 @@ describe('@actrium/actr-workload', () => {
 
     expect(host.hostCalls.unregisterStream).toEqual(['stream-1']);
     await expect(
-      runtime.__dispatchDataStream(testChunk(), testActorId()),
+      runtime.__dispatchDataChunk(testChunk(), testActorId()),
     ).rejects.toThrow('No stream callback registered for stream-1');
   });
 
@@ -85,7 +85,7 @@ describe('@actrium/actr-workload', () => {
     const { host, runtime } = await loadRuntime();
     const peer = testActorId(9);
 
-    await runtime.sendDataStream(
+    await runtime.sendDataChunk(
       { peer },
       testChunk({
         sequence: 4,
@@ -94,7 +94,7 @@ describe('@actrium/actr-workload', () => {
       runtime.PayloadType.StreamReliable,
     );
 
-    expect(host.hostCalls.sendDataStream).toEqual([
+    expect(host.hostCalls.sendDataChunk).toEqual([
       {
         target: {
           tag: 'peer',
@@ -118,23 +118,23 @@ describe('@actrium/actr-workload', () => {
   it('sends data streams using host and workload destinations', async () => {
     const { host, runtime } = await loadRuntime();
 
-    await runtime.sendDataStream(
+    await runtime.sendDataChunk(
       'host',
       testChunk({ streamId: 'host-stream' }),
       runtime.PayloadType.StreamLatencyFirst,
     );
-    await runtime.sendDataStream(
+    await runtime.sendDataChunk(
       'workload',
       testChunk({ streamId: 'workload-stream' }),
       runtime.PayloadType.StreamReliable,
     );
 
-    expect(host.hostCalls.sendDataStream.map((call) => call.target)).toEqual([
+    expect(host.hostCalls.sendDataChunk.map((call) => call.target)).toEqual([
       { tag: 'host' },
       { tag: 'workload' },
     ]);
     expect(
-      host.hostCalls.sendDataStream.map((call) => call.payloadType),
+      host.hostCalls.sendDataChunk.map((call) => call.payloadType),
     ).toEqual([{ tag: 'stream-latency-first' }, { tag: 'stream-reliable' }]);
   });
 
@@ -142,7 +142,7 @@ describe('@actrium/actr-workload', () => {
     const { host, runtime } = await loadRuntime();
     const buffer = new Uint8Array([9, 8, 7]).buffer;
 
-    await runtime.sendDataStream(
+    await runtime.sendDataChunk(
       { peer: testActorId(11n) },
       {
         streamId: 'array-buffer-stream',
@@ -151,7 +151,7 @@ describe('@actrium/actr-workload', () => {
       },
       runtime.PayloadType.StreamLatencyFirst,
     );
-    await runtime.sendDataStream(
+    await runtime.sendDataChunk(
       { peer: testActorId(12n) },
       {
         streamId: 'array-like-stream',
@@ -161,14 +161,14 @@ describe('@actrium/actr-workload', () => {
       runtime.PayloadType.StreamReliable,
     );
 
-    expect(host.hostCalls.sendDataStream[0]?.chunk).toEqual({
+    expect(host.hostCalls.sendDataChunk[0]?.chunk).toEqual({
       streamId: 'array-buffer-stream',
       sequence: 12n,
       payload: new Uint8Array([9, 8, 7]),
       metadata: [],
       timestampMs: undefined,
     });
-    expect(host.hostCalls.sendDataStream[1]?.chunk).toEqual({
+    expect(host.hostCalls.sendDataChunk[1]?.chunk).toEqual({
       streamId: 'array-like-stream',
       sequence: 13n,
       payload: new Uint8Array([6, 5, 4]),

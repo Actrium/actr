@@ -18,7 +18,7 @@ use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{TestHarness, install_test_crypto_provider};
 use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrId, DataChunk, Direction, PayloadType, RpcEnvelope};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
@@ -962,7 +962,7 @@ fn is_expected_bounded_send_error(message: &str) -> bool {
     .any(|needle| message.contains(needle))
 }
 
-async fn send_data_stream_bounded(
+async fn send_data_chunk_bounded(
     harness: &TestHarness,
     from_serial: u64,
     to_serial: u64,
@@ -970,7 +970,7 @@ async fn send_data_stream_bounded(
     timeout: Duration,
 ) {
     let target_id = harness.peer(to_serial).id.clone();
-    let stream = DataStream {
+    let stream = DataChunk {
         stream_id: stream_id.to_string(),
         sequence: 1,
         payload: bytes::Bytes::from_static(b"mobile-event-storm-stream-payload"),
@@ -978,7 +978,7 @@ async fn send_data_stream_bounded(
         timestamp_ms: Some(0),
     };
     let payload = bytes::Bytes::from(stream.encode_to_vec());
-    let send = harness.peer(from_serial).gate.send_data_stream(
+    let send = harness.peer(from_serial).gate.send_data_chunk(
         &target_id,
         PayloadType::StreamReliable,
         &stream.stream_id,
@@ -987,13 +987,13 @@ async fn send_data_stream_bounded(
 
     let result = tokio::time::timeout(timeout, send)
         .await
-        .unwrap_or_else(|_| panic!("{stream_id} DataStream send hung for {:?}", timeout));
+        .unwrap_or_else(|_| panic!("{stream_id} DataChunk send hung for {:?}", timeout));
 
     if let Err(err) = result {
         let msg = err.to_string();
         assert!(
             is_expected_bounded_send_error(&msg),
-            "{stream_id} DataStream failed with unexpected error: {msg}"
+            "{stream_id} DataChunk failed with unexpected error: {msg}"
         );
     }
 }
@@ -1538,7 +1538,7 @@ async fn test_complex_mobile_event_storms_with_real_network_outage() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bounded() {
+async fn test_mobile_network_event_handle_storm_then_call_and_data_chunk_are_bounded() {
     install_test_crypto_provider();
 
     init_tracing();
@@ -1591,7 +1591,7 @@ async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bo
         )
         .await;
         for direction in case.directions() {
-            send_data_stream_bounded(
+            send_data_chunk_bounded(
                 &harness,
                 direction.from_serial,
                 direction.to_serial,
@@ -1610,13 +1610,13 @@ async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bo
         assert_eq!(
             harness.peer(case.mobile_serial).pending_count().await,
             0,
-            "{} mobile event storm call/DataStream path should not leak pending requests",
+            "{} mobile event storm call/DataChunk path should not leak pending requests",
             case.name
         );
         assert_eq!(
             harness.peer(case.server_serial).pending_count().await,
             0,
-            "{} server event storm call/DataStream path should not leak pending requests",
+            "{} server event storm call/DataChunk path should not leak pending requests",
             case.name
         );
 
