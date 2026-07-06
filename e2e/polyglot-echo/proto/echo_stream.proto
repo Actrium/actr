@@ -4,8 +4,8 @@ package echo;
 
 // Control RPC for server-streaming scenario.
 //
-// Client registers a DataStream callback for client_stream_id BEFORE calling
-// this RPC. Server sends chunk_count DataStream chunks to that stream_id.
+// Client registers a data stream callback for client_stream_id BEFORE calling
+// this RPC. Server sends chunk_count data stream chunks to that stream_id.
 message StartServerStreamRequest {
   string client_stream_id = 1;
   uint32 chunk_count = 2;
@@ -19,7 +19,7 @@ message StartServerStreamResponse {
 // Control RPC for bidi-streaming scenario.
 //
 // Client and server each own a stream_id for receiving chunks.  After this
-// RPC completes, the client sends chunk_count DataStream chunks to
+// RPC completes, the client sends chunk_count data stream chunks to
 // server_rx_stream_id; the server echoes each one back to client_rx_stream_id.
 message SetupBidiRequest {
   string client_rx_stream_id = 1;

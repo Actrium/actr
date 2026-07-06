@@ -27,13 +27,13 @@
 //! `ActrError::NotImplemented` for those two shapes; if a future phase
 //! adds same-realm shortcuts we can revisit.
 //!
-//! DataStream / MediaTrack fast paths are not part of Phase 6 γ and
+//! DataChunk / MediaTrack fast paths are not part of Phase 6 γ and
 //! remain permanently `NotImplemented` on the web target.
 
 use std::rc::Rc;
 
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, PayloadType,
+    ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataChunk, PayloadType,
     Realm, RpcRequest,
 };
 use async_trait::async_trait;
@@ -297,11 +297,11 @@ impl Context for WebContext {
         flatten_js(outcome).map(|wit_id| actr_id_from_wit(&wit_id))
     }
 
-    // ── DataStream fast path (not supported on web) ─────────────────────
+    // ── DataChunk fast path (not supported on web) ─────────────────────
 
     async fn register_stream<F>(&self, _stream_id: String, _callback: F) -> ActorResult<()>
     where
-        F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
         Err(Self::not_implemented("register_stream"))
     }
@@ -313,7 +313,7 @@ impl Context for WebContext {
     async fn send_data_stream(
         &self,
         _target: &Dest,
-        _chunk: DataStream,
+        _chunk: DataChunk,
         _payload_type: PayloadType,
     ) -> ActorResult<()> {
         Err(Self::not_implemented("send_data_stream"))

@@ -36,7 +36,7 @@ use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_framework::{BackpressureEvent, CredentialEvent, PeerEvent, WebRtcPeerStatus};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, MetadataEntry, PayloadType,
+    ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataChunk, MetadataEntry, PayloadType,
     Realm, RpcEnvelope,
 };
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -272,7 +272,7 @@ impl HostImports for HostState {
     ) -> wasmtime::Result<Result<(), WitActrError>> {
         let op = HostOperation::SendDataStream(HostSendDataStreamV1 {
             dest: wit_dest_to_v1(&target),
-            chunk: wit_data_stream_to_proto(chunk),
+            chunk: wit_data_stream_to_data_chunk(chunk),
             payload_type: wit_payload_type_to_proto(payload_type) as i32,
         });
         match forward_host_operation(self, op).await? {
@@ -474,7 +474,7 @@ fn rpc_envelope_to_wit(envelope: &RpcEnvelope) -> WitRpcEnvelope {
     }
 }
 
-fn proto_data_stream_to_wit(chunk: DataStream) -> WitDataStream {
+fn proto_data_chunk_to_wit(chunk: DataChunk) -> WitDataStream {
     WitDataStream {
         stream_id: chunk.stream_id,
         sequence: chunk.sequence,
@@ -531,8 +531,8 @@ fn proto_backpressure_event_to_wit(event: BackpressureEvent) -> WitBackpressureE
     }
 }
 
-fn wit_data_stream_to_proto(chunk: WitDataStream) -> DataStream {
-    DataStream {
+fn wit_data_stream_to_data_chunk(chunk: WitDataStream) -> DataChunk {
+    DataChunk {
         stream_id: chunk.stream_id,
         sequence: chunk.sequence,
         payload: chunk.payload.into(),
@@ -911,14 +911,14 @@ impl WasmWorkload {
 
     pub(crate) async fn handle_data_stream(
         &mut self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender: ActrId,
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
         self.install_invocation(ctx, host_abi);
 
-        let wit_chunk = proto_data_stream_to_wit(chunk);
+        let wit_chunk = proto_data_chunk_to_wit(chunk);
         let wit_sender = proto_actr_id_to_wit(&sender);
         let result = self
             .bindings

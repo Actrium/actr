@@ -30,7 +30,7 @@ use actr_framework::MediaSample;
 /// 2. **One-way message (`send_message`)**
 ///    - Send directly without waiting for a response
 ///
-/// 3. **DataStream (Fast Path)**
+/// 3. **Data stream (Fast Path)**
 ///    - Bypass serialization and pass bytes directly
 pub struct HostGate {
     /// Pending requests: request_id → oneshot sender
@@ -153,12 +153,12 @@ impl HostGate {
         }
     }
 
-    /// Send a DataStream through the Fast Path.
+    /// Send a data stream through the Fast Path.
     ///
     /// # Parameters
     /// - `target`: Target actor ID
     /// - `payload_type`: PayloadType (`StreamReliable` or `StreamLatencyFirst`)
-    /// - `data`: Serialized DataStream bytes
+    /// - `data`: Serialized data stream bytes
     pub async fn send_data_stream(
         &self,
         target: &ActrId,

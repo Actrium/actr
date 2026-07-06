@@ -166,7 +166,7 @@ actr-web/
 
 1. **Fast Path 端到端验证**
    - DOM `FastPathForwarder` → SW `handle_dom_fast_path` → stream handlers
-   - DataStream、MediaTrack 的真实场景覆盖
+   - data stream、MediaTrack 的真实场景覆盖
 
 2. **actr-cli Web 支持**（P1.7）
    - Protobuf → TypeScript 生成

@@ -20,7 +20,7 @@ fn wasm_workload_wit_declares_data_stream_surface() {
     ] {
         assert!(
             wit.contains(expected),
-            "actr-workload.wit should declare `{expected}` for wasm DataStream support"
+            "actr-workload.wit should declare `{expected}` for wasm data stream support"
         );
     }
 }
@@ -38,11 +38,11 @@ fn dynclib_abi_declares_data_stream_surface() {
         "HostRegisterStreamV1",
         "HostUnregisterStreamV1",
         "HostSendDataStreamV1",
-        "GuestDataStreamV1",
+        "GuestDataChunkV1",
     ] {
         assert!(
             abi.contains(expected),
-            "dynclib_abi.rs should declare `{expected}` for dynclib DataStream support"
+            "dynclib_abi.rs should declare `{expected}` for dynclib data stream support"
         );
     }
 }

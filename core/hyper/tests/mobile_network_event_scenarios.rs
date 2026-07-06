@@ -18,7 +18,7 @@ use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{TestHarness, install_test_crypto_provider};
 use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrId, DataChunk, Direction, PayloadType, RpcEnvelope};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
@@ -970,7 +970,7 @@ async fn send_data_stream_bounded(
     timeout: Duration,
 ) {
     let target_id = harness.peer(to_serial).id.clone();
-    let stream = DataStream {
+    let stream = DataChunk {
         stream_id: stream_id.to_string(),
         sequence: 1,
         payload: bytes::Bytes::from_static(b"mobile-event-storm-stream-payload"),
@@ -987,13 +987,13 @@ async fn send_data_stream_bounded(
 
     let result = tokio::time::timeout(timeout, send)
         .await
-        .unwrap_or_else(|_| panic!("{stream_id} DataStream send hung for {:?}", timeout));
+        .unwrap_or_else(|_| panic!("{stream_id} data stream send hung for {:?}", timeout));
 
     if let Err(err) = result {
         let msg = err.to_string();
         assert!(
             is_expected_bounded_send_error(&msg),
-            "{stream_id} DataStream failed with unexpected error: {msg}"
+            "{stream_id} data stream failed with unexpected error: {msg}"
         );
     }
 }
@@ -1610,13 +1610,13 @@ async fn test_mobile_network_event_handle_storm_then_call_and_data_stream_are_bo
         assert_eq!(
             harness.peer(case.mobile_serial).pending_count().await,
             0,
-            "{} mobile event storm call/DataStream path should not leak pending requests",
+            "{} mobile event storm call/data stream path should not leak pending requests",
             case.name
         );
         assert_eq!(
             harness.peer(case.server_serial).pending_count().await,
             0,
-            "{} server event storm call/DataStream path should not leak pending requests",
+            "{} server event storm call/data stream path should not leak pending requests",
             case.name
         );
 

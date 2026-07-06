@@ -3,7 +3,7 @@
  *
  * This test uses UnifiedWorkload pattern, combining the following two test cases:
  * 1. RPC call to EchoServer
- * 2. DataStream transfer (via StreamClient.StartStream)
+ * 2. Data stream transfer (via StreamClient.StartStream)
  *
  * Advantages of UnifiedWorkload:
  * - Local service requests: routed through UnifiedDispatcher to StreamClientHandler implementation
@@ -101,7 +101,7 @@ class UnifiedIntegrationTest {
      *
      * This test uses UnifiedWorkload to verify:
      * 1. Remote RPC call (EchoService)
-     * 2. DataStream transfer (StreamClient.StartStream -> DataStreamConcurrentServer)
+     * 2. Data stream transfer (StreamClient.StartStream -> DataStreamConcurrentServer)
      *
      * Architecture:
      * ```
@@ -115,10 +115,10 @@ class UnifiedIntegrationTest {
      * ```
      */
     @Test
-    fun testUnifiedWorkloadWithEchoAndDataStream(): Unit =
+    fun testUnifiedWorkloadWithEchoAndDataChunk(): Unit =
         runBlocking {
             Log.i(TAG, "=== Starting Unified Integration Test ===")
-            Log.i(TAG, "This test combines Echo RPC and DataStream transfer")
+            Log.i(TAG, "This test combines Echo RPC and data stream transfer")
             val clientConfigPath = copyAssetToInternalStorage("actr.toml")
             val packagePath = copyFirstPackageAssetToInternalStorage()
             var clientRef: ActrRef? = null
@@ -154,9 +154,9 @@ class UnifiedIntegrationTest {
                 assertEquals("Echo mismatch", expectedResponse, echoResponse)
                 Log.i(TAG, "✅ Echo RPC Test PASSED")
 
-                // ==================== Part 2: Test DataStream Transfer ====================
+                // ==================== Part 2: Test data stream transfer ====================
                 Log.i(TAG, "")
-                Log.i(TAG, "==================== Part 2: DataStream Transfer ====================")
+                Log.i(TAG, "==================== Part 2: data stream transfer ====================")
 
                 Log.i(TAG, "📞 Calling StartStream via UnifiedDispatcher (local service)...")
                 val startStreamRequest =
@@ -183,7 +183,7 @@ class UnifiedIntegrationTest {
                 )
 
                 assertTrue("Stream transfer should be accepted", startStreamResponse.accepted)
-                Log.i(TAG, "✅ DataStream StartStream Test PASSED")
+                Log.i(TAG, "✅ Data stream StartStream Test PASSED")
 
                 // Wait for data stream messages to be sent (3 messages * 1 second each)
                 Log.i(TAG, "⏳ Waiting for data stream messages to be sent...")
@@ -193,7 +193,7 @@ class UnifiedIntegrationTest {
                 Log.i(TAG, "")
                 Log.i(TAG, "==================== Test Summary ====================")
                 Log.i(TAG, "✅ Part 1: Echo RPC - PASSED")
-                Log.i(TAG, "✅ Part 2: DataStream Transfer - PASSED")
+                Log.i(TAG, "✅ Part 2: Data stream transfer - PASSED")
                 Log.i(TAG, "")
                 Log.i(TAG, "=== Unified Integration Test PASSED ===")
             } finally {

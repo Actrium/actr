@@ -46,7 +46,7 @@ impl<T> SendPtr<T> {
 }
 
 use actr_framework::guest::vtable::HostVTable;
-use actr_protocol::{ActrId, DataStream};
+use actr_protocol::{ActrId, DataChunk};
 
 use crate::workload::{
     HostAbiFn, HostOperation, HostOperationResult, InvocationContext, PackageHookEvent,
@@ -545,7 +545,7 @@ impl DynclibInstance {
 
     pub(crate) async fn handle_data_stream(
         &mut self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender: ActrId,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<()> {
@@ -604,7 +604,7 @@ impl DynClibWorkload {
 
     pub(crate) async fn handle_data_stream(
         &mut self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender: ActrId,
         call_executor: &HostAbiFn,
     ) -> DynclibResult<()> {

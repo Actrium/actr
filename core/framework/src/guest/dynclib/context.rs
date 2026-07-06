@@ -1,13 +1,13 @@
 //! Dynclib guest-side `Context` implementation backed by the compressed ABI.
 
 use crate::guest::dynclib_abi::{
-    self as abi, AbiPayload, AbiReply, GuestDataStreamV1, HostCallRawV1, HostCallV1,
-    HostDiscoverV1, HostRegisterStreamV1, HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1,
+    self as abi, AbiPayload, AbiReply, GuestDataChunkV1, HostCallRawV1, HostCallV1, HostDiscoverV1,
+    HostRegisterStreamV1, HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1,
     InvocationContextV1, abi_error_to_actr, dest_to_v1, reply_to_actr_error,
 };
 use crate::guest::vtable::HostVTable;
 use crate::{Context, Dest, MediaSample};
-use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType};
+use actr_protocol::{ActorResult, ActrError, ActrId, ActrType, DataChunk, PayloadType};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
@@ -28,14 +28,14 @@ unsafe impl Send for DynclibContext {}
 unsafe impl Sync for DynclibContext {}
 
 type StreamCallback =
-    Arc<dyn Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
+    Arc<dyn Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
 
 fn stream_callbacks() -> &'static Mutex<HashMap<String, StreamCallback>> {
     static CALLBACKS: OnceLock<Mutex<HashMap<String, StreamCallback>>> = OnceLock::new();
     CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub fn dispatch_registered_stream(payload: GuestDataStreamV1) -> ActorResult<()> {
+pub fn dispatch_registered_stream(payload: GuestDataChunkV1) -> ActorResult<()> {
     let callback = {
         let callbacks = stream_callbacks()
             .lock()
@@ -175,7 +175,7 @@ impl Context for DynclibContext {
 
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
         stream_callbacks()
             .lock()
@@ -209,7 +209,7 @@ impl Context for DynclibContext {
     async fn send_data_stream(
         &self,
         target: &Dest,
-        chunk: DataStream,
+        chunk: DataChunk,
         payload_type: PayloadType,
     ) -> ActorResult<()> {
         let payload = HostSendDataStreamV1 {

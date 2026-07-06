@@ -28,9 +28,9 @@ use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 pub(crate) type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 
-/// Internal upper bound for a single DataStream send operation.
+/// Internal upper bound for a single data stream send operation.
 ///
-/// DataStream has no caller-provided request deadline like RPC envelopes, so
+/// A data stream has no caller-provided request deadline like RPC envelopes, so
 /// this prevents a stalled WebRTC DataChannel send from holding the mobile
 /// caller forever during unrecoverable network loss.
 const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
@@ -1217,13 +1217,13 @@ impl PeerGate {
         Ok(())
     }
 
-    /// Send DataStream (Fast Path)
+    /// Send DataChunk (Fast Path)
     ///
     /// # Parameters
     /// - `target`: Target Actor ID
     /// - `payload_type`: PayloadType (StreamReliable or StreamLatencyFirst)
-    /// - `stream_id`: DataStream identifier already known before serialization
-    /// - `data`: Serialized DataStream bytes
+    /// - `stream_id`: DataChunk identifier already known before serialization
+    /// - `data`: Serialized DataChunk bytes
     ///
     /// # Implementation Note
     /// Sends via PeerTransport using WebRTC DataChannel or WebSocket
@@ -1280,7 +1280,7 @@ impl PeerGate {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(ActrError::Unavailable(e.to_string())),
             Err(_) => Err(ActrError::Unavailable(format!(
-                "DataStream send timeout: {}ms",
+                "Data stream send timeout: {}ms",
                 DATA_STREAM_SEND_TIMEOUT.as_millis()
             ))),
         };

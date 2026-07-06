@@ -1,6 +1,6 @@
 //! DataStreamRegistry - Fast path data stream registry
 
-use actr_protocol::{ActorResult, ActrId, DataStream};
+use actr_protocol::{ActorResult, ActrId, DataChunk};
 use dashmap::DashMap;
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
@@ -13,12 +13,12 @@ use std::sync::Arc;
 /// - Doesn't pass Context (avoids confusing RPC and Stream semantics)
 /// - If reverse signaling needed, user should send via OutboundGate
 pub(crate) type DataStreamCallback =
-    Arc<dyn Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
+    Arc<dyn Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
 
 /// DataStreamRegistry - Stream chunk callback manager
 ///
 /// # Responsibilities
-/// - Receive DataStream from LatencyFirst Lane (stream-format data packets)
+/// - Receive DataChunk from LatencyFirst Lane (stream-format data packets)
 /// - Maintain stream_id → callback mapping
 /// - Concurrently invoke user-registered data stream callbacks
 ///
@@ -67,14 +67,14 @@ impl DataStreamRegistry {
     /// Dispatch data stream to callback (concurrent execution)
     ///
     /// # Arguments
-    /// - `chunk`: data stream
+    /// - `chunk`: DataChunk
     /// - `sender_id`: sender ActrId
     ///
     /// # Performance
     /// - Direct callback invocation, no queueing overhead
     /// - Latency: ~10μs
     /// - Concurrent execution, doesn't block other streams
-    pub(crate) async fn dispatch(&self, chunk: DataStream, sender_id: ActrId) {
+    pub(crate) async fn dispatch(&self, chunk: DataChunk, sender_id: ActrId) {
         let start = std::time::Instant::now();
 
         if let Some(callback) = self.callbacks.get(&chunk.stream_id) {

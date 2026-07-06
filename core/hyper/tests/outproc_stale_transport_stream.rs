@@ -19,7 +19,7 @@
 use actr_hyper::test_support::TestHarness;
 use actr_hyper::transport::{ConnectionEvent, ConnectionState, Dest};
 use actr_protocol::prost::Message;
-use actr_protocol::{DataStream, PayloadType};
+use actr_protocol::{DataChunk, PayloadType};
 use std::time::Duration;
 
 const SOURCE_SERIAL: u64 = 100;
@@ -183,7 +183,7 @@ async fn test_real_disconnect_stream_send_recovers_and_stale_close_is_ignored() 
     tokio::time::sleep(Duration::from_secs(5)).await;
 
     tracing::info!("📤 Step 4: Probe StreamReliable through the public gate path");
-    let stream = DataStream {
+    let stream = DataChunk {
         stream_id: "stale-transport-stream".to_string(),
         sequence: 1,
         payload: bytes::Bytes::from_static(b"stream-payload"),

@@ -165,14 +165,14 @@ impl Gate {
         }
     }
 
-    /// Send a `DataStream` over the Fast Path.
+    /// Send a `DataChunk` over the Fast Path.
     ///
     /// # Parameters
     ///
     /// - `target`: target actor ID
     /// - `payload_type`: `PayloadType` such as `StreamReliable` or `StreamLatencyFirst`
-    /// - `stream_id`: `DataStream` identifier already known before serialization
-    /// - `data`: serialized `DataStream` bytes
+    /// - `stream_id`: `DataChunk` identifier already known before serialization
+    /// - `data`: serialized `DataChunk` bytes
     ///
     /// # Semantics
     ///

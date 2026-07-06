@@ -200,7 +200,7 @@ interface Workload {
 
 | Class | Description |
 |-------|-------------|
-| `SimpleWorkload` | Concrete workload with DataStream channel support, target server routing, and handler hooks |
+| `SimpleWorkload` | Concrete workload with data stream channel support, target server routing, and handler hooks |
 | `RoutedWorkload` | Abstract base class with target server routing — subclass and override lifecycle hooks |
 | `WorkloadBuilder` | DSL builder: `workload { realm = ...; type = ...; onStart { }; onStop { } }` |
 
@@ -296,18 +296,18 @@ fun ActrId.toShortString(): String
 fun ActrId.toFullString(): String
 ```
 
-#### DataStream
+#### DataChunk
 
 Streaming data chunk with metadata.
 
 ```kotlin
 // Factory
-inline fun dataStream(builder: DataStreamBuilder.() -> Unit): DataStream
+inline fun dataChunk(builder: DataChunkBuilder.() -> Unit): DataChunk
 
 // Extensions
-fun DataStream.getMetadata(key: String): String?
-fun DataStream.hasMetadata(key: String): Boolean
-fun DataStream.metadataMap(): Map<String, String>
+fun DataChunk.getMetadata(key: String): String?
+fun DataChunk.hasMetadata(key: String): Boolean
+fun DataChunk.metadataMap(): Map<String, String>
 ```
 
 #### Realm
@@ -548,7 +548,7 @@ The low-level API is in `io.actrium.actr` and consists of UniFFI-generated bindi
 | `ActrType` | `manufacturer: String`, `name: String`, `version: String` |
 | `ActrId` | `realm: Realm`, `serialNumber: ULong`, `type: ActrType` |
 | `Realm` | `realmId: UInt` |
-| `DataStream` | `streamId: String`, `sequence: ULong`, `payload: ByteArray`, `metadata: List<MetadataEntry>`, `timestampMs: Long?` |
+| `DataChunk` | `streamId: String`, `sequence: ULong`, `payload: ByteArray`, `metadata: List<MetadataEntry>`, `timestampMs: Long?` |
 | `MetadataEntry` | `key: String`, `value: String` |
 | `RpcEnvelopeBridge` | `routeKey: String`, `payload: ByteArray`, `requestId: String` |
 | `NetworkSnapshot` | `sequence: ULong`, `availability: NetworkAvailability`, `transport: NetworkTransportFlags`, `isExpensive: Boolean`, `isConstrained: Boolean` |

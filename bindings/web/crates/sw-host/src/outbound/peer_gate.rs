@@ -121,7 +121,7 @@ impl PeerGate {
         Ok(())
     }
 
-    /// Send a DataStream through the Fast Path.
+    /// Send a data stream through the Fast Path.
     pub async fn send_data_stream(
         &self,
         target: &ActrId,
@@ -137,7 +137,7 @@ impl PeerGate {
         // 1. Resolve the target destination.
         let dest = self.get_dest(target)?;
 
-        // 2. Send the DataStream directly.
+        // 2. Send the data stream directly.
         self.transport
             .send(&dest, payload_type, &data)
             .await

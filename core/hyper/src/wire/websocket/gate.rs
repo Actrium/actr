@@ -24,7 +24,7 @@ use crate::wire::webrtc::{HookCallback, HookEvent};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    AIdCredential, ActrId, DataStream, Direction, IdentityClaims, PayloadType, RpcEnvelope,
+    AIdCredential, ActrId, DataChunk, Direction, IdentityClaims, PayloadType, RpcEnvelope,
 };
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
@@ -86,7 +86,7 @@ pub(crate) struct WebSocketGate {
     /// **Shared with PeerGate** for correct Response routing
     pending_requests: PendingRequestsMap,
 
-    /// DataStream registry (fast-path stream message routing)
+    /// data stream registry (fast-path stream message routing)
     data_stream_registry: Arc<DataStreamRegistry>,
 
     /// Inbound connection authentication context
@@ -110,7 +110,7 @@ impl WebSocketGate {
     /// # Arguments
     /// - `conn_rx`: receiver end from `WebSocketServer::bind()`
     /// - `pending_requests`: pending requests map shared with PeerGate
-    /// - `data_stream_registry`: DataStream registry
+    /// - `data_stream_registry`: data stream registry
     /// - `auth_ctx`: authentication context (when configured, enforces credential verification on all inbound connections)
     pub fn new(
         conn_rx: mpsc::Receiver<InboundWsConn>,
@@ -529,10 +529,10 @@ impl WebSocketGate {
                                     }
                                 }
                                 PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                                    match DataStream::decode(&data[..]) {
+                                    match DataChunk::decode(&data[..]) {
                                         Ok(chunk) => {
                                             tracing::debug!(
-                                                "📦 WS Received DataStream: stream_id={}, seq={}",
+                                                "📦 WS Received DataChunk: stream_id={}, seq={}",
                                                 chunk.stream_id,
                                                 chunk.sequence,
                                             );
@@ -550,7 +550,7 @@ impl WebSocketGate {
                                         }
                                         Err(e) => {
                                             tracing::error!(
-                                                "❌ WS Failed to decode DataStream: {:?}",
+                                                "❌ WS Failed to decode DataChunk: {:?}",
                                                 e
                                             );
                                         }

@@ -55,7 +55,7 @@ typealias NetworkEventHandle = io.actrium.actr.NetworkEventHandleWrapper
 /** Callback interface for forwarding tracing log events to the host. */
 typealias LogCallback = io.actrium.actr.LogCallback
 
-/** Callback interface for incoming DataStream chunks. */
+/** Callback interface for incoming data stream chunks. */
 typealias DataStreamCallback = io.actrium.actr.DataStreamCallback
 
 /** A single audio or video frame. */

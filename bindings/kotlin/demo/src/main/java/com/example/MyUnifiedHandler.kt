@@ -4,7 +4,7 @@ import android.util.Log
 import com.example.generated.UnifiedHandler
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.DataStream
+import io.actrium.actr.DataChunk
 import io.actrium.actr.DataStreamCallback
 import io.actrium.actr.PayloadType
 import io.actrium.actr.dsl.ActrContext
@@ -16,7 +16,7 @@ import kotlinx.coroutines.delay
  *
  * Implements the DuplexStreamService client protocol:
  * 1. Call StartDuplexStream RPC on the server
- * 2. Send DataStream chunks to the server
+ * 2. Send DataChunk values to the server
  * 3. Optionally receive return stream from the server
  */
 class MyUnifiedHandler : UnifiedHandler {
@@ -85,7 +85,7 @@ class MyUnifiedHandler : UnifiedHandler {
                     serverStreamId,
                     object : DataStreamCallback {
                         override suspend fun onStream(
-                            chunk: DataStream,
+                            chunk: DataChunk,
                             sender: ActrId,
                         ) {
                             val text = String(chunk.payload, Charsets.UTF_8)
@@ -99,11 +99,11 @@ class MyUnifiedHandler : UnifiedHandler {
                 Log.i(TAG, "✅ Registered stream handler for server return stream: $serverStreamId")
             }
 
-            // Step 3: Send DataStream chunks to the server (synchronous)
+            // Step 3: Send DataChunk values to the server (synchronous)
             for (i in 1..messageCount) {
                 val message = "[client $clientId] message $i"
-                val dataStream =
-                    DataStream(
+                val chunk =
+                    DataChunk(
                         streamId = clientStreamId,
                         sequence = i.toULong(),
                         payload = message.toByteArray(Charsets.UTF_8),
@@ -115,7 +115,7 @@ class MyUnifiedHandler : UnifiedHandler {
                 try {
                     ctx.sendDataStream(
                         serverId,
-                        dataStream,
+                        chunk,
                         PayloadType.STREAM_RELIABLE,
                     )
                 } catch (e: Exception) {

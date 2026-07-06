@@ -3,7 +3,7 @@ package io.actrium.actr.dsl
 
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.DataStream
+import io.actrium.actr.DataChunk
 import io.actrium.actr.PayloadType
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
@@ -57,13 +57,13 @@ open class SimpleWorkload(
     private val onReadyHandler: suspend (ActrContext) -> Unit = {},
     private val onErrorHandler: suspend (ActrContext, ErrorEvent) -> Unit = { _, _ -> },
 ) : Workload {
-    /** Channel for sending DataStream requests from UI to workload. */
-    private val dataStreamChannel = Channel<DataStreamRequest>(Channel.UNLIMITED)
+    /** Channel for sending data stream requests from UI to workload. */
+    private val chunkChannel = Channel<DataStreamRequest>(Channel.UNLIMITED)
 
-    /** Data class for DataStream requests. */
+    /** Data class for data stream requests. */
     data class DataStreamRequest(
         val target: ActrId,
-        val dataStream: DataStream,
+        val chunk: DataChunk,
     )
 
     /**
@@ -122,29 +122,29 @@ open class SimpleWorkload(
     fun getTargetServerId(): ActrId? = targetServerId.get()
 
     /**
-     * Send a DataStream through the workload's context. This method is thread-safe and can be
+     * Send a DataChunk through the workload's context. This method is thread-safe and can be
      * called from UI threads.
      */
     suspend fun sendDataStream(
         target: ActrId,
-        dataStream: DataStream,
+        chunk: DataChunk,
     ) {
-        dataStreamChannel.send(DataStreamRequest(target, dataStream))
+        chunkChannel.send(DataStreamRequest(target, chunk))
     }
 
     override suspend fun onStart(ctx: ActrContext) {
-        // Start a coroutine to handle DataStream requests
+        // Start a coroutine to handle data stream requests
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
-            for (request in dataStreamChannel) {
+            for (request in chunkChannel) {
                 try {
                     ctx.sendDataStream(
                         request.target,
-                        request.dataStream,
+                        request.chunk,
                         PayloadType.STREAM_RELIABLE,
                     )
                 } catch (e: Exception) {
                     // Log error but continue processing
-                    println("Failed to send DataStream: ${e.message}")
+                    println("Failed to send data stream: ${e.message}")
                 }
             }
         }

@@ -122,9 +122,9 @@ pub struct MetadataEntry {
     pub value: String,
 }
 
-// DataStream
+// DataChunk
 #[napi(object)]
-pub struct DataStream {
+pub struct DataChunk {
     #[napi(js_name = "streamId")]
     pub stream_id: String,
     pub sequence: i64,
@@ -136,17 +136,17 @@ pub struct DataStream {
 
 #[napi(object)]
 pub struct StreamSignal {
-    pub chunk: DataStream,
+    pub chunk: DataChunk,
     pub sender: ActrId,
 }
 
-impl From<actr_protocol::DataStream> for DataStream {
-    fn from(stream: actr_protocol::DataStream) -> Self {
+impl From<actr_protocol::DataChunk> for DataChunk {
+    fn from(chunk: actr_protocol::DataChunk) -> Self {
         Self {
-            stream_id: stream.stream_id,
-            sequence: stream.sequence as i64,
-            payload: stream.payload.to_vec().into(),
-            metadata: stream
+            stream_id: chunk.stream_id,
+            sequence: chunk.sequence as i64,
+            payload: chunk.payload.to_vec().into(),
+            metadata: chunk
                 .metadata
                 .into_iter()
                 .map(|e| MetadataEntry {
@@ -154,18 +154,18 @@ impl From<actr_protocol::DataStream> for DataStream {
                     value: e.value,
                 })
                 .collect(),
-            timestamp_ms: stream.timestamp_ms,
+            timestamp_ms: chunk.timestamp_ms,
         }
     }
 }
 
-impl From<DataStream> for actr_protocol::DataStream {
-    fn from(stream: DataStream) -> Self {
+impl From<DataChunk> for actr_protocol::DataChunk {
+    fn from(chunk: DataChunk) -> Self {
         Self {
-            stream_id: stream.stream_id,
-            sequence: stream.sequence as u64,
-            payload: bytes::Bytes::from(stream.payload.to_vec()),
-            metadata: stream
+            stream_id: chunk.stream_id,
+            sequence: chunk.sequence as u64,
+            payload: bytes::Bytes::from(chunk.payload.to_vec()),
+            metadata: chunk
                 .metadata
                 .into_iter()
                 .map(|e| actr_protocol::MetadataEntry {
@@ -173,7 +173,7 @@ impl From<DataStream> for actr_protocol::DataStream {
                     value: e.value,
                 })
                 .collect(),
-            timestamp_ms: stream.timestamp_ms,
+            timestamp_ms: chunk.timestamp_ms,
         }
     }
 }

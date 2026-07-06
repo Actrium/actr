@@ -125,7 +125,7 @@ Context provided to workloads during lifecycle callbacks. Provides access to RPC
     - `callback`: Callback interface invoked on incoming stream chunks
   - **Throws:** `ActrError` if registration fails
 
-- `func sendDataStream(target: ActrId, chunk: DataStream) async throws`
+- `func sendDataStream(target: ActrId, chunk: DataChunk) async throws`
   - Sends a data stream to a remote actor
   - **Parameters:**
     - `target`: Target actor ID
@@ -207,12 +207,12 @@ public enum PayloadType: Int32, Sendable {
 }
 ```
 
-#### `DataStream`
+#### `DataChunk`
 
-Data stream structure for fast-path streaming.
+Data chunk structure for the data stream fast path.
 
 ```swift
-public struct DataStream: Equatable, Hashable {
+public struct DataChunk: Equatable, Hashable {
     // Contains stream_id, sequence, payload, metadata, timestamp
 }
 ```
@@ -380,7 +380,7 @@ Swift-facing names below.
 - `ActrType`
 - `PayloadType`
 - `Realm`
-- `DataStream`
+- `DataChunk`
 - `DataStreamCallback`
 - `MetadataEntry`
 - `Context`

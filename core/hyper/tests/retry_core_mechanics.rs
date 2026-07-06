@@ -1831,7 +1831,7 @@ async fn peer_data_stream_rejects_non_stream_payload_type_before_transport() {
     assert!(matches!(err, actr_protocol::ActrError::InvalidArgument(_)));
     assert!(
         lane.sent_payloads().is_empty(),
-        "invalid DataStream payload must not be sent through transport"
+        "invalid data stream payload must not be sent through transport"
     );
 }
 
@@ -1855,17 +1855,17 @@ async fn unrecoverable_data_stream_send_failure_is_explicit_and_bounded() {
         ),
     )
     .await
-    .expect("unrecoverable DataStream send should not hang");
+    .expect("unrecoverable data stream send should not hang");
 
-    let err = result.expect_err("unrecoverable DataStream send should fail explicitly");
+    let err = result.expect_err("unrecoverable data stream send should fail explicitly");
     assert!(
         err.to_string().contains("permanently closed")
             || err.to_string().contains("Channel closed"),
-        "unexpected DataStream failure error: {err}"
+        "unexpected data stream failure error: {err}"
     );
     assert_eq!(
         lane.sent_payloads().len(),
         1,
-        "DataStream should make one bounded send attempt"
+        "data stream send should make one bounded send attempt"
     );
 }

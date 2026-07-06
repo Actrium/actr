@@ -1,6 +1,6 @@
 //! Context trait - Execution context interface for actors
 
-use actr_protocol::{ActorResult, ActrId, ActrType, DataStream, PayloadType};
+use actr_protocol::{ActorResult, ActrId, ActrType, DataChunk, PayloadType};
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
@@ -138,17 +138,17 @@ pub trait Context: Clone + MaybeSendSync + 'static {
         message: R,
     ) -> ActorResult<()>;
 
-    // ========== Fast Path: DataStream Methods ==========
+    // ========== Fast Path: DataChunk Methods ==========
 
-    /// Register a DataStream callback for a specific stream
+    /// Register a DataChunk callback for a specific stream
     ///
-    /// When a DataStream with matching stream_id arrives, the registered callback will be invoked.
+    /// When a DataChunk with matching stream_id arrives, the registered callback will be invoked.
     /// Callbacks are executed concurrently and do not block other streams.
     ///
     /// # Parameters
     ///
     /// - `stream_id`: Stream identifier (must be globally unique)
-    /// - `callback`: Handler function that receives (DataStream, sender ActrId)
+    /// - `callback`: Handler function that receives (DataChunk, sender ActrId)
     ///
     /// # Example
     ///
@@ -162,16 +162,16 @@ pub trait Context: Clone + MaybeSendSync + 'static {
     /// ```
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static;
+        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static;
 
-    /// Unregister a DataStream callback
+    /// Unregister a DataChunk callback
     ///
     /// # Parameters
     ///
     /// - `stream_id`: Stream identifier to unregister
     async fn unregister_stream(&self, stream_id: &str) -> ActorResult<()>;
 
-    /// Send a DataStream to a destination with explicit lane selection.
+    /// Send a DataChunk to a destination with explicit lane selection.
     ///
     /// Use [`PayloadType::StreamReliable`] for ordered reliable delivery (default) or
     /// [`PayloadType::StreamLatencyFirst`] for low-latency partial-reliable delivery.
@@ -179,12 +179,12 @@ pub trait Context: Clone + MaybeSendSync + 'static {
     /// # Parameters
     ///
     /// - `target`: Target destination
-    /// - `chunk`: DataStream to send
+    /// - `chunk`: DataChunk to send
     /// - `payload_type`: Lane selection (`StreamReliable` or `StreamLatencyFirst`)
     async fn send_data_stream(
         &self,
         target: &crate::Dest,
-        chunk: DataStream,
+        chunk: DataChunk,
         payload_type: PayloadType,
     ) -> ActorResult<()>;
 

@@ -56,7 +56,7 @@ use std::sync::Arc;
 
 /// Trivial linked handle that accepts every default hook and rejects
 /// dispatch — sufficient because host_operation_handler only touches the
-/// workload for the DataStream callback path (not exercised here).
+/// workload for the data stream callback path (not exercised here).
 struct DummyLinkedHandle;
 #[async_trait::async_trait]
 impl LinkedWorkloadHandle for DummyLinkedHandle {}

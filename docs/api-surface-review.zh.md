@@ -26,8 +26,7 @@
 1. **god-trait**：RPC、流、媒体轨、发现、日志 15+ 个方法挤在一个 trait 上（`core/framework/src/context.rs:67-352`）。
 2. **媒体 API 自我矛盾**：`send_media_sample` 用 `MediaType` 枚举，同一文件里 `add_media_track` 却是 `media_type: &str, codec: &str` 字符串参数（`context.rs:318-324`）。
 3. **wire 细节渗漏**：应用要从 `PayloadType`（一个同时含 `RpcReliable` / `MediaRtp` 等对流 API 非法值的 wire 枚举）里挑 lane；`Dest` 文档在讲 HostGate / PeerGate 与序列化策略（`dest.rs:52-65`）；`MediaSample.timestamp` 是裸 RTP u32。
-4. **命名债躺在应用面上**：`send_data_stream(chunk: DataStream)`——类型叫"流"、参数叫"块"（issue #267）。
-5. `call` 无超时参数（写死 30s，issue #257）；`discover_route_candidate` 名字暴露内部概念，只返回单个候选，无缓存 / 失效 / 订阅语义。
+4. `call` 无超时参数（写死 30s，issue #257）；`discover_route_candidate` 名字暴露内部概念，只返回单个候选，无缓存 / 失效 / 订阅语义。
 
 ---
 
@@ -113,8 +112,6 @@
 9. FFI `ContextBridge` 补 `self_id` / `caller_id` / `request_id` / `log`。
 10. TS `serialNumber` 统一 `bigint`；补全 `host-imports.d.ts`；修正 TS guest 脚手架的 call 示例。
 11. 跨语言命名对齐（Context 别名、discover 签名、Bridge 名收口）；超时魔数统一为配置常量。
-12. `DataStream → DataChunk`（#267，0.5 破坏窗口，与 Direction+TELL=3 协议手术同批）。
-
 ---
 
 ## 附：证据索引

@@ -1,10 +1,10 @@
 import Actr
 import Foundation
 
-/// Per-session DataStream ack collector.
+/// Per-session data stream ack collector.
 /// Registered as DataStreamCallback for a specific service_to_client_stream_id.
 actor SessionAckCollector: DataStreamCallback {
-    private var chunks: [UInt64: DataStream] = [:]
+    private var chunks: [UInt64: DataChunk] = [:]
     private let expectedCount: Int
     private let streamId: String
 
@@ -13,7 +13,7 @@ actor SessionAckCollector: DataStreamCallback {
         self.expectedCount = expectedCount
     }
 
-    func onStream(chunk: DataStream, sender: ActrId) async throws {
+    func onStream(chunk: DataChunk, sender: ActrId) async throws {
         guard chunk.streamId == streamId else { return }
         chunks[chunk.sequence] = chunk
     }
@@ -21,7 +21,7 @@ actor SessionAckCollector: DataStreamCallback {
     var receivedCount: Int { chunks.count }
 
     /// Poll until all expected chunks received or timeout.
-    func waitForCompletion(timeoutMs: Int64 = 30_000) async throws -> [DataStream] {
+    func waitForCompletion(timeoutMs: Int64 = 30_000) async throws -> [DataChunk] {
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
         while Date() < deadline {
             if chunks.count >= expectedCount {

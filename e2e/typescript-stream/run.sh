@@ -511,7 +511,7 @@ use crate::generated::echo::{
 };
 use crate::generated::relay::{RelayRequest, RelayResponse};
 use crate::generated::relay_actor::RelayServiceHandler;
-use actr_framework::{Context, DataStream, Dest};
+use actr_framework::{Context, DataChunk, Dest};
 use actr_protocol::{ActrError, ActrId, ActrType, ActorResult, MetadataEntry, PayloadType};
 use bytes::Bytes;
 use std::collections::HashMap;
@@ -697,7 +697,7 @@ async fn start_stream_round_trip<C: Context>(
 
     ctx.send_data_stream(
         &Dest::Actor(echo_actor),
-        DataStream {
+        DataChunk {
             stream_id: inbound_stream_id,
             sequence: 1,
             payload: Bytes::from(outbound_message.to_string()),

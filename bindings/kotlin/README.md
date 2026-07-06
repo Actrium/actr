@@ -80,7 +80,7 @@ actr-kotlin/
 │       └── dsl/              # High-level Kotlin-idiomatic API
 │           ├── Aliases.kt    # Central application-facing type aliases
 │           ├── Actr.kt       # ActrNode/ActrRef wrapper classes + factory fns
-│           ├── Types.kt      # Type builders (ActrType, ActrId, DataStream)
+│           ├── Types.kt      # Type builders (ActrType, ActrId, DataChunk)
 │           ├── Extensions.kt # Error handling, retry, context helpers
 │           ├── RpcRequest.kt # Type-safe RPC protocol
 │           ├── Workload.kt   # Workload abstractions (SimpleWorkload, etc.)
@@ -279,8 +279,8 @@ val type = actrType { manufacturer = "acme"; name = "EchoService"; version = "1.
 // ActrId
 val id = actrId { realm = 2281844430u; serialNumber = 1uL; type = "acme:EchoService:1.0.0" }
 
-// DataStream
-val stream = dataStream {
+// DataChunk
+val stream = dataChunk {
     streamId = "file-001"; sequence = 0uL; payload = data
     metadata { "content-type" to "application/octet-stream" }
 }

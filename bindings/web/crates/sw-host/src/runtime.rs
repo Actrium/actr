@@ -2768,7 +2768,7 @@ struct ClientContext {
     peer_gate: Arc<crate::outbound::PeerGate>,
     /// `PeerTransport`, which manages one `DestTransport` per destination.
     transport_manager: Arc<crate::transport::PeerTransport>,
-    /// `DataStream` callback registry, isolated per browser tab.
+    /// data stream callback registry, isolated per browser tab.
     stream_handlers: Rc<RefCell<HashMap<String, StreamHandler>>>,
 }
 
@@ -2921,19 +2921,19 @@ fn direction_for_routing(
 fn decode_stream_payload(data: &[u8]) -> Result<(String, Bytes), JsValue> {
     if data.len() < 4 {
         return Err(JsValue::from_str(
-            "Invalid DataStream payload: missing stream_id length",
+            "Invalid data stream payload: missing stream_id length",
         ));
     }
 
     let stream_id_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
     if data.len() < 4 + stream_id_len {
         return Err(JsValue::from_str(
-            "Invalid DataStream payload: truncated stream_id",
+            "Invalid data stream payload: truncated stream_id",
         ));
     }
 
     let logical_stream_id = String::from_utf8(data[4..4 + stream_id_len].to_vec())
-        .map_err(|e| JsValue::from_str(&format!("Invalid DataStream stream_id: {}", e)))?;
+        .map_err(|e| JsValue::from_str(&format!("Invalid data stream stream_id: {}", e)))?;
 
     Ok((
         logical_stream_id,

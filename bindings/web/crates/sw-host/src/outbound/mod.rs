@@ -72,7 +72,7 @@ impl Gate {
         }
     }
 
-    /// Send a DataStream through the Fast Path.
+    /// Send a data stream through the Fast Path.
     pub async fn send_data_stream(
         &self,
         target: &ActrId,

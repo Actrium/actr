@@ -218,7 +218,7 @@
 
 ## ⚡ 三、Fast Path 支持
 
-### DataStream (数据流)
+### Data Stream (数据流)
 
 | 特性 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
@@ -275,7 +275,7 @@
 | **Echo (基础 RPC)** | ✅ `shell-actr-echo/` | ✅ `echo/` (真实实现) | **90%** |
 | - 客户端 | ✅ Rust | ✅ React + TS + gRPC-Web | 95% |
 | - 服务端 | ✅ Rust | ✅ Rust Tonic gRPC | 100% |
-| **DataStream (流式传输)** | ✅ `data-stream/` | ❌ 未实现 | **0%** |
+| **Data Stream (流式传输)** | ✅ `data-stream/` | ❌ 未实现 | **0%** |
 | **MediaRelay (媒体中继)** | ✅ `media-relay/` | ❌ 未实现 | **0%** |
 | **Hello World** | ❌ | ✅ `hello-world/` | **N/A** |
 
@@ -325,7 +325,7 @@
 | **WebSocket 连接** | ✅ | ⚠️ | **40%** | 🟡 中 |
 | **Inproc 通信** | ✅ Tokio mpsc | ✅ PostMessage | **85%** | 🔴 高 |
 | **路由表** | ✅ | ✅ RouteTable (~300 行) | **90%** | ✅ 已完成 |
-| **DataStream** | ✅ | ⚠️ 框架 | **40%** | 🟡 中 |
+| **Data Stream** | ✅ | ⚠️ 框架 | **40%** | 🟡 中 |
 | **MediaTrack** | ✅ | ⚠️ 框架 | **35%** | 🟢 低 |
 | **Actor 生命周期** | ✅ | ❌ | **10%** | 🟡 中 |
 | **代码生成** | ✅ actr-cli | ✅ Option U WIT codegen + `.wbg` guest bundle | 当前已接入 | 🟡 中 |
@@ -417,10 +417,10 @@
 | ~~完善 WebRTC 连接逻辑~~ | ~~5-7 天~~ | ✅ 已完成 |
 | ~~实现调度器~~ | ~~3-5 天~~ | ✅ 已完成 |
 | ~~实现 RouteTable~~ | ~~2-3 天~~ | ✅ 已完成 |
-| 完善 Fast Path (DataStream) | 3-4 天 | 🟡 中 |
+| 完善 Fast Path (Data Stream) | 3-4 天 | 🟡 中 |
 | 完善 ActrNode 启动流程 | 4-5 天 | 🟡 中 |
 | 补充 E2E 测试 | 3-4 天 | 🟡 中 |
-| 创建 DataStream 示例 | 2-3 天 | 🟢 低 |
+| 创建 Data Stream 示例 | 2-3 天 | 🟢 低 |
 | **剩余总计** | **12-16 天** | - |
 
 ### 达到生产就绪 - 95% 完成度
@@ -501,7 +501,7 @@
 #### 🎯 短期目标 (1-2 周) - 完善 MVP
 
 1. **清理遗留代码** (send_rpc_to_remote)
-2. **完善 Fast Path 集成** (DataStream)
+2. **完善 Fast Path 集成** (Data Stream)
 3. **补充关键测试** (E2E)
 
 #### 🚀 中期目标 (1 月) - 生产就绪

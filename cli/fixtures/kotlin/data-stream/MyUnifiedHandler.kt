@@ -15,7 +15,7 @@ import stream_server.StreamClientOuterClass.PrepareClientStreamRequest
 import stream_server.StreamClientOuterClass.PrepareClientStreamResponse
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.DataStream
+import io.actrium.actr.DataChunk
 import io.actrium.actr.DataStreamCallback
 import io.actrium.actr.PayloadType
 import io.actrium.actr.dsl.ActrContext
@@ -44,7 +44,7 @@ class MyUnifiedHandler : UnifiedHandler {
     /**
      * PrepareClientStream - Called by the server to prepare client for receiving data stream
      *
-     * This registers a DataStream handler to receive messages from the server.
+     * This registers a data stream handler to receive messages from the server.
      */
     override suspend fun prepare_client_stream(
         request: PrepareClientStreamRequest,
@@ -55,11 +55,11 @@ class MyUnifiedHandler : UnifiedHandler {
         Log.i(TAG, "prepare_client_stream: stream_id=$streamId, expected_count=$expectedCount")
 
         try {
-            // Register DataStream callback to receive server's data stream
+            // Register data stream callback to receive server's data stream
             ctx.registerStream(
                 streamId,
                 object : DataStreamCallback {
-                    override suspend fun onStream(chunk: DataStream, sender: ActrId) {
+                    override suspend fun onStream(chunk: DataChunk, sender: ActrId) {
                         val text = String(chunk.payload, Charsets.UTF_8)
                         Log.i(
                             TAG,
@@ -89,7 +89,7 @@ class MyUnifiedHandler : UnifiedHandler {
      * This follows the client implementation:
      * 1. Discover the server
      * 2. Call RegisterStream RPC on the server
-     * 3. Spawn a coroutine to send DataStream chunks
+     * 3. Spawn a coroutine to send data stream chunks
      */
     override suspend fun start_stream(
         request: ClientStartStreamRequest,
@@ -129,11 +129,11 @@ class MyUnifiedHandler : UnifiedHandler {
                     .build()
             }
 
-            // Spawn a coroutine to send DataStream chunks (like tokio::spawn in Rust)
+            // Spawn a coroutine to send data stream chunks (like tokio::spawn in Rust)
             CoroutineScope(Dispatchers.IO).launch {
                 for (i in 1..messageCount) {
                     val message = "[client $clientId] message $i"
-                    val dataStream = DataStream(
+                    val chunk = DataChunk(
                         streamId = streamId,
                         sequence = i.toULong(),
                         payload = message.toByteArray(Charsets.UTF_8),
@@ -143,7 +143,7 @@ class MyUnifiedHandler : UnifiedHandler {
 
                     Log.i(TAG, "client sending $i/$messageCount: $message")
                     try {
-                        ctx.sendDataStream(serverId, dataStream)
+                        ctx.sendDataStream(serverId, chunk)
                     } catch (e: Exception) {
                         Log.e(TAG, "client send_data_stream error: ${e.message}")
                     }

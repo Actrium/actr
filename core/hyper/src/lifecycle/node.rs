@@ -63,7 +63,7 @@ pub(crate) struct Inner {
     /// not initialized yet")` — see `RuntimeContext::select_gate`.
     pub(crate) outproc_gate: Option<Gate>,
 
-    /// DataStream callback registry shared between the inbound WebRTC / WS
+    /// data stream callback registry shared between the inbound WebRTC / WS
     /// gates (which dispatch into it) and `RuntimeContext`
     /// (register_stream / send_data_stream).
     pub(crate) data_stream_registry: Arc<DataStreamRegistry>,
@@ -256,7 +256,7 @@ async fn host_operation_handler(
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
     use actr_framework::guest::dynclib_abi::code as abi_code;
     use actr_framework::{Context as _, Dest};
-    use actr_protocol::{DataStream, PayloadType};
+    use actr_protocol::{DataChunk, PayloadType};
 
     /// Map `ActrError` to ABI error code, preserving semantics for guest-side discrimination
     fn actr_error_to_code(err: &ActrError) -> i32 {
@@ -352,7 +352,7 @@ async fn host_operation_handler(
             let callback_ctx = ctx.clone();
             let callback_workload_dispatch = workload_dispatch.clone();
             match ctx
-                .register_stream(stream_id, move |chunk: DataStream, sender| {
+                .register_stream(stream_id, move |chunk: DataChunk, sender| {
                     let ctx_for_executor = callback_ctx.clone();
                     let workload_dispatch = callback_workload_dispatch.clone();
                     Box::pin(async move {

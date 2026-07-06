@@ -16,7 +16,7 @@ use actr_hyper::test_support::{
 use actr_hyper::transport::{ConnectionEvent, ConnectionState};
 use actr_hyper::wire::webrtc::{HookCallback, HookEvent, WebRtcCoordinator};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrError, ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrError, ActrId, DataChunk, Direction, PayloadType, RpcEnvelope};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -965,7 +965,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case: Ro
             .coordinator
             .set_hook_callback(hook);
 
-        let stream = DataStream {
+        let stream = DataChunk {
             stream_id: format!("{}-{}-large-data-stream", case.name, direction.name),
             sequence: 7,
             payload: Bytes::from(vec![0x5a; LARGE_PAYLOAD_SIZE]),
@@ -1078,7 +1078,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
             .coordinator
             .set_hook_callback(hook);
 
-        let stream = DataStream {
+        let stream = DataChunk {
             stream_id: format!(
                 "{}-{}-inflight-long-offline-stream",
                 case.name, direction.name
@@ -1117,14 +1117,14 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
 
         let send_result = tokio::time::timeout(Duration::from_secs(20), send_task)
             .await
-            .expect("in-flight DataStream send should not hang after long offline")
-            .expect("in-flight DataStream task should not panic");
+            .expect("in-flight data stream send should not hang after long offline")
+            .expect("in-flight data stream task should not panic");
 
         if let Err(err) = send_result {
             let msg = err.to_string();
             assert!(
                 is_expected_bounded_transport_failure(&msg),
-                "unexpected in-flight DataStream failure: {msg}"
+                "unexpected in-flight data stream failure: {msg}"
             );
         } else {
             let event = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1138,7 +1138,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
             })
             .await
             .expect(
-                "successful in-flight DataStream during offline must emit delivery uncertainty",
+                "successful in-flight data stream during offline must emit delivery uncertainty",
             );
 
             match event {
@@ -1213,7 +1213,7 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
             5_000,
         );
 
-        let stream = DataStream {
+        let stream = DataChunk {
             stream_id: format!("{}-mobile-event-storm-concurrent-stream", case.name),
             sequence: 19,
             payload: Bytes::from(vec![0x42; LARGE_PAYLOAD_SIZE]),
@@ -1236,16 +1236,16 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
             .await
             .unwrap_or_else(|_| {
                 panic!(
-                    "{} DataStream send during mobile event storm should not hang",
+                    "{} data stream send during mobile event storm should not hang",
                     case.name
                 )
             })
-            .expect("DataStream send task should not panic");
+            .expect("data stream send task should not panic");
         if let Err(err) = stream_result {
             let msg = err.to_string();
             assert!(
                 is_expected_bounded_transport_failure(&msg),
-                "{} unexpected DataStream error during mobile event storm: {msg}",
+                "{} unexpected data stream error during mobile event storm: {msg}",
                 case.name
             );
         }

@@ -266,7 +266,7 @@ impl WebContext for RuntimeContext {
         _callback: Box<dyn FnMut(Bytes) + 'static>,
     ) -> ActorResult<()> {
         // Media-track fast path is intentionally not wired on the web target
-        // (see core/framework/src/web/context.rs §"DataStream / MediaTrack
+        // (see core/framework/src/web/context.rs §"DataChunk / MediaTrack
         // fast paths"). Returning Unavailable is consistent with the
         // framework `WebContext` shape so callers fail loud rather than
         // believe a registration that did nothing.

@@ -7,7 +7,7 @@ use crate::generated::{
     file_transfer::*, local_file::*, file_actor::LocalFileServiceHandler,
 };
 use actr_framework::Context;
-use actr_protocol::{ActrType, DataStream};
+use actr_protocol::{ActrType, DataChunk};
 use actr_hyper::prelude::*;
 use bytes::Bytes;
 
@@ -77,11 +77,11 @@ impl LocalFileServiceHandler for MyFileService {
 
         info!("✅ StartTransfer RPC succeeded: {}", start_resp.message);
 
-        // Phase 2: Send DataStream chunks (Data Plane - Fast Path)
-        info!("📦 Phase 2: Sending {} DataStream chunks...", chunks.len());
+        // Phase 2: Send DataChunk chunks (Data Plane - Fast Path)
+        info!("📦 Phase 2: Sending {} DataChunk chunks...", chunks.len());
 
         for (i, chunk) in chunks.iter().enumerate() {
-            let data_stream = DataStream {
+            let chunk = DataChunk {
                 stream_id: "test-stream-001".to_string(),
                 sequence: i as u64,
                 payload: chunk.clone().into(),
@@ -89,7 +89,7 @@ impl LocalFileServiceHandler for MyFileService {
                 timestamp_ms: Some(chrono::Utc::now().timestamp_millis()),
             };
 
-            ctx.send_data_stream(&Dest::Actor(receiver_id.clone()), data_stream, actr_protocol::PayloadType::StreamReliable)
+            ctx.send_data_stream(&Dest::Actor(receiver_id.clone()), chunk, actr_protocol::PayloadType::StreamReliable)
                 .await?;
 
             let progress = ((i + 1) as f64 / chunks.len() as f64 * 100.0) as u32;
@@ -126,7 +126,7 @@ impl LocalFileServiceHandler for MyFileService {
 }
 
 fn create_content() -> (String, Vec<Bytes>) {
-    let content = "Hello DataStream! This is a test file content. ".repeat(100);
+    let content = "Hello DataChunk! This is a test file content. ".repeat(100);
     let chunk_size = 1024;
     let chunks: Vec<Bytes> = content
         .as_bytes()

@@ -125,7 +125,7 @@ impl Context for MockCtx {
     async fn register_stream<F>(&self, _id: String, _cb: F) -> ActorResult<()>
     where
         F: Fn(
-                actr_protocol::DataStream,
+                actr_protocol::DataChunk,
                 ActrId,
             ) -> futures_util::future::BoxFuture<'static, ActorResult<()>>
             + Send
@@ -142,7 +142,7 @@ impl Context for MockCtx {
     async fn send_data_stream(
         &self,
         _target: &actr_framework::Dest,
-        _chunk: actr_protocol::DataStream,
+        _chunk: actr_protocol::DataChunk,
         _pt: actr_protocol::PayloadType,
     ) -> ActorResult<()> {
         Err(ActrError::NotImplemented("mock".to_string()))

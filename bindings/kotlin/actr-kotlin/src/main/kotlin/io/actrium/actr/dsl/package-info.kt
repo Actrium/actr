@@ -11,7 +11,7 @@
  * This gives you access to:
  * - Type aliases: ActrNode, ActrRef, Workload, ActrContext, RpcEnvelope, LogCallback,
  *   DataStreamCallback, MediaSample, MediaTrackCallback, MediaType, OpusEncoder
- * - DSL builders: actrType(), actrId(), dataStream(), workload()
+ * - DSL builders: actrType(), actrId(), dataChunk(), workload()
  * - Extensions: String.toActrType(), ActrRef.discover(String), etc.
  * - Utilities: withRetry(), withStartedActor(), SimpleWorkload, RoutedWorkload
  * - Logging: setLogCallback()

@@ -77,7 +77,7 @@ e2e/polyglot-echo/
 │   ├── cdylib-rust/              default; scaffolded fresh via `actr init`
 │   ├── linked-rust/              in-process Rust linked workload binary
 │   └── wasm-rust/                wasm32-wasip2 Component package
-├── server/                       linked EchoStreamService (DataStream scenarios)
+├── server/                       linked EchoStreamService (data stream scenarios)
 ├── clients/
 │   └── rust/                     Rust driver (link-only workload + outbound RPC)
 └── run.sh                        orchestrator + assertion harness

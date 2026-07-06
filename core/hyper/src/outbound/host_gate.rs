@@ -148,16 +148,16 @@ impl HostGate {
             .map_err(|e| ActrError::Unavailable(e.to_string()))
     }
 
-    /// Send DataStream (Fast Path)
+    /// Send DataChunk (Fast Path)
     ///
     /// # Arguments
     /// - `_target`: Target ActorId (for logging only, not needed for intra-process)
     /// - `payload_type`: PayloadType (StreamReliable or StreamLatencyFirst)
-    /// - `stream_id`: DataStream identifier already known before serialization
-    /// - `data`: Serialized DataStream bytes
+    /// - `stream_id`: DataChunk identifier already known before serialization
+    /// - `data`: Serialized DataChunk bytes
     ///
     /// # Note
-    /// For inproc, DataStream is sent via LatencyFirst channel with stream_id as identifier
+    /// For inproc, DataChunk is sent via LatencyFirst channel with stream_id as identifier
     pub async fn send_data_stream(
         &self,
         _target: &ActrId,

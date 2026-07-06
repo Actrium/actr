@@ -725,7 +725,7 @@ macro_rules! entry {
                 }
 
                 if frame.op == $crate::guest::dynclib_abi::op::GUEST_DATA_STREAM {
-                    let payload = match <$crate::guest::dynclib_abi::GuestDataStreamV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
+                    let payload = match <$crate::guest::dynclib_abi::GuestDataChunkV1 as $crate::guest::dynclib_abi::AbiPayload>::decode_payload(&frame.payload) {
                         Ok(payload) => payload,
                         Err(_) => return $crate::guest::dynclib_abi::code::PROTOCOL_ERROR,
                     };

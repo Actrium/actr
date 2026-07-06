@@ -62,7 +62,7 @@ impl Context for DummyContext {
 
     async fn register_stream<F>(&self, _stream_id: String, _callback: F) -> ActorResult<()>
     where
-        F: Fn(actr_protocol::DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>>
+        F: Fn(actr_protocol::DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>>
             + Send
             + Sync
             + 'static,
@@ -77,7 +77,7 @@ impl Context for DummyContext {
     async fn send_data_stream(
         &self,
         _target: &Dest,
-        _chunk: actr_protocol::DataStream,
+        _chunk: actr_protocol::DataChunk,
         _payload_type: actr_protocol::PayloadType,
     ) -> ActorResult<()> {
         Err(Self::not_implemented("DummyContext::send_data_stream"))

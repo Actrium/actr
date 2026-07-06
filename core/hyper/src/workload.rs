@@ -15,7 +15,7 @@ use actr_framework::{
     BackpressureEvent, CredentialEvent, ErrorEvent, MessageDispatcher, PeerEvent,
     Workload as FrameworkWorkload,
 };
-use actr_protocol::{ActorResult, ActrError, ActrId, DataStream, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, DataChunk, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
@@ -655,7 +655,7 @@ impl Workload {
 
     pub(crate) fn dispatch_data_stream<'a>(
         &'a mut self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender: ActrId,
         invocation: InvocationContext,
         host_abi: &'a HostAbiFn,
@@ -781,10 +781,10 @@ pub(crate) fn encode_guest_handle_request(
 
 #[cfg(feature = "dynclib-engine")]
 pub(crate) fn encode_guest_data_stream_request(
-    chunk: DataStream,
+    chunk: DataChunk,
     sender: ActrId,
 ) -> Result<Vec<u8>, i32> {
-    let request = guest_abi::GuestDataStreamV1 { chunk, sender };
+    let request = guest_abi::GuestDataChunkV1 { chunk, sender };
     let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
 }

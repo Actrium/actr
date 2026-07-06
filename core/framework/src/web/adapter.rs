@@ -26,7 +26,7 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use actr_protocol::{
-    ActrError, ActrId, ConnectionNotReadyInfo, DataStream, Direction, MetadataEntry, Realm,
+    ActrError, ActrId, ConnectionNotReadyInfo, DataChunk, Direction, MetadataEntry, Realm,
     RpcEnvelope,
 };
 use async_trait::async_trait;
@@ -200,8 +200,8 @@ fn backpressure_event_from_wit(e: wit::BackpressureEvent) -> BackpressureEvent {
     }
 }
 
-fn data_stream_from_wit(chunk: wit::DataStream) -> DataStream {
-    DataStream {
+fn data_chunk_from_wit(chunk: wit::DataStream) -> DataChunk {
+    DataChunk {
         stream_id: chunk.stream_id,
         sequence: chunk.sequence,
         payload: chunk.payload.into(),
@@ -410,7 +410,7 @@ where
         chunk: wit::DataStream,
         _sender: wit::ActrId,
     ) -> Result<(), wit::ActrError> {
-        let chunk = data_stream_from_wit(chunk);
+        let chunk = data_chunk_from_wit(chunk);
         Err(proto_error_to_wit(ActrError::NotImplemented(format!(
             "WebWorkloadAdapter::on_data_stream({})",
             chunk.stream_id

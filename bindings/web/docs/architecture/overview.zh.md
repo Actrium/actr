@@ -274,7 +274,7 @@ loop {
 | WirePool | ✓ | ✓ | 当前核心路径已对齐，浏览器边界不同 |
 | InboundPacketDispatcher | ✓ | ✓ | 当前接口已对齐 |
 | Mailbox | SQLite | IndexedDB | 当前语义已对齐，存储后端不同 |
-| DataStream Fast Path | ✓ | ✓ | 当前 baseline 已进 SW handlers |
+| Data stream Fast Path | ✓ | ✓ | 当前 baseline 已进 SW handlers |
 
 **总体一致性**: 当前核心路径和接口 baseline 已对齐；精确覆盖率需要基于当前测试和 benchmark 重新评估。
 

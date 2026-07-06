@@ -7,7 +7,7 @@
 //! suspends the guest task at await points directly.
 
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, PayloadType,
+    ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataChunk, PayloadType,
     RpcRequest,
 };
 use async_trait::async_trait;
@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::{Context, Dest, MediaSample};
 
 use super::context_helpers::{
-    actr_id_from_wit, actr_id_to_wit, actr_type_to_wit, data_stream_from_wit, data_stream_to_wit,
+    actr_id_from_wit, actr_id_to_wit, actr_type_to_wit, data_chunk_from_wit, data_chunk_to_wit,
     dest_to_wit, payload_type_to_wit,
 };
 use super::generated::actr::workload::host as wit_host;
@@ -116,7 +116,7 @@ pub(crate) struct WasmContext {
 }
 
 type StreamCallback =
-    Arc<dyn Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
+    Arc<dyn Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
 
 fn stream_callbacks() -> &'static Mutex<HashMap<String, StreamCallback>> {
     static CALLBACKS: OnceLock<Mutex<HashMap<String, StreamCallback>>> = OnceLock::new();
@@ -127,7 +127,7 @@ pub(crate) async fn dispatch_registered_stream(
     chunk: wit_types::DataStream,
     sender: wit_types::ActrId,
 ) -> ActorResult<()> {
-    let chunk = data_stream_from_wit(chunk);
+    let chunk = data_chunk_from_wit(chunk);
     let sender = actr_id_from_wit(&sender);
     let callback = {
         let callbacks = stream_callbacks()
@@ -219,7 +219,7 @@ impl Context for WasmContext {
 
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
         stream_callbacks()
             .lock()
@@ -243,12 +243,12 @@ impl Context for WasmContext {
     async fn send_data_stream(
         &self,
         target: &Dest,
-        chunk: DataStream,
+        chunk: DataChunk,
         payload_type: PayloadType,
     ) -> ActorResult<()> {
         wit_host::send_data_stream(
             dest_to_wit(target),
-            data_stream_to_wit(chunk),
+            data_chunk_to_wit(chunk),
             payload_type_to_wit(payload_type),
         )
         .await
