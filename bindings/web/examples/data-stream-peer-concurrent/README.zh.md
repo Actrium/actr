@@ -113,7 +113,7 @@ node test-auto.js
   - `server: stream <stream_id> received N/N`
   - `server sending N/N`
 - Server / Client 日志不应出现：
-  - `Unknown service: __fast_path_data_stream__`
+  - `Unknown service: __fast_path_data_chunk__`
   - `Tell handler error`
 
 ## 说明

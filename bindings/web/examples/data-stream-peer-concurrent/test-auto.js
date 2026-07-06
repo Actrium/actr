@@ -9,7 +9,7 @@ const CLIENT_COUNT = CLIENT_URLS.length;
 const MESSAGE_COUNT = Number(process.env.MESSAGE_COUNT || 3);
 const DEFAULT_MAC_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const ERROR_PATTERNS = [
-    'Unknown service: __fast_path_data_stream__',
+    'Unknown service: __fast_path_data_chunk__',
     'Tell handler error',
 ];
 

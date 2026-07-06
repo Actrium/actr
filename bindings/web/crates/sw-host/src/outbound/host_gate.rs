@@ -173,7 +173,7 @@ impl HostGate {
 
         // Temporarily send through RpcEnvelope. This can be optimized further later.
         let envelope = RpcEnvelope {
-            route_key: "__fast_path_data_stream__".to_string(),
+            route_key: "__fast_path_data_chunk__".to_string(),
             payload: Some(data),
             error: None,
             direction: Some(Direction::Request as i32),
