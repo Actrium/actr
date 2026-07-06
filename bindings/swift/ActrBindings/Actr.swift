@@ -1122,7 +1122,7 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
     /**
      * Register a DataChunk callback for a stream ID.
      */
-    func registerStream(streamId: String, callback: DataChunkCallback) async throws 
+    func registerStream(streamId: String, callback: DataChunkCallback) async throws
     
     /**
      * Remove a media track from the WebRTC connection with the target.
@@ -1137,7 +1137,7 @@ public protocol ContextBridgeProtocol: AnyObject, Sendable {
      * - `chunk`: DataChunk containing stream_id, sequence, payload, etc.
      * - `payload_type`: Stream lane selection for delivery guarantees.
      */
-    func sendDataChunk(target: ActrId, chunk: DataChunk, payloadType: PayloadType) async throws 
+    func sendDataChunk(target: ActrId, chunk: DataChunk, payloadType: PayloadType) async throws
     
     /**
      * Send a media sample via WebRTC native RTP track
@@ -4431,7 +4431,7 @@ public protocol DataChunkCallback: AnyObject, Sendable {
     /**
      * Handle an incoming DataChunk chunk.
      */
-    func onStream(chunk: DataChunk, sender: ActrId) async throws 
+    func onStream(chunk: DataChunk, sender: ActrId) async throws
     
 }
 
