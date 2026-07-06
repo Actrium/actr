@@ -538,7 +538,7 @@ impl WebSocketGate {
                                             );
                                             match ActrId::decode(&src[..]) {
                                                 Ok(sender_id) => {
-                                                    registry.dispatch(chunk, sender_id).await;
+                                                    registry.dispatch(chunk, sender_id, pt).await;
                                                 }
                                                 Err(e) => {
                                                     tracing::error!(

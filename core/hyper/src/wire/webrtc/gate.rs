@@ -332,9 +332,9 @@ impl WebRtcGate {
                                         // Decode sender ActrId
                                         match ActrId::decode(&from_bytes[..]) {
                                             Ok(sender_id) => {
-                                                // Dispatch to DataStreamRegistry (async callback invocation)
+                                                // Dispatch to DataStreamRegistry with the lane's ordering policy.
                                                 data_stream_registry
-                                                    .dispatch(chunk, sender_id)
+                                                    .dispatch(chunk, sender_id, payload_type)
                                                     .await;
                                             }
                                             Err(e) => {
