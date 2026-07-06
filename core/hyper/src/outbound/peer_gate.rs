@@ -28,12 +28,12 @@ use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 pub(crate) type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 
-/// Internal upper bound for a single DataStream send operation.
+/// Internal upper bound for a single DataChunk send operation.
 ///
-/// DataStream has no caller-provided request deadline like RPC envelopes, so
+/// DataChunk has no caller-provided request deadline like RPC envelopes, so
 /// this prevents a stalled WebRTC DataChannel send from holding the mobile
 /// caller forever during unrecoverable network loss.
-const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+const DATA_CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 const RECOVERY_REASON_PEER_DISCONNECTED: &str = "peer state Disconnected";
 const RECOVERY_REASON_PEER_FAILED: &str = "peer state Failed";
 const RECOVERY_REASON_ICE_NETWORK_STARTED: &str = "ice/network recovery started";
@@ -70,7 +70,7 @@ pub struct PeerGate {
     /// late events from older sessions from unblocking a newer recovery.
     recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
 
-    /// Recently sent `send_data_stream` chunks used to surface delivery
+    /// Recently sent `send_data_chunk` chunks used to surface delivery
     /// uncertainty when WebRTC/DataChannel state changes mid-stream.
     active_data_streams: Arc<RwLock<DataStreamActivityTracker>>,
 }
@@ -1217,17 +1217,17 @@ impl PeerGate {
         Ok(())
     }
 
-    /// Send DataStream (Fast Path)
+    /// Send DataChunk (Fast Path)
     ///
     /// # Parameters
     /// - `target`: Target Actor ID
     /// - `payload_type`: PayloadType (StreamReliable or StreamLatencyFirst)
-    /// - `stream_id`: DataStream identifier already known before serialization
-    /// - `data`: Serialized DataStream bytes
+    /// - `stream_id`: DataChunk identifier already known before serialization
+    /// - `data`: Serialized DataChunk bytes
     ///
     /// # Implementation Note
     /// Sends via PeerTransport using WebRTC DataChannel or WebSocket
-    pub async fn send_data_stream(
+    pub async fn send_data_chunk(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
@@ -1235,7 +1235,7 @@ impl PeerGate {
         data: Bytes,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "PeerGate::send_data_stream to {:?}, stream_id={}, payload_type={:?}, size={} bytes",
+            "PeerGate::send_data_chunk to {:?}, stream_id={}, payload_type={:?}, size={} bytes",
             target,
             stream_id,
             payload_type,
@@ -1272,7 +1272,7 @@ impl PeerGate {
         };
 
         let result = match tokio::time::timeout(
-            DATA_STREAM_SEND_TIMEOUT,
+            DATA_CHUNK_SEND_TIMEOUT,
             self.transport_manager.send(&dest, payload_type, &data),
         )
         .await
@@ -1280,8 +1280,8 @@ impl PeerGate {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(ActrError::Unavailable(e.to_string())),
             Err(_) => Err(ActrError::Unavailable(format!(
-                "DataStream send timeout: {}ms",
-                DATA_STREAM_SEND_TIMEOUT.as_millis()
+                "DataChunk send timeout: {}ms",
+                DATA_CHUNK_SEND_TIMEOUT.as_millis()
             ))),
         };
 

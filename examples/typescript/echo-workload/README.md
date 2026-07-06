@@ -12,8 +12,8 @@ is required.
 
 - Exports `acme:EchoService:0.1.0`.
 - Handles `echo.EchoService.Echo`.
-- Exercises DataStream authoring by handling `PrepareStream` / `ReleaseStream`
-  and using `registerStream`, `sendDataStream`, and `unregisterStream`.
+- Exercises DataChunk authoring by handling `PrepareStream` / `ReleaseStream`
+  and using `registerStream`, `sendDataChunk`, and `unregisterStream`.
 - Keeps generated dispatch glue in `src/generated/echo_workload.ts`.
 - Keeps user business logic in `src/actr_service.ts`, where the handler
   implements `EchoServiceHandler` and delegates dispatch to

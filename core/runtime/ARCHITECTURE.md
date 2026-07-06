@@ -38,7 +38,7 @@ actr-hyper/
 │   ├── actr_node.rs    # ActrNode runtime infrastructure
 │   └── actr_node.rs    # ActrNode<W> (complete node)
 ├── inbound/            # Inbound Message Processing
-│   ├── data_stream_registry.rs     # DataStream fast path registry
+│   ├── data_stream_registry.rs     # DataChunk fast path registry
 │   └── media_frame_registry.rs     # MediaFrame fast path registry
 ├── outbound/           # Outbound Message Processing
 │   ├── host_gate.rs    # In-process outbound gate (Shell ↔ Workload)
@@ -252,9 +252,9 @@ Design Advantage: enum dispatch provides static dispatch with zero virtual funct
 - Workload→Shell: Call `complete_response()` based on `request_id` to wake requester
 
 **DataStreamRegistry**：
-- Responsibility: Manage DataStream callback registry (stream_id → callback)
+- Responsibility: Manage DataChunk callback registry (stream_id → callback)
 - Concurrency Safety: Use DashMap to support multi-threaded concurrent access
-- Callback Signature: `FnMut(DataStream, ActrId) -> BoxFuture<ActorResult<()>>`
+- Callback Signature: `FnMut(DataChunk, ActrId) -> BoxFuture<ActorResult<()>>`
 
 **MediaFrameRegistry**：
 - Responsibility: Manage MediaTrack callback registry (track_id → callback)
@@ -377,7 +377,7 @@ Design Constraints:
 - Routing Logic:
   - Dispatch messages based on PayloadType
   - RPC messages check pending_requests first: if hit complete continuation, otherwise enqueue(Mailbox) by priority
-  - DataStream messages dispatched directly to DataStreamRegistry
+  - DataChunk messages dispatched directly to DataStreamRegistry
 
 **WebRtcConnection**:
 - Responsibility: Encapsulate single RTCPeerConnection, manage DataChannel and MediaTrack
@@ -406,12 +406,12 @@ Design Constraints:
 5. If Request: enqueue(Mailbox)
 ```
 
-### 7.2 DataStream Fast Path Flow
+### 7.2 DataChunk Fast Path Flow
 
 **Sender**:
 ```rust
-1. ctx.send_data_stream(target, stream_id, chunk)
-2. Gate::send_data_stream(target, StreamReliable, data)
+1. ctx.send_data_chunk(target, stream_id, chunk)
+2. Gate::send_data_chunk(target, StreamReliable, data)
 3. TransportManager → DataLane(StreamReliable) → WebRTC
 ```
 
@@ -419,7 +419,7 @@ Design Constraints:
 ```rust
 1. Coordinator.receive_message() → (from, data, StreamReliable)
 2. WebRtcGate identifies PayloadType::StreamReliable
-3. Deserialize Bytes → DataStream
+3. Deserialize Bytes → DataChunk
 4. DataStreamRegistry.dispatch(chunk, sender_id)
 5. Invoke registered callback function
 ```

@@ -2,7 +2,7 @@ use actr_protocol::ActrId;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-pub(crate) const DATA_STREAM_ACTIVITY_TTL: Duration = Duration::from_secs(30);
+pub(crate) const DATA_CHUNK_ACTIVITY_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DataStreamDeliveryUncertainNotice {
@@ -32,7 +32,7 @@ pub(crate) struct DataStreamActivityTracker {
 
 impl Default for DataStreamActivityTracker {
     fn default() -> Self {
-        Self::new(DATA_STREAM_ACTIVITY_TTL)
+        Self::new(DATA_CHUNK_ACTIVITY_TTL)
     }
 }
 

@@ -10,7 +10,7 @@
 
 use crate::Dest;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrError, ActrId, ActrType, DataStream, PayloadType};
+use actr_protocol::{ActrError, ActrId, ActrType, DataChunk, PayloadType};
 
 /// ABI error codes.
 pub mod code {
@@ -46,9 +46,9 @@ pub mod op {
     pub const HOST_DISCOVER: u32 = 4;
     pub const HOST_REGISTER_STREAM: u32 = 5;
     pub const HOST_UNREGISTER_STREAM: u32 = 6;
-    pub const HOST_SEND_DATA_STREAM: u32 = 7;
+    pub const HOST_SEND_DATA_CHUNK: u32 = 7;
     pub const GUEST_HANDLE: u32 = 101;
-    pub const GUEST_DATA_STREAM: u32 = 102;
+    pub const GUEST_DATA_CHUNK: u32 = 102;
     pub const GUEST_LIFECYCLE: u32 = 103;
     pub const GUEST_HOOK: u32 = 104;
 }
@@ -154,11 +154,11 @@ pub struct GuestHandleV1 {
     pub rpc_envelope: Vec<u8>,
 }
 
-/// Runtime host->guest DataStream payload.
+/// Runtime host->guest DataChunk payload.
 #[derive(Clone, PartialEq, prost::Message)]
-pub struct GuestDataStreamV1 {
+pub struct GuestDataChunkV1 {
     #[prost(message, required, tag = "1")]
-    pub chunk: DataStream,
+    pub chunk: DataChunk,
     #[prost(message, required, tag = "2")]
     pub sender: ActrId,
 }
@@ -318,27 +318,27 @@ pub struct HostDiscoverV1 {
     pub target_type: ActrType,
 }
 
-/// Runtime guest->host DataStream registration payload.
+/// Runtime guest->host DataChunk registration payload.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct HostRegisterStreamV1 {
     #[prost(string, tag = "1")]
     pub stream_id: String,
 }
 
-/// Runtime guest->host DataStream unregistration payload.
+/// Runtime guest->host DataChunk unregistration payload.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct HostUnregisterStreamV1 {
     #[prost(string, tag = "1")]
     pub stream_id: String,
 }
 
-/// Runtime guest->host DataStream send payload.
+/// Runtime guest->host DataChunk send payload.
 #[derive(Clone, PartialEq, prost::Message)]
-pub struct HostSendDataStreamV1 {
+pub struct HostSendDataChunkV1 {
     #[prost(message, required, tag = "1")]
     pub dest: DestV1,
     #[prost(message, required, tag = "2")]
-    pub chunk: DataStream,
+    pub chunk: DataChunk,
     #[prost(enumeration = "PayloadType", tag = "3")]
     pub payload_type: i32,
 }
@@ -395,9 +395,9 @@ impl AbiPayload for HostUnregisterStreamV1 {
     const OP: u32 = op::HOST_UNREGISTER_STREAM;
 }
 
-impl AbiPayload for HostSendDataStreamV1 {
+impl AbiPayload for HostSendDataChunkV1 {
     const ABI_VERSION: u32 = version::V1;
-    const OP: u32 = op::HOST_SEND_DATA_STREAM;
+    const OP: u32 = op::HOST_SEND_DATA_CHUNK;
 }
 
 impl AbiPayload for GuestHandleV1 {
@@ -405,9 +405,9 @@ impl AbiPayload for GuestHandleV1 {
     const OP: u32 = op::GUEST_HANDLE;
 }
 
-impl AbiPayload for GuestDataStreamV1 {
+impl AbiPayload for GuestDataChunkV1 {
     const ABI_VERSION: u32 = version::V1;
-    const OP: u32 = op::GUEST_DATA_STREAM;
+    const OP: u32 = op::GUEST_DATA_CHUNK;
 }
 
 impl AbiPayload for GuestLifecycleV1 {

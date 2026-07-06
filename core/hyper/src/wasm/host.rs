@@ -36,7 +36,7 @@ use actr_framework::guest::dynclib_abi::InitPayloadV1;
 use actr_framework::{BackpressureEvent, CredentialEvent, PeerEvent, WebRtcPeerStatus};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
-    ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataStream, MetadataEntry, PayloadType,
+    ActrError, ActrId, ActrType, ConnectionNotReadyInfo, DataChunk, MetadataEntry, PayloadType,
     Realm, RpcEnvelope,
 };
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
@@ -49,7 +49,7 @@ use super::component_bindings::actr::workload::types::Host as TypesHost;
 use super::component_bindings::actr::workload::types::{
     self as wit_types, ActrError as WitActrError, ActrId as WitActrId, ActrType as WitActrType,
     BackpressureEvent as WitBackpressureEvent, CredentialEvent as WitCredentialEvent,
-    DataStream as WitDataStream, Dest as WitDest, PayloadType as WitPayloadType,
+    DataChunk as WitDataChunk, Dest as WitDest, PayloadType as WitPayloadType,
     PeerEvent as WitPeerEvent, Realm as WitRealm, RpcEnvelope as WitRpcEnvelope,
     WebrtcPeerStatus as WitWebrtcPeerStatus,
 };
@@ -60,7 +60,7 @@ use crate::workload::{
 
 use actr_framework::guest::dynclib_abi as guest_abi;
 use actr_framework::guest::dynclib_abi::{
-    HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1, HostSendDataStreamV1,
+    HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1, HostSendDataChunkV1,
     HostTellV1, HostUnregisterStreamV1,
 };
 
@@ -264,15 +264,15 @@ impl HostImports for HostState {
         }
     }
 
-    async fn send_data_stream(
+    async fn send_data_chunk(
         &mut self,
         target: WitDest,
-        chunk: WitDataStream,
+        chunk: WitDataChunk,
         payload_type: WitPayloadType,
     ) -> wasmtime::Result<Result<(), WitActrError>> {
-        let op = HostOperation::SendDataStream(HostSendDataStreamV1 {
+        let op = HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: wit_dest_to_v1(&target),
-            chunk: wit_data_stream_to_proto(chunk),
+            chunk: wit_data_chunk_to_proto(chunk),
             payload_type: wit_payload_type_to_proto(payload_type) as i32,
         });
         match forward_host_operation(self, op).await? {
@@ -474,8 +474,8 @@ fn rpc_envelope_to_wit(envelope: &RpcEnvelope) -> WitRpcEnvelope {
     }
 }
 
-fn proto_data_stream_to_wit(chunk: DataStream) -> WitDataStream {
-    WitDataStream {
+fn proto_data_chunk_to_wit(chunk: DataChunk) -> WitDataChunk {
+    WitDataChunk {
         stream_id: chunk.stream_id,
         sequence: chunk.sequence,
         payload: chunk.payload.to_vec(),
@@ -531,8 +531,8 @@ fn proto_backpressure_event_to_wit(event: BackpressureEvent) -> WitBackpressureE
     }
 }
 
-fn wit_data_stream_to_proto(chunk: WitDataStream) -> DataStream {
-    DataStream {
+fn wit_data_chunk_to_proto(chunk: WitDataChunk) -> DataChunk {
+    DataChunk {
         stream_id: chunk.stream_id,
         sequence: chunk.sequence,
         payload: chunk.payload.into(),
@@ -909,28 +909,28 @@ impl WasmWorkload {
         }
     }
 
-    pub(crate) async fn handle_data_stream(
+    pub(crate) async fn handle_data_chunk(
         &mut self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender: ActrId,
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
         self.install_invocation(ctx, host_abi);
 
-        let wit_chunk = proto_data_stream_to_wit(chunk);
+        let wit_chunk = proto_data_chunk_to_wit(chunk);
         let wit_sender = proto_actr_id_to_wit(&sender);
         let result = self
             .bindings
             .actr_workload_workload()
-            .call_on_data_stream(&mut self.store, &wit_chunk, &wit_sender)
+            .call_on_data_chunk(&mut self.store, &wit_chunk, &wit_sender)
             .await;
         self.clear_invocation();
         let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_data_stream trap: {e}")))?;
+            result.map_err(|e| WasmError::ExecutionFailed(format!("on_data_chunk trap: {e}")))?;
         result.map_err(|e| {
             WasmError::ExecutionFailed(format!(
-                "on_data_stream error: {:?}",
+                "on_data_chunk error: {:?}",
                 wit_actr_error_to_proto(e)
             ))
         })?;

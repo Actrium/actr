@@ -336,8 +336,8 @@ pub async fn run_on_mailbox_backpressure<W: Workload>(
     workload.on_mailbox_backpressure(&ctx, &event).await;
 }
 
-pub async fn run_on_data_stream(
-    chunk: wit_types::DataStream,
+pub async fn run_on_data_chunk(
+    chunk: wit_types::DataChunk,
     sender: wit_types::ActrId,
 ) -> Result<(), wit_types::ActrError> {
     super::context::dispatch_registered_stream(chunk, sender)

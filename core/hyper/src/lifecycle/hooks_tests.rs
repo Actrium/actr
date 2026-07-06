@@ -419,7 +419,7 @@ async fn chained_observation_hooks_do_not_let_first_observer_block_second() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn data_stream_uncertain_hook_routes_to_on_error() {
+async fn data_chunk_uncertain_hook_routes_to_on_error() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let observer: WorkloadHookObserverRef = Arc::new(ErrorRecorder { tx });
     let ctx = test_runtime_context();

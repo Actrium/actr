@@ -118,18 +118,18 @@ Context provided to workloads during lifecycle callbacks. Provides access to RPC
   - **Returns:** The discovered actor ID
   - **Throws:** `ActrError` if discovery fails
 
-- `func registerStream(streamId: String, callback: DataStreamCallback) async throws`
-  - Registers a `DataStreamCallback` for the specified stream ID
+- `func registerStream(streamId: String, callback: DataChunkCallback) async throws`
+  - Registers a `DataChunkCallback` for the specified stream ID
   - **Parameters:**
     - `streamId`: Stream identifier to associate with the callback
     - `callback`: Callback interface invoked on incoming stream chunks
   - **Throws:** `ActrError` if registration fails
 
-- `func sendDataStream(target: ActrId, chunk: DataStream) async throws`
-  - Sends a data stream to a remote actor
+- `func sendDataChunk(target: ActrId, chunk: DataChunk) async throws`
+  - Sends a data chunk to a remote actor
   - **Parameters:**
     - `target`: Target actor ID
-    - `chunk`: Data stream to send
+    - `chunk`: Data chunk to send
   - **Throws:** `ActrError` if sending fails
 
 - `func tellRaw(target: ActrId, routeKey: String, payloadType: PayloadType, payload: Data) async throws`
@@ -142,7 +142,7 @@ Context provided to workloads during lifecycle callbacks. Provides access to RPC
   - **Throws:** `ActrError` if sending fails
 
 - `func unregisterStream(streamId: String) async throws`
-  - Unregisters a `DataStreamCallback` for the specified stream ID
+  - Unregisters a `DataChunkCallback` for the specified stream ID
   - **Parameters:**
     - `streamId`: Stream identifier to unregister
   - **Throws:** `ActrError` if unregistration fails
@@ -207,12 +207,12 @@ public enum PayloadType: Int32, Sendable {
 }
 ```
 
-#### `DataStream`
+#### `DataChunk`
 
-Data stream structure for fast-path streaming.
+Data chunk structure for fast-path streaming.
 
 ```swift
-public struct DataStream: Equatable, Hashable {
+public struct DataChunk: Equatable, Hashable {
     // Contains stream_id, sequence, payload, metadata, timestamp
 }
 ```
@@ -380,8 +380,8 @@ Swift-facing names below.
 - `ActrType`
 - `PayloadType`
 - `Realm`
-- `DataStream`
-- `DataStreamCallback`
+- `DataChunk`
+- `DataChunkCallback`
 - `MetadataEntry`
 - `Context`
 - `RpcEnvelope`

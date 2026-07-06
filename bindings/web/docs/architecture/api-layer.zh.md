@@ -95,7 +95,7 @@ pub struct PeerGate {
 - `register_actor()`: 注册 ActrId → Dest 映射
 - `send_request()`: 发送请求并等待响应
 - `send_message()`: 发送单向消息
-- `send_data_stream()`: 发送 DataStream（Fast Path）
+- `send_data_chunk()`: 发送 DataChunk（Fast Path）
 
 ## 4. Context 层
 
@@ -137,7 +137,7 @@ pub struct RuntimeContext {
 - `tell<R>(&self, target: &Dest, message: R)`: 单向消息发送
 
 **Fast Path（当前路径）**：
-- `send_data_stream()` - ✅ 已实现，出站经 PeerGate / WebRTC MessagePort
+- `send_data_chunk()` - ✅ 已实现，出站经 PeerGate / WebRTC MessagePort
 - `handle_dom_fast_path()` - ✅ 已实现，DOM `fast_path_data` 入站后进入 SW runtime
 - stream handler 注册/注销 - ✅ SW runtime 内有 handler map 和 register/unregister 能力
 - MediaTrack 高级 API - ⚠️ 仍需按当前媒体路径继续补齐和验证
@@ -147,7 +147,7 @@ pub struct RuntimeContext {
 | 特性 | actr | actr-web | 说明 |
 |------|------|----------|------|
 | **RPC call/tell** | ✅ | ✅ | 完全等价 |
-| **Fast Path** | ✅ | ⚠️ DataStream baseline 已进 SW handlers，MediaTrack 需继续补齐 | 不再是 DOM 本地 callback |
+| **Fast Path** | ✅ | ⚠️ DataChunk baseline 已进 SW handlers，MediaTrack 需继续补齐 | 不再是 DOM 本地 callback |
 | **Dest 支持** | Shell/Local/Actor | Actor only | Web 版本只支持 Dest::Actor |
 | **ID 生成** | uuid | js_sys::Math::random() | Web 环境简化 |
 
@@ -297,7 +297,7 @@ SW 侧
 ## 8. 后续工作
 
 - [x] 实现 HostGate 的 MessageHandler 自动注册（通过 System.init_message_handler）
-- [x] 实现 DataStream Fast Path baseline（`send_data_stream`、`handle_dom_fast_path`、SW stream handlers）
+- [x] 实现 DataChunk Fast Path baseline（`send_data_chunk`、`handle_dom_fast_path`、SW stream handlers）
 - [ ] 补齐 MediaTrack 高级 API 和更多端到端覆盖
 - [ ] 添加 ActrRef 的事件订阅功能（events()）
 - [ ] 完善错误处理和超时机制

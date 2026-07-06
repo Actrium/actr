@@ -255,7 +255,7 @@ impl HostTransport {
                 let channel_id = identifier
                     .as_ref()
                     .ok_or_else(|| {
-                        NetworkError::InvalidArgument("DataStream requires channel_id".into())
+                        NetworkError::InvalidArgument("DataChunk requires channel_id".into())
                     })?
                     .clone();
 

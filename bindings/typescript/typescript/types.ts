@@ -4,7 +4,7 @@ import {
   ActrType,
   Realm,
   PayloadType,
-  DataStream,
+  DataChunk,
   StreamSignal,
   MetadataEntry,
 } from '../index';
@@ -14,7 +14,7 @@ export {
   ActrType,
   Realm,
   PayloadType,
-  DataStream,
+  DataChunk,
   StreamSignal,
   MetadataEntry,
 };

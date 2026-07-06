@@ -8,7 +8,7 @@ use crate::inbound::DataStreamRegistry;
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{self, ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
+use actr_protocol::{self, ActrId, DataChunk, Direction, PayloadType, RpcEnvelope};
 use actr_protocol::{ActorResult, ActrError};
 use actr_runtime_mailbox::{Mailbox, MessagePriority};
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ enum DirectionError {
 /// - Send messages using WebRtcCoordinator
 /// - Serialize/deserialize RpcEnvelope (Protobuf)
 /// - Track pending requests and match responses (by r  equest_id)
-/// - Route messages by PayloadType (RPC → Mailbox, DataStream → Registry)
+/// - Route messages by PayloadType (RPC → Mailbox, DataChunk → Registry)
 ///
 /// # Design Principles
 /// - Response reuses Request's request_id (standard RPC semantics)
@@ -62,7 +62,7 @@ pub(crate) struct WebRtcGate {
     /// Can send success (Ok(Bytes)) or error (Err(ProtocolError))
     pending_requests: PendingRequestsMap,
 
-    /// DataStream registry for fast-path message routing
+    /// DataChunk registry for fast-path message routing
     data_stream_registry: Arc<DataStreamRegistry>,
 }
 
@@ -72,7 +72,7 @@ impl WebRtcGate {
     /// # Arguments
     /// - `coordinator`: WebRtcCoordinator instance
     /// - `pending_requests`: Shared pending requests (should be same as PeerGate)
-    /// - `data_stream_registry`: DataStream registry for fast-path routing
+    /// - `data_stream_registry`: DataChunk registry for fast-path routing
     pub fn new(
         coordinator: Arc<WebRtcCoordinator>,
         pending_requests: PendingRequestsMap,
@@ -259,7 +259,7 @@ impl WebRtcGate {
     /// # Message Routing Logic
     /// - Route based on PayloadType:
     ///   - RpcReliable/RpcSignal: Deserialize RpcEnvelope, check pending_requests, enqueue to Mailbox
-    ///   - StreamReliable/StreamLatencyFirst: Deserialize DataStream, dispatch to DataStreamRegistry
+    ///   - StreamReliable/StreamLatencyFirst: Deserialize DataChunk, dispatch to DataStreamRegistry
     pub async fn start_receive_loop(&self, mailbox: Arc<dyn Mailbox>) -> ActorResult<()> {
         let coordinator = self.coordinator.clone();
         let pending_requests = self.pending_requests.clone();
@@ -319,11 +319,11 @@ impl WebRtcGate {
                                 }
                             }
                             PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                                // DataStream path: deserialize and dispatch to registry
-                                match DataStream::decode(&data[..]) {
+                                // DataChunk path: deserialize and dispatch to registry
+                                match DataChunk::decode(&data[..]) {
                                     Ok(chunk) => {
                                         tracing::debug!(
-                                            "📦 Received DataStream: stream_id={}, seq={}, {} bytes",
+                                            "📦 Received DataChunk: stream_id={}, seq={}, {} bytes",
                                             chunk.stream_id,
                                             chunk.sequence,
                                             chunk.payload.len()
@@ -347,7 +347,7 @@ impl WebRtcGate {
                                     }
                                     Err(e) => {
                                         tracing::error!(
-                                            "❌ Failed to deserialize DataStream: {:?}",
+                                            "❌ Failed to deserialize DataChunk: {:?}",
                                             e
                                         );
                                     }

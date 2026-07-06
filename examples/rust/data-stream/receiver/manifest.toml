@@ -2,7 +2,7 @@
 name = "FileTransferService"
 manufacturer = "acme"
 version = "1.0.0"
-description = "File transfer receiver using DataStream API"
+description = "File transfer receiver using DataChunk API"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example"]

@@ -1813,13 +1813,13 @@ async fn unrecoverable_rpc_send_failure_clears_pending_without_waiting_for_deadl
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn peer_data_stream_rejects_non_stream_payload_type_before_transport() {
+async fn peer_data_chunk_rejects_non_stream_payload_type_before_transport() {
     let (gate, lane, _stats, _transport) =
         gate_with_lane_and_transport(ScriptedLane::new(vec![Ok(())]), Duration::ZERO);
     let target = make_actor_id(2);
 
     let err = gate
-        .send_data_stream(
+        .send_data_chunk(
             &target,
             PayloadType::RpcReliable,
             "not-a-stream-lane",
@@ -1831,12 +1831,12 @@ async fn peer_data_stream_rejects_non_stream_payload_type_before_transport() {
     assert!(matches!(err, actr_protocol::ActrError::InvalidArgument(_)));
     assert!(
         lane.sent_payloads().is_empty(),
-        "invalid DataStream payload must not be sent through transport"
+        "invalid DataChunk payload must not be sent through transport"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unrecoverable_data_stream_send_failure_is_explicit_and_bounded() {
+async fn unrecoverable_data_chunk_send_failure_is_explicit_and_bounded() {
     let (gate, lane, _stats, _transport) = gate_with_lane_and_transport(
         ScriptedLane::new(vec![Err(NetworkError::ChannelClosed(
             "stream channel permanently closed".into(),
@@ -1847,7 +1847,7 @@ async fn unrecoverable_data_stream_send_failure_is_explicit_and_bounded() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(1),
-        gate.send_data_stream(
+        gate.send_data_chunk(
             &target,
             PayloadType::StreamReliable,
             "unrecoverable-stream",
@@ -1855,17 +1855,17 @@ async fn unrecoverable_data_stream_send_failure_is_explicit_and_bounded() {
         ),
     )
     .await
-    .expect("unrecoverable DataStream send should not hang");
+    .expect("unrecoverable DataChunk send should not hang");
 
-    let err = result.expect_err("unrecoverable DataStream send should fail explicitly");
+    let err = result.expect_err("unrecoverable DataChunk send should fail explicitly");
     assert!(
         err.to_string().contains("permanently closed")
             || err.to_string().contains("Channel closed"),
-        "unexpected DataStream failure error: {err}"
+        "unexpected DataChunk failure error: {err}"
     );
     assert_eq!(
         lane.sent_payloads().len(),
         1,
-        "DataStream should make one bounded send attempt"
+        "DataChunk should make one bounded send attempt"
     );
 }

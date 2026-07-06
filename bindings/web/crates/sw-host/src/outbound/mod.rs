@@ -72,16 +72,16 @@ impl Gate {
         }
     }
 
-    /// Send a DataStream through the Fast Path.
-    pub async fn send_data_stream(
+    /// Send a DataChunk through the Fast Path.
+    pub async fn send_data_chunk(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
         data: Bytes,
     ) -> ActorResult<()> {
         match self {
-            Gate::Host(gate) => gate.send_data_stream(target, payload_type, data).await,
-            Gate::Peer(gate) => gate.send_data_stream(target, payload_type, data).await,
+            Gate::Host(gate) => gate.send_data_chunk(target, payload_type, data).await,
+            Gate::Peer(gate) => gate.send_data_chunk(target, payload_type, data).await,
         }
     }
 

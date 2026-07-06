@@ -16,7 +16,7 @@ use actr_hyper::test_support::{
 use actr_hyper::transport::{ConnectionEvent, ConnectionState};
 use actr_hyper::wire::webrtc::{HookCallback, HookEvent, WebRtcCoordinator};
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActrError, ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
+use actr_protocol::{ActrError, ActrId, DataChunk, Direction, PayloadType, RpcEnvelope};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -947,7 +947,7 @@ async fn mobile_large_message_baseline_after_recovery(case: RoleCase) {
     }
 }
 
-async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case: RoleCase) {
+async fn mobile_data_chunk_channel_close_emits_delivery_uncertain_hook(case: RoleCase) {
     for direction in case.directions() {
         let (harness, _bg_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
@@ -965,8 +965,8 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case: Ro
             .coordinator
             .set_hook_callback(hook);
 
-        let stream = DataStream {
-            stream_id: format!("{}-{}-large-data-stream", case.name, direction.name),
+        let stream = DataChunk {
+            stream_id: format!("{}-{}-large-data-chunk", case.name, direction.name),
             sequence: 7,
             payload: Bytes::from(vec![0x5a; LARGE_PAYLOAD_SIZE]),
             metadata: Vec::new(),
@@ -977,7 +977,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case: Ro
         harness
             .peer(direction.from_serial)
             .gate
-            .send_data_stream(
+            .send_data_chunk(
                 &target_id,
                 PayloadType::StreamReliable,
                 &stream.stream_id,
@@ -1060,7 +1060,7 @@ async fn mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case: Ro
     }
 }
 
-async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case: RoleCase) {
+async fn inflight_data_chunk_long_offline_is_bounded_or_delivery_uncertain(case: RoleCase) {
     for direction in case.directions() {
         let (harness, _bg_tasks) =
             setup_mobile_to_server_with_serials(case.mobile_serial, case.server_serial).await;
@@ -1078,7 +1078,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
             .coordinator
             .set_hook_callback(hook);
 
-        let stream = DataStream {
+        let stream = DataChunk {
             stream_id: format!(
                 "{}-{}-inflight-long-offline-stream",
                 case.name, direction.name
@@ -1096,7 +1096,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
             let target_id = target_id.clone();
             let stream_id = stream.stream_id.clone();
             tokio::spawn(async move {
-                gate.send_data_stream(&target_id, PayloadType::StreamReliable, &stream_id, payload)
+                gate.send_data_chunk(&target_id, PayloadType::StreamReliable, &stream_id, payload)
                     .await
             })
         };
@@ -1117,14 +1117,14 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
 
         let send_result = tokio::time::timeout(Duration::from_secs(20), send_task)
             .await
-            .expect("in-flight DataStream send should not hang after long offline")
-            .expect("in-flight DataStream task should not panic");
+            .expect("in-flight DataChunk send should not hang after long offline")
+            .expect("in-flight DataChunk task should not panic");
 
         if let Err(err) = send_result {
             let msg = err.to_string();
             assert!(
                 is_expected_bounded_transport_failure(&msg),
-                "unexpected in-flight DataStream failure: {msg}"
+                "unexpected in-flight DataChunk failure: {msg}"
             );
         } else {
             let event = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1137,9 +1137,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
                 }
             })
             .await
-            .expect(
-                "successful in-flight DataStream during offline must emit delivery uncertainty",
-            );
+            .expect("successful in-flight DataChunk during offline must emit delivery uncertainty");
 
             match event {
                 HookEvent::DataStreamDeliveryUncertain { stream_id, .. } => {
@@ -1167,7 +1165,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
 
         let (retry_payload, retry_hash) = generate_test_data(LARGE_PAYLOAD_SIZE);
         let retry_id = format!(
-            "{}_{}_after_data_stream_long_offline",
+            "{}_{}_after_data_chunk_long_offline",
             case.name, direction.name
         );
         expect_large_request_eventually_ok_between(
@@ -1184,7 +1182,7 @@ async fn inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
+async fn mobile_event_storm_during_call_and_data_chunk_does_not_hang() {
     init_tracing();
 
     for case in ROLE_CASES {
@@ -1213,7 +1211,7 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
             5_000,
         );
 
-        let stream = DataStream {
+        let stream = DataChunk {
             stream_id: format!("{}-mobile-event-storm-concurrent-stream", case.name),
             sequence: 19,
             payload: Bytes::from(vec![0x42; LARGE_PAYLOAD_SIZE]),
@@ -1225,7 +1223,7 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
             let gate = harness.peer(case.mobile_serial).gate.clone();
             let stream_id = stream.stream_id.clone();
             tokio::spawn(async move {
-                gate.send_data_stream(&server_id, PayloadType::StreamReliable, &stream_id, payload)
+                gate.send_data_chunk(&server_id, PayloadType::StreamReliable, &stream_id, payload)
                     .await
             })
         };
@@ -1236,16 +1234,16 @@ async fn mobile_event_storm_during_call_and_data_stream_does_not_hang() {
             .await
             .unwrap_or_else(|_| {
                 panic!(
-                    "{} DataStream send during mobile event storm should not hang",
+                    "{} DataChunk send during mobile event storm should not hang",
                     case.name
                 )
             })
-            .expect("DataStream send task should not panic");
+            .expect("DataChunk send task should not panic");
         if let Err(err) = stream_result {
             let msg = err.to_string();
             assert!(
                 is_expected_bounded_transport_failure(&msg),
-                "{} unexpected DataStream error during mobile event storm: {msg}",
+                "{} unexpected DataChunk error during mobile event storm: {msg}",
                 case.name
             );
         }
@@ -1289,7 +1287,7 @@ async fn test_mobile_inflight_large_message_interruptions() {
         inflight_long_offline_fails_bounded_then_retries(case).await;
         inflight_short_background_survives_foreground_restore(case).await;
         inflight_long_background_is_bounded_and_retries(case).await;
-        mobile_data_stream_channel_close_emits_delivery_uncertain_hook(case).await;
-        inflight_data_stream_long_offline_is_bounded_or_delivery_uncertain(case).await;
+        mobile_data_chunk_channel_close_emits_delivery_uncertain_hook(case).await;
+        inflight_data_chunk_long_offline_is_bounded_or_delivery_uncertain(case).await;
     }
 }

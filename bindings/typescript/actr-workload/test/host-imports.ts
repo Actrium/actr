@@ -10,7 +10,7 @@ type ActrId = {
 
 type Dest = { tag: 'shell' } | { tag: 'local' } | { tag: 'actor'; val: ActrId };
 
-type DataStream = {
+type DataChunk = {
   streamId: string;
   sequence: bigint;
   payload: Uint8Array;
@@ -27,22 +27,22 @@ type PayloadType = {
     | 'media-rtp';
 };
 
-export type SendDataStreamCall = {
+export type SendDataChunkCall = {
   target: Dest;
-  chunk: DataStream;
+  chunk: DataChunk;
   payloadType: PayloadType;
 };
 
 export const hostCalls = {
   registerStream: [] as string[],
   unregisterStream: [] as string[],
-  sendDataStream: [] as SendDataStreamCall[],
+  sendDataChunk: [] as SendDataChunkCall[],
 };
 
 export function resetHostCalls(): void {
   hostCalls.registerStream.length = 0;
   hostCalls.unregisterStream.length = 0;
-  hostCalls.sendDataStream.length = 0;
+  hostCalls.sendDataChunk.length = 0;
 }
 
 export function registerStream(streamId: string): void {
@@ -53,10 +53,10 @@ export function unregisterStream(streamId: string): void {
   hostCalls.unregisterStream.push(streamId);
 }
 
-export function sendDataStream(
+export function sendDataChunk(
   target: Dest,
-  chunk: DataStream,
+  chunk: DataChunk,
   payloadType: PayloadType,
 ): void {
-  hostCalls.sendDataStream.push({ target, chunk, payloadType });
+  hostCalls.sendDataChunk.push({ target, chunk, payloadType });
 }

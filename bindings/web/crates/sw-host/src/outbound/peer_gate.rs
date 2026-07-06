@@ -121,15 +121,15 @@ impl PeerGate {
         Ok(())
     }
 
-    /// Send a DataStream through the Fast Path.
-    pub async fn send_data_stream(
+    /// Send a DataChunk through the Fast Path.
+    pub async fn send_data_chunk(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
         data: Bytes,
     ) -> ActorResult<()> {
         log::debug!(
-            "PeerGate::send_data_stream to {:?}, type={:?}",
+            "PeerGate::send_data_chunk to {:?}, type={:?}",
             target,
             payload_type
         );
@@ -137,7 +137,7 @@ impl PeerGate {
         // 1. Resolve the target destination.
         let dest = self.get_dest(target)?;
 
-        // 2. Send the DataStream directly.
+        // 2. Send the DataChunk directly.
         self.transport
             .send(&dest, payload_type, &data)
             .await

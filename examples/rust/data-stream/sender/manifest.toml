@@ -2,7 +2,7 @@
 name = "GenericClient"
 manufacturer = "acme"
 version = "1.0.0"
-description = "File transfer sender using DataStream API"
+description = "File transfer sender using DataChunk API"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "example"]
