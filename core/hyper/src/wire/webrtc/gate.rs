@@ -3,7 +3,7 @@
 //! Uses WebRtcCoordinator to send/receive messages, implementing cross-process RPC communication
 
 use super::coordinator::WebRtcCoordinator;
-use crate::inbound::DataStreamRegistry;
+use crate::inbound::DataChunkRegistry;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
 use actr_framework::Bytes;
@@ -63,26 +63,26 @@ pub(crate) struct WebRtcGate {
     pending_requests: PendingRequestsMap,
 
     /// DataChunk registry for fast-path message routing
-    data_stream_registry: Arc<DataStreamRegistry>,
+    data_chunk_registry: Arc<DataChunkRegistry>,
 }
 
 impl WebRtcGate {
-    /// Create new WebRtcGate with shared pending_requests and DataStreamRegistry
+    /// Create new WebRtcGate with shared pending_requests and DataChunkRegistry
     ///
     /// # Arguments
     /// - `coordinator`: WebRtcCoordinator instance
     /// - `pending_requests`: Shared pending requests (should be same as PeerGate)
-    /// - `data_stream_registry`: DataChunk registry for fast-path routing
+    /// - `data_chunk_registry`: DataChunk registry for fast-path routing
     pub fn new(
         coordinator: Arc<WebRtcCoordinator>,
         pending_requests: PendingRequestsMap,
-        data_stream_registry: Arc<DataStreamRegistry>,
+        data_chunk_registry: Arc<DataChunkRegistry>,
     ) -> Self {
         Self {
             local_id: Arc::new(RwLock::new(None)),
             coordinator,
             pending_requests,
-            data_stream_registry,
+            data_chunk_registry,
         }
     }
 
@@ -254,16 +254,16 @@ impl WebRtcGate {
     /// According to three-loop architecture design (framework-runtime-architecture.zh.md):
     /// - WebRtcGate belongs to outer loop (Transport layer)
     /// - Mailbox belongs to inner loop (state path)
-    /// - Message flow: WebRTC → WebRtcGate → Mailbox/DataStreamRegistry → Scheduler → ActrNode
+    /// - Message flow: WebRTC → WebRtcGate → Mailbox/DataChunkRegistry → Scheduler → ActrNode
     ///
     /// # Message Routing Logic
     /// - Route based on PayloadType:
     ///   - RpcReliable/RpcSignal: Deserialize RpcEnvelope, check pending_requests, enqueue to Mailbox
-    ///   - StreamReliable/StreamLatencyFirst: Deserialize DataChunk, dispatch to DataStreamRegistry
+    ///   - StreamReliable/StreamLatencyFirst: Deserialize DataChunk, dispatch to DataChunkRegistry
     pub async fn start_receive_loop(&self, mailbox: Arc<dyn Mailbox>) -> ActorResult<()> {
         let coordinator = self.coordinator.clone();
         let pending_requests = self.pending_requests.clone();
-        let data_stream_registry = self.data_stream_registry.clone();
+        let data_chunk_registry = self.data_chunk_registry.clone();
         #[cfg(feature = "opentelemetry")]
         let local_id = self.local_id.clone();
 
@@ -332,8 +332,8 @@ impl WebRtcGate {
                                         // Decode sender ActrId
                                         match ActrId::decode(&from_bytes[..]) {
                                             Ok(sender_id) => {
-                                                // Dispatch to DataStreamRegistry (async callback invocation)
-                                                data_stream_registry
+                                                // Dispatch to DataChunkRegistry (async callback invocation)
+                                                data_chunk_registry
                                                     .dispatch(chunk, sender_id)
                                                     .await;
                                             }

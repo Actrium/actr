@@ -2,7 +2,7 @@
 //!
 //! Receives new connections from the `WebSocketServer` channel (including sender ActrId bytes and AIdCredential),
 //! performs Ed25519 credential verification for each connection (if `WsAuthContext` is configured),
-//! then routes messages by PayloadType to Mailbox or DataStreamRegistry upon successful verification.
+//! then routes messages by PayloadType to Mailbox or DataChunkRegistry upon successful verification.
 //!
 //! # Design comparison with WebRtcGate
 //!
@@ -14,7 +14,7 @@
 
 use super::connection::WebSocketConnection;
 use super::server::InboundWsConn;
-use crate::inbound::DataStreamRegistry;
+use crate::inbound::DataChunkRegistry;
 use crate::key_cache::AisKeyCache;
 use crate::lifecycle::CredentialState;
 use crate::transport::WsSink;
@@ -87,7 +87,7 @@ pub(crate) struct WebSocketGate {
     pending_requests: PendingRequestsMap,
 
     /// DataChunk registry (fast-path stream message routing)
-    data_stream_registry: Arc<DataStreamRegistry>,
+    data_chunk_registry: Arc<DataChunkRegistry>,
 
     /// Inbound connection authentication context
     auth_ctx: Option<Arc<WsAuthContext>>,
@@ -110,18 +110,18 @@ impl WebSocketGate {
     /// # Arguments
     /// - `conn_rx`: receiver end from `WebSocketServer::bind()`
     /// - `pending_requests`: pending requests map shared with PeerGate
-    /// - `data_stream_registry`: DataChunk registry
+    /// - `data_chunk_registry`: DataChunk registry
     /// - `auth_ctx`: authentication context (when configured, enforces credential verification on all inbound connections)
     pub fn new(
         conn_rx: mpsc::Receiver<InboundWsConn>,
         pending_requests: PendingRequestsMap,
-        data_stream_registry: Arc<DataStreamRegistry>,
+        data_chunk_registry: Arc<DataChunkRegistry>,
         auth_ctx: Option<WsAuthContext>,
     ) -> Self {
         Self {
             conn_rx: tokio::sync::Mutex::new(Some(conn_rx)),
             pending_requests,
-            data_stream_registry,
+            data_chunk_registry,
             auth_ctx: auth_ctx.map(Arc::new),
             hook_callback: OnceLock::new(),
             inbound_sinks: Arc::new(RwLock::new(HashMap::new())),
@@ -440,7 +440,7 @@ impl WebSocketGate {
         conn: WebSocketConnection,
         source_id: Vec<u8>,
         pending_requests: PendingRequestsMap,
-        data_stream_registry: Arc<DataStreamRegistry>,
+        data_chunk_registry: Arc<DataChunkRegistry>,
         mailbox: Arc<dyn Mailbox>,
         hook_callback: Option<HookCallback>,
         inbound_sinks: InboundSinkMap,
@@ -481,7 +481,7 @@ impl WebSocketGate {
             let conn_clone = conn.clone();
             let src = source_id.clone();
             let pending = pending_requests.clone();
-            let registry = data_stream_registry.clone();
+            let registry = data_chunk_registry.clone();
             let mb = mailbox.clone();
             let active_lanes = active_lanes.clone();
             let peer_id_for_lane = peer_id.clone();
@@ -601,7 +601,7 @@ impl WebSocketGate {
         })?;
 
         let pending_requests = self.pending_requests.clone();
-        let data_stream_registry = self.data_stream_registry.clone();
+        let data_chunk_registry = self.data_chunk_registry.clone();
         let auth_ctx = self.auth_ctx.clone();
         let hook_cb = self.hook_callback.get().cloned();
         let inbound_sinks = self.inbound_sinks.clone();
@@ -657,7 +657,7 @@ impl WebSocketGate {
                         conn,
                         source_id,
                         pending_requests.clone(),
-                        data_stream_registry.clone(),
+                        data_chunk_registry.clone(),
                         mailbox.clone(),
                         hook_cb.clone(),
                         inbound_sinks.clone(),

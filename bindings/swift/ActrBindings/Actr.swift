@@ -3538,7 +3538,7 @@ public enum ErrorCategoryBridge: Equatable, Hashable {
     case handlerError
     case signalingFailure
     case transportFailure
-    case dataStreamDeliveryUncertain
+    case dataChunkDeliveryUncertain
 
 
 
@@ -3568,7 +3568,7 @@ public struct FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer {
         
         case 4: return .transportFailure
         
-        case 5: return .dataStreamDeliveryUncertain
+        case 5: return .dataChunkDeliveryUncertain
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -3594,7 +3594,7 @@ public struct FfiConverterTypeErrorCategoryBridge: FfiConverterRustBuffer {
             writeInt(&buf, Int32(4))
         
         
-        case .dataStreamDeliveryUncertain:
+        case .dataChunkDeliveryUncertain:
             writeInt(&buf, Int32(5))
         
         }

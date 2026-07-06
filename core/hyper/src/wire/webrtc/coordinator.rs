@@ -502,19 +502,17 @@ impl WebRtcCoordinator {
         }
     }
 
-    pub(crate) async fn notify_data_stream_delivery_uncertain(
+    pub(crate) async fn notify_data_chunk_delivery_uncertain(
         &self,
         stream_id: String,
         session_id: u64,
         reason: String,
     ) {
-        self.invoke_hook(
-            crate::wire::webrtc::HookEvent::DataStreamDeliveryUncertain {
-                stream_id,
-                session_id,
-                reason,
-            },
-        )
+        self.invoke_hook(crate::wire::webrtc::HookEvent::DataChunkDeliveryUncertain {
+            stream_id,
+            session_id,
+            reason,
+        })
         .await;
     }
 

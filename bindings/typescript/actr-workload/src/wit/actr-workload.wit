@@ -109,7 +109,7 @@ interface types {
         handler-error,
         signaling-failure,
         transport-failure,
-        data-stream-delivery-uncertain,
+        data-chunk-delivery-uncertain,
     }
 
     // Coarse WebRTC send-readiness state — one-to-one with

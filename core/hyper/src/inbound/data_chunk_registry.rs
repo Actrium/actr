@@ -1,4 +1,4 @@
-//! DataStreamRegistry - Fast path data stream registry
+//! DataChunkRegistry - Fast path data stream registry
 
 use actr_protocol::{ActorResult, ActrId, DataChunk};
 use dashmap::DashMap;
@@ -12,10 +12,10 @@ use std::sync::Arc;
 /// - Only passes sender ActrId (to know where data comes from)
 /// - Doesn't pass Context (avoids confusing RPC and Stream semantics)
 /// - If reverse signaling needed, user should send via OutboundGate
-pub(crate) type DataStreamCallback =
+pub(crate) type DataChunkCallback =
     Arc<dyn Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
 
-/// DataStreamRegistry - Stream chunk callback manager
+/// DataChunkRegistry - Stream chunk callback manager
 ///
 /// # Responsibilities
 /// - Receive DataChunk from LatencyFirst Lane (stream-format data packets)
@@ -27,18 +27,18 @@ pub(crate) type DataStreamCallback =
 /// - Real-time collaborative editing (multi-user editing sync)
 /// - Game state streams (position updates, event streams)
 /// - Log streams, sensor data streams, metrics streams
-pub(crate) struct DataStreamRegistry {
+pub(crate) struct DataChunkRegistry {
     /// Concurrent mapping of stream_id → callback function
-    callbacks: DashMap<String, DataStreamCallback>,
+    callbacks: DashMap<String, DataChunkCallback>,
 }
 
-impl Default for DataStreamRegistry {
+impl Default for DataChunkRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DataStreamRegistry {
+impl DataChunkRegistry {
     pub(crate) fn new() -> Self {
         Self {
             callbacks: DashMap::new(),
@@ -50,7 +50,7 @@ impl DataStreamRegistry {
     /// # Arguments
     /// - `stream_id`: stream identifier (must be globally unique)
     /// - `callback`: data stream handler callback
-    pub(crate) fn register(&self, stream_id: String, callback: DataStreamCallback) {
+    pub(crate) fn register(&self, stream_id: String, callback: DataChunkCallback) {
         self.callbacks.insert(stream_id.clone(), callback);
         tracing::info!("📡 Registered data stream handler: {}", stream_id);
     }
@@ -93,5 +93,5 @@ impl DataStreamRegistry {
 }
 
 #[cfg(test)]
-#[path = "data_stream_registry_tests.rs"]
+#[path = "data_chunk_registry_tests.rs"]
 mod tests;

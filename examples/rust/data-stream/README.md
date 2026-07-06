@@ -30,7 +30,7 @@ Receiver (datastream.Receiver)
   └─ ReceiverWorkload
       └─ ctx.register_stream("file-transfer", callback)
            │
-           └─ DataStreamRegistry::register()
+           └─ DataChunkRegistry::register()
                 │
                 └─ InboundPacketDispatcher::dispatch()
                      └─ Callback invoked with DataChunk

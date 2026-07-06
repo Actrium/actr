@@ -5,7 +5,7 @@ import "remote/data-stream-peer-concurrent-server/data_stream_peer.proto";
 
 // Local trigger to start a duplex stream session.
 // The handler calls StartDuplexStream RPC on the remote DuplexStreamService,
-// then sends DataStream chunks, and finally calls FinishDuplexStream.
+// then sends DataChunk chunks, and finally calls FinishDuplexStream.
 message ClientStartStreamRequest {
   string client_id = 1;
   string session_id = 2;

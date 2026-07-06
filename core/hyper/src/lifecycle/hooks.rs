@@ -504,7 +504,7 @@ pub(crate) fn build_hook_callback(
                         }
                     }
                 }
-                HookEvent::DataStreamDeliveryUncertain {
+                HookEvent::DataChunkDeliveryUncertain {
                     stream_id,
                     session_id,
                     reason,
@@ -515,7 +515,7 @@ pub(crate) fn build_hook_callback(
                                 "data stream delivery uncertain after WebRTC disconnect"
                                     .to_string(),
                             ),
-                            ErrorCategory::DataStreamDeliveryUncertain,
+                            ErrorCategory::DataChunkDeliveryUncertain,
                             format!(
                                 "stream_id={stream_id}; session_id={session_id}; reason={reason}"
                             ),
@@ -629,7 +629,7 @@ fn log_hook_event(event: &HookEvent) {
         HookEvent::WebRtcDisconnected { peer_id, status } => {
             tracing::warn!(peer = %peer_id, status = ?status, "webrtc disconnected");
         }
-        HookEvent::DataStreamDeliveryUncertain {
+        HookEvent::DataChunkDeliveryUncertain {
             stream_id,
             session_id,
             reason,

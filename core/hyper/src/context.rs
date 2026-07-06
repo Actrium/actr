@@ -2,7 +2,7 @@
 //!
 //! Implements the Context trait defined in actr-framework.
 
-use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
 use crate::lifecycle::session_state::{SessionPhase, SessionState};
 use crate::outbound::Gate;
 use crate::wire::webrtc::SignalingClient;
@@ -41,7 +41,7 @@ pub struct RuntimeContext {
     request_id: String,
     inproc_gate: Gate,          // Shell/Local calls - immediately available
     outproc_gate: Option<Gate>, // Remote Actor calls - lazily initialized
-    data_stream_registry: Arc<DataStreamRegistry>, // DataChunk callback registry
+    data_chunk_registry: Arc<DataChunkRegistry>, // DataChunk callback registry
     media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack callback registry
     signaling_client: Arc<dyn SignalingClient>,
     credential: AIdCredential,
@@ -69,7 +69,7 @@ impl RuntimeContext {
     /// - `request_id`: unique ID for the current request
     /// - `inproc_gate`: in-process gate, immediately available
     /// - `outproc_gate`: cross-process gate, possibly `None` until WebRTC initialization completes
-    /// - `data_stream_registry`: callback registry for `DataChunk`
+    /// - `data_chunk_registry`: callback registry for `DataChunk`
     /// - `media_frame_registry`: callback registry for `MediaTrack`
     /// - `signaling_client`: signaling client used for route discovery
     /// - `credential`: credentials used when calling signaling interfaces
@@ -82,7 +82,7 @@ impl RuntimeContext {
         request_id: String,
         inproc_gate: Gate,
         outproc_gate: Option<Gate>,
-        data_stream_registry: Arc<DataStreamRegistry>,
+        data_chunk_registry: Arc<DataChunkRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
         credential: AIdCredential,
@@ -97,7 +97,7 @@ impl RuntimeContext {
             request_id,
             inproc_gate,
             outproc_gate,
-            data_stream_registry,
+            data_chunk_registry,
             media_frame_registry,
             signaling_client,
             credential,
@@ -393,7 +393,7 @@ struct InternalDiscoveryResult {
 pub(crate) struct BootstrapContextBuilder {
     inproc_gate: Gate,
     outproc_gate: Option<Gate>,
-    data_stream_registry: Arc<DataStreamRegistry>,
+    data_chunk_registry: Arc<DataChunkRegistry>,
     media_frame_registry: Arc<MediaFrameRegistry>,
     signaling_client: Arc<dyn SignalingClient>,
     actr_lock: Option<Arc<LockFile>>,
@@ -416,7 +416,7 @@ impl BootstrapContextBuilder {
     pub(crate) fn new(
         inproc_gate: Gate,
         outproc_gate: Option<Gate>,
-        data_stream_registry: Arc<DataStreamRegistry>,
+        data_chunk_registry: Arc<DataChunkRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
         actr_lock: Option<Arc<LockFile>>,
@@ -427,7 +427,7 @@ impl BootstrapContextBuilder {
         Self {
             inproc_gate,
             outproc_gate,
-            data_stream_registry,
+            data_chunk_registry,
             media_frame_registry,
             signaling_client,
             actr_lock,
@@ -470,7 +470,7 @@ impl BootstrapContextBuilder {
             uuid::Uuid::new_v4().to_string(),
             self.inproc_gate.clone(),
             self.outproc_gate.clone(),
-            self.data_stream_registry.clone(),
+            self.data_chunk_registry.clone(),
             self.media_frame_registry.clone(),
             self.signaling_client.clone(),
             credential.clone(),
@@ -608,7 +608,7 @@ impl Context for RuntimeContext {
             "📊 Registering DataChunk callback for stream_id: {}",
             stream_id
         );
-        self.data_stream_registry
+        self.data_chunk_registry
             .register(stream_id, Arc::new(callback));
         Ok(())
     }
@@ -618,7 +618,7 @@ impl Context for RuntimeContext {
             "🚫 Unregistering DataChunk callback for stream_id: {}",
             stream_id
         );
-        self.data_stream_registry.unregister(stream_id);
+        self.data_chunk_registry.unregister(stream_id);
         Ok(())
     }
 

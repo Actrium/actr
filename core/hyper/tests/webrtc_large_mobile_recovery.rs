@@ -1012,7 +1012,7 @@ async fn mobile_data_chunk_channel_close_emits_delivery_uncertain_hook(case: Rol
         let nonterminal_event = tokio::time::timeout(Duration::from_millis(250), async {
             loop {
                 if let Some(event) = hook_rx.recv().await {
-                    if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
+                    if matches!(event, HookEvent::DataChunkDeliveryUncertain { .. }) {
                         return event;
                     }
                 }
@@ -1036,7 +1036,7 @@ async fn mobile_data_chunk_channel_close_emits_delivery_uncertain_hook(case: Rol
         let event = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(event) = hook_rx.recv().await {
-                    if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
+                    if matches!(event, HookEvent::DataChunkDeliveryUncertain { .. }) {
                         return event;
                     }
                 }
@@ -1046,7 +1046,7 @@ async fn mobile_data_chunk_channel_close_emits_delivery_uncertain_hook(case: Rol
         .expect("data stream delivery uncertain hook was not emitted");
 
         match event {
-            HookEvent::DataStreamDeliveryUncertain {
+            HookEvent::DataChunkDeliveryUncertain {
                 stream_id,
                 session_id: got_session_id,
                 reason,
@@ -1130,7 +1130,7 @@ async fn inflight_data_chunk_long_offline_is_bounded_or_delivery_uncertain(case:
             let event = tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
                     if let Some(event) = hook_rx.recv().await {
-                        if matches!(event, HookEvent::DataStreamDeliveryUncertain { .. }) {
+                        if matches!(event, HookEvent::DataChunkDeliveryUncertain { .. }) {
                             return event;
                         }
                     }
@@ -1140,7 +1140,7 @@ async fn inflight_data_chunk_long_offline_is_bounded_or_delivery_uncertain(case:
             .expect("successful in-flight DataChunk during offline must emit delivery uncertainty");
 
             match event {
-                HookEvent::DataStreamDeliveryUncertain { stream_id, .. } => {
+                HookEvent::DataChunkDeliveryUncertain { stream_id, .. } => {
                     assert_eq!(stream_id, stream.stream_id);
                 }
                 other => panic!("unexpected hook event: {other:?}"),

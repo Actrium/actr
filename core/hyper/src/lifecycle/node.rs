@@ -8,7 +8,7 @@
 use crate::actr_ref::{ActrRef, ActrRefShared};
 use crate::ais_client::AisClient;
 use crate::context::{BootstrapContextBuilder, RuntimeContext};
-use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
 use crate::lifecycle::credential_manager::{
     CredentialManager, HardRebindHandles, RegistrationContext,
 };
@@ -66,7 +66,7 @@ pub(crate) struct Inner {
     /// DataChunk callback registry shared between the inbound WebRTC / WS
     /// gates (which dispatch into it) and `RuntimeContext`
     /// (register_stream / send_data_chunk).
-    pub(crate) data_stream_registry: Arc<DataStreamRegistry>,
+    pub(crate) data_chunk_registry: Arc<DataChunkRegistry>,
 
     /// MediaTrack callback registry shared between WebRTC media tracks and
     /// `RuntimeContext` (register_media_track / send_media_sample).
@@ -920,7 +920,7 @@ impl Inner {
         let workload_to_shell = Arc::new(HostTransport::new());
         let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
 
-        let data_stream_registry = Arc::new(DataStreamRegistry::new());
+        let data_chunk_registry = Arc::new(DataChunkRegistry::new());
         let media_frame_registry = Arc::new(MediaFrameRegistry::new());
 
         tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Guest)");
@@ -946,7 +946,7 @@ impl Inner {
             dlq,
             inproc_gate,
             outproc_gate: None, // Populated in start() once WebRTC / PeerGate is ready.
-            data_stream_registry,
+            data_chunk_registry,
             media_frame_registry,
             signaling_client,
             actor_id: None,
@@ -987,7 +987,7 @@ impl Inner {
         BootstrapContextBuilder::new(
             self.inproc_gate.clone(),
             self.outproc_gate.clone(),
-            self.data_stream_registry.clone(),
+            self.data_chunk_registry.clone(),
             self.media_frame_registry.clone(),
             self.signaling_client.clone(),
             self.actr_lock.clone(),
@@ -1017,7 +1017,7 @@ impl Inner {
             request_id.to_string(),
             self.inproc_gate.clone(),
             self.outproc_gate.clone(),
-            self.data_stream_registry.clone(),
+            self.data_chunk_registry.clone(),
             self.media_frame_registry.clone(),
             self.signaling_client.clone(),
             credential.clone(),
@@ -1462,18 +1462,18 @@ impl Inner {
             let outproc_gate_enum = Gate::Peer(outproc_gate.clone());
             tracing::info!("PeerTransport + PeerGate initialized");
 
-            let data_stream_registry = self.data_stream_registry.clone();
+            let data_chunk_registry = self.data_chunk_registry.clone();
 
-            // Create WebRtcGate with shared pending_requests and DataStreamRegistry
+            // Create WebRtcGate with shared pending_requests and DataChunkRegistry
             let gate = Arc::new(crate::wire::webrtc::gate::WebRtcGate::new(
                 coordinator.clone(),
                 pending_requests,
-                data_stream_registry.clone(),
+                data_chunk_registry.clone(),
             ));
             // Set local_id
             gate.set_local_id(actor_id.clone()).await;
             tracing::info!(
-                "✅ WebRtcGate created with shared pending_requests and DataStreamRegistry"
+                "✅ WebRtcGate created with shared pending_requests and DataChunkRegistry"
             );
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1566,7 +1566,7 @@ impl Inner {
                         let ws_gate = Arc::new(WebSocketGate::new(
                             conn_rx,
                             outproc_gate.get_pending_requests(),
-                            data_stream_registry.clone(),
+                            data_chunk_registry.clone(),
                             Some(auth_ctx),
                         ));
 

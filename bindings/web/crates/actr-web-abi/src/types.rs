@@ -176,8 +176,8 @@ pub enum ErrorCategory {
     SignalingFailure,
     #[serde(rename = "transport-failure")]
     TransportFailure,
-    #[serde(rename = "data-stream-delivery-uncertain")]
-    DataStreamDeliveryUncertain,
+    #[serde(rename = "data-chunk-delivery-uncertain")]
+    DataChunkDeliveryUncertain,
 }
 
 /// Lowered from WIT `variant payload-type`.

@@ -75,7 +75,7 @@ async fn actorless_harness() -> (
     crate::context::RuntimeContext,
     Arc<tokio::sync::Mutex<Workload>>,
 ) {
-    use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
     use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
 
@@ -87,7 +87,7 @@ async fn actorless_harness() -> (
         "req".into(),
         inproc,
         None,
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         Arc::new(MediaFrameRegistry::new()),
         Arc::new(WebSocketSignalingClient::new(SignalingConfig {
             server_url: url::Url::parse("ws://127.0.0.1:9").unwrap(),

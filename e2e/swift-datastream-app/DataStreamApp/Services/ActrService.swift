@@ -156,7 +156,7 @@ final class ActrService: ObservableObject {
         fileLog("[DataStreamApp] runAllProbes: calling StartProbe RPC...")
         isRunning = true
         results = []
-        logLines = ["--- Starting DataStream probe run ---"]
+        logLines = ["--- Starting DataChunk probe run ---"]
 
         var req = Local_StartProbeRequest()
         req.probeName = "run-all"

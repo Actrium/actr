@@ -8,7 +8,7 @@
 //! - **Zero-cost abstraction**: static dispatch with compile-time type selection
 //! - **Unified API**: Host and Peer share the same method signatures
 
-mod data_stream_activity;
+mod data_chunk_activity;
 mod host_gate;
 mod peer_gate;
 

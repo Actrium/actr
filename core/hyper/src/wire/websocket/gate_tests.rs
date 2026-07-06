@@ -770,7 +770,7 @@ async fn send_response_returns_false_for_unknown_peer() {
     let gate = WebSocketGate::new(
         rx,
         Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         None,
     );
     let sent = gate
@@ -788,7 +788,7 @@ async fn send_response_returns_false_when_sink_is_none() {
     let gate = WebSocketGate::new(
         rx,
         Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         None,
     );
     // Insert a None sink for the peer.

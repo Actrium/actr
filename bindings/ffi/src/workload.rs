@@ -103,7 +103,7 @@ pub enum ErrorCategoryBridge {
     HandlerError,
     SignalingFailure,
     TransportFailure,
-    DataStreamDeliveryUncertain,
+    DataChunkDeliveryUncertain,
 }
 
 impl From<ErrorCategory> for ErrorCategoryBridge {
@@ -113,8 +113,8 @@ impl From<ErrorCategory> for ErrorCategoryBridge {
             ErrorCategory::HandlerError => ErrorCategoryBridge::HandlerError,
             ErrorCategory::SignalingFailure => ErrorCategoryBridge::SignalingFailure,
             ErrorCategory::TransportFailure => ErrorCategoryBridge::TransportFailure,
-            ErrorCategory::DataStreamDeliveryUncertain => {
-                ErrorCategoryBridge::DataStreamDeliveryUncertain
+            ErrorCategory::DataChunkDeliveryUncertain => {
+                ErrorCategoryBridge::DataChunkDeliveryUncertain
             }
         }
     }

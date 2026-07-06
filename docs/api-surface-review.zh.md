@@ -26,7 +26,7 @@
 1. **god-trait**：RPC、流、媒体轨、发现、日志 15+ 个方法挤在一个 trait 上（`core/framework/src/context.rs:67-352`）。
 2. **媒体 API 自我矛盾**：`send_media_sample` 用 `MediaType` 枚举，同一文件里 `add_media_track` 却是 `media_type: &str, codec: &str` 字符串参数（`context.rs:318-324`）。
 3. **wire 细节渗漏**：应用要从 `PayloadType`（一个同时含 `RpcReliable` / `MediaRtp` 等对流 API 非法值的 wire 枚举）里挑 lane；`Dest` 文档在讲 HostGate / PeerGate 与序列化策略（`dest.rs:52-65`）；`MediaSample.timestamp` 是裸 RTP u32。
-4. **命名债躺在应用面上**：`send_data_stream(chunk: DataStream)`——类型叫"流"、参数叫"块"（issue #267）。
+4. **命名债躺在应用面上**：`send_data_chunk(chunk: DataChunk)`——类型叫"流"、参数叫"块"（issue #267）。
 5. `call` 无超时参数（写死 30s，issue #257）；`discover_route_candidate` 名字暴露内部概念，只返回单个候选，无缓存 / 失效 / 订阅语义。
 
 ---
@@ -59,7 +59,7 @@
 |---|---|---|---|---|---|
 | 类型化 call | ✅ | ⚠️ codegen 包装，原语是 callRaw | ⚠️ 裸 Buffer | ⚠️ 裸 bytes | ✅ |
 | call 超时参数 | ❌（写死 30s） | ✅ callRaw 带 timeout | ✅ | ❌ | ❌ |
-| 数据流 | ✅ | ✅ | ❌ | ⚠️（单一 on-data-stream 汇入） | ❌ |
+| 数据流 | ✅ | ✅ | ❌ | ⚠️（单一 on-data-chunk 汇入） | ❌ |
 | 媒体轨 | ✅ | ✅ | ❌ | ❌（WIT 无此面） | ❌ |
 | 16 lifecycle hook | ✅ | ✅ | n/a | ✅ | ✅ |
 | self_id/caller_id/request_id/log | ✅ | ❌ | n/a | ✅ | ✅ |
@@ -71,7 +71,7 @@
 
 按严重程度排序：
 
-1. **可测试性接近零**。`test_support::DummyContext` 对 `call` / `tell` / `send_data_stream` / `discover` / `call_raw` / 全部媒体方法一律返回 `NotImplemented`（`core/framework/src/test_support.rs:55-133`）——任何调用过 `ctx.call` 的 handler 都无法单测，没有可编程的 mock 响应机制。框架自身示例也只有起真节点的集成测试。
+1. **可测试性接近零**。`test_support::DummyContext` 对 `call` / `tell` / `send_data_chunk` / `discover` / `call_raw` / 全部媒体方法一律返回 `NotImplemented`（`core/framework/src/test_support.rs:55-133`）——任何调用过 `ctx.call` 的 handler 都无法单测，没有可编程的 mock 响应机制。框架自身示例也只有起真节点的集成测试。
 2. **业务错误无类型通道**。`ActrError` 全部变体为 `String` payload（`core/protocol/src/error.rs:68-143`），应用只能把领域错误塞进 `Internal(format!(...))` 过 wire；无错误码、无结构化 domain payload 扩展点。FFI 边界上 `ErrorEvent.source` 被进一步压平成 Display 字符串（`bindings/ffi/src/workload.rs:128-154`）。
 3. **示例场是废墟**。约 10 个示例的 main 是 `unimplemented!("source-defined workload examples were removed; migrate ...")`（mutil-actr / shell-actr-echo / ws-actr-echo / data-stream / acl / media-relay），仅 echo-actr 与 package-echo 可运行；`mutil-actr` 留有机翻痕迹注释（"loadconfig"、"createfailed"）。
 4. **host 侧上手成本失控**。旗舰示例 `examples/rust/package-echo/client/src/main.rs` 手工编排约 240 行（读包 → 拼 `PackageInfo` → 配置解析 → 观测 → 信任锚 → `Hyper::new` → attach → register → start），而现成的 `Node::run_from_config` 糖（`core/hyper/src/lib.rs:771`）没有任何示例使用。新人入门需吞下约 24 个概念。guest 侧每个作者背一份 187 行的 `build.rs`（含硬编码 repo URL、构建期网络安装 codegen 插件、手工字符串解析 Cargo.toml 取 rev）。
@@ -113,7 +113,7 @@
 9. FFI `ContextBridge` 补 `self_id` / `caller_id` / `request_id` / `log`。
 10. TS `serialNumber` 统一 `bigint`；补全 `host-imports.d.ts`；修正 TS guest 脚手架的 call 示例。
 11. 跨语言命名对齐（Context 别名、discover 签名、Bridge 名收口）；超时魔数统一为配置常量。
-12. `DataStream → DataChunk`（#267，0.5 破坏窗口，与 Direction+TELL=3 协议手术同批）。
+12. `DataChunk → DataChunk`（#267，0.5 破坏窗口，与 Direction+TELL=3 协议手术同批）。
 
 ---
 

@@ -27,7 +27,7 @@ async fn select_gate_shell_and_local_use_inproc() {
 async fn select_gate_actor_errors_when_outproc_unset() {
     // Build a context with outproc_gate = None (unlike the test_support
     // helper, which sets Some). Actor dest must fail.
-    use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
     use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
     let host = Arc::new(HostTransport::new());
@@ -38,7 +38,7 @@ async fn select_gate_actor_errors_when_outproc_unset() {
         "req".into(),
         inproc,
         None, // outproc_gate unset
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         Arc::new(MediaFrameRegistry::new()),
         Arc::new(WebSocketSignalingClient::new(SignalingConfig {
             server_url: url::Url::parse("ws://127.0.0.1:9").unwrap(),
@@ -155,7 +155,7 @@ fn builder() -> BootstrapContextBuilder {
     BootstrapContextBuilder::new(
         inproc.clone(),
         Some(inproc),
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         Arc::new(MediaFrameRegistry::new()),
         {
             use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -210,7 +210,7 @@ async fn build_bootstrap_falls_back_to_builder_generation() {
 use actr_config::lock::{LockFile, LockedDependency};
 
 fn ctx_with_lock(lock: Option<LockFile>) -> RuntimeContext {
-    use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
     use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
     let host = Arc::new(HostTransport::new());
@@ -221,7 +221,7 @@ fn ctx_with_lock(lock: Option<LockFile>) -> RuntimeContext {
         "req".into(),
         inproc,
         None,
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         Arc::new(MediaFrameRegistry::new()),
         Arc::new(WebSocketSignalingClient::new(SignalingConfig {
             server_url: url::Url::parse("ws://127.0.0.1:9").unwrap(),

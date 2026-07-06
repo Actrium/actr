@@ -100,7 +100,7 @@
 | 组件 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
 | **InboundPacketDispatcher** | ✅ (~300 行) | ✅ (~200 行) | **80%** |
-| **DataStreamRegistry** | ✅ 完整 (~150 行) | ⚠️ 框架 (~100 行) | **40%** |
+| **DataChunkRegistry** | ✅ 完整 (~150 行) | ⚠️ 框架 (~100 行) | **40%** |
 | - register_stream | ✅ | ⚠️ TODO stub | 30% |
 | - dispatch 逻辑 | ✅ | ✅ 已实现 | 70% |
 | **MediaFrameRegistry** | ✅ 完整 (~180 行) | ⚠️ 框架 (~120 行) | **35%** |
@@ -222,7 +222,7 @@
 
 | 特性 | actr (Native) | actr-web (WASM) | 完成度 |
 |------|--------------|-----------------|--------|
-| **DataStreamRegistry** | ✅ 完整 (~150 行) | ⚠️ 框架 (~100 行) | **40%** |
+| **DataChunkRegistry** | ✅ 完整 (~150 行) | ⚠️ 框架 (~100 行) | **40%** |
 | **send_data_chunk()** | ✅ | ✅ 已实现 (PeerGate + RuntimeContext) | **85%** |
 | **register_stream()** | ✅ | ⚠️ 基础实现 | **35%** |
 | **回调并发执行** | ✅ Tokio spawn | ❌ 未实现 | **0%** |
@@ -361,7 +361,7 @@
 ### 🟡 影响体验 (Major)
 
 3. **Fast Path 完整集成** (50% → 需要 85%)
-   - DataStreamRegistry: 框架存在，register_stream 待完善
+   - DataChunkRegistry: 框架存在，register_stream 待完善
    - MediaFrameRegistry: WebRTC RTP 集成缺失
    - 影响: 流式数据和媒体支持不完整
 
