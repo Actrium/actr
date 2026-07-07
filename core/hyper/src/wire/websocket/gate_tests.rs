@@ -482,13 +482,12 @@ async fn spawn_connection_tasks_get_lane_failure_removes_sink_and_fires_disconne
 
     let disconnected_peer = tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
-            match rx
+            let event = rx
                 .recv()
                 .await
-                .expect("disconnect hook should fire before channel closes")
-            {
-                HookEvent::WebSocketDisconnected { peer_id } => break peer_id,
-                _ => {}
+                .expect("disconnect hook should fire before channel closes");
+            if let HookEvent::WebSocketDisconnected { peer_id } = event {
+                break peer_id;
             }
         }
     })
