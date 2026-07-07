@@ -39,10 +39,10 @@ const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 /// `tell` does not wait for a response, so it is bounded by the transport
 /// send budget rather than a caller RPC deadline (`timeout_ms` is 0 for tell).
 /// In practice tell dispatches via `RpcReliable`, whose retry policy is
-/// 5 attempts with a 1s→2s→4s→5s→5s backoff (12s of cumulative delay); this
-/// timeout covers that full backoff plus a small margin for the send attempts
-/// themselves, so a reliable tell can still complete all retries while a
-/// stalled transport is capped instead of hanging indefinitely.
+/// 5 attempts with a 1s→2s→4s→5s backoff (4 retries, 12s cumulative delay);
+/// this timeout covers that full backoff plus a small margin for the send
+/// attempts themselves, so a reliable tell can still complete all retries
+/// while a stalled transport is capped instead of hanging indefinitely.
 const TELL_SEND_TIMEOUT: Duration = Duration::from_secs(13);
 const RECOVERY_REASON_PEER_DISCONNECTED: &str = "peer state Disconnected";
 const RECOVERY_REASON_PEER_FAILED: &str = "peer state Failed";
