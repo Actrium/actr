@@ -27,7 +27,7 @@ Describe the design in enough detail that:
 - edge cases are explained with examples;
 - users can understand how to use the feature.
 
-Include signatures, types, or protocol snippets where relevant. Explain why each major design decision was chosen over its alternatives. Put diagrams and other media in `media/` and reference them with relative links such as `![Description](../media/example.png)`.
+Include signatures, types, or protocol snippets where relevant. Explain why each major design decision was chosen over its alternatives.
 
 ## Drawbacks
 
