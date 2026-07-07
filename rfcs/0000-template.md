@@ -3,7 +3,7 @@
 - Status: Proposed
 - Date: YYYY-MM-DD
 - RFC PR:
-- Tracking issue:
+- Tracking issue: #123
 - Superseded by:
 - Related: <Relevant issues or PRs. Link only to files under `rfcs/` or to external URLs; do not link to repository files outside `rfcs/`.>
 
