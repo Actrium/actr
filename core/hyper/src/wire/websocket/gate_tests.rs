@@ -456,6 +456,49 @@ async fn finish_lane_task_non_last_lane_keeps_sink_and_skips_disconnect() {
     assert_eq!(hook_calls.load(Ordering::SeqCst), 0);
 }
 
+#[tokio::test]
+async fn spawn_connection_tasks_get_lane_failure_removes_sink_and_fires_disconnect() {
+    let peer = test_actor_id(300);
+    let source_id = actr_protocol::prost::Message::encode_to_vec(&peer);
+    let inbound_sinks: InboundSinkMap = Arc::new(RwLock::new(HashMap::new()));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let hook: HookCallback = Arc::new(move |event| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            let _ = tx.send(event);
+        })
+    });
+
+    WebSocketGate::spawn_connection_tasks(
+        crate::wire::websocket::connection::WebSocketConnection::new("ws://127.0.0.1:0".into()),
+        source_id,
+        empty_pending(),
+        Arc::new(DataStreamRegistry::new()),
+        CapturingMailbox::new(),
+        Some(hook),
+        inbound_sinks.clone(),
+    )
+    .await;
+
+    let disconnected_peer = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            match rx
+                .recv()
+                .await
+                .expect("disconnect hook should fire before channel closes")
+            {
+                HookEvent::WebSocketDisconnected { peer_id } => break peer_id,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("get_lane failure should finish lane tasks and fire disconnect");
+
+    assert_eq!(disconnected_peer, peer);
+    assert!(!inbound_sinks.read().await.contains_key(&peer));
+}
+
 /// RPC request with no pending entry should go to the mailbox with normal priority.
 #[tokio::test]
 async fn handle_envelope_request_goes_to_mailbox_with_normal_priority() {
