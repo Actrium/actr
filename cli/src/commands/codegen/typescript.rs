@@ -1,4 +1,5 @@
 use crate::commands::SupportedLanguage;
+use crate::commands::codegen::proto_model::{ProtoFileModel, TypeOwnerIndex};
 use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldService};
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
@@ -87,7 +88,6 @@ struct LocalWorkloadModule {
 #[derive(Debug, Clone)]
 struct LocalWorkloadService {
     name: String,
-    proto_stem: String,
     handler_interface: String,
     dispatcher_type: String,
     methods: Vec<LocalWorkloadMethod>,
@@ -100,6 +100,13 @@ struct LocalWorkloadMethod {
     input_type_short: String,
     output_type_short: String,
     route_key: String,
+    /// Workload-relative import path for the request type's generated `_pb.js`
+    /// module (e.g. `./data_stream_app_pb.js` or `./ask-service/ask_pb.js`),
+    /// resolved from the declaring proto file so imported types are imported
+    /// from their real owner module.
+    input_pb_import: String,
+    /// Workload-relative import path for the response type's `_pb.js` module.
+    output_pb_import: String,
 }
 
 type ServiceImportKey<'a> = (&'a str, &'a str);
@@ -573,6 +580,7 @@ impl TypeScriptGenerator {
 
     fn generate_local_workload_files(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
         let mut modules: BTreeMap<String, LocalWorkloadModule> = BTreeMap::new();
+        let owner_index = TypeOwnerIndex::from_files(&context.proto_model.files);
 
         for file in &context.proto_model.files {
             if !file.services.iter().any(|service| {
@@ -584,13 +592,6 @@ impl TypeScriptGenerator {
             }) {
                 continue;
             }
-
-            let proto_stem = file
-                .proto_file
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("proto")
-                .to_string();
 
             for service in &file.services {
                 if !context.proto_model.local_services.iter().any(|local| {
@@ -609,7 +610,6 @@ impl TypeScriptGenerator {
                         });
                 module.services.push(LocalWorkloadService {
                     name: service.name.clone(),
-                    proto_stem: proto_stem.clone(),
                     handler_interface: format!("{}Handler", service.name),
                     dispatcher_type: format!("{}Dispatcher", service.name),
                     methods: service
@@ -621,6 +621,16 @@ impl TypeScriptGenerator {
                             input_type_short: short_proto_type(&method.input_type),
                             output_type_short: short_proto_type(&method.output_type),
                             route_key: method.route_key.clone(),
+                            input_pb_import: resolve_workload_pb_import(
+                                &method.input_type,
+                                file,
+                                &owner_index,
+                            ),
+                            output_pb_import: resolve_workload_pb_import(
+                                &method.output_type,
+                                file,
+                                &owner_index,
+                            ),
                         })
                         .collect(),
                 });
@@ -1489,25 +1499,28 @@ fn normalize_actr_type_for_typescript_plugin(raw: &str) -> Result<String> {
 }
 
 fn generate_local_workload_content(module: &LocalWorkloadModule) -> String {
+    // Group referenced message types by their declaring proto module's
+    // workload-relative import path, so imported types are imported from their
+    // real owner `_pb.js` instead of the local service's proto stem.
     let mut type_imports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     let mut schema_imports: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
 
     for service in &module.services {
         for method in &service.methods {
             type_imports
-                .entry(&service.proto_stem)
+                .entry(&method.input_pb_import)
                 .or_default()
                 .insert(&method.input_type_short);
             type_imports
-                .entry(&service.proto_stem)
+                .entry(&method.output_pb_import)
                 .or_default()
                 .insert(&method.output_type_short);
             schema_imports
-                .entry(&service.proto_stem)
+                .entry(&method.input_pb_import)
                 .or_default()
                 .insert(format!("{}Schema", method.input_type_short));
             schema_imports
-                .entry(&service.proto_stem)
+                .entry(&method.output_pb_import)
                 .or_default()
                 .insert(format!("{}Schema", method.output_type_short));
         }
@@ -1519,20 +1532,20 @@ fn generate_local_workload_content(module: &LocalWorkloadModule) -> String {
     output.push_str("import type { RpcEnvelope } from '@actrium/actr-workload';\n");
     output.push_str("import { fromBinary, toBinary } from '@bufbuild/protobuf';\n");
 
-    for (proto_stem, types) in type_imports {
+    for (import_path, types) in type_imports {
         output.push_str("import type { ");
         output.push_str(&types.into_iter().collect::<Vec<_>>().join(", "));
-        output.push_str(" } from './");
-        output.push_str(proto_stem);
-        output.push_str("_pb.js';\n");
+        output.push_str(" } from '");
+        output.push_str(import_path);
+        output.push_str("';\n");
     }
 
-    for (proto_stem, schemas) in schema_imports {
+    for (import_path, schemas) in schema_imports {
         output.push_str("import { ");
         output.push_str(&schemas.into_iter().collect::<Vec<_>>().join(", "));
-        output.push_str(" } from './");
-        output.push_str(proto_stem);
-        output.push_str("_pb.js';\n");
+        output.push_str(" } from '");
+        output.push_str(import_path);
+        output.push_str("';\n");
     }
 
     for service in &module.services {
@@ -1713,6 +1726,48 @@ fn short_proto_type(raw: &str) -> String {
         .next()
         .unwrap_or_default()
         .to_string()
+}
+
+/// Workload-relative import path for a generated `_pb.js` module, derived from
+/// a proto file's path relative to the proto root. Mirrors the
+/// `flatten_local_and_lift_remote` post-processing: `local/X.proto` flattens
+/// to `./X_pb.js`, `remote/<alias>/X.proto` lifts to `./<alias>/X_pb.js`.
+fn workload_pb_import_path(relative_path: &str) -> String {
+    let path = Path::new(relative_path);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("proto");
+    let parent = path
+        .parent()
+        .and_then(|parent| parent.to_str())
+        .unwrap_or("");
+    let import_parent = if let Some(rest) = parent.strip_prefix("local") {
+        rest.trim_start_matches('/')
+    } else if let Some(rest) = parent.strip_prefix("remote") {
+        rest.trim_start_matches('/')
+    } else {
+        parent
+    };
+    if import_parent.is_empty() {
+        format!("./{stem}_pb.js")
+    } else {
+        format!("./{import_parent}/{stem}_pb.js")
+    }
+}
+
+/// Resolve the workload-relative `_pb.js` import path for a referenced RPC
+/// message type by looking up its declaring proto file. Falls back to the
+/// current service's file for types absent from the local proto set.
+fn resolve_workload_pb_import(
+    referenced: &str,
+    current_file: &ProtoFileModel,
+    owner_index: &TypeOwnerIndex,
+) -> String {
+    match owner_index.resolve(referenced, current_file) {
+        Ok(Some(owner)) => workload_pb_import_path(&owner.proto_file),
+        _ => workload_pb_import_path(&current_file.relative_path.to_string_lossy()),
+    }
 }
 
 fn workload_module_name(package: &str, service_name: &str) -> String {

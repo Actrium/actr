@@ -169,3 +169,42 @@ fn generates_scaffold_with_local_and_remote_sections() {
     assert!(scaffold.contains("PingRequest.response.decode"));
     assert!(scaffold.contains(UNIMPLEMENTED_MARKER));
 }
+
+#[test]
+fn local_workload_imports_imported_types_from_their_owner_module() {
+    // A local `data_stream_app` service references `ask.*` message types
+    // declared in `remote/ask-service/ask.proto`. The workload dispatcher must
+    // import those types from the owner module (`./ask-service/ask_pb.js`),
+    // not from the local service's proto stem.
+    let module = LocalWorkloadModule {
+        name: "data_stream_app_workload".to_string(),
+        services: vec![LocalWorkloadService {
+            name: "DataStreamAppService".to_string(),
+            handler_interface: "DataStreamAppServiceHandler".to_string(),
+            dispatcher_type: "DataStreamAppServiceDispatcher".to_string(),
+            methods: vec![LocalWorkloadMethod {
+                name: "ContinuePromptResultStreams".to_string(),
+                handler_method_name: "continuePromptResultStreams".to_string(),
+                input_type_short: "ContinuePromptResultStreamsRequest".to_string(),
+                output_type_short: "ContinuePromptResultStreamsResponse".to_string(),
+                route_key: "data_stream_app.DataStreamAppService.ContinuePromptResultStreams"
+                    .to_string(),
+                input_pb_import: "./ask-service/ask_pb.js".to_string(),
+                output_pb_import: "./ask-service/ask_pb.js".to_string(),
+            }],
+        }],
+    };
+
+    let content = generate_local_workload_content(&module);
+
+    assert!(
+        content.contains("from './ask-service/ask_pb.js'"),
+        "expected owner module import, got:\n{content}"
+    );
+    assert!(
+        !content.contains("from './data_stream_app_pb.js'"),
+        "must not pin imported types to the local service proto stem:\n{content}"
+    );
+    assert!(content.contains("ContinuePromptResultStreamsRequest"));
+    assert!(content.contains("ContinuePromptResultStreamsResponseSchema"));
+}
