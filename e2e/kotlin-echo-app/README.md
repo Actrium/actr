@@ -61,30 +61,20 @@ minimal placeholder `manifest.lock.toml`, with the remote `echo.proto` placed lo
 `actr gen -l kotlin` consuming it via the `protos/` input. **No `actr deps install` / registry
 round-trip is needed** for codegen.
 
-Validated locally end-to-end through RPC dispatch: actrix bootstrap, MFR keychain, Rust
-EchoService build + registry publish, server host start + signaling registration, Kotlin client
-scaffold, local-proto + placeholder lock, `actr gen -l kotlin`, app + androidTest APK build +
-install, instrumentation test run — the linked client starts, discovers
-`actrium:EchoService:1.0.0`, and dispatches the `echo.EchoService.Echo` RPC.
+**Validated on CI (green):** the `kotlin-echo-app-e2e` job passes end-to-end on
+ubuntu x86_64 + KVM + `reactivecircus/android-emulator-runner` — native `.so` + AAR build,
+actrix + EchoService bootstrap, Kotlin scaffold + codegen, APK build/install, emulator boot,
+and the `am instrument` echo round-trip all succeed.
 
-The remaining failure is the **WebRTC relayed connection between the Android emulator and the
-host**. Key findings (the earlier "`attribute not found` = TURN-protocol bug" diagnosis was
-wrong — that error was only because STUN/TURN wasn't running):
+Local macOS (Apple Silicon arm64 emulator) hits a WebRTC relay instability that does **not**
+reproduce on CI: the TURN relayed data channel opens then closes before the RPC reply gets
+through, and retries time out. So local macOS is not a reliable reproducer for this suite;
+CI is the source of truth.
 
-- The shared actrix config had `enable = 25` = SIGNALING|AIS|SIGNER — **the STUN(2) and
-  TURN(4) bits were unset**, so actrix logged `ICE服务(STUN/TURN)已禁用` and never started the
-  STUN/TURN server. The e2e sets `enable = 31` to turn them on.
-- With STUN/TURN running (and the sibling actrix that advertises the public IP), TURN ALLOCATE
-  **succeeds**: both client and server receive valid HMAC time-limited TURN credentials
-  (`username="<expiry>:<actor_id>"`) from registration, and the client gathers a relay
-  candidate (`relay 10.30.3.206:NNNNN`).
-- The relayed ICE connection still times out (`Connection attempt N/4 failed: timed out`). Both
-  peers have credentials + the client has a relay candidate, but the relay ↔ relay bridging on
-  actrix's TURN doesn't complete within the timeout.
-
-Two repo-level items: (1) the actr repo's vendored `actrix/` is **stale** vs the sibling actrix
-with the `advertise public IP` fix — CI must build the sibling (`ACTRIX_SOURCE_DIR`) or sync the
-vendored copy; (2) the shared `enable = 25` disables STUN/TURN, so any e2e needing TURN (this
-one) must bump it. The remaining relay-bridging timeout is the last WebRTC piece; everything
-else (build, install, gen, discovery, RPC dispatch, TURN allocate, relay-candidate gather) is
-validated.
+Two config notes (both handled by `run.sh`, flagged as repo-level debt):
+- The shared actrix template's `enable = 25` = SIGNALING|AIS|SIGNER — the STUN(2)/TURN(4) bits
+  are unset, so actrix ships with STUN/TURN disabled. This suite needs TURN (the emulator can't
+  do direct ICE to the host), so `run.sh` bumps it to `enable = 31`. Cleaner: parameterize the
+  shared template instead of the in-place `perl` rewrite (review finding #1, follow-up).
+- actrix binds ICE on `0.0.0.0` and advertises the host LAN IP so the emulator can reach
+  STUN/TURN (the emulator can't use 127.0.0.1).
