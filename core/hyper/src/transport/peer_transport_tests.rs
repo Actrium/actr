@@ -179,20 +179,14 @@ async fn peer_transport_with_webrtc_and_ws(
 
     // `DestTransport::new` spawns background `connect` tasks; wait for the
     // WebRTC wire to become Ready so `matches_webrtc_session` can observe it.
-    let ready = timeout(
-        Duration::from_secs(2),
-        async {
-            loop {
-                if transport
-                    .matches_webrtc_session(&peer_id, session_id)
-                    .await
-                {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
+    let ready = timeout(Duration::from_secs(2), async {
+        loop {
+            if transport.matches_webrtc_session(&peer_id, session_id).await {
+                return;
             }
-        },
-    )
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
     .await;
     assert!(ready.is_ok(), "WebRTC wire should become Ready in time");
 
