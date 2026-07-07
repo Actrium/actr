@@ -36,10 +36,14 @@ pub(crate) type PendingRequestsMap =
 const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 /// Total budget for fire-and-forget RPC sends, including transient retries.
 ///
-/// `tell` does not wait for a response, so it should fail fast enough for
-/// event/notification hot paths instead of inheriting the 12s reliable-RPC
-/// backoff envelope.
-const TELL_SEND_TIMEOUT: Duration = Duration::from_secs(3);
+/// `tell` does not wait for a response, so it is bounded by the transport
+/// send budget rather than a caller RPC deadline (`timeout_ms` is 0 for tell).
+/// In practice tell dispatches via `RpcReliable`, whose retry policy is
+/// 5 attempts with a 1s→2s→4s→5s→5s backoff (12s of cumulative delay); this
+/// timeout covers that full backoff plus a small margin for the send attempts
+/// themselves, so a reliable tell can still complete all retries while a
+/// stalled transport is capped instead of hanging indefinitely.
+const TELL_SEND_TIMEOUT: Duration = Duration::from_secs(13);
 const RECOVERY_REASON_PEER_DISCONNECTED: &str = "peer state Disconnected";
 const RECOVERY_REASON_PEER_FAILED: &str = "peer state Failed";
 const RECOVERY_REASON_ICE_NETWORK_STARTED: &str = "ice/network recovery started";
