@@ -332,9 +332,12 @@ impl WebRtcGate {
                                         // Decode sender ActrId
                                         match ActrId::decode(&from_bytes[..]) {
                                             Ok(sender_id) => {
-                                                // Dispatch to DataStreamRegistry (async callback invocation)
+                                                // Dispatch to the per-stream serial worker.
+                                                // For StreamReliable a full queue makes this
+                                                // await block, stalling this single receive
+                                                // loop = SCTP stop-read backpressure.
                                                 data_stream_registry
-                                                    .dispatch(chunk, sender_id)
+                                                    .dispatch(chunk, sender_id, payload_type)
                                                     .await;
                                             }
                                             Err(e) => {

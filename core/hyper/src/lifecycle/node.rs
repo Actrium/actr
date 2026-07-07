@@ -920,7 +920,12 @@ impl Inner {
         let workload_to_shell = Arc::new(HostTransport::new());
         let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
 
-        let data_stream_registry = Arc::new(DataStreamRegistry::new());
+        // Root shutdown token; the data stream registry gets a child so a
+        // node-wide shutdown drains all per-stream workers (no orphans).
+        let shutdown_token = CancellationToken::new();
+        let data_stream_registry = Arc::new(DataStreamRegistry::with_shutdown(
+            shutdown_token.child_token(),
+        ));
         let media_frame_registry = Arc::new(MediaFrameRegistry::new());
 
         tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Guest)");
@@ -958,7 +963,7 @@ impl Inner {
             websocket_gate: None,
             shell_to_workload: Some(shell_to_workload),
             workload_to_shell: Some(workload_to_shell),
-            shutdown_token: CancellationToken::new(),
+            shutdown_token,
             actr_lock,
             network_event_rx: None,
             network_event_debounce_config: None,
@@ -1830,6 +1835,12 @@ impl Inner {
                 {
                     tracing::warn!(error = %e, "workload on_stop returned Err");
                 }
+                drop(workload);
+
+                // Drain per-stream data stream workers before the node tears
+                // down: cancel queued chunks, let in-flight callbacks finish,
+                // join all worker tasks (bounded, else abort). Avoids orphans.
+                node.data_stream_registry.shutdown().await;
             });
             task_handles.push(on_stop_handle);
         }
