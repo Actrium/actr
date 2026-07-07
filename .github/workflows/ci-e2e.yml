@@ -537,7 +537,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown,aarch64-linux-android,x86_64-linux-android
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
