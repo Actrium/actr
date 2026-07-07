@@ -516,3 +516,77 @@ jobs:
           PYTHON_SERVER_READY_ATTEMPTS: "1200"
           PYTHON_ECHO_MESSAGE: hello-from-actr-web
         run: bash start-python-mock.sh
+
+  kotlin-echo-app-e2e:
+    name: Kotlin EchoApp E2E
+    # Kotlin/Android mirror of swift-echo-app. Builds the native .so fresh (the
+    # .so files are gitignored), publishes the AAR to mavenLocal, bootstraps a
+    # local actrix + Rust EchoService, scaffolds a Kotlin client (linked mode),
+    # and verifies via `./gradlew connectedDebugAndroidTest` on an x86_64 emulator.
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Enable KVM (emulator hardware acceleration)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0777", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-34 build-tools;34.0.0 ndk;25.2.9519653'
+      - name: Install Linux e2e dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq sqlite3 lsof perl
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Install uniffi-bindgen
+        run: cargo install uniffi --version 0.31.1 --locked --features cli --bin uniffi-bindgen
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Build Android native lib (x86_64) + publish AAR to mavenLocal
+        env:
+          ACTR_ANDROID_TARGETS: x86_64-linux-android
+          ACTR_COPY_DEMO_JNILIBS: "false"
+        run: |
+          bash bindings/kotlin/build-android.sh
+          cd bindings/kotlin && ./gradlew :actr-kotlin:publishToMavenLocal --no-daemon
+      - name: Run Kotlin EchoApp e2e (emulator)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: default
+          profile: pixel_6_pro
+          sdcard-path-or-size: 512M
+          ram-size: 4096M
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          disable-animations: true
+          script: bash e2e/kotlin-echo-app/run.sh
+      - name: Upload sanitized diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kotlin-echo-app-e2e-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e/kotlin-echo-app/.tmp/sanitized-logs/
+          retention-days: 7
+          if-no-files-found: warn
+
