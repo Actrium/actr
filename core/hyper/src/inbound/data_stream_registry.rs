@@ -25,6 +25,13 @@
 //! - **unregister = drain**: removing a stream drops the stored sender; the
 //!   worker drains already-queued chunks then exits (already-accepted chunks are
 //!   still delivered, matching reliable "accepted == delivered").
+//! - **re-register = immediate swap**: the callback travels with each queued
+//!   chunk (cloned at `dispatch` time), so replacing a stream's handler — even
+//!   by re-registering the same `stream_id` without unregistering first — takes
+//!   effect on the very next dispatched chunk. A worker never pins the callback
+//!   it was spawned with, which also makes any residual/racing worker benign:
+//!   whichever worker drains a chunk runs the callback the dispatcher captured
+//!   for that chunk, never a stale one.
 //! - **shutdown = cancel**: `shutdown()` cancels the shared token so workers
 //!   drop queued chunks, let any in-flight callback finish, then exit; all
 //!   worker handles are joined (with a bounded timeout, else aborted). No
@@ -64,10 +71,17 @@ const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) type DataStreamCallback =
     Arc<dyn Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
 
-/// A chunk queued for a stream's worker, carrying the sender identity.
+/// A chunk queued for a stream's worker, carrying the sender identity and the
+/// callback captured at dispatch time.
+///
+/// The callback is enqueued per-chunk (rather than pinned when the worker is
+/// spawned) so that re-registering a `stream_id`'s handler takes effect on the
+/// next dispatched chunk instead of being shadowed by the worker's original
+/// callback.
 struct QueuedChunk {
     chunk: DataStream,
     sender_id: ActrId,
+    callback: DataStreamCallback,
 }
 
 /// Per-stream serial executor: a bounded queue plus the worker task draining it.
@@ -211,8 +225,12 @@ impl DataStreamRegistry {
             }
         };
 
-        let tx = self.worker_tx(&stream_id, callback);
-        let queued = QueuedChunk { chunk, sender_id };
+        let tx = self.worker_tx(&stream_id);
+        let queued = QueuedChunk {
+            chunk,
+            sender_id,
+            callback,
+        };
 
         match payload_type {
             PayloadType::StreamLatencyFirst => match tx.try_send(queued) {
@@ -298,12 +316,10 @@ impl DataStreamRegistry {
     /// Get or lazily create the sender for `stream_id`'s worker.
     ///
     /// Returns a cloned bounded sender; the DashMap guard is never held across
-    /// an `await` (the caller may block on `send().await`).
-    fn worker_tx(
-        &self,
-        stream_id: &str,
-        callback: DataStreamCallback,
-    ) -> mpsc::Sender<QueuedChunk> {
+    /// an `await` (the caller may block on `send().await`). The worker carries
+    /// no callback of its own — each chunk carries the callback to run (see
+    /// [`QueuedChunk`]).
+    fn worker_tx(&self, stream_id: &str) -> mpsc::Sender<QueuedChunk> {
         if let Some(worker) = self.workers.get(stream_id) {
             return worker.tx.clone();
         }
@@ -316,7 +332,6 @@ impl DataStreamRegistry {
                 let handle = tokio::spawn(Self::worker_loop(
                     stream_id.to_string(),
                     rx,
-                    callback,
                     self.shutdown.clone(),
                     self.panic_count.clone(),
                 ));
@@ -329,7 +344,6 @@ impl DataStreamRegistry {
     async fn worker_loop(
         stream_id: String,
         mut rx: mpsc::Receiver<QueuedChunk>,
-        callback: DataStreamCallback,
         shutdown: CancellationToken,
         panic_count: Arc<AtomicU64>,
     ) {
@@ -348,7 +362,7 @@ impl DataStreamRegistry {
                 }
                 maybe = rx.recv() => match maybe {
                     Some(queued) => {
-                        Self::run_callback(&stream_id, &callback, queued, &panic_count).await;
+                        Self::run_callback(&stream_id, queued, &panic_count).await;
                     }
                     // All senders dropped (unregister): queue drained, exit.
                     None => {
@@ -365,13 +379,12 @@ impl DataStreamRegistry {
 
     /// Invoke a single callback with panic isolation; errors and panics are
     /// logged and counted, and the worker proceeds to the next chunk.
-    async fn run_callback(
-        stream_id: &str,
-        callback: &DataStreamCallback,
-        queued: QueuedChunk,
-        panic_count: &AtomicU64,
-    ) {
-        let QueuedChunk { chunk, sender_id } = queued;
+    async fn run_callback(stream_id: &str, queued: QueuedChunk, panic_count: &AtomicU64) {
+        let QueuedChunk {
+            chunk,
+            sender_id,
+            callback,
+        } = queued;
         let sequence = chunk.sequence;
         let fut = callback(chunk, sender_id);
         match AssertUnwindSafe(fut).catch_unwind().await {

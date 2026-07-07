@@ -403,6 +403,92 @@ async fn reliable_backpressure_blocks_then_delivers() {
     assert_eq!(probe.completions(), vec![1, 2, 3]);
 }
 
+/// (9) Re-register replaces the handler in place: re-registering the same
+/// `stream_id` (without unregistering first) makes the *new* callback handle the
+/// next chunk, while chunks already in flight/queued keep FIFO order. This is
+/// the regression guard for the "worker pins its spawn-time callback" bug — on
+/// the buggy path seq 2 would be handled by the old handler `A`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reregister_swaps_handler_and_preserves_order() {
+    // Shared log of (handler_label, seq) in completion order.
+    let record: Arc<Mutex<Vec<(char, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+    let gates: Arc<Mutex<HashMap<u64, oneshot::Receiver<()>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let (started_tx, mut started_rx) = tokio_mpsc::unbounded_channel::<(char, u64)>();
+    let (done_tx, mut done_rx) = tokio_mpsc::unbounded_channel::<(char, u64)>();
+
+    let make_cb = |label: char| -> DataStreamCallback {
+        let record = record.clone();
+        let gates = gates.clone();
+        let started_tx = started_tx.clone();
+        let done_tx = done_tx.clone();
+        Arc::new(move |chunk: DataStream, _sender| {
+            let record = record.clone();
+            let gates = gates.clone();
+            let started_tx = started_tx.clone();
+            let done_tx = done_tx.clone();
+            Box::pin(async move {
+                let seq = chunk.sequence;
+                let _ = started_tx.send((label, seq));
+                // Take this invocation's gate (if any); guard dropped before await.
+                let gate = gates.lock().unwrap().remove(&seq);
+                if let Some(rx) = gate {
+                    let _ = rx.await;
+                }
+                record.lock().unwrap().push((label, seq));
+                let _ = done_tx.send((label, seq));
+                Ok(())
+            })
+        })
+    };
+
+    let reg = DataStreamRegistry::with_capacity(8);
+    reg.register("s1".into(), make_cb('A'));
+
+    // Gate seq 1 so handler A stays in flight until we release it.
+    let (release1_tx, release1_rx) = oneshot::channel();
+    gates.lock().unwrap().insert(1, release1_rx);
+
+    reg.dispatch(chunk_seq("s1", 1), ActrId::default(), RELIABLE)
+        .await;
+    // A has begun seq 1 (blocked on its gate).
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), started_rx.recv())
+            .await
+            .expect("seq 1 never started")
+            .unwrap(),
+        ('A', 1)
+    );
+
+    // Replace the handler in place (no unregister first).
+    reg.register("s1".into(), make_cb('B'));
+
+    // seq 2 is dispatched after the swap; it must run under B, after seq 1.
+    reg.dispatch(chunk_seq("s1", 2), ActrId::default(), RELIABLE)
+        .await;
+    // Nothing completed yet: seq 2 is queued behind the blocked seq 1.
+    assert!(record.lock().unwrap().is_empty());
+
+    release1_tx.send(()).unwrap();
+
+    let first = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+        .await
+        .expect("seq 1 never finished")
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+        .await
+        .expect("seq 2 never finished")
+        .unwrap();
+
+    assert_eq!(first, ('A', 1), "seq 1 was in flight under the old handler");
+    assert_eq!(
+        second,
+        ('B', 2),
+        "seq 2 must run under the re-registered handler, in order"
+    );
+    assert_eq!(*record.lock().unwrap(), vec![('A', 1), ('B', 2)]);
+}
+
 /// (8) Dispatching to an unregistered stream only warns; it never panics.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_after_unregister_is_warn_only() {
