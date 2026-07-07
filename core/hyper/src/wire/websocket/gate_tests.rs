@@ -422,6 +422,40 @@ async fn finish_lane_task_last_lane_removes_sink_and_fires_disconnect() {
     ));
 }
 
+#[tokio::test]
+async fn finish_lane_task_non_last_lane_keeps_sink_and_skips_disconnect() {
+    let peer = test_actor_id(299);
+    let active_lanes = Arc::new(AtomicUsize::new(2));
+    let inbound_sinks: InboundSinkMap = Arc::new(RwLock::new(HashMap::new()));
+    inbound_sinks
+        .write()
+        .await
+        .insert(peer.clone(), Arc::new(tokio::sync::Mutex::new(None)));
+
+    let hook_calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls_for_hook = hook_calls.clone();
+    let hook: HookCallback = Arc::new(move |event| {
+        let hook_calls = hook_calls_for_hook.clone();
+        Box::pin(async move {
+            if matches!(event, HookEvent::WebSocketDisconnected { .. }) {
+                hook_calls.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    });
+
+    WebSocketGate::finish_lane_task(
+        active_lanes.clone(),
+        Some(peer.clone()),
+        Some(hook),
+        inbound_sinks.clone(),
+    )
+    .await;
+
+    assert_eq!(active_lanes.load(Ordering::SeqCst), 1);
+    assert!(inbound_sinks.read().await.contains_key(&peer));
+    assert_eq!(hook_calls.load(Ordering::SeqCst), 0);
+}
+
 /// RPC request with no pending entry should go to the mailbox with normal priority.
 #[tokio::test]
 async fn handle_envelope_request_goes_to_mailbox_with_normal_priority() {
