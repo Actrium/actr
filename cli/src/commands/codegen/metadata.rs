@@ -250,6 +250,14 @@ fn resolve_type_ref(
     };
 
     let Some(current) = current_file else {
+        if normalized.contains('.') {
+            return Err(unresolved_qualified_type_error(
+                kind,
+                normalized,
+                service,
+                method_name,
+            ));
+        }
         return Ok(fallback());
     };
 
@@ -260,6 +268,12 @@ fn resolve_type_ref(
             proto_package: owner.proto_package,
             proto_file: owner.proto_file,
         }),
+        Ok(None) if normalized.contains('.') => Err(unresolved_qualified_type_error(
+            kind,
+            normalized,
+            service,
+            method_name,
+        )),
         Ok(None) => Ok(fallback()),
         Err(candidates) => {
             let declared_files = candidates
@@ -273,6 +287,18 @@ fn resolve_type_ref(
             )))
         }
     }
+}
+
+fn unresolved_qualified_type_error(
+    kind: &str,
+    normalized: &str,
+    service: &ServiceModel,
+    method_name: &str,
+) -> ActrCliError {
+    ActrCliError::config_error(format!(
+        "Cannot resolve {} type `{}` for {}.{}: qualified RPC types must be declared in one of the parsed proto files",
+        kind, normalized, service.name, method_name
+    ))
 }
 
 #[cfg(test)]

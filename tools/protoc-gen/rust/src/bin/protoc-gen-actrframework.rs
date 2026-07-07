@@ -3,7 +3,7 @@ use bytes::Bytes;
 use heck::ToSnakeCase;
 use prost::Message;
 use prost_types::{
-    FileDescriptorProto, ServiceDescriptorProto,
+    DescriptorProto, FileDescriptorProto, ServiceDescriptorProto,
     compiler::{CodeGeneratorRequest, CodeGeneratorResponse, code_generator_response::File},
 };
 use serde::Serialize;
@@ -292,18 +292,37 @@ fn collect_type_owners(
     package: &str,
 ) {
     for message in &file.message_type {
-        let full_name = if package.is_empty() {
-            message.name().to_string()
-        } else {
-            format!("{}.{}", package, message.name())
-        };
-        owners.insert(full_name.clone(), package.to_string());
+        collect_message_type_owner(message, owners, package, package);
+    }
 
-        // Recursively process nested messages — they share the file's package.
-        for nested in &message.nested_type {
-            let nested_name = format!("{}.{}", full_name, nested.name());
-            owners.insert(nested_name, package.to_string());
-        }
+    // Index file-scope enums so RPC types referencing an imported enum resolve
+    // to their declaring package (mirrors the CLI's TypeOwnerIndex, which
+    // captures enums via declared_type_names).
+    for enum_type in &file.enum_type {
+        let full_name = if package.is_empty() {
+            enum_type.name().to_string()
+        } else {
+            format!("{}.{}", package, enum_type.name())
+        };
+        owners.insert(full_name, package.to_string());
+    }
+}
+
+fn collect_message_type_owner(
+    message: &DescriptorProto,
+    owners: &mut HashMap<String, String>,
+    package: &str,
+    parent_path: &str,
+) {
+    let full_name = if parent_path.is_empty() {
+        message.name().to_string()
+    } else {
+        format!("{}.{}", parent_path, message.name())
+    };
+    owners.insert(full_name.clone(), package.to_string());
+
+    for nested in &message.nested_type {
+        collect_message_type_owner(nested, owners, package, &full_name);
     }
 }
 
@@ -487,5 +506,28 @@ mod tests {
         assert!(local_actor.contains("\"custom\""));
         assert!(local_actor.contains("name"));
         assert!(local_actor.contains("\"EchoAlias\""));
+    }
+
+    #[test]
+    fn collect_type_owners_indexes_file_scope_enums() {
+        // The CLI's TypeOwnerIndex captures enums via declared_type_names;
+        // the plugin's collect_type_owners must mirror that so an imported
+        // enum resolves to its declaring package instead of falling back.
+        let file = FileDescriptorProto {
+            name: Some("ask.proto".to_string()),
+            package: Some("ask".to_string()),
+            enum_type: vec![prost_types::EnumDescriptorProto {
+                name: Some("Status".to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut owners = HashMap::new();
+        collect_type_owners(&file, &mut owners, "ask");
+        assert_eq!(
+            owners.get("ask.Status").map(String::as_str),
+            Some("ask"),
+            "file-scope enum should be indexed under its declaring package"
+        );
     }
 }

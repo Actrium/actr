@@ -177,3 +177,178 @@ fn type_owner_index_prefers_current_file_for_unqualified_types() {
         .expect("unresolvable type should fall back, not error");
     assert!(unresolvable.is_none());
 }
+
+#[test]
+fn type_owner_index_resolves_unqualified_unique_non_current_type() {
+    // A local service references an unqualified `SharedRequest` declared in
+    // exactly one remote file. It should resolve to that file (the
+    // `bare` single-candidate branch), not fall back to the current file.
+    let tmp = TempDir::new().unwrap();
+    let proto_root = tmp.path().join("protos");
+    let local_dir = proto_root.join("local");
+    let remote_dir = proto_root.join("remote/pkg-a");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::fs::create_dir_all(&remote_dir).unwrap();
+    std::fs::write(
+        local_dir.join("client.proto"),
+        "syntax = \"proto3\";\npackage client;\nimport \"remote/pkg-a/a.proto\";\nservice Client {\n  rpc Foo(SharedRequest) returns (SharedResponse);\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        remote_dir.join("a.proto"),
+        "syntax = \"proto3\";\npackage a;\nmessage SharedRequest {}\nmessage SharedResponse {}\n",
+    )
+    .unwrap();
+
+    let config = minimal_manifest(tmp.path());
+    let local_proto = proto_root.join("local/client.proto");
+    let remote_proto = proto_root.join("remote/pkg-a/a.proto");
+    let proto_files = vec![local_proto, remote_proto];
+    let proto_model = ProtoModel::parse(&proto_files, &proto_root, &config).unwrap();
+
+    let meta = ActrGenMetadata::from_proto_model(SupportedLanguage::Rust, &proto_model).unwrap();
+    let method = &meta.local_services[0].methods[0];
+    assert_eq!(method.input_ref.proto_package, "a");
+    assert_eq!(method.input_ref.proto_file, "remote/pkg-a/a.proto");
+    assert_eq!(method.input_ref.type_name, "SharedRequest");
+}
+
+#[test]
+fn from_proto_model_errors_on_ambiguous_unqualified_type() {
+    // An unqualified `SharedRequest` declared in TWO remote files is
+    // ambiguous and must surface as a config error rather than silently
+    // picking one owner.
+    let tmp = TempDir::new().unwrap();
+    let proto_root = tmp.path().join("protos");
+    let local_dir = proto_root.join("local");
+    let remote_a = proto_root.join("remote/pkg-a");
+    let remote_b = proto_root.join("remote/pkg-b");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::fs::create_dir_all(&remote_a).unwrap();
+    std::fs::create_dir_all(&remote_b).unwrap();
+    std::fs::write(
+        local_dir.join("client.proto"),
+        "syntax = \"proto3\";\npackage client;\nimport \"remote/pkg-a/a.proto\";\nimport \"remote/pkg-b/b.proto\";\nservice Client {\n  rpc Foo(SharedRequest) returns (SharedResponse);\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        remote_a.join("a.proto"),
+        "syntax = \"proto3\";\npackage a;\nmessage SharedRequest {}\nmessage SharedResponse {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        remote_b.join("b.proto"),
+        "syntax = \"proto3\";\npackage b;\nmessage SharedRequest {}\nmessage SharedResponse {}\n",
+    )
+    .unwrap();
+
+    let config = minimal_manifest(tmp.path());
+    let local_proto = proto_root.join("local/client.proto");
+    let proto_files = vec![
+        local_proto,
+        remote_a.join("a.proto"),
+        remote_b.join("b.proto"),
+    ];
+    let proto_model = ProtoModel::parse(&proto_files, &proto_root, &config).unwrap();
+
+    let result = ActrGenMetadata::from_proto_model(SupportedLanguage::Rust, &proto_model);
+    let err = result.expect_err("ambiguous type should error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Cannot uniquely resolve") && msg.contains("SharedRequest"),
+        "unexpected error message: {msg}"
+    );
+}
+
+#[test]
+fn from_proto_model_errors_on_unresolved_qualified_type() {
+    let tmp = TempDir::new().unwrap();
+    let proto_root = tmp.path().join("protos");
+    let local_dir = proto_root.join("local");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::fs::write(
+        local_dir.join("client.proto"),
+        "syntax = \"proto3\";\npackage client;\nimport \"google/protobuf/empty.proto\";\nservice Client {\n  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);\n}\n",
+    )
+    .unwrap();
+
+    let config = minimal_manifest(tmp.path());
+    let local_proto = proto_root.join("local/client.proto");
+    let proto_model = ProtoModel::parse(&[local_proto], &proto_root, &config).unwrap();
+
+    let err = ActrGenMetadata::from_proto_model(SupportedLanguage::Rust, &proto_model)
+        .expect_err("unresolved qualified RPC type should be a config error");
+    let message = err.to_string();
+    assert!(
+        message.contains("Cannot resolve input type `google.protobuf.Empty`"),
+        "unexpected error message: {message}"
+    );
+}
+
+#[test]
+fn from_proto_model_resolves_nested_qualified_type_owner() {
+    let tmp = TempDir::new().unwrap();
+    let proto_root = tmp.path().join("protos");
+    let local_dir = proto_root.join("local");
+    let remote_dir = proto_root.join("remote/ask");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::fs::create_dir_all(&remote_dir).unwrap();
+    std::fs::write(
+        local_dir.join("client.proto"),
+        "syntax = \"proto3\";\npackage client;\nimport \"remote/ask/ask.proto\";\nservice Client {\n  rpc Foo(ask.Outer.InnerRequest) returns (ask.Outer.InnerResponse);\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        remote_dir.join("ask.proto"),
+        "syntax = \"proto3\";\npackage ask;\nmessage Outer {\n  message InnerRequest {}\n  message InnerResponse {}\n}\n",
+    )
+    .unwrap();
+
+    let config = minimal_manifest(tmp.path());
+    let local_proto = proto_root.join("local/client.proto");
+    let remote_proto = remote_dir.join("ask.proto");
+    let proto_model =
+        ProtoModel::parse(&[local_proto, remote_proto], &proto_root, &config).unwrap();
+
+    let meta = ActrGenMetadata::from_proto_model(SupportedLanguage::Rust, &proto_model).unwrap();
+    let method = &meta.local_services[0].methods[0];
+    assert_eq!(method.input_ref.proto_package, "ask");
+    assert_eq!(method.input_ref.proto_file, "remote/ask/ask.proto");
+    assert_eq!(method.input_ref.type_name, "Outer.InnerRequest");
+    assert_eq!(method.output_ref.type_name, "Outer.InnerResponse");
+}
+
+#[test]
+fn load_metadata_defaults_missing_type_refs_for_backward_compat() {
+    // Older metadata JSON written before this PR has no input_ref/output_ref
+    // fields; `#[serde(default)]` must fill empty TypeRefs so the scaffold
+    // still loads (generators fall back to the bare type name).
+    let dir = TempDir::new().unwrap();
+    let json = r#"{
+        "plugin_version": "actr-cli",
+        "language": "rust",
+        "local_services": [{
+            "name": "EchoService",
+            "package": "echo",
+            "proto_file": "local/echo.proto",
+            "handler_interface": "EchoServiceHandler",
+            "workload_type": "EchoServiceWorkload",
+            "dispatcher_type": "EchoServiceDispatcher",
+            "methods": [{
+                "name": "Echo",
+                "snake_name": "echo",
+                "input_type": "EchoRequest",
+                "output_type": "EchoResponse",
+                "route_key": "echo.EchoService.Echo"
+            }]
+        }],
+        "remote_services": []
+    }"#;
+    let path = dir.path().join("actr-gen-meta.json");
+    std::fs::write(&path, json).unwrap();
+    let loaded = load_metadata(dir.path()).unwrap().unwrap();
+    let method = &loaded.local_services[0].methods[0];
+    assert_eq!(method.input_type, "EchoRequest");
+    assert_eq!(method.input_ref.proto_package, "");
+    assert_eq!(method.input_ref.type_name, "");
+}

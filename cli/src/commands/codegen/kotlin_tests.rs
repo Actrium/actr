@@ -1,4 +1,7 @@
 use super::*;
+use crate::commands::codegen::{
+    GenContext, MethodModel, ProtoFileModel, ProtoModel, ProtoSide, ServiceModel,
+};
 
 fn remote_echo_service() -> ServiceInfo {
     ServiceInfo {
@@ -103,6 +106,93 @@ fn local_only_workload_does_not_require_remote_targets() {
     assert!(!content.contains("private val remoteTargets"));
     assert!(!content.contains("resolveRemoteTargets"));
     assert!(content.contains("val workload = UnifiedWorkload(handler)"));
+}
+
+#[test]
+fn collect_services_preserves_nested_kotlin_type_names() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_path = tmp.path().join("manifest.toml");
+    std::fs::write(
+        &config_path,
+        r#"edition = 1
+exports = []
+
+[package]
+name = "Demo"
+manufacturer = "acme"
+version = "0.1.0"
+
+[system.signaling]
+url = "ws://127.0.0.1:8080"
+
+[system.ais_endpoint]
+url = "http://127.0.0.1:8080/ais"
+
+[system.deployment]
+realm_id = 1001
+"#,
+    )
+    .unwrap();
+    let config = actr_config::ConfigParser::from_manifest_file(&config_path).unwrap();
+    let local_file = ProtoFileModel {
+        proto_file: "local/client.proto".into(),
+        relative_path: "local/client.proto".into(),
+        package: "client".to_string(),
+        side: ProtoSide::Local,
+        declared_type_names: vec![],
+        services: vec![ServiceModel {
+            name: "Client".to_string(),
+            package: "client".to_string(),
+            proto_file: "local/client.proto".into(),
+            relative_path: "local/client.proto".into(),
+            side: ProtoSide::Local,
+            methods: vec![MethodModel {
+                name: "Foo".to_string(),
+                snake_name: "foo".to_string(),
+                input_type: "ask.Outer.InnerRequest".to_string(),
+                output_type: "ask.Outer.InnerResponse".to_string(),
+                route_key: "client.Client.Foo".to_string(),
+            }],
+            actr_type: None,
+        }],
+    };
+    let remote_file = ProtoFileModel {
+        proto_file: "remote/ask/ask.proto".into(),
+        relative_path: "remote/ask/ask.proto".into(),
+        package: "ask".to_string(),
+        side: ProtoSide::Remote,
+        declared_type_names: vec![
+            "Outer".to_string(),
+            "Outer.InnerRequest".to_string(),
+            "Outer.InnerResponse".to_string(),
+        ],
+        services: vec![],
+    };
+    let context = GenContext {
+        proto_files: vec![],
+        proto_model: ProtoModel {
+            files: vec![local_file.clone(), remote_file],
+            local_services: local_file.services,
+            remote_services: vec![],
+        },
+        input_path: tmp.path().join("protos"),
+        output: tmp.path().join("generated"),
+        config_path,
+        config,
+        no_scaffold: false,
+        overwrite_user_code: false,
+        no_format: false,
+        debug: false,
+        skip_validation: false,
+    };
+
+    let services = KotlinGenerator
+        .collect_services(&context)
+        .expect("collect services");
+    let method = &services[0].methods[0];
+
+    assert_eq!(method.request_type, "Outer.InnerRequest");
+    assert_eq!(method.response_type, "Outer.InnerResponse");
 }
 
 #[test]

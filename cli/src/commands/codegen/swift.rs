@@ -1473,10 +1473,11 @@ impl SwiftGenerator {
 
     fn swift_type_name(&self, type_ref: &TypeRef) -> String {
         let prefix = swift_package_prefix_from_package(&type_ref.proto_package);
+        let type_name = swift_owner_relative_type_name(type_ref);
         if prefix.is_empty() {
-            type_ref.type_name.clone()
+            type_name
         } else {
-            format!("{}{}", prefix, type_ref.type_name)
+            format!("{prefix}{type_name}")
         }
     }
 
@@ -1658,6 +1659,32 @@ impl SwiftGenerator {
         let mut handlebars = Handlebars::new();
         handlebars.register_escape_fn(handlebars::no_escape);
         Ok(handlebars.render_template(LIFECYCLE_ADAPTER_TEMPLATE, &context)?)
+    }
+}
+
+fn swift_owner_relative_type_name(type_ref: &TypeRef) -> String {
+    let relative_type = owner_relative_proto_type(type_ref)
+        .filter(|relative| !relative.is_empty())
+        .unwrap_or(type_ref.type_name.as_str());
+    let mut parts = relative_type.split('.').collect::<Vec<_>>();
+    if parts.len() <= 1 {
+        return relative_type.to_string();
+    }
+    let first = parts.remove(0);
+    format!("{first}.{}", parts.join("."))
+}
+
+fn owner_relative_proto_type(type_ref: &TypeRef) -> Option<&str> {
+    let proto_type = type_ref.proto_type.trim().trim_start_matches('.');
+    if proto_type.is_empty() {
+        return None;
+    }
+    if type_ref.proto_package.is_empty() {
+        Some(proto_type)
+    } else {
+        proto_type
+            .strip_prefix(&type_ref.proto_package)
+            .and_then(|relative| relative.strip_prefix('.'))
     }
 }
 

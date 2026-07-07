@@ -61,6 +61,19 @@ fn swift_type_name_uses_declaring_package_for_imported_types() {
 }
 
 #[test]
+fn swift_type_name_preserves_nested_parent_scope() {
+    let generator = SwiftGenerator;
+    let nested = TypeRef {
+        proto_type: "ask.Outer.InnerRequest".to_string(),
+        type_name: "InnerRequest".to_string(),
+        proto_package: "ask".to_string(),
+        proto_file: "remote/ask/ask.proto".to_string(),
+    };
+
+    assert_eq!(generator.swift_type_name(&nested), "Ask_Outer.InnerRequest");
+}
+
+#[test]
 fn generated_scaffold_uses_linked_runtime() {
     let generator = SwiftGenerator;
     let service = sample_echo_service();

@@ -70,9 +70,9 @@ pub struct TypeOwner {
 /// - an unqualified name declared in several non-current files is ambiguous
 ///   and surfaces as an error so the codegen does not silently pick the wrong
 ///   owner;
-/// - types that cannot be resolved at all (well-known types, external imports
-///   not part of the local proto set, nested messages) fall back to the
-///   current service's file so existing behaviour is preserved.
+/// - types that cannot be resolved at all return `Ok(None)`; callers may
+///   choose a local fallback for unqualified legacy references, but should not
+///   silently rewrite unresolved qualified types to the current service owner.
 #[derive(Debug, Clone, Default)]
 pub struct TypeOwnerIndex {
     qualified: HashMap<String, TypeOwner>,
@@ -89,12 +89,17 @@ impl TypeOwnerIndex {
                     proto_file: file.relative_path.to_string_lossy().to_string(),
                     type_name: declared.clone(),
                 };
-                if !file.package.is_empty() {
-                    index
-                        .qualified
-                        .insert(format!("{}.{}", file.package, declared), owner.clone());
-                }
-                index.bare.entry(declared.clone()).or_default().push(owner);
+                let qualified_name = if file.package.is_empty() {
+                    declared.clone()
+                } else {
+                    format!("{}.{}", file.package, declared)
+                };
+                index.qualified.insert(qualified_name, owner.clone());
+                index
+                    .bare
+                    .entry(declared.rsplit('.').next().unwrap_or(declared).to_string())
+                    .or_default()
+                    .push(owner);
             }
         }
         index
@@ -105,8 +110,8 @@ impl TypeOwnerIndex {
     /// `EchoRequest`) against the index.
     ///
     /// Returns `Ok(Some(owner))` when the declaring file is known, `Ok(None)`
-    /// when the type cannot be resolved (caller falls back to the current
-    /// service), or `Err(candidates)` when an unqualified type is ambiguous.
+    /// when the type cannot be resolved, or `Err(candidates)` when an
+    /// unqualified type is ambiguous.
     pub fn resolve(
         &self,
         referenced: &str,
@@ -121,17 +126,32 @@ impl TypeOwnerIndex {
             return Ok(Some(owner.clone()));
         }
 
+        if normalized.contains('.') {
+            if !current.package.is_empty()
+                && let Some(owner) = self
+                    .qualified
+                    .get(&format!("{}.{}", current.package, normalized))
+            {
+                return Ok(Some(owner.clone()));
+            }
+            return Ok(None);
+        }
+
         let type_name = normalized
             .rsplit('.')
             .next()
             .unwrap_or(&normalized)
             .to_string();
 
-        if current.declared_type_names.contains(&type_name) {
+        if let Some(declared) = current
+            .declared_type_names
+            .iter()
+            .find(|declared| declared.rsplit('.').next() == Some(type_name.as_str()))
+        {
             return Ok(Some(TypeOwner {
                 proto_package: current.package.clone(),
                 proto_file: current.relative_path.to_string_lossy().to_string(),
-                type_name,
+                type_name: declared.clone(),
             }));
         }
 
@@ -177,6 +197,18 @@ impl ProtoModel {
                 .strip_prefix(proto_root)
                 .unwrap_or(proto_file)
                 .to_path_buf();
+            // Reject paths that escape the proto root: a `..` component would
+            // let a crafted proto file path (e.g. from a remote dependency)
+            // inject traversal sequences into generated import/module paths.
+            if relative_path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(ActrCliError::config_error(format!(
+                    "proto file path escapes the proto root: {}",
+                    proto_file.display()
+                )));
+            }
             let side = classify_proto_side(&relative_path);
             let parsed = parse_proto_file(proto_file)?;
 
@@ -295,7 +327,7 @@ fn parse_proto_file(proto_file: &Path) -> Result<ParsedProtoFile> {
     })?;
 
     let mut package = String::new();
-    let mut declared_type_names = Vec::new();
+    let mut declared_type_names = collect_declared_type_names(&content);
     let mut current_service: Option<ParsedService> = None;
     let mut services = Vec::new();
 
@@ -336,13 +368,11 @@ fn parse_proto_file(proto_file: &Path) -> Result<ParsedProtoFile> {
             continue;
         }
 
-        if let Some(name) = extract_declared_type_name(line, "message ") {
-            declared_type_names.push(name);
+        if extract_declared_type_name(line, "message ").is_some() {
             continue;
         }
 
-        if let Some(name) = extract_declared_type_name(line, "enum ") {
-            declared_type_names.push(name);
+        if extract_declared_type_name(line, "enum ").is_some() {
             continue;
         }
 
@@ -412,6 +442,76 @@ fn parse_rpc_method(rest: &str, package: &str, service_name: &str) -> Option<Met
 
 fn normalize_proto_type(raw_type: &str) -> String {
     raw_type.trim().trim_start_matches('.').to_string()
+}
+
+fn collect_declared_type_names(content: &str) -> Vec<String> {
+    let tokens = tokenize_proto_declarations(content);
+    let mut declared = Vec::new();
+    let mut type_scopes: Vec<Option<String>> = Vec::new();
+    let mut pending_scope: Option<Option<String>> = None;
+    let mut index = 0;
+
+    while index < tokens.len() {
+        match tokens[index].as_str() {
+            "message" | "enum" => {
+                if let Some(name) = tokens.get(index + 1).filter(|token| is_proto_ident(token)) {
+                    let mut parts = type_scopes
+                        .iter()
+                        .filter_map(|scope| scope.as_deref())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    parts.push(name.clone());
+                    let full_name = parts.join(".");
+                    declared.push(full_name.clone());
+                    pending_scope = Some(Some(full_name));
+                    index += 2;
+                    continue;
+                }
+            }
+            "{" => {
+                type_scopes.push(pending_scope.take().unwrap_or(None));
+            }
+            "}" => {
+                type_scopes.pop();
+                pending_scope = None;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+
+    declared
+}
+
+fn tokenize_proto_declarations(content: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    for line in content.lines() {
+        let line = line.split_once("//").map_or(line, |(before, _)| before);
+        let mut current = String::new();
+        for character in line.chars() {
+            if character == '{' || character == '}' {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+                tokens.push(character.to_string());
+            } else if character.is_alphanumeric() || character == '_' {
+                current.push(character);
+            } else if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        }
+        if !current.is_empty() {
+            tokens.push(current);
+        }
+    }
+    tokens
+}
+
+fn is_proto_ident(token: &str) -> bool {
+    token
+        .chars()
+        .next()
+        .is_some_and(|character| character.is_alphabetic() || character == '_')
 }
 
 fn extract_declared_type_name(line: &str, prefix: &str) -> Option<String> {

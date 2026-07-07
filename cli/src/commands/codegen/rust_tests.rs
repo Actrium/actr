@@ -244,3 +244,30 @@ fn pure_helpers_produce_correct_output() {
     // is_default_cargo_lib_rs returns false for non-default lib.rs.
     assert!(!super::is_default_cargo_lib_rs("custom content"));
 }
+
+#[test]
+fn message_imports_use_nested_parent_modules() {
+    let mut svc = scaffold_service();
+    svc.methods[0].input_ref = TypeRef {
+        proto_type: "ask.Outer.InnerRequest".to_string(),
+        type_name: "InnerRequest".to_string(),
+        proto_package: "ask".to_string(),
+        proto_file: "remote/ask/ask.proto".to_string(),
+    };
+    svc.methods[0].output_ref = TypeRef {
+        proto_type: "ask.Outer.InnerResponse".to_string(),
+        type_name: "InnerResponse".to_string(),
+        proto_package: "ask".to_string(),
+        proto_file: "remote/ask/ask.proto".to_string(),
+    };
+
+    let imports = super::message_imports(&svc);
+
+    assert!(
+        imports.contains("use crate::generated::ask::{outer::InnerRequest, outer::InnerResponse};")
+            || imports.contains(
+                "use crate::generated::ask::{outer::InnerResponse, outer::InnerRequest};"
+            ),
+        "expected nested parent modules in imports, got:\n{imports}"
+    );
+}

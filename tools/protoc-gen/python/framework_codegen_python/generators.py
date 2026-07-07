@@ -22,13 +22,13 @@ def generate_local_workload_module(
 ) -> dict:
     """Generate typed dispatchers for local protobuf services."""
     proto_module = proto_module_name(proto_name)
-    proto_alias = pb2_alias(package_name)
+    proto_alias = pb2_alias(proto_name)
     file_name = workload_module_name(package_name, services[0].name if services else "workload")
 
     # Resolve the declaring owner pb2 module for every method input/output type
-    # so imported types resolve to their real owner (e.g. `ask.*` -> `ask_pb2`)
-    # instead of the current service's package. The current file is always
-    # imported as the fallback for locally-declared / unresolvable types.
+    # so imported types resolve to their real owner module instead of the
+    # current service's package. The alias is derived from the proto file path
+    # so two files in the same proto package cannot shadow each other.
     imports: dict[str, str] = {}  # alias -> import line
     imports[proto_alias] = import_line_for(proto_name, proto_module, proto_alias)
     type_alias: dict[str, str] = {}  # fully-qualified type -> alias
@@ -43,8 +43,8 @@ def generate_local_workload_module(
                 if owner is None:
                     type_alias[cleaned] = proto_alias
                     continue
-                owner_package, owner_proto_name = owner
-                alias = pb2_alias(owner_package)
+                _owner_package, owner_proto_name = owner
+                alias = pb2_alias(owner_proto_name)
                 if alias not in imports:
                     imports[alias] = import_line_for(
                         owner_proto_name, proto_module_name(owner_proto_name), alias
@@ -151,9 +151,16 @@ def proto_module_name(proto_name: str) -> str:
     return f"{base}_pb2"
 
 
-def pb2_alias(package_name: str) -> str:
-    """pb2 module alias for a proto package (e.g. `ask` -> `ask_pb2`)."""
-    base = package_name.replace(".", "_").replace("-", "_").lower()
+def pb2_alias(proto_name: str) -> str:
+    """pb2 module alias derived from a declaring proto file path."""
+    base = (
+        proto_name.strip()
+        .removesuffix(".proto")
+        .replace("/", "_")
+        .replace(".", "_")
+        .replace("-", "_")
+        .lower()
+    )
     return f"{base}_pb2" if base else "local_pb2"
 
 
@@ -164,13 +171,6 @@ def import_line_for(proto_name: str, proto_module: str, proto_alias: str) -> str
     if proto_dir:
         return f"from .{proto_dir.replace('/', '.')} import {proto_module} as {proto_alias}"
     return f"from . import {proto_module} as {proto_alias}"
-
-
-def proto_module_name(proto_name: str) -> str:
-    """Convert proto file name to module name."""
-    filename = proto_name.split("/")[-1]
-    base = filename.removesuffix(".proto")
-    return f"{base}_pb2"
 
 
 def workload_module_name(package_name: str, service_name: str) -> str:

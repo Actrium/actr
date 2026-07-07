@@ -13,6 +13,8 @@
  */
 package io.actrium.codegen
 
+import com.google.protobuf.DescriptorProtos.DescriptorProto
+import com.google.protobuf.DescriptorProtos.FileDescriptorProto
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse
 
@@ -65,10 +67,7 @@ fun generateCode(request: CodeGeneratorRequest): CodeGeneratorResponse {
     val typeOwner = mutableMapOf<String, TypeOwner>()
     for (file in request.protoFileList) {
         for (message in file.messageTypeList) {
-            val fullName =
-                    if (file.`package`.isEmpty()) message.name
-                    else "${file.`package`}.${message.name}"
-            typeOwner[fullName] = TypeOwner(file.`package`, file.name)
+            collectTypeOwners(file, message, emptyList(), typeOwner)
         }
     }
 
@@ -97,6 +96,44 @@ fun generateCode(request: CodeGeneratorRequest): CodeGeneratorResponse {
     }
 
     return responseBuilder.build()
+}
+
+private fun collectTypeOwners(
+        file: FileDescriptorProto,
+        message: DescriptorProto,
+        parentPath: List<String>,
+        owners: MutableMap<String, TypeOwner>,
+) {
+    val messagePath = parentPath + message.name
+    val protoName = (listOf(file.`package`).filter { it.isNotEmpty() } + messagePath).joinToString(".")
+    owners[protoName] =
+            TypeOwner(
+                    packageName = file.`package`,
+                    protoFileName = file.name,
+                    javaPackage = file.options.javaPackage,
+                    javaOuterClassName =
+                            file.options.javaOuterClassname.ifEmpty { defaultJavaOuterClassName(file) },
+                    javaMultipleFiles = file.options.javaMultipleFiles,
+                    messagePath = messagePath,
+            )
+    for (nested in message.nestedTypeList) {
+        collectTypeOwners(file, nested, messagePath, owners)
+    }
+}
+
+private fun defaultJavaOuterClassName(file: FileDescriptorProto): String {
+    val baseName = file.name.substringAfterLast("/").removeSuffix(".proto").toPascalCase()
+    val topLevelNames =
+            file.messageTypeList.map { it.name }.toSet() +
+                    file.enumTypeList.map { it.name } +
+                    file.serviceList.map { it.name }
+    return if (baseName in topLevelNames) "${baseName}OuterClass" else baseName
+}
+
+private fun String.toPascalCase(): String {
+    return this.split("_", "-").joinToString("") { word ->
+        word.replaceFirstChar { it.uppercase() }
+    }
 }
 
 /** Parse parameters from protoc --actrframework-kotlin_opt */

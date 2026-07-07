@@ -1021,7 +1021,7 @@ fn message_imports(service: &ScaffoldService) -> String {
             by_module
                 .entry(module)
                 .or_default()
-                .insert(type_ref.type_name.clone());
+                .insert(rust_message_import_name(type_ref));
         }
     }
 
@@ -1035,6 +1035,40 @@ fn message_imports(service: &ScaffoldService) -> String {
         .join("\n")
 }
 
+fn rust_message_import_name(type_ref: &crate::commands::codegen::TypeRef) -> String {
+    let Some(relative_type) = owner_relative_proto_type(type_ref) else {
+        return type_ref.type_name.clone();
+    };
+    let parts = relative_type.split('.').collect::<Vec<_>>();
+    let Some((type_name, parents)) = parts.split_last() else {
+        return type_ref.type_name.clone();
+    };
+    if parents.is_empty() {
+        type_name.to_string()
+    } else {
+        let parent_modules = parents
+            .iter()
+            .map(|part| to_snake_case(part))
+            .collect::<Vec<_>>()
+            .join("::");
+        format!("{parent_modules}::{type_name}")
+    }
+}
+
+fn owner_relative_proto_type(type_ref: &crate::commands::codegen::TypeRef) -> Option<&str> {
+    let proto_type = type_ref.proto_type.trim().trim_start_matches('.');
+    if proto_type.is_empty() {
+        return None;
+    }
+    if type_ref.proto_package.is_empty() {
+        Some(proto_type)
+    } else {
+        proto_type
+            .strip_prefix(&type_ref.proto_package)
+            .and_then(|relative| relative.strip_prefix('.'))
+    }
+}
+
 fn handler_method_impls(service: &ScaffoldService) -> String {
     if service.methods.is_empty() {
         return "    // This service does not declare RPC methods yet.\n".to_string();
@@ -1044,6 +1078,8 @@ fn handler_method_impls(service: &ScaffoldService) -> String {
         .methods
         .iter()
         .map(|method| {
+            let input_type = rust_scaffold_type_name(&method.input_ref, &method.input_type);
+            let output_type = rust_scaffold_type_name(&method.output_ref, &method.output_type);
             format!(
                 r#"    async fn {method_name}<C: Context>(
         &self,
@@ -1054,14 +1090,24 @@ fn handler_method_impls(service: &ScaffoldService) -> String {
     }}
 "#,
                 method_name = method.snake_name,
-                input_type = method.input_type,
-                output_type = method.output_type,
+                input_type = input_type,
+                output_type = output_type,
                 service_name = service.name,
                 rpc_name = method.name,
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn rust_scaffold_type_name(type_ref: &crate::commands::codegen::TypeRef, fallback: &str) -> String {
+    type_ref
+        .type_name
+        .rsplit('.')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 fn is_default_cargo_lib_rs(content: &str) -> bool {

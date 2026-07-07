@@ -588,8 +588,14 @@ impl PythonGenerator {
                         ProtoMethod {
                             name: method.name,
                             snake_name: method.snake_name,
-                            input_type: method.input_type,
-                            output_type: method.output_type,
+                            input_type: python_proto_type_name(
+                                &method.input_ref,
+                                &method.input_type,
+                            ),
+                            output_type: python_proto_type_name(
+                                &method.output_ref,
+                                &method.output_type,
+                            ),
                             input_alias,
                             output_alias,
                             input_import,
@@ -678,10 +684,15 @@ fn proto_module_from_path(path: &Path) -> String {
         .to_string()
 }
 
-/// pb2 module alias for a proto package (e.g. `ask` -> `ask_pb2`), matching
-/// the Python protoc plugin's `pb2_alias` convention.
-fn pb2_alias(package: &str) -> String {
-    let base = package.replace(['.', '-'], "_").to_ascii_lowercase();
+/// pb2 module alias for a declaring proto file, matching the Python protoc
+/// plugin's convention. The proto file path is included so two files in the
+/// same proto package cannot shadow each other.
+fn pb2_alias_for_proto_file(proto_file: &str) -> String {
+    let normalized = proto_file
+        .trim()
+        .trim_end_matches(".proto")
+        .replace(['/', '.', '-'], "_");
+    let base = normalized.to_ascii_lowercase();
     if base.is_empty() {
         "local_pb2".to_string()
     } else {
@@ -699,10 +710,32 @@ fn pb2_import_line(proto_file: &str, alias: &str) -> String {
 }
 
 /// Resolve the pb2 alias and import line for a declaring proto package/file.
-fn pb2_alias_and_import(proto_package: &str, proto_file: &str) -> (String, String) {
-    let alias = pb2_alias(proto_package);
+fn pb2_alias_and_import(_proto_package: &str, proto_file: &str) -> (String, String) {
+    let alias = pb2_alias_for_proto_file(proto_file);
     let import = pb2_import_line(proto_file, &alias);
     (alias, import)
+}
+
+fn python_proto_type_name(type_ref: &crate::commands::codegen::TypeRef, fallback: &str) -> String {
+    owner_relative_proto_type(type_ref)
+        .filter(|relative| !relative.is_empty())
+        .or_else(|| (!type_ref.type_name.is_empty()).then_some(type_ref.type_name.as_str()))
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn owner_relative_proto_type(type_ref: &crate::commands::codegen::TypeRef) -> Option<&str> {
+    let proto_type = type_ref.proto_type.trim().trim_start_matches('.');
+    if proto_type.is_empty() {
+        return None;
+    }
+    if type_ref.proto_package.is_empty() {
+        Some(proto_type)
+    } else {
+        proto_type
+            .strip_prefix(&type_ref.proto_package)
+            .and_then(|relative| relative.strip_prefix('.'))
+    }
 }
 
 fn pb2_package_from_path(path: &Path) -> String {
