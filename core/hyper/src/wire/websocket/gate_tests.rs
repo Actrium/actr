@@ -386,6 +386,118 @@ fn empty_pending() -> PendingReplies {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
+#[tokio::test]
+async fn finish_lane_task_last_lane_removes_sink_and_fires_disconnect() {
+    let peer = test_actor_id(298);
+    let active_lanes = Arc::new(AtomicUsize::new(1));
+    let inbound_sinks: InboundSinkMap = Arc::new(RwLock::new(HashMap::new()));
+    inbound_sinks
+        .write()
+        .await
+        .insert(peer.clone(), Arc::new(tokio::sync::Mutex::new(None)));
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let hook: HookCallback = Arc::new(move |event| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            let _ = tx.send(event);
+        })
+    });
+
+    WebSocketGate::finish_lane_task(
+        active_lanes.clone(),
+        Some(peer.clone()),
+        Some(hook),
+        inbound_sinks.clone(),
+    )
+    .await;
+
+    assert_eq!(active_lanes.load(Ordering::SeqCst), 0);
+    assert!(!inbound_sinks.read().await.contains_key(&peer));
+
+    let event = rx.recv().await.expect("disconnect hook should fire");
+    assert!(matches!(
+        event,
+        HookEvent::WebSocketDisconnected { peer_id } if peer_id == peer
+    ));
+}
+
+#[tokio::test]
+async fn finish_lane_task_non_last_lane_keeps_sink_and_skips_disconnect() {
+    let peer = test_actor_id(299);
+    let active_lanes = Arc::new(AtomicUsize::new(2));
+    let inbound_sinks: InboundSinkMap = Arc::new(RwLock::new(HashMap::new()));
+    inbound_sinks
+        .write()
+        .await
+        .insert(peer.clone(), Arc::new(tokio::sync::Mutex::new(None)));
+
+    let hook_calls = Arc::new(AtomicUsize::new(0));
+    let hook_calls_for_hook = hook_calls.clone();
+    let hook: HookCallback = Arc::new(move |event| {
+        let hook_calls = hook_calls_for_hook.clone();
+        Box::pin(async move {
+            if matches!(event, HookEvent::WebSocketDisconnected { .. }) {
+                hook_calls.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    });
+
+    WebSocketGate::finish_lane_task(
+        active_lanes.clone(),
+        Some(peer.clone()),
+        Some(hook),
+        inbound_sinks.clone(),
+    )
+    .await;
+
+    assert_eq!(active_lanes.load(Ordering::SeqCst), 1);
+    assert!(inbound_sinks.read().await.contains_key(&peer));
+    assert_eq!(hook_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn spawn_connection_tasks_get_lane_failure_removes_sink_and_fires_disconnect() {
+    let peer = test_actor_id(300);
+    let source_id = actr_protocol::prost::Message::encode_to_vec(&peer);
+    let inbound_sinks: InboundSinkMap = Arc::new(RwLock::new(HashMap::new()));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let hook: HookCallback = Arc::new(move |event| {
+        let tx = tx.clone();
+        Box::pin(async move {
+            let _ = tx.send(event);
+        })
+    });
+
+    WebSocketGate::spawn_connection_tasks(
+        crate::wire::websocket::connection::WebSocketConnection::new("ws://127.0.0.1:0".into()),
+        source_id,
+        empty_pending(),
+        Arc::new(DataChunkRegistry::new()),
+        CapturingMailbox::new(),
+        Some(hook),
+        inbound_sinks.clone(),
+    )
+    .await;
+
+    let disconnected_peer = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let event = rx
+                .recv()
+                .await
+                .expect("disconnect hook should fire before channel closes");
+            if let HookEvent::WebSocketDisconnected { peer_id } = event {
+                break peer_id;
+            }
+        }
+    })
+    .await
+    .expect("get_lane failure should finish lane tasks and fire disconnect");
+
+    assert_eq!(disconnected_peer, peer);
+    assert!(!inbound_sinks.read().await.contains_key(&peer));
+}
+
 /// RPC request with no pending entry should go to the mailbox with normal priority.
 #[tokio::test]
 async fn handle_envelope_request_goes_to_mailbox_with_normal_priority() {
