@@ -321,6 +321,26 @@ impl WebSocketGate {
         }
     }
 
+    async fn finish_lane_task(
+        active_lanes: Arc<std::sync::atomic::AtomicUsize>,
+        peer_id_for_lane: Option<ActrId>,
+        hook_cb_for_lane: Option<HookCallback>,
+        sinks_for_lane: InboundSinkMap,
+    ) {
+        let remaining = active_lanes
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            .saturating_sub(1);
+        if remaining == 0 {
+            if let Some(ref peer) = peer_id_for_lane {
+                sinks_for_lane.write().await.remove(peer);
+                tracing::debug!(peer = %peer, "WS inbound sink removed (all lanes closed)");
+            }
+            if let (Some(peer), Some(cb)) = (peer_id_for_lane, hook_cb_for_lane) {
+                cb(HookEvent::WebSocketDisconnected { peer_id: peer }).await;
+            }
+        }
+    }
+
     /// Verify AIdCredential Ed25519 signature of an inbound connection
     ///
     /// Returns `Some(verified_actor_id_str)` on successful verification, `None` on failure (already logged).
@@ -492,100 +512,98 @@ impl WebSocketGate {
             tokio::spawn(async move {
                 // get_lane lazily creates the mpsc channel and registers in router
                 let lane = match conn_clone.get_lane(pt).await {
-                    Ok(l) => l,
+                    Ok(l) => Some(l),
                     Err(e) => {
                         tracing::error!("❌ WS get_lane({:?}) failed: {:?}", pt, e);
-                        return;
+                        None
                     }
                 };
 
-                tracing::debug!("📡 WS lane reader started for {:?}", pt);
+                if let Some(lane) = lane {
+                    tracing::debug!("📡 WS lane reader started for {:?}", pt);
 
-                loop {
-                    match lane.recv().await {
-                        Ok(data) => {
-                            let data_bytes = Bytes::copy_from_slice(&data);
+                    loop {
+                        match lane.recv().await {
+                            Ok(data) => {
+                                let data_bytes = Bytes::copy_from_slice(&data);
 
-                            match pt {
-                                PayloadType::RpcReliable | PayloadType::RpcSignal => {
-                                    match RpcEnvelope::decode(&data[..]) {
-                                        Ok(envelope) => {
-                                            Self::handle_envelope(
-                                                envelope,
-                                                src.clone(),
-                                                data_bytes,
-                                                pt,
-                                                pending.clone(),
-                                                mb.clone(),
-                                            )
-                                            .await;
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "❌ WS Failed to decode RpcEnvelope: {:?}",
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
-                                PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                                    match DataStream::decode(&data[..]) {
-                                        Ok(chunk) => {
-                                            tracing::debug!(
-                                                "📦 WS Received DataStream: stream_id={}, seq={}",
-                                                chunk.stream_id,
-                                                chunk.sequence,
-                                            );
-                                            match ActrId::decode(&src[..]) {
-                                                Ok(sender_id) => {
-                                                    registry.dispatch(chunk, sender_id).await;
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!(
-                                                        "❌ WS Failed to decode sender ActrId: {:?}",
-                                                        e
-                                                    );
-                                                }
+                                match pt {
+                                    PayloadType::RpcReliable | PayloadType::RpcSignal => {
+                                        match RpcEnvelope::decode(&data[..]) {
+                                            Ok(envelope) => {
+                                                Self::handle_envelope(
+                                                    envelope,
+                                                    src.clone(),
+                                                    data_bytes,
+                                                    pt,
+                                                    pending.clone(),
+                                                    mb.clone(),
+                                                )
+                                                .await;
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "❌ WS Failed to decode RpcEnvelope: {:?}",
+                                                    e
+                                                );
                                             }
                                         }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                "❌ WS Failed to decode DataStream: {:?}",
-                                                e
-                                            );
+                                    }
+                                    PayloadType::StreamReliable
+                                    | PayloadType::StreamLatencyFirst => {
+                                        match DataStream::decode(&data[..]) {
+                                            Ok(chunk) => {
+                                                tracing::debug!(
+                                                    "📦 WS Received DataStream: stream_id={}, seq={}",
+                                                    chunk.stream_id,
+                                                    chunk.sequence,
+                                                );
+                                                match ActrId::decode(&src[..]) {
+                                                    Ok(sender_id) => {
+                                                        registry.dispatch(chunk, sender_id).await;
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!(
+                                                            "❌ WS Failed to decode sender ActrId: {:?}",
+                                                            e
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "❌ WS Failed to decode DataStream: {:?}",
+                                                    e
+                                                );
+                                            }
                                         }
                                     }
-                                }
-                                PayloadType::MediaRtp => {
-                                    tracing::warn!(
-                                        "⚠️ MediaRtp received in WebSocketGate (unexpected)"
-                                    );
+                                    PayloadType::MediaRtp => {
+                                        tracing::warn!(
+                                            "⚠️ MediaRtp received in WebSocketGate (unexpected)"
+                                        );
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            tracing::info!("🔌 WS lane {:?} closed: {:?}", pt, e);
-                            break;
+                            Err(e) => {
+                                tracing::info!("🔌 WS lane {:?} closed: {:?}", pt, e);
+                                break;
+                            }
                         }
                     }
-                }
 
-                tracing::debug!("📡 WS lane reader exited for {:?}", pt);
+                    tracing::debug!("📡 WS lane reader exited for {:?}", pt);
+                }
 
                 // Last lane out fires the disconnected hook exactly once
                 // and removes the inbound sink from the registry.
-                let remaining = active_lanes
-                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
-                    .saturating_sub(1);
-                if remaining == 0 {
-                    if let Some(ref peer) = peer_id_for_lane {
-                        sinks_for_lane.write().await.remove(peer);
-                        tracing::debug!(peer = %peer, "WS inbound sink removed (all lanes closed)");
-                    }
-                    if let (Some(peer), Some(cb)) = (peer_id_for_lane, hook_cb_for_lane) {
-                        cb(HookEvent::WebSocketDisconnected { peer_id: peer }).await;
-                    }
-                }
+                Self::finish_lane_task(
+                    active_lanes,
+                    peer_id_for_lane,
+                    hook_cb_for_lane,
+                    sinks_for_lane,
+                )
+                .await;
             });
         }
     }
