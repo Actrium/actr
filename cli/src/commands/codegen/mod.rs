@@ -12,9 +12,11 @@ pub use crate::commands::SupportedLanguage;
 use crate::error::Result;
 use kotlin::KotlinGenerator;
 pub use metadata::{
-    ACTR_GEN_META_FILE, ActrGenMetadata, load_metadata, metadata_path, write_metadata,
+    ACTR_GEN_META_FILE, ActrGenMetadata, TypeRef, load_metadata, metadata_path, write_metadata,
 };
-pub use proto_model::{MethodModel, ProtoFileModel, ProtoModel, ProtoSide, ServiceModel};
+pub use proto_model::{
+    MethodModel, ProtoFileModel, ProtoModel, ProtoSide, ServiceModel, TypeOwner, TypeOwnerIndex,
+};
 use python::PythonGenerator;
 use rust::RustGenerator;
 pub use scaffold::{ScaffoldCatalog, ScaffoldMethod, ScaffoldService};
@@ -55,7 +57,7 @@ async fn run_codegen_pipeline(
     context: &GenContext,
 ) -> Result<()> {
     let mut all_files = generator.generate_infrastructure(context).await?;
-    let metadata = ActrGenMetadata::from_proto_model(language, &context.proto_model);
+    let metadata = ActrGenMetadata::from_proto_model(language, &context.proto_model)?;
     write_metadata(&context.output, &metadata)?;
     if !context.no_scaffold {
         all_files.extend(generator.generate_scaffold(context).await?);

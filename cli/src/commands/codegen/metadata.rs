@@ -1,11 +1,34 @@
 use crate::commands::SupportedLanguage;
-use crate::commands::codegen::proto_model::{MethodModel, ProtoModel, ServiceModel};
+use crate::commands::codegen::proto_model::{
+    MethodModel, ProtoFileModel, ProtoModel, ServiceModel, TypeOwnerIndex,
+};
 use crate::error::{ActrCliError, Result};
 use actr_protocol::ActrType;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const ACTR_GEN_META_FILE: &str = "actr-gen-meta.json";
+
+/// Structured reference to a proto message type used as an RPC input/output.
+///
+/// `input_type`/`output_type` on [`MethodMetadata`] keep the bare,
+/// language-agnostic message name; `input_ref`/`output_ref` carry the
+/// declaring package and proto file so each language generator can emit
+/// owner-qualified type references instead of assuming the current service's
+/// package.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TypeRef {
+    /// Fully-qualified proto type as written in the RPC signature
+    /// (leading `.` stripped), e.g. `ask.ContinuePromptResultStreamsRequest`.
+    pub proto_type: String,
+    /// Bare message name, e.g. `ContinuePromptResultStreamsRequest`.
+    pub type_name: String,
+    /// Declaring proto package, e.g. `ask`.
+    pub proto_package: String,
+    /// Declaring proto file (path relative to the proto root), e.g.
+    /// `remote/ask-service/ask.proto`.
+    pub proto_file: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ActrGenMetadata {
@@ -38,31 +61,38 @@ pub struct RemoteServiceMetadata {
     pub methods: Vec<MethodMetadata>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MethodMetadata {
     pub name: String,
     pub snake_name: String,
     pub input_type: String,
     pub output_type: String,
     pub route_key: String,
+    #[serde(default)]
+    pub input_ref: TypeRef,
+    #[serde(default)]
+    pub output_ref: TypeRef,
 }
 
 impl ActrGenMetadata {
-    pub fn from_proto_model(language: SupportedLanguage, proto_model: &ProtoModel) -> Self {
-        Self {
+    pub fn from_proto_model(language: SupportedLanguage, proto_model: &ProtoModel) -> Result<Self> {
+        let owner_index = TypeOwnerIndex::from_files(&proto_model.files);
+        let local_services = proto_model
+            .local_services
+            .iter()
+            .map(|service| build_local_service_metadata(service, &proto_model.files, &owner_index))
+            .collect::<Result<Vec<_>>>()?;
+        let remote_services = proto_model
+            .remote_services
+            .iter()
+            .map(|service| build_remote_service_metadata(service, &proto_model.files, &owner_index))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
             plugin_version: "actr-cli".to_string(),
             language: language_key(language).to_string(),
-            local_services: proto_model
-                .local_services
-                .iter()
-                .map(build_local_service_metadata)
-                .collect(),
-            remote_services: proto_model
-                .remote_services
-                .iter()
-                .map(build_remote_service_metadata)
-                .collect(),
-        }
+            local_services,
+            remote_services,
+        })
     }
 }
 
@@ -112,20 +142,38 @@ fn language_key(language: SupportedLanguage) -> &'static str {
     }
 }
 
-fn build_local_service_metadata(service: &ServiceModel) -> LocalServiceMetadata {
-    LocalServiceMetadata {
+fn build_local_service_metadata(
+    service: &ServiceModel,
+    files: &[ProtoFileModel],
+    owner_index: &TypeOwnerIndex,
+) -> Result<LocalServiceMetadata> {
+    let current_file = files
+        .iter()
+        .find(|file| file.relative_path == service.relative_path);
+    Ok(LocalServiceMetadata {
         name: service.name.clone(),
         package: service.package.clone(),
         proto_file: service.relative_path.to_string_lossy().to_string(),
         handler_interface: format!("{}Handler", service.name),
         workload_type: format!("{}Workload", service.name),
         dispatcher_type: format!("{}Dispatcher", service.name),
-        methods: service.methods.iter().map(build_method_metadata).collect(),
-    }
+        methods: service
+            .methods
+            .iter()
+            .map(|method| build_method_metadata(method, service, current_file, owner_index))
+            .collect::<Result<Vec<_>>>()?,
+    })
 }
 
-fn build_remote_service_metadata(service: &ServiceModel) -> RemoteServiceMetadata {
-    RemoteServiceMetadata {
+fn build_remote_service_metadata(
+    service: &ServiceModel,
+    files: &[ProtoFileModel],
+    owner_index: &TypeOwnerIndex,
+) -> Result<RemoteServiceMetadata> {
+    let current_file = files
+        .iter()
+        .find(|file| file.relative_path == service.relative_path);
+    Ok(RemoteServiceMetadata {
         name: service.name.clone(),
         package: service.package.clone(),
         proto_file: service.relative_path.to_string_lossy().to_string(),
@@ -138,17 +186,92 @@ fn build_remote_service_metadata(service: &ServiceModel) -> RemoteServiceMetadat
             .to_string_repr()
         }),
         client_type: format!("{}Client", service.name),
-        methods: service.methods.iter().map(build_method_metadata).collect(),
-    }
+        methods: service
+            .methods
+            .iter()
+            .map(|method| build_method_metadata(method, service, current_file, owner_index))
+            .collect::<Result<Vec<_>>>()?,
+    })
 }
 
-fn build_method_metadata(method: &MethodModel) -> MethodMetadata {
-    MethodMetadata {
+fn build_method_metadata(
+    method: &MethodModel,
+    service: &ServiceModel,
+    current_file: Option<&ProtoFileModel>,
+    owner_index: &TypeOwnerIndex,
+) -> Result<MethodMetadata> {
+    let input_ref = resolve_type_ref(
+        &method.input_type,
+        service,
+        &method.name,
+        "input",
+        current_file,
+        owner_index,
+    )?;
+    let output_ref = resolve_type_ref(
+        &method.output_type,
+        service,
+        &method.name,
+        "output",
+        current_file,
+        owner_index,
+    )?;
+    Ok(MethodMetadata {
         name: method.name.clone(),
         snake_name: method.snake_name.clone(),
-        input_type: method.input_type.clone(),
-        output_type: method.output_type.clone(),
+        input_type: input_ref.type_name.clone(),
+        output_type: output_ref.type_name.clone(),
         route_key: method.route_key.clone(),
+        input_ref,
+        output_ref,
+    })
+}
+
+fn resolve_type_ref(
+    referenced: &str,
+    service: &ServiceModel,
+    method_name: &str,
+    kind: &str,
+    current_file: Option<&ProtoFileModel>,
+    owner_index: &TypeOwnerIndex,
+) -> Result<TypeRef> {
+    let normalized = referenced.trim().trim_start_matches('.');
+    let type_name = normalized
+        .rsplit('.')
+        .next()
+        .unwrap_or(normalized)
+        .to_string();
+
+    let fallback = || TypeRef {
+        proto_type: normalized.to_string(),
+        type_name: type_name.clone(),
+        proto_package: service.package.clone(),
+        proto_file: service.relative_path.to_string_lossy().to_string(),
+    };
+
+    let Some(current) = current_file else {
+        return Ok(fallback());
+    };
+
+    match owner_index.resolve(referenced, current) {
+        Ok(Some(owner)) => Ok(TypeRef {
+            proto_type: normalized.to_string(),
+            type_name: owner.type_name,
+            proto_package: owner.proto_package,
+            proto_file: owner.proto_file,
+        }),
+        Ok(None) => Ok(fallback()),
+        Err(candidates) => {
+            let declared_files = candidates
+                .iter()
+                .map(|owner| owner.proto_file.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ActrCliError::config_error(format!(
+                "Cannot uniquely resolve {} type `{}` for {}.{}: declared in multiple proto files [{}]",
+                kind, normalized, service.name, method_name, declared_files
+            )))
+        }
     }
 }
 

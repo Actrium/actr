@@ -48,6 +48,101 @@ pub struct MethodModel {
     pub route_key: String,
 }
 
+/// Declaring owner of a proto message/enum type.
+///
+/// `proto_file` is the path relative to the proto root (matching
+/// `ProtoFileModel::relative_path`), so it stays stable across the metadata,
+/// scaffold catalog, and language generators.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeOwner {
+    pub proto_package: String,
+    pub proto_file: String,
+    pub type_name: String,
+}
+
+/// Index mapping declared message/enum/service type names to the proto file
+/// that declares them, built from a fully parsed [`ProtoModel`].
+///
+/// Resolution rules (see `resolve`):
+/// - fully-qualified `package.Type` → exact match on the declaring file;
+/// - unqualified `Type` → prefer the current proto file, then a unique
+///   declaring file;
+/// - an unqualified name declared in several non-current files is ambiguous
+///   and surfaces as an error so the codegen does not silently pick the wrong
+///   owner;
+/// - types that cannot be resolved at all (well-known types, external imports
+///   not part of the local proto set, nested messages) fall back to the
+///   current service's file so existing behaviour is preserved.
+#[derive(Debug, Clone, Default)]
+pub struct TypeOwnerIndex {
+    qualified: HashMap<String, TypeOwner>,
+    bare: HashMap<String, Vec<TypeOwner>>,
+}
+
+impl TypeOwnerIndex {
+    pub fn from_files(files: &[ProtoFileModel]) -> Self {
+        let mut index = Self::default();
+        for file in files {
+            for declared in &file.declared_type_names {
+                let owner = TypeOwner {
+                    proto_package: file.package.clone(),
+                    proto_file: file.relative_path.to_string_lossy().to_string(),
+                    type_name: declared.clone(),
+                };
+                if !file.package.is_empty() {
+                    index
+                        .qualified
+                        .insert(format!("{}.{}", file.package, declared), owner.clone());
+                }
+                index.bare.entry(declared.clone()).or_default().push(owner);
+            }
+        }
+        index
+    }
+
+    /// Resolve `referenced` (a proto type string as written in an RPC
+    /// signature, e.g. `ask.ContinuePromptResultStreamsRequest` or
+    /// `EchoRequest`) against the index.
+    ///
+    /// Returns `Ok(Some(owner))` when the declaring file is known, `Ok(None)`
+    /// when the type cannot be resolved (caller falls back to the current
+    /// service), or `Err(candidates)` when an unqualified type is ambiguous.
+    pub fn resolve(
+        &self,
+        referenced: &str,
+        current: &ProtoFileModel,
+    ) -> std::result::Result<Option<TypeOwner>, Vec<TypeOwner>> {
+        let normalized = normalize_proto_type(referenced);
+        if normalized.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(owner) = self.qualified.get(&normalized) {
+            return Ok(Some(owner.clone()));
+        }
+
+        let type_name = normalized
+            .rsplit('.')
+            .next()
+            .unwrap_or(&normalized)
+            .to_string();
+
+        if current.declared_type_names.contains(&type_name) {
+            return Ok(Some(TypeOwner {
+                proto_package: current.package.clone(),
+                proto_file: current.relative_path.to_string_lossy().to_string(),
+                type_name,
+            }));
+        }
+
+        match self.bare.get(&type_name) {
+            None => Ok(None),
+            Some(candidates) if candidates.len() == 1 => Ok(Some(candidates[0].clone())),
+            Some(candidates) => Err(candidates.clone()),
+        }
+    }
+}
+
 impl ProtoModel {
     pub fn parse(
         proto_files: &[PathBuf],

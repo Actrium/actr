@@ -21,6 +21,7 @@ fn scaffold_service() -> ScaffoldService {
             input_type: "PingRequest".to_string(),
             output_type: "PingResponse".to_string(),
             route_key: "demo.shell.EmptyShell/Ping".to_string(),
+            ..Default::default()
         }],
     }
 }

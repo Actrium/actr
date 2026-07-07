@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package ask;
+
+// Mirrors the real ask-service request/response used to continue prompt
+// result streams. Declared in its own package so cross-package RPC type
+// ownership can be exercised by the codegen fixtures.
+
+message ContinuePromptResultStreamsRequest {
+  string prompt_id = 1;
+  string session_id = 2;
+}
+
+message ContinuePromptResultStreamsResponse {
+  string stream_token = 1;
+}

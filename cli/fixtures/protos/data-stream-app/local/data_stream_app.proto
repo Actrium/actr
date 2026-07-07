@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package data_stream_app;
+
+import "remote/ask-service/ask.proto";
+
+// Local service that references an imported RPC message type
+// (`ask.ContinuePromptResultStreamsRequest/Response`). This fixture exercises
+// cross-package RPC type ownership across every language codegen target.
+
+service DataStreamAppService {
+  rpc ContinuePromptResultStreams(ask.ContinuePromptResultStreamsRequest) returns (ask.ContinuePromptResultStreamsResponse);
+}
