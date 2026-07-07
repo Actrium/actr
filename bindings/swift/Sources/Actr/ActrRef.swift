@@ -50,8 +50,8 @@ public final class ActrRef: Sendable {
         payloadType: PayloadType = .rpcReliable,
         timeoutMs: Int64 = 30000
     ) async throws -> Req.Response {
-        let requestData = try message.serializedData()
         do {
+            let requestData = try message.serializedData()
             let responseData = try await inner.call(
                 routeKey: Req.routeKey,
                 payloadType: payloadType.bridge,
@@ -59,12 +59,8 @@ public final class ActrRef: Sendable {
                 timeoutMs: timeoutMs
             )
             return try Req.Response(serializedBytes: responseData)
-        } catch let error as ActrError {
-            throw error
-        } catch let error as ActrBindings.ActrError {
-            throw ActrError(bridge: error)
         } catch {
-            throw error
+            throw ActrError(error: error)
         }
     }
 

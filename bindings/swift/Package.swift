@@ -103,7 +103,11 @@ let package = Package(
         ),
         .testTarget(
             name: "ActrTests",
-            dependencies: ["Actr"]
+            dependencies: [
+                "Actr",
+                "ActrBindings",
+                .product(name: "SwiftProtobuf", package: "swift-protobuf")
+            ]
         )
     ]
 )
