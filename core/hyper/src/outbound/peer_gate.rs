@@ -1290,6 +1290,24 @@ impl PeerGate {
         stream_id: &str,
         data: Bytes,
     ) -> ActorResult<()> {
+        self.send_data_stream_with_timeout(
+            target,
+            payload_type,
+            stream_id,
+            data,
+            DATA_STREAM_SEND_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn send_data_stream_with_timeout(
+        &self,
+        target: &ActrId,
+        payload_type: PayloadType,
+        stream_id: &str,
+        data: Bytes,
+        send_timeout: Duration,
+    ) -> ActorResult<()> {
         tracing::debug!(
             "PeerGate::send_data_stream to {:?}, stream_id={}, payload_type={:?}, size={} bytes",
             target,
@@ -1328,17 +1346,14 @@ impl PeerGate {
         };
 
         let result = match tokio::time::timeout(
-            DATA_STREAM_SEND_TIMEOUT,
+            send_timeout,
             self.transport_manager.send(&dest, payload_type, &data),
         )
         .await
         {
             Ok(Ok(())) => Ok(()),
             Ok(Err(e)) => Err(ActrError::Unavailable(e.to_string())),
-            Err(_) => Err(ActrError::Unavailable(format!(
-                "DataStream send timeout: {}ms",
-                DATA_STREAM_SEND_TIMEOUT.as_millis()
-            ))),
+            Err(_) => Err(ActrError::TimedOut),
         };
 
         if result.is_err() {
@@ -1496,5 +1511,84 @@ mod tests {
 
         assert!(matches!(err, ActrError::TimedOut), "got {err:?}");
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[derive(Debug)]
+    struct PendingLane;
+
+    #[async_trait]
+    impl DataLane for PendingLane {
+        async fn send(&self, _data: bytes::Bytes) -> NetworkResult<()> {
+            std::future::pending::<NetworkResult<()>>().await
+        }
+
+        fn lane_type(&self) -> &'static str {
+            "pending"
+        }
+    }
+
+    #[derive(Debug)]
+    struct PendingWebSocketWire;
+
+    #[async_trait]
+    impl WireHandle for PendingWebSocketWire {
+        fn connection_type(&self) -> ConnType {
+            ConnType::WebSocket
+        }
+
+        fn priority(&self) -> u8 {
+            1
+        }
+
+        async fn connect(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        fn is_connected(&self) -> bool {
+            true
+        }
+
+        async fn close(&self) -> NetworkResult<()> {
+            Ok(())
+        }
+
+        async fn get_lane(&self, _payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+            Ok(Arc::new(PendingLane))
+        }
+    }
+
+    struct PendingWireBuilder;
+
+    #[async_trait]
+    impl WireBuilder for PendingWireBuilder {
+        async fn create_connections(
+            &self,
+            _dest: &Dest,
+        ) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+            Ok(vec![Arc::new(PendingWebSocketWire)])
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_data_stream_timeout_is_timed_out() {
+        let transport = Arc::new(PeerTransport::new(
+            ActrId::default(),
+            Arc::new(PendingWireBuilder),
+        ));
+        let gate = PeerGate::new(transport, None);
+        let target = ActrId::default();
+
+        let err = gate
+            .send_data_stream_with_timeout(
+                &target,
+                PayloadType::StreamReliable,
+                "stream-1",
+                Bytes::from_static(b"chunk"),
+                Duration::from_millis(250),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, ActrError::TimedOut), "got {err:?}");
     }
 }
