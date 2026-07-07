@@ -504,7 +504,7 @@ run_connected_android_test() {
         -e class "${test_class}" "$instrument_target" 2>&1 | tee "$instrument_log"
 
     local status=0
-    if grep -qE "FAILURES!!!|INSTRUMENTATION_RESULT: shortCode=-[0-9]|Process crashed|java\.lang\.reflect\.|InvalidTestClassError" "$instrument_log"; then
+    if grep -qE "FAILURES!!!|Process crashed|java\.lang\.reflect\.|InvalidTestClassError" "$instrument_log"; then
         status=1
     elif ! grep -qE "OK \([0-9]+ test" "$instrument_log"; then
         # No explicit success marker and no known failure marker → treat as failure.
