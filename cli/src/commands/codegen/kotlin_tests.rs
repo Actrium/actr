@@ -11,6 +11,8 @@ fn remote_echo_service() -> ServiceInfo {
             name: "Echo".to_string(),
             request_type: "EchoRequest".to_string(),
             response_type: "EchoResponse".to_string(),
+            request_import: "echo.Echo".to_string(),
+            response_import: "echo.Echo".to_string(),
         }],
         needs_outer_class_suffix: false,
     }
@@ -27,6 +29,8 @@ fn local_client_service() -> ServiceInfo {
             name: "Send".to_string(),
             request_type: "SendRequest".to_string(),
             response_type: "SendResponse".to_string(),
+            request_import: "client.Client".to_string(),
+            response_import: "client.Client".to_string(),
         }],
         needs_outer_class_suffix: false,
     }
@@ -154,4 +158,42 @@ fn kotlin_bootstrap_fixtures_inject_manifest_resolved_targets() {
         assert!(fixture.contains("toDynamicWorkload()"));
         assert!(!fixture.contains(concat!("attach", "(clientWorkload)")));
     }
+}
+
+#[test]
+fn unified_handler_scaffold_imports_and_resolves_imported_rpc_types() {
+    // A local `data_stream_app` service references `ask.*` message types.
+    // The scaffold must import the `ask.Ask` outer class and reference the
+    // bare message name (resolving via that import) instead of pinning the
+    // type to the local service's package.
+    let service = ServiceInfo {
+        service_name: "DataStreamAppService".to_string(),
+        proto_package: "data_stream_app".to_string(),
+        proto_file_name: "data_stream_app.proto".to_string(),
+        is_local: true,
+        remote_target_type: None,
+        methods: vec![MethodInfo {
+            name: "continue_prompt_result_streams".to_string(),
+            request_type: "ContinuePromptResultStreamsRequest".to_string(),
+            response_type: "ContinuePromptResultStreamsResponse".to_string(),
+            request_import: "ask.Ask".to_string(),
+            response_import: "ask.Ask".to_string(),
+        }],
+        needs_outer_class_suffix: false,
+    };
+
+    let imports = super::kotlin_type_imports(std::iter::once(&service));
+    assert!(
+        imports.contains("import ask.Ask.*"),
+        "expected `ask.Ask` import, got:\n{imports}"
+    );
+    // The local service's own package is still imported.
+    assert!(imports.contains("import data_stream_app.DataStreamApp.*"));
+
+    let scaffold = generate_unified_handler_scaffold(&[service], "com.example.generated");
+    // Signature uses the bare message name, resolved via the `ask.Ask` import.
+    assert!(scaffold.contains("request: ContinuePromptResultStreamsRequest"));
+    assert!(scaffold.contains(": ContinuePromptResultStreamsResponse"));
+    // The unqualified `ask.` proto-package prefix must NOT leak into Kotlin.
+    assert!(!scaffold.contains("request: ask."));
 }

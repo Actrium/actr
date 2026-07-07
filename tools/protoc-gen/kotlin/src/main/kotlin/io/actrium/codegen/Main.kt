@@ -59,6 +59,19 @@ fun generateCode(request: CodeGeneratorRequest): CodeGeneratorResponse {
     // Parse parameters
     val params = parseParameters(request.parameter)
 
+    // Build fully-qualified message name -> declaring (package, proto file) map
+    // from the full descriptor set so imported RPC message types resolve to
+    // their real owner outer class instead of the current service's package.
+    val typeOwner = mutableMapOf<String, TypeOwner>()
+    for (file in request.protoFileList) {
+        for (message in file.messageTypeList) {
+            val fullName =
+                    if (file.`package`.isEmpty()) message.name
+                    else "${file.`package`}.${message.name}"
+            typeOwner[fullName] = TypeOwner(file.`package`, file.name)
+        }
+    }
+
     // Process each file to generate
     for (fileName in request.fileToGenerateList) {
         val fileDescriptor = request.protoFileList.find { it.name == fileName } ?: continue
@@ -74,7 +87,8 @@ fun generateCode(request: CodeGeneratorRequest): CodeGeneratorResponse {
                             serviceName = service.name,
                             methods = service.methodList,
                             params = params,
-                            protoFileName = protoFileName
+                            protoFileName = protoFileName,
+                            typeOwner = typeOwner
                     )
 
             val generatedFile = generator.generate()
