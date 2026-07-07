@@ -49,10 +49,12 @@ pub use host_transport::HostTransport;
 #[cfg(not(feature = "test-utils"))]
 pub(crate) use host_transport::HostTransport;
 pub(crate) use peer_transport::DestTransportRef;
-#[cfg(not(feature = "test-utils"))]
+#[cfg(all(not(feature = "test-utils"), not(test)))]
 pub(crate) use peer_transport::PeerTransport;
 #[cfg(feature = "test-utils")]
 pub use peer_transport::{PeerTransport, WireBuilder};
+#[cfg(all(not(feature = "test-utils"), test))]
+pub(crate) use peer_transport::{PeerTransport, WireBuilder};
 
 // Wire layer management
 #[cfg(feature = "test-utils")]
