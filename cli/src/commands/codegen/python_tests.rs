@@ -139,21 +139,41 @@ fn test_empty_lock_file_scenario() {
 #[test]
 fn pb2_alias_and_import_resolves_imported_type_owner() {
     // An imported `ask.*` type declared in `remote/ask-service/ask.proto`
-    // resolves to the `ask_pb2` alias imported from its owner module, not the
-    // local service's package.
+    // resolves to an alias based on its owner proto path, not the local
+    // service's package.
     let (alias, import) = super::pb2_alias_and_import("ask", "remote/ask-service/ask.proto");
-    assert_eq!(alias, "ask_pb2");
+    assert_eq!(alias, "remote_ask_service_ask_pb2");
     assert_eq!(
         import,
-        "from generated.remote.ask_service import ask_pb2 as ask_pb2"
+        "from generated.remote.ask_service import ask_pb2 as remote_ask_service_ask_pb2"
     );
 
     // A locally-declared type keeps its own package alias + module path.
     let (local_alias, local_import) =
         super::pb2_alias_and_import("data_stream_app", "local/data_stream_app.proto");
-    assert_eq!(local_alias, "data_stream_app_pb2");
+    assert_eq!(local_alias, "local_data_stream_app_pb2");
     assert_eq!(
         local_import,
-        "from generated.local import data_stream_app_pb2 as data_stream_app_pb2"
+        "from generated.local import data_stream_app_pb2 as local_data_stream_app_pb2"
+    );
+}
+
+#[test]
+fn pb2_alias_and_import_distinguishes_same_package_owner_files() {
+    let (request_alias, request_import) =
+        super::pb2_alias_and_import("shared", "remote/shared/request.proto");
+    let (response_alias, response_import) =
+        super::pb2_alias_and_import("shared", "remote/shared/response.proto");
+
+    assert_eq!(request_alias, "remote_shared_request_pb2");
+    assert_eq!(response_alias, "remote_shared_response_pb2");
+    assert_ne!(request_alias, response_alias);
+    assert_eq!(
+        request_import,
+        "from generated.remote.shared import request_pb2 as remote_shared_request_pb2"
+    );
+    assert_eq!(
+        response_import,
+        "from generated.remote.shared import response_pb2 as remote_shared_response_pb2"
     );
 }

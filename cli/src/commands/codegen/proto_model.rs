@@ -121,6 +121,10 @@ impl TypeOwnerIndex {
             return Ok(Some(owner.clone()));
         }
 
+        if normalized.contains('.') {
+            return Ok(None);
+        }
+
         let type_name = normalized
             .rsplit('.')
             .next()
@@ -177,6 +181,18 @@ impl ProtoModel {
                 .strip_prefix(proto_root)
                 .unwrap_or(proto_file)
                 .to_path_buf();
+            // Reject paths that escape the proto root: a `..` component would
+            // let a crafted proto file path (e.g. from a remote dependency)
+            // inject traversal sequences into generated import/module paths.
+            if relative_path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(ActrCliError::config_error(format!(
+                    "proto file path escapes the proto root: {}",
+                    proto_file.display()
+                )));
+            }
             let side = classify_proto_side(&relative_path);
             let parsed = parse_proto_file(proto_file)?;
 

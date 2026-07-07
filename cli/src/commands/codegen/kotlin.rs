@@ -518,7 +518,7 @@ impl KotlinGenerator {
         let owner_index = &owner_index;
         let files_by_path = &files_by_path;
 
-        Ok(context
+        context
             .proto_model
             .files
             .iter()
@@ -532,42 +532,51 @@ impl KotlinGenerator {
                 let needs_outer_class_suffix =
                     file.declared_type_names.contains(&outer_class_base_name);
 
-                file.services.iter().map(move |service| ServiceInfo {
-                    service_name: service.name.clone(),
-                    proto_package: service.package.clone(),
-                    proto_file_name: file
-                        .proto_file
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("unknown.proto")
-                        .to_string(),
-                    is_local: service.side == crate::commands::codegen::ProtoSide::Local,
-                    remote_target_type: service.actr_type.clone(),
-                    methods: service
-                        .methods
-                        .iter()
-                        .map(|method| MethodInfo {
-                            name: method.snake_name.clone(),
-                            request_type: bare_type_name(&method.input_type),
-                            response_type: bare_type_name(&method.output_type),
-                            request_import: kotlin_type_import_path(
-                                &method.input_type,
-                                file,
-                                owner_index,
-                                files_by_path,
-                            ),
-                            response_import: kotlin_type_import_path(
-                                &method.output_type,
-                                file,
-                                owner_index,
-                                files_by_path,
-                            ),
+                file.services
+                    .iter()
+                    .map(move |service| -> Result<ServiceInfo> {
+                        let methods = service
+                            .methods
+                            .iter()
+                            .map(|method| {
+                                let request_import = kotlin_type_import_path(
+                                    &method.input_type,
+                                    file,
+                                    owner_index,
+                                    files_by_path,
+                                )?;
+                                let response_import = kotlin_type_import_path(
+                                    &method.output_type,
+                                    file,
+                                    owner_index,
+                                    files_by_path,
+                                )?;
+                                Ok(MethodInfo {
+                                    name: method.snake_name.clone(),
+                                    request_type: bare_type_name(&method.input_type),
+                                    response_type: bare_type_name(&method.output_type),
+                                    request_import,
+                                    response_import,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(ServiceInfo {
+                            service_name: service.name.clone(),
+                            proto_package: service.package.clone(),
+                            proto_file_name: file
+                                .proto_file
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("unknown.proto")
+                                .to_string(),
+                            is_local: service.side == crate::commands::codegen::ProtoSide::Local,
+                            remote_target_type: service.actr_type.clone(),
+                            methods,
+                            needs_outer_class_suffix,
                         })
-                        .collect(),
-                    needs_outer_class_suffix,
-                })
+                    })
             })
-            .collect())
+            .collect()
     }
 
     /// Generate unified infrastructure code
@@ -1197,24 +1206,38 @@ fn kotlin_outer_class(file: &ProtoFileModel) -> String {
 
 /// Resolve the Kotlin import path (`package.OuterClass`) for a referenced RPC
 /// message type by looking up its declaring proto file. Falls back to the
-/// current service's file for types not in the local proto set.
+/// current service's file for types not in the local proto set, and surfaces
+/// ambiguous unqualified types as a config error instead of silently picking
+/// the wrong owner.
 fn kotlin_type_import_path(
     referenced: &str,
     current_file: &ProtoFileModel,
     owner_index: &TypeOwnerIndex,
     files_by_path: &HashMap<String, &ProtoFileModel>,
-) -> String {
+) -> Result<String> {
     let owner_file = match owner_index.resolve(referenced, current_file) {
         Ok(Some(owner)) => files_by_path.get(&owner.proto_file).copied(),
-        _ => None,
+        Ok(None) => None,
+        Err(candidates) => {
+            let declared_files = candidates
+                .iter()
+                .map(|owner| owner.proto_file.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ActrCliError::config_error(format!(
+                "Cannot uniquely resolve RPC type `{}` for Kotlin scaffold: declared in multiple proto files [{}]",
+                referenced.trim_start_matches('.'),
+                declared_files
+            )));
+        }
     }
     .unwrap_or(current_file);
 
     let outer = kotlin_outer_class(owner_file);
     if outer.is_empty() || owner_file.package.is_empty() {
-        outer
+        Ok(outer)
     } else {
-        format!("{}.{}", owner_file.package, outer)
+        Ok(format!("{}.{}", owner_file.package, outer))
     }
 }
 

@@ -678,10 +678,15 @@ fn proto_module_from_path(path: &Path) -> String {
         .to_string()
 }
 
-/// pb2 module alias for a proto package (e.g. `ask` -> `ask_pb2`), matching
-/// the Python protoc plugin's `pb2_alias` convention.
-fn pb2_alias(package: &str) -> String {
-    let base = package.replace(['.', '-'], "_").to_ascii_lowercase();
+/// pb2 module alias for a declaring proto file, matching the Python protoc
+/// plugin's convention. The proto file path is included so two files in the
+/// same proto package cannot shadow each other.
+fn pb2_alias_for_proto_file(proto_file: &str) -> String {
+    let normalized = proto_file
+        .trim()
+        .trim_end_matches(".proto")
+        .replace(['/', '.', '-'], "_");
+    let base = normalized.to_ascii_lowercase();
     if base.is_empty() {
         "local_pb2".to_string()
     } else {
@@ -699,8 +704,8 @@ fn pb2_import_line(proto_file: &str, alias: &str) -> String {
 }
 
 /// Resolve the pb2 alias and import line for a declaring proto package/file.
-fn pb2_alias_and_import(proto_package: &str, proto_file: &str) -> (String, String) {
-    let alias = pb2_alias(proto_package);
+fn pb2_alias_and_import(_proto_package: &str, proto_file: &str) -> (String, String) {
+    let alias = pb2_alias_for_proto_file(proto_file);
     let import = pb2_import_line(proto_file, &alias);
     (alias, import)
 }

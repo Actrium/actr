@@ -504,11 +504,17 @@ struct ActrFrameworkGenerator {
   ) -> String {
     let trimmed = inputType.trimmingCharacters(in: CharacterSet(charactersIn: "."))
     let declaringPackage = typeToPackage[trimmed] ?? currentPackage
-    let prefix =
-      declaringPackage.isEmpty
-      ? "" : declaringPackage.split(separator: "_").map { $0.capitalized }.joined() + "_"
+    let prefix = swiftPackagePrefix(declaringPackage)
     let typeName = trimmed.split(separator: ".").last.map(String.init) ?? trimmed
     return prefix + typeName
+  }
+
+  static func swiftPackagePrefix(_ packageName: String) -> String {
+    if packageName.isEmpty { return "" }
+    let components = packageName.split(separator: ".").map { component in
+      component.split(separator: "_").map { $0.capitalized }.joined()
+    }
+    return components.joined(separator: "_") + "_"
   }
 
   static func snakeCase(_ value: String) -> String {

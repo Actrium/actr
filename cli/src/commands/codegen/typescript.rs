@@ -33,7 +33,6 @@ struct ProtoModuleInfo {
     is_local: bool,
     generated_client_path: PathBuf,
     generated_client_import: String,
-    generated_proto_import: String,
     services: Vec<ProtoServiceInfo>,
 }
 
@@ -54,6 +53,10 @@ struct ProtoMethodInfo {
     output_type: String,
     input_type_short: String,
     output_type_short: String,
+    /// Scaffold-relative `_pb.js` import path for the request type's declaring
+    /// proto file, so imported types resolve to their real owner module.
+    input_pb_import: String,
+    output_pb_import: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -64,7 +67,6 @@ struct GeneratedClientApi {
 #[derive(Debug, Clone)]
 struct BoundMethodInfo {
     generated_client_import: String,
-    generated_proto_import: String,
     generated_workload_import: String,
     service_name: String,
     handler_interface: String,
@@ -75,6 +77,8 @@ struct BoundMethodInfo {
     output_type: String,
     input_type_short: String,
     output_type_short: String,
+    input_pb_import: String,
+    output_pb_import: String,
     request_companion: Option<String>,
     is_local: bool,
 }
@@ -380,31 +384,12 @@ impl TypeScriptGenerator {
                     &proto_stem,
                     is_local,
                 );
-            let generated_proto_import = if is_local {
-                format!("./generated/{proto_stem}_pb.js")
-            } else {
-                let mut import_parts = relative_parts.clone();
-                if import_parts
-                    .first()
-                    .is_some_and(|part| matches!(part.as_str(), "local" | "remote"))
-                {
-                    import_parts.remove(0);
-                }
-                if import_parts.is_empty() {
-                    import_parts.push(format!("{proto_stem}.proto"));
-                }
-                if let Some(last) = import_parts.last_mut() {
-                    *last = format!("{proto_stem}_pb.js");
-                }
-                format!("./generated/{}", import_parts.join("/"))
-            };
 
             modules.push(ProtoModuleInfo {
                 proto_stem,
                 is_local,
                 generated_client_path,
                 generated_client_import,
-                generated_proto_import,
                 services: services_by_file.remove(&relative_norm).unwrap_or_default(),
             });
         }
@@ -438,6 +423,8 @@ impl TypeScriptGenerator {
                     output_type_short: short_proto_type(&method.output_type),
                     input_type: method.input_type,
                     output_type: method.output_type,
+                    input_pb_import: scaffold_proto_import_for(&method.input_ref.proto_file),
+                    output_pb_import: scaffold_proto_import_for(&method.output_ref.proto_file),
                 })
                 .collect(),
         }
@@ -476,7 +463,6 @@ impl TypeScriptGenerator {
             is_local,
             generated_client_path,
             generated_client_import,
-            generated_proto_import: String::new(),
             services,
         })
     }
@@ -561,6 +547,10 @@ impl TypeScriptGenerator {
                     output_type_short: short_proto_type(&output_type),
                     input_type,
                     output_type,
+                    // parse_proto_content has no owner metadata; the live path
+                    // (to_proto_service_info) fills these from TypeRef.
+                    input_pb_import: String::new(),
+                    output_pb_import: String::new(),
                 });
             }
 
@@ -615,24 +605,25 @@ impl TypeScriptGenerator {
                     methods: service
                         .methods
                         .iter()
-                        .map(|method| LocalWorkloadMethod {
-                            name: method.name.clone(),
-                            handler_method_name: snake_to_camel_case(&method.snake_name),
-                            input_type_short: short_proto_type(&method.input_type),
-                            output_type_short: short_proto_type(&method.output_type),
-                            route_key: method.route_key.clone(),
-                            input_pb_import: resolve_workload_pb_import(
-                                &method.input_type,
-                                file,
-                                &owner_index,
-                            ),
-                            output_pb_import: resolve_workload_pb_import(
+                        .map(|method| {
+                            let input_pb_import =
+                                resolve_workload_pb_import(&method.input_type, file, &owner_index)?;
+                            let output_pb_import = resolve_workload_pb_import(
                                 &method.output_type,
                                 file,
                                 &owner_index,
-                            ),
+                            )?;
+                            Ok(LocalWorkloadMethod {
+                                name: method.name.clone(),
+                                handler_method_name: snake_to_camel_case(&method.snake_name),
+                                input_type_short: short_proto_type(&method.input_type),
+                                output_type_short: short_proto_type(&method.output_type),
+                                route_key: method.route_key.clone(),
+                                input_pb_import,
+                                output_pb_import,
+                            })
                         })
-                        .collect(),
+                        .collect::<Result<Vec<_>>>()?,
                 });
             }
         }
@@ -738,7 +729,6 @@ impl TypeScriptGenerator {
 
                     bound_methods.push(BoundMethodInfo {
                         generated_client_import: module.generated_client_import.clone(),
-                        generated_proto_import: module.generated_proto_import.clone(),
                         generated_workload_import: service.generated_workload_import.clone(),
                         service_name: service.name.clone(),
                         handler_interface: service.handler_interface.clone(),
@@ -749,6 +739,8 @@ impl TypeScriptGenerator {
                         output_type: method.output_type.clone(),
                         input_type_short: method.input_type_short.clone(),
                         output_type_short: method.output_type_short.clone(),
+                        input_pb_import: method.input_pb_import.clone(),
+                        output_pb_import: method.output_pb_import.clone(),
                         request_companion: api
                             .exported_consts
                             .contains(&request_companion_name)
@@ -809,17 +801,20 @@ impl TypeScriptGenerator {
                     ));
                 }
 
-                let proto_import = method.generated_proto_import.as_str();
+                // Group proto type/schema imports by each method type's
+                // declaring proto module (owner-resolved), so imported types
+                // are imported from their real owner `_pb.js` instead of the
+                // local service's proto module.
                 proto_type_imports
-                    .entry(proto_import)
+                    .entry(&method.input_pb_import)
                     .or_default()
-                    .insert(method.input_type_short.as_str());
+                    .insert(&method.input_type_short);
                 proto_type_imports
-                    .entry(proto_import)
+                    .entry(&method.output_pb_import)
                     .or_default()
-                    .insert(method.output_type_short.as_str());
+                    .insert(&method.output_type_short);
                 proto_schema_imports
-                    .entry(proto_import)
+                    .entry(&method.output_pb_import)
                     .or_default()
                     .insert(format!("{}Schema", method.output_type_short));
             }
@@ -1728,6 +1723,39 @@ fn short_proto_type(raw: &str) -> String {
         .to_string()
 }
 
+/// Scaffold-relative (`./generated/...`) import path for a proto file's
+/// generated `_pb.js` module, as referenced from the user-facing
+/// `actr_service.ts` (which lives outside `generated/`). Generated protobuf
+/// files are emitted under `generated/` with only the leading `local/` or
+/// `remote/` source marker removed.
+fn scaffold_proto_import_for(relative_path: &str) -> String {
+    let path = Path::new(relative_path);
+    let proto_stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("proto")
+        .to_string();
+    let relative_parts: Vec<String> = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(str::to_string)
+        .collect();
+    let mut import_parts = relative_parts;
+    if import_parts
+        .first()
+        .is_some_and(|part| matches!(part.as_str(), "local" | "remote"))
+    {
+        import_parts.remove(0);
+    }
+    if import_parts.is_empty() {
+        import_parts.push(format!("{proto_stem}.proto"));
+    }
+    if let Some(last) = import_parts.last_mut() {
+        *last = format!("{proto_stem}_pb.js");
+    }
+    format!("./generated/{}", import_parts.join("/"))
+}
+
 /// Workload-relative import path for a generated `_pb.js` module, derived from
 /// a proto file's path relative to the proto root. Mirrors the
 /// `flatten_local_and_lift_remote` post-processing: `local/X.proto` flattens
@@ -1758,15 +1786,31 @@ fn workload_pb_import_path(relative_path: &str) -> String {
 
 /// Resolve the workload-relative `_pb.js` import path for a referenced RPC
 /// message type by looking up its declaring proto file. Falls back to the
-/// current service's file for types absent from the local proto set.
+/// current service's file for types absent from the local proto set, and
+/// surfaces ambiguous unqualified types as a config error instead of silently
+/// picking the wrong owner.
 fn resolve_workload_pb_import(
     referenced: &str,
     current_file: &ProtoFileModel,
     owner_index: &TypeOwnerIndex,
-) -> String {
+) -> Result<String> {
     match owner_index.resolve(referenced, current_file) {
-        Ok(Some(owner)) => workload_pb_import_path(&owner.proto_file),
-        _ => workload_pb_import_path(&current_file.relative_path.to_string_lossy()),
+        Ok(Some(owner)) => Ok(workload_pb_import_path(&owner.proto_file)),
+        Ok(None) => Ok(workload_pb_import_path(
+            &current_file.relative_path.to_string_lossy(),
+        )),
+        Err(candidates) => {
+            let declared_files = candidates
+                .iter()
+                .map(|owner| owner.proto_file.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ActrCliError::config_error(format!(
+                "Cannot uniquely resolve RPC type `{}` for TypeScript workload: declared in multiple proto files [{}]",
+                referenced.trim_start_matches('.'),
+                declared_files
+            )))
+        }
     }
 }
 
