@@ -4,7 +4,7 @@ use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
 use crate::utils::to_snake_case;
 use async_trait::async_trait;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
@@ -521,7 +521,6 @@ entry!(
 
     fn generate_scaffold_content(&self, service: &ScaffoldService) -> String {
         let actor_module = actor_module_name(service);
-        let proto_module = proto_module_name(service);
         let handler_interface =
             service_type_or_default(service, service.handler_interface.as_deref(), "Handler");
         let handler_impl = handler_impl_type(service);
@@ -530,7 +529,7 @@ entry!(
         let method_imports = if message_imports.is_empty() {
             String::new()
         } else {
-            format!("use crate::generated::{proto_module}::{{{message_imports}}};\n")
+            format!("{message_imports}\n")
         };
         let framework_imports = if service.methods.is_empty() {
             String::new()
@@ -1005,12 +1004,35 @@ fn proto_module_name(service: &ScaffoldService) -> String {
 }
 
 fn message_imports(service: &ScaffoldService) -> String {
-    let mut imports = BTreeSet::new();
+    // Group referenced message types by their declaring proto package so
+    // imported types are imported from their real owner module instead of
+    // always assuming the current service's package.
+    let mut by_module: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for method in &service.methods {
-        imports.insert(method.input_type.clone());
-        imports.insert(method.output_type.clone());
+        for type_ref in [&method.input_ref, &method.output_ref] {
+            if type_ref.type_name.is_empty() {
+                continue;
+            }
+            let module = if type_ref.proto_package.is_empty() {
+                proto_module_name(service)
+            } else {
+                type_ref.proto_package.replace('.', "_")
+            };
+            by_module
+                .entry(module)
+                .or_default()
+                .insert(type_ref.type_name.clone());
+        }
     }
-    imports.into_iter().collect::<Vec<_>>().join(", ")
+
+    by_module
+        .into_iter()
+        .map(|(module, types)| {
+            let names = types.into_iter().collect::<Vec<_>>().join(", ");
+            format!("use crate::generated::{module}::{{{names}}};")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn handler_method_impls(service: &ScaffoldService) -> String {

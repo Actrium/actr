@@ -1,6 +1,6 @@
 use super::RustGenerator;
 use crate::commands::codegen::scaffold::{ScaffoldMethod, ScaffoldService};
-use crate::commands::codegen::{GenContext, LanguageGenerator, ProtoModel};
+use crate::commands::codegen::{GenContext, LanguageGenerator, ProtoModel, TypeRef};
 use actr_config::ConfigParser;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -21,7 +21,16 @@ fn scaffold_service() -> ScaffoldService {
             input_type: "PingRequest".to_string(),
             output_type: "PingResponse".to_string(),
             route_key: "demo.shell.EmptyShell/Ping".to_string(),
-            ..Default::default()
+            input_ref: TypeRef {
+                type_name: "PingRequest".to_string(),
+                proto_package: "demo.shell".to_string(),
+                ..Default::default()
+            },
+            output_ref: TypeRef {
+                type_name: "PingResponse".to_string(),
+                proto_package: "demo.shell".to_string(),
+                ..Default::default()
+            },
         }],
     }
 }

@@ -3,7 +3,7 @@ use bytes::Bytes;
 use heck::ToSnakeCase;
 use prost::Message;
 use prost_types::{
-    DescriptorProto, FileDescriptorProto, ServiceDescriptorProto,
+    FileDescriptorProto, ServiceDescriptorProto,
     compiler::{CodeGeneratorRequest, CodeGeneratorResponse, code_generator_response::File},
 };
 use serde::Serialize;
@@ -198,10 +198,12 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
         }
     }
 
-    // Build type map for resolution
-    let mut message_types = HashMap::new();
+    // Build fully-qualified message name -> declaring proto package map so
+    // imported RPC message types resolve to their declaring module instead of
+    // the current service's package.
+    let mut type_owner: HashMap<String, String> = HashMap::new();
     for file in &request.proto_file {
-        collect_message_types(file, &mut message_types, file.package());
+        collect_type_owners(file, &mut type_owner, file.package());
     }
 
     // Collect all remote services information
@@ -268,13 +270,8 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
                 ));
             }
             for service in &file.service {
-                let generated_file = generate_service_code(
-                    file,
-                    service,
-                    &message_types,
-                    &params,
-                    &remote_services,
-                )?;
+                let generated_file =
+                    generate_service_code(file, service, &type_owner, &params, &remote_services)?;
                 response.file.push(generated_file);
             }
         }
@@ -289,23 +286,23 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
     Ok(response)
 }
 
-fn collect_message_types(
+fn collect_type_owners(
     file: &FileDescriptorProto,
-    types: &mut HashMap<String, DescriptorProto>,
-    package_prefix: &str,
+    owners: &mut HashMap<String, String>,
+    package: &str,
 ) {
     for message in &file.message_type {
-        let full_name = if package_prefix.is_empty() {
+        let full_name = if package.is_empty() {
             message.name().to_string()
         } else {
-            format!("{}.{}", package_prefix, message.name())
+            format!("{}.{}", package, message.name())
         };
-        types.insert(full_name.clone(), message.clone());
+        owners.insert(full_name.clone(), package.to_string());
 
-        // Recursively process nested messages
+        // Recursively process nested messages — they share the file's package.
         for nested in &message.nested_type {
             let nested_name = format!("{}.{}", full_name, nested.name());
-            types.insert(nested_name, nested.clone());
+            owners.insert(nested_name, package.to_string());
         }
     }
 }
@@ -313,7 +310,7 @@ fn collect_message_types(
 fn generate_service_code(
     file: &FileDescriptorProto,
     service: &ServiceDescriptorProto,
-    _message_types: &HashMap<String, DescriptorProto>,
+    type_owner: &HashMap<String, String>,
     params: &HashMap<String, String>,
     remote_services: &[RemoteServiceInfo],
 ) -> Result<File> {
@@ -343,7 +340,7 @@ fn generate_service_code(
         ProtoSource::Remote => GeneratorRole::ClientSide,
     };
 
-    let generator = ModernGenerator::new(package_name, service_name, role);
+    let generator = ModernGenerator::new(package_name, service_name, role, type_owner.clone());
 
     // Pass remote_services only for ServerSide generation
     let final_code = if role == GeneratorRole::ServerSide {
