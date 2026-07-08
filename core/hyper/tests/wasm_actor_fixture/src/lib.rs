@@ -28,16 +28,6 @@ use bytes::Bytes;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::UNIX_EPOCH;
 
-// Shared, per-instance (per-linear-memory) in-flight counters used by the
-// `test/inflight-probe` route to prove same-instance interleaving (M5). wasm is
-// single-threaded, so these atomics are contention-free; they read cleanly as a
-// shared counter that every concurrently-suspended dispatch on the ONE instance
-// increments/decrements. A fresh instance (rebuild after a trap) starts both at
-// zero, so a post-trap probe reporting MAX_SEEN==1 is direct evidence of a
-// rebuilt linear memory.
-static IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
-static MAX_SEEN: AtomicU32 = AtomicU32::new(0);
-
 async fn record_hook<C: Context>(ctx: &C, name: &'static str) {
     record_hook_value(ctx, name.to_string()).await;
 }
@@ -85,8 +75,40 @@ async fn record_peer_hook<C: Context>(
 
 // ── Workload ──────────────────────────────────────────────────────────────────
 
-#[derive(Default)]
-pub struct DoubleActor;
+/// Per-instance in-flight counters used by the `test/inflight-probe` route to
+/// prove same-instance interleaving (M5) and the WASM/native isomorphism (M6).
+///
+/// These live on the workload instance, NOT in module statics, so the peak
+/// concurrency they report is scoped to exactly one guest instance. That makes
+/// the probe **basis-agnostic**:
+///
+/// * WASM V2 — the `entry!` macro keeps one `DoubleActor` per linear memory, so
+///   a fresh instance (rebuild after a trap) starts both counters at zero and a
+///   post-trap probe reporting MAX_SEEN==1 is direct evidence of a rebuilt
+///   linear memory.
+/// * native Linked — one `DoubleActor` is shared (behind `&self`) across the
+///   concurrent dispatches of a single dispatcher, and a *different* dispatcher
+///   (a different test) owns a *different* instance. Were these module statics
+///   instead, the process-global `fetch_max` peak would leak across tests and
+///   break the same-key/serial (MAX_SEEN==1) properties. Instance fields give
+///   every dispatcher its own isolated, parallel-safe counters.
+///
+/// wasm is single-threaded so these atomics are contention-free there; on native
+/// they are genuinely concurrent but the SeqCst `fetch_max` is exactly the peak
+/// tracker the property tests read.
+pub struct DoubleActor {
+    in_flight: AtomicU32,
+    max_seen: AtomicU32,
+}
+
+impl Default for DoubleActor {
+    fn default() -> Self {
+        Self {
+            in_flight: AtomicU32::new(0),
+            max_seen: AtomicU32::new(0),
+        }
+    }
+}
 
 pub struct DoubleDispatcher;
 
@@ -96,7 +118,7 @@ impl MessageDispatcher for DoubleDispatcher {
     type Workload = DoubleActor;
 
     async fn dispatch<C: Context>(
-        _workload: &Self::Workload,
+        workload: &Self::Workload,
         envelope: RpcEnvelope,
         ctx: &C,
     ) -> ActorResult<Bytes> {
@@ -130,14 +152,14 @@ impl MessageDispatcher for DoubleDispatcher {
                 // peak concurrency this instance ever observed as a 4-byte LE u32.
                 // Two distinct-conflict-key probes suspended here at once make
                 // MAX_SEEN >= 2 — proof they interleaved inside one instance.
-                let cur = IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
-                MAX_SEEN.fetch_max(cur, Ordering::SeqCst);
+                let cur = workload.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                workload.max_seen.fetch_max(cur, Ordering::SeqCst);
                 let target = ctx.self_id().clone();
                 let payload = envelope.payload.unwrap_or_default();
                 let gate = ctx.call_raw(&target, "test/gate", payload).await;
-                IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+                workload.in_flight.fetch_sub(1, Ordering::SeqCst);
                 gate?;
-                let peak = MAX_SEEN.load(Ordering::SeqCst);
+                let peak = workload.max_seen.load(Ordering::SeqCst);
                 Ok(Bytes::from(peak.to_le_bytes().to_vec()))
             }
             "test/boom-after-await" => {
@@ -203,11 +225,7 @@ impl Workload for DoubleActor {
         record_peer_hook(ctx, "on_websocket_connecting", event).await;
     }
 
-    async fn on_websocket_connected<C: Context>(
-        &self,
-        ctx: &C,
-        event: &actr_framework::PeerEvent,
-    ) {
+    async fn on_websocket_connected<C: Context>(&self, ctx: &C, event: &actr_framework::PeerEvent) {
         record_peer_hook(ctx, "on_websocket_connected", event).await;
     }
 
@@ -219,11 +237,7 @@ impl Workload for DoubleActor {
         record_peer_hook(ctx, "on_websocket_disconnected", event).await;
     }
 
-    async fn on_webrtc_connecting<C: Context>(
-        &self,
-        ctx: &C,
-        event: &actr_framework::PeerEvent,
-    ) {
+    async fn on_webrtc_connecting<C: Context>(&self, ctx: &C, event: &actr_framework::PeerEvent) {
         record_peer_hook(ctx, "on_webrtc_connecting", event).await;
     }
 
@@ -231,11 +245,7 @@ impl Workload for DoubleActor {
         record_peer_hook(ctx, "on_webrtc_connected", event).await;
     }
 
-    async fn on_webrtc_disconnected<C: Context>(
-        &self,
-        ctx: &C,
-        event: &actr_framework::PeerEvent,
-    ) {
+    async fn on_webrtc_disconnected<C: Context>(&self, ctx: &C, event: &actr_framework::PeerEvent) {
         record_peer_hook(ctx, "on_webrtc_disconnected", event).await;
     }
 
