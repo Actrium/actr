@@ -36,7 +36,10 @@ fn empty_conflict_key_spec_is_reported_empty() {
         .method("svc/method", crate::dispatch::KeySource::Sender)
         .build()
         .expect("build keyed spec");
-    assert!(!keyed.is_empty(), "a spec with a rule must report non-empty");
+    assert!(
+        !keyed.is_empty(),
+        "a spec with a rule must report non-empty"
+    );
 }
 
 #[test]

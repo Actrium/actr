@@ -444,8 +444,18 @@ async fn prop_dispatch_timeout<B: Basis>() {
         d.dispatch(ECHO, payload.clone(), caller(1), &bridge),
     )
     .await
-    .unwrap_or_else(|_| panic!("[{}] same-key dispatch after a timeout must not hang", B::NAME))
-    .unwrap_or_else(|e| panic!("[{}] same-key dispatch after a timeout must succeed: {e:?}", B::NAME));
+    .unwrap_or_else(|_| {
+        panic!(
+            "[{}] same-key dispatch after a timeout must not hang",
+            B::NAME
+        )
+    })
+    .unwrap_or_else(|e| {
+        panic!(
+            "[{}] same-key dispatch after a timeout must succeed: {e:?}",
+            B::NAME
+        )
+    });
     assert_eq!(
         recovered.as_ref(),
         payload.as_slice(),
@@ -483,12 +493,14 @@ async fn prop_default_on_keyless_serial<B: Basis>() {
     let second = read_u32(&await_dispatch(b, "sa B").await.expect("B ok"));
 
     assert_eq!(
-        first, 1,
+        first,
+        1,
         "[{}] default-on keyless must never overlap (A) — strategy-A promise",
         B::NAME
     );
     assert_eq!(
-        second, 1,
+        second,
+        1,
         "[{}] default-on keyless must never overlap (B) — strategy-A promise",
         B::NAME
     );
