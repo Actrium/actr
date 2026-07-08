@@ -105,13 +105,17 @@ fn proto_connection_not_ready_info_to_wit(
 /// WASM guest-side actor execution context, backed by the Component
 /// Model host imports.
 ///
-/// `WasmContext` is cheap to clone — it carries a cached snapshot of
-/// `self_id` / `caller_id` / `request_id` captured at dispatch entry via
-/// the `get-self-id` / `get-caller-id` / `get-request-id` host imports.
-/// All outbound calls (`call`, `tell`, `call-raw`, `discover`) forward
-/// directly to the corresponding WIT import.
+/// `WasmContext` is cheap to clone. Under the 0.2.0 async world the
+/// identity triple (`self_id` / `caller_id` / `request_id`) is delivered
+/// as an explicit `invocation-ctx` parameter rather than read back through
+/// getter imports, and `ctx_token` keys this invocation in the host's
+/// per-invocation table. Every outbound call (`call`, `tell`, `call-raw`,
+/// `discover`, stream ops) threads `ctx_token` as the first argument of the
+/// corresponding WIT import so the host recovers the right bridge even when
+/// several invocations are in flight on one instance.
 #[derive(Clone)]
 pub(crate) struct WasmContext {
+    ctx_token: u64,
     self_id: ActrId,
     caller_id: Option<ActrId>,
     request_id: String,
@@ -148,34 +152,27 @@ pub(crate) async fn dispatch_registered_stream(
 }
 
 impl WasmContext {
-    /// Build a context by querying the host for the per-dispatch identity
-    /// triple. Must be called from inside an active dispatch — outside of
-    /// one the host traps with a clear error message.
-    pub(crate) async fn from_host() -> Self {
-        let self_id = actr_id_from_wit(&wit_host::get_self_id());
-        let caller_id = wit_host::get_caller_id().map(|id| actr_id_from_wit(&id));
-        let request_id = wit_host::get_request_id();
+    /// Build a context from the explicit `invocation-ctx` the host threads
+    /// into `dispatch` / the fallible lifecycle hooks / `on-data-stream`.
+    /// Carries the full identity triple plus the `ctx-token` used to route
+    /// outbound host imports.
+    pub(crate) fn from_invocation(inv: wit_types::InvocationCtx) -> Self {
         Self {
-            self_id,
-            caller_id,
-            request_id,
+            ctx_token: inv.ctx_token,
+            self_id: actr_id_from_wit(&inv.self_id),
+            caller_id: inv.caller_id.as_ref().map(actr_id_from_wit),
+            request_id: inv.request_id,
         }
     }
 
-    /// Build a placeholder context for lifecycle hooks (`on_start` /
-    /// `on_ready` / `on_stop` / `on_error` and the signaling / transport
-    /// / credential / mailbox observers).
-    ///
-    /// These hooks fire outside an active dispatch, so the host has not
-    /// installed an [`InvocationContext`] — consulting
-    /// `get-self-id` / `get-caller-id` / `get-request-id` would trap.
-    /// Returns a `WasmContext` with zero-valued identity fields. Outbound
-    /// `ctx.call` / `ctx.tell` / `ctx.discover` operations route through
-    /// the host's standalone `host-abi` bridge (when installed for the
-    /// lifecycle path) and do not require these identity fields.
-    #[allow(dead_code)]
-    pub(crate) fn lifecycle_placeholder() -> Self {
+    /// Build a context for the twelve infallible observation hooks, which
+    /// carry only a bare `ctx-token: u64` (the host has no meaningful caller
+    /// identity for them). Identity fields are zero-valued; the token still
+    /// routes any outbound `ctx.call` / `ctx.tell` / `ctx.discover` the hook
+    /// performs.
+    pub(crate) fn from_token(ctx_token: u64) -> Self {
         Self {
+            ctx_token,
             self_id: ActrId::default(),
             caller_id: None,
             request_id: String::new(),
@@ -199,10 +196,15 @@ impl Context for WasmContext {
 
     async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
         let payload = request.encode_to_vec();
-        // NB: with the synchronous lift, wit-bindgen emits borrowing
-        // signatures for imports (`&list<u8>`, `&string`, ...); we pass
-        // references to the owned values constructed just above.
-        let result = wit_host::call(&dest_to_wit(target), R::route_key(), &payload);
+        // 0.2.0 async imports take OWNED params and a `ctx-token` first arg;
+        // the call is `.await`ed (the host may suspend on real I/O).
+        let result = wit_host::call(
+            self.ctx_token,
+            dest_to_wit(target),
+            R::route_key().to_string(),
+            payload,
+        )
+        .await;
         match result {
             Ok(bytes) => R::Response::decode(bytes.as_slice())
                 .map_err(|e| ActrError::DecodeFailure(format!("response decode failed: {e}"))),
@@ -212,8 +214,14 @@ impl Context for WasmContext {
 
     async fn tell<R: RpcRequest>(&self, target: &Dest, message: R) -> ActorResult<()> {
         let payload = message.encode_to_vec();
-        wit_host::tell(&dest_to_wit(target), R::route_key(), &payload)
-            .map_err(wit_actr_error_to_proto)
+        wit_host::tell(
+            self.ctx_token,
+            dest_to_wit(target),
+            R::route_key().to_string(),
+            payload,
+        )
+        .await
+        .map_err(wit_actr_error_to_proto)
     }
 
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
@@ -224,7 +232,9 @@ impl Context for WasmContext {
             .lock()
             .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?
             .insert(stream_id.clone(), Arc::new(callback));
-        wit_host::register_stream(&stream_id).map_err(wit_actr_error_to_proto)
+        wit_host::register_stream(self.ctx_token, stream_id)
+            .await
+            .map_err(wit_actr_error_to_proto)
     }
 
     async fn unregister_stream(&self, stream_id: &str) -> ActorResult<()> {
@@ -232,7 +242,9 @@ impl Context for WasmContext {
             .lock()
             .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?
             .remove(stream_id);
-        wit_host::unregister_stream(stream_id).map_err(wit_actr_error_to_proto)
+        wit_host::unregister_stream(self.ctx_token, stream_id.to_string())
+            .await
+            .map_err(wit_actr_error_to_proto)
     }
 
     async fn send_data_stream(
@@ -242,15 +254,18 @@ impl Context for WasmContext {
         payload_type: PayloadType,
     ) -> ActorResult<()> {
         wit_host::send_data_stream(
-            &dest_to_wit(target),
-            &data_stream_to_wit(chunk),
+            self.ctx_token,
+            dest_to_wit(target),
+            data_stream_to_wit(chunk),
             payload_type_to_wit(payload_type),
         )
+        .await
         .map_err(wit_actr_error_to_proto)
     }
 
     async fn discover_route_candidate(&self, target_type: &ActrType) -> ActorResult<ActrId> {
-        wit_host::discover(&actr_type_to_wit(target_type))
+        wit_host::discover(self.ctx_token, actr_type_to_wit(target_type))
+            .await
             .map(|id| actr_id_from_wit(&id))
             .map_err(wit_actr_error_to_proto)
     }
@@ -262,10 +277,12 @@ impl Context for WasmContext {
         payload: Bytes,
     ) -> ActorResult<Bytes> {
         wit_host::call_raw(
-            &actr_id_to_wit(target),
-            route_key,
-            &payload,
+            self.ctx_token,
+            actr_id_to_wit(target),
+            route_key.to_string(),
+            payload.to_vec(),
         )
+        .await
         .map(Bytes::from)
         .map_err(wit_actr_error_to_proto)
     }

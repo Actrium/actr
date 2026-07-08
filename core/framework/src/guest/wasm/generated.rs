@@ -9,23 +9,23 @@
 //! is `#[cfg(target_arch = "wasm32")]`-gated, so hosts never see this code
 //! or the underlying `wit-bindgen` crate.
 //!
-//! # Synchronous lift (no `async` flag)
+//! # Async world (`actr:workload@0.2.0`)
 //!
-//! The WIT world (`actr:workload@0.1.0`) declares every function as a plain
-//! (synchronous) `func`. Earlier revisions passed `async: true` here, which
-//! made wit-bindgen emit async-ABI (async-lift) custom sections. wasmtime
-//! 46's embedded wasmparser now enforces `check_asyncness`: the `async`
-//! canonical option is only valid on WIT `async func` types, so async-lift
-//! components built from a sync world are rejected at `Component::from_binary`
-//! ("the `async` canonical option requires an async function type"). There is
-//! no Config/feature escape hatch.
+//! The WIT world (`actr:workload@0.2.0`) declares every host import and
+//! workload export as a real `async func`. wit-bindgen 0.58 auto-generates
+//! async Rust bindings from that — the `Guest` trait methods and the host
+//! imports are all `async fn`, with NO `async: true` flag (the async-ness
+//! comes from the WIT itself). This is the guest half of the run_concurrent
+//! substrate: the host drives these async exports through
+//! `Store::run_concurrent`, and the guest just `.await`s its host imports.
 //!
-//! So the flag is removed and the exports are lifted synchronously. Host
-//! imports appear as ordinary (non-`async`) functions at the Rust surface;
-//! the guest's `async fn` workload hooks are driven to completion by
-//! `adapter::complete_sync`. Host-side asynchrony (fiber suspension while a
-//! host import is in flight) is unchanged — it is provided by wasmtime's
-//! `call_async` fibers on the host, not by the guest ABI.
+//! This replaces the M3 synchronous lift. Per-call identity is no longer
+//! read back through `get-self-id` / `get-caller-id` / `get-request-id`
+//! imports (removed in 0.2.0); it arrives as an explicit `invocation-ctx`
+//! parameter on `dispatch` / the lifecycle hooks / `on-data-stream`, and a
+//! bare `ctx-token: u64` on the twelve observation hooks. The SDK carries
+//! the token into every host import so the host can key the calling
+//! invocation even under concurrent in-flight calls.
 //!
 //! # `generate_all`
 //!
@@ -34,8 +34,8 @@
 //! exports surface is generated.
 
 wit_bindgen::generate!({
-    world: "actr-workload-guest",
-    path: "wit",
+    world: "actr-workload-guest-v2",
+    path: "wit-v2",
     generate_all,
     // The `entry!` macro in `guest/mod.rs` expands inside the user's crate
     // and needs to call `export!` from user-crate scope. Default `export!`
