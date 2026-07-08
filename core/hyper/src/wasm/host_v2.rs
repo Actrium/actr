@@ -508,10 +508,7 @@ impl WasmWorkloadV2 {
     }
 
     /// Legacy init entry — mirrors the V1 path so the loader stays uniform.
-    pub(crate) fn init(
-        &mut self,
-        init_payload: &guest_abi::InitPayloadV1,
-    ) -> WasmResult<()> {
+    pub(crate) fn init(&mut self, init_payload: &guest_abi::InitPayloadV1) -> WasmResult<()> {
         tracing::debug!(
             actr_type = %init_payload.actr_type,
             realm_id = init_payload.realm_id,
@@ -541,7 +538,10 @@ impl WasmWorkloadV2 {
                 self.bindings = bindings;
                 self.poisoned = false;
                 self.rebuilds += 1;
-                tracing::info!(rebuilds = self.rebuilds, "wasm store rebuilt (v2); serviceable");
+                tracing::info!(
+                    rebuilds = self.rebuilds,
+                    "wasm store rebuilt (v2); serviceable"
+                );
                 Ok(())
             }
             Err(e) => Err(WasmError::LoadFailed(format!(
@@ -634,7 +634,10 @@ impl WasmWorkloadV2 {
         let region = self
             .store
             .run_concurrent(async move |accessor| {
-                bindings.actr_workload_workload().call_on_start(accessor, inv).await
+                bindings
+                    .actr_workload_workload()
+                    .call_on_start(accessor, inv)
+                    .await
             })
             .await;
         self.finish_lifecycle("on_start", token, region)
@@ -655,7 +658,10 @@ impl WasmWorkloadV2 {
         let region = self
             .store
             .run_concurrent(async move |accessor| {
-                bindings.actr_workload_workload().call_on_ready(accessor, inv).await
+                bindings
+                    .actr_workload_workload()
+                    .call_on_ready(accessor, inv)
+                    .await
             })
             .await;
         self.finish_lifecycle("on_ready", token, region)
@@ -676,7 +682,10 @@ impl WasmWorkloadV2 {
         let region = self
             .store
             .run_concurrent(async move |accessor| {
-                bindings.actr_workload_workload().call_on_stop(accessor, inv).await
+                bindings
+                    .actr_workload_workload()
+                    .call_on_stop(accessor, inv)
+                    .await
             })
             .await;
         self.finish_lifecycle("on_stop", token, region)
@@ -786,40 +795,72 @@ impl WasmWorkloadV2 {
                         wl.call_on_signaling_disconnected(accessor, token).await
                     }
                     PackageHookEvent::WebSocketConnecting(event) => {
-                        wl.call_on_websocket_connecting(accessor, proto_peer_event_to_wit(event), token)
-                            .await
+                        wl.call_on_websocket_connecting(
+                            accessor,
+                            proto_peer_event_to_wit(event),
+                            token,
+                        )
+                        .await
                     }
                     PackageHookEvent::WebSocketConnected(event) => {
-                        wl.call_on_websocket_connected(accessor, proto_peer_event_to_wit(event), token)
-                            .await
+                        wl.call_on_websocket_connected(
+                            accessor,
+                            proto_peer_event_to_wit(event),
+                            token,
+                        )
+                        .await
                     }
                     PackageHookEvent::WebSocketDisconnected(event) => {
-                        wl.call_on_websocket_disconnected(accessor, proto_peer_event_to_wit(event), token)
-                            .await
+                        wl.call_on_websocket_disconnected(
+                            accessor,
+                            proto_peer_event_to_wit(event),
+                            token,
+                        )
+                        .await
                     }
                     PackageHookEvent::WebRtcConnecting(event) => {
-                        wl.call_on_webrtc_connecting(accessor, proto_peer_event_to_wit(event), token)
-                            .await
+                        wl.call_on_webrtc_connecting(
+                            accessor,
+                            proto_peer_event_to_wit(event),
+                            token,
+                        )
+                        .await
                     }
                     PackageHookEvent::WebRtcConnected(event) => {
                         wl.call_on_webrtc_connected(accessor, proto_peer_event_to_wit(event), token)
                             .await
                     }
                     PackageHookEvent::WebRtcDisconnected(event) => {
-                        wl.call_on_webrtc_disconnected(accessor, proto_peer_event_to_wit(event), token)
-                            .await
+                        wl.call_on_webrtc_disconnected(
+                            accessor,
+                            proto_peer_event_to_wit(event),
+                            token,
+                        )
+                        .await
                     }
                     PackageHookEvent::CredentialRenewed(event) => {
-                        wl.call_on_credential_renewed(accessor, proto_credential_event_to_wit(event), token)
-                            .await
+                        wl.call_on_credential_renewed(
+                            accessor,
+                            proto_credential_event_to_wit(event),
+                            token,
+                        )
+                        .await
                     }
                     PackageHookEvent::CredentialExpiring(event) => {
-                        wl.call_on_credential_expiring(accessor, proto_credential_event_to_wit(event), token)
-                            .await
+                        wl.call_on_credential_expiring(
+                            accessor,
+                            proto_credential_event_to_wit(event),
+                            token,
+                        )
+                        .await
                     }
                     PackageHookEvent::MailboxBackpressure(event) => {
-                        wl.call_on_mailbox_backpressure(accessor, proto_backpressure_event_to_wit(event), token)
-                            .await
+                        wl.call_on_mailbox_backpressure(
+                            accessor,
+                            proto_backpressure_event_to_wit(event),
+                            token,
+                        )
+                        .await
                     }
                 }
             })

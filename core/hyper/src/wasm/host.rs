@@ -179,7 +179,9 @@ impl HostState {
     /// `.await` inside an Accessor host method (the store borrow is not
     /// held across the await).
     pub(crate) fn invocation_host_abi(&self, token: u64) -> Option<HostAbiFn> {
-        self.invocations.get(&token).map(|e| Arc::clone(&e.host_abi))
+        self.invocations
+            .get(&token)
+            .map(|e| Arc::clone(&e.host_abi))
     }
 
     /// Retire the invocation registered for `token` once its guest call has
