@@ -566,7 +566,7 @@ The low-level API is in `io.actrium.actr` and consists of UniFFI-generated bindi
 |------|----------|
 | `PayloadType` | `RPC_RELIABLE`, `RPC_SIGNAL`, `STREAM_RELIABLE`, `STREAM_LATENCY_FIRST`, `MEDIA_RTP` |
 | `ErrorKind` | `TRANSIENT`, `CLIENT`, `INTERNAL`, `CORRUPT` |
-| `ErrorCategoryBridge` | `HANDLER_PANIC`, `HANDLER_ERROR`, `SIGNALING_FAILURE`, `TRANSPORT_FAILURE`, `DATA_STREAM_DELIVERY_UNCERTAIN` |
+| `ErrorCategoryBridge` | `HANDLER_PANIC`, `HANDLER_ERROR`, `SIGNALING_FAILURE`, `TRANSPORT_FAILURE`, `DATA_CHUNK_DELIVERY_UNCERTAIN` |
 | `NetworkAvailability` | `UNKNOWN`, `AVAILABLE`, `UNAVAILABLE` |
 | `AppLifecycleState` | `Background`, `Foreground(backgroundDurationMs)` |
 | `CleanupReason` | `APP_TERMINATING`, `USER_LOGOUT`, `STALE_CONNECTION_SUSPECTED`, `MANUAL_RESET` |
