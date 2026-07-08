@@ -51,6 +51,60 @@ class KotlinActorGeneratorTest {
     }
 
     @Test
+    fun generateCodeQualifiesImportedAskRpcTypesForDataStreamApp() {
+        val request =
+                CodeGeneratorRequest.newBuilder()
+                        .addFileToGenerate("data_stream_app.proto")
+                        .addProtoFile(
+                                FileDescriptorProto.newBuilder()
+                                        .setName("ask.proto")
+                                        .setPackage("ask")
+                                        .addMessageType(
+                                                DescriptorProto.newBuilder()
+                                                        .setName(
+                                                                "ContinuePromptResultStreamsRequest"))
+                                        .addMessageType(
+                                                DescriptorProto.newBuilder()
+                                                        .setName(
+                                                                "ContinuePromptResultStreamsResponse"))
+                        )
+                        .addProtoFile(
+                                FileDescriptorProto.newBuilder()
+                                        .setName("data_stream_app.proto")
+                                        .setPackage("data_stream_app")
+                                        .addService(
+                                                ServiceDescriptorProto.newBuilder()
+                                                        .setName("DataStreamApp")
+                                                        .addMethod(
+                                                                MethodDescriptorProto.newBuilder()
+                                                                        .setName(
+                                                                                "ContinuePromptResultStreams")
+                                                                        .setInputType(
+                                                                                ".ask.ContinuePromptResultStreamsRequest")
+                                                                        .setOutputType(
+                                                                                ".ask.ContinuePromptResultStreamsResponse")
+                                                        )
+                                        )
+                        )
+                        .build()
+
+        val generated = generateCode(request).fileList.single().content
+
+        assertContains(
+                generated,
+                "suspend fun continue_prompt_result_streams(request: ask.Ask.ContinuePromptResultStreamsRequest, ctx: ActrContext): ask.Ask.ContinuePromptResultStreamsResponse",
+        )
+        assertContains(
+                generated,
+                "val request = ask.Ask.ContinuePromptResultStreamsRequest.parseFrom(envelope.payload)",
+        )
+        assertFalse(
+                generated.contains("request: ContinuePromptResultStreamsRequest"),
+                "generated code should keep the imported ask owner:\n$generated",
+        )
+    }
+
+    @Test
     fun generateCodeHonorsJavaPackageOuterClassAndMultipleFiles() {
         val request =
                 CodeGeneratorRequest.newBuilder()
