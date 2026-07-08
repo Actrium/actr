@@ -15,8 +15,12 @@ reply equals `Echo: <message>`.
         └─ echo.EchoService.Echo  ──▶  actrix (host, 127.0.0.1)  ──▶  Rust EchoService (`actr run`)
 ```
 
-Verification is `./gradlew connectedDebugAndroidTest` (JUnit), not logcat greping — the
-idiomatic Android pattern.
+Verification builds the app + androidTest APKs, installs them on the target emulator
+(`adb -s "$ANDROID_SERIAL"`), and runs the instrumentation test via `am instrument`, with the
+`am instrument` output (`OK (N tests)` vs `FAILURES!!!`) as the pass/fail signal. We use
+manual `am instrument` rather than `./gradlew connectedDebugAndroidTest` because the latter
+runs on **all** attached devices — a hazard when a physical phone is connected alongside the
+emulator. Set `ANDROID_SERIAL` when more than one device is attached.
 
 ## Shared helpers
 
@@ -51,7 +55,7 @@ bash e2e/kotlin-echo-app/run.sh
 ```
 
 A green run prints `actrix is healthy` → `EchoService readiness check complete` →
-`BUILD SUCCESSFUL` from `connectedDebugAndroidTest`.
+`OK (1 test)` from `am instrument` (the echo round-trip assertion passed).
 
 ## Status / approach
 

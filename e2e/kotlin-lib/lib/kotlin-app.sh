@@ -266,8 +266,15 @@ permission = "allow"
 type = "${client_acl_type}"
 EOF
 
-    RUST_LOG="${RUST_LOG:-info}" \
-        run_actr run -c "$SERVER_RUNTIME_PATH" >"$LOG_DIR/server.log" 2>&1 &
+    # Launch in a backgrounded subshell that `exec`s the actr binary, so $! is the
+    # actr process PID (not the subshell's). kotlin_cleanup then kills the real
+    # server instead of orphaning it (the binary holds the signaling WebSocket +
+    # bound ports). run_actr can't `exec` globally (it's also used for foreground
+    # init/gen/build), so do the exec inline here.
+    (
+        export RUST_LOG="${RUST_LOG:-info}" CARGO_TARGET_DIR="$ACTR_TARGET_DIR"
+        exec "$ACTR_CLI_BIN" run -c "$SERVER_RUNTIME_PATH"
+    ) >"$LOG_DIR/server.log" 2>&1 &
     SERVER_PID=$!
 
     local attempt=0
