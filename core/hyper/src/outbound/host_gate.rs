@@ -148,17 +148,17 @@ impl HostGate {
             .map_err(|e| ActrError::Unavailable(e.to_string()))
     }
 
-    /// Send DataStream (Fast Path)
+    /// Send DataChunk (Fast Path)
     ///
     /// # Arguments
     /// - `_target`: Target ActorId (for logging only, not needed for intra-process)
     /// - `payload_type`: PayloadType (StreamReliable or StreamLatencyFirst)
-    /// - `stream_id`: DataStream identifier already known before serialization
-    /// - `data`: Serialized DataStream bytes
+    /// - `stream_id`: DataChunk identifier already known before serialization
+    /// - `data`: Serialized DataChunk bytes
     ///
     /// # Note
-    /// For inproc, DataStream is sent via LatencyFirst channel with stream_id as identifier
-    pub async fn send_data_stream(
+    /// For inproc, DataChunk is sent via LatencyFirst channel with stream_id as identifier
+    pub async fn send_data_chunk(
         &self,
         _target: &ActrId,
         payload_type: PayloadType,
@@ -166,17 +166,17 @@ impl HostGate {
         data: Bytes,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "HostGate::send_data_stream stream_id={}, size={} bytes",
+            "HostGate::send_data_chunk stream_id={}, size={} bytes",
             stream_id,
             data.len()
         );
 
         ensure_stream_payload_type(payload_type)?;
 
-        // Wrap in RpcEnvelope for transport
+        // Wrap in RpcEnvelope for transport.
         #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
         let mut envelope = RpcEnvelope {
-            route_key: "fast_path.data_stream".to_string(),
+            route_key: "fast_path.data_chunk".to_string(),
             payload: Some(data),
             error: None,
             direction: Some(Direction::Request as i32),

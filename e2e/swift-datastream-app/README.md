@@ -25,8 +25,8 @@ graph LR
     DUS -->|register| AIS
     DUS -->|publish| REG
     DS -->|WebRTC RPC| DUS
-    DS -->|DataStream: hello 1..3| DUS
-    DUS -->|DataStream: echo hello 1..3| DS
+    DS -->|DataChunk: hello 1..3| DUS
+    DUS -->|DataChunk: echo hello 1..3| DS
 ```
 
 ## Flow

@@ -3,7 +3,7 @@ package io.actrium.actr.dsl
 
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.DataStream
+import io.actrium.actr.DataChunk
 import io.actrium.actr.MetadataEntry
 import io.actrium.actr.Realm
 
@@ -149,15 +149,15 @@ fun ActrId.toShortString(): String = "${type.manufacturer}:${type.name}@${serial
 fun ActrId.toFullString(): String = "${type.manufacturer}:${type.name}@${serialNumber.toString(16)}:${realm.realmId}"
 
 // ============================================================================
-// DataStream Builders
+// DataChunk Builders
 // ============================================================================
 
 /**
- * Create a DataStream with DSL syntax.
+ * Create a DataChunk with DSL syntax.
  *
  * Example:
  * ```kotlin
- * val stream = dataStream {
+ * val chunk = dataChunk {
  *     streamId = "file-transfer-001"
  *     sequence = 0uL
  *     payload = fileBytes
@@ -169,10 +169,10 @@ fun ActrId.toFullString(): String = "${type.manufacturer}:${type.name}@${serialN
  * }
  * ```
  */
-inline fun dataStream(builder: DataStreamBuilder.() -> Unit): DataStream = DataStreamBuilder().apply(builder).build()
+inline fun dataChunk(builder: DataChunkBuilder.() -> Unit): DataChunk = DataChunkBuilder().apply(builder).build()
 
-/** Builder for DataStream. */
-class DataStreamBuilder {
+/** Builder for DataChunk. */
+class DataChunkBuilder {
     var streamId: String = ""
     var sequence: ULong = 0uL
     var payload: ByteArray = ByteArray(0)
@@ -210,9 +210,9 @@ class DataStreamBuilder {
         payload = text.toByteArray(charset)
     }
 
-    fun build(): DataStream {
+    fun build(): DataChunk {
         require(streamId.isNotBlank()) { "streamId must not be blank" }
-        return DataStream(
+        return DataChunk(
             streamId = streamId,
             sequence = sequence,
             payload = payload,
@@ -233,17 +233,17 @@ class MetadataBuilder {
 }
 
 // ============================================================================
-// DataStream Extensions
+// DataChunk Extensions
 // ============================================================================
 
 /** Get a metadata value by key. */
-fun DataStream.getMetadata(key: String): String? = metadata.find { it.key == key }?.value
+fun DataChunk.getMetadata(key: String): String? = metadata.find { it.key == key }?.value
 
 /** Check if metadata contains a key. */
-fun DataStream.hasMetadata(key: String): Boolean = metadata.any { it.key == key }
+fun DataChunk.hasMetadata(key: String): Boolean = metadata.any { it.key == key }
 
 /** Get metadata as a Map. */
-fun DataStream.metadataMap(): Map<String, String> = metadata.associate { it.key to it.value }
+fun DataChunk.metadataMap(): Map<String, String> = metadata.associate { it.key to it.value }
 
 // ============================================================================
 // Realm Builders

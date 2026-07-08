@@ -6,7 +6,7 @@
 //! - Maintain pending_requests (Request/Response matching)
 //! - Block new requests to peers being cleaned up (closing_peers)
 
-use super::data_stream_activity::{DataStreamActivityTracker, DataStreamRecordState};
+use super::data_chunk_activity::{DataChunkActivityTracker, DataChunkRecordState};
 use super::ensure_stream_payload_type;
 use crate::transport::{
     ConnectionEvent, ConnectionState, Dest, DestTransportRef, PayloadTypeExt, PeerTransport,
@@ -28,12 +28,12 @@ use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 pub(crate) type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 
-/// Internal upper bound for a single DataStream send operation.
+/// Internal upper bound for a single DataChunk send operation.
 ///
-/// DataStream has no caller-provided request deadline like RPC envelopes, so
+/// DataChunk has no caller-provided request deadline like RPC envelopes, so
 /// this prevents a stalled WebRTC DataChannel send from holding the mobile
 /// caller forever during unrecoverable network loss.
-const DATA_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(15);
+const DATA_CHUNK_SEND_TIMEOUT: Duration = Duration::from_secs(15);
 /// Total budget for fire-and-forget RPC sends, including transient retries.
 ///
 /// `tell` does not wait for a response, so it is bounded by the transport
@@ -80,9 +80,9 @@ pub struct PeerGate {
     /// late events from older sessions from unblocking a newer recovery.
     recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
 
-    /// Recently sent `send_data_stream` chunks used to surface delivery
+    /// Recently sent `send_data_chunk` chunks used to surface delivery
     /// uncertainty when WebRTC/DataChannel state changes mid-stream.
-    active_data_streams: Arc<RwLock<DataStreamActivityTracker>>,
+    active_data_chunks: Arc<RwLock<DataChunkActivityTracker>>,
 }
 
 impl PeerGate {
@@ -134,21 +134,21 @@ impl PeerGate {
         (NETWORK_RECOVERY_TIMEOUT + CONNECTION_NOT_READY_RETRY_GRACE).as_millis() as u64
     }
 
-    async fn notify_active_data_streams_uncertain(
+    async fn notify_active_data_chunks_uncertain(
         webrtc_coordinator: &WebRtcCoordinator,
-        active_data_streams: &Arc<RwLock<DataStreamActivityTracker>>,
+        active_data_chunks: &Arc<RwLock<DataChunkActivityTracker>>,
         peer_id: &ActrId,
         session_id: u64,
         reason: &str,
     ) {
         let notices = {
-            let mut tracker = active_data_streams.write().await;
+            let mut tracker = active_data_chunks.write().await;
             tracker.mark_delivery_uncertain(peer_id, session_id, reason, Instant::now())
         };
 
         for notice in notices {
             webrtc_coordinator
-                .notify_data_stream_delivery_uncertain(
+                .notify_data_chunk_delivery_uncertain(
                     notice.stream_id,
                     notice.session_id,
                     notice.reason,
@@ -157,7 +157,7 @@ impl PeerGate {
         }
     }
 
-    async fn record_active_data_stream_if_needed(
+    async fn record_active_data_chunk_if_needed(
         &self,
         target: &ActrId,
         stream_id: &str,
@@ -165,12 +165,12 @@ impl PeerGate {
         now: Instant,
     ) -> bool {
         let record_state = {
-            let tracker = self.active_data_streams.read().await;
+            let tracker = self.active_data_chunks.read().await;
             tracker.record_state(target, stream_id, session_id, now)
         };
 
-        if record_state != DataStreamRecordState::Fresh {
-            self.active_data_streams.write().await.record_stream(
+        if record_state != DataChunkRecordState::Fresh {
+            self.active_data_chunks.write().await.record_stream(
                 target,
                 stream_id.to_string(),
                 session_id,
@@ -178,7 +178,7 @@ impl PeerGate {
             );
         }
 
-        record_state == DataStreamRecordState::Missing
+        record_state == DataChunkRecordState::Missing
     }
 
     /// Create new PeerGate with a pre-allocated `pending_requests` map.
@@ -192,7 +192,7 @@ impl PeerGate {
     ) -> Self {
         let closing_peers = Arc::new(RwLock::new(HashSet::new()));
         let recovering_peers = Arc::new(RwLock::new(HashMap::new()));
-        let active_data_streams = Arc::new(RwLock::new(DataStreamActivityTracker::default()));
+        let active_data_chunks = Arc::new(RwLock::new(DataChunkActivityTracker::default()));
 
         // Start event listener if coordinator is available
         if let Some(ref coordinator) = webrtc_coordinator {
@@ -202,7 +202,7 @@ impl PeerGate {
                 Arc::clone(&pending_requests),
                 Arc::clone(&closing_peers),
                 Arc::clone(&recovering_peers),
-                Arc::clone(&active_data_streams),
+                Arc::clone(&active_data_chunks),
                 Arc::clone(&transport_manager),
             );
         }
@@ -213,7 +213,7 @@ impl PeerGate {
             webrtc_coordinator,
             closing_peers,
             recovering_peers,
-            active_data_streams,
+            active_data_chunks,
         }
     }
 
@@ -230,7 +230,7 @@ impl PeerGate {
         let closing_peers = Arc::new(RwLock::new(HashSet::new()));
         let recovering_peers = Arc::new(RwLock::new(HashMap::new()));
         let pending_requests = Arc::new(RwLock::new(HashMap::new()));
-        let active_data_streams = Arc::new(RwLock::new(DataStreamActivityTracker::default()));
+        let active_data_chunks = Arc::new(RwLock::new(DataChunkActivityTracker::default()));
 
         // Start event listener if coordinator is available
         // This is the ONLY event subscriber - it triggers top-down cleanup
@@ -241,7 +241,7 @@ impl PeerGate {
                 Arc::clone(&pending_requests),
                 Arc::clone(&closing_peers),
                 Arc::clone(&recovering_peers),
-                Arc::clone(&active_data_streams),
+                Arc::clone(&active_data_chunks),
                 Arc::clone(&transport_manager),
             );
         }
@@ -252,7 +252,7 @@ impl PeerGate {
             webrtc_coordinator,
             closing_peers,
             recovering_peers,
-            active_data_streams,
+            active_data_chunks,
         }
     }
 
@@ -268,7 +268,7 @@ impl PeerGate {
         pending_requests: PendingRequestsMap,
         closing_peers: Arc<RwLock<HashSet<ActrId>>>,
         recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
-        active_data_streams: Arc<RwLock<DataStreamActivityTracker>>,
+        active_data_chunks: Arc<RwLock<DataChunkActivityTracker>>,
         transport_manager: Arc<PeerTransport>,
     ) {
         tokio::spawn(async move {
@@ -442,9 +442,9 @@ impl PeerGate {
                                 .is_active_session(peer_id, *session_id)
                                 .await
                             {
-                                Self::notify_active_data_streams_uncertain(
+                                Self::notify_active_data_chunks_uncertain(
                                     &webrtc_coordinator,
-                                    &active_data_streams,
+                                    &active_data_chunks,
                                     peer_id,
                                     *session_id,
                                     "ice restart failed",
@@ -463,9 +463,9 @@ impl PeerGate {
                         session_id,
                         payload_type: PayloadType::StreamReliable | PayloadType::StreamLatencyFirst,
                     } => {
-                        Self::notify_active_data_streams_uncertain(
+                        Self::notify_active_data_chunks_uncertain(
                             &webrtc_coordinator,
-                            &active_data_streams,
+                            &active_data_chunks,
                             peer_id,
                             *session_id,
                             "data channel closed",
@@ -486,9 +486,9 @@ impl PeerGate {
                     } => {
                         let dest = Dest::actor(peer_id.clone());
 
-                        Self::notify_active_data_streams_uncertain(
+                        Self::notify_active_data_chunks_uncertain(
                             &webrtc_coordinator,
-                            &active_data_streams,
+                            &active_data_chunks,
                             peer_id,
                             *event_session_id,
                             "connection closed",
@@ -1273,34 +1273,34 @@ impl PeerGate {
         Ok(())
     }
 
-    /// Send DataStream (Fast Path)
+    /// Send DataChunk (Fast Path)
     ///
     /// # Parameters
     /// - `target`: Target Actor ID
     /// - `payload_type`: PayloadType (StreamReliable or StreamLatencyFirst)
-    /// - `stream_id`: DataStream identifier already known before serialization
-    /// - `data`: Serialized DataStream bytes
+    /// - `stream_id`: DataChunk identifier already known before serialization
+    /// - `data`: Serialized DataChunk bytes
     ///
     /// # Implementation Note
     /// Sends via PeerTransport using WebRTC DataChannel or WebSocket
-    pub async fn send_data_stream(
+    pub async fn send_data_chunk(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
         stream_id: &str,
         data: Bytes,
     ) -> ActorResult<()> {
-        self.send_data_stream_with_timeout(
+        self.send_data_chunk_with_timeout(
             target,
             payload_type,
             stream_id,
             data,
-            DATA_STREAM_SEND_TIMEOUT,
+            DATA_CHUNK_SEND_TIMEOUT,
         )
         .await
     }
 
-    async fn send_data_stream_with_timeout(
+    async fn send_data_chunk_with_timeout(
         &self,
         target: &ActrId,
         payload_type: PayloadType,
@@ -1309,7 +1309,7 @@ impl PeerGate {
         send_timeout: Duration,
     ) -> ActorResult<()> {
         tracing::debug!(
-            "PeerGate::send_data_stream to {:?}, stream_id={}, payload_type={:?}, size={} bytes",
+            "PeerGate::send_data_chunk to {:?}, stream_id={}, payload_type={:?}, size={} bytes",
             target,
             stream_id,
             payload_type,
@@ -1331,7 +1331,7 @@ impl PeerGate {
         self.preflight_send(target, &dest).await?;
 
         // `ensure_stream_payload_type` above guarantees `payload_type` is a
-        // stream variant, so every call tracks an active data stream unconditionally.
+        // stream variant, so every call tracks an active DataChunk unconditionally.
         let stream_session_id = if let Some(coordinator) = &self.webrtc_coordinator {
             coordinator.get_peer_session_id(target).await
         } else {
@@ -1339,7 +1339,7 @@ impl PeerGate {
         };
 
         let recorded_before_send = if let Some(session_id) = stream_session_id {
-            self.record_active_data_stream_if_needed(target, stream_id, session_id, Instant::now())
+            self.record_active_data_chunk_if_needed(target, stream_id, session_id, Instant::now())
                 .await
         } else {
             false
@@ -1358,7 +1358,7 @@ impl PeerGate {
 
         if result.is_err() {
             if recorded_before_send && let Some(session_id) = stream_session_id {
-                self.active_data_streams
+                self.active_data_chunks
                     .write()
                     .await
                     .remove_stream_session(target, stream_id, session_id);
@@ -1367,7 +1367,7 @@ impl PeerGate {
             && let Some(coordinator) = &self.webrtc_coordinator
         {
             if let Some(session_id) = coordinator.get_peer_session_id(target).await {
-                self.record_active_data_stream_if_needed(
+                self.record_active_data_chunk_if_needed(
                     target,
                     stream_id,
                     session_id,
@@ -1570,7 +1570,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn send_data_stream_timeout_is_timed_out() {
+    async fn send_data_chunk_timeout_is_timed_out() {
         let transport = Arc::new(PeerTransport::new(
             ActrId::default(),
             Arc::new(PendingWireBuilder),
@@ -1579,7 +1579,7 @@ mod tests {
         let target = ActrId::default();
 
         let err = gate
-            .send_data_stream_with_timeout(
+            .send_data_chunk_with_timeout(
                 &target,
                 PayloadType::StreamReliable,
                 "stream-1",

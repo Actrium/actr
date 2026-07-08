@@ -122,8 +122,8 @@ fn error_category_from_wit(c: wit_types::ErrorCategory) -> ErrorCategory {
         wit_types::ErrorCategory::HandlerError => ErrorCategory::HandlerError,
         wit_types::ErrorCategory::SignalingFailure => ErrorCategory::SignalingFailure,
         wit_types::ErrorCategory::TransportFailure => ErrorCategory::TransportFailure,
-        wit_types::ErrorCategory::DataStreamDeliveryUncertain => {
-            ErrorCategory::DataStreamDeliveryUncertain
+        wit_types::ErrorCategory::DataChunkDeliveryUncertain => {
+            ErrorCategory::DataChunkDeliveryUncertain
         }
     }
 }
@@ -336,8 +336,8 @@ pub async fn run_on_mailbox_backpressure<W: Workload>(
     workload.on_mailbox_backpressure(&ctx, &event).await;
 }
 
-pub async fn run_on_data_stream(
-    chunk: wit_types::DataStream,
+pub async fn run_on_data_chunk(
+    chunk: wit_types::DataChunk,
     sender: wit_types::ActrId,
 ) -> Result<(), wit_types::ActrError> {
     super::context::dispatch_registered_stream(chunk, sender)

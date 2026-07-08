@@ -73,7 +73,7 @@ class Workload(WorkloadProtocol):
     def on_mailbox_backpressure(self, event) -> None:
         return None
 
-    def on_data_stream(self, chunk, sender) -> None:
+    def on_data_chunk(self, chunk, sender) -> None:
         return None
 
 

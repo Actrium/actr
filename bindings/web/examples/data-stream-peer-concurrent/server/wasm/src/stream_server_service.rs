@@ -34,7 +34,7 @@ async fn prepare_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result
         .map_err(|e| format!("Failed to decode PrepareServerStreamRequest: {}", e))?;
 
     log::info!(
-        "[DataStreamServer] prepare_stream: stream_id={} expected_count={}",
+        "[DataChunkServer] prepare_stream: stream_id={} expected_count={}",
         req.stream_id,
         req.expected_count
     );
@@ -51,7 +51,7 @@ async fn prepare_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result
                 .and_then(|n| n.parse::<u32>().ok())
                 .unwrap_or_default();
             log::info!(
-                "[DataStreamServer] server: stream {} received {}/{}: {}",
+                "[DataChunkServer] server: stream {} received {}/{}: {}",
                 stream_id,
                 seq,
                 expected_count,
@@ -74,28 +74,28 @@ async fn prepare_stream(request_bytes: &[u8], ctx: Rc<RuntimeContext>) -> Result
 
     spawn_local(async move {
         log::info!(
-            "[DataStreamServer] sending data stream back to client: {}",
+            "[DataChunkServer] sending data stream back to client: {}",
             caller_for_stream
         );
 
         for i in 1..=expected_for_stream {
             let message = format!("[server] message {}", i);
             log::info!(
-                "[DataStreamServer] server sending {}/{} on {}: {}",
+                "[DataChunkServer] server sending {}/{} on {}: {}",
                 i,
                 expected_for_stream,
                 stream_id_for_stream,
                 message
             );
             if let Err(error) = ctx_clone
-                .send_data_stream(
+                .send_data_chunk(
                     &caller_for_stream,
                     &stream_id_for_stream,
                     Bytes::from(message.into_bytes()),
                 )
                 .await
             {
-                log::error!("[DataStreamServer] send_data_stream failed: {}", error);
+                log::error!("[DataChunkServer] send_data_chunk failed: {}", error);
                 break;
             }
             TimeoutFuture::new(700).await;

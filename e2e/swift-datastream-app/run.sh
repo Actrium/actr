@@ -887,7 +887,7 @@ use crate::generated::local::{
 };
 use crate::generated::duplex_stream_actor::DuplexStreamServiceHandler;
 use actr_framework::{Context, Dest};
-use actr_protocol::{ActorResult, DataStream, MetadataEntry, PayloadType};
+use actr_protocol::{ActorResult, DataChunk, MetadataEntry, PayloadType};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -945,8 +945,8 @@ impl DuplexStreamServiceHandler for DuplexStreamServiceImpl {
         let chunks_recv = client_chunks_received.clone();
         let chunks_sent = service_chunks_sent.clone();
 
-        ctx.register_stream(c2s_id.clone(), move |data_stream: DataStream, _sender_id| {
-            let original_sequence = data_stream.sequence;
+        ctx.register_stream(c2s_id.clone(), move |data_chunk: DataChunk, _sender_id| {
+            let original_sequence = data_chunk.sequence;
             let client = client_actr_id.clone();
             let s2c = s2c_clone.clone();
             let c2s = c2s_clone.clone();
@@ -956,8 +956,8 @@ impl DuplexStreamServiceHandler for DuplexStreamServiceImpl {
             let sent = chunks_sent.clone();
 
             Box::pin(async move {
-                let text = String::from_utf8(data_stream.payload.to_vec())
-                    .unwrap_or_else(|_| format!("<{} bytes>", data_stream.payload.len()));
+                let text = String::from_utf8(data_chunk.payload.to_vec())
+                    .unwrap_or_else(|_| format!("<{} bytes>", data_chunk.payload.len()));
                 println!("DuplexStream: received chunk #{original_sequence} on {c2s}: {text}");
 
                 {
@@ -984,7 +984,7 @@ impl DuplexStreamServiceHandler for DuplexStreamServiceImpl {
                     },
                 ];
 
-                let echo_chunk = DataStream {
+                let echo_chunk = DataChunk {
                     stream_id: s2c,
                     sequence: original_sequence,
                     payload: format!("echo: {text}").into_bytes().into(),
@@ -992,7 +992,7 @@ impl DuplexStreamServiceHandler for DuplexStreamServiceImpl {
                     ..Default::default()
                 };
 
-                ctx.send_data_stream(&Dest::Actor(client), echo_chunk, payload_type)
+                ctx.send_data_chunk(&Dest::Actor(client), echo_chunk, payload_type)
                     .await?;
 
                 {
@@ -1476,7 +1476,7 @@ EOF
             fail "Server host exited early"
         fi
 
-        if grep -q "DataStream Host fully started\|ActrNode started" "$LOG_DIR/server.log" 2>/dev/null; then
+        if grep -q "DataChunk Host fully started\|ActrNode started" "$LOG_DIR/server.log" 2>/dev/null; then
             success "Server host is running"
             return 0
         fi

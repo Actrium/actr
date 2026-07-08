@@ -17,20 +17,20 @@ fn actr_id(serial_number: u64) -> ActrId {
 fn records_stream_once_per_session() {
     let peer = actr_id(100);
     let now = Instant::now();
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
 
     assert_eq!(
         tracker.record_state(&peer, "stream-a", 42, now),
-        DataStreamRecordState::Missing
+        DataChunkRecordState::Missing
     );
     tracker.record_stream(&peer, "stream-a", 42, now);
     assert_eq!(
         tracker.record_state(&peer, "stream-a", 42, now + Duration::from_secs(1)),
-        DataStreamRecordState::Fresh
+        DataChunkRecordState::Fresh
     );
     assert_eq!(
         tracker.record_state(&peer, "stream-a", 42, now + Duration::from_secs(16)),
-        DataStreamRecordState::Stale
+        DataChunkRecordState::Stale
     );
 
     let notices = tracker.mark_delivery_uncertain(
@@ -49,7 +49,7 @@ fn records_stream_once_per_session() {
 fn tracks_multiple_streams_for_same_peer() {
     let peer = actr_id(100);
     let now = Instant::now();
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
 
     tracker.record_stream(&peer, "stream-a", 42, now);
     tracker.record_stream(&peer, "stream-b", 42, now);
@@ -66,7 +66,7 @@ fn tracks_multiple_streams_for_same_peer() {
 fn expires_streams_outside_ttl() {
     let peer = actr_id(100);
     let now = Instant::now();
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(5));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(5));
 
     tracker.record_stream(&peer, "stream-a", 42, now);
 
@@ -80,7 +80,7 @@ fn expires_streams_outside_ttl() {
 fn filters_and_deduplicates_by_session() {
     let peer = actr_id(100);
     let now = Instant::now();
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
 
     tracker.record_stream(&peer, "stream-a", 42, now);
     let first = tracker.mark_delivery_uncertain(&peer, 42, "state disconnected", now);
@@ -106,7 +106,7 @@ fn filters_and_deduplicates_by_session() {
 fn keeps_same_stream_records_for_overlapping_sessions() {
     let peer = actr_id(100);
     let now = Instant::now();
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
 
     tracker.record_stream(&peer, "stream-a", 42, now);
     tracker.record_stream(&peer, "stream-a", 43, now + Duration::from_secs(1));
@@ -134,7 +134,7 @@ fn keeps_same_stream_records_for_overlapping_sessions() {
 fn remove_stream_drops_failed_inflight_marker() {
     let peer = actr_id(100);
     let now = Instant::now();
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
 
     tracker.record_stream(&peer, "stream-a", 42, now);
     tracker.remove_stream(&peer, "stream-a");
@@ -147,7 +147,7 @@ fn remove_stream_drops_failed_inflight_marker() {
 fn remove_stream_session_keeps_other_session_marker() {
     let peer = actr_id(100);
     let now = Instant::now();
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
 
     tracker.record_stream(&peer, "stream-a", 42, now);
     tracker.record_stream(&peer, "stream-a", 43, now + Duration::from_secs(1));
@@ -172,31 +172,31 @@ fn remove_stream_session_keeps_other_session_marker() {
 
 #[test]
 fn remove_stream_unknown_peer_is_noop() {
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
     let peer = actr_id(999);
     let now = Instant::now();
     tracker.remove_stream(&peer, "never");
     assert_eq!(
         tracker.record_state(&peer, "never", 1, now),
-        DataStreamRecordState::Missing
+        DataChunkRecordState::Missing
     );
 }
 
 #[test]
 fn remove_stream_session_unknown_peer_is_noop() {
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
     let peer = actr_id(998);
     let now = Instant::now();
     tracker.remove_stream_session(&peer, "never", 1);
     assert_eq!(
         tracker.record_state(&peer, "never", 1, now),
-        DataStreamRecordState::Missing
+        DataChunkRecordState::Missing
     );
 }
 
 #[test]
 fn remove_stream_session_unknown_stream_for_known_peer_is_noop() {
-    let mut tracker = DataStreamActivityTracker::new(Duration::from_secs(30));
+    let mut tracker = DataChunkActivityTracker::new(Duration::from_secs(30));
     let peer = actr_id(7);
     let now = Instant::now();
     tracker.record_stream(&peer, "exists", 1, now);
@@ -204,6 +204,6 @@ fn remove_stream_session_unknown_stream_for_known_peer_is_noop() {
     tracker.remove_stream_session(&peer, "missing", 1);
     assert_eq!(
         tracker.record_state(&peer, "exists", 1, now + Duration::from_secs(1)),
-        DataStreamRecordState::Fresh
+        DataChunkRecordState::Fresh
     );
 }

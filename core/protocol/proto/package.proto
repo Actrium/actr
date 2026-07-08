@@ -61,13 +61,13 @@ message RpcEnvelope {
     required int64 timeout_ms = 104;
 }
 
-// DataStream - Application data stream packet (Fast Path)
+// DataChunk - A single chunk of an application data stream (Fast Path)
 //
 // For streaming application data (non-media):
 // - File transfer chunks
 // - Game state updates
 // - Custom protocol streams
-message DataStream {
+message DataChunk {
     required string stream_id = 1;
     required uint64 sequence = 2;
     required bytes payload = 3;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
 use crate::lifecycle::hooks::{HookContextBuilder, WorkloadHookObserverRef, build_hook_callback};
 use crate::outbound::{Gate, HostGate};
 use crate::transport::HostTransport;
@@ -50,7 +50,7 @@ fn test_runtime_context(serial: u64) -> RuntimeContext {
         "workload-test".to_string(),
         inproc_gate,
         None,
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         Arc::new(MediaFrameRegistry::new()),
         signaling_client,
         test_credential(),

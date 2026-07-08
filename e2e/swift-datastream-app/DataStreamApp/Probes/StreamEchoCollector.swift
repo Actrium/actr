@@ -2,8 +2,8 @@ import Actr
 import Foundation
 
 /// Per-session collector for manual stream echo chunks.
-actor StreamEchoCollector: DataStreamCallback {
-    private var chunks: [UInt64: DataStream] = [:]
+actor StreamEchoCollector: DataChunkCallback {
+    private var chunks: [UInt64: DataChunk] = [:]
     private let expectedCount: Int
     private let streamId: String
     private let onReceive: (@Sendable (_ logLine: String, _ receivedLine: String) async -> Void)?
@@ -18,7 +18,7 @@ actor StreamEchoCollector: DataStreamCallback {
         self.onReceive = onReceive
     }
 
-    func onStream(chunk: DataStream, sender: ActrId) async throws {
+    func onStream(chunk: DataChunk, sender: ActrId) async throws {
         guard chunk.streamId == streamId else { return }
         chunks[chunk.sequence] = chunk
         let payload = String(data: chunk.payload, encoding: .utf8) ?? "<\(chunk.payload.count) bytes>"
@@ -28,7 +28,7 @@ actor StreamEchoCollector: DataStreamCallback {
 
     var receivedCount: Int { chunks.count }
 
-    func waitForCompletion(timeoutMs: Int64) async throws -> [DataStream] {
+    func waitForCompletion(timeoutMs: Int64) async throws -> [DataChunk] {
         let deadline = Date().addingTimeInterval(Double(timeoutMs) / 1000.0)
         while Date() < deadline {
             if chunks.count >= expectedCount {
@@ -44,7 +44,7 @@ actor StreamEchoCollector: DataStreamCallback {
         )
     }
 
-    private func sortedChunks() -> [DataStream] {
+    private func sortedChunks() -> [DataChunk] {
         chunks.values.sorted { $0.sequence < $1.sequence }
     }
 

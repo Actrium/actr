@@ -140,7 +140,7 @@ pub trait WebContext {
     /// Send stream data.
     ///
     /// Uses the Fast Path with latency around 3 ms.
-    async fn send_data_stream(
+    async fn send_data_chunk(
         &self,
         target: &ActrId,
         stream_id: &str,

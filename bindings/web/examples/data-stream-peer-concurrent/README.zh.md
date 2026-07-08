@@ -6,7 +6,7 @@
 - 发起方在本地 WASM handler 中发现远端对等节点
 - 远端节点调回 `PrepareClientStream`
 - 双方分别调用 `ctx.register_stream()` 注册 `stream_id`
-- Client / Server 通过 `ctx.send_data_stream()` 在 WebRTC DataChannel 上双向发送数据
+- Client / Server 通过 `ctx.send_data_chunk()` 在 WebRTC DataChannel 上双向发送数据
 - `test-auto.js` 用 Puppeteer 同时拉起多个 Client 页面，验证并发场景
 
 ## 目录结构
@@ -113,12 +113,12 @@ node test-auto.js
   - `server: stream <stream_id> received N/N`
   - `server sending N/N`
 - Server / Client 日志不应出现：
-  - `Unknown service: __fast_path_data_stream__`
+  - `Unknown service: __fast_path_data_chunk__`
   - `Tell handler error`
 
 ## 说明
 
-- 这里的 RPC 请求体使用 JSON 编码，重点验证的是 web 侧 `register_stream()` / `send_data_stream()` / Fast Path 分发链路，而不是 protobuf codegen。
+- 这里的 RPC 请求体使用 JSON 编码，重点验证的是 web 侧 `register_stream()` / `send_data_chunk()` / Fast Path 分发链路，而不是 protobuf codegen。
 - 默认 ICE server 列表为空，适合本机多端口验证；如需显式 STUN/TURN，可设置 `VITE_ACTRIX_STUN_URL`。
 - 并发测试默认启动 2 个 Client 页面，每个页面发送 3 条消息；可通过环境变量覆盖：
   - `CLIENT_URLS`

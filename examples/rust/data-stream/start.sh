@@ -19,7 +19,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📡 DataStream Example - Using Actrix"
+echo "📡 DataChunk Example - Using Actrix"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Determine paths and switch to workspace root
@@ -300,7 +300,7 @@ echo "   secret_hash  = ${SECRET_HASH:0:16}..."
 
 # Insert realm and ACL rules (with clean slate for ACL)
 sqlite3 "$ACTRIX_DB" <<EOF
-INSERT OR REPLACE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'DataStream Realm', 'Active', 1, strftime('%s','now'), '$SECRET_HASH');
+INSERT OR REPLACE INTO realm (id, name, status, enabled, created_at, secret_current) VALUES ($REALM_ID, 'DataChunk Realm', 'Active', 1, strftime('%s','now'), '$SECRET_HASH');
 DELETE FROM actoracl WHERE realm_id = $REALM_ID;
 INSERT INTO actoracl (realm_id, source_realm_id, from_type, to_type, access)
 VALUES ($REALM_ID, $REALM_ID, 'acme:GenericClient:1.0.0', 'acme:FileTransferService:1.0.0', 1);
@@ -489,12 +489,12 @@ if grep -q "Received chunk" "$LOG_DIR/data-stream-receiver.log"; then
     echo -e "${GREEN}✅ Test PASSED: Receiver got $CHUNK_COUNT chunks${NC}"
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "🎉 DataStream demo completed successfully!"
+    echo "🎉 DataChunk demo completed successfully!"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     echo "✅ Validated:"
     echo "   • RPC handshake (StartTransfer/EndTransfer)"
-    echo "   • DataStream fast path transmission"
+    echo "   • DataChunk fast path transmission"
     echo "   • register_stream/unregister_stream callbacks"
     echo "   • Real protobuf encode/decode"
     echo "   • Real distributed Actor communication"

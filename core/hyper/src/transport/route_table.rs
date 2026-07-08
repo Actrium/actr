@@ -43,10 +43,10 @@ pub(crate) enum DataLaneType {
 
 /// PayloadType routing extension
 pub(crate) trait PayloadTypeExt {
-    /// Whether this payload type carries a `DataStream` chunk.
+    /// Whether this payload type carries a `DataChunk` chunk.
     ///
     /// Only `StreamReliable` and `StreamLatencyFirst` are permitted on the
-    /// `send_data_stream` path; centralizing the classification here keeps the
+    /// `send_data_chunk` path; centralizing the classification here keeps the
     /// stream-type set in one place as it is referenced from several call sites.
     #[allow(clippy::wrong_self_convention)]
     fn is_stream(self) -> bool;
@@ -114,13 +114,13 @@ impl PayloadTypeExt for PayloadType {
                 DataLaneType::WebSocket,
             ],
 
-            // STREAM_RELIABLE - DataStream with reliable ordered transmission
+            // STREAM_RELIABLE - DataChunk with reliable ordered transmission
             PayloadType::StreamReliable => &[
                 DataLaneType::WebRtcDataChannel(DataChannelQoS::Reliable),
                 DataLaneType::WebSocket,
             ],
 
-            // STREAM_LATENCY_FIRST - DataStream with low latency partial-reliable transmission
+            // STREAM_LATENCY_FIRST - DataChunk with low latency partial-reliable transmission
             PayloadType::StreamLatencyFirst => &[
                 DataLaneType::WebRtcDataChannel(DataChannelQoS::LatencyFirst),
                 DataLaneType::WebSocket,

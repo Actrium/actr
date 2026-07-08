@@ -4,8 +4,8 @@ import android.util.Log
 import com.example.generated.UnifiedHandler
 import io.actrium.actr.ActrId
 import io.actrium.actr.ActrType
-import io.actrium.actr.DataStream
-import io.actrium.actr.DataStreamCallback
+import io.actrium.actr.DataChunk
+import io.actrium.actr.DataChunkCallback
 import io.actrium.actr.PayloadType
 import io.actrium.actr.dsl.ActrContext
 import io.actrium.actr.dsl.withRetry
@@ -16,7 +16,7 @@ import kotlinx.coroutines.delay
  *
  * Implements the DuplexStreamService client protocol:
  * 1. Call StartDuplexStream RPC on the server
- * 2. Send DataStream chunks to the server
+ * 2. Send DataChunk chunks to the server
  * 3. Optionally receive return stream from the server
  */
 class MyUnifiedHandler : UnifiedHandler {
@@ -83,9 +83,9 @@ class MyUnifiedHandler : UnifiedHandler {
             if (serverStreamId.isNotBlank()) {
                 ctx.registerStream(
                     serverStreamId,
-                    object : DataStreamCallback {
+                    object : DataChunkCallback {
                         override suspend fun onStream(
-                            chunk: DataStream,
+                            chunk: DataChunk,
                             sender: ActrId,
                         ) {
                             val text = String(chunk.payload, Charsets.UTF_8)
@@ -99,11 +99,11 @@ class MyUnifiedHandler : UnifiedHandler {
                 Log.i(TAG, "✅ Registered stream handler for server return stream: $serverStreamId")
             }
 
-            // Step 3: Send DataStream chunks to the server (synchronous)
+            // Step 3: Send DataChunk chunks to the server (synchronous)
             for (i in 1..messageCount) {
                 val message = "[client $clientId] message $i"
-                val dataStream =
-                    DataStream(
+                val dataChunk =
+                    DataChunk(
                         streamId = clientStreamId,
                         sequence = i.toULong(),
                         payload = message.toByteArray(Charsets.UTF_8),
@@ -113,13 +113,13 @@ class MyUnifiedHandler : UnifiedHandler {
 
                 Log.i(TAG, "client sending $i/$messageCount: $message")
                 try {
-                    ctx.sendDataStream(
+                    ctx.sendDataChunk(
                         serverId,
-                        dataStream,
+                        dataChunk,
                         PayloadType.STREAM_RELIABLE,
                     )
                 } catch (e: Exception) {
-                    Log.e(TAG, "client send_data_stream error: ${e.message}")
+                    Log.e(TAG, "client send_data_chunk error: ${e.message}")
                 }
                 delay(1000)
             }

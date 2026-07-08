@@ -1,13 +1,13 @@
-# DataStream API Example
+# DataChunk API Example
 
-This example demonstrates the DataStream API for streaming application data between Actors.
+This example demonstrates the DataChunk API for streaming application data between Actors.
 
 ## Overview
 
-The DataStream API provides a Fast Path for streaming non-media data (file transfers, game state updates, custom protocols) between Actors without going through the RPC envelope mechanism.
+The DataChunk API provides a Fast Path for streaming non-media data (file transfers, game state updates, custom protocols) between Actors without going through the RPC envelope mechanism.
 
 **Key Concepts:**
-- **DataStream**: Protocol buffer message for streaming data chunks
+- **DataChunk**: Protocol buffer message for streaming data chunks
 - **Stream ID**: Identifies a specific data stream (e.g., "file-transfer")
 - **Sequence Number**: Ensures ordered delivery of chunks
 - **Fast Path**: Bypasses RPC envelope for lower latency
@@ -17,11 +17,11 @@ The DataStream API provides a Fast Path for streaming non-media data (file trans
 ```
 Sender (datastream.Sender)
   └─ SenderWorkload
-      └─ ctx.send_data_stream(&dest, chunk)
+      └─ ctx.send_data_chunk(&dest, chunk)
            │
-           ├─ RuntimeContext::send_data_stream()
-           ├─ Gate::send_data_stream()
-           └─ PeerGate::send_data_stream()
+           ├─ RuntimeContext::send_data_chunk()
+           ├─ Gate::send_data_chunk()
+           └─ PeerGate::send_data_chunk()
                 │
                 └─ PeerTransport::send()
                      └─ WebRTC DataChannel / WebSocket
@@ -30,10 +30,10 @@ Receiver (datastream.Receiver)
   └─ ReceiverWorkload
       └─ ctx.register_stream("file-transfer", callback)
            │
-           └─ DataStreamRegistry::register()
+           └─ DataChunkRegistry::register()
                 │
                 └─ InboundPacketDispatcher::dispatch()
-                     └─ Callback invoked with DataStream
+                     └─ Callback invoked with DataChunk
 ```
 
 ## Components
@@ -105,12 +105,12 @@ cargo run -p data-stream-sender
 
 ### Receiver Output:
 ```
-🚀 DataStream Receiver starting
+🚀 DataChunk Receiver starting
 ✅ ActrNode created
 ✅ ActrNode started!
 🎉 Receiver ready to receive data streams
 📦 Received chunk #1: stream_id=file-transfer, sequence=0, size=67 bytes
-📄 Content preview: Chunk #0: Hello from DataStream API! This is chunk number 0.
+📄 Content preview: Chunk #0: Hello from DataChunk API! This is chunk number 0.
 📦 Received chunk #2: stream_id=file-transfer, sequence=1, size=67 bytes
 ...
 📊 Final statistics:
@@ -120,7 +120,7 @@ cargo run -p data-stream-sender
 
 ### Sender Output:
 ```
-🚀 DataStream Sender starting
+🚀 DataChunk Sender starting
 ✅ ActrNode created
 ✅ ActrNode started!
 📤 SenderWorkload will start sending after 3 seconds...
@@ -137,11 +137,11 @@ cargo run -p data-stream-sender
 ### Sender Side
 
 ```rust
-use actr_protocol::DataStream;
+use actr_protocol::DataChunk;
 use actr_framework::{Context, Dest};
 
-// Create DataStream chunk
-let chunk = DataStream {
+// Create a DataChunk
+let chunk = DataChunk {
     stream_id: "file-transfer".to_string(),
     sequence: 0,
     payload: bytes::Bytes::from("Hello!"),
@@ -151,14 +151,14 @@ let chunk = DataStream {
 
 // Send to receiver
 let dest = Dest::Actor(receiver_id);
-ctx.send_data_stream(&dest, chunk).await?;
+ctx.send_data_chunk(&dest, chunk).await?;
 ```
 
 ### Receiver Side
 
 ```rust
 // Register callback for stream_id
-ctx.register_stream("file-transfer".to_string(), |chunk: DataStream, sender_id: ActrId| {
+ctx.register_stream("file-transfer".to_string(), |chunk: DataChunk, sender_id: ActrId| {
     Box::pin(async move {
         println!("Received chunk: sequence={}, size={}", chunk.sequence, chunk.payload.len());
         Ok(())
@@ -179,7 +179,7 @@ ctx.unregister_stream("file-transfer").await?;
 
 ## Comparison with RPC
 
-| Feature | RPC (call/tell) | DataStream |
+| Feature | RPC (call/tell) | DataChunk |
 |---------|----------------|------------|
 | Use Case | Request-response | Streaming data |
 | Overhead | Higher (RpcEnvelope) | Lower (direct protobuf) |

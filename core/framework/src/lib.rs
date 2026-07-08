@@ -159,8 +159,8 @@ pub use bytes::Bytes;
 // Re-export async_trait to avoid users having to add it as a dependency
 pub use async_trait::async_trait;
 
-// Re-export DataStream from protocol
-pub use actr_protocol::DataStream;
+// Re-export DataChunk from protocol
+pub use actr_protocol::DataChunk;
 
 // Re-export backoff utilities
 pub use util::backoff::{BackoffBuilder, ExponentialBackoff};

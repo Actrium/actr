@@ -38,7 +38,7 @@ actr-hyper/
 │   ├── actr_node.rs    # ActrNode runtime infrastructure
 │   └── actr_node.rs    # ActrNode<W> (complete node)
 ├── inbound/            # Inbound Message Processing
-│   ├── data_stream_registry.rs     # DataStream fast path registry
+│   ├── data_chunk_registry.rs     # DataChunk fast path registry
 │   └── media_frame_registry.rs     # MediaFrame fast path registry
 ├── outbound/           # Outbound Message Processing
 │   ├── host_gate.rs    # In-process outbound gate (Shell ↔ Workload)
@@ -172,7 +172,7 @@ The runtime adopts a 4-layer architecture design:
 ```
 ┌─────────────────────────────────────────────┐
 │  Layer 3: Application (Workload)            │  User business logic
-│    Inbound: DataStreamRegistry              │  Fast path callbacks
+│    Inbound: DataChunkRegistry              │  Fast path callbacks
 │             MediaFrameRegistry              │
 ├─────────────────────────────────────────────┤
 │  Layer 2: Outbound Gate                     │  Outbound gate abstraction
@@ -243,7 +243,7 @@ Design Advantage: enum dispatch provides static dispatch with zero virtual funct
 - Responsibility: Consumes inbound data aggregated by `WebRtcCoordinator`, dispatching directly based on PayloadType
 - Routing Rules:
   - RpcReliable/RpcSignal → Check pending_requests first; if hit, treat as Response and wake continuation, otherwise enter Mailbox by priority
-  - StreamReliable/StreamLatencyFirst → DataStreamRegistry (fast path callback)
+  - StreamReliable/StreamLatencyFirst → DataChunkRegistry (fast path callback)
   - MediaRtp → Drop directly and hint to use WebRTC Track (MediaFrameRegistry registered by PeerConnection)
 
 **Inproc Receive Loop**：
@@ -251,10 +251,10 @@ Design Advantage: enum dispatch provides static dispatch with zero virtual funct
 - Shell→Workload: Extract `RpcEnvelope` then call `handle_incoming()`
 - Workload→Shell: Call `complete_response()` based on `request_id` to wake requester
 
-**DataStreamRegistry**：
-- Responsibility: Manage DataStream callback registry (stream_id → callback)
+**DataChunkRegistry**：
+- Responsibility: Manage DataChunk callback registry (stream_id → callback)
 - Concurrency Safety: Use DashMap to support multi-threaded concurrent access
-- Callback Signature: `FnMut(DataStream, ActrId) -> BoxFuture<ActorResult<()>>`
+- Callback Signature: `FnMut(DataChunk, ActrId) -> BoxFuture<ActorResult<()>>`
 
 **MediaFrameRegistry**：
 - Responsibility: Manage MediaTrack callback registry (track_id → callback)
@@ -315,7 +315,7 @@ Recommended Default Mapping:
 | `RpcReliable + Request/Notify` | `Mailbox` | Normal priority, enters actor state path |
 | `RpcSignal + Request/Notify` | `Mailbox` | High priority control message |
 | `RpcReliable/RpcSignal + Response` | `PendingContinuation` | Defaults to serving `call().await`; if "handle later as actor event" needed, model as explicit split-phase API, not rewriting normal response semantics |
-| `StreamReliable + Data` | `OrderedStreamQueue` | Current implementation approximates `DataStreamRegistry` fast path, can add bounded queue / batching later |
+| `StreamReliable + Data` | `OrderedStreamQueue` | Current implementation approximates `DataChunkRegistry` fast path, can add bounded queue / batching later |
 | `StreamLatencyFirst + Data` | `CoalescingQueue` | Current implementation shares registry with `StreamReliable`, target semantics should be latest-first / coalescing |
 | `MediaRtp + Data` | `MediaPipeline` | Should follow WebRTC Track fast path; `websocket` usually not a valid carrier path |
 | `StateSync + Snapshot/Delta` | `LatestValueStore` | planned; Old values can be overwritten by new ones, shouldn't force reuse of RPC/mailbox semantics |
@@ -377,7 +377,7 @@ Design Constraints:
 - Routing Logic:
   - Dispatch messages based on PayloadType
   - RPC messages check pending_requests first: if hit complete continuation, otherwise enqueue(Mailbox) by priority
-  - DataStream messages dispatched directly to DataStreamRegistry
+  - DataChunk messages dispatched directly to DataChunkRegistry
 
 **WebRtcConnection**:
 - Responsibility: Encapsulate single RTCPeerConnection, manage DataChannel and MediaTrack
@@ -406,12 +406,12 @@ Design Constraints:
 5. If Request: enqueue(Mailbox)
 ```
 
-### 7.2 DataStream Fast Path Flow
+### 7.2 DataChunk Fast Path Flow
 
 **Sender**:
 ```rust
-1. ctx.send_data_stream(target, stream_id, chunk)
-2. Gate::send_data_stream(target, StreamReliable, data)
+1. ctx.send_data_chunk(target, stream_id, chunk)
+2. Gate::send_data_chunk(target, StreamReliable, data)
 3. TransportManager → DataLane(StreamReliable) → WebRTC
 ```
 
@@ -419,8 +419,8 @@ Design Constraints:
 ```rust
 1. Coordinator.receive_message() → (from, data, StreamReliable)
 2. WebRtcGate identifies PayloadType::StreamReliable
-3. Deserialize Bytes → DataStream
-4. DataStreamRegistry.dispatch(chunk, sender_id)
+3. Deserialize Bytes → DataChunk
+4. DataChunkRegistry.dispatch(chunk, sender_id)
 5. Invoke registered callback function
 ```
 
@@ -486,7 +486,7 @@ RuntimeError
 - `actr-runtime/acl.rs`: ACL permission check tests
 - `actr-runtime/dispatch.rs`: Dispatcher panic capture tests
 - `transport/lane.rs`: DataLane creation and send/receive tests
-- `inbound/data_stream_registry.rs`: Callback registration and trigger tests
+- `inbound/data_chunk_registry.rs`: Callback registration and trigger tests
 - `outbound/host_gate.rs`: In-process message sending tests
 
 ### 10.2 Integration Testing
@@ -534,7 +534,7 @@ actr-runtime
 ### 12.2 Naming Conventions
 
 - **Manager**: Lifecycle management component (e.g., TransportManager)
-- **Registry**: Callback registration management component (e.g., DataStreamRegistry)
+- **Registry**: Callback registration management component (e.g., DataChunkRegistry)
 - **Gate**: Message entry/exit abstraction (e.g., WebRtcGate, Gate)
 - **Coordinator**: Component coordinating multiple related components (e.g., WebRtcCoordinator)
 - **Bridge**: ABI bridge or transport bridge component

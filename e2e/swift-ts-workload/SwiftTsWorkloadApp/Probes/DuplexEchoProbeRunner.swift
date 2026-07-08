@@ -109,9 +109,9 @@ final class DuplexEchoProbeRunner: @unchecked Sendable {
     }
 
     func sendChunk(c2s: String, seq: UInt64, payload: Data, pt: PayloadType, sid: String, log: inout [String]) async throws {
-        let chunk = DataStream(streamId: c2s, sequence: seq, payload: payload,
+        let chunk = DataChunk(streamId: c2s, sequence: seq, payload: payload,
             metadata: [.init(key: "session_id", value: sid)], timestampMs: nil)
-        try await ctx.sendDataStream(target: target, chunk: chunk, payloadType: pt)
+        try await ctx.sendDataChunk(target: target, chunk: chunk, payloadType: pt)
         log.append("Sent seq=\(seq) on \(c2s)")
     }
 
@@ -145,7 +145,7 @@ final class DuplexEchoProbeRunner: @unchecked Sendable {
 
             for index in 1...count {
                 let text = "hello \(index)"
-                let chunk = DataStream(
+                let chunk = DataChunk(
                     streamId: s.c2s,
                     sequence: UInt64(index),
                     payload: Data(text.utf8),
@@ -155,7 +155,7 @@ final class DuplexEchoProbeRunner: @unchecked Sendable {
                     ],
                     timestampMs: nil
                 )
-                try await ctx.sendDataStream(target: target, chunk: chunk, payloadType: .streamReliable)
+                try await ctx.sendDataChunk(target: target, chunk: chunk, payloadType: .streamReliable)
                 let sentLine = "sent: \(text)"
                 log.append(sentLine)
                 await onLog?(sentLine, nil)
@@ -338,9 +338,9 @@ final class DuplexEchoProbeRunner: @unchecked Sendable {
 
         for (i, label) in ["alpha","beta"].enumerated() {
             let seq = UInt64(i+1)
-            let chunk = DataStream(streamId: s.c2s, sequence: seq, payload: Data(label.utf8),
+            let chunk = DataChunk(streamId: s.c2s, sequence: seq, payload: Data(label.utf8),
                 metadata: [.init(key: "session_id", value: s.sid), .init(key: "direction", value: "client-to-service"), .init(key: "chunk_label", value: label)], timestampMs: nil)
-            try await ctx.sendDataStream(target: target, chunk: chunk, payloadType: .streamReliable)
+            try await ctx.sendDataChunk(target: target, chunk: chunk, payloadType: .streamReliable)
             log.append("Sent seq=\(seq) \(label)")
         }
         let acks = try await s.col.waitForCompletion()
@@ -396,9 +396,9 @@ final class DuplexEchoProbeRunner: @unchecked Sendable {
             for (sid, s) in sessions {
                 g.addTask {
                     for seq: UInt64 in [1,2] {
-                        let chunk = DataStream(streamId: s.c2s, sequence: seq, payload: Data("\(sid == "concurrent-apple" ? "apple" : "banana")-\(seq)".utf8),
+                        let chunk = DataChunk(streamId: s.c2s, sequence: seq, payload: Data("\(sid == "concurrent-apple" ? "apple" : "banana")-\(seq)".utf8),
                             metadata: [.init(key: "session_id", value: sid)], timestampMs: nil)
-                        try await self.ctx.sendDataStream(target: self.target, chunk: chunk, payloadType: .streamReliable)
+                        try await self.ctx.sendDataChunk(target: self.target, chunk: chunk, payloadType: .streamReliable)
                     }
                 }
             }
@@ -406,9 +406,9 @@ final class DuplexEchoProbeRunner: @unchecked Sendable {
         }
 
         // Collect concurrently
-        let results = try await withThrowingTaskGroup(of: (String,[DataStream]).self) { g in
+        let results = try await withThrowingTaskGroup(of: (String,[DataChunk]).self) { g in
             for (sid, s) in sessions { g.addTask { (sid, try await s.col.waitForCompletion()) } }
-            var r: [(String,[DataStream])] = []; for try await x in g { r.append(x) }; return r
+            var r: [(String,[DataChunk])] = []; for try await x in g { r.append(x) }; return r
         }
 
         // Teardown
@@ -437,9 +437,9 @@ final class DuplexEchoProbeRunner: @unchecked Sendable {
         _ = try await finish(s: s, log: &log)  // service unregisters c2s here
 
         // Send post-finish chunk
-        let post = DataStream(streamId: s.c2s, sequence: 99, payload: Data("post-finish".utf8),
+        let post = DataChunk(streamId: s.c2s, sequence: 99, payload: Data("post-finish".utf8),
             metadata: [.init(key: "session_id", value: s.sid)], timestampMs: nil)
-        try await ctx.sendDataStream(target: target, chunk: post, payloadType: .streamReliable)
+        try await ctx.sendDataChunk(target: target, chunk: post, payloadType: .streamReliable)
         log.append("Sent post-finish chunk")
 
         let noNew = try await s.col.assertNoNewChunks(afterMs: 3_000)

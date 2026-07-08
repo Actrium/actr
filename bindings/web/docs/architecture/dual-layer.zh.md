@@ -52,7 +52,7 @@ Actor-RTC Web 采用**双层架构**，将消息处理分为两条路径：
 
 #### Fast Path（数据平面）
 - **职责**: 高吞吐数据传输（音视频、文件）
-- **消息类型**: DataStream、MediaFrame
+- **消息类型**: DataChunk、MediaFrame
 - **处理方式**: DOM 转发 `fast_path_data`，SW 派发 stream handlers
 - **延迟**: 不在本文声明固定数字；以当前 e2e/benchmark 为准
 
@@ -182,7 +182,7 @@ sequenceDiagram
 | 组件 | 完成度 | 说明 |
 |------|--------|------|
 | State Path 基础设施 | 95% | Mailbox + Dispatcher 完整 |
-| Fast Path DataStream baseline | 当前已接入 | DOM FastPathForwarder → SW handle_dom_fast_path → stream handlers |
+| Fast Path DataChunk baseline | 当前已接入 | DOM FastPathForwarder → SW handle_dom_fast_path → stream handlers |
 | WebRTC 集成 | 70% | 完整传输栈 + ICE restart + MessagePort 桥接 |
 | Scheduler | ✅ 100% | 串行调度 + 优先级 + 事件驱动 |
 

@@ -7,7 +7,7 @@
 use actr_framework::WebRtcPeerStatus;
 use actr_framework::guest::dynclib_abi::{
     self as guest_abi, HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1,
-    HostSendDataStreamV1, HostTellV1, HostUnregisterStreamV1,
+    HostSendDataChunkV1, HostTellV1, HostUnregisterStreamV1,
 };
 #[cfg(feature = "dynclib-engine")]
 use actr_framework::guest::dynclib_abi::{AbiPayload, GuestHandleV1, GuestHookV1};
@@ -15,7 +15,7 @@ use actr_framework::{
     BackpressureEvent, CredentialEvent, ErrorEvent, MessageDispatcher, PeerEvent,
     Workload as FrameworkWorkload,
 };
-use actr_protocol::{ActorResult, ActrError, ActrId, DataStream, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, DataChunk, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
 #[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
@@ -38,7 +38,7 @@ pub enum HostOperation {
     CallRaw(HostCallRawV1),
     RegisterStream(HostRegisterStreamV1),
     UnregisterStream(HostUnregisterStreamV1),
-    SendDataStream(HostSendDataStreamV1),
+    SendDataChunk(HostSendDataChunkV1),
 }
 
 /// Result of a host operation.
@@ -653,9 +653,9 @@ impl Workload {
         })
     }
 
-    pub(crate) fn dispatch_data_stream<'a>(
+    pub(crate) fn dispatch_data_chunk<'a>(
         &'a mut self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender: ActrId,
         invocation: InvocationContext,
         host_abi: &'a HostAbiFn,
@@ -673,14 +673,14 @@ impl Workload {
                 }
                 #[cfg(feature = "wasm-engine")]
                 Workload::Wasm(workload) => workload
-                    .handle_data_stream(chunk, sender, invocation, host_abi)
+                    .handle_data_chunk(chunk, sender, invocation, host_abi)
                     .await
                     .map_err(|e| {
                         ActrError::Internal(format!("workload stream dispatch failed: {e}"))
                     }),
                 #[cfg(feature = "dynclib-engine")]
                 Workload::DynClib(workload) => workload
-                    .handle_data_stream(chunk, sender, host_abi)
+                    .handle_data_chunk(chunk, sender, host_abi)
                     .await
                     .map_err(|e| {
                         ActrError::Internal(format!("workload stream dispatch failed: {e}"))
@@ -757,9 +757,9 @@ pub(crate) fn decode_host_operation(frame: guest_abi::AbiFrame) -> Result<HostOp
             let payload = <HostUnregisterStreamV1 as AbiPayload>::decode_payload(&frame.payload)?;
             Ok(HostOperation::UnregisterStream(payload))
         }
-        guest_abi::op::HOST_SEND_DATA_STREAM => {
-            let payload = <HostSendDataStreamV1 as AbiPayload>::decode_payload(&frame.payload)?;
-            Ok(HostOperation::SendDataStream(payload))
+        guest_abi::op::HOST_SEND_DATA_CHUNK => {
+            let payload = <HostSendDataChunkV1 as AbiPayload>::decode_payload(&frame.payload)?;
+            Ok(HostOperation::SendDataChunk(payload))
         }
         _ => Err(guest_abi::code::UNSUPPORTED_OP),
     }
@@ -780,11 +780,11 @@ pub(crate) fn encode_guest_handle_request(
 }
 
 #[cfg(feature = "dynclib-engine")]
-pub(crate) fn encode_guest_data_stream_request(
-    chunk: DataStream,
+pub(crate) fn encode_guest_data_chunk_request(
+    chunk: DataChunk,
     sender: ActrId,
 ) -> Result<Vec<u8>, i32> {
-    let request = guest_abi::GuestDataStreamV1 { chunk, sender };
+    let request = guest_abi::GuestDataChunkV1 { chunk, sender };
     let frame = request.to_frame()?;
     guest_abi::encode_message(&frame)
 }
