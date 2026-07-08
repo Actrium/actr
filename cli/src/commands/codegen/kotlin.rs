@@ -1,9 +1,10 @@
+use crate::commands::codegen::proto_model::{ProtoFileModel, TypeOwnerIndex};
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
 use crate::utils::{command_exists, to_snake_case};
 use actr_config::LockFile;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
@@ -34,14 +35,19 @@ struct ServiceInfo {
 }
 
 /// Information about an RPC method
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct MethodInfo {
     /// Method name (e.g., "send_file")
     name: String,
-    /// Request type (e.g., "SendFileRequest")
+    /// Request type, bare message name (e.g., "SendFileRequest")
     request_type: String,
-    /// Response type (e.g., "SendFileResponse")
+    /// Response type, bare message name (e.g., "SendFileResponse")
     response_type: String,
+    /// Kotlin import path (`package.OuterClass`) for the request type's
+    /// declaring proto file, so imported types resolve to their real owner.
+    request_import: String,
+    /// Kotlin import path for the response type's declaring proto file.
+    response_import: String,
 }
 
 impl KotlinGenerator {
@@ -361,6 +367,7 @@ impl KotlinGenerator {
                                         name: method_name,
                                         request_type,
                                         response_type,
+                                        ..Default::default()
                                     });
                                 }
                             }
@@ -498,7 +505,20 @@ impl KotlinGenerator {
     /// Collect all service information from proto files
     /// Skips proto files that have no service definitions
     fn collect_services(&self, context: &GenContext) -> Result<Vec<ServiceInfo>> {
-        Ok(context
+        let owner_index = TypeOwnerIndex::from_files(&context.proto_model.files);
+        let files_by_path: HashMap<String, &ProtoFileModel> = context
+            .proto_model
+            .files
+            .iter()
+            .map(|file| (file.relative_path.to_string_lossy().to_string(), file))
+            .collect();
+        // Pre-borrow so the `move` inner closure captures these by reference
+        // (refs are `Copy`) instead of moving the owned collections on every
+        // outer iteration.
+        let owner_index = &owner_index;
+        let files_by_path = &files_by_path;
+
+        context
             .proto_model
             .files
             .iter()
@@ -512,30 +532,55 @@ impl KotlinGenerator {
                 let needs_outer_class_suffix =
                     file.declared_type_names.contains(&outer_class_base_name);
 
-                file.services.iter().map(move |service| ServiceInfo {
-                    service_name: service.name.clone(),
-                    proto_package: service.package.clone(),
-                    proto_file_name: file
-                        .proto_file
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("unknown.proto")
-                        .to_string(),
-                    is_local: service.side == crate::commands::codegen::ProtoSide::Local,
-                    remote_target_type: service.actr_type.clone(),
-                    methods: service
-                        .methods
-                        .iter()
-                        .map(|method| MethodInfo {
-                            name: method.snake_name.clone(),
-                            request_type: method.input_type.clone(),
-                            response_type: method.output_type.clone(),
+                file.services
+                    .iter()
+                    .map(move |service| -> Result<ServiceInfo> {
+                        let methods = service
+                            .methods
+                            .iter()
+                            .map(|method| {
+                                let request_import = kotlin_type_import_path(
+                                    &method.input_type,
+                                    file,
+                                    owner_index,
+                                    files_by_path,
+                                )?;
+                                let response_import = kotlin_type_import_path(
+                                    &method.output_type,
+                                    file,
+                                    owner_index,
+                                    files_by_path,
+                                )?;
+                                let request_type =
+                                    kotlin_rpc_type_name(&method.input_type, file, owner_index)?;
+                                let response_type =
+                                    kotlin_rpc_type_name(&method.output_type, file, owner_index)?;
+                                Ok(MethodInfo {
+                                    name: method.snake_name.clone(),
+                                    request_type,
+                                    response_type,
+                                    request_import,
+                                    response_import,
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok(ServiceInfo {
+                            service_name: service.name.clone(),
+                            proto_package: service.package.clone(),
+                            proto_file_name: file
+                                .proto_file
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .unwrap_or("unknown.proto")
+                                .to_string(),
+                            is_local: service.side == crate::commands::codegen::ProtoSide::Local,
+                            remote_target_type: service.actr_type.clone(),
+                            methods,
+                            needs_outer_class_suffix,
                         })
-                        .collect(),
-                    needs_outer_class_suffix,
-                })
+                    })
             })
-            .collect())
+            .collect()
     }
 
     /// Generate unified infrastructure code
@@ -585,22 +630,17 @@ import io.actrium.actr.dsl.RpcEnvelope
             manifest_resolver_import = manifest_resolver_import,
         ));
 
-        // Import protobuf message types for all services
-        // Protobuf Java Lite generates outer class with PascalCase file name
-        // The outer class name is file_name in PascalCase (e.g., echo.proto -> Echo, stream_client.proto -> StreamClient)
-        // If the PascalCase name conflicts with a message/service/enum name, protobuf adds "OuterClass" suffix
+        // Import protobuf message types for all services.
+        // Protobuf Java Lite generates one outer class per proto file (PascalCase
+        // of the file stem, +`OuterClass` on name collisions); import every
+        // declaring file referenced by the services' RPC methods so imported
+        // types resolve to their real owner instead of the local service's
+        // package.
         code.push_str("// Import protobuf message types\n");
-        for service in services {
-            let file_stem = service.proto_file_name.replace(".proto", "");
-            let outer_class = if service.needs_outer_class_suffix {
-                format!("{}OuterClass", to_pascal_case(&file_stem))
-            } else {
-                to_pascal_case(&file_stem)
-            };
-            code.push_str(&format!(
-                "import {}.{}.*\n",
-                service.proto_package, outer_class
-            ));
+        let type_imports = kotlin_type_imports(services);
+        if !type_imports.is_empty() {
+            code.push_str(&type_imports);
+            code.push('\n');
         }
         code.push('\n');
 
@@ -1139,6 +1179,149 @@ fn to_pascal_case(s: &str) -> String {
         .collect()
 }
 
+/// Bare proto message name (last `.`-segment) from a fully-qualified type
+/// reference such as `.ask.ContinuePromptResultStreamsRequest`.
+fn bare_type_name(referenced: &str) -> String {
+    referenced
+        .trim()
+        .trim_start_matches('.')
+        .rsplit('.')
+        .next()
+        .unwrap_or(referenced.trim())
+        .to_string()
+}
+
+/// Java/Kotlin outer class name protobuf-javalite generates for a proto file:
+/// PascalCase of the file stem, with an `OuterClass` suffix when that name
+/// collides with a top-level message/service/enum in the file.
+fn kotlin_outer_class(file: &ProtoFileModel) -> String {
+    let stem = file
+        .proto_file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Unknown");
+    let base = to_pascal_case(stem);
+    if file.declared_type_names.contains(&base) {
+        format!("{}OuterClass", base)
+    } else {
+        base
+    }
+}
+
+/// Resolve the Kotlin import path (`package.OuterClass`) for a referenced RPC
+/// message type by looking up its declaring proto file. Falls back to the
+/// current service's file for types not in the local proto set, and surfaces
+/// ambiguous unqualified types as a config error instead of silently picking
+/// the wrong owner.
+fn kotlin_type_import_path(
+    referenced: &str,
+    current_file: &ProtoFileModel,
+    owner_index: &TypeOwnerIndex,
+    files_by_path: &HashMap<String, &ProtoFileModel>,
+) -> Result<String> {
+    let normalized = referenced.trim().trim_start_matches('.');
+    let owner_file = match owner_index.resolve(referenced, current_file) {
+        Ok(Some(owner)) => files_by_path.get(&owner.proto_file).copied(),
+        Ok(None) if normalized.contains('.') => {
+            return Err(unresolved_kotlin_type_error(normalized));
+        }
+        Ok(None) => None,
+        Err(candidates) => {
+            let declared_files = candidates
+                .iter()
+                .map(|owner| owner.proto_file.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ActrCliError::config_error(format!(
+                "Cannot uniquely resolve RPC type `{}` for Kotlin scaffold: declared in multiple proto files [{}]",
+                referenced.trim_start_matches('.'),
+                declared_files
+            )));
+        }
+    }
+    .unwrap_or(current_file);
+
+    let outer = kotlin_outer_class(owner_file);
+    if outer.is_empty() || owner_file.package.is_empty() {
+        Ok(outer)
+    } else {
+        Ok(format!("{}.{}", owner_file.package, outer))
+    }
+}
+
+fn kotlin_rpc_type_name(
+    referenced: &str,
+    current_file: &ProtoFileModel,
+    owner_index: &TypeOwnerIndex,
+) -> Result<String> {
+    let normalized = referenced.trim().trim_start_matches('.');
+    match owner_index.resolve(referenced, current_file) {
+        Ok(Some(owner)) => Ok(owner_relative_proto_type(normalized, &owner.proto_package)
+            .unwrap_or(owner.type_name.as_str())
+            .to_string()),
+        Ok(None) if normalized.contains('.') => Err(unresolved_kotlin_type_error(normalized)),
+        Ok(None) => Ok(bare_type_name(referenced)),
+        Err(candidates) => {
+            let declared_files = candidates
+                .iter()
+                .map(|owner| owner.proto_file.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(ActrCliError::config_error(format!(
+                "Cannot uniquely resolve RPC type `{}` for Kotlin scaffold: declared in multiple proto files [{}]",
+                normalized, declared_files
+            )))
+        }
+    }
+}
+
+fn owner_relative_proto_type<'a>(proto_type: &'a str, proto_package: &str) -> Option<&'a str> {
+    if proto_package.is_empty() {
+        Some(proto_type)
+    } else {
+        proto_type
+            .strip_prefix(proto_package)
+            .and_then(|relative| relative.strip_prefix('.'))
+    }
+}
+
+fn unresolved_kotlin_type_error(normalized: &str) -> ActrCliError {
+    ActrCliError::config_error(format!(
+        "Cannot resolve RPC type `{normalized}` for Kotlin scaffold: qualified RPC types must be declared in one of the parsed proto files"
+    ))
+}
+
+/// Distinct `import package.OuterClass.*` lines covering every proto file that
+/// declares a message type referenced by the given services' RPC methods (plus
+/// each service's own package, for locally-declared types).
+fn kotlin_type_imports<'a>(services: impl IntoIterator<Item = &'a ServiceInfo>) -> String {
+    let mut imports: BTreeSet<String> = BTreeSet::new();
+    for service in services {
+        let file_stem = service.proto_file_name.replace(".proto", "");
+        let outer = if service.needs_outer_class_suffix {
+            format!("{}OuterClass", to_pascal_case(&file_stem))
+        } else {
+            to_pascal_case(&file_stem)
+        };
+        if !service.proto_package.is_empty() && !outer.is_empty() {
+            imports.insert(format!("{}.{}", service.proto_package, outer));
+        }
+        for method in &service.methods {
+            if !method.request_import.is_empty() {
+                imports.insert(method.request_import.clone());
+            }
+            if !method.response_import.is_empty() {
+                imports.insert(method.response_import.clone());
+            }
+        }
+    }
+    imports
+        .into_iter()
+        .map(|path| format!("import {}.*", path))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Generate unified workload scaffold
 fn generate_unified_workload_scaffold(services: &[ServiceInfo], kotlin_package: &str) -> String {
     let base_package = kotlin_package
@@ -1375,20 +1558,15 @@ package {base_package}
     let mut imports = String::new();
     let mut method_impls = String::new();
 
-    for service in &local_services {
-        let outer_class = if service.needs_outer_class_suffix {
-            format!(
-                "{}OuterClass",
-                to_pascal_case(&service.proto_file_name.replace(".proto", ""))
-            )
-        } else {
-            to_pascal_case(&service.proto_file_name.replace(".proto", ""))
-        };
-        imports.push_str(&format!(
-            "import {}.{}.*\n",
-            service.proto_package, outer_class
-        ));
+    // Import every declaring proto file referenced by the local services' RPC
+    // methods so imported types resolve to their real owner outer class.
+    let type_imports = kotlin_type_imports(local_services.iter().copied());
+    if !type_imports.is_empty() {
+        imports.push_str(&type_imports);
+        imports.push('\n');
+    }
 
+    for service in &local_services {
         // Generate method implementations for each RPC method
         for method in &service.methods {
             method_impls.push_str(&format!(

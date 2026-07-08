@@ -1,6 +1,6 @@
 use super::RustGenerator;
 use crate::commands::codegen::scaffold::{ScaffoldMethod, ScaffoldService};
-use crate::commands::codegen::{GenContext, LanguageGenerator, ProtoModel};
+use crate::commands::codegen::{GenContext, LanguageGenerator, ProtoModel, TypeRef};
 use actr_config::ConfigParser;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -21,6 +21,16 @@ fn scaffold_service() -> ScaffoldService {
             input_type: "PingRequest".to_string(),
             output_type: "PingResponse".to_string(),
             route_key: "demo.shell.EmptyShell/Ping".to_string(),
+            input_ref: TypeRef {
+                type_name: "PingRequest".to_string(),
+                proto_package: "demo.shell".to_string(),
+                ..Default::default()
+            },
+            output_ref: TypeRef {
+                type_name: "PingResponse".to_string(),
+                proto_package: "demo.shell".to_string(),
+                ..Default::default()
+            },
         }],
     }
 }
@@ -233,4 +243,31 @@ fn pure_helpers_produce_correct_output() {
     assert!(!super::handler_method_impls(&svc).is_empty());
     // is_default_cargo_lib_rs returns false for non-default lib.rs.
     assert!(!super::is_default_cargo_lib_rs("custom content"));
+}
+
+#[test]
+fn message_imports_use_nested_parent_modules() {
+    let mut svc = scaffold_service();
+    svc.methods[0].input_ref = TypeRef {
+        proto_type: "ask.Outer.InnerRequest".to_string(),
+        type_name: "InnerRequest".to_string(),
+        proto_package: "ask".to_string(),
+        proto_file: "remote/ask/ask.proto".to_string(),
+    };
+    svc.methods[0].output_ref = TypeRef {
+        proto_type: "ask.Outer.InnerResponse".to_string(),
+        type_name: "InnerResponse".to_string(),
+        proto_package: "ask".to_string(),
+        proto_file: "remote/ask/ask.proto".to_string(),
+    };
+
+    let imports = super::message_imports(&svc);
+
+    assert!(
+        imports.contains("use crate::generated::ask::{outer::InnerRequest, outer::InnerResponse};")
+            || imports.contains(
+                "use crate::generated::ask::{outer::InnerResponse, outer::InnerRequest};"
+            ),
+        "expected nested parent modules in imports, got:\n{imports}"
+    );
 }

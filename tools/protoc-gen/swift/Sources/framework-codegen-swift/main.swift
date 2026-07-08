@@ -1,4 +1,5 @@
 import Foundation
+import SwiftProtobuf
 import SwiftProtobufPluginLibrary
 
 @main
@@ -156,6 +157,22 @@ struct ActrFrameworkGenerator {
 
     var response = Google_Protobuf_Compiler_CodeGeneratorResponse()
 
+    // Build a fully-qualified message name -> generated Swift type map from
+    // the full descriptor set. Imported RPC message types must resolve to their
+    // declaring package's Swift prefix (e.g. `ask.X` -> `Ask_X`) instead of the
+    // current service's package.
+    var typeToSwiftName: [String: String] = [:]
+    for fileDescriptor in request.protoFile {
+      for message in fileDescriptor.messageType {
+        Self.collectSwiftTypeNames(
+          package: fileDescriptor.package,
+          message: message,
+          parentProtoName: nil,
+          parentSwiftName: nil,
+          into: &typeToSwiftName)
+      }
+    }
+
     // Second pass: Generate content for each file
     for fileDescriptor in request.protoFile {
       // Only generate code for files explicitly requested by protoc
@@ -189,10 +206,6 @@ struct ActrFrameworkGenerator {
         import Actr
 
         """
-
-      let packagePrefix =
-        fileDescriptor.package.isEmpty
-        ? "" : fileDescriptor.package.split(separator: "_").map { $0.capitalized }.joined() + "_"
 
       // For Local mode with no services, generate a generic Workload from package name
       if !isRemote, fileDescriptor.service.isEmpty {
@@ -285,8 +298,10 @@ struct ActrFrameworkGenerator {
 
             for method in service.method {
               let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
-              let inputType = packagePrefix + method.inputType.split(separator: ".").last!
-              let outputType = packagePrefix + method.outputType.split(separator: ".").last!
+              let inputType = Self.swiftTypeName(
+                method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+              let outputType = Self.swiftTypeName(
+                method.outputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
 
               content += """
 
@@ -304,8 +319,10 @@ struct ActrFrameworkGenerator {
 
           // 2. Generate RpcRequest extensions
           for method in service.method {
-            let inputType = packagePrefix + method.inputType.split(separator: ".").last!
-            let outputType = packagePrefix + method.outputType.split(separator: ".").last!
+            let inputType = Self.swiftTypeName(
+              method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+            let outputType = Self.swiftTypeName(
+              method.outputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
 
             let routeKey: String
             if fileDescriptor.package.isEmpty {
@@ -348,7 +365,8 @@ struct ActrFrameworkGenerator {
             // Local Methods
             for method in service.method {
               let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
-              let inputType = packagePrefix + method.inputType.split(separator: ".").last!
+              let inputType = Self.swiftTypeName(
+                method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
 
               let routeKey: String
               if fileDescriptor.package.isEmpty {
@@ -474,6 +492,58 @@ struct ActrFrameworkGenerator {
   static func shortTypeName(_ rawType: String) -> String {
     let trimmed = rawType.trimmingCharacters(in: CharacterSet(charactersIn: "."))
     return trimmed.split(separator: ".").last.map(String.init) ?? trimmed
+  }
+
+  /// Resolve a fully-qualified proto type (as carried by
+  /// `MethodDescriptorProto.inputType`/`outputType`, e.g.
+  /// `.ask.ContinuePromptResultStreamsRequest`) to its Swift type name, using
+  /// the declaring package's prefix when the type is imported from another
+  /// proto file. Falls back to `currentPackage` for types not found in the
+  /// descriptor set (well-known types, external imports).
+  static func swiftTypeName(
+    _ inputType: String,
+    currentPackage: String,
+    typeToSwiftName: [String: String]
+  ) -> String {
+    let trimmed = inputType.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    if let swiftName = typeToSwiftName[trimmed] {
+      return swiftName
+    }
+    let prefix = swiftPackagePrefix(currentPackage)
+    let typeName = trimmed.split(separator: ".").last.map(String.init) ?? trimmed
+    return prefix + typeName
+  }
+
+  static func collectSwiftTypeNames(
+    package: String,
+    message: Google_Protobuf_DescriptorProto,
+    parentProtoName: String?,
+    parentSwiftName: String?,
+    into typeToSwiftName: inout [String: String]
+  ) {
+    let protoName = parentProtoName.map { "\($0).\(message.name)" } ?? message.name
+    let fullProtoName = package.isEmpty ? protoName : "\(package).\(protoName)"
+    let swiftName =
+      parentSwiftName.map { "\($0).\(message.name)" }
+      ?? "\(swiftPackagePrefix(package))\(message.name)"
+    typeToSwiftName[fullProtoName] = swiftName
+
+    for nested in message.nestedType {
+      collectSwiftTypeNames(
+        package: package,
+        message: nested,
+        parentProtoName: protoName,
+        parentSwiftName: swiftName,
+        into: &typeToSwiftName)
+    }
+  }
+
+  static func swiftPackagePrefix(_ packageName: String) -> String {
+    if packageName.isEmpty { return "" }
+    let components = packageName.split(separator: ".").map { component in
+      component.split(separator: "_").map { $0.capitalized }.joined()
+    }
+    return components.joined(separator: "_") + "_"
   }
 
   static func snakeCase(_ value: String) -> String {
