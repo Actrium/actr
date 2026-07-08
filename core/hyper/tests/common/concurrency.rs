@@ -302,3 +302,80 @@ pub async fn await_dispatch(
         })
         .unwrap_or_else(|e| panic!("dispatch `{label}` task panicked or was cancelled: {e}"))
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IO-load gate bridges (used by `benches/dispatch_throughput.rs`).
+//
+// The gate bridges above (`gate_bridge` / `spawn_native_gate`) park each guest
+// `ctx.call_raw` on a *semaphore* the test releases by hand — event-driven
+// coordination, no sleeps. The throughput benchmark needs the OPPOSITE: it must
+// model an actual IO **workload** — a host import that takes a fixed wall-clock
+// window `io_delay` to service (a network/disk round-trip stand-in). So these
+// two IO-gate variants complete each `test/gate` crossing after `sleep(io_delay)`.
+//
+// IMPORTANT — the `sleep` here is the BENCHMARKED IO LOAD ITSELF, not test
+// coordination. The project rule "never use `sleep` to coordinate/synchronise"
+// forbids sleeping to *wait for another task to make progress*; here nothing is
+// being waited on — the sleep IS the simulated IO service time under test. With
+// `io_delay = 0` the gate returns immediately, isolating pure per-dispatch
+// plumbing overhead (scheduler + runner + region + one guest→host round-trip).
+//
+// Serial base (K dispatches, one at a time)  ⇒ wall-clock ≈ K·io_delay.
+// Interleaved base (budget C, distinct keys) ⇒ wall-clock ≈ ⌈K/C⌉·io_delay,
+// because up to C IO windows overlap inside the ONE resident instance.
+
+/// WASM IO-load gate: a `HostAbiFn` that services each `test/gate` crossing
+/// after `io_delay` (the simulated IO service time — see the module note on why
+/// this sleep is the load, not coordination), then resolves `Done`. Any other
+/// route errors. Unlike [`gate_bridge`] it needs no [`GateControls`] — it
+/// releases itself on the timer, so a benchmark can fire K dispatches and just
+/// await them.
+pub fn io_gate_bridge(io_delay: Duration) -> HostAbiFn {
+    Arc::new(move |op| {
+        Box::pin(async move {
+            match op {
+                HostOperation::CallRaw(req) if req.route_key == "test/gate" => {
+                    // Simulated IO service window (the load under measurement).
+                    tokio::time::sleep(io_delay).await;
+                    HostOperationResult::Done
+                }
+                _ => HostOperationResult::Error(-1),
+            }
+        })
+    })
+}
+
+/// Native IO-load gate: the mirror of [`spawn_native_io_gate`]'s WASM sibling.
+/// Drains the shared [`crate::transport::HostTransport`] raw and answers each
+/// `test/gate` request after `io_delay` on its own task, so up to C co-resident
+/// guest calls can be in their IO window simultaneously. Returns the reader's
+/// [`JoinHandle`] so a benchmark can drop/abort it at teardown.
+pub fn spawn_native_io_gate(
+    transport: Arc<crate::transport::HostTransport>,
+    io_delay: Duration,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(env) = transport.recv_reliable_raw().await {
+            let rid = env.request_id.clone();
+            let route = env.route_key.clone();
+            let transport = transport.clone();
+            match route.as_str() {
+                "test/gate" => {
+                    tokio::spawn(async move {
+                        // Simulated IO service window (the load under measurement).
+                        tokio::time::sleep(io_delay).await;
+                        let _ = transport.complete_response(&rid, Bytes::new()).await;
+                    });
+                }
+                other => {
+                    let _ = transport
+                        .complete_error(
+                            &rid,
+                            actr_protocol::ActrError::UnknownRoute(other.to_string()),
+                        )
+                        .await;
+                }
+            }
+        }
+    })
+}
