@@ -59,9 +59,9 @@ pub struct CredentialEvent {
     pub new_expiry: Timestamp,
 }
 
-/// Lowered from WIT `record data-stream`.
+/// Lowered from WIT `record data-chunk`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataStream {
+pub struct DataChunk {
     #[serde(rename = "stream-id")]
     pub stream_id: String,
     pub sequence: u64,
@@ -176,8 +176,8 @@ pub enum ErrorCategory {
     SignalingFailure,
     #[serde(rename = "transport-failure")]
     TransportFailure,
-    #[serde(rename = "data-stream-delivery-uncertain")]
-    DataStreamDeliveryUncertain,
+    #[serde(rename = "data-chunk-delivery-uncertain")]
+    DataChunkDeliveryUncertain,
 }
 
 /// Lowered from WIT `variant payload-type`.

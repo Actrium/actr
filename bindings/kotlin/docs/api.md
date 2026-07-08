@@ -142,7 +142,7 @@ Context passed to workload callbacks. Provides methods for inter-actor communica
 | `suspend fun callRaw(target, routeKey, payloadType, payload, timeoutMs): ByteArray` | Raw RPC call |
 | `suspend fun tellRaw(target, routeKey, payloadType, payload)` | Fire-and-forget message |
 | `suspend fun discover(targetType: ActrType): ActrId` | Discover remote actors |
-| `suspend fun sendDataStream(target, chunk, payloadType)` | Send a data stream chunk |
+| `suspend fun sendDataChunk(target, chunk, payloadType)` | Send a data chunk |
 | `suspend fun registerStream(streamId, callback)` | Register a data stream callback |
 | `suspend fun unregisterStream(streamId)` | Unregister a data stream |
 | `suspend fun registerMediaTrack(trackId, callback)` | Register a media track callback |
@@ -200,7 +200,7 @@ interface Workload {
 
 | Class | Description |
 |-------|-------------|
-| `SimpleWorkload` | Concrete workload with DataStream channel support, target server routing, and handler hooks |
+| `SimpleWorkload` | Concrete workload with DataChunk channel support, target server routing, and handler hooks |
 | `RoutedWorkload` | Abstract base class with target server routing — subclass and override lifecycle hooks |
 | `WorkloadBuilder` | DSL builder: `workload { realm = ...; type = ...; onStart { }; onStop { } }` |
 
@@ -296,18 +296,18 @@ fun ActrId.toShortString(): String
 fun ActrId.toFullString(): String
 ```
 
-#### DataStream
+#### DataChunk
 
 Streaming data chunk with metadata.
 
 ```kotlin
 // Factory
-inline fun dataStream(builder: DataStreamBuilder.() -> Unit): DataStream
+inline fun dataChunk(builder: DataChunkBuilder.() -> Unit): DataChunk
 
 // Extensions
-fun DataStream.getMetadata(key: String): String?
-fun DataStream.hasMetadata(key: String): Boolean
-fun DataStream.metadataMap(): Map<String, String>
+fun DataChunk.getMetadata(key: String): String?
+fun DataChunk.hasMetadata(key: String): Boolean
+fun DataChunk.metadataMap(): Map<String, String>
 ```
 
 #### Realm
@@ -548,7 +548,7 @@ The low-level API is in `io.actrium.actr` and consists of UniFFI-generated bindi
 | `ActrType` | `manufacturer: String`, `name: String`, `version: String` |
 | `ActrId` | `realm: Realm`, `serialNumber: ULong`, `type: ActrType` |
 | `Realm` | `realmId: UInt` |
-| `DataStream` | `streamId: String`, `sequence: ULong`, `payload: ByteArray`, `metadata: List<MetadataEntry>`, `timestampMs: Long?` |
+| `DataChunk` | `streamId: String`, `sequence: ULong`, `payload: ByteArray`, `metadata: List<MetadataEntry>`, `timestampMs: Long?` |
 | `MetadataEntry` | `key: String`, `value: String` |
 | `RpcEnvelopeBridge` | `routeKey: String`, `payload: ByteArray`, `requestId: String` |
 | `NetworkSnapshot` | `sequence: ULong`, `availability: NetworkAvailability`, `transport: NetworkTransportFlags`, `isExpensive: Boolean`, `isConstrained: Boolean` |
@@ -566,7 +566,7 @@ The low-level API is in `io.actrium.actr` and consists of UniFFI-generated bindi
 |------|----------|
 | `PayloadType` | `RPC_RELIABLE`, `RPC_SIGNAL`, `STREAM_RELIABLE`, `STREAM_LATENCY_FIRST`, `MEDIA_RTP` |
 | `ErrorKind` | `TRANSIENT`, `CLIENT`, `INTERNAL`, `CORRUPT` |
-| `ErrorCategoryBridge` | `HANDLER_PANIC`, `HANDLER_ERROR`, `SIGNALING_FAILURE`, `TRANSPORT_FAILURE`, `DATA_STREAM_DELIVERY_UNCERTAIN` |
+| `ErrorCategoryBridge` | `HANDLER_PANIC`, `HANDLER_ERROR`, `SIGNALING_FAILURE`, `TRANSPORT_FAILURE`, `DATA_CHUNK_DELIVERY_UNCERTAIN` |
 | `NetworkAvailability` | `UNKNOWN`, `AVAILABLE`, `UNAVAILABLE` |
 | `AppLifecycleState` | `Background`, `Foreground(backgroundDurationMs)` |
 | `CleanupReason` | `APP_TERMINATING`, `USER_LOGOUT`, `STALE_CONNECTION_SUSPECTED`, `MANUAL_RESET` |
@@ -583,7 +583,7 @@ The low-level API is in `io.actrium.actr` and consists of UniFFI-generated bindi
 | `WebRtcObserverBridge` | `onConnecting(ctx, event)`, `onConnected(ctx, event)`, `onDisconnected(ctx, event)` | WebRTC peer events |
 | `CredentialObserverBridge` | `onRenewed(ctx, event)`, `onExpiring(ctx, event)` | Credential lifecycle |
 | `MailboxObserverBridge` | `onBackpressure(ctx, event)` | Mailbox backpressure |
-| `DataStreamCallback` | `onStream(chunk, sender)` | Incoming data stream chunk |
+| `DataChunkCallback` | `onStream(chunk, sender)` | Incoming data chunk |
 | `MediaTrackCallback` | `onSample(sample, sender)` | Incoming media sample |
 
 ### Free Functions

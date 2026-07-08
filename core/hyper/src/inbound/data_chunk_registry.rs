@@ -1,4 +1,4 @@
-//! DataStreamRegistry - Fast path data stream registry
+//! DataChunkRegistry - Fast path data stream registry
 //!
 //! # Dispatch semantics (issue #285 minimal closure)
 //!
@@ -45,7 +45,7 @@
 //! A worker is never resurrected after its channel closes: once unregistered or
 //! shut down, a stream stays gone until explicitly re-registered.
 
-use actr_protocol::{ActorResult, ActrId, DataStream, PayloadType};
+use actr_protocol::{ActorResult, ActrId, DataChunk, PayloadType};
 use futures_util::FutureExt as _;
 use futures_util::future::BoxFuture;
 use std::collections::HashMap;
@@ -60,10 +60,10 @@ use tokio_util::sync::CancellationToken;
 /// Default per-stream bounded queue depth.
 ///
 /// Compile-time constant for v1; a configurable buffer model is deferred to the
-/// concurrency-model RFC. Tests use [`DataStreamRegistry::with_capacity`].
+/// concurrency-model RFC. Tests use [`DataChunkRegistry::with_capacity`].
 const DEFAULT_STREAM_QUEUE_DEPTH: usize = 64;
 
-/// Total budget for joining worker tasks during [`DataStreamRegistry::shutdown`].
+/// Total budget for joining worker tasks during [`DataChunkRegistry::shutdown`].
 const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Stream chunk callback type
@@ -73,8 +73,8 @@ const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// - Only passes sender ActrId (to know where data comes from)
 /// - Doesn't pass Context (avoids confusing RPC and Stream semantics)
 /// - If reverse signaling needed, user should send via OutboundGate
-pub(crate) type DataStreamCallback =
-    Arc<dyn Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
+pub(crate) type DataChunkCallback =
+    Arc<dyn Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
 
 /// A chunk queued for a stream's worker, carrying the sender identity and the
 /// callback captured at dispatch time.
@@ -84,9 +84,9 @@ pub(crate) type DataStreamCallback =
 /// next dispatched chunk instead of being shadowed by the worker's original
 /// callback.
 struct QueuedChunk {
-    chunk: DataStream,
+    chunk: DataChunk,
     sender_id: ActrId,
-    callback: DataStreamCallback,
+    callback: DataChunkCallback,
 }
 
 /// Per-stream serial executor: a bounded queue plus the worker task draining it.
@@ -133,7 +133,7 @@ impl WorkerDone {
 
 #[derive(Default)]
 struct StreamEntry {
-    callback: Option<DataStreamCallback>,
+    callback: Option<DataChunkCallback>,
     worker: Option<StreamWorker>,
 }
 
@@ -152,10 +152,10 @@ struct RegistryInner {
     dropped_count: Arc<AtomicU64>,
 }
 
-/// DataStreamRegistry - Stream chunk callback manager
+/// DataChunkRegistry - Stream chunk callback manager
 ///
 /// # Responsibilities
-/// - Receive DataStream from Stream lanes (stream-format data packets)
+/// - Receive DataChunk from Stream lanes (stream-format data packets)
 /// - Maintain stream_id → callback mapping
 /// - Serialize callbacks per stream via a bounded per-stream worker (see module docs)
 ///
@@ -164,17 +164,17 @@ struct RegistryInner {
 /// - Real-time collaborative editing (multi-user editing sync)
 /// - Game state streams (position updates, event streams)
 /// - Log streams, sensor data streams, metrics streams
-pub(crate) struct DataStreamRegistry {
+pub(crate) struct DataChunkRegistry {
     inner: Arc<RegistryInner>,
 }
 
-impl Default for DataStreamRegistry {
+impl Default for DataChunkRegistry {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl DataStreamRegistry {
+impl DataChunkRegistry {
     /// Create a registry with its own root cancellation token.
     pub(crate) fn new() -> Self {
         Self::build(DEFAULT_STREAM_QUEUE_DEPTH, CancellationToken::new())
@@ -261,7 +261,7 @@ impl DataStreamRegistry {
     /// # Arguments
     /// - `stream_id`: stream identifier (must be globally unique)
     /// - `callback`: data stream handler callback
-    pub(crate) fn register(&self, stream_id: String, callback: DataStreamCallback) {
+    pub(crate) fn register(&self, stream_id: String, callback: DataChunkCallback) {
         let mut state = self
             .inner
             .state
@@ -326,7 +326,7 @@ impl DataStreamRegistry {
     /// Same-stream chunks are delivered in arrival order, run-to-completion.
     pub(crate) async fn dispatch(
         &self,
-        chunk: DataStream,
+        chunk: DataChunk,
         sender_id: ActrId,
         payload_type: PayloadType,
     ) {
@@ -440,7 +440,7 @@ impl DataStreamRegistry {
     async fn worker_tx(
         &self,
         stream_id: &str,
-    ) -> Option<(mpsc::Sender<QueuedChunk>, DataStreamCallback)> {
+    ) -> Option<(mpsc::Sender<QueuedChunk>, DataChunkCallback)> {
         loop {
             let wait_for = {
                 let mut state = self
@@ -659,5 +659,5 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 #[cfg(test)]
-#[path = "data_stream_registry_tests.rs"]
+#[path = "data_chunk_registry_tests.rs"]
 mod tests;

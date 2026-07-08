@@ -61,7 +61,7 @@ pub fn runtime_context_with_host_transport(
     self_id: ActrId,
     host_transport: Arc<crate::transport::HostTransport>,
 ) -> crate::context::RuntimeContext {
-    use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
     use crate::wire::webrtc::{
         ReconnectConfig, SignalingClient, SignalingConfig, WebSocketSignalingClient,
@@ -85,7 +85,7 @@ pub fn runtime_context_with_host_transport(
         "package-hook-observer-test".to_string(),
         inproc_gate,
         outproc_gate,
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         Arc::new(MediaFrameRegistry::new()),
         signaling_client,
         AIdCredential {

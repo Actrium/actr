@@ -18,6 +18,7 @@ fn from_metadata_maps_local_and_remote_to_scaffold_services() {
                 input_type: "EchoRequest".into(),
                 output_type: "EchoResponse".into(),
                 route_key: "echo.Echo".into(),
+                ..Default::default()
             }],
         }],
         remote_services: vec![],

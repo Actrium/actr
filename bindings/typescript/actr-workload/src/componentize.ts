@@ -25,7 +25,7 @@ function toPublicEnvelope(): string {
 
 function shimSource(entry: string, runtimeEntry: string): string {
   return `
-	import { __dispatchDataStream } from ${JSON.stringify(runtimeEntry)};
+	import { __dispatchDataChunk } from ${JSON.stringify(runtimeEntry)};
 	import userWorkload from ${JSON.stringify(entry)};
 
 function activeWorkload() {
@@ -86,12 +86,12 @@ export const workload = {
 	    await activeWorkload().onError?.(errorMessage(event));
 	  },
 
-	  async onDataStream(chunk, sender) {
-	    if (typeof activeWorkload().onDataStream === 'function') {
-	      await activeWorkload().onDataStream(chunk, sender);
+	  async onDataChunk(chunk, sender) {
+	    if (typeof activeWorkload().onDataChunk === 'function') {
+	      await activeWorkload().onDataChunk(chunk, sender);
 	      return;
 	    }
-	    await __dispatchDataStream(chunk, sender);
+	    await __dispatchDataChunk(chunk, sender);
 	  },
 
   onSignalingConnecting() {},

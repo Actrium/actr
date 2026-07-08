@@ -48,7 +48,7 @@ use crate::test_support::runtime_context_with_host_transport;
 use crate::transport::HostTransport;
 use crate::workload::{HostOperation, HostOperationResult, LinkedWorkloadHandle, Workload};
 use actr_framework::guest::dynclib_abi::{
-    DestV1, HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1, HostSendDataStreamV1,
+    DestV1, HostCallRawV1, HostCallV1, HostDiscoverV1, HostRegisterStreamV1, HostSendDataChunkV1,
     HostTellV1, HostUnregisterStreamV1, code as abi_code,
 };
 use actr_protocol::{AIdCredential, ActrId, PayloadType};
@@ -56,7 +56,7 @@ use std::sync::Arc;
 
 /// Trivial linked handle that accepts every default hook and rejects
 /// dispatch — sufficient because host_operation_handler only touches the
-/// workload for the DataStream callback path (not exercised here).
+/// workload for the DataChunk callback path (not exercised here).
 struct DummyLinkedHandle;
 #[async_trait::async_trait]
 impl LinkedWorkloadHandle for DummyLinkedHandle {}
@@ -75,7 +75,7 @@ async fn actorless_harness() -> (
     crate::context::RuntimeContext,
     Arc<tokio::sync::Mutex<Workload>>,
 ) {
-    use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+    use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
     use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
 
@@ -87,7 +87,7 @@ async fn actorless_harness() -> (
         "req".into(),
         inproc,
         None,
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         Arc::new(MediaFrameRegistry::new()),
         Arc::new(WebSocketSignalingClient::new(SignalingConfig {
             server_url: url::Url::parse("ws://127.0.0.1:9").unwrap(),
@@ -195,13 +195,13 @@ async fn unregister_unknown_stream_is_idempotent_done() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn send_data_stream_rejects_non_stream_payload_type() {
+async fn send_data_chunk_rejects_non_stream_payload_type() {
     let (ctx, wl) = harness().await;
     // RpcReliable is a valid PayloadType but not a stream type → PROTOCOL_ERROR.
     let res = host_operation_handler(
         ctx,
         wl,
-        HostOperation::SendDataStream(HostSendDataStreamV1 {
+        HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::local(),
             payload_type: PayloadType::RpcReliable as i32,
             ..Default::default()
@@ -212,12 +212,12 @@ async fn send_data_stream_rejects_non_stream_payload_type() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn send_data_stream_rejects_unknown_payload_type() {
+async fn send_data_chunk_rejects_unknown_payload_type() {
     let (ctx, wl) = harness().await;
     let res = host_operation_handler(
         ctx,
         wl,
-        HostOperation::SendDataStream(HostSendDataStreamV1 {
+        HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::local(),
             payload_type: 9999,
             ..Default::default()
@@ -228,13 +228,13 @@ async fn send_data_stream_rejects_unknown_payload_type() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn send_data_stream_valid_type_routes_and_errors() {
+async fn send_data_chunk_valid_type_routes_and_errors() {
     let (ctx, wl) = harness().await;
     // Valid stream payload type, but no route to the default dest → routing error.
     let res = host_operation_handler(
         ctx,
         wl,
-        HostOperation::SendDataStream(HostSendDataStreamV1 {
+        HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::local(),
             payload_type: PayloadType::StreamReliable as i32,
             ..Default::default()
@@ -329,7 +329,7 @@ async fn stream_callback_send_rejects_non_stream_payload_type() {
     let ctx = ctx_only().await;
     let res = stream_callback_host_operation_handler(
         ctx,
-        HostOperation::SendDataStream(HostSendDataStreamV1 {
+        HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::local(),
             payload_type: PayloadType::RpcReliable as i32,
             ..Default::default()
@@ -344,7 +344,7 @@ async fn stream_callback_send_rejects_unknown_payload_type() {
     let ctx = ctx_only().await;
     let res = stream_callback_host_operation_handler(
         ctx,
-        HostOperation::SendDataStream(HostSendDataStreamV1 {
+        HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::local(),
             payload_type: 9999,
             ..Default::default()
@@ -359,7 +359,7 @@ async fn stream_callback_send_valid_type_routes_and_errors() {
     let ctx = ctx_only().await;
     let res = stream_callback_host_operation_handler(
         ctx,
-        HostOperation::SendDataStream(HostSendDataStreamV1 {
+        HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::local(),
             payload_type: PayloadType::StreamLatencyFirst as i32,
             ..Default::default()

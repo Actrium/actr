@@ -75,7 +75,7 @@ class RpcRequestTest {
     // --- Multiple RPC contracts can coexist ---
 
     private object StreamRpc : RpcRequest<EchoRequest, EchoResponse> {
-        override val routeKey = "stream.DataStream.Send"
+        override val routeKey = "stream.DataChunk.Send"
         override fun serializeRequest(request: EchoRequest) = request.message.toByteArray()
         override fun deserializeResponse(bytes: ByteArray) = EchoResponse(String(bytes))
     }
@@ -83,7 +83,7 @@ class RpcRequestTest {
     @Test
     fun `multiple RpcRequest contracts have distinct routeKey`() {
         assertEquals("echo.EchoService.Echo", EchoRpc.routeKey)
-        assertEquals("stream.DataStream.Send", StreamRpc.routeKey)
+        assertEquals("stream.DataChunk.Send", StreamRpc.routeKey)
     }
 
     // --- Contract can be parameterized with protobuf-like types ---

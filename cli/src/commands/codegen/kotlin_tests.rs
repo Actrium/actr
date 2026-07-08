@@ -1,4 +1,7 @@
 use super::*;
+use crate::commands::codegen::{
+    GenContext, MethodModel, ProtoFileModel, ProtoModel, ProtoSide, ServiceModel,
+};
 
 fn remote_echo_service() -> ServiceInfo {
     ServiceInfo {
@@ -11,6 +14,8 @@ fn remote_echo_service() -> ServiceInfo {
             name: "Echo".to_string(),
             request_type: "EchoRequest".to_string(),
             response_type: "EchoResponse".to_string(),
+            request_import: "echo.Echo".to_string(),
+            response_import: "echo.Echo".to_string(),
         }],
         needs_outer_class_suffix: false,
     }
@@ -27,6 +32,8 @@ fn local_client_service() -> ServiceInfo {
             name: "Send".to_string(),
             request_type: "SendRequest".to_string(),
             response_type: "SendResponse".to_string(),
+            request_import: "client.Client".to_string(),
+            response_import: "client.Client".to_string(),
         }],
         needs_outer_class_suffix: false,
     }
@@ -102,6 +109,93 @@ fn local_only_workload_does_not_require_remote_targets() {
 }
 
 #[test]
+fn collect_services_preserves_nested_kotlin_type_names() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_path = tmp.path().join("manifest.toml");
+    std::fs::write(
+        &config_path,
+        r#"edition = 1
+exports = []
+
+[package]
+name = "Demo"
+manufacturer = "acme"
+version = "0.1.0"
+
+[system.signaling]
+url = "ws://127.0.0.1:8080"
+
+[system.ais_endpoint]
+url = "http://127.0.0.1:8080/ais"
+
+[system.deployment]
+realm_id = 1001
+"#,
+    )
+    .unwrap();
+    let config = actr_config::ConfigParser::from_manifest_file(&config_path).unwrap();
+    let local_file = ProtoFileModel {
+        proto_file: "local/client.proto".into(),
+        relative_path: "local/client.proto".into(),
+        package: "client".to_string(),
+        side: ProtoSide::Local,
+        declared_type_names: vec![],
+        services: vec![ServiceModel {
+            name: "Client".to_string(),
+            package: "client".to_string(),
+            proto_file: "local/client.proto".into(),
+            relative_path: "local/client.proto".into(),
+            side: ProtoSide::Local,
+            methods: vec![MethodModel {
+                name: "Foo".to_string(),
+                snake_name: "foo".to_string(),
+                input_type: "ask.Outer.InnerRequest".to_string(),
+                output_type: "ask.Outer.InnerResponse".to_string(),
+                route_key: "client.Client.Foo".to_string(),
+            }],
+            actr_type: None,
+        }],
+    };
+    let remote_file = ProtoFileModel {
+        proto_file: "remote/ask/ask.proto".into(),
+        relative_path: "remote/ask/ask.proto".into(),
+        package: "ask".to_string(),
+        side: ProtoSide::Remote,
+        declared_type_names: vec![
+            "Outer".to_string(),
+            "Outer.InnerRequest".to_string(),
+            "Outer.InnerResponse".to_string(),
+        ],
+        services: vec![],
+    };
+    let context = GenContext {
+        proto_files: vec![],
+        proto_model: ProtoModel {
+            files: vec![local_file.clone(), remote_file],
+            local_services: local_file.services,
+            remote_services: vec![],
+        },
+        input_path: tmp.path().join("protos"),
+        output: tmp.path().join("generated"),
+        config_path,
+        config,
+        no_scaffold: false,
+        overwrite_user_code: false,
+        no_format: false,
+        debug: false,
+        skip_validation: false,
+    };
+
+    let services = KotlinGenerator
+        .collect_services(&context)
+        .expect("collect services");
+    let method = &services[0].methods[0];
+
+    assert_eq!(method.request_type, "Outer.InnerRequest");
+    assert_eq!(method.response_type, "Outer.InnerResponse");
+}
+
+#[test]
 fn unified_lifecycle_adapter_wraps_unified_workload() {
     let content = generate_unified_lifecycle_adapter_scaffold("com.example.generated");
 
@@ -154,4 +248,42 @@ fn kotlin_bootstrap_fixtures_inject_manifest_resolved_targets() {
         assert!(fixture.contains("toDynamicWorkload()"));
         assert!(!fixture.contains(concat!("attach", "(clientWorkload)")));
     }
+}
+
+#[test]
+fn unified_handler_scaffold_imports_and_resolves_imported_rpc_types() {
+    // A local `data_stream_app` service references `ask.*` message types.
+    // The scaffold must import the `ask.Ask` outer class and reference the
+    // bare message name (resolving via that import) instead of pinning the
+    // type to the local service's package.
+    let service = ServiceInfo {
+        service_name: "DataStreamAppService".to_string(),
+        proto_package: "data_stream_app".to_string(),
+        proto_file_name: "data_stream_app.proto".to_string(),
+        is_local: true,
+        remote_target_type: None,
+        methods: vec![MethodInfo {
+            name: "continue_prompt_result_streams".to_string(),
+            request_type: "ContinuePromptResultStreamsRequest".to_string(),
+            response_type: "ContinuePromptResultStreamsResponse".to_string(),
+            request_import: "ask.Ask".to_string(),
+            response_import: "ask.Ask".to_string(),
+        }],
+        needs_outer_class_suffix: false,
+    };
+
+    let imports = super::kotlin_type_imports(std::iter::once(&service));
+    assert!(
+        imports.contains("import ask.Ask.*"),
+        "expected `ask.Ask` import, got:\n{imports}"
+    );
+    // The local service's own package is still imported.
+    assert!(imports.contains("import data_stream_app.DataStreamApp.*"));
+
+    let scaffold = generate_unified_handler_scaffold(&[service], "com.example.generated");
+    // Signature uses the bare message name, resolved via the `ask.Ask` import.
+    assert!(scaffold.contains("request: ContinuePromptResultStreamsRequest"));
+    assert!(scaffold.contains(": ContinuePromptResultStreamsResponse"));
+    // The unqualified `ask.` proto-package prefix must NOT leak into Kotlin.
+    assert!(!scaffold.contains("request: ask."));
 }

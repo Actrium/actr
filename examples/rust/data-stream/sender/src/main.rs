@@ -1,8 +1,8 @@
-//! DataStream Sender Example - 100% Real Implementation
+//! DataChunk Sender Example - 100% Real Implementation
 //!
 //! Demonstrates sending data streams using:
 //! - RPC for control messages (StartTransfer, EndTransfer)
-//! - DataStream API for fast path data transmission
+//! - DataChunk API for fast path data transmission
 
 mod file_service;
 mod generated;

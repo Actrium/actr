@@ -513,7 +513,7 @@ start_wasm_rust_server() {
 #
 # Builds and starts the in-tree streaming server binary
 # (e2e/polyglot-echo/server/).  The streaming server runs as a *linked
-# workload* (not a cdylib package) so that RuntimeContext's DataStream APIs
+# workload* (not a cdylib package) so that RuntimeContext's DataChunk APIs
 # are available.  It registers directly with mock-actrix under
 # polyglot:EchoStreamService:1.0.0 without going through `actr build` /
 # `actr run`.

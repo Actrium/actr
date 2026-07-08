@@ -473,7 +473,7 @@ async fn spawn_connection_tasks_get_lane_failure_removes_sink_and_fires_disconne
         crate::wire::websocket::connection::WebSocketConnection::new("ws://127.0.0.1:0".into()),
         source_id,
         empty_pending(),
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         CapturingMailbox::new(),
         Some(hook),
         inbound_sinks.clone(),
@@ -882,7 +882,7 @@ async fn send_response_returns_false_for_unknown_peer() {
     let gate = WebSocketGate::new(
         rx,
         Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         None,
     );
     let sent = gate
@@ -900,7 +900,7 @@ async fn send_response_returns_false_when_sink_is_none() {
     let gate = WebSocketGate::new(
         rx,
         Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         None,
     );
     // Insert a None sink for the peer.

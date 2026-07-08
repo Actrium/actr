@@ -2374,7 +2374,7 @@ impl SwRuntime {
         let (peer_id, channel_id) = parse_peer_and_channel(&payload.stream_id);
 
         if matches!(channel_id, 2 | 3) {
-            return self.handle_data_stream(payload);
+            return self.handle_data_chunk(payload);
         }
 
         let envelope = RpcEnvelope::decode(&payload.data[..])
@@ -2427,7 +2427,7 @@ impl SwRuntime {
         }
     }
 
-    fn handle_data_stream(&mut self, payload: FastPathPayload) -> Result<(), JsValue> {
+    fn handle_data_chunk(&mut self, payload: FastPathPayload) -> Result<(), JsValue> {
         let (logical_stream_id, data) = decode_stream_payload(&payload.data)?;
 
         let handler = CLIENTS.with(|cell| {
@@ -2768,7 +2768,7 @@ struct ClientContext {
     peer_gate: Arc<crate::outbound::PeerGate>,
     /// `PeerTransport`, which manages one `DestTransport` per destination.
     transport_manager: Arc<crate::transport::PeerTransport>,
-    /// `DataStream` callback registry, isolated per browser tab.
+    /// `DataChunk` callback registry, isolated per browser tab.
     stream_handlers: Rc<RefCell<HashMap<String, StreamHandler>>>,
 }
 
@@ -2921,19 +2921,19 @@ fn direction_for_routing(
 fn decode_stream_payload(data: &[u8]) -> Result<(String, Bytes), JsValue> {
     if data.len() < 4 {
         return Err(JsValue::from_str(
-            "Invalid DataStream payload: missing stream_id length",
+            "Invalid DataChunk payload: missing stream_id length",
         ));
     }
 
     let stream_id_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
     if data.len() < 4 + stream_id_len {
         return Err(JsValue::from_str(
-            "Invalid DataStream payload: truncated stream_id",
+            "Invalid DataChunk payload: truncated stream_id",
         ));
     }
 
     let logical_stream_id = String::from_utf8(data[4..4 + stream_id_len].to_vec())
-        .map_err(|e| JsValue::from_str(&format!("Invalid DataStream stream_id: {}", e)))?;
+        .map_err(|e| JsValue::from_str(&format!("Invalid DataChunk stream_id: {}", e)))?;
 
     Ok((
         logical_stream_id,
@@ -3529,7 +3529,7 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
         };
         // Use the peer gate directly for handler-initiated outbound traffic.
         // `call_raw()` still registers pending RPCs through the bridge, while
-        // `send_data_stream()` must bypass HostGate so it uses the stream lane
+        // `send_data_chunk()` must bypass HostGate so it uses the stream lane
         // instead of being wrapped as an RPC envelope.
         let outgate = Gate::peer(Arc::clone(&ctx.peer_gate));
         let bridge: Rc<dyn RuntimeBridge> = Rc::new(SwRuntimeBridge {

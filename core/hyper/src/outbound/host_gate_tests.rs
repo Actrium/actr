@@ -99,10 +99,10 @@ async fn send_message_with_type_unknown_stream_channel_errors() {
 }
 
 #[tokio::test]
-async fn send_data_stream_unknown_channel_errors() {
+async fn send_data_chunk_unknown_channel_errors() {
     let gate = gate();
     let err = gate
-        .send_data_stream(
+        .send_data_chunk(
             &ActrId::default(),
             PayloadType::StreamLatencyFirst,
             "missing-stream",
@@ -114,10 +114,10 @@ async fn send_data_stream_unknown_channel_errors() {
 }
 
 #[tokio::test]
-async fn send_data_stream_rejects_non_stream_payload_type() {
+async fn send_data_chunk_rejects_non_stream_payload_type() {
     let gate = gate();
     let err = gate
-        .send_data_stream(
+        .send_data_chunk(
             &ActrId::default(),
             PayloadType::RpcReliable,
             "any-stream",

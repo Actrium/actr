@@ -42,7 +42,7 @@
     console.log = (...args) => {
         original.log(...args);
         const msg = extractMessage(args);
-        if (msg && (msg.includes('[SW]') || msg.includes('[DataStream'))) {
+        if (msg && (msg.includes('[SW]') || msg.includes('[DataChunk'))) {
             broadcast('sw_log', 'info', msg);
         }
     };

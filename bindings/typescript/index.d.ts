@@ -86,7 +86,7 @@ export interface ActrType {
   version: string
 }
 
-export interface DataStream {
+export interface DataChunk {
   streamId: string
   sequence: number
   payload: Buffer
@@ -118,6 +118,6 @@ export interface RpcEnvelopeBridge {
 }
 
 export interface StreamSignal {
-  chunk: DataStream
+  chunk: DataChunk
   sender: ActrId
 }

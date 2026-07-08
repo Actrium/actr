@@ -122,9 +122,9 @@ pub struct MetadataEntry {
     pub value: String,
 }
 
-// DataStream
+// DataChunk
 #[napi(object)]
-pub struct DataStream {
+pub struct DataChunk {
     #[napi(js_name = "streamId")]
     pub stream_id: String,
     pub sequence: i64,
@@ -136,12 +136,12 @@ pub struct DataStream {
 
 #[napi(object)]
 pub struct StreamSignal {
-    pub chunk: DataStream,
+    pub chunk: DataChunk,
     pub sender: ActrId,
 }
 
-impl From<actr_protocol::DataStream> for DataStream {
-    fn from(stream: actr_protocol::DataStream) -> Self {
+impl From<actr_protocol::DataChunk> for DataChunk {
+    fn from(stream: actr_protocol::DataChunk) -> Self {
         Self {
             stream_id: stream.stream_id,
             sequence: stream.sequence as i64,
@@ -159,8 +159,8 @@ impl From<actr_protocol::DataStream> for DataStream {
     }
 }
 
-impl From<DataStream> for actr_protocol::DataStream {
-    fn from(stream: DataStream) -> Self {
+impl From<DataChunk> for actr_protocol::DataChunk {
+    fn from(stream: DataChunk) -> Self {
         Self {
             stream_id: stream.stream_id,
             sequence: stream.sequence as u64,

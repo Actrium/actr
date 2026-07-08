@@ -10,12 +10,12 @@ pub fn init() {
     console_error_panic_hook::set_once();
     wasm_logger::init(wasm_logger::Config::default());
 
-    log::info!("[DataStreamServer] WASM initialized");
+    log::info!("[DataChunkServer] WASM initialized");
 }
 
 #[wasm_bindgen]
 pub fn register_stream_server_handler() {
-    log::info!("[DataStreamServer] Registering stream server workload");
+    log::info!("[DataChunkServer] Registering stream server workload");
 
     actr_sw_host::register_workload(actr_sw_host::WasmWorkload::new(Rc::new(
         |route_key, bytes, ctx| {
@@ -29,7 +29,7 @@ pub fn register_stream_server_handler() {
                 };
 
                 match service {
-                    "data_stream.StreamServer" => {
+                    "data_chunk.StreamServer" => {
                         stream_server_service::handle_request(method, &bytes, ctx).await
                     }
                     _ => Err(format!("Unknown service: {}", service)),

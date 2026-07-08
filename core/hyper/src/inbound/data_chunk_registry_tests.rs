@@ -7,8 +7,8 @@ use tokio::sync::{mpsc as tokio_mpsc, oneshot};
 const RELIABLE: PayloadType = PayloadType::StreamReliable;
 const LATENCY: PayloadType = PayloadType::StreamLatencyFirst;
 
-fn chunk_seq(stream_id: &str, sequence: u64) -> DataStream {
-    DataStream {
+fn chunk_seq(stream_id: &str, sequence: u64) -> DataChunk {
+    DataChunk {
         stream_id: stream_id.to_string(),
         sequence,
         payload: Default::default(),
@@ -17,14 +17,14 @@ fn chunk_seq(stream_id: &str, sequence: u64) -> DataStream {
     }
 }
 
-fn chunk(stream_id: &str) -> DataStream {
+fn chunk(stream_id: &str) -> DataChunk {
     chunk_seq(stream_id, 1)
 }
 
-fn counting_callback() -> (DataStreamCallback, Arc<Mutex<u32>>) {
+fn counting_callback() -> (DataChunkCallback, Arc<Mutex<u32>>) {
     let count = Arc::new(Mutex::new(0u32));
     let c = count.clone();
-    let cb: DataStreamCallback = Arc::new(move |_chunk, _sender| {
+    let cb: DataChunkCallback = Arc::new(move |_chunk, _sender| {
         let c = c.clone();
         Box::pin(async move {
             *c.lock().unwrap() += 1;
@@ -48,7 +48,7 @@ struct HarnessProbe {
 }
 
 impl Harness {
-    fn new() -> (DataStreamCallback, Self, HarnessProbe) {
+    fn new() -> (DataChunkCallback, Self, HarnessProbe) {
         let completions = Arc::new(Mutex::new(Vec::new()));
         let gates: Arc<Mutex<HashMap<u64, oneshot::Receiver<()>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -62,7 +62,7 @@ impl Harness {
         };
 
         let cb_completions = completions.clone();
-        let cb: DataStreamCallback = Arc::new(move |chunk: DataStream, _sender| {
+        let cb: DataChunkCallback = Arc::new(move |chunk: DataChunk, _sender| {
             let completions = cb_completions.clone();
             let gates = gates.clone();
             let started_tx = started_tx.clone();
@@ -130,7 +130,7 @@ impl HarnessProbe {
 
 #[test]
 fn register_and_default() {
-    let reg = DataStreamRegistry::default();
+    let reg = DataChunkRegistry::default();
     assert_eq!(reg.callback_len(), 0);
     let (cb, _) = counting_callback();
     reg.register("s1".into(), cb);
@@ -139,7 +139,7 @@ fn register_and_default() {
 
 #[test]
 fn unregister_removes_stream() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     let (cb, _) = counting_callback();
     reg.register("s1".into(), cb);
     reg.unregister("s1");
@@ -151,7 +151,7 @@ fn unregister_removes_stream() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_invokes_registered_callback() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     let (cb, _h, mut probe) = Harness::new();
     reg.register("s1".into(), cb);
 
@@ -162,7 +162,7 @@ async fn dispatch_invokes_registered_callback() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_unknown_stream_is_noop() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     reg.dispatch(chunk("missing"), ActrId::default(), RELIABLE)
         .await;
     assert_eq!(reg.callback_len(), 0);
@@ -173,7 +173,7 @@ async fn dispatch_unknown_stream_is_noop() {
 /// completion order equals arrival order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn same_stream_reliable_preserves_order() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     let (cb, h, mut probe) = Harness::new();
     reg.register("s1".into(), cb);
 
@@ -200,7 +200,7 @@ async fn same_stream_reliable_preserves_order() {
 /// fast stream from completing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn distinct_streams_are_independent() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     let (cb, h, mut probe) = Harness::new();
     reg.register("slow".into(), cb.clone());
     reg.register("fast".into(), cb);
@@ -223,7 +223,7 @@ async fn distinct_streams_are_independent() {
 /// processing subsequent chunks on the same stream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn callback_panic_is_isolated() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     let (cb, h, mut probe) = Harness::new();
     reg.register("s1".into(), cb);
     h.make_panic(1);
@@ -245,10 +245,10 @@ async fn callback_panic_is_isolated() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn synchronous_callback_panic_is_isolated() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     let (done_tx, mut done_rx) = tokio_mpsc::unbounded_channel::<u64>();
 
-    let cb: DataStreamCallback = Arc::new(move |chunk: DataStream, _sender| {
+    let cb: DataChunkCallback = Arc::new(move |chunk: DataChunk, _sender| {
         let seq = chunk.sequence;
         if seq == 1 {
             panic!("intentional synchronous test panic on seq {seq}");
@@ -290,7 +290,7 @@ async fn synchronous_callback_panic_is_isolated() {
 /// stream is unregistered and released.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unregister_drains_queued_chunks() {
-    let reg = DataStreamRegistry::with_capacity(8);
+    let reg = DataChunkRegistry::with_capacity(8);
     let (cb, h, mut probe) = Harness::new();
     reg.register("s1".into(), cb);
 
@@ -324,14 +324,14 @@ async fn unregister_drains_queued_chunks() {
 /// before the worker could ever dequeue seq 2 / seq 3.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shutdown_cancels_queue_and_joins() {
-    let reg = DataStreamRegistry::with_capacity(8);
+    let reg = DataChunkRegistry::with_capacity(8);
 
     let token = reg.shutdown_token();
     let completions = Arc::new(Mutex::new(Vec::<u64>::new()));
     let (started_tx, mut started_rx) = tokio_mpsc::unbounded_channel::<u64>();
 
     let cb_completions = completions.clone();
-    let cb: DataStreamCallback = Arc::new(move |chunk: DataStream, _sender| {
+    let cb: DataChunkCallback = Arc::new(move |chunk: DataChunk, _sender| {
         let completions = cb_completions.clone();
         let started_tx = started_tx.clone();
         let token = token.clone();
@@ -372,7 +372,7 @@ async fn shutdown_cancels_queue_and_joins() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shutdown_is_terminal_for_late_dispatch() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     let (cb, _h, mut probe) = Harness::new();
     reg.register("s1".into(), cb);
 
@@ -391,7 +391,7 @@ async fn shutdown_is_terminal_for_late_dispatch() {
 /// subsequent dispatches return immediately and are dropped + counted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn latency_first_drops_on_overflow() {
-    let reg = DataStreamRegistry::with_capacity(1);
+    let reg = DataChunkRegistry::with_capacity(1);
     let (cb, h, mut probe) = Harness::new();
     reg.register("s1".into(), cb);
 
@@ -424,7 +424,7 @@ async fn latency_first_drops_on_overflow() {
 /// dispatch that would overflow blocks until the queue drains; no chunk is lost.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn reliable_backpressure_blocks_then_delivers() {
-    let reg = Arc::new(DataStreamRegistry::with_capacity(1));
+    let reg = Arc::new(DataChunkRegistry::with_capacity(1));
     let (cb, h, mut probe) = Harness::new();
     reg.register("s1".into(), cb);
 
@@ -477,12 +477,12 @@ async fn reregister_swaps_handler_and_preserves_order() {
     let (started_tx, mut started_rx) = tokio_mpsc::unbounded_channel::<(char, u64)>();
     let (done_tx, mut done_rx) = tokio_mpsc::unbounded_channel::<(char, u64)>();
 
-    let make_cb = |label: char| -> DataStreamCallback {
+    let make_cb = |label: char| -> DataChunkCallback {
         let record = record.clone();
         let gates = gates.clone();
         let started_tx = started_tx.clone();
         let done_tx = done_tx.clone();
-        Arc::new(move |chunk: DataStream, _sender| {
+        Arc::new(move |chunk: DataChunk, _sender| {
             let record = record.clone();
             let gates = gates.clone();
             let started_tx = started_tx.clone();
@@ -502,7 +502,7 @@ async fn reregister_swaps_handler_and_preserves_order() {
         })
     };
 
-    let reg = DataStreamRegistry::with_capacity(8);
+    let reg = DataChunkRegistry::with_capacity(8);
     reg.register("s1".into(), make_cb('A'));
 
     // Gate seq 1 so handler A stays in flight until we release it.
@@ -551,19 +551,19 @@ async fn reregister_swaps_handler_and_preserves_order() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unregister_then_reregister_waits_for_draining_worker() {
-    let reg = Arc::new(DataStreamRegistry::with_capacity(8));
+    let reg = Arc::new(DataChunkRegistry::with_capacity(8));
     let record: Arc<Mutex<Vec<(char, u64)>>> = Arc::new(Mutex::new(Vec::new()));
     let gates: Arc<Mutex<HashMap<u64, oneshot::Receiver<()>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let (started_tx, mut started_rx) = tokio_mpsc::unbounded_channel::<(char, u64)>();
     let (done_tx, mut done_rx) = tokio_mpsc::unbounded_channel::<(char, u64)>();
 
-    let make_cb = |label: char| -> DataStreamCallback {
+    let make_cb = |label: char| -> DataChunkCallback {
         let record = record.clone();
         let gates = gates.clone();
         let started_tx = started_tx.clone();
         let done_tx = done_tx.clone();
-        Arc::new(move |chunk: DataStream, _sender| {
+        Arc::new(move |chunk: DataChunk, _sender| {
             let record = record.clone();
             let gates = gates.clone();
             let started_tx = started_tx.clone();
@@ -637,7 +637,7 @@ async fn unregister_then_reregister_waits_for_draining_worker() {
 /// (8) Dispatching to an unregistered stream only warns; it never panics.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_after_unregister_is_warn_only() {
-    let reg = DataStreamRegistry::new();
+    let reg = DataChunkRegistry::new();
     let (cb, _h, _probe) = Harness::new();
     reg.register("s1".into(), cb);
     reg.unregister("s1");

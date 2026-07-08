@@ -23,7 +23,7 @@ declare module 'actr:workload/host@0.1.0' {
   type Dest =
     { tag: 'shell' } | { tag: 'local' } | { tag: 'actor'; val: ActrId };
 
-  type DataStream = {
+  type DataChunk = {
     streamId: string;
     sequence: bigint;
     payload: Uint8Array;
@@ -40,9 +40,9 @@ declare module 'actr:workload/host@0.1.0' {
 
   export function registerStream(streamId: string): void;
   export function unregisterStream(streamId: string): void;
-  export function sendDataStream(
+  export function sendDataChunk(
     target: Dest,
-    chunk: DataStream,
+    chunk: DataChunk,
     payloadType: PayloadType,
   ): void;
 }

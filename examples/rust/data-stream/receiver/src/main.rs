@@ -1,8 +1,8 @@
-//! DataStream Receiver Example - 100% Real Implementation
+//! DataChunk Receiver Example - 100% Real Implementation
 //!
 //! Demonstrates receiving data streams using:
 //! - RPC for control messages (StartTransfer, EndTransfer)
-//! - DataStream API for fast path data transmission
+//! - DataChunk API for fast path data transmission
 
 mod file_transfer_service;
 mod generated;
@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize observability (logging/tracing) using config
     let _obs_guard = actr_hyper::init_observability(&config.observability)?;
 
-    info!("🚀 DataStream Receiver starting - 100% Real Implementation");
+    info!("🚀 DataChunk Receiver starting - 100% Real Implementation");
     info!("📋 Config: type={}", config.package.actr_type.name);
 
     // Build ActrNode

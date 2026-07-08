@@ -502,19 +502,17 @@ impl WebRtcCoordinator {
         }
     }
 
-    pub(crate) async fn notify_data_stream_delivery_uncertain(
+    pub(crate) async fn notify_data_chunk_delivery_uncertain(
         &self,
         stream_id: String,
         session_id: u64,
         reason: String,
     ) {
-        self.invoke_hook(
-            crate::wire::webrtc::HookEvent::DataStreamDeliveryUncertain {
-                stream_id,
-                session_id,
-                reason,
-            },
-        )
+        self.invoke_hook(crate::wire::webrtc::HookEvent::DataChunkDeliveryUncertain {
+            stream_id,
+            session_id,
+            reason,
+        })
         .await;
     }
 
@@ -3632,7 +3630,7 @@ impl WebRtcCoordinator {
     ///
     /// IMPORTANT: We need to listen to ALL PayloadTypes, not just RpcReliable:
     /// - RpcReliable, RpcSignal: for RPC messages
-    /// - StreamReliable, StreamLatencyFirst: for DataStream messages
+    /// - StreamReliable, StreamLatencyFirst: for DataChunk messages
     async fn start_peer_receive_loop(
         &self,
         peer_id: ActrId,

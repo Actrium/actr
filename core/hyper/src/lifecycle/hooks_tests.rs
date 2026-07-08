@@ -1,6 +1,6 @@
 use super::*;
 use crate::context::RuntimeContext;
-use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
 use crate::outbound::{Gate, HostGate};
 use crate::transport::HostTransport;
 use crate::wire::webrtc::{
@@ -108,7 +108,7 @@ fn test_runtime_context() -> RuntimeContext {
         "hook-test".to_string(),
         inproc_gate,
         None,
-        Arc::new(DataStreamRegistry::new()),
+        Arc::new(DataChunkRegistry::new()),
         Arc::new(MediaFrameRegistry::new()),
         signaling_client,
         test_credential(),
@@ -419,7 +419,7 @@ async fn chained_observation_hooks_do_not_let_first_observer_block_second() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn data_stream_uncertain_hook_routes_to_on_error() {
+async fn data_chunk_uncertain_hook_routes_to_on_error() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let observer: WorkloadHookObserverRef = Arc::new(ErrorRecorder { tx });
     let ctx = test_runtime_context();
@@ -429,7 +429,7 @@ async fn data_stream_uncertain_hook_routes_to_on_error() {
     });
     let cb = build_hook_callback(Some(observer), ctx_builder);
 
-    cb(HookEvent::DataStreamDeliveryUncertain {
+    cb(HookEvent::DataChunkDeliveryUncertain {
         stream_id: "mobile-upload".to_string(),
         session_id: 99,
         reason: "data channel closed".to_string(),
@@ -441,7 +441,7 @@ async fn data_stream_uncertain_hook_routes_to_on_error() {
         .expect("on_error was not called")
         .expect("error recorder dropped");
 
-    assert_eq!(event.category, ErrorCategory::DataStreamDeliveryUncertain);
+    assert_eq!(event.category, ErrorCategory::DataChunkDeliveryUncertain);
     assert!(matches!(event.source, ActrError::Unavailable(_)));
     assert!(event.context.contains("stream_id=mobile-upload"));
     assert!(event.context.contains("session_id=99"));
@@ -635,7 +635,7 @@ async fn call_both_lifecycle_combines_results() {
 // ── build_hook_callback: remaining HookEvent branches ───────────────────
 //
 // build_hook_callback routes each HookEvent to the observer. The
-// DataStreamDeliveryUncertain arm is already covered above; these tests
+// DataChunkDeliveryUncertain arm is already covered above; these tests
 // drive the WebSocket / WebRTC / Credential / Mailbox / Signaling arms
 // plus the None-ctx early-return paths.
 
@@ -887,7 +887,7 @@ fn log_hook_event_covers_all_variants() {
         peer_id: test_actr_id(1),
         status: WebRtcPeerStatus::Idle,
     });
-    log_hook_event(&HookEvent::DataStreamDeliveryUncertain {
+    log_hook_event(&HookEvent::DataChunkDeliveryUncertain {
         stream_id: "s".into(),
         session_id: 1,
         reason: "r".into(),

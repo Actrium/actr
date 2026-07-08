@@ -1,4 +1,4 @@
-//! Integration tests for `call` / `tell` / `send_data_stream` retry behavior.
+//! Integration tests for `call` / `tell` / `send_data_chunk` retry behavior.
 //!
 //! These tests exercise the three retry layers in the outbound send path:
 //!
@@ -13,7 +13,7 @@
 //! 1. Only `ErrorKind::Transient` errors trigger `send_with_retry` retries.
 //! 2. `call` wraps send+wait in an envelope timeout (default 30s).
 //! 3. `tell` has no envelope timeout; retry policy alone limits attempts.
-//! 4. `send_data_stream` does NOT use `send_with_retry` at all.
+//! 4. `send_data_chunk` does NOT use `send_with_retry` at all.
 //! 5. `ConnectionClosed` events clean up `pending_requests` — the response
 //!    channel is severed even if `send_with_retry` is still running.
 //! 6. `close_transport_if_webrtc_session` is session-guarded: stale close
@@ -571,16 +571,16 @@ async fn test_tell_does_not_register_pending_requests() {
 }
 
 // ─── Scenario 7 ─────────────────────────────────────────────────────────────
-// `send_data_stream` does NOT use `send_with_retry`. When the recovery guard
-// is active (peer in recovery window), send_data_stream is rejected by
+// `send_data_chunk` does NOT use `send_with_retry`. When the recovery guard
+// is active (peer in recovery window), send_data_chunk is rejected by
 // preflight_send with "connection not ready" — just like call/tell. The key
-// difference is that send_data_stream won't retry on Transient transport
+// difference is that send_data_chunk won't retry on Transient transport
 // errors either.
 //
 // We test the preflight_send rejection which is the most reliable failure
 // mode to trigger (recovery guard is deterministic).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_send_data_stream_rejected_during_recovery() {
+async fn test_send_data_chunk_rejected_during_recovery() {
     init_tracing();
 
     let mut harness = TestHarness::with_vnet().await;
@@ -590,10 +590,10 @@ async fn test_send_data_stream_rejected_during_recovery() {
 
     let target_id = harness.peer(200).id.clone();
 
-    // First verify send_data_stream works on a healthy connection.
+    // First verify send_data_chunk works on a healthy connection.
     let gate = harness.peer(100).gate.clone();
     let healthy_result = gate
-        .send_data_stream(
+        .send_data_chunk(
             &target_id,
             PayloadType::StreamReliable,
             "healthy_stream",
@@ -602,7 +602,7 @@ async fn test_send_data_stream_rejected_during_recovery() {
         .await;
     assert!(
         healthy_result.is_ok(),
-        "send_data_stream should succeed on healthy connection"
+        "send_data_chunk should succeed on healthy connection"
     );
 
     // Now put the peer in recovery.
@@ -613,10 +613,10 @@ async fn test_send_data_stream_rejected_during_recovery() {
         .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // send_data_stream should be rejected by preflight_send — no retry.
+    // send_data_chunk should be rejected by preflight_send — no retry.
     let start = Instant::now();
     let result = gate
-        .send_data_stream(
+        .send_data_chunk(
             &target_id,
             PayloadType::StreamReliable,
             "recovery_stream",
@@ -627,7 +627,7 @@ async fn test_send_data_stream_rejected_during_recovery() {
     let elapsed = start.elapsed();
     assert!(
         result.is_err(),
-        "send_data_stream should fail during recovery window"
+        "send_data_chunk should fail during recovery window"
     );
     let err = result.unwrap_err();
     match err {
@@ -642,11 +642,11 @@ async fn test_send_data_stream_rejected_during_recovery() {
     // Should be fast — no retry backoff.
     assert!(
         elapsed < Duration::from_secs(2),
-        "send_data_stream should fail fast without retry, took {:?}",
+        "send_data_chunk should fail fast without retry, took {:?}",
         elapsed
     );
     tracing::info!(
-        "send_data_stream correctly rejected without retry in {:?} with ConnectionNotReady",
+        "send_data_chunk correctly rejected without retry in {:?} with ConnectionNotReady",
         elapsed
     );
 }

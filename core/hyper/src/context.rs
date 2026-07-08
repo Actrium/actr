@@ -2,14 +2,14 @@
 //!
 //! Implements the Context trait defined in actr-framework.
 
-use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
 use crate::lifecycle::session_state::{SessionPhase, SessionState};
 use crate::outbound::Gate;
 use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
-use actr_framework::{Bytes, Context, DataStream, Dest, MediaSample};
+use actr_framework::{Bytes, Context, DataChunk, Dest, MediaSample};
 use actr_protocol::{
     AIdCredential, ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, Direction,
     PayloadType, RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
@@ -41,7 +41,7 @@ pub struct RuntimeContext {
     request_id: String,
     inproc_gate: Gate,          // Shell/Local calls - immediately available
     outproc_gate: Option<Gate>, // Remote Actor calls - lazily initialized
-    data_stream_registry: Arc<DataStreamRegistry>, // DataStream callback registry
+    data_chunk_registry: Arc<DataChunkRegistry>, // DataChunk callback registry
     media_frame_registry: Arc<MediaFrameRegistry>, // MediaTrack callback registry
     signaling_client: Arc<dyn SignalingClient>,
     credential: AIdCredential,
@@ -69,7 +69,7 @@ impl RuntimeContext {
     /// - `request_id`: unique ID for the current request
     /// - `inproc_gate`: in-process gate, immediately available
     /// - `outproc_gate`: cross-process gate, possibly `None` until WebRTC initialization completes
-    /// - `data_stream_registry`: callback registry for `DataStream`
+    /// - `data_chunk_registry`: callback registry for `DataChunk`
     /// - `media_frame_registry`: callback registry for `MediaTrack`
     /// - `signaling_client`: signaling client used for route discovery
     /// - `credential`: credentials used when calling signaling interfaces
@@ -82,7 +82,7 @@ impl RuntimeContext {
         request_id: String,
         inproc_gate: Gate,
         outproc_gate: Option<Gate>,
-        data_stream_registry: Arc<DataStreamRegistry>,
+        data_chunk_registry: Arc<DataChunkRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
         credential: AIdCredential,
@@ -97,7 +97,7 @@ impl RuntimeContext {
             request_id,
             inproc_gate,
             outproc_gate,
-            data_stream_registry,
+            data_chunk_registry,
             media_frame_registry,
             signaling_client,
             credential,
@@ -252,15 +252,15 @@ impl RuntimeContext {
             .await
     }
 
-    /// Send DataStream with an explicit payload type (lane selection).
+    /// Send DataChunk with an explicit payload type (lane selection).
     ///
     /// Convenience wrapper for language bindings that prefer positional `payload_type`
-    /// before `chunk`. Equivalent to calling `Context::send_data_stream` directly.
-    pub async fn send_data_stream_with_type(
+    /// before `chunk`. Equivalent to calling `Context::send_data_chunk` directly.
+    pub async fn send_data_chunk_with_type(
         &self,
         target: &Dest,
         payload_type: actr_protocol::PayloadType,
-        chunk: DataStream,
+        chunk: DataChunk,
     ) -> ActorResult<()> {
         self.ensure_session_ready().await?;
 
@@ -272,7 +272,7 @@ impl RuntimeContext {
         let gate = self.select_gate(target)?;
         let target_id = self.extract_target_id(target);
 
-        gate.send_data_stream(
+        gate.send_data_chunk(
             target_id,
             payload_type,
             stream_id,
@@ -393,7 +393,7 @@ struct InternalDiscoveryResult {
 pub(crate) struct BootstrapContextBuilder {
     inproc_gate: Gate,
     outproc_gate: Option<Gate>,
-    data_stream_registry: Arc<DataStreamRegistry>,
+    data_chunk_registry: Arc<DataChunkRegistry>,
     media_frame_registry: Arc<MediaFrameRegistry>,
     signaling_client: Arc<dyn SignalingClient>,
     actr_lock: Option<Arc<LockFile>>,
@@ -416,7 +416,7 @@ impl BootstrapContextBuilder {
     pub(crate) fn new(
         inproc_gate: Gate,
         outproc_gate: Option<Gate>,
-        data_stream_registry: Arc<DataStreamRegistry>,
+        data_chunk_registry: Arc<DataChunkRegistry>,
         media_frame_registry: Arc<MediaFrameRegistry>,
         signaling_client: Arc<dyn SignalingClient>,
         actr_lock: Option<Arc<LockFile>>,
@@ -427,7 +427,7 @@ impl BootstrapContextBuilder {
         Self {
             inproc_gate,
             outproc_gate,
-            data_stream_registry,
+            data_chunk_registry,
             media_frame_registry,
             signaling_client,
             actr_lock,
@@ -470,7 +470,7 @@ impl BootstrapContextBuilder {
             uuid::Uuid::new_v4().to_string(),
             self.inproc_gate.clone(),
             self.outproc_gate.clone(),
-            self.data_stream_registry.clone(),
+            self.data_chunk_registry.clone(),
             self.media_frame_registry.clone(),
             self.signaling_client.clone(),
             credential.clone(),
@@ -598,46 +598,46 @@ impl Context for RuntimeContext {
             .await
     }
 
-    // ========== Fast Path: DataStream Methods ==========
+    // ========== Fast Path: DataChunk Methods ==========
 
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataStream, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
     {
         tracing::debug!(
-            "📊 Registering DataStream callback for stream_id: {}",
+            "📊 Registering DataChunk callback for stream_id: {}",
             stream_id
         );
-        self.data_stream_registry
+        self.data_chunk_registry
             .register(stream_id, Arc::new(callback));
         Ok(())
     }
 
     async fn unregister_stream(&self, stream_id: &str) -> ActorResult<()> {
         tracing::debug!(
-            "🚫 Unregistering DataStream callback for stream_id: {}",
+            "🚫 Unregistering DataChunk callback for stream_id: {}",
             stream_id
         );
-        self.data_stream_registry.unregister(stream_id);
+        self.data_chunk_registry.unregister(stream_id);
         Ok(())
     }
 
-    async fn send_data_stream(
+    async fn send_data_chunk(
         &self,
         target: &Dest,
-        chunk: DataStream,
+        chunk: DataChunk,
         payload_type: actr_protocol::PayloadType,
     ) -> ActorResult<()> {
         self.ensure_session_ready().await?;
 
         use actr_protocol::prost::Message as ProstMessage;
 
-        // 1. Serialize DataStream to bytes
+        // 1. Serialize DataChunk to bytes
         let payload = chunk.encode_to_vec();
         let stream_id = chunk.stream_id.as_str();
 
         tracing::debug!(
-            "📤 Sending DataStream: stream_id={}, sequence={}, size={} bytes",
+            "📤 Sending DataChunk: stream_id={}, sequence={}, size={} bytes",
             stream_id,
             chunk.sequence,
             payload.len()
@@ -648,7 +648,7 @@ impl Context for RuntimeContext {
         let target_id = self.extract_target_id(target);
 
         // 3. Send via Gate with the caller-specified PayloadType
-        gate.send_data_stream(
+        gate.send_data_chunk(
             target_id,
             payload_type,
             stream_id,

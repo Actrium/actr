@@ -38,7 +38,7 @@
 //! ├─────────────────────────────────────────────────────┤
 //! │  Lifecycle Management (ActrNode → ActrRef)
 //! ├─────────────────────────────────────────────────────┤
-//! │  Layer 3: Inbound Dispatch                          │  DataStreamRegistry
+//! │  Layer 3: Inbound Dispatch                          │  DataChunkRegistry
 //! │           (Fast Path Routing)                       │  MediaFrameRegistry
 //! ├─────────────────────────────────────────────────────┤
 //! │  Layer 2: Outbound Adapters (internal)             │  HostGate

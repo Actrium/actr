@@ -24,7 +24,7 @@ use actr_config::ConfigParser;
 use actr_framework::{Context as RtContext, MessageDispatcher, Workload as RtWorkload};
 use actr_hyper::Node;
 use actr_protocol::{
-    ActorResult, ActrError, ActrId, ActrType, DataStream, PayloadType, RpcEnvelope, RpcRequest,
+    ActorResult, ActrError, ActrId, ActrType, DataChunk, PayloadType, RpcEnvelope, RpcRequest,
 };
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
@@ -231,7 +231,7 @@ async fn scenario_server_stream(
     let ctx = actr_ref.app_context().await;
     ctx.register_stream(
         stream_id.clone(),
-        move |chunk: DataStream, sender_id: ActrId| {
+        move |chunk: DataChunk, sender_id: ActrId| {
             let received = received_clone.clone();
             let done_tx = done_tx_clone.clone();
             Box::pin(async move {
@@ -325,7 +325,7 @@ async fn scenario_bidi(
     let ctx = actr_ref.app_context().await;
     ctx.register_stream(
         client_rx_id.clone(),
-        move |chunk: DataStream, sender_id: ActrId| {
+        move |chunk: DataChunk, sender_id: ActrId| {
             let received = received_clone.clone();
             let done_tx = done_tx_clone.clone();
             Box::pin(async move {
@@ -369,16 +369,16 @@ async fn scenario_bidi(
     let dest = actr_framework::Dest::Actor(target.clone());
     for seq in 0..chunk_count {
         let payload = format!("{message}:{seq}").into_bytes();
-        let chunk = DataStream {
+        let chunk = DataChunk {
             stream_id: server_rx_id.clone(),
             sequence: seq as u64,
             payload: Bytes::from(payload),
             metadata: vec![],
             timestamp_ms: None,
         };
-        ctx.send_data_stream(&dest, chunk, PayloadType::StreamReliable)
+        ctx.send_data_chunk(&dest, chunk, PayloadType::StreamReliable)
             .await
-            .with_context(|| format!("send_data_stream seq={seq} failed"))?;
+            .with_context(|| format!("send_data_chunk seq={seq} failed"))?;
         info!(seq, "bidi: sent chunk to server");
     }
 

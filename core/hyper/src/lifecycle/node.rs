@@ -8,7 +8,7 @@
 use crate::actr_ref::{ActrRef, ActrRefShared};
 use crate::ais_client::AisClient;
 use crate::context::{BootstrapContextBuilder, RuntimeContext};
-use crate::inbound::{DataStreamRegistry, MediaFrameRegistry};
+use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
 use crate::lifecycle::credential_manager::{
     CredentialManager, HardRebindHandles, RegistrationContext,
 };
@@ -63,10 +63,10 @@ pub(crate) struct Inner {
     /// not initialized yet")` — see `RuntimeContext::select_gate`.
     pub(crate) outproc_gate: Option<Gate>,
 
-    /// DataStream callback registry shared between the inbound WebRTC / WS
+    /// DataChunk callback registry shared between the inbound WebRTC / WS
     /// gates (which dispatch into it) and `RuntimeContext`
-    /// (register_stream / send_data_stream).
-    pub(crate) data_stream_registry: Arc<DataStreamRegistry>,
+    /// (register_stream / send_data_chunk).
+    pub(crate) data_chunk_registry: Arc<DataChunkRegistry>,
 
     /// MediaTrack callback registry shared between WebRTC media tracks and
     /// `RuntimeContext` (register_media_track / send_media_sample).
@@ -256,7 +256,7 @@ async fn host_operation_handler(
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
     use actr_framework::guest::dynclib_abi::code as abi_code;
     use actr_framework::{Context as _, Dest};
-    use actr_protocol::{DataStream, PayloadType};
+    use actr_protocol::{DataChunk, PayloadType};
 
     /// Map `ActrError` to ABI error code, preserving semantics for guest-side discrimination
     fn actr_error_to_code(err: &ActrError) -> i32 {
@@ -352,7 +352,7 @@ async fn host_operation_handler(
             let callback_ctx = ctx.clone();
             let callback_workload_dispatch = workload_dispatch.clone();
             match ctx
-                .register_stream(stream_id, move |chunk: DataStream, sender| {
+                .register_stream(stream_id, move |chunk: DataChunk, sender| {
                     let ctx_for_executor = callback_ctx.clone();
                     let workload_dispatch = callback_workload_dispatch.clone();
                     Box::pin(async move {
@@ -360,7 +360,7 @@ async fn host_operation_handler(
                             self_id: actr_framework::Context::self_id(&ctx_for_executor).clone(),
                             caller_id: Some(sender.clone()),
                             request_id: format!(
-                                "data-stream:{}:{}",
+                                "data-chunk:{}:{}",
                                 chunk.stream_id, chunk.sequence
                             ),
                         };
@@ -373,7 +373,7 @@ async fn host_operation_handler(
                             });
                         let mut guard = workload_dispatch.lock().await;
                         guard
-                            .dispatch_data_stream(chunk, sender, invocation, &call_executor)
+                            .dispatch_data_chunk(chunk, sender, invocation, &call_executor)
                             .await
                     })
                 })
@@ -395,11 +395,11 @@ async fn host_operation_handler(
             }
         },
 
-        HostOperation::SendDataStream(req) => {
+        HostOperation::SendDataChunk(req) => {
             let dest = match decode_dest(&req.dest) {
                 Some(d) => d,
                 None => {
-                    tracing::error!("send_data_stream: dest decode failed");
+                    tracing::error!("send_data_chunk: dest decode failed");
                     return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
                 }
             };
@@ -408,21 +408,21 @@ async fn host_operation_handler(
                     PayloadType::try_from(req.payload_type).expect("checked payload type")
                 }
                 Ok(other) => {
-                    tracing::error!(?other, "send_data_stream: invalid stream payload type");
+                    tracing::error!(?other, "send_data_chunk: invalid stream payload type");
                     return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
                 }
                 Err(_) => {
                     tracing::error!(
                         payload_type = req.payload_type,
-                        "send_data_stream: unknown payload type"
+                        "send_data_chunk: unknown payload type"
                     );
                     return HostOperationResult::Error(abi_code::PROTOCOL_ERROR);
                 }
             };
-            match ctx.send_data_stream(&dest, req.chunk, payload_type).await {
+            match ctx.send_data_chunk(&dest, req.chunk, payload_type).await {
                 Ok(()) => HostOperationResult::Done,
                 Err(e) => {
-                    tracing::error!("send_data_stream failed: {e:?}");
+                    tracing::error!("send_data_chunk failed: {e:?}");
                     HostOperationResult::Error(actr_error_to_code(&e))
                 }
             }
@@ -535,7 +535,7 @@ async fn stream_callback_host_operation_handler(
             Ok(()) => HostOperationResult::Done,
             Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
         },
-        HostOperation::SendDataStream(req) => {
+        HostOperation::SendDataChunk(req) => {
             let dest = match decode_dest(&req.dest) {
                 Some(d) => d,
                 None => return HostOperationResult::Error(abi_code::PROTOCOL_ERROR),
@@ -546,7 +546,7 @@ async fn stream_callback_host_operation_handler(
                 }
                 Ok(_) | Err(_) => return HostOperationResult::Error(abi_code::PROTOCOL_ERROR),
             };
-            match ctx.send_data_stream(&dest, req.chunk, payload_type).await {
+            match ctx.send_data_chunk(&dest, req.chunk, payload_type).await {
                 Ok(()) => HostOperationResult::Done,
                 Err(e) => HostOperationResult::Error(actr_error_to_code(&e)),
             }
@@ -920,10 +920,10 @@ impl Inner {
         let workload_to_shell = Arc::new(HostTransport::new());
         let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
 
-        // Root shutdown token; the data stream registry gets a child so a
+        // Root shutdown token; the data chunk registry gets a child so a
         // node-wide shutdown drains all per-stream workers (no orphans).
         let shutdown_token = CancellationToken::new();
-        let data_stream_registry = Arc::new(DataStreamRegistry::with_shutdown(
+        let data_chunk_registry = Arc::new(DataChunkRegistry::with_shutdown(
             shutdown_token.child_token(),
         ));
         let media_frame_registry = Arc::new(MediaFrameRegistry::new());
@@ -951,7 +951,7 @@ impl Inner {
             dlq,
             inproc_gate,
             outproc_gate: None, // Populated in start() once WebRTC / PeerGate is ready.
-            data_stream_registry,
+            data_chunk_registry,
             media_frame_registry,
             signaling_client,
             actor_id: None,
@@ -992,7 +992,7 @@ impl Inner {
         BootstrapContextBuilder::new(
             self.inproc_gate.clone(),
             self.outproc_gate.clone(),
-            self.data_stream_registry.clone(),
+            self.data_chunk_registry.clone(),
             self.media_frame_registry.clone(),
             self.signaling_client.clone(),
             self.actr_lock.clone(),
@@ -1022,7 +1022,7 @@ impl Inner {
             request_id.to_string(),
             self.inproc_gate.clone(),
             self.outproc_gate.clone(),
-            self.data_stream_registry.clone(),
+            self.data_chunk_registry.clone(),
             self.media_frame_registry.clone(),
             self.signaling_client.clone(),
             credential.clone(),
@@ -1467,18 +1467,18 @@ impl Inner {
             let outproc_gate_enum = Gate::Peer(outproc_gate.clone());
             tracing::info!("PeerTransport + PeerGate initialized");
 
-            let data_stream_registry = self.data_stream_registry.clone();
+            let data_chunk_registry = self.data_chunk_registry.clone();
 
-            // Create WebRtcGate with shared pending_requests and DataStreamRegistry
+            // Create WebRtcGate with shared pending_requests and DataChunkRegistry
             let gate = Arc::new(crate::wire::webrtc::gate::WebRtcGate::new(
                 coordinator.clone(),
                 pending_requests,
-                data_stream_registry.clone(),
+                data_chunk_registry.clone(),
             ));
             // Set local_id
             gate.set_local_id(actor_id.clone()).await;
             tracing::info!(
-                "✅ WebRtcGate created with shared pending_requests and DataStreamRegistry"
+                "✅ WebRtcGate created with shared pending_requests and DataChunkRegistry"
             );
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1571,7 +1571,7 @@ impl Inner {
                         let ws_gate = Arc::new(WebSocketGate::new(
                             conn_rx,
                             outproc_gate.get_pending_requests(),
-                            data_stream_registry.clone(),
+                            data_chunk_registry.clone(),
                             Some(auth_ctx),
                         ));
 
@@ -1840,7 +1840,7 @@ impl Inner {
                 // Drain per-stream data stream workers before the node tears
                 // down: cancel queued chunks, let in-flight callbacks finish,
                 // join all worker tasks (bounded, else abort). Avoids orphans.
-                node.data_stream_registry.shutdown().await;
+                node.data_chunk_registry.shutdown().await;
             });
             task_handles.push(on_stop_handle);
         }

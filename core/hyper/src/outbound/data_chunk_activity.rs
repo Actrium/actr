@@ -2,41 +2,41 @@ use actr_protocol::ActrId;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-pub(crate) const DATA_STREAM_ACTIVITY_TTL: Duration = Duration::from_secs(30);
+pub(crate) const DATA_CHUNK_ACTIVITY_TTL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DataStreamDeliveryUncertainNotice {
+pub(crate) struct DataChunkDeliveryUncertainNotice {
     pub(crate) stream_id: String,
     pub(crate) session_id: u64,
     pub(crate) reason: String,
 }
 
 #[derive(Debug, Clone)]
-struct ActiveDataStream {
+struct ActiveDataChunk {
     last_updated_at: Instant,
     notified: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DataStreamRecordState {
+pub(crate) enum DataChunkRecordState {
     Missing,
     Stale,
     Fresh,
 }
 
 #[derive(Debug)]
-pub(crate) struct DataStreamActivityTracker {
+pub(crate) struct DataChunkActivityTracker {
     ttl: Duration,
-    streams_by_peer: HashMap<ActrId, HashMap<String, HashMap<u64, ActiveDataStream>>>,
+    streams_by_peer: HashMap<ActrId, HashMap<String, HashMap<u64, ActiveDataChunk>>>,
 }
 
-impl Default for DataStreamActivityTracker {
+impl Default for DataChunkActivityTracker {
     fn default() -> Self {
-        Self::new(DATA_STREAM_ACTIVITY_TTL)
+        Self::new(DATA_CHUNK_ACTIVITY_TTL)
     }
 }
 
-impl DataStreamActivityTracker {
+impl DataChunkActivityTracker {
     pub(crate) fn new(ttl: Duration) -> Self {
         Self {
             ttl,
@@ -50,21 +50,21 @@ impl DataStreamActivityTracker {
         stream_id: &str,
         session_id: u64,
         now: Instant,
-    ) -> DataStreamRecordState {
+    ) -> DataChunkRecordState {
         let Some(stream) = self
             .streams_by_peer
             .get(peer_id)
             .and_then(|streams| streams.get(stream_id))
             .and_then(|sessions| sessions.get(&session_id))
         else {
-            return DataStreamRecordState::Missing;
+            return DataChunkRecordState::Missing;
         };
 
         let refresh_interval = self.ttl.checked_div(2).unwrap_or(self.ttl);
         if now.duration_since(stream.last_updated_at) > refresh_interval {
-            DataStreamRecordState::Stale
+            DataChunkRecordState::Stale
         } else {
-            DataStreamRecordState::Fresh
+            DataChunkRecordState::Fresh
         }
     }
 
@@ -83,7 +83,7 @@ impl DataStreamActivityTracker {
             .entry(stream_id)
             .or_default()
             .entry(session_id)
-            .or_insert_with(|| ActiveDataStream {
+            .or_insert_with(|| ActiveDataChunk {
                 last_updated_at: now,
                 notified: false,
             });
@@ -97,7 +97,7 @@ impl DataStreamActivityTracker {
         session_id: u64,
         reason: impl Into<String>,
         now: Instant,
-    ) -> Vec<DataStreamDeliveryUncertainNotice> {
+    ) -> Vec<DataChunkDeliveryUncertainNotice> {
         self.prune_expired(now);
 
         let reason = reason.into();
@@ -114,7 +114,7 @@ impl DataStreamActivityTracker {
                 }
                 stream.notified = true;
 
-                Some(DataStreamDeliveryUncertainNotice {
+                Some(DataChunkDeliveryUncertainNotice {
                     stream_id: stream_id.clone(),
                     session_id,
                     reason: reason.clone(),
@@ -178,5 +178,5 @@ impl DataStreamActivityTracker {
 }
 
 #[cfg(test)]
-#[path = "data_stream_activity_tests.rs"]
+#[path = "data_chunk_activity_tests.rs"]
 mod tests;
