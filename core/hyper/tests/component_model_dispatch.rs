@@ -294,7 +294,7 @@ async fn component_model_panic_after_await_surfaces_as_trap() {
     );
 
     match &err {
-        WasmError::ExecutionFailed(msg) => {
+        WasmError::InstanceTrapped(msg) => {
             // The guest panic surfaces through wasmtime as a trap. The
             // message shape varies slightly across wasmtime versions, so
             // match on either "trap" or "panic" rather than exact text.
@@ -304,8 +304,103 @@ async fn component_model_panic_after_await_surfaces_as_trap() {
                 "expected trap/panic in error message, got: {msg}"
             );
         }
+        other => panic!("expected InstanceTrapped, got {other:?}"),
+    }
+}
+
+// ─── Test 9 — trap poisons the store, next call rebuilds and recovers ────────
+
+/// A guest trap poisons the wasmtime store (wasmtime v42+). Before the B0
+/// fix the poisoned store was reused, so the *next* dispatch failed with a
+/// "cannot enter component instance" style error even though the request
+/// was well-formed. The fix rebuilds a fresh instance lazily on the next
+/// call. This test drives two trap→recover rounds and asserts the rebuild
+/// counter advances 1→2, proving the poison flag is reset each time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn component_model_trap_rebuilds_instance_and_recovers() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+
+    assert_eq!(wl.rebuild_count(), 0, "no rebuild before any trap");
+
+    for round in 1..=2u64 {
+        // Trigger a deterministic post-await guest panic: the bridge answers
+        // the pre-panic call_raw (no sleep needed), then the guest panics.
+        let (bridge, counter) = doubling_bridge(None);
+        let boom = make_envelope("test/boom-after-await", 1i32.to_le_bytes().to_vec());
+        let err = wl
+            .handle(&boom, test_ctx(), &bridge)
+            .await
+            .expect_err("boom route must trap");
+        assert!(
+            matches!(err, WasmError::InstanceTrapped(_)),
+            "round {round}: trap must surface as InstanceTrapped, got {err:?}"
+        );
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "round {round}: bridge must have serviced the pre-panic call_raw once"
+        );
+
+        // The next dispatch must succeed on a rebuilt instance. Before the
+        // fix this failed on the poisoned store.
+        let payload = format!("recover-{round}").into_bytes();
+        let echo = make_envelope("test/echo", payload.clone());
+        let reply = wl
+            .handle(&echo, test_ctx(), &unreachable_bridge())
+            .await
+            .unwrap_or_else(|e| panic!("round {round}: echo after trap must succeed, got {e:?}"));
+        assert_eq!(
+            reply, payload,
+            "round {round}: echo must round-trip payload"
+        );
+        assert_eq!(
+            wl.rebuild_count(),
+            round,
+            "round {round}: rebuild counter must advance once per recovered trap"
+        );
+    }
+}
+
+// ─── Test 10 — a business error does not poison / rebuild the store ──────────
+
+/// A guest-visible business error (`Ok(Err(actr-error))`) is not a trap and
+/// must never poison the store. This locks in the Err-vs-trap split: an
+/// unknown route surfaces as `ExecutionFailed`, the following dispatch
+/// succeeds on the *same* (never-rebuilt) instance, and `rebuild_count`
+/// stays at zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn component_model_business_error_does_not_rebuild() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+
+    let req = make_envelope("unknown/route", Vec::new());
+    let err = wl
+        .handle(&req, test_ctx(), &unreachable_bridge())
+        .await
+        .expect_err("unknown route must surface a business error");
+    match &err {
+        WasmError::ExecutionFailed(msg) => assert!(
+            msg.contains("UnknownRoute"),
+            "business error should carry UnknownRoute, got: {msg}"
+        ),
         other => panic!("expected ExecutionFailed, got {other:?}"),
     }
+
+    // Same instance must keep serving; a business error is not fatal.
+    let payload = b"still-alive".to_vec();
+    let echo = make_envelope("test/echo", payload.clone());
+    let reply = wl
+        .handle(&echo, test_ctx(), &unreachable_bridge())
+        .await
+        .expect("echo after business error must succeed");
+    assert_eq!(reply, payload);
+
+    assert_eq!(
+        wl.rebuild_count(),
+        0,
+        "a business error must not poison the store or trigger a rebuild"
+    );
 }
 
 // ─── Per-call overhead micro-benchmark (supersedes spike Test 6) ────────────

@@ -512,6 +512,13 @@ impl TestWasmWorkload {
         self.inner.handle(request_bytes, ctx, host_abi).await
     }
 
+    /// Number of times the underlying store was rebuilt after a guest trap.
+    /// Lets integration tests assert that a trap triggered a rebuild and a
+    /// business error did not.
+    pub fn rebuild_count(&self) -> u64 {
+        self.inner.rebuild_count()
+    }
+
     pub fn into_package_hook_observer(self) -> TestPackageHookObserver {
         TestPackageHookObserver::from_workload(crate::workload::Workload::Wasm(self.inner))
     }

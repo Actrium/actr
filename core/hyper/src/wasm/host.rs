@@ -607,26 +607,49 @@ impl WasmHost {
     /// resulting bindings are cached on the returned workload
     /// for subsequent `call_dispatch` and hook invocations.
     pub(crate) async fn instantiate(&self) -> WasmResult<WasmWorkload> {
-        let mut linker: Linker<HostState> = Linker::new(&self.engine);
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
-            WasmError::LoadFailed(format!("failed to register WASI p2 linker imports: {e}"))
-        })?;
-        ActrWorkloadGuest::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| {
-            WasmError::LoadFailed(format!(
-                "failed to register actr:workload/host linker imports: {e}"
-            ))
-        })?;
-
-        let mut store = Store::new(&self.engine, HostState::new());
-        let bindings = ActrWorkloadGuest::instantiate_async(&mut store, &self.component, &linker)
-            .await
-            .map_err(|e| {
-                WasmError::LoadFailed(format!("Component instantiate_async failed: {e:#}"))
-            })?;
-
+        let (store, bindings) = instantiate_parts(&self.engine, &self.component).await?;
         tracing::info!("wasm Component instantiated");
-        Ok(WasmWorkload { store, bindings })
+        Ok(WasmWorkload {
+            engine: self.engine.clone(),
+            component: self.component.clone(),
+            store,
+            bindings,
+            poisoned: false,
+            rebuilds: 0,
+        })
     }
+}
+
+/// Build a fresh [`Store`] + component instance from an already-compiled
+/// [`Engine`]/[`Component`] pair.
+///
+/// Shared by [`WasmHost::instantiate`] (first instantiation) and
+/// [`WasmWorkload::ensure_instance`] (rebuild after a guest trap poisons
+/// the store). Only re-runs `instantiate_async`; the component compilation
+/// is not repeated — both `Engine` and `Component` are `Arc`-backed and
+/// cheap to clone. A fresh [`Linker`] is built each time (cheap) so the
+/// WASI p2 and `actr:workload/host` imports are registered against the new
+/// store.
+async fn instantiate_parts(
+    engine: &Engine,
+    component: &Component,
+) -> WasmResult<(Store<HostState>, ActrWorkloadGuest)> {
+    let mut linker: Linker<HostState> = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
+        WasmError::LoadFailed(format!("failed to register WASI p2 linker imports: {e}"))
+    })?;
+    ActrWorkloadGuest::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| {
+        WasmError::LoadFailed(format!(
+            "failed to register actr:workload/host linker imports: {e}"
+        ))
+    })?;
+
+    let mut store = Store::new(engine, HostState::new());
+    let bindings = ActrWorkloadGuest::instantiate_async(&mut store, component, &linker)
+        .await
+        .map_err(|e| WasmError::LoadFailed(format!("Component instantiate_async failed: {e:#}")))?;
+
+    Ok((store, bindings))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -640,14 +663,46 @@ impl WasmHost {
 /// borrow checker rejects any caller attempting to drive two hooks on
 /// the same instance concurrently — the single-threaded-actor invariant
 /// is compile-time-enforced.
+///
+/// # Store poisoning and lazy rebuild
+///
+/// A guest trap (panic, unreachable, or a host-import bridge fault raised
+/// through the trappable error path) poisons the underlying wasmtime
+/// [`Store`] as of wasmtime v42+: any further guest entry on that store
+/// fails with a "cannot enter component instance" style error. To keep an
+/// actor serviceable after such a fault, every guest entry method
+/// (`handle`, `handle_data_stream`, the lifecycle hooks, `call_hook_event`)
+/// first calls [`WasmWorkload::ensure_instance`]: if the store is poisoned
+/// it is transparently rebuilt (fresh [`Store`] + `instantiate_async`) from
+/// the retained [`Engine`]/[`Component`] before the call proceeds. The
+/// rebuild only re-instantiates — no recompilation.
+///
+/// The rebuild is *lazy* (performed on the next inbound call, not at the
+/// trap site) and only re-establishes a serviceable instance. It does
+/// **not** replay `on-start`/lifecycle hooks and does **not** replay any
+/// in-flight or queued message: the guest's in-memory linear-memory state
+/// is lost (a `warn` is logged to make that explicit). Replay / hook
+/// adjudication (rebuild vs discard vs escalate) is out of scope here and
+/// belongs to the later mailbox/replay milestone (v2 plan §3.3 B0 boundary).
 pub(crate) struct WasmWorkload {
+    /// Retained for rebuilding a poisoned store. `Arc`-backed, cheap clone.
+    engine: Engine,
+    /// Retained for rebuilding a poisoned store. `Arc`-backed, cheap clone.
+    component: Component,
     store: Store<HostState>,
     bindings: ActrWorkloadGuest,
+    /// Set when a guest entry trapped; the store is unusable until rebuilt.
+    poisoned: bool,
+    /// Count of successful rebuilds, for observability / tests.
+    rebuilds: u64,
 }
 
 impl std::fmt::Debug for WasmWorkload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WasmWorkload").finish_non_exhaustive()
+        f.debug_struct("WasmWorkload")
+            .field("poisoned", &self.poisoned)
+            .field("rebuilds", &self.rebuilds)
+            .finish_non_exhaustive()
     }
 }
 
@@ -682,6 +737,75 @@ impl WasmWorkload {
         state.host_abi = None;
     }
 
+    /// Number of times the poisoned store has been rebuilt. Test/observability
+    /// hook — monotonic, incremented once per successful re-instantiation.
+    pub(crate) fn rebuild_count(&self) -> u64 {
+        self.rebuilds
+    }
+
+    /// Ensure the wasm store is usable before a guest entry.
+    ///
+    /// If the store is not poisoned this is a no-op. If a previous guest
+    /// entry trapped (see [`WasmWorkload::trap_poison`]), the store is
+    /// rebuilt from the retained [`Engine`]/[`Component`]: a fresh
+    /// [`Store`] + `instantiate_async`, discarding the guest's prior
+    /// in-memory state. On success the poison flag clears and the rebuild
+    /// counter advances; on failure the instance stays poisoned and the
+    /// next call retries, so a transient rebuild failure is not fatal.
+    async fn ensure_instance(&mut self) -> WasmResult<()> {
+        if !self.poisoned {
+            return Ok(());
+        }
+
+        tracing::warn!(
+            rebuild_attempt = self.rebuilds + 1,
+            "rebuilding poisoned wasm store after a prior guest trap; \
+             guest in-memory state is discarded (lifecycle/queue not replayed)"
+        );
+
+        match instantiate_parts(&self.engine, &self.component).await {
+            Ok((store, bindings)) => {
+                self.store = store;
+                self.bindings = bindings;
+                self.poisoned = false;
+                self.rebuilds += 1;
+                tracing::info!(
+                    rebuilds = self.rebuilds,
+                    "wasm store rebuilt; instance serviceable again"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "failed to rebuild poisoned wasm store; instance stays poisoned, will retry on next call"
+                );
+                Err(WasmError::LoadFailed(format!(
+                    "failed to rebuild poisoned wasm store: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Mark the store poisoned after a guest entry trapped.
+    ///
+    /// A trap (outer `wasmtime::Result` `Err`) is an instance-level fatal
+    /// fault: the store cannot be re-entered. We flag it so the next guest
+    /// entry rebuilds a fresh instance, and return a distinct
+    /// [`WasmError::InstanceTrapped`] so callers/telemetry can tell a
+    /// trap-level failure apart from a guest-visible business error
+    /// (`ExecutionFailed`).
+    fn trap_poison(&mut self, entry: &str, trap: wasmtime::Error) -> WasmError {
+        self.poisoned = true;
+        tracing::error!(
+            entry,
+            error = %trap,
+            "wasm guest trapped; store poisoned (instance-level fatal). \
+             In-memory guest state is lost; a fresh instance is rebuilt before the next call"
+        );
+        WasmError::InstanceTrapped(format!("{entry} trap: {trap}"))
+    }
+
     /// Invoke the workload's `on-start` lifecycle hook.
     ///
     /// Phase 1 exposes this as a distinct entry point so the host can
@@ -693,6 +817,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
 
         let result = self
@@ -703,9 +828,11 @@ impl WasmWorkload {
 
         self.clear_invocation();
 
-        let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_start trap: {e}")))?;
-        result.map_err(|e| WasmError::ExecutionFailed(format!("on_start error: {:?}", e)))?;
+        let inner = match result {
+            Ok(inner) => inner,
+            Err(trap) => return Err(self.trap_poison("on_start", trap)),
+        };
+        inner.map_err(|e| WasmError::ExecutionFailed(format!("on_start error: {:?}", e)))?;
         Ok(())
     }
 
@@ -714,6 +841,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
 
         let result = self
@@ -724,9 +852,11 @@ impl WasmWorkload {
 
         self.clear_invocation();
 
-        let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_ready trap: {e}")))?;
-        result.map_err(|e| WasmError::ExecutionFailed(format!("on_ready error: {:?}", e)))?;
+        let inner = match result {
+            Ok(inner) => inner,
+            Err(trap) => return Err(self.trap_poison("on_ready", trap)),
+        };
+        inner.map_err(|e| WasmError::ExecutionFailed(format!("on_ready error: {:?}", e)))?;
         Ok(())
     }
 
@@ -735,6 +865,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
 
         let result = self
@@ -745,9 +876,11 @@ impl WasmWorkload {
 
         self.clear_invocation();
 
-        let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_stop trap: {e}")))?;
-        result.map_err(|e| WasmError::ExecutionFailed(format!("on_stop error: {:?}", e)))?;
+        let inner = match result {
+            Ok(inner) => inner,
+            Err(trap) => return Err(self.trap_poison("on_stop", trap)),
+        };
+        inner.map_err(|e| WasmError::ExecutionFailed(format!("on_stop error: {:?}", e)))?;
         Ok(())
     }
 
@@ -757,6 +890,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         let label = event.request_id();
         self.install_invocation(ctx, host_abi);
         let result = match event {
@@ -844,7 +978,9 @@ impl WasmWorkload {
         };
         self.clear_invocation();
 
-        result.map_err(|e| WasmError::ExecutionFailed(format!("{label} trap: {e}")))?;
+        if let Err(trap) = result {
+            return Err(self.trap_poison(label, trap));
+        }
         Ok(())
     }
 
@@ -865,6 +1001,11 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<Vec<u8>> {
+        // Rebuild the store first if a prior guest entry poisoned it. Done
+        // before envelope decode so a decode failure (which never touches
+        // the guest) does not gate on a rebuild it does not need.
+        self.ensure_instance().await?;
+
         // Decode the envelope. If the caller handed us malformed bytes
         // we surface that as an ExecutionFailed; historically this case
         // could never happen in practice because the caller encodes the
@@ -891,10 +1032,10 @@ impl WasmWorkload {
             .call_dispatch(&mut self.store, &wit_envelope)
             .await;
 
-        // Always clear per-call state regardless of outcome — a trap
-        // poisons the Store (wasmtime drops further use anyway) but
-        // clearing keeps the state machine observable even when the
-        // caller decides to retain the store for a next dispatch.
+        // Always clear per-call state regardless of outcome. On a trap the
+        // Store is poisoned (flagged below via `trap_poison`) and rebuilt
+        // lazily on the next call; clearing here keeps per-call state tidy
+        // either way.
         self.clear_invocation();
 
         match dispatch_result {
@@ -903,9 +1044,7 @@ impl WasmWorkload {
                 "guest dispatch returned error: {:?}",
                 wit_actr_error_to_proto(wit_err)
             ))),
-            Err(trap) => Err(WasmError::ExecutionFailed(format!(
-                "guest dispatch trapped: {trap}"
-            ))),
+            Err(trap) => Err(self.trap_poison("dispatch", trap)),
         }
     }
 
@@ -916,6 +1055,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
 
         let wit_chunk = proto_data_stream_to_wit(chunk);
@@ -926,9 +1066,11 @@ impl WasmWorkload {
             .call_on_data_stream(&mut self.store, &wit_chunk, &wit_sender)
             .await;
         self.clear_invocation();
-        let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_data_stream trap: {e}")))?;
-        result.map_err(|e| {
+        let inner = match result {
+            Ok(inner) => inner,
+            Err(trap) => return Err(self.trap_poison("on_data_stream", trap)),
+        };
+        inner.map_err(|e| {
             WasmError::ExecutionFailed(format!(
                 "on_data_stream error: {:?}",
                 wit_actr_error_to_proto(e)
