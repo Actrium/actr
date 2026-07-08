@@ -310,7 +310,7 @@ mod bench_impl {
     fn format_l(l_us: u64) -> String {
         if l_us == 0 {
             "0".to_string()
-        } else if l_us % 1000 == 0 {
+        } else if l_us.is_multiple_of(1000) {
             format!("{}ms", l_us / 1000)
         } else {
             format!("{l_us}us")
