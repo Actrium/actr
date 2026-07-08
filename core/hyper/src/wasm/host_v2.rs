@@ -470,7 +470,7 @@ async fn instantiate_parts_v2(
 /// Single 0.2.0 async-world wasm actor instance.
 ///
 /// Mirrors [`super::host::WasmWorkload`]'s lifecycle (engine/component/store
-/// + poison/rebuild), but every guest entry runs inside a single-task
+/// plus poison/rebuild), but every guest entry runs inside a single-task
 /// `Store::run_concurrent` region. The per-invocation `ctx-token` is
 /// allocated into [`HostState`]'s invocation table just before the region
 /// opens and retired after it closes; a trap clears the whole table.
