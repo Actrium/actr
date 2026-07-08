@@ -109,6 +109,10 @@ pub struct DispatchConcurrency {
     /// future in the `select!`), not from an external timer, so the reply is
     /// sent only *after* the timed-out dispatch has truly left the region —
     /// which is what keeps same-key FIFO airtight across a timeout.
+    ///
+    /// Only in effect on the interleaved runner — a keyed actor with the gate
+    /// on. A keyless (serial) actor runs each dispatch to completion on the
+    /// pre-B2 loop and does not consult this field.
     pub dispatch_timeout: Option<std::time::Duration>,
 }
 

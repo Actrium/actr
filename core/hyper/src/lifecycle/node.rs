@@ -2371,8 +2371,9 @@ impl Inner {
                     use futures_util::stream::FuturesUnordered;
 
                     // Concurrency gate: only when the dispatch scheduler is on do
-                    // we overlap messages. Off (default) = one message at a time,
-                    // bit-for-bit the pre-B2 loop.
+                    // we overlap messages. No scheduler (a keyless actor, or the
+                    // gate forced off) = one message at a time, bit-for-bit the
+                    // pre-B2 loop.
                     let scheduler_on = node.dispatch_scheduler.is_some();
                     // Bound on continuations the loop keeps in flight; a full set
                     // stops us dequeuing, which back-pressures the lane. The
@@ -2698,8 +2699,9 @@ impl Inner {
                 use futures_util::stream::FuturesUnordered;
 
                 // Concurrency gate: only overlap messages when the dispatch
-                // scheduler is on. Off (default) = one message at a time,
-                // bit-for-bit the pre-B2 loop.
+                // scheduler is on. No scheduler (a keyless actor, or the gate
+                // forced off) = one message at a time, bit-for-bit the pre-B2
+                // loop.
                 let scheduler_on = node.dispatch_scheduler.is_some();
                 const MAILBOX_INFLIGHT_CAP: usize = 256;
                 let mut inflight: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>> =
