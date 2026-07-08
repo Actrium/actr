@@ -5,7 +5,7 @@
 - RFC PR:
 - Tracking issue: #123
 - Superseded by:
-- Related: <Relevant issues or PRs. Link only to files under `rfcs/` or to external URLs; do not link to repository files outside `rfcs/`.>
+- Related: <Relevant issues, PRs, or external URLs. Do not use relative links to repository files outside `rfcs/`.>
 
 ## Summary
 

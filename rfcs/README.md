@@ -1,76 +1,123 @@
-# actr RFCs
+# actr RFC Guide
 
-The Request for Comments (RFC) process provides a consistent review path for cross-cutting actr changes that are expensive to revise once adopted. These changes include protocol semantics, concurrency models, FFI and ABI contracts, and code generation contracts.
+Chinese version: [README.zh.md](README.zh.md).
 
-Many changes do not require an RFC. Bug fixes, documentation improvements, and refactoring contained within one crate should use the regular pull request process.
+This directory records accepted design decisions for actr changes that are
+cross-cutting, hard to reverse, or likely to affect long-term contracts.
 
-## Repository layout
+Use this guide as an operating checklist for creating and managing RFCs. The
+metadata in each RFC file is the source of truth. Do not maintain a hand-written
+RFC index; the directory listing and Git history are enough.
+
+## Files
 
 ```text
 rfcs/
-├── 0000-template.md               # Template for new RFCs
-├── README.md                      # Process and conventions
-└── NNNN-short-name.md             # RFC documents
+├── 0000-template.md        # Copy this when starting a new RFC
+├── README.md              # English process guide
+├── README.zh.md           # Chinese process guide
+└── NNNN-short-name.md     # RFC documents
 ```
 
-- **RFC documents must not use relative links to repository documents outside `rfcs/`.** Those documents may move or be deleted. References to code locations such as `core/.../file.rs` are allowed. Include necessary background directly in the RFC or link to an external issue or pull request.
+Append a language code before `.md` for a non-English RFC, for example
+`0323-explicit-reply.zh.md`.
 
-## When an RFC is required
+## When to write an RFC
 
-Write an RFC before implementation when a change does any of the following:
+Write an RFC before implementation when the change:
 
-- changes the wire format or protocol, or adds caller-visible concurrency or reply semantics;
-- requires coordinated changes across multiple crates or layers, such as `core/hyper`, `framework`, code generation, FFI, or WIT;
-- introduces an API that will be difficult to withdraw after release, such as a protocol method option or host import;
-- requires a durable decision among alternatives with meaningful trade-offs.
+- changes protocol, wire format, concurrency, or reply semantics;
+- coordinates behavior across crates or layers such as `core/hyper`,
+  `framework`, code generation, FFI, or WIT;
+- adds a public API or option that will be difficult to withdraw after release;
+- needs a durable decision among meaningful alternatives.
 
-An RFC is not required when a change does any of the following:
+An RFC is usually unnecessary for:
 
-- restates, reorganizes, or refactors existing behavior without changing semantics;
-- incrementally improves an objective metric such as performance, platform coverage, parallelism, or warning coverage;
-- remains internal and has no caller-visible effect.
+- bug fixes;
+- documentation-only changes;
+- local refactors that do not change behavior;
+- internal improvements with no caller-visible effect;
+- incremental metric improvements such as performance, platform coverage,
+  parallelism, or warning coverage.
 
-## Submitting a new RFC
+## Create an RFC
 
-1. Open a tracking issue titled `RFC: <name>`. Use that issue number as the RFC number. Leave the issue open during review; if the RFC is accepted, the same issue tracks implementation work.
-2. Copy `0000-template.md` to `<issue-number>-<short-name>.md` directly under `rfcs/`. Zero-pad the issue number to four digits in the RFC title and filename, for example issue `#291` becomes `RFC-0291` and `0291-explicit-reply.md`. Fill in the `Tracking issue` metadata with the GitHub issue reference, for example `#291`. Append a language code before `.md` for a non-English version, for example `0291-explicit-reply.zh.md`.
-3. Complete every section. Cite concrete code paths such as `core/.../file.rs` and relevant issue or pull request URLs. The `Alternatives` section must describe genuine rejected options; this requirement distinguishes an RFC from a regular design document.
-4. Add the RFC to the index with `Proposed` status and open a pull request titled `docs: add RFC-NNNN <name>`. After GitHub assigns the pull request number, fill in the RFC PR metadata with its URL. A proposed RFC must not be merged.
-5. Address review feedback and ensure CI passes. If the proposal is rejected or withdrawn, close the pull request without merging it and close the tracking issue with the outcome.
-6. After the maintainers decide to accept the proposal, set the RFC and index status to `Accepted`, update the tracking issue with any required acceptance criteria, and request final approval. The latest commit must have at least one maintainer approval and passing CI before the RFC pull request is merged into `main`. The merge is the point at which `Accepted` takes effect.
-7. Track implementation pull requests and required acceptance criteria in the tracking issue. When all required work is merged, submit a follow-up documentation pull request that changes the RFC and index status to `Implemented`. After that pull request merges, close the tracking issue with a link to the status update.
-8. To replace an accepted or implemented RFC, submit a new RFC. When the maintainers decide to accept the replacement, use the replacement RFC pull request to set the original RFC to `Superseded`, link its successor in `Superseded by`, and update both index entries. Merging the replacement RFC pull request makes both status changes effective. Then comment on the original tracking issue with the successor RFC and close it as superseded, moving any still-relevant implementation tasks to the successor tracking issue.
+1. Open a tracking issue named `RFC: <name>`.
+2. Use the issue number as the RFC number. Issue `#323` becomes `RFC-0323`.
+3. Copy `0000-template.md` to `NNNN-short-name.md`.
+4. Fill every template section, including `Status`, `RFC PR`, and
+   `Tracking issue`.
+5. Set `Status: Proposed`.
+6. Open a pull request named `docs: add RFC-NNNN <name>`.
+7. Keep the RFC PR open while it is `Proposed`; do not merge a proposed RFC.
 
-## RFC lifecycle
+RFCs should include enough background for future readers. Avoid relative links
+to repository files outside `rfcs/`; those files may move or be deleted. Mention
+code paths such as `core/.../file.rs` as text when needed, and link to issues,
+pull requests, or external references for discussion history.
 
-```mermaid
-flowchart TD
-    A["Create tracking issue<br/>Use issue number as RFC number"] --> B["Open RFC PR<br/>Status: Proposed"]
-    B --> C["Review and CI"]
-    C -->|Rejected or withdrawn| X["Close RFC PR and tracking issue<br/>Do not merge"]
-    C -->|Decision to accept| D["Set status to Accepted<br/>Update RFC index and tracking issue"]
-    D --> E["Final approval on latest commit<br/>CI passes"]
-    E --> F["Merge RFC PR into main<br/>Accepted takes effect"]
-    F --> G["Implementation PRs<br/>Tracked by the issue"]
-    G -->|Required acceptance criteria met| H["Open status update PR<br/>Set status to Implemented"]
-    H --> I["Merge status update into main<br/>Close tracking issue"]
-    F -->|Replacement RFC PR merges| J["Status: Superseded<br/>Link successor<br/>Close original issue"]
-    I -->|Replacement RFC PR merges| J
-```
+## Statuses
+
+Use only these persisted statuses:
 
 | Status | Meaning |
 |---|---|
-| Proposed | The RFC exists in an open pull request, is linked to its tracking issue, remains under review, and must not be merged. |
-| Accepted | The RFC pull request has merged into `main`, and implementation may proceed under its tracking issue. |
-| Implemented | All required acceptance criteria and required implementation phases have merged, and the tracking issue is closed. Optional phases and future possibilities do not block this status. |
-| Superseded | A newer accepted RFC replaces this RFC, is linked in `Superseded by`, and is noted in the closed original tracking issue. |
+| `Proposed` | The RFC is under review in an open PR and is not merged. |
+| `Accepted` | Maintainers have accepted the design, and the RFC PR has merged into `main`. Implementation may proceed under the tracking issue. |
+| `Implemented` | Required implementation phases and acceptance criteria are complete. |
+| `Superseded` | A newer accepted RFC replaces this RFC. |
 
-- `Accepted` is not a guarantee of implementation or a statement of priority.
-- Rejected and withdrawn proposals are closed without merging; they are pull request outcomes, not persisted RFC statuses.
-- Every status-changing pull request must update the RFC metadata and RFC index together. Status changes to `Implemented` or `Superseded` must also update the tracking issue.
-- Avoid substantial changes to an accepted RFC. Submit small corrections in follow-up pull requests. Use a new RFC for material design changes and reference it from the original RFC.
+Rejected and withdrawn proposals are PR outcomes, not persisted RFC statuses.
+Close the RFC PR and tracking issue without merging them.
 
-## RFC index
+## Accept an RFC
 
-| Number | Title | Status |
-|---|---|---|
+1. Record acceptance criteria in the tracking issue.
+2. Update the RFC metadata from `Proposed` to `Accepted`.
+3. Request final review on the latest commit.
+4. Merge only after maintainer approval and passing CI.
+
+The merge into `main` is the point where `Accepted` takes effect.
+
+## Track implementation
+
+Use the tracking issue to collect:
+
+- implementation checklist items;
+- required acceptance criteria;
+- related implementation PRs;
+- open follow-up questions.
+
+When all required work is done:
+
+1. Open a documentation PR that changes the RFC status to `Implemented`.
+2. Link the completed implementation work.
+3. Merge the status update PR.
+4. Close the tracking issue with a link to the status update.
+
+Optional follow-up work and future possibilities do not block `Implemented`
+unless they were part of the required acceptance criteria.
+
+## Supersede an RFC
+
+1. Create a new RFC for the replacement design.
+2. When maintainers accept the replacement, update the old RFC to
+   `Superseded`.
+3. Fill `Superseded by` in the old RFC.
+4. Merge the replacement RFC PR.
+5. Comment on the old tracking issue with the successor RFC and close it.
+
+Move any still-relevant implementation tasks to the successor tracking issue.
+
+## Agent checklist
+
+When creating or updating an RFC:
+
+- keep the status in the RFC metadata as the only status source;
+- do not add or update a central index;
+- keep RFC documents directly under `rfcs/`;
+- update the tracking issue when status changes to `Accepted`, `Implemented`,
+  or `Superseded`;
+- use a new RFC for material design changes after acceptance;
+- use small follow-up PRs only for corrections or clarifications.
