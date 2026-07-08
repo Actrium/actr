@@ -50,11 +50,16 @@
 //! Do not change [`ActorCmd`] / [`ActorHandle`] shapes without preserving these.
 
 use crate::context::RuntimeContext;
-use crate::workload::{HostAbiFn, InvocationContext, PackageHookEvent, Workload};
+use crate::workload::{
+    HostAbiFn, InvocationContext, LinkedWorkloadHandle, PackageHookEvent, Workload,
+};
 use actr_protocol::{ActorResult, ActrError, ActrId, DataStream, RpcEnvelope};
 use bytes::Bytes;
 use futures_util::FutureExt as _;
+use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::Instrument as _;
@@ -307,10 +312,50 @@ impl ActorHandle {
     }
 }
 
+/// Execution discipline for the runner task.
+///
+/// `Serial` is the B1 contract: one command at a time, run-to-completion. It is
+/// mandatory for `Wasm` / `DynClib` workloads (single `Store` / `&mut` guest
+/// ABI) and is the default. `Interleaved` is the B2 native-concurrency point:
+/// only meaningful for a `Linked` workload, whose `dispatch` takes `&self`, so
+/// distinct-key dispatches (routed concurrently by the scheduler) can be in
+/// flight at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunnerMode {
+    Serial,
+    Interleaved,
+}
+
 /// Spawn the serial runner task that owns `workload` and return its handle.
+///
+/// A thin `RunnerMode::Serial` convenience used by test-support harnesses; the
+/// production node path calls [`spawn_runner_with_mode`] directly so it can pick
+/// the interleaved runner when the dispatch gate is on.
+#[cfg(any(
+    test,
+    all(
+        feature = "test-utils",
+        any(feature = "wasm-engine", feature = "dynclib-engine")
+    )
+))]
 pub(crate) fn spawn_runner(workload: Workload) -> ActorHandle {
+    spawn_runner_with_mode(workload, RunnerMode::Serial)
+}
+
+/// Spawn a runner in the requested [`RunnerMode`].
+///
+/// `Interleaved` only applies to `Workload::Linked`; any packaged workload
+/// (`Wasm` / `DynClib`) falls back to the serial loop even if `Interleaved` is
+/// requested, so the single-`Store` contract is never violated — the conflict
+/// key becomes a no-op routing hint there, exactly as B2 intends.
+pub(crate) fn spawn_runner_with_mode(workload: Workload, mode: RunnerMode) -> ActorHandle {
     let (tx, rx) = mpsc::channel(RUNNER_QUEUE_CAPACITY);
-    let join = tokio::spawn(run_loop(workload, rx));
+    let join = match (mode, workload) {
+        (RunnerMode::Interleaved, Workload::Linked(handle)) => {
+            tokio::spawn(run_loop_interleaved(handle, rx))
+        }
+        (_, workload) => tokio::spawn(run_loop(workload, rx)),
+    };
     ActorHandle {
         tx,
         join: std::sync::Mutex::new(Some(join)),
@@ -393,6 +438,111 @@ async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
                 break;
             }
         }
+    }
+}
+
+/// Interleaved command loop for a `Linked` workload (B2 native concurrency).
+///
+/// `Dispatch` commands are cloned onto owned futures (the handle is behind an
+/// `Arc`, and `LinkedWorkloadHandle::dispatch` takes `&self`) and pushed into a
+/// `FuturesUnordered`, so several distinct-key dispatches run concurrently. The
+/// scheduler upstream bounds how many are ever in flight (budget `C`).
+///
+/// Every *non-Dispatch* command (`Lifecycle` / `Hook` / `DataStream` /
+/// `Shutdown`) is a **barrier**: the loop stops accepting new work, drains all
+/// in-flight dispatches, runs the barrier command alone, then resumes. This
+/// keeps lifecycle ordering and the single-runner guarantee intact.
+///
+/// The shape (`select!` over `cmd_rx` + a `FuturesUnordered`) deliberately
+/// mirrors the M5 `store.run_concurrent` evolution path documented above so M5
+/// swaps only the execution kernel, not this skeleton.
+async fn run_loop_interleaved(
+    handle: Arc<dyn LinkedWorkloadHandle>,
+    mut rx: mpsc::Receiver<ActorCmd>,
+) {
+    let mut inflight: FuturesUnordered<Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
+        FuturesUnordered::new();
+    loop {
+        tokio::select! {
+            biased;
+            maybe_cmd = rx.recv() => {
+                match maybe_cmd {
+                    Some(ActorCmd::Dispatch { envelope, ctx, invocation, host_abi, span, reply }) => {
+                        let _ = (&invocation, &host_abi);
+                        let handle = handle.clone();
+                        inflight.push(Box::pin(async move {
+                            let fut = handle.dispatch(envelope, Arc::new(ctx));
+                            let result = guarded("dispatch", fut).instrument(span).await;
+                            let _ = reply.send(result);
+                        }));
+                    }
+                    Some(barrier) => {
+                        // Drain in-flight dispatches, then run the barrier alone.
+                        while inflight.next().await.is_some() {}
+                        if run_barrier(&handle, barrier).await {
+                            break;
+                        }
+                    }
+                    None => {
+                        // All handles dropped: drain remaining dispatches and exit.
+                        while inflight.next().await.is_some() {}
+                        break;
+                    }
+                }
+            }
+            Some(()) = inflight.next(), if !inflight.is_empty() => {
+                // A dispatch completed; its reply was already sent.
+            }
+        }
+    }
+}
+
+/// Run one barrier command against the linked handle. Returns `true` when the
+/// runner should stop (an explicit `Shutdown`).
+async fn run_barrier(handle: &Arc<dyn LinkedWorkloadHandle>, cmd: ActorCmd) -> bool {
+    match cmd {
+        ActorCmd::Lifecycle {
+            phase,
+            ctx,
+            invocation,
+            host_abi,
+            span,
+            reply,
+        } => {
+            let _ = (&invocation, &host_abi);
+            let fut = async {
+                match phase {
+                    LifecyclePhase::OnStart => handle.on_start(&ctx).await,
+                    LifecyclePhase::OnReady => handle.on_ready(&ctx).await,
+                    LifecyclePhase::OnStop => handle.on_stop(&ctx).await,
+                }
+            };
+            let result = guarded(phase.panic_label(), fut).instrument(span).await;
+            let _ = reply.send(result);
+            false
+        }
+        // Linked workloads receive hooks via the observer path; the ABI hook
+        // command is a no-op for them (mirrors `Workload::dispatch_hook_event`).
+        ActorCmd::Hook { reply, .. } => {
+            let _ = reply.send(Ok(()));
+            false
+        }
+        // Linked stream callbacks register directly on RuntimeContext; the ABI
+        // stream command is not applicable (mirrors `dispatch_data_stream`).
+        ActorCmd::DataStream { reply, .. } => {
+            let _ = reply.send(Err(ActrError::NotImplemented(
+                "linked workload stream callbacks are registered directly on RuntimeContext"
+                    .to_string(),
+            )));
+            false
+        }
+        ActorCmd::Shutdown { done } => {
+            if let Some(done) = done {
+                let _ = done.send(());
+            }
+            true
+        }
+        ActorCmd::Dispatch { .. } => unreachable!("dispatch is handled before the barrier path"),
     }
 }
 

@@ -297,3 +297,48 @@ fn resolve_plain_string_without_placeholders() {
     let path = resolver.resolve("/plain/path/no/vars").unwrap();
     assert_eq!(path, PathBuf::from("/plain/path/no/vars"));
 }
+
+// ── Dispatch concurrency (B2) ────────────────────────────────────────────────
+
+#[test]
+fn dispatch_concurrency_default_is_off() {
+    let cfg = DispatchConcurrency::default();
+    assert!(!cfg.enabled);
+    assert_eq!(cfg.budget, 8);
+    assert_eq!(cfg.queue_cap, 256);
+}
+
+#[test]
+fn hyper_config_dispatch_concurrency_none_by_default() {
+    let config = stub_config("/tmp");
+    assert!(config.dispatch_concurrency.is_none());
+    // With no config, the resolved value is the (disabled) default.
+    let resolved = config.resolved_dispatch_concurrency();
+    assert!(!resolved.enabled);
+}
+
+#[test]
+fn with_dispatch_concurrency_builder_sets_field() {
+    let config = stub_config("/tmp").with_dispatch_concurrency(Some(DispatchConcurrency {
+        enabled: true,
+        budget: 4,
+        queue_cap: 32,
+    }));
+    let dc = config.dispatch_concurrency.expect("set");
+    assert!(dc.enabled);
+    assert_eq!(dc.budget, 4);
+    assert_eq!(dc.queue_cap, 32);
+}
+
+#[test]
+fn env_escape_hatch_parsing() {
+    assert!(dispatch_serial_env_override(Some("1")));
+    assert!(dispatch_serial_env_override(Some("true")));
+    assert!(dispatch_serial_env_override(Some("TRUE")));
+    assert!(dispatch_serial_env_override(Some(" 1 ")));
+    assert!(dispatch_serial_env_override(Some("yes")));
+    assert!(!dispatch_serial_env_override(Some("0")));
+    assert!(!dispatch_serial_env_override(Some("false")));
+    assert!(!dispatch_serial_env_override(Some("")));
+    assert!(!dispatch_serial_env_override(None));
+}

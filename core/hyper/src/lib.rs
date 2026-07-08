@@ -122,6 +122,11 @@ pub mod workload;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod executor;
 
+// In-memory conflict-key dispatch scheduling layer (B2): sits between the node
+// entry loops and the serial command runner. Default off.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dispatch;
+
 // ServiceSpec derivation from a verified package (native-only; pulls
 // actr-service-compat/proto-fingerprint).
 #[cfg(not(target_arch = "wasm32"))]
@@ -171,6 +176,11 @@ pub use actr_platform_traits::{CryptoProvider, KvStore, PlatformError, PlatformP
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use ais_client::AisClient;
+// Conflict-key dispatch scheduling (B2).
+#[cfg(not(target_arch = "wasm32"))]
+pub use config::DispatchConcurrency;
+#[cfg(not(target_arch = "wasm32"))]
+pub use dispatch::{ConflictKeyError, ConflictKeySpec, ConflictKeySpecBuilder, KeySource};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::ActorStore;
 #[cfg(not(target_arch = "wasm32"))]
@@ -438,6 +448,10 @@ pub struct Node<S: NodeState = Attached> {
     /// Pending runtime configuration for `Node<Init>`; consumed by attach
     /// methods. `None` on `Attached` / `Registered`.
     pending_runtime_config: Option<actr_config::RuntimeConfig>,
+    /// Conflict-key projection spec declared on `Node<Init>` via
+    /// [`Node::with_conflict_keys`], consumed by attach / link into the dispatch
+    /// scheduler. `None` = no declarations = fully serial dispatch.
+    pending_conflict_keys: Option<crate::dispatch::ConflictKeySpec>,
     _state: std::marker::PhantomData<S>,
 }
 
@@ -761,6 +775,7 @@ impl Node {
             hyper: hyper.inner,
             attachment: None,
             pending_runtime_config: Some(runtime_config),
+            pending_conflict_keys: None,
             _state: std::marker::PhantomData,
         }
     }
@@ -819,6 +834,23 @@ impl Node<Init> {
         runtime_config.package.actr_type = actor_type;
         self
     }
+
+    /// Declare per-method conflict keys for dispatch scheduling (B2).
+    ///
+    /// This is data, evaluated host-side once per message by projecting a few
+    /// bytes of the request — no per-message guest crossing. It only takes
+    /// effect when dispatch concurrency is enabled
+    /// ([`crate::config::HyperConfig::with_dispatch_concurrency`]); with the gate
+    /// off, or for methods left undeclared, dispatch stays fully serial.
+    ///
+    /// Declaring a key asserts that distinct-key invocations of that method may
+    /// run concurrently — see [`crate::dispatch::ConflictKeySpec`] for the
+    /// consumer-side concurrency contract. WASM / DynClib workloads stay serial
+    /// regardless (the key is a no-op routing hint there).
+    pub fn with_conflict_keys(mut self, spec: crate::dispatch::ConflictKeySpec) -> Self {
+        self.pending_conflict_keys = Some(spec);
+        self
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -834,6 +866,7 @@ impl Node<Init> {
         let runtime_config = self
             .pending_runtime_config
             .expect("Node<Init> without pending runtime config");
+        let conflict_keys = self.pending_conflict_keys;
         let hyper_inner = self.hyper;
         let loaded = load_workload_package_inner(&hyper_inner, package).await?;
         let packaged_lock = actr_pack::read_lock_file(package.bytes())
@@ -850,6 +883,7 @@ impl Node<Init> {
         let mailbox_backpressure_threshold =
             hyper_inner.config.resolved_mailbox_backpressure_threshold();
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
+        let dispatch_concurrency = hyper_inner.config.resolved_dispatch_concurrency();
         let mut node_inner = crate::lifecycle::node::Inner::build(
             runtime_config,
             loaded.workload,
@@ -857,6 +891,8 @@ impl Node<Init> {
             packaged_lock,
             mailbox_backpressure_threshold,
             credential_expiry_warning,
+            dispatch_concurrency,
+            conflict_keys,
         )
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;
@@ -873,6 +909,7 @@ impl Node<Init> {
                 package_bytes: package.bytes.clone(),
             }),
             pending_runtime_config: None,
+            pending_conflict_keys: None,
             _state: std::marker::PhantomData,
         })
     }
@@ -893,10 +930,12 @@ impl Node<Init> {
         let runtime_config = self
             .pending_runtime_config
             .expect("Node<Init> without pending runtime config");
+        let conflict_keys = self.pending_conflict_keys;
         let hyper_inner = self.hyper;
         let mailbox_backpressure_threshold =
             hyper_inner.config.resolved_mailbox_backpressure_threshold();
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
+        let dispatch_concurrency = hyper_inner.config.resolved_dispatch_concurrency();
         let mut node_inner = crate::lifecycle::node::Inner::build(
             runtime_config,
             crate::workload::Workload::Linked(handle.clone()),
@@ -904,6 +943,8 @@ impl Node<Init> {
             None,
             mailbox_backpressure_threshold,
             credential_expiry_warning,
+            dispatch_concurrency,
+            conflict_keys,
         )
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;
@@ -918,6 +959,7 @@ impl Node<Init> {
                 package_bytes: bytes::Bytes::new(),
             }),
             pending_runtime_config: None,
+            pending_conflict_keys: None,
             _state: std::marker::PhantomData,
         })
     }
@@ -1125,6 +1167,7 @@ impl Node<Attached> {
             hyper: self.hyper,
             attachment: self.attachment,
             pending_runtime_config: None,
+            pending_conflict_keys: None,
             _state: std::marker::PhantomData,
         })
     }

@@ -312,3 +312,190 @@ async fn queued_cmds_after_shutdown_get_no_reply() {
         "queued-behind-shutdown command must get no reply"
     );
 }
+
+// ── Interleaved runner (B2 native concurrency) ───────────────────────────────
+
+/// Build a gated runner in `Interleaved` mode (native `Linked` concurrency).
+fn gated_runner_interleaved() -> (
+    ActorHandle,
+    Arc<Gate>,
+    mpsc::UnboundedReceiver<u64>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let (entered_tx, entered_rx) = mpsc::unbounded_channel();
+    let gate = Arc::new(Gate {
+        inflight: AtomicUsize::new(0),
+        max_inflight: AtomicUsize::new(0),
+        entry_order: AsyncMutex::new(Vec::new()),
+        entered: entered_tx,
+        release: Semaphore::new(0),
+    });
+    let (drop_tx, drop_rx) = tokio::sync::oneshot::channel();
+    let handle = GateHandle {
+        gate: gate.clone(),
+        tag: AtomicUsize::new(0),
+        _drop: DropSignal(Some(drop_tx)),
+    };
+    let workload = Workload::Linked(Arc::new(handle) as Arc<dyn LinkedWorkloadHandle>);
+    (
+        spawn_runner_with_mode(workload, RunnerMode::Interleaved),
+        gate,
+        entered_rx,
+        drop_rx,
+    )
+}
+
+fn enqueue_dispatch(
+    handle: &ActorHandle,
+    request_id: &str,
+) -> tokio::sync::oneshot::Receiver<ActorResult<bytes::Bytes>> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    let envelope = RpcEnvelope {
+        request_id: request_id.to_string(),
+        ..RpcEnvelope::default()
+    };
+    let cmd = ActorCmd::Dispatch {
+        envelope,
+        ctx: test_ctx(),
+        invocation: test_invocation(),
+        host_abi: noop_host_abi(),
+        span: tracing::Span::none(),
+        reply,
+    };
+    handle.tx.try_send(cmd).expect("queue has capacity");
+    rx
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interleaved_dispatches_run_concurrently() {
+    let (handle, gate, mut entered_rx, _drop_rx) = gated_runner_interleaved();
+
+    let rx1 = enqueue_dispatch(&handle, "d1");
+    let rx2 = enqueue_dispatch(&handle, "d2");
+
+    // Both dispatch bodies must be in flight at the same time.
+    for _ in 0..2 {
+        tokio::time::timeout(WATCHDOG, entered_rx.recv())
+            .await
+            .expect("watchdog: dispatch entered")
+            .expect("open");
+    }
+    assert_eq!(
+        gate.max_inflight.load(Ordering::SeqCst),
+        2,
+        "interleaved mode must run two dispatches concurrently"
+    );
+
+    gate.release.add_permits(2);
+    assert!(
+        tokio::time::timeout(WATCHDOG, rx1)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok()
+    );
+    assert!(
+        tokio::time::timeout(WATCHDOG, rx2)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interleaved_lifecycle_is_a_barrier() {
+    let (handle, gate, mut entered_rx, _drop_rx) = gated_runner_interleaved();
+
+    // One dispatch in flight (gated).
+    let rx_d = enqueue_dispatch(&handle, "d1");
+    let tag = tokio::time::timeout(WATCHDOG, entered_rx.recv())
+        .await
+        .expect("watchdog: dispatch entered")
+        .expect("open");
+    assert_eq!(tag, 0);
+
+    // A lifecycle command is a barrier: it must not enter while a dispatch is
+    // still in flight.
+    let rx_l = enqueue_on_start(&handle);
+    assert!(
+        matches!(entered_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+        "lifecycle must wait for the in-flight dispatch to drain"
+    );
+
+    // Drain the dispatch → the barrier runs alone.
+    gate.release.add_permits(1);
+    assert!(
+        tokio::time::timeout(WATCHDOG, rx_d)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok()
+    );
+    let l_tag = tokio::time::timeout(WATCHDOG, entered_rx.recv())
+        .await
+        .expect("watchdog: lifecycle entered after drain")
+        .expect("open");
+    assert_eq!(l_tag, 1, "lifecycle runs after the dispatch completes");
+    assert_eq!(
+        gate.inflight.load(Ordering::SeqCst),
+        1,
+        "barrier runs alone"
+    );
+    gate.release.add_permits(1);
+    assert!(
+        tokio::time::timeout(WATCHDOG, rx_l)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_ok()
+    );
+}
+
+/// Linked handle whose dispatch panics for a specific request id, so we can
+/// prove sibling isolation under interleaving.
+struct SelectivePanicHandle;
+
+#[async_trait]
+impl LinkedWorkloadHandle for SelectivePanicHandle {
+    async fn dispatch(
+        &self,
+        envelope: RpcEnvelope,
+        _ctx: Arc<RuntimeContext>,
+    ) -> ActorResult<bytes::Bytes> {
+        if envelope.request_id == "boom" {
+            panic!("intentional dispatch panic");
+        }
+        Ok(bytes::Bytes::from_static(b"ok"))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interleaved_panic_isolated_from_siblings() {
+    let workload =
+        Workload::Linked(Arc::new(SelectivePanicHandle) as Arc<dyn LinkedWorkloadHandle>);
+    let handle = spawn_runner_with_mode(workload, RunnerMode::Interleaved);
+
+    let rx_boom = enqueue_dispatch(&handle, "boom");
+    let rx_ok = enqueue_dispatch(&handle, "fine");
+
+    // The panicking dispatch yields an Internal error; the sibling still succeeds.
+    let boom = tokio::time::timeout(WATCHDOG, rx_boom)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(boom, Err(ActrError::Internal(_))), "got {boom:?}");
+    let ok = tokio::time::timeout(WATCHDOG, rx_ok)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ok.unwrap(), bytes::Bytes::from_static(b"ok"));
+
+    // Runner survives a panic: a third dispatch still completes.
+    let rx_after = enqueue_dispatch(&handle, "after");
+    let after = tokio::time::timeout(WATCHDOG, rx_after)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.unwrap(), bytes::Bytes::from_static(b"ok"));
+}
