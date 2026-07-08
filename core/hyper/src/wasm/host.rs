@@ -30,6 +30,7 @@
 //! parallelism still works because each instantiated runtime owns its own
 //! `Store`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use actr_framework::guest::dynclib_abi::InitPayloadV1;
@@ -112,6 +113,28 @@ pub(crate) struct HostState {
     table: ResourceTable,
     pub(crate) invocation: Option<InvocationContext>,
     pub(crate) host_abi: Option<HostAbiFn>,
+    /// Per-invocation table keyed by `ctx-token`, used by the V2 (0.2.0
+    /// async world) Accessor-based host imports. Under the serial M4 runner
+    /// this holds at most one live entry, but keeping it a map means the M5
+    /// concurrent runner needs zero changes here: each in-flight invocation
+    /// keys its own `HostAbiFn` / `InvocationContext` by its token, so the
+    /// static Accessor import methods recover the correct one without a
+    /// shared single slot that would cross-talk.
+    ///
+    /// The V1 (0.1.0 sync world) path never touches this map — it keeps
+    /// using the `invocation` / `host_abi` single slots above.
+    invocations: HashMap<u64, InvocationEntry>,
+    /// Monotonic token allocator. Reset to zero whenever the map is cleared
+    /// on a trap-poison so a rebuilt instance starts from a clean sheet.
+    next_token: u64,
+}
+
+/// One live invocation's host-facing state, keyed by `ctx-token` in
+/// [`HostState::invocations`].
+pub(crate) struct InvocationEntry {
+    #[allow(dead_code)]
+    pub(crate) ctx: InvocationContext,
+    pub(crate) host_abi: HostAbiFn,
 }
 
 impl std::fmt::Debug for HostState {
@@ -119,18 +142,56 @@ impl std::fmt::Debug for HostState {
         f.debug_struct("HostState")
             .field("invocation", &self.invocation)
             .field("host_abi", &self.host_abi.as_ref().map(|_| "<fn>"))
+            .field("invocations", &self.invocations.len())
+            .field("next_token", &self.next_token)
             .finish_non_exhaustive()
     }
 }
 
 impl HostState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::new(),
             invocation: None,
             host_abi: None,
+            invocations: HashMap::new(),
+            next_token: 0,
         }
+    }
+
+    /// Allocate a fresh `ctx-token` and register a live invocation's
+    /// `InvocationContext` + `HostAbiFn` under it. Returns the token to
+    /// thread into the guest's `invocation-ctx` (V2 world). Tokens are
+    /// monotonic within a Store's lifetime.
+    pub(crate) fn alloc_invocation(&mut self, ctx: InvocationContext, host_abi: HostAbiFn) -> u64 {
+        let token = self.next_token;
+        self.next_token = self.next_token.wrapping_add(1);
+        self.invocations
+            .insert(token, InvocationEntry { ctx, host_abi });
+        token
+    }
+
+    /// Clone the `HostAbiFn` registered for `token`, if any. `HostAbiFn` is
+    /// an `Arc`, so the clone is a refcount bump safe to carry across an
+    /// `.await` inside an Accessor host method (the store borrow is not
+    /// held across the await).
+    pub(crate) fn invocation_host_abi(&self, token: u64) -> Option<HostAbiFn> {
+        self.invocations.get(&token).map(|e| Arc::clone(&e.host_abi))
+    }
+
+    /// Retire the invocation registered for `token` once its guest call has
+    /// completed (success or business error). No-op if already gone.
+    pub(crate) fn remove_invocation(&mut self, token: u64) {
+        self.invocations.remove(&token);
+    }
+
+    /// Drop every live invocation and reset the token counter. Called when a
+    /// trap poisons the store: the whole in-flight set is dead, so the
+    /// rebuilt instance starts clean.
+    pub(crate) fn clear_invocations(&mut self) {
+        self.invocations.clear();
+        self.next_token = 0;
     }
 }
 
