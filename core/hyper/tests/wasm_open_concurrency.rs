@@ -28,26 +28,26 @@
 #![cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+// The conflict-key concurrency harness (route consts, gate bridge, watchdog
+// helpers) is shared with the M6 isomorphism suite; see
+// `core/hyper/tests/common/concurrency.rs`.
+use actr_hyper::test_support::concurrency::{
+    BOOM, ECHO, PROBE, await_dispatch, caller, gate_bridge, probe_spec, read_u32, spawn_dispatch,
+    wait_entered,
+};
 use actr_hyper::test_support::{
     TestConcurrentDispatcher, TestDedupOutcome, TestDedupState, instantiate_wasm_workload,
 };
 use actr_hyper::wasm::WasmHost;
-use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult};
-use actr_hyper::{ConflictKeySpec, KeySource};
-use actr_protocol::{ActrId, ActrType, Realm};
+use actr_hyper::workload::{HostAbiFn, HostOperationResult};
+use actr_protocol::ActrId;
 use bytes::Bytes;
-use tokio::sync::{Mutex, Semaphore, mpsc};
-use tokio::task::JoinHandle;
+use tokio::sync::{Mutex, mpsc};
 
 #[path = "wasm_actor_fixture.rs"]
 mod wasm_actor_fixture;
-
-const PROBE: &str = "test/inflight-probe";
-const BOOM: &str = "test/boom-after-await";
-const ECHO: &str = "test/echo";
 
 fn fixture_bytes() -> &'static [u8] {
     wasm_actor_fixture::WASM_ACTOR_FIXTURE
@@ -56,161 +56,6 @@ fn fixture_bytes() -> &'static [u8] {
 /// A genuine 0.1.0 sync-lift Component (frozen pre-M4 build of the same guest
 /// source), used by the compat matrix to prove the V1-on-Interleaved fallback.
 const V1_SYNCLIFT_GUEST: &[u8] = include_bytes!("fixtures/v1_synclift_guest.wasm");
-
-fn caller(serial: u64) -> Option<ActrId> {
-    Some(ActrId {
-        realm: Realm { realm_id: 1 },
-        serial_number: serial,
-        r#type: ActrType {
-            manufacturer: "test".to_string(),
-            name: "fixture".to_string(),
-            version: "0.2.0".to_string(),
-        },
-    })
-}
-
-fn probe_spec() -> ConflictKeySpec {
-    ConflictKeySpec::builder()
-        .method(PROBE, KeySource::Sender)
-        .method(BOOM, KeySource::Sender)
-        .method(ECHO, KeySource::Sender)
-        .build()
-        .expect("build conflict-key spec")
-}
-
-fn read_u32(b: &Bytes) -> u32 {
-    assert!(
-        b.len() >= 4,
-        "reply must be a 4-byte LE u32, got {} bytes",
-        b.len()
-    );
-    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
-}
-
-/// Host bridge with two independently-gated host imports:
-/// * `test/gate`      — the `test/inflight-probe` suspension point (probes park here)
-/// * `test/double_impl` — the `test/boom-after-await` suspension point (boom parks here)
-///
-/// Each import signals an entry channel and then parks on its release
-/// semaphore, so a test can hold N guest tasks suspended inside the ONE instance
-/// at once and release them deterministically — no sleeps.
-struct GateControls {
-    gate_entered: mpsc::UnboundedReceiver<()>,
-    gate_release: Arc<Semaphore>,
-    impl_entered: mpsc::UnboundedReceiver<()>,
-    impl_release: Arc<Semaphore>,
-    #[allow(dead_code)]
-    calls: Arc<AtomicU64>,
-}
-
-fn gate_bridge() -> (HostAbiFn, GateControls) {
-    let (gate_tx, gate_rx) = mpsc::unbounded_channel();
-    let (impl_tx, impl_rx) = mpsc::unbounded_channel();
-    let gate_release = Arc::new(Semaphore::new(0));
-    let impl_release = Arc::new(Semaphore::new(0));
-    let calls = Arc::new(AtomicU64::new(0));
-
-    let bridge: HostAbiFn = {
-        let gate_release = gate_release.clone();
-        let impl_release = impl_release.clone();
-        let calls = calls.clone();
-        Arc::new(move |op| {
-            let gate_tx = gate_tx.clone();
-            let impl_tx = impl_tx.clone();
-            let gate_release = gate_release.clone();
-            let impl_release = impl_release.clone();
-            let calls = calls.clone();
-            Box::pin(async move {
-                calls.fetch_add(1, Ordering::SeqCst);
-                match op {
-                    HostOperation::CallRaw(req) if req.route_key == "test/gate" => {
-                        let _ = gate_tx.send(());
-                        gate_release
-                            .acquire()
-                            .await
-                            .expect("gate semaphore open")
-                            .forget();
-                        HostOperationResult::Done
-                    }
-                    HostOperation::CallRaw(req) if req.route_key == "test/double_impl" => {
-                        let _ = impl_tx.send(());
-                        impl_release
-                            .acquire()
-                            .await
-                            .expect("impl semaphore open")
-                            .forget();
-                        if req.payload.len() < 4 {
-                            return HostOperationResult::Error(-1);
-                        }
-                        let x = i32::from_le_bytes([
-                            req.payload[0],
-                            req.payload[1],
-                            req.payload[2],
-                            req.payload[3],
-                        ]);
-                        HostOperationResult::Bytes((x * 2).to_le_bytes().to_vec())
-                    }
-                    _ => HostOperationResult::Error(-1),
-                }
-            })
-        })
-    };
-    (
-        bridge,
-        GateControls {
-            gate_entered: gate_rx,
-            gate_release,
-            impl_entered: impl_rx,
-            impl_release,
-            calls,
-        },
-    )
-}
-
-/// Block (bounded by a watchdog) until `n` guest tasks have signalled entry on
-/// `rx`. Receiving from a channel is an event wait, not sleep-coordination.
-async fn wait_entered(rx: &mut mpsc::UnboundedReceiver<()>, n: usize) {
-    for i in 0..n {
-        tokio::time::timeout(Duration::from_secs(10), rx.recv())
-            .await
-            .unwrap_or_else(|_| panic!("watchdog: only {i}/{n} guest entries arrived"))
-            .expect("entry channel open");
-    }
-}
-
-fn spawn_dispatch(
-    dispatcher: &Arc<TestConcurrentDispatcher>,
-    route: &str,
-    payload: Vec<u8>,
-    caller_id: Option<ActrId>,
-    bridge: &HostAbiFn,
-) -> JoinHandle<actr_protocol::ActorResult<Bytes>> {
-    let dispatcher = dispatcher.clone();
-    let bridge = bridge.clone();
-    let route = route.to_string();
-    tokio::spawn(async move {
-        dispatcher
-            .dispatch(&route, payload, caller_id, &bridge)
-            .await
-    })
-}
-
-/// Await a spawned dispatch **under a watchdog**. Any orchestration accident —
-/// a mis-ordered release, a lost permit, a scheduler stall — trips the timeout
-/// and fails the test fast rather than hanging CI forever. This is a fast-fail
-/// guard, not a way to skip work: the timeout is a generous upper bound that a
-/// correct run never approaches.
-async fn await_dispatch(
-    h: JoinHandle<actr_protocol::ActorResult<Bytes>>,
-    label: &str,
-) -> actr_protocol::ActorResult<Bytes> {
-    tokio::time::timeout(Duration::from_secs(20), h)
-        .await
-        .unwrap_or_else(|_| {
-            panic!("watchdog: dispatch `{label}` did not resolve within 20s (hang)")
-        })
-        .unwrap_or_else(|e| panic!("dispatch `{label}` task panicked or was cancelled: {e}"))
-}
 
 // ── Facet 1 — distinct keys truly interleave (MAX_SEEN >= 2) ─────────────────
 

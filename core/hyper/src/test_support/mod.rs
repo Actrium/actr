@@ -788,3 +788,201 @@ impl TestConcurrentDispatcher {
         self.handle.shutdown().await;
     }
 }
+
+/// Basis-agnostic view of a conflict-key dispatcher: the exact production shape
+/// (a budgeted conflict-key scheduler feeding an **interleaved** runner) exposed
+/// through one signature so a single property-test body can drive either the
+/// WASM V2 kernel ([`TestConcurrentDispatcher`]) or the native `Linked` runner
+/// ([`TestNativeConcurrentDispatcher`]). Proving the two satisfy the SAME
+/// conflict-key properties through this one interface is the M6 isomorphism.
+///
+/// `host_abi` is the guest→host bridge. On WASM it intercepts `ctx.call_raw`
+/// suspension points directly; on native the guest's `ctx.call_raw` instead
+/// travels the shared `HostTransport` (see
+/// [`TestNativeConcurrentDispatcher::host_transport`]) and this argument is
+/// accepted for signature parity but ignored by the native runner.
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+#[async_trait::async_trait]
+pub trait ConcurrentDispatch: Send + Sync {
+    /// Dispatch one RPC through the scheduler → interleaved runner. Distinct
+    /// callers project to distinct conflict keys (eligible to interleave); the
+    /// same caller projects to the same key (strictly serial).
+    async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes>;
+
+    /// Deterministically tear down the scheduler then the runner.
+    async fn shutdown(&self);
+}
+
+#[cfg(feature = "wasm-engine")]
+#[async_trait::async_trait]
+impl ConcurrentDispatch for TestConcurrentDispatcher {
+    async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        TestConcurrentDispatcher::dispatch(self, route_key, payload, caller_id, host_abi).await
+    }
+
+    async fn shutdown(&self) {
+        TestConcurrentDispatcher::shutdown(self).await
+    }
+}
+
+/// Native mirror of [`TestConcurrentDispatcher`]: a budgeted conflict-key
+/// scheduler feeding the **interleaved** runner for a `Workload::Linked`
+/// in-process guest (`executor::run_loop_interleaved`). It is deliberately
+/// signature-identical to the WASM dispatcher so the M6 isomorphism suite drives
+/// both through [`ConcurrentDispatch`].
+///
+/// The one structural difference from the WASM path is where the guest's
+/// `ctx.call_raw` suspension points land: the native `Linked` runner ignores the
+/// per-dispatch `HostAbiFn`, so every dispatch shares ONE
+/// [`crate::transport::HostTransport`] and a gate harness drains it via
+/// [`crate::transport::HostTransport::recv_reliable_raw`] to hold guest calls
+/// suspended and release them deterministically — the native equivalent of the
+/// WASM `HostAbiFn` bridge. Sharing one transport across the concurrent
+/// dispatches is what lets a single reader observe every co-resident guest call
+/// (each carries a unique uuid `request_id`, so the shared correlation map never
+/// collides).
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+pub struct TestNativeConcurrentDispatcher {
+    handle: Arc<crate::executor::ActorHandle>,
+    scheduler: Arc<crate::dispatch::scheduler::SchedulerHandle>,
+    spec: Arc<crate::dispatch::ConflictKeySpec>,
+    transport: Arc<crate::transport::HostTransport>,
+    next_request_id: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+impl TestNativeConcurrentDispatcher {
+    /// Wire a native `Linked` workload behind the production gate-on shape: a
+    /// conflict-key scheduler (budget `C` / queue cap `M`) in front of an
+    /// interleaved runner. `dispatch_timeout` is accepted for signature parity
+    /// with the WASM path; the native `run_loop_interleaved` does not currently
+    /// honour a per-dispatch deadline (M6 P5 is WASM-only, pending decision).
+    pub fn spawn<W: actr_framework::Workload>(
+        workload: W,
+        spec: crate::dispatch::ConflictKeySpec,
+        budget: usize,
+        queue_cap: usize,
+        dispatch_timeout: Option<std::time::Duration>,
+    ) -> Self {
+        let adapter: Arc<dyn crate::workload::LinkedWorkloadHandle> =
+            crate::workload::WorkloadAdapter::new(workload);
+        let handle = crate::executor::spawn_runner_with_mode(
+            crate::workload::Workload::Linked(adapter),
+            crate::executor::RunnerMode::Interleaved,
+            dispatch_timeout,
+        );
+        let scheduler = crate::dispatch::scheduler::SchedulerHandle::spawn(budget, queue_cap);
+        Self {
+            handle: Arc::new(handle),
+            scheduler: Arc::new(scheduler),
+            spec: Arc::new(spec),
+            transport: Arc::new(crate::transport::HostTransport::new()),
+            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// The shared host transport backing every dispatch's `RuntimeContext`. A
+    /// gate harness drains it (`recv_reliable_raw`) to intercept the guest's
+    /// `ctx.call_raw` suspension points and release them deterministically.
+    pub fn host_transport(&self) -> Arc<crate::transport::HostTransport> {
+        self.transport.clone()
+    }
+
+    fn ctx(&self) -> crate::context::RuntimeContext {
+        runtime_context_with_host_transport(ActrId::default(), self.transport.clone())
+    }
+
+    /// Dispatch one RPC through scheduler → interleaved native runner. Mirrors
+    /// [`TestConcurrentDispatcher::dispatch`] exactly, differing only in that the
+    /// `RuntimeContext` is built from the shared transport (so guest host-calls
+    /// are observable at the gate).
+    pub async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        use std::sync::atomic::Ordering;
+        let rid = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = format!("native-concurrent-req-{rid}");
+        let payload_bytes = actr_framework::Bytes::from(payload);
+        let envelope = actr_protocol::RpcEnvelope {
+            route_key: route_key.to_string(),
+            payload: Some(payload_bytes.clone()),
+            request_id: request_id.clone(),
+            direction: Some(actr_protocol::Direction::Request as i32),
+            ..Default::default()
+        };
+        let key = self
+            .spec
+            .extract(route_key, caller_id.as_ref(), payload_bytes.as_ref());
+        let invocation = InvocationContext {
+            self_id: ActrId::default(),
+            caller_id,
+            request_id,
+        };
+        let handle = self.handle.clone();
+        let host_abi = host_abi.clone();
+        let ctx = self.ctx();
+        let run: crate::dispatch::scheduler::DispatchFn = Box::new(move || {
+            Box::pin(async move {
+                handle
+                    .dispatch_envelope(envelope, ctx, invocation, &host_abi)
+                    .await
+            })
+        });
+        let rx = self.scheduler.submit(key, run).await;
+        rx.await.unwrap_or_else(|_| {
+            Err(actr_protocol::ActrError::Unavailable(
+                "dispatch scheduler terminated".to_string(),
+            ))
+        })
+    }
+
+    /// Deterministically tear down the scheduler then the runner.
+    pub async fn shutdown(&self) {
+        self.scheduler.shutdown().await;
+        self.handle.shutdown().await;
+    }
+}
+
+#[cfg(any(feature = "wasm-engine", feature = "dynclib-engine"))]
+#[async_trait::async_trait]
+impl ConcurrentDispatch for TestNativeConcurrentDispatcher {
+    async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        TestNativeConcurrentDispatcher::dispatch(self, route_key, payload, caller_id, host_abi)
+            .await
+    }
+
+    async fn shutdown(&self) {
+        TestNativeConcurrentDispatcher::shutdown(self).await
+    }
+}
+
+// The shared M6 conflict-key concurrency harness (route consts, conflict-key
+// spec, gate bridges for both bases, watchdog helpers). Lives under
+// `tests/common/` but is compiled into the library so its `pub` items are
+// externally reachable (no per-integration-test-crate dead-code warnings), the
+// same pattern the WebRTC `harness`/`wait`/… modules above use.
+#[cfg(feature = "wasm-engine")]
+#[path = "../../tests/common/concurrency.rs"]
+pub mod concurrency;
