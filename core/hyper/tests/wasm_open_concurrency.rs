@@ -11,8 +11,13 @@
 //! 4. an in-flight guest trap fails ALL siblings together and rebuilds (5. the
 //!    whole-region teardown is asserted explicitly there too)
 //! 6. a per-dispatch timeout cleanly cancels the stuck dispatch (bounded, no
-//!    hang), frees its key, and does not poison the store
+//!    hang), frees its key, and does not poison the store; and (6b) the same-key
+//!    timeout seam stays sealed — a same-key sibling never enters the region
+//!    before a timed-out first dispatch actually leaves it
 //! 7. gate-off degrades to the serial M4 path (MAX_SEEN==1)
+//! 8. the node-integration seam: the dedup write-back (node.rs:~1204) is correct
+//!    around a gate-on interleaved wasm V2 dispatch (see the scope note on that
+//!    test for what a full real-node crossing is blocked by)
 //! 9. the package compat matrix: a V1 (sync-world) guest stays serial even when
 //!    Interleaved is requested; a V2 guest works in both modes
 //!
@@ -26,13 +31,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use actr_hyper::test_support::{TestConcurrentDispatcher, instantiate_wasm_workload};
+use actr_hyper::test_support::{
+    TestConcurrentDispatcher, TestDedupOutcome, TestDedupState, instantiate_wasm_workload,
+};
 use actr_hyper::wasm::WasmHost;
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult};
 use actr_hyper::{ConflictKeySpec, KeySource};
 use actr_protocol::{ActrId, ActrType, Realm};
 use bytes::Bytes;
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 
 #[path = "wasm_actor_fixture.rs"]
@@ -188,6 +195,23 @@ fn spawn_dispatch(
     })
 }
 
+/// Await a spawned dispatch **under a watchdog**. Any orchestration accident —
+/// a mis-ordered release, a lost permit, a scheduler stall — trips the timeout
+/// and fails the test fast rather than hanging CI forever. This is a fast-fail
+/// guard, not a way to skip work: the timeout is a generous upper bound that a
+/// correct run never approaches.
+async fn await_dispatch(
+    h: JoinHandle<actr_protocol::ActorResult<Bytes>>,
+    label: &str,
+) -> actr_protocol::ActorResult<Bytes> {
+    tokio::time::timeout(Duration::from_secs(20), h)
+        .await
+        .unwrap_or_else(|_| {
+            panic!("watchdog: dispatch `{label}` did not resolve within 20s (hang)")
+        })
+        .unwrap_or_else(|e| panic!("dispatch `{label}` task panicked or was cancelled: {e}"))
+}
+
 // ── Facet 1 — distinct keys truly interleave (MAX_SEEN >= 2) ─────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -205,8 +229,16 @@ async fn interleave_distinct_keys_reaches_max_seen_2() {
     wait_entered(&mut ctl.gate_entered, 2).await;
     ctl.gate_release.add_permits(2);
 
-    let m1 = read_u32(&d1.await.unwrap().expect("d1 dispatch ok"));
-    let m2 = read_u32(&d2.await.unwrap().expect("d2 dispatch ok"));
+    let m1 = read_u32(
+        &await_dispatch(d1, "distinct d1")
+            .await
+            .expect("d1 dispatch ok"),
+    );
+    let m2 = read_u32(
+        &await_dispatch(d2, "distinct d2")
+            .await
+            .expect("d2 dispatch ok"),
+    );
 
     assert!(
         m1.max(m2) >= 2,
@@ -228,15 +260,29 @@ async fn same_key_stays_serial_max_seen_1() {
     let a = spawn_dispatch(&dispatcher, PROBE, vec![], caller(7), &bridge);
     let b = spawn_dispatch(&dispatcher, PROBE, vec![], caller(7), &bridge);
 
-    // Only ONE may be in the guest at a time. Release them one at a time; the
-    // second cannot have entered until the first replies (its key was held).
-    wait_entered(&mut ctl.gate_entered, 1).await;
-    ctl.gate_release.add_permits(1);
-    let first = read_u32(&a.await.unwrap().expect("first dispatch ok"));
-
-    wait_entered(&mut ctl.gate_entered, 1).await;
-    ctl.gate_release.add_permits(1);
-    let second = read_u32(&b.await.unwrap().expect("second dispatch ok"));
+    // Only ONE may be in the guest at a time, so we release strictly by the
+    // guest's real *entry* order, never by spawn order. The scheduler is free to
+    // admit either submission first; whichever it admits parks at the gate and
+    // signals entry, we hand it exactly one permit, it replies and frees the
+    // key, and only then can the second be admitted and enter. Awaiting a fixed
+    // JoinHandle between releases would be a latent deadlock: if the scheduler
+    // admitted the *other* task first, that handle stays parked with no permit
+    // and the await hangs forever. Release-by-entry keeps this deterministic
+    // regardless of which submission the scheduler dequeues first.
+    for _ in 0..2 {
+        wait_entered(&mut ctl.gate_entered, 1).await;
+        ctl.gate_release.add_permits(1);
+    }
+    let first = read_u32(
+        &await_dispatch(a, "same-key A")
+            .await
+            .expect("first dispatch ok"),
+    );
+    let second = read_u32(
+        &await_dispatch(b, "same-key B")
+            .await
+            .expect("second dispatch ok"),
+    );
 
     // Never overlapped => the shared in-flight counter never exceeded 1.
     assert_eq!(first, 1, "same-key dispatch A must never overlap a sibling");
@@ -276,7 +322,11 @@ async fn concurrency_capped_at_budget() {
 
     let mut peak = 0u32;
     for h in handles {
-        peak = peak.max(read_u32(&h.await.unwrap().expect("dispatch ok")));
+        peak = peak.max(read_u32(
+            &await_dispatch(h, "budget dispatch")
+                .await
+                .expect("dispatch ok"),
+        ));
     }
     assert_eq!(
         peak, C as u32,
@@ -324,10 +374,10 @@ async fn inflight_trap_fails_all_siblings_then_rebuilds() {
     // per-task isolation).
     ctl.impl_release.add_permits(1);
 
-    let boom_res = boom.await.unwrap();
+    let boom_res = await_dispatch(boom, "boom").await;
     assert!(boom_res.is_err(), "the trapping dispatch itself must fail");
     for (i, h) in siblings.into_iter().enumerate() {
-        let res = h.await.unwrap();
+        let res = await_dispatch(h, "trap sibling").await;
         assert!(
             res.is_err(),
             "sibling {i} must fail when a co-resident dispatch traps (whole-region teardown)"
@@ -421,6 +471,72 @@ async fn dispatch_timeout_cancels_frees_key_and_survives() {
     );
 }
 
+// ── Facet 6b — same-key timeout seam: region stays sealed until the first ─────
+//               dispatch truly leaves (direct entry-order proof)
+//
+// Facet 6 proves a timed-out dispatch frees its key and doesn't poison the store.
+// This companion proves the *sealing* seam directly: with two SAME-key dispatches
+// and the first parked past its deadline, the second must NEVER enter the region
+// before the first has actually left it. We assert this on the guest's real entry
+// order (its own entry channel), not on wall-clock timing — the contrapositive of
+// a leak would be a second entry observed while the first still occupies the
+// region.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_key_timeout_seam_seals_region_until_first_leaves() {
+    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
+    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    // Short per-dispatch deadline so the parked first dispatch reliably times out
+    // while leaving ample margin before the sealing assertion below.
+    let dispatcher = Arc::new(wl.into_concurrent_dispatcher(
+        probe_spec(),
+        8,
+        256,
+        Some(Duration::from_millis(400)),
+    ));
+    let (bridge, mut ctl) = gate_bridge();
+
+    // SAME caller => same conflict key => strictly serial. The first parks at the
+    // gate and is never released, so it must hit its deadline; the second is
+    // queued behind the held key.
+    let first = spawn_dispatch(&dispatcher, PROBE, vec![], caller(7), &bridge);
+    let second = spawn_dispatch(&dispatcher, PROBE, vec![], caller(7), &bridge);
+
+    // Exactly one guest task ever enters. While the first holds the region, the
+    // second CANNOT have entered — the key is held, so no second entry can be
+    // buffered on the channel. This *is* the sealing property under test: the
+    // timeout seam must not hand the region to a same-key sibling before the
+    // first truly leaves.
+    wait_entered(&mut ctl.gate_entered, 1).await;
+    assert!(
+        matches!(
+            ctl.gate_entered.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ),
+        "same-key second dispatch must NOT enter the region while the first still \
+         occupies it (region sealed until the first leaves)"
+    );
+
+    // The first hits its deadline (bounded — a real hang trips the watchdog),
+    // which cancels it and frees the key. Only *after* this can the same key be
+    // re-armed for the sibling — the seam under test.
+    let r1 = await_dispatch(first, "seam first").await;
+    assert!(
+        matches!(r1, Err(actr_protocol::ActrError::TimedOut)),
+        "the parked same-key dispatch must resolve TimedOut, got {r1:?}"
+    );
+
+    // The second, queued behind a first that held the key for the entire deadline
+    // window, resolves promptly (bounded by the watchdog) instead of hanging, and
+    // — proven above — never stole the region while the first occupied it. Its own
+    // result is intentionally not asserted: under a single per-dispatch deadline a
+    // same-key sibling queued for the full window legitimately times out from the
+    // queue too. The sealing property lives entirely in the two assertions above
+    // (empty entry channel during the first's occupancy + the first's TimedOut).
+    let _second_resolved = await_dispatch(second, "seam second").await;
+
+    dispatcher.shutdown().await;
+}
+
 // ── Facet 7 — gate off degrades to the serial M4 path (MAX_SEEN == 1) ────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -459,18 +575,186 @@ async fn gate_off_is_serial_max_seen_1() {
     let a = spawn_serial(1, bridge.clone());
     let b = spawn_serial(2, bridge.clone());
 
-    wait_entered(&mut ctl.gate_entered, 1).await;
-    ctl.gate_release.add_permits(1);
-    let first = read_u32(&a.await.unwrap().expect("serial first ok"));
-
-    wait_entered(&mut ctl.gate_entered, 1).await;
-    ctl.gate_release.add_permits(1);
-    let second = read_u32(&b.await.unwrap().expect("serial second ok"));
+    // The serial runner processes one command at a time, but the order the two
+    // spawned tasks reach its command channel is NOT the spawn order. Release by
+    // the guest's real entry order (as in facet 2), not by awaiting a fixed
+    // handle: hand a permit to whichever the runner ran first, let it reply, then
+    // the second is dequeued and enters. Awaiting `a` specifically between
+    // releases could hang if the runner happened to run `b` first.
+    for _ in 0..2 {
+        wait_entered(&mut ctl.gate_entered, 1).await;
+        ctl.gate_release.add_permits(1);
+    }
+    let first = read_u32(
+        &await_dispatch(a, "serial A")
+            .await
+            .expect("serial first ok"),
+    );
+    let second = read_u32(
+        &await_dispatch(b, "serial B")
+            .await
+            .expect("serial second ok"),
+    );
 
     assert_eq!(first, 1, "serial path must never overlap (A)");
     assert_eq!(second, 1, "serial path must never overlap (B)");
 
     runner.shutdown().await;
+}
+
+// ── Facet 8 — node-integration seam: dedup write-back around a gate-on, ───────
+//              interleaved wasm V2 dispatch
+//
+// SCOPE / HONESTY NOTE — read before extending this test.
+//
+// Facet 8's ideal is a *signed wasm V2 package driven through a real `Node`*:
+// through `Inner::admit_incoming` (dedup `check_or_mark` → gate-on scheduler →
+// interleaved runner → dedup `complete` write-back at node.rs:~1204) and the
+// inbound loop, asserting the write-back and the mailbox reply-before-ack
+// (node.rs:~217) hold under gate-on interleaved concurrency.
+//
+// That full crossing is **not achievable with the committed fixture**, for two
+// structural reasons — this is a real coverage gap, not a shortcut:
+//
+//   1. The 0.2.0 fixture cannot complete a real node's `start()` lifecycle. The
+//      node always invokes `on_start` with request_id `"lifecycle:on_start"`
+//      (node.rs:~1967), and the fixture's `on_start` is deliberately hardwired
+//      to return `Err` for exactly that id (it powers the on_start-abort test in
+//      `package_lifecycle.rs`). So `attach(pkg).register().start()` always aborts
+//      — there is no running wasm actor to drive `call` / `call_remote` against.
+//   2. The probe's concurrency suspension point (`test/gate`) is a *harness
+//      bridge* import, not a dispatch route. Through a real node,
+//      `ctx.call_raw(self_id, "test/gate")` self-routes to `UnknownRoute`, so the
+//      host-gated parking that makes deterministic same-instance overlap
+//      observable cannot be reproduced across the node boundary.
+//
+// So this test delivers the closest achievable node-integration coverage: it
+// reconstructs `admit_incoming`'s gate-on sequence using the **real production
+// types** — the same `DedupState` the node writes back to (node.rs:~1204), the
+// same conflict-key scheduler + interleaved wasm V2 runner the node wires when
+// the gate is on (node.rs:~1262-1386, via `into_concurrent_dispatcher`) — and
+// proves the dedup write-back is correct while two distinct-key dispatches truly
+// interleave inside the one instance.
+//
+// COVERED here: dedup `check_or_mark` → interleaved gate-on dispatch → dedup
+// `complete` write-back, and that a later duplicate request_id observes the
+// written-back result (never re-runs the guest).
+// NOT COVERED (needs the crate-private mailbox lane through a startable
+// workload): `mailbox_reply_and_ack`'s reply-before-ack ordering (node.rs:~217).
+// The native-workload two-node variant of that seam lives in
+// `dispatch_concurrency_e2e.rs`; the wasm-package variant is blocked by (1)+(2).
+
+/// Mirror of `Inner::admit_incoming`'s gate-on path: dedup `check_or_mark`, then
+/// (on Fresh) run through the conflict-key scheduler + interleaved wasm V2
+/// runner, then write the result back into the dedup state exactly as the node's
+/// `finish` closure does at node.rs:~1204.
+async fn admit_like(
+    dispatcher: &Arc<TestConcurrentDispatcher>,
+    dedup: &Arc<Mutex<TestDedupState>>,
+    request_id: &str,
+    route: &str,
+    payload: Vec<u8>,
+    caller_id: Option<ActrId>,
+    bridge: &HostAbiFn,
+) -> actr_protocol::ActorResult<Bytes> {
+    // admit_incoming step 1 — dedup on the node-level request_id.
+    match dedup.lock().await.check_or_mark(request_id) {
+        TestDedupOutcome::Fresh => {}
+        TestDedupOutcome::Duplicate(result) => return result,
+        TestDedupOutcome::InFlight(waiter) => return waiter.wait().await,
+    }
+    // Step 2 — gate-on scheduler → interleaved wasm V2 runner (the exact shape
+    // the node builds; distinct callers ⇒ distinct keys ⇒ eligible to interleave).
+    let result = dispatcher.dispatch(route, payload, caller_id, bridge).await;
+    // Step 3 — dedup write-back (node.rs:~1204's `finish` closure).
+    dedup.lock().await.complete(request_id, result.clone());
+    result
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_gate_on_dedup_writeback_survives_interleave() {
+    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
+    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let dispatcher = Arc::new(wl.into_concurrent_dispatcher(probe_spec(), 8, 256, None));
+    let (bridge, mut ctl) = gate_bridge();
+    let dedup = Arc::new(Mutex::new(TestDedupState::new()));
+
+    // Two distinct callers → distinct conflict keys → eligible to interleave
+    // inside the ONE instance, each admitted through the dedup gate first.
+    let ra_id = "node-req-A".to_string();
+    let rb_id = "node-req-B".to_string();
+    let a = {
+        let (dispatcher, dedup, bridge, rid) = (
+            dispatcher.clone(),
+            dedup.clone(),
+            bridge.clone(),
+            ra_id.clone(),
+        );
+        tokio::spawn(async move {
+            admit_like(&dispatcher, &dedup, &rid, PROBE, vec![], caller(1), &bridge).await
+        })
+    };
+    let b = {
+        let (dispatcher, dedup, bridge, rid) = (
+            dispatcher.clone(),
+            dedup.clone(),
+            bridge.clone(),
+            rb_id.clone(),
+        );
+        tokio::spawn(async move {
+            admit_like(&dispatcher, &dedup, &rid, PROBE, vec![], caller(2), &bridge).await
+        })
+    };
+
+    // Both suspended inside the one instance before either is released — proves
+    // the gate-on interleave happens *underneath* the node's dedup wrapper.
+    wait_entered(&mut ctl.gate_entered, 2).await;
+    ctl.gate_release.add_permits(2);
+
+    let ma = read_u32(
+        &await_dispatch(a, "node A")
+            .await
+            .expect("node A dispatch ok"),
+    );
+    let mb = read_u32(
+        &await_dispatch(b, "node B")
+            .await
+            .expect("node B dispatch ok"),
+    );
+    assert!(
+        ma.max(mb) >= 2,
+        "distinct-key dispatches must interleave inside one instance beneath the \
+         dedup wrapper (MAX_SEEN>=2), got {ma} and {mb}"
+    );
+
+    // The dedup write-back (node.rs:~1204) must have stored each result: a later
+    // request replaying request_id A observes the cached bytes and NEVER re-runs
+    // the guest. We deliberately do NOT open a gate permit here — if the duplicate
+    // wrongly reached the runner it would park at the gate forever and trip the
+    // watchdog, so a prompt, correct reply is itself proof the write-back served
+    // this request without a re-dispatch.
+    let cached = tokio::time::timeout(
+        Duration::from_secs(10),
+        admit_like(
+            &dispatcher,
+            &dedup,
+            &ra_id,
+            PROBE,
+            vec![],
+            caller(1),
+            &bridge,
+        ),
+    )
+    .await
+    .expect("duplicate request must be served from the dedup write-back, not re-dispatched")
+    .expect("duplicate request must return the written-back result");
+    assert_eq!(
+        read_u32(&cached),
+        ma,
+        "a duplicate request_id must observe the written-back result of the original"
+    );
+
+    dispatcher.shutdown().await;
 }
 
 // ── Facet 9 — package compat matrix ──────────────────────────────────────────
@@ -527,6 +811,8 @@ async fn compat_v2_guest_single_dispatch_on_interleaved() {
     let d = spawn_dispatch(&dispatcher, PROBE, vec![], caller(1), &bridge);
     wait_entered(&mut ctl.gate_entered, 1).await;
     ctl.gate_release.add_permits(1);
-    let reply = d.await.unwrap().expect("v2 single dispatch ok");
+    let reply = await_dispatch(d, "v2 single")
+        .await
+        .expect("v2 single dispatch ok");
     assert_eq!(read_u32(&reply), 1, "a lone dispatch sees MAX_SEEN==1");
 }
