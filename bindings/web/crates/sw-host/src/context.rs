@@ -97,6 +97,10 @@ impl WebContext for RuntimeContext {
         payload: &[u8],
         timeout_ms: i64,
     ) -> ActorResult<Vec<u8>> {
+        // Sender-side contract (#254): a REQUEST must carry a positive
+        // deadline. Reject before registering a pending entry or sending.
+        crate::outbound::validate_rpc_timeout_ms(timeout_ms)?;
+
         let request_id = js_sys::Math::random().to_string();
 
         // Register the pending RPC through the bridge so `handle_fast_path`

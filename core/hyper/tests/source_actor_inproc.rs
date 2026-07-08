@@ -198,7 +198,7 @@ impl InprocTestHarness {
                                                 tracestate: None,
                                                 request_id: request_id.clone(),
                                                 metadata: Vec::new(),
-                                                timeout_ms: 30000,
+                                                timeout_ms: 0, // RESPONSE filler; contract: only REQUEST carries a deadline.
                                             };
                                             if let Err(e) = response_tx
                                                 .send_message(PayloadType::RpcReliable, None, response_envelope)
@@ -226,7 +226,7 @@ impl InprocTestHarness {
                                                 tracestate: None,
                                                 request_id: request_id.clone(),
                                                 metadata: Vec::new(),
-                                                timeout_ms: 30000,
+                                                timeout_ms: 0, // RESPONSE filler; contract: only REQUEST carries a deadline.
                                             };
                                             if let Err(e) = response_tx
                                                 .send_message(PayloadType::RpcReliable, None, error_envelope)

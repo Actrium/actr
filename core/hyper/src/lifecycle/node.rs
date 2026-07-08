@@ -687,6 +687,33 @@ impl Inner {
         Self::dispatchable_direction(raw_direction).map(|direction| direction != Direction::Tell)
     }
 
+    /// Build a RESPONSE envelope for a handled request.
+    ///
+    /// `timeout_ms` is always 0: per the `package.proto` wire contract only
+    /// `DIRECTION_REQUEST` carries a positive deadline — RESPONSE (and TELL)
+    /// use 0 as documented filler, and receivers MUST ignore it. Centralizing
+    /// RESPONSE construction here pins that contract in one tested place.
+    pub(crate) fn build_response_envelope(
+        request_id: String,
+        route_key: String,
+        payload: Option<Bytes>,
+        error: Option<actr_protocol::ErrorResponse>,
+        traceparent: Option<String>,
+        tracestate: Option<String>,
+    ) -> RpcEnvelope {
+        RpcEnvelope {
+            request_id,
+            route_key,
+            payload,
+            error,
+            direction: Some(Direction::Response as i32),
+            traceparent,
+            tracestate,
+            metadata: Vec::new(),
+            timeout_ms: 0,
+        }
+    }
+
     fn duplicate_wait_timeout(timeout_ms: i64) -> Duration {
         if timeout_ms > 0 {
             Duration::from_millis(timeout_ms as u64)
@@ -2000,17 +2027,14 @@ impl Inner {
                                                     // Send RESPONSE back via workload_to_shell
                                                     // Keep same route_key (no prefix needed - separate channels!)
                                                     #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                    let mut response_envelope = RpcEnvelope {
-                                                        route_key: envelope.route_key.clone(),
-                                                        payload: Some(response_bytes),
-                                                        error: None,
-                                                        direction: Some(Direction::Response as i32),
-                                                        traceparent: None,
-                                                        tracestate: None,
-                                                        request_id: request_id.clone(),
-                                                        metadata: Vec::new(),
-                                                        timeout_ms: 30000,
-                                                    };
+                                                    let mut response_envelope = Inner::build_response_envelope(
+                                                        request_id.clone(),
+                                                        envelope.route_key.clone(),
+                                                        Some(response_bytes),
+                                                        None,
+                                                        None,
+                                                        None,
+                                                    );
                                                     // Inject tracing context
                                                     #[cfg(feature = "opentelemetry")]
                                                     inject_span_context_to_rpc(&span, &mut response_envelope);
@@ -2050,17 +2074,14 @@ impl Inner {
                                                         message: e.to_string(),
                                                     };
                                                     #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                    let mut error_envelope = RpcEnvelope {
-                                                        route_key: envelope.route_key.clone(),
-                                                        payload: None,
-                                                        error: Some(error_response),
-                                                        direction: Some(Direction::Response as i32),
-                                                        traceparent: envelope.traceparent.clone(),
-                                                        tracestate: envelope.tracestate.clone(),
-                                                        request_id: request_id.clone(),
-                                                        metadata: Vec::new(),
-                                                        timeout_ms: 30000,
-                                                    };
+                                                    let mut error_envelope = Inner::build_response_envelope(
+                                                        request_id.clone(),
+                                                        envelope.route_key.clone(),
+                                                        None,
+                                                        Some(error_response),
+                                                        envelope.traceparent.clone(),
+                                                        envelope.tracestate.clone(),
+                                                    );
                                                     // Inject tracing context
                                                     #[cfg(feature = "opentelemetry")]
                                                     inject_span_context_to_rpc(&span, &mut error_envelope);
@@ -2470,17 +2491,14 @@ impl Inner {
                                                             Ok(caller) if expects_response => {
                                                                 // Construct response RpcEnvelope (reuse request_id!)
                                                                 #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                                let mut response_envelope = RpcEnvelope {
-                                                                    request_id: request_id.clone(),
-                                                                    route_key: envelope.route_key.clone(),
-                                                                    payload: Some(response_bytes),
-                                                                    error: None,
-                                                                    direction: Some(Direction::Response as i32),
-                                                                    traceparent: envelope.traceparent.clone(),
-                                                                    tracestate: envelope.tracestate.clone(),
-                                                                    metadata: Vec::new(),
-                                                                    timeout_ms: 30000,
-                                                                };
+                                                                let mut response_envelope = Inner::build_response_envelope(
+                                                                    request_id.clone(),
+                                                                    envelope.route_key.clone(),
+                                                                    Some(response_bytes),
+                                                                    None,
+                                                                    envelope.traceparent.clone(),
+                                                                    envelope.tracestate.clone(),
+                                                                );
                                                                 // Inject tracing context
                                                                 #[cfg(feature = "opentelemetry")]
                                                                 inject_span_context_to_rpc(&span, &mut response_envelope);
@@ -2552,17 +2570,14 @@ impl Inner {
                                                                 message: e.to_string(),
                                                             };
                                                             #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                            let mut error_envelope = RpcEnvelope {
-                                                                request_id: request_id.clone(),
-                                                                route_key: envelope.route_key.clone(),
-                                                                payload: None,
-                                                                error: Some(error_response),
-                                                                direction: Some(Direction::Response as i32),
-                                                                traceparent: envelope.traceparent.clone(),
-                                                                tracestate: envelope.tracestate.clone(),
-                                                                metadata: Vec::new(),
-                                                                timeout_ms: 30000,
-                                                            };
+                                                            let mut error_envelope = Inner::build_response_envelope(
+                                                                request_id.clone(),
+                                                                envelope.route_key.clone(),
+                                                                None,
+                                                                Some(error_response),
+                                                                envelope.traceparent.clone(),
+                                                                envelope.tracestate.clone(),
+                                                            );
                                                             #[cfg(feature = "opentelemetry")]
                                                             inject_span_context_to_rpc(&span, &mut error_envelope);
 

@@ -27,6 +27,22 @@ use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use bytes::Bytes;
 use std::sync::Arc;
 
+/// Validate a caller-supplied RPC timeout for a REQUEST envelope.
+///
+/// Wire contract (see `package.proto`): `timeout_ms` MUST be > 0 for
+/// `DIRECTION_REQUEST`. Rejecting `<= 0` here prevents web callers from
+/// producing the invalid zero/negative REQUEST envelopes that #254 guards
+/// against on the native side. Mirrors
+/// `actr_hyper::transport::validate_rpc_timeout_ms`.
+pub(crate) fn validate_rpc_timeout_ms(timeout_ms: i64) -> ActorResult<()> {
+    if timeout_ms <= 0 {
+        return Err(ActrError::InvalidArgument(format!(
+            "RPC call timeout_ms must be > 0, got {timeout_ms} (fire-and-forget messaging must use tell, not a zero timeout)"
+        )));
+    }
+    Ok(())
+}
+
 /// Gate enum for outbound messaging.
 ///
 /// # Variants

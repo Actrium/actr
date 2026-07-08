@@ -612,6 +612,42 @@ fn envelope_is_tell_matches_only_explicit_tell_label() {
     assert!(!Inner::envelope_is_tell(&envelope));
 }
 
+#[test]
+fn build_response_envelope_pins_zero_timeout_per_contract() {
+    use actr_protocol::Direction;
+
+    // Success RESPONSE.
+    let ok_env = Inner::build_response_envelope(
+        "req-ok".to_string(),
+        "pkg.Service.Method".to_string(),
+        Some(Bytes::from_static(b"resp")),
+        None,
+        None,
+        None,
+    );
+    assert_eq!(ok_env.direction, Some(Direction::Response as i32));
+    assert_eq!(
+        ok_env.timeout_ms, 0,
+        "RESPONSE envelopes must carry timeout_ms=0 per package.proto contract"
+    );
+
+    // Error RESPONSE also uses 0; payload/error are mutually exclusive.
+    let err_env = Inner::build_response_envelope(
+        "req-err".to_string(),
+        "pkg.Service.Method".to_string(),
+        None,
+        Some(actr_protocol::ErrorResponse {
+            code: 1,
+            message: "boom".to_string(),
+        }),
+        None,
+        None,
+    );
+    assert_eq!(err_env.timeout_ms, 0);
+    assert!(err_env.payload.is_none());
+    assert!(err_env.error.is_some());
+}
+
 // ── handle_incoming TELL dedup semantics ────────────────────────────────
 //
 // These tests build a real `Inner` (in-memory mailbox, unreachable

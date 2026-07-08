@@ -3514,6 +3514,9 @@ pub async fn handle_dom_control(client_id: String, payload: JsValue) -> Result<(
     let payload_bytes = call.request.payload.clone();
     let request_id = call.request_id.clone();
     let timeout_ms = call.request.timeout.unwrap_or(30000);
+    // Sender-side contract (#254): a REQUEST must carry a positive deadline.
+    crate::outbound::validate_rpc_timeout_ms(timeout_ms as i64)
+        .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     // Check if a workload is registered
     let workload = WORKLOAD.with(|cell| cell.borrow().clone());

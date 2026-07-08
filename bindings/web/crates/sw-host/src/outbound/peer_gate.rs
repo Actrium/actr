@@ -98,6 +98,10 @@ impl PeerGate {
     pub async fn send_request(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<Bytes> {
         let envelope = Self::stamp_envelope_direction(envelope, Direction::Request);
 
+        // Sender-side contract (#254): reject non-positive deadlines before
+        // registering a pending entry. Mirrors the native PeerGate guard.
+        crate::outbound::validate_rpc_timeout_ms(envelope.timeout_ms)?;
+
         log::debug!(
             "PeerGate::send_request to {:?}, request_id={}",
             target,
