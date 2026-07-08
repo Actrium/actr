@@ -59,6 +59,53 @@ pub struct HyperConfig {
     /// `lifecycle::node` works against any mailbox backend that supports
     /// the base trait.
     pub mailbox_backpressure_threshold: Option<usize>,
+
+    /// Conflict-key dispatch concurrency (B2). `None` = off (the default):
+    /// dispatch stays strictly serial per actor, bit-for-bit the B1 runner.
+    /// `Some(cfg)` enables the in-memory dispatch scheduler; concurrency still
+    /// only appears for methods with a declared conflict key on a native
+    /// `Linked` workload. See [`DispatchConcurrency`].
+    pub dispatch_concurrency: Option<DispatchConcurrency>,
+}
+
+/// Conflict-key dispatch concurrency knobs (design doc §4.2, §7).
+///
+/// Even when `enabled`, every *undeclared* method stays a global serial
+/// barrier, so an app that turns this on without declaring conflict keys keeps
+/// the exact serial behaviour — the "no declaration = fully serial" second
+/// safety net.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchConcurrency {
+    /// Master switch. Default `false`.
+    pub enabled: bool,
+    /// `C` — maximum number of dispatches in flight at once. Default `8`.
+    pub budget: usize,
+    /// `M` — total in-queue + in-flight bound; a full queue applies
+    /// back-pressure up to the node entry loop. Default `256`.
+    pub queue_cap: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for DispatchConcurrency {
+    fn default() -> Self {
+        DispatchConcurrency {
+            enabled: false,
+            budget: 8,
+            queue_cap: 256,
+        }
+    }
+}
+
+/// Env escape hatch: `ACTR_DISPATCH_SERIAL=1` (or `true`) forces dispatch fully
+/// serial regardless of config. Pure function of the raw env string so it can
+/// be unit-tested without touching process env.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dispatch_serial_env_override(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(|s| s.trim()),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes")
+    )
 }
 
 /// Default mailbox backpressure threshold (queued-message count).
@@ -86,6 +133,7 @@ impl std::fmt::Debug for HyperConfig {
                 "mailbox_backpressure_threshold",
                 &self.mailbox_backpressure_threshold,
             )
+            .field("dispatch_concurrency", &self.dispatch_concurrency)
             .finish()
     }
 }
@@ -396,6 +444,7 @@ impl HyperConfig {
             trust_provider,
             credential_expiry_warning: DEFAULT_CREDENTIAL_EXPIRY_WARNING,
             mailbox_backpressure_threshold: None,
+            dispatch_concurrency: None,
         }
     }
 
@@ -428,6 +477,29 @@ impl HyperConfig {
     pub fn resolved_mailbox_backpressure_threshold(&self) -> usize {
         self.mailbox_backpressure_threshold
             .unwrap_or(DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD)
+    }
+
+    /// Set the conflict-key dispatch concurrency config (B2). `None` = off.
+    pub fn with_dispatch_concurrency(mut self, cfg: Option<DispatchConcurrency>) -> Self {
+        self.dispatch_concurrency = cfg;
+        self
+    }
+
+    /// Resolve the effective dispatch concurrency, applying the
+    /// `ACTR_DISPATCH_SERIAL` escape hatch (which forces `enabled = false`).
+    pub fn resolved_dispatch_concurrency(&self) -> DispatchConcurrency {
+        let mut cfg = self.dispatch_concurrency.unwrap_or_default();
+        let raw = std::env::var("ACTR_DISPATCH_SERIAL").ok();
+        if dispatch_serial_env_override(raw.as_deref()) {
+            if cfg.enabled {
+                tracing::warn!(
+                    "ACTR_DISPATCH_SERIAL is set; forcing fully-serial dispatch \
+                     (dispatch concurrency disabled)"
+                );
+            }
+            cfg.enabled = false;
+        }
+        cfg
     }
 }
 

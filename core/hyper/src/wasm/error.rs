@@ -15,4 +15,7 @@ pub enum WasmError {
 
     #[error("WASM actor execution failed: {0}")]
     ExecutionFailed(String),
+
+    #[error("WASM instance trapped (store poisoned; rebuilt on next call): {0}")]
+    InstanceTrapped(String),
 }

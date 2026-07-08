@@ -27,12 +27,320 @@ use actr_protocol::{
 };
 use actr_runtime::check_acl_permission;
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
+
+/// The remainder of an inbound RPC after synchronous admission has run.
+///
+/// See [`Inner::admit_incoming`]. `'static + Send` so an entry loop may push it
+/// into a `FuturesUnordered` and keep dequeuing.
+pub(crate) type IncomingContinuation = Pin<Box<dyn Future<Output = ActorResult<Bytes>> + Send>>;
+
+/// Wrap an already-known result as an immediately-ready continuation.
+fn ready_continuation(result: ActorResult<Bytes>) -> IncomingContinuation {
+    Box::pin(async move { result })
+}
+
+/// Send the reply for one in-proc (Shell → Guest) request back over the
+/// Guest → Shell channel.
+///
+/// This is the "reply tail" of the in-proc receive loop, extracted so both the
+/// gate-off inline path and the gate-on continuation (pushed into the loop's
+/// `FuturesUnordered`) run bit-for-bit identical logic. A `tell`
+/// (`expects_response == false`) runs for side effects only and sends nothing.
+#[allow(clippy::too_many_arguments)]
+async fn inproc_send_reply(
+    response_tx: Arc<HostTransport>,
+    route_key: String,
+    request_id: String,
+    traceparent: Option<String>,
+    tracestate: Option<String>,
+    expects_response: bool,
+    result: ActorResult<Bytes>,
+    span: tracing::Span,
+) {
+    let _ = &span; // consumed only under the opentelemetry feature
+    match result {
+        Ok(response_bytes) => {
+            if expects_response {
+                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                let mut response_envelope = RpcEnvelope {
+                    route_key,
+                    payload: Some(response_bytes),
+                    error: None,
+                    direction: Some(Direction::Response as i32),
+                    traceparent: None,
+                    tracestate: None,
+                    request_id: request_id.clone(),
+                    metadata: Vec::new(),
+                    timeout_ms: 30000,
+                };
+                #[cfg(feature = "opentelemetry")]
+                inject_span_context_to_rpc(&span, &mut response_envelope);
+
+                let send_response_fut =
+                    response_tx.send_message(PayloadType::RpcReliable, None, response_envelope);
+                #[cfg(feature = "opentelemetry")]
+                let send_response_fut = send_response_fut.instrument(span);
+                if let Err(e) = send_response_fut.await {
+                    tracing::error!(
+                        severity = 7,
+                        error_category = "transport_error",
+                        request_id = %request_id,
+                        "❌ Failed to send RESPONSE to Shell: {:?}",
+                        e
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                severity = 6,
+                error_category = "handler_error",
+                request_id = %request_id,
+                "❌ Guest message handling failed: {:?}",
+                e
+            );
+            // Keep the local error log above for every failure, but skip sending
+            // an error envelope for a `tell`: the caller registered no pending
+            // entry to receive it (#262).
+            if expects_response {
+                let error_response = actr_protocol::ErrorResponse {
+                    code: protocol_error_to_code(&e),
+                    message: e.to_string(),
+                };
+                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                let mut error_envelope = RpcEnvelope {
+                    route_key,
+                    payload: None,
+                    error: Some(error_response),
+                    direction: Some(Direction::Response as i32),
+                    traceparent,
+                    tracestate,
+                    request_id: request_id.clone(),
+                    metadata: Vec::new(),
+                    timeout_ms: 30000,
+                };
+                #[cfg(feature = "opentelemetry")]
+                inject_span_context_to_rpc(&span, &mut error_envelope);
+
+                let send_error_response_fut =
+                    response_tx.send_message(PayloadType::RpcReliable, None, error_envelope);
+                #[cfg(feature = "opentelemetry")]
+                let send_error_response_fut = send_error_response_fut.instrument(span);
+                if let Err(send_err) = send_error_response_fut.await {
+                    tracing::error!(
+                        severity = 7,
+                        error_category = "transport_error",
+                        request_id = %request_id,
+                        "❌ Failed to send ERROR response to Shell: {:?}",
+                        send_err
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Send `response_envelope` back to `caller` via the best available transport.
+///
+/// Priority: inbound WebSocket connection (if the caller dialled us directly) →
+/// WebRTC gate. Module-level so both the inline mailbox path and the gate-on
+/// continuation share one implementation.
+async fn send_envelope_to_caller(
+    ws_gate: &Option<Arc<crate::wire::websocket::WebSocketGate>>,
+    webrtc_gate: &Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
+    caller: &ActrId,
+    response_envelope: RpcEnvelope,
+    request_id: &str,
+) {
+    // 1. Try inbound WebSocket connection first.
+    if let Some(wsg) = ws_gate {
+        match wsg.send_response(caller, response_envelope.clone()).await {
+            Ok(true) => return, // sent successfully
+            Ok(false) => {
+                tracing::debug!(
+                    request_id = request_id,
+                    caller = %caller,
+                    "No inbound WS connection for caller; falling back to WebRTC gate"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    severity = 5,
+                    error_category = "transport_error",
+                    request_id = request_id,
+                    "WebSocketGate send_response failed, falling back: {:?}",
+                    e
+                );
+            }
+        }
+    }
+
+    // 2. Fall back to WebRTC gate.
+    if let Some(gate) = webrtc_gate {
+        if let Err(e) = gate.send_response(caller, response_envelope).await {
+            tracing::error!(
+                severity = 7,
+                error_category = "transport_error",
+                request_id = request_id,
+                "❌ WebRtcGate send_response failed: {:?}",
+                e
+            );
+        }
+    } else {
+        tracing::error!(
+            severity = 7,
+            error_category = "transport_error",
+            request_id = request_id,
+            "❌ No gate available to send response"
+        );
+    }
+}
+
+/// Send the reply for one mailbox (State Path) request back to its caller and
+/// ACK the durable message.
+///
+/// This is the "reply + ack tail" of the mailbox loop, extracted so the
+/// gate-off inline path and the gate-on continuation (pushed into the loop's
+/// `FuturesUnordered`) run bit-for-bit identical logic. The per-message
+/// `reply → ack` order is preserved exactly; only *across* messages may an ack
+/// overlap a later message's dispatch (gate-on only, a documented behaviour
+/// change bounded by the dedup TTL).
+#[allow(clippy::too_many_arguments)]
+async fn mailbox_reply_and_ack(
+    ws_gate: Option<Arc<crate::wire::websocket::WebSocketGate>>,
+    webrtc_gate: Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
+    mailbox: Arc<dyn Mailbox>,
+    caller: Result<ActrId, String>,
+    request_id: String,
+    route_key: String,
+    traceparent: Option<String>,
+    tracestate: Option<String>,
+    expects_response: bool,
+    msg_id: uuid::Uuid,
+    result: ActorResult<Bytes>,
+    span: tracing::Span,
+) {
+    let _ = &span; // consumed only under the opentelemetry feature
+    match result {
+        Ok(response_bytes) => {
+            match caller {
+                Ok(caller) if expects_response => {
+                    // Construct response RpcEnvelope (reuse request_id!)
+                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                    let mut response_envelope = RpcEnvelope {
+                        request_id: request_id.clone(),
+                        route_key,
+                        payload: Some(response_bytes),
+                        error: None,
+                        direction: Some(Direction::Response as i32),
+                        traceparent,
+                        tracestate,
+                        metadata: Vec::new(),
+                        timeout_ms: 30000,
+                    };
+                    #[cfg(feature = "opentelemetry")]
+                    inject_span_context_to_rpc(&span, &mut response_envelope);
+
+                    #[cfg(feature = "opentelemetry")]
+                    let send_fut = send_envelope_to_caller(
+                        &ws_gate,
+                        &webrtc_gate,
+                        &caller,
+                        response_envelope,
+                        &request_id,
+                    )
+                    .instrument(span);
+                    #[cfg(not(feature = "opentelemetry"))]
+                    let send_fut = send_envelope_to_caller(
+                        &ws_gate,
+                        &webrtc_gate,
+                        &caller,
+                        response_envelope,
+                        &request_id,
+                    );
+                    send_fut.await;
+                }
+                // `tell` handled successfully: side effects ran, no reply is sent.
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::error!(
+                        severity = 8,
+                        error_category = "protobuf_decode",
+                        request_id = %request_id,
+                        "❌ Failed to decode caller_id: {}",
+                        e
+                    );
+                }
+            }
+
+            // ACK message
+            if let Err(e) = mailbox.ack(msg_id).await {
+                tracing::error!(
+                    severity = 9,
+                    error_category = "mailbox_error",
+                    request_id = %request_id,
+                    message_id = %msg_id,
+                    "❌ Mailbox ACK failed: {:?}",
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!(
+                severity = 6,
+                error_category = "handler_error",
+                request_id = %request_id,
+                route_key = %route_key,
+                "❌ handle_incoming failed: {:?}", e
+            );
+
+            // Send error envelope back to caller so it receives a structured
+            // error rather than waiting until its deadline fires. A `tell`
+            // (timeout_ms == 0) registered no pending entry, so skip the reply —
+            // the local error log above still records the failure (#262).
+            if let (true, Ok(caller)) = (expects_response, caller) {
+                let error_response = actr_protocol::ErrorResponse {
+                    code: protocol_error_to_code(&e),
+                    message: e.to_string(),
+                };
+                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
+                let mut error_envelope = RpcEnvelope {
+                    request_id: request_id.clone(),
+                    route_key,
+                    payload: None,
+                    error: Some(error_response),
+                    direction: Some(Direction::Response as i32),
+                    traceparent,
+                    tracestate,
+                    metadata: Vec::new(),
+                    timeout_ms: 30000,
+                };
+                #[cfg(feature = "opentelemetry")]
+                inject_span_context_to_rpc(&span, &mut error_envelope);
+
+                send_envelope_to_caller(
+                    &ws_gate,
+                    &webrtc_gate,
+                    &caller,
+                    error_envelope,
+                    &request_id,
+                )
+                .await;
+            }
+
+            // ACK to avoid infinite retries
+            let _ = mailbox.ack(msg_id).await;
+        }
+    }
+}
 
 /// Internal running-state of an attached node.
 ///
@@ -146,19 +454,29 @@ pub(crate) struct Inner {
     pub(crate) discovered_ws_addresses:
         Arc<tokio::sync::RwLock<std::collections::HashMap<ActrId, String>>>,
 
-    /// Runtime workload (WASM, dynclib, etc.)
+    /// Handle to the per-actor serial command runner.
     ///
-    /// `handle_incoming` dispatches through this workload.
-    ///
-    /// The `Mutex` serializes dispatch into a single guest actor instance:
-    /// `WasmWorkload::handle` and `DynClibWorkload::handle` both take
-    /// `&mut self` because the underlying Wasmtime `Store` / native guest
-    /// ABI is single-threaded, so concurrent dispatch through the same
-    /// instance would be unsound. Lifecycle hooks also take this lock because
-    /// package-backed WASM / dynclib workloads expose them on the same guest
-    /// instance; transport and other observation hooks reach linked workloads
-    /// through `hook_observer` without holding this lock.
-    pub(crate) workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    /// `handle_incoming` dispatches through this handle. The runner owns the
+    /// `Workload` (WASM `Store` / native guest ABI) and processes commands one
+    /// at a time, run-to-completion, so the single-threaded guest instance is
+    /// never entered concurrently — the same invariant the old node-global
+    /// `Arc<Mutex<Workload>>` provided, now enforced by a single-consumer
+    /// command channel instead of a shared lock. Dispatch, data-stream, hook,
+    /// and lifecycle commands all travel the same channel (= the old single
+    /// lock); transport and other observation hooks reach linked workloads
+    /// through `hook_observer` without touching this handle.
+    pub(crate) workload_dispatch: Arc<crate::executor::ActorHandle>,
+
+    /// In-memory conflict-key dispatch scheduler (B2). `None` = gate off =
+    /// dispatch goes straight to `workload_dispatch` exactly as B1 did.
+    /// `Some(scheduler)` routes RPC dispatch through per-key serial + budgeted
+    /// concurrent scheduling before it reaches the runner.
+    pub(crate) dispatch_scheduler: Option<Arc<crate::dispatch::scheduler::SchedulerHandle>>,
+
+    /// Conflict-key projection table. Empty (default) = every method projects to
+    /// the global serial key, so even with the gate on an app that declared
+    /// nothing stays fully serial.
+    pub(crate) conflict_keys: Arc<crate::dispatch::ConflictKeySpec>,
 
     /// Optional shell-side observer that receives linked-workload transport /
     /// credential / mailbox hook invocations.
@@ -250,7 +568,7 @@ impl CredentialState {
 /// Called by the workload dispatch path in `handle_incoming`.
 async fn host_operation_handler(
     ctx: crate::context::RuntimeContext,
-    workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    workload_dispatch: Arc<crate::executor::ActorHandle>,
     pending: crate::workload::HostOperation,
 ) -> crate::workload::HostOperationResult {
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
@@ -371,8 +689,11 @@ async fn host_operation_handler(
                                     stream_callback_host_operation_handler(ctx, pending).await
                                 })
                             });
-                        let mut guard = workload_dispatch.lock().await;
-                        guard
+                        // Self-lock elimination: this callback fires later (on
+                        // chunk arrival), never during the dispatch that
+                        // registered it, so appending a DataStream command to
+                        // the runner's channel and awaiting it cannot deadlock.
+                        workload_dispatch
                             .dispatch_data_stream(chunk, sender, invocation, &call_executor)
                             .await
                     })
@@ -443,7 +764,7 @@ fn lifecycle_invocation(
 
 pub(crate) fn lifecycle_host_abi(
     ctx: crate::context::RuntimeContext,
-    workload_dispatch: Arc<Mutex<crate::workload::Workload>>,
+    workload_dispatch: Arc<crate::executor::ActorHandle>,
 ) -> crate::workload::HostAbiFn {
     std::sync::Arc::new(move |pending| {
         let ctx = ctx.clone();
@@ -710,6 +1031,34 @@ impl Inner {
         envelope: RpcEnvelope,
         caller_id: Option<&ActrId>,
     ) -> ActorResult<Bytes> {
+        // Thin wrapper preserving the original signature: run synchronous
+        // admission, then await the continuation to completion inline. This is
+        // bit-for-bit the pre-B2 path (ACL → dedup → ctx → dispatch → dedup
+        // complete), used directly by the mailbox lane and by the in-proc lane
+        // when the dispatch gate is off.
+        self.admit_incoming(envelope, caller_id).await.await
+    }
+
+    /// Synchronous admission of an inbound RPC, returning the continuation that
+    /// finishes it.
+    ///
+    /// Everything that must happen *in arrival order* runs before this returns:
+    /// ACL, dedup `check_or_mark`, context construction, conflict-key
+    /// extraction, and — when the gate is on — the scheduler submission (whose
+    /// queue semaphore is the back-pressure point). The returned
+    /// [`IncomingContinuation`] is `'static + Send`, so an entry loop can push
+    /// it into a `FuturesUnordered` and keep dequeuing while distinct-key
+    /// dispatches run concurrently. Awaiting it yields the dispatch result and
+    /// writes the dedup completion at the same point the old inline model did.
+    ///
+    /// The three pre-dispatch fast paths (ACL deny, dedup in-flight wait, dedup
+    /// cache hit) return an already-resolved continuation — they never mark a
+    /// dedup completion, exactly as before.
+    pub(crate) async fn admit_incoming(
+        &self,
+        envelope: RpcEnvelope,
+        caller_id: Option<&ActrId>,
+    ) -> IncomingContinuation {
         // Log received message
         if let Some(caller) = caller_id {
             tracing::debug!(
@@ -727,15 +1076,26 @@ impl Inner {
         }
 
         // 0. Get actor_id early for ACL check
-        let actor_id = self.actor_id.as_ref().ok_or_else(|| {
-            ActrError::Internal(
-                "Actor ID not set - node must be started before handling messages".to_string(),
-            )
-        })?;
+        let actor_id = match self.actor_id.as_ref() {
+            Some(id) => id,
+            None => {
+                return ready_continuation(Err(ActrError::Internal(
+                    "Actor ID not set - node must be started before handling messages".to_string(),
+                )));
+            }
+        };
 
         // 0.1. ACL Permission Check (before processing message)
-        let acl_allowed = check_acl_permission(caller_id, actor_id, self.config.acl.as_ref())
-            .map_err(|err_msg| ActrError::Internal(format!("ACL check failed: {}", err_msg)))?;
+        let acl_allowed = match check_acl_permission(caller_id, actor_id, self.config.acl.as_ref())
+        {
+            Ok(allowed) => allowed,
+            Err(err_msg) => {
+                return ready_continuation(Err(ActrError::Internal(format!(
+                    "ACL check failed: {}",
+                    err_msg
+                ))));
+            }
+        };
 
         if !acl_allowed {
             tracing::warn!(
@@ -749,13 +1109,14 @@ impl Inner {
                 "🚫 ACL: Permission denied"
             );
 
-            return Err(ActrError::PermissionDenied(format!(
+            let denied = ActrError::PermissionDenied(format!(
                 "ACL denied: {} is not allowed to call {}",
                 caller_id
                     .map(|c| c.to_string())
                     .unwrap_or_else(|| "<unknown>".to_string()),
                 actor_id
-            )));
+            ));
+            return ready_continuation(Err(denied));
         }
 
         // 0.2. Deduplication: return cached response for retried request_ids
@@ -773,11 +1134,10 @@ impl Inner {
                     route_key = %envelope.route_key,
                     "duplicate request in-flight; waiting for original result"
                 );
-                return Self::wait_for_inflight_duplicate(
-                    waiter,
-                    Self::duplicate_wait_timeout(envelope.timeout_ms),
-                )
-                .await;
+                let timeout = Self::duplicate_wait_timeout(envelope.timeout_ms);
+                return Box::pin(async move {
+                    Self::wait_for_inflight_duplicate(waiter, timeout).await
+                });
             }
             DedupOutcome::Duplicate(cached) => {
                 tracing::debug!(
@@ -785,16 +1145,20 @@ impl Inner {
                     route_key = %envelope.route_key,
                     "♻️ returning cached response for duplicate request_id"
                 );
-                return cached;
+                return ready_continuation(cached);
             }
         }
 
         // 1. Create Context with caller_id from transport layer
-        let credential_state = self.credential_state.clone().ok_or_else(|| {
-            ActrError::Internal(
-                "Credential not set - node must be started before handling messages".to_string(),
-            )
-        })?;
+        let credential_state = match self.credential_state.clone() {
+            Some(cs) => cs,
+            None => {
+                return ready_continuation(Err(ActrError::Internal(
+                    "Credential not set - node must be started before handling messages"
+                        .to_string(),
+                )));
+            }
+        };
         let ctx = self.make_runtime_context(
             actor_id,
             caller_id, // caller_id from transport layer (MessageRecord.from)
@@ -816,39 +1180,82 @@ impl Inner {
             Box::pin(async move { host_operation_handler(ctx, workload_dispatch, pending).await })
         });
 
-        let mut guard = self.workload_dispatch.lock().await;
-        let result = guard
-            .dispatch_envelope(envelope.clone(), ctx.clone(), dispatch_ctx, &call_executor)
-            .await;
+        // The continuation logs its result and writes the dedup completion at the
+        // dispatch completion point — same write-back timing as the old inline
+        // lock model, for both the gate-on and gate-off branches below.
+        let dedup_state = self.dedup_state.clone();
+        let request_id = envelope.request_id.clone();
+        let route_key = envelope.route_key.clone();
+        let finish = move |result: ActorResult<Bytes>| async move {
+            match &result {
+                Ok(_) => tracing::debug!(
+                    request_id = %request_id,
+                    route_key = %route_key,
+                    "✅ Message handled successfully"
+                ),
+                Err(e) => tracing::error!(
+                    severity = 6,
+                    error_category = "handler_error",
+                    request_id = %request_id,
+                    route_key = %route_key,
+                    "❌ Message handling failed: {:?}", e
+                ),
+            }
+            dedup_state
+                .lock()
+                .await
+                .complete(&request_id, result.clone());
+            result
+        };
 
-        match &result {
-            Ok(_) => tracing::debug!(
-                request_id = %envelope.request_id,
-                route_key = %envelope.route_key,
-                "✅ Message handled successfully"
-            ),
-            Err(e) => tracing::error!(
-                severity = 6,
-                error_category = "handler_error",
-                request_id = %envelope.request_id,
-                route_key = %envelope.route_key,
-                "❌ Message handling failed: {:?}", e
-            ),
+        // Route through the conflict-key scheduler when the gate is on; otherwise
+        // the continuation dispatches straight to the runner — bit-for-bit the
+        // B1 path once awaited.
+        if let Some(scheduler) = &self.dispatch_scheduler {
+            let key = self.conflict_keys.extract(
+                &envelope.route_key,
+                caller_id,
+                envelope.payload.as_deref().unwrap_or_default(),
+            );
+            let workload = self.workload_dispatch.clone();
+            let env = envelope.clone();
+            let ctx_run = ctx.clone();
+            let invocation = dispatch_ctx;
+            let executor = call_executor;
+            let run: crate::dispatch::scheduler::DispatchFn = Box::new(move || {
+                Box::pin(async move {
+                    workload
+                        .dispatch_envelope(env, ctx_run, invocation, &executor)
+                        .await
+                })
+            });
+            // Submission (queue-slot acquisition + arrival-order enqueue) happens
+            // now, before returning — this `.await` is the back-pressure point.
+            let rx = scheduler.submit(key, run).await;
+            Box::pin(async move {
+                let result = rx.await.unwrap_or_else(|_| {
+                    Err(ActrError::Unavailable(
+                        "dispatch scheduler terminated".to_string(),
+                    ))
+                });
+                finish(result).await
+            })
+        } else {
+            let workload = self.workload_dispatch.clone();
+            Box::pin(async move {
+                let result = workload
+                    .dispatch_envelope(envelope, ctx, dispatch_ctx, &call_executor)
+                    .await;
+                finish(result).await
+            })
         }
-
-        // 3. Store completed result in dedup cache before returning
-        self.dedup_state
-            .lock()
-            .await
-            .complete(&envelope.request_id, result.clone());
-
-        result
     }
 
     /// Build a new `Inner` from config and runtime workload.
     ///
     /// This is the internal constructor behind the public node builders and
     /// Hyper package attach helpers.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn build(
         config: actr_config::RuntimeConfig,
         workload: crate::workload::Workload,
@@ -856,6 +1263,8 @@ impl Inner {
         packaged_lock: Option<actr_config::lock::LockFile>,
         mailbox_backpressure_threshold: usize,
         credential_expiry_warning: Duration,
+        dispatch_concurrency: crate::config::DispatchConcurrency,
+        conflict_keys: Option<crate::dispatch::ConflictKeySpec>,
     ) -> ActorResult<Self> {
         use crate::outbound::{Gate, HostGate};
         use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -938,6 +1347,47 @@ impl Inner {
             None
         };
 
+        // ── Dispatch scheduling layer (B2) ──────────────────────────────────
+        // Gate is on only when the config enables it. When on, a native
+        // `Linked` workload gets an interleaved runner (distinct-key dispatches
+        // run concurrently); packaged workloads stay serial (the key becomes a
+        // no-op routing hint). When off, everything is bit-for-bit B1.
+        let conflict_keys = Arc::new(conflict_keys.unwrap_or_default());
+        let gate_on = dispatch_concurrency.enabled;
+        let is_linked = matches!(workload, crate::workload::Workload::Linked(_));
+
+        if gate_on && !conflict_keys.is_empty() && !is_linked {
+            tracing::warn!(
+                "dispatch concurrency is on with conflict keys declared, but this is a packaged \
+                 (WASM/DynClib) workload; the single guest instance stays serial, so the keys are \
+                 no-op routing hints only"
+            );
+        }
+
+        let runner_mode = if gate_on && is_linked {
+            crate::executor::RunnerMode::Interleaved
+        } else {
+            crate::executor::RunnerMode::Serial
+        };
+        let workload_dispatch = crate::executor::spawn_runner_with_mode(workload, runner_mode);
+
+        let dispatch_scheduler = if gate_on {
+            tracing::info!(
+                budget = dispatch_concurrency.budget,
+                queue_cap = dispatch_concurrency.queue_cap,
+                interleaved = is_linked,
+                "dispatch concurrency enabled"
+            );
+            Some(Arc::new(
+                crate::dispatch::scheduler::SchedulerHandle::spawn(
+                    dispatch_concurrency.budget,
+                    dispatch_concurrency.queue_cap,
+                ),
+            ))
+        } else {
+            None
+        };
+
         tracing::info!("✅ ActrNode initialized");
 
         Ok(Self {
@@ -969,7 +1419,9 @@ impl Inner {
             discovered_ws_addresses: Arc::new(tokio::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
-            workload_dispatch: Arc::new(Mutex::new(workload)),
+            workload_dispatch: Arc::new(workload_dispatch),
+            dispatch_scheduler,
+            conflict_keys,
             hook_observer: None,
             mailbox_backpressure_threshold,
             credential_expiry_warning,
@@ -1510,10 +1962,10 @@ impl Inner {
                 let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_start");
                 let call_executor =
                     lifecycle_host_abi(startup_ctx.clone(), self.workload_dispatch.clone());
-                let mut workload = self.workload_dispatch.lock().await;
                 crate::lifecycle::hooks::call_lifecycle_hook(
                     "on_start",
-                    workload.on_start(startup_ctx, invocation, &call_executor),
+                    self.workload_dispatch
+                        .on_start(startup_ctx, invocation, &call_executor),
                 )
                 .await?;
             }
@@ -1821,10 +2273,10 @@ impl Inner {
                 let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
                 let call_executor =
                     lifecycle_host_abi(stop_ctx.clone(), node.workload_dispatch.clone());
-                let mut workload = node.workload_dispatch.lock().await;
                 if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
                     "on_stop",
-                    workload.on_stop(stop_ctx, invocation, &call_executor),
+                    node.workload_dispatch
+                        .on_stop(stop_ctx, invocation, &call_executor),
                 )
                 .await
                 {
@@ -1887,13 +2339,35 @@ impl Inner {
                 let shutdown = shutdown_token.clone();
 
                 let inproc_handle = tokio::spawn(async move {
+                    use futures_util::StreamExt as _;
+                    use futures_util::stream::FuturesUnordered;
+
+                    // Concurrency gate: only when the dispatch scheduler is on do
+                    // we overlap messages. Off (default) = one message at a time,
+                    // bit-for-bit the pre-B2 loop.
+                    let scheduler_on = node.dispatch_scheduler.is_some();
+                    // Bound on continuations the loop keeps in flight; a full set
+                    // stops us dequeuing, which back-pressures the lane. The
+                    // scheduler's own queue (`M`) is the finer bound underneath.
+                    const INPROC_INFLIGHT_CAP: usize = 256;
+                    let mut inflight: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>> =
+                        FuturesUnordered::new();
+
                     loop {
                         tokio::select! {
+                            biased;
                             _ = shutdown.cancelled() => {
                                 tracing::info!("📭 Guest receive loop (Shell → Guest) received shutdown signal");
                                 break;
                             }
-                            envelope_result = request_rx_lane.recv_envelope() => {
+                            // Drain finished reply continuations (gate-on only;
+                            // inert when `inflight` is empty).
+                            Some(()) = inflight.next(), if !inflight.is_empty() => {}
+                            // Accept a new request only while under the in-flight
+                            // cap (back-pressure). With the gate off `inflight` is
+                            // always empty so the guard is always true.
+                            envelope_result = request_rx_lane.recv_envelope(),
+                                if inflight.len() < INPROC_INFLIGHT_CAP => {
                                 match envelope_result {
                                     Ok(envelope) => {
                                         let request_id = envelope.request_id.clone();
@@ -1906,102 +2380,44 @@ impl Inner {
                                             set_parent_from_rpc_envelope(&span, &envelope);
                                             span
                                         };
-
-                                        // Shell calls have no caller_id (local process communication)
-                                        let handle_incoming_fut = node.handle_incoming(envelope.clone(), None);
-                                        #[cfg(feature = "opentelemetry")]
-                                        let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
+                                        #[cfg(not(feature = "opentelemetry"))]
+                                        let span = tracing::Span::none();
 
                                         // A `tell` (fire-and-forget) sets `timeout_ms == 0` to
                                         // signal it wants no reply. Run the handler for its side
                                         // effects, but do not send a response — an unwanted reply
                                         // becomes an orphan response on the caller (#262).
                                         let expects_response = envelope.timeout_ms != 0;
-                                        match handle_incoming_fut.await {
-                                            Ok(response_bytes) => {
-                                                if expects_response {
-                                                    // Send RESPONSE back via workload_to_shell
-                                                    // Keep same route_key (no prefix needed - separate channels!)
-                                                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                    let mut response_envelope = RpcEnvelope {
-                                                        route_key: envelope.route_key.clone(),
-                                                        payload: Some(response_bytes),
-                                                        error: None,
-                                                        direction: Some(Direction::Response as i32),
-                                                        traceparent: None,
-                                                        tracestate: None,
-                                                        request_id: request_id.clone(),
-                                                        metadata: Vec::new(),
-                                                        timeout_ms: 30000,
-                                                    };
-                                                    // Inject tracing context
-                                                    #[cfg(feature = "opentelemetry")]
-                                                    inject_span_context_to_rpc(&span, &mut response_envelope);
+                                        let route_key = envelope.route_key.clone();
+                                        let traceparent = envelope.traceparent.clone();
+                                        let tracestate = envelope.tracestate.clone();
 
-                                                    // Send via Guest → Shell channel
-                                                    let send_response_fut = response_tx.send_message(PayloadType::RpcReliable, None, response_envelope);
-                                                    #[cfg(feature = "opentelemetry")]
-                                                    let send_response_fut = send_response_fut.instrument(span.clone());
-                                                    if let Err(e) = send_response_fut.await {
-                                                        tracing::error!(
-                                                            severity = 7,
-                                                            error_category = "transport_error",
-                                                            request_id = %request_id,
-                                                            "❌ Failed to send RESPONSE to Shell: {:?}",
-                                                            e
-                                                        );
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    severity = 6,
-                                                    error_category = "handler_error",
-                                                    request_id = %request_id,
-                                                    route_key = %envelope.route_key,
-                                                    "❌ Guest message handling failed: {:?}",
-                                                    e
-                                                );
-
-                                                // Keep the local error log above for every failure,
-                                                // but skip sending an error envelope for a `tell`:
-                                                // the caller registered no pending entry to receive it.
-                                                if expects_response {
-                                                    // Send error response (system-level error on envelope)
-                                                    let error_response = actr_protocol::ErrorResponse {
-                                                        code: protocol_error_to_code(&e),
-                                                        message: e.to_string(),
-                                                    };
-                                                    #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                    let mut error_envelope = RpcEnvelope {
-                                                        route_key: envelope.route_key.clone(),
-                                                        payload: None,
-                                                        error: Some(error_response),
-                                                        direction: Some(Direction::Response as i32),
-                                                        traceparent: envelope.traceparent.clone(),
-                                                        tracestate: envelope.tracestate.clone(),
-                                                        request_id: request_id.clone(),
-                                                        metadata: Vec::new(),
-                                                        timeout_ms: 30000,
-                                                    };
-                                                    // Inject tracing context
-                                                    #[cfg(feature = "opentelemetry")]
-                                                    inject_span_context_to_rpc(&span, &mut error_envelope);
-
-                                                    let send_error_response_fut = response_tx.send_message(PayloadType::RpcReliable, None, error_envelope);
-                                                    #[cfg(feature = "opentelemetry")]
-                                                    let send_error_response_fut = send_error_response_fut.instrument(span);
-                                                    if let Err(send_err) = send_error_response_fut.await {
-                                                        tracing::error!(
-                                                            severity = 7,
-                                                            error_category = "transport_error",
-                                                            request_id = %request_id,
-                                                            "❌ Failed to send ERROR response to Shell: {:?}",
-                                                            send_err
-                                                        );
-                                                    }
-                                                }
-                                            }
+                                        if scheduler_on {
+                                            // Synchronous admission preserves arrival
+                                            // order + back-pressure; the continuation
+                                            // (dispatch result → reply) overlaps with
+                                            // later messages. Shell calls have no caller_id.
+                                            let cont = node.admit_incoming(envelope, None).await;
+                                            let response_tx = response_tx.clone();
+                                            inflight.push(Box::pin(async move {
+                                                let result = cont.await;
+                                                inproc_send_reply(
+                                                    response_tx, route_key, request_id,
+                                                    traceparent, tracestate, expects_response,
+                                                    result, span,
+                                                ).await;
+                                            }));
+                                        } else {
+                                            // Gate off: run to completion inline.
+                                            let handle_incoming_fut = node.handle_incoming(envelope, None);
+                                            #[cfg(feature = "opentelemetry")]
+                                            let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
+                                            let result = handle_incoming_fut.await;
+                                            inproc_send_reply(
+                                                response_tx.clone(), route_key, request_id,
+                                                traceparent, tracestate, expects_response,
+                                                result, span,
+                                            ).await;
                                         }
                                     }
                                     Err(e) => {
@@ -2017,6 +2433,9 @@ impl Inner {
                             }
                         }
                     }
+                    // Drain any remaining reply continuations before exiting so no
+                    // in-flight reply is orphaned.
+                    while inflight.next().await.is_some() {}
                     tracing::info!("✅ Guest receive loop (Shell → Guest) terminated gracefully");
                 });
                 task_handles.push(inproc_handle);
@@ -2247,15 +2666,31 @@ impl Inner {
             let shutdown = shutdown_token.clone();
 
             let mailbox_handle = tokio::spawn(async move {
+                use futures_util::StreamExt as _;
+                use futures_util::stream::FuturesUnordered;
+
+                // Concurrency gate: only overlap messages when the dispatch
+                // scheduler is on. Off (default) = one message at a time,
+                // bit-for-bit the pre-B2 loop.
+                let scheduler_on = node.dispatch_scheduler.is_some();
+                const MAILBOX_INFLIGHT_CAP: usize = 256;
+                let mut inflight: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>> =
+                    FuturesUnordered::new();
+
                 loop {
                     tokio::select! {
+                        biased;
                         // Listen for shutdown signal
                         _ = shutdown.cancelled() => {
                             tracing::info!("📭 Mailbox loop received shutdown signal");
                             break;
                         }
-                        // Dequeue messages (by priority)
-                        result = mailbox.dequeue() => {
+                        // Drain finished reply+ack continuations (gate-on only;
+                        // inert when `inflight` is empty).
+                        Some(()) = inflight.next(), if !inflight.is_empty() => {}
+                        // Dequeue messages (by priority); pause while the in-flight
+                        // set is full so back-pressure reaches the durable mailbox.
+                        result = mailbox.dequeue(), if inflight.len() < MAILBOX_INFLIGHT_CAP => {
                             match result {
                                 Ok(messages) => {
                                     if messages.is_empty() {
@@ -2294,186 +2729,60 @@ impl Inner {
                                                     );
                                                 }
 
-                                                // Call handle_incoming with caller_id from transport layer
-                                                let handle_incoming_fut = node.handle_incoming(envelope.clone(), caller_id_ref);
-                                                #[cfg(feature = "opentelemetry")]
-                                                let handle_incoming_fut = handle_incoming_fut.instrument(span.clone());
-
-                                                /// Send `response_envelope` back to `caller` via the
-                                                /// best available transport.
-                                                ///
-                                                /// Priority: inbound WebSocket connection (if caller
-                                                /// dialled us directly) → WebRTC gate.  Returns the
-                                                /// first transport error encountered, if any.
-                                                async fn send_envelope_to_caller(
-                                                    ws_gate: &Option<Arc<crate::wire::websocket::WebSocketGate>>,
-                                                    webrtc_gate: &Option<Arc<crate::wire::webrtc::gate::WebRtcGate>>,
-                                                    caller: &ActrId,
-                                                    response_envelope: RpcEnvelope,
-                                                    request_id: &str,
-                                                ) {
-                                                    // 1. Try inbound WebSocket connection first.
-                                                    if let Some(wsg) = ws_gate {
-                                                        match wsg.send_response(caller, response_envelope.clone()).await {
-                                                            Ok(true) => return, // sent successfully
-                                                            Ok(false) => {
-                                                                tracing::debug!(
-                                                                    request_id = request_id,
-                                                                    caller = %caller,
-                                                                    "No inbound WS connection for caller; falling back to WebRTC gate"
-                                                                );
-                                                            }
-                                                            Err(e) => {
-                                                                tracing::warn!(
-                                                                    severity = 5,
-                                                                    error_category = "transport_error",
-                                                                    request_id = request_id,
-                                                                    "WebSocketGate send_response failed, falling back: {:?}", e
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // 2. Fall back to WebRTC gate.
-                                                    if let Some(gate) = webrtc_gate {
-                                                        if let Err(e) = gate.send_response(caller, response_envelope).await {
-                                                            tracing::error!(
-                                                                severity = 7,
-                                                                error_category = "transport_error",
-                                                                request_id = request_id,
-                                                                "❌ WebRtcGate send_response failed: {:?}", e
-                                                            );
-                                                        }
-                                                    } else {
-                                                        tracing::error!(
-                                                            severity = 7,
-                                                            error_category = "transport_error",
-                                                            request_id = request_id,
-                                                            "❌ No gate available to send response"
-                                                        );
-                                                    }
-                                                }
-
                                                 // A `tell` (fire-and-forget) sets `timeout_ms == 0`
                                                 // to signal it wants no reply. Run the handler for
                                                 // its side effects, but do not send a response — an
                                                 // unwanted reply becomes an orphan response on the
                                                 // caller (#262).
                                                 let expects_response = envelope.timeout_ms != 0;
-                                                match handle_incoming_fut.await {
-                                                    Ok(response_bytes) => {
-                                                        match caller_id_result {
-                                                            Ok(caller) if expects_response => {
-                                                                // Construct response RpcEnvelope (reuse request_id!)
-                                                                #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                                let mut response_envelope = RpcEnvelope {
-                                                                    request_id: request_id.clone(),
-                                                                    route_key: envelope.route_key.clone(),
-                                                                    payload: Some(response_bytes),
-                                                                    error: None,
-                                                                    direction: Some(Direction::Response as i32),
-                                                                    traceparent: envelope.traceparent.clone(),
-                                                                    tracestate: envelope.tracestate.clone(),
-                                                                    metadata: Vec::new(),
-                                                                    timeout_ms: 30000,
-                                                                };
-                                                                // Inject tracing context
-                                                                #[cfg(feature = "opentelemetry")]
-                                                                inject_span_context_to_rpc(&span, &mut response_envelope);
+                                                let route_key = envelope.route_key.clone();
+                                                let traceparent = envelope.traceparent.clone();
+                                                let tracestate = envelope.tracestate.clone();
+                                                let msg_id = msg_record.id;
+                                                let ws_gate = ws_gate.clone();
+                                                let webrtc_gate = webrtc_gate.clone();
+                                                let mailbox_c = mailbox.clone();
+                                                #[cfg(not(feature = "opentelemetry"))]
+                                                let span = tracing::Span::none();
 
-                                                                #[cfg(feature = "opentelemetry")]
-                                                                let send_fut = send_envelope_to_caller(
-                                                                    &ws_gate,
-                                                                    &webrtc_gate,
-                                                                    &caller,
-                                                                    response_envelope,
-                                                                    &request_id,
-                                                                ).instrument(span);
-                                                                #[cfg(not(feature = "opentelemetry"))]
-                                                                let send_fut = send_envelope_to_caller(
-                                                                    &ws_gate,
-                                                                    &webrtc_gate,
-                                                                    &caller,
-                                                                    response_envelope,
-                                                                    &request_id,
-                                                                );
-                                                                send_fut.await;
-                                                            }
-                                                            // `tell` handled successfully: side
-                                                            // effects ran, no reply is sent.
-                                                            Ok(_) => {}
-                                                            Err(e) => {
-                                                                tracing::error!(
-                                                                    severity = 8,
-                                                                    error_category = "protobuf_decode",
-                                                                    request_id = %envelope.request_id,
-                                                                    "❌ Failed to decode caller_id: {:?}",
-                                                                    e
-                                                                );
-                                                            }
-                                                        }
-
-                                                        // ACK message
-                                                        if let Err(e) = mailbox.ack(msg_record.id).await {
-                                                            tracing::error!(
-                                                                severity = 9,
-                                                                error_category = "mailbox_error",
-                                                                request_id = %envelope.request_id,
-                                                                message_id = %msg_record.id,
-                                                                "❌ Mailbox ACK failed: {:?}",
-                                                                e
-                                                            );
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::error!(
-                                                            severity = 6,
-                                                            error_category = "handler_error",
-                                                            request_id = %envelope.request_id,
-                                                            route_key = %envelope.route_key,
-                                                            "❌ handle_incoming failed: {:?}", e
-                                                        );
-
-                                                        // Send error envelope back to caller so it
-                                                        // receives a structured error rather than
-                                                        // waiting until its deadline fires. A `tell`
-                                                        // (timeout_ms == 0) registered no pending
-                                                        // entry, so skip the reply — the local error
-                                                        // log above still records the failure (#262).
-                                                        if let (true, Ok(caller)) =
-                                                            (expects_response, caller_id_result)
-                                                        {
-                                                            let error_response = actr_protocol::ErrorResponse {
-                                                                code: protocol_error_to_code(&e),
-                                                                message: e.to_string(),
-                                                            };
-                                                            #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                                                            let mut error_envelope = RpcEnvelope {
-                                                                request_id: request_id.clone(),
-                                                                route_key: envelope.route_key.clone(),
-                                                                payload: None,
-                                                                error: Some(error_response),
-                                                                direction: Some(Direction::Response as i32),
-                                                                traceparent: envelope.traceparent.clone(),
-                                                                tracestate: envelope.tracestate.clone(),
-                                                                metadata: Vec::new(),
-                                                                timeout_ms: 30000,
-                                                            };
-                                                            #[cfg(feature = "opentelemetry")]
-                                                            inject_span_context_to_rpc(&span, &mut error_envelope);
-
-                                                            send_envelope_to_caller(
-                                                                &ws_gate,
-                                                                &webrtc_gate,
-                                                                &caller,
-                                                                error_envelope,
-                                                                &request_id,
-                                                            ).await;
-                                                        }
-
-                                                        // ACK to avoid infinite retries
-                                                        let _ = mailbox.ack(msg_record.id).await;
-                                                    }
+                                                if scheduler_on {
+                                                    // Synchronous admission preserves arrival order
+                                                    // + back-pressure; the reply+ack continuation
+                                                    // overlaps with later messages. Per-message
+                                                    // reply→ack order is unchanged inside the tail.
+                                                    let cont = node
+                                                        .admit_incoming(envelope.clone(), caller_id_ref)
+                                                        .await;
+                                                    let caller_owned =
+                                                        caller_id_result.map_err(|e| e.to_string());
+                                                    inflight.push(Box::pin(async move {
+                                                        let result = cont.await;
+                                                        mailbox_reply_and_ack(
+                                                            ws_gate, webrtc_gate, mailbox_c,
+                                                            caller_owned, request_id, route_key,
+                                                            traceparent, tracestate, expects_response,
+                                                            msg_id, result, span,
+                                                        )
+                                                        .await;
+                                                    }));
+                                                } else {
+                                                    // Gate off: run to completion inline —
+                                                    // bit-for-bit the pre-B2 mailbox path.
+                                                    let handle_incoming_fut =
+                                                        node.handle_incoming(envelope.clone(), caller_id_ref);
+                                                    #[cfg(feature = "opentelemetry")]
+                                                    let handle_incoming_fut =
+                                                        handle_incoming_fut.instrument(span.clone());
+                                                    let result = handle_incoming_fut.await;
+                                                    let caller_owned =
+                                                        caller_id_result.map_err(|e| e.to_string());
+                                                    mailbox_reply_and_ack(
+                                                        ws_gate, webrtc_gate, mailbox_c,
+                                                        caller_owned, request_id, route_key,
+                                                        traceparent, tracestate, expects_response,
+                                                        msg_id, result, span,
+                                                    )
+                                                    .await;
                                                 }
                                             }
                                             Err(e) => {
@@ -2549,6 +2858,9 @@ impl Inner {
                         }
                     }
                 }
+                // Drain any remaining reply+ack continuations so no in-flight
+                // reply is orphaned on shutdown.
+                while inflight.next().await.is_some() {}
                 tracing::info!("✅ Mailbox processing loop terminated gracefully");
             });
 
@@ -2563,10 +2875,11 @@ impl Inner {
             let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_ready");
             let call_executor =
                 lifecycle_host_abi(ready_ctx.clone(), node_ref.workload_dispatch.clone());
-            let mut workload = node_ref.workload_dispatch.lock().await;
             if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
                 "on_ready",
-                workload.on_ready(ready_ctx, invocation, &call_executor),
+                node_ref
+                    .workload_dispatch
+                    .on_ready(ready_ctx, invocation, &call_executor),
             )
             .await
             {
