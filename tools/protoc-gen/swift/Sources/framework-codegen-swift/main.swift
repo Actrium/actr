@@ -226,7 +226,7 @@ struct ActrFrameworkGenerator {
           }
 
           extension \(workloadName) {
-              \(accessModifier)func __dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
+              \(accessModifier)func __dispatch(ctx: any ActrContext, envelope: RpcEnvelope) async throws(ActrError) -> Data {
                   switch envelope.routeKey {
           """
 
@@ -274,7 +274,7 @@ struct ActrFrameworkGenerator {
                   }
               }
 
-              private func remoteTargetType(for routeKey: String) throws -> ActrType {
+              private func remoteTargetType(for routeKey: String) throws(ActrError) -> ActrType {
                   guard let targetType = remoteTargets[routeKey] else {
                       throw ActrError.UnknownRoute(msg: "No remote target configured for route: \\(routeKey)")
                   }
@@ -308,8 +308,8 @@ struct ActrFrameworkGenerator {
                 /// RPC method: \(method.name)
                 func \(methodName)(
                     req: \(inputType),
-                    ctx: Context
-                ) async throws -> \(outputType)
+                    ctx: any ActrContext
+                ) async throws(ActrError) -> \(outputType)
 
                 """
             }
@@ -358,7 +358,7 @@ struct ActrFrameworkGenerator {
               }
 
               extension \(workloadName) {
-                  \(accessModifier)func __dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
+                  \(accessModifier)func __dispatch(ctx: any ActrContext, envelope: RpcEnvelope) async throws(ActrError) -> Data {
                       switch envelope.routeKey {
               """
 
@@ -367,6 +367,8 @@ struct ActrFrameworkGenerator {
               let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
               let inputType = Self.swiftTypeName(
                 method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+              let outputType = Self.swiftTypeName(
+                method.outputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
 
               let routeKey: String
               if fileDescriptor.package.isEmpty {
@@ -378,9 +380,18 @@ struct ActrFrameworkGenerator {
               content += """
 
                 case "\(routeKey)":
-                    let req = try \(inputType)(serializedBytes: envelope.payload)
+                    let req: \(inputType)
+                    do {
+                        req = try \(inputType)(serializedBytes: envelope.payload)
+                    } catch {
+                        throw ActrError.DecodeFailure(msg: "Failed to decode \(inputType) for route \\(envelope.routeKey): \\(error)")
+                    }
                     let resp = try await handler.\(methodName)(req: req, ctx: ctx)
-                    return try resp.serializedData()
+                    do {
+                        return try resp.serializedData()
+                    } catch {
+                        throw ActrError.DecodeFailure(msg: "Failed to encode \(outputType) for route \\(envelope.routeKey): \\(error)")
+                    }
                 """
             }
 
@@ -428,7 +439,7 @@ struct ActrFrameworkGenerator {
                       }
                   }
 
-              private func remoteTargetType(for routeKey: String) throws -> ActrType {
+              private func remoteTargetType(for routeKey: String) throws(ActrError) -> ActrType {
                   guard let targetType = remoteTargets[routeKey] else {
                       throw ActrError.UnknownRoute(msg: "No remote target configured for route: \\(routeKey)")
                   }
