@@ -96,7 +96,9 @@ jobs:
         # core/hyper/wit/actr-workload.wit is a publish-time copy of the
         # framework original (shipped in the actr-hyper tarball so bindgen
         # works without the sibling framework crate). Fail fast if they drift.
-        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -154,7 +156,9 @@ jobs:
         # core/hyper/wit/actr-workload.wit is a publish-time copy of the
         # framework original (shipped in the actr-hyper tarball so bindgen
         # works without the sibling framework crate). Fail fast if they drift.
-        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -284,7 +288,9 @@ jobs:
             bindings/typescript/actr-workload/package-lock.json
             examples/typescript/echo-workload/package-lock.json
       - name: Verify TypeScript workload WIT drift
-        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
       - name: Build TypeScript workload package
         working-directory: bindings/typescript/actr-workload
         run: |
@@ -398,7 +404,9 @@ jobs:
         # core/hyper/wit/actr-workload.wit is a publish-time copy of the
         # framework original (shipped in the actr-hyper tarball so bindgen
         # works without the sibling framework crate). Fail fast if they drift.
-        run: cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -414,7 +422,9 @@ jobs:
         if: steps.cargo-tools.outputs.cache-hit != 'true'
         run: cargo install wasm-pack --version 0.13.1 --locked
       - name: Verify TypeScript workload WIT drift
-        run: cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+        run: |
+          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
+          cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
       - name: Build actr-workload package
         run: |
           python -m pip install -U build
