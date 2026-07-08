@@ -349,8 +349,7 @@ mod bench_impl {
             print_row(name, l_us, "keyed-serial", &keyed_serial);
 
             let speedup = serial.median_s / interleaved.median_s;
-            let region_overhead_us =
-                (keyed_serial.median_s - serial.median_s) / K as f64 * 1e6;
+            let region_overhead_us = (keyed_serial.median_s - serial.median_s) / K as f64 * 1e6;
             println!(
                 "|        |        | -> {name} L={}: speedup={speedup:.2}x (ideal min(C,K)={}), \
                  keyed-serial per-dispatch region cost={region_overhead_us:+.2}us \
