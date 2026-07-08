@@ -467,10 +467,11 @@ pub(crate) struct Inner {
     /// through `hook_observer` without touching this handle.
     pub(crate) workload_dispatch: Arc<crate::executor::ActorHandle>,
 
-    /// In-memory conflict-key dispatch scheduler (B2). `None` = gate off =
-    /// dispatch goes straight to `workload_dispatch` exactly as B1 did.
-    /// `Some(scheduler)` routes RPC dispatch through per-key serial + budgeted
-    /// concurrent scheduling before it reaches the runner.
+    /// In-memory conflict-key dispatch scheduler (B2). `None` = the scheduler is
+    /// not engaged (gate off, **or** — under strategy A default-on — a keyless
+    /// actor), so dispatch goes straight to `workload_dispatch` exactly as B1
+    /// did. `Some(scheduler)` routes RPC dispatch through per-key serial +
+    /// budgeted concurrent scheduling before it reaches the runner.
     pub(crate) dispatch_scheduler: Option<Arc<crate::dispatch::scheduler::SchedulerHandle>>,
 
     /// Conflict-key projection table. Empty (default) = every method projects to
@@ -949,6 +950,19 @@ fn parse_connection_not_ready_retry_hint(message: &str) -> Option<u64> {
     rest[..end].parse().ok()
 }
 
+/// Strategy A gate: decide whether the resident concurrency machinery (the
+/// interleaved runner + conflict-key scheduler) should be engaged for an actor.
+///
+/// It is engaged **only** when the dispatch gate is on *and* the actor declares
+/// at least one conflict key. A keyless actor — even with the default-on gate —
+/// returns `false`, so the node keeps it on the serial `run_loop` with no
+/// scheduler: default-on is bit-for-bit the M4 path for anything unkeyed, at
+/// zero scheduling cost. This is a pure function so the routing promise is unit
+/// testable without standing up a node.
+fn scheduler_engaged(gate_on: bool, has_conflict_keys: bool) -> bool {
+    gate_on && has_conflict_keys
+}
+
 impl Inner {
     #[allow(dead_code)]
     pub(crate) fn package_manifest(&self) -> Option<&actr_pack::PackageManifest> {
@@ -1348,21 +1362,30 @@ impl Inner {
         };
 
         // ── Dispatch scheduling layer (B2 native / M5 wasm) ─────────────────
-        // Gate is on only when the config enables it. When on, the runner mode
-        // is `Interleaved` regardless of world; the executor then routes by the
-        // workload's actual concurrency capability:
+        // Strategy A (default-on, keyless zero-overhead): the gate now defaults
+        // *on*, but the resident concurrency machinery (interleaved runner +
+        // scheduler) is engaged **only when the gate is on AND at least one
+        // conflict key is declared** ([`scheduler_engaged`]). A keyless actor —
+        // even with the gate on — stays on the serial `run_loop` with no
+        // scheduler spawned, bit-for-bit the M4 path: default-on costs it
+        // nothing. When engaged, the runner mode is `Interleaved` regardless of
+        // world; the executor then routes by the workload's actual concurrency
+        // capability:
         //   * `Linked`     → native `&self` concurrency (B2)
         //   * `Wasm(V2)`   → resident `run_concurrent` region (M5 open concurrency)
         //   * `Wasm(V1)` / `DynClib` → serial `run_loop` (single-Store fallback)
         // The node stays world-agnostic: it never inspects the wasm kernel
         // version — that adjudication lives entirely in the executor match, so
-        // the "no-op key on a serial-only package" case degrades silently. When
-        // the gate is off everything is bit-for-bit B1.
+        // the "no-op key on a serial-only package" case degrades silently. The
+        // second safety net is orthogonal to the gate default: whenever a
+        // scheduler *is* running, an undeclared method still projects to the
+        // global `ConflictKey::Serial` barrier and can never interleave.
         let conflict_keys = Arc::new(conflict_keys.unwrap_or_default());
         let gate_on = dispatch_concurrency.enabled;
+        let scheduler_on = scheduler_engaged(gate_on, !conflict_keys.is_empty());
         let is_linked = matches!(workload, crate::workload::Workload::Linked(_));
 
-        let runner_mode = if gate_on {
+        let runner_mode = if scheduler_on {
             crate::executor::RunnerMode::Interleaved
         } else {
             crate::executor::RunnerMode::Serial
@@ -1373,7 +1396,7 @@ impl Inner {
             dispatch_concurrency.dispatch_timeout,
         );
 
-        let dispatch_scheduler = if gate_on {
+        let dispatch_scheduler = if scheduler_on {
             tracing::info!(
                 budget = dispatch_concurrency.budget,
                 queue_cap = dispatch_concurrency.queue_cap,

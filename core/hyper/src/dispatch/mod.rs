@@ -25,14 +25,24 @@
 //! The name deliberately avoids "mailbox" so the durable and in-memory layers
 //! stay legible as distinct concepts.
 //!
-//! ## Default-off, serial-safe
+//! ## Default-on, serial-safe (strategy A)
 //!
-//! The layer is gated (`HyperConfig::dispatch_concurrency`, default `None` =
-//! off) and additionally treats every *undeclared* method as a global
-//! [`conflict_key::ConflictKey::Serial`] barrier. Both together mean the default
-//! behaviour is bit-for-bit the B1 serial runner: at most one dispatch in
-//! flight, in arrival order. Concurrency only appears after a consumer both
-//! turns the gate on *and* declares conflict keys for specific methods.
+//! The gate now defaults **on** (`HyperConfig::dispatch_concurrency`,
+//! `None` → [`crate::config::DispatchConcurrency::default`] with `enabled:
+//! true`), but this is safe for the common case because of two independent nets:
+//!
+//! 1. **keyless zero-overhead** — the node engages this scheduler *only* when
+//!    the gate is on **and** at least one conflict key is declared. A keyless
+//!    actor (no declared key) is kept on the serial `run_loop` with no scheduler
+//!    spawned at all — bit-for-bit the B1 serial runner, at zero cost, even with
+//!    the gate on.
+//! 2. **undeclared = global barrier** — when a scheduler *is* running (some
+//!    method declared a key), every *undeclared* method still projects to the
+//!    global [`conflict_key::ConflictKey::Serial`] barrier: at most one such
+//!    dispatch in flight, in arrival order.
+//!
+//! Concurrency therefore only appears for methods a consumer explicitly declares
+//! a conflict key for; everything else stays serial regardless of the gate.
 //!
 //! ## Scope (B2)
 //!

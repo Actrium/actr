@@ -60,24 +60,38 @@ pub struct HyperConfig {
     /// the base trait.
     pub mailbox_backpressure_threshold: Option<usize>,
 
-    /// Conflict-key dispatch concurrency (B2). `None` = off (the default):
-    /// dispatch stays strictly serial per actor, bit-for-bit the B1 runner.
-    /// `Some(cfg)` enables the in-memory dispatch scheduler; concurrency still
-    /// only appears for methods with a declared conflict key on a native
-    /// `Linked` workload. See [`DispatchConcurrency`].
+    /// Conflict-key dispatch concurrency (B2). `None` resolves to
+    /// [`DispatchConcurrency::default`], whose gate is now **on** (strategy A).
+    /// Default-on is free for a keyless actor: with no declared conflict key the
+    /// node keeps it bit-for-bit serial and never spawns a scheduler, so the
+    /// resident concurrency machinery only engages once a method declares a
+    /// conflict key on a workload that can multiplex (native `Linked` /
+    /// `Wasm(V2)`). Pass `Some(DispatchConcurrency { enabled: false, .. })` (or
+    /// set `ACTR_DISPATCH_SERIAL=1`) to force the fully-serial B1 runner. See
+    /// [`DispatchConcurrency`].
     pub dispatch_concurrency: Option<DispatchConcurrency>,
 }
 
 /// Conflict-key dispatch concurrency knobs (design doc §4.2, §7).
 ///
-/// Even when `enabled`, every *undeclared* method stays a global serial
-/// barrier, so an app that turns this on without declaring conflict keys keeps
-/// the exact serial behaviour — the "no declaration = fully serial" second
-/// safety net.
+/// The gate defaults **on** (strategy A). Two orthogonal safety nets keep that
+/// free and safe:
+///
+/// * **keyless zero-overhead** — an actor that declares no conflict key is kept
+///   fully serial by the node, which does not even spawn a dispatch scheduler
+///   for it (it stays on the M4 per-dispatch `run_loop`). Default-on therefore
+///   costs a keyless actor nothing.
+/// * **undeclared = global barrier** — when a scheduler *is* running (some
+///   method declared a key), every *undeclared* method still projects to the
+///   global [`crate::dispatch::ConflictKey::Serial`] barrier, so an unkeyed
+///   route can never interleave. These two nets are independent of the gate's
+///   default value.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DispatchConcurrency {
-    /// Master switch. Default `false`.
+    /// Master switch. Default `true` (strategy A default-on). A keyless actor is
+    /// unaffected (kept serial with no scheduler); set `false` (or export
+    /// `ACTR_DISPATCH_SERIAL=1`) to force the fully-serial B1 runner everywhere.
     pub enabled: bool,
     /// `C` — maximum number of dispatches in flight at once. Default `8`.
     pub budget: usize,
@@ -102,7 +116,12 @@ pub struct DispatchConcurrency {
 impl Default for DispatchConcurrency {
     fn default() -> Self {
         DispatchConcurrency {
-            enabled: false,
+            // Default-on (strategy A): the gate defaults *on*, but an actor that
+            // declares no conflict key stays bit-for-bit serial (the node never
+            // spawns a scheduler for it — see `lifecycle::node`). So turning the
+            // gate on by default costs a keyless actor nothing; concurrency only
+            // materializes once a method declares a conflict key.
+            enabled: true,
             budget: 8,
             queue_cap: 256,
             dispatch_timeout: None,
@@ -492,7 +511,9 @@ impl HyperConfig {
             .unwrap_or(DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD)
     }
 
-    /// Set the conflict-key dispatch concurrency config (B2). `None` = off.
+    /// Set the conflict-key dispatch concurrency config (B2). `None` falls back
+    /// to [`DispatchConcurrency::default`] (gate on, strategy A); pass
+    /// `Some(DispatchConcurrency { enabled: false, .. })` to force serial.
     pub fn with_dispatch_concurrency(mut self, cfg: Option<DispatchConcurrency>) -> Self {
         self.dispatch_concurrency = cfg;
         self

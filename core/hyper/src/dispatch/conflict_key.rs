@@ -105,6 +105,14 @@ impl ConflictKeySpec {
         ConflictKeySpecBuilder::default()
     }
 
+    /// `true` when no route declares a conflict key. A keyless spec means every
+    /// dispatch projects to the global [`ConflictKey::Serial`] barrier, so
+    /// concurrency can never appear — the node uses this to keep a keyless actor
+    /// on the serial `run_loop` with no scheduler (strategy A zero-overhead).
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rules.is_empty()
+    }
+
     /// Project one inbound RPC to its [`ConflictKey`].
     ///
     /// `payload` is the request payload bytes (the `RpcEnvelope.payload`). An

@@ -301,18 +301,35 @@ fn resolve_plain_string_without_placeholders() {
 // ── Dispatch concurrency (B2) ────────────────────────────────────────────────
 
 #[test]
-fn dispatch_concurrency_default_is_off() {
+fn dispatch_concurrency_default_is_on() {
+    // Strategy A: the gate defaults *on*. This is safe for keyless actors
+    // because the node never spawns a scheduler for them (proven in
+    // `lifecycle::node_tests::scheduler_engaged_*`); default-on only unlocks
+    // concurrency once a method declares a conflict key.
     let cfg = DispatchConcurrency::default();
-    assert!(!cfg.enabled);
+    assert!(cfg.enabled);
     assert_eq!(cfg.budget, 8);
     assert_eq!(cfg.queue_cap, 256);
+    assert!(cfg.dispatch_timeout.is_none());
 }
 
 #[test]
-fn hyper_config_dispatch_concurrency_none_by_default() {
+fn hyper_config_dispatch_concurrency_none_resolves_to_default_on() {
     let config = stub_config("/tmp");
     assert!(config.dispatch_concurrency.is_none());
-    // With no config, the resolved value is the (disabled) default.
+    // With no explicit config, the resolved value is the default — now on.
+    let resolved = config.resolved_dispatch_concurrency();
+    assert!(resolved.enabled);
+}
+
+#[test]
+fn explicit_disabled_still_opts_out_of_default_on() {
+    // The `Option` field is unchanged, so a caller can still force the
+    // fully-serial B1 runner by passing an explicit disabled config.
+    let config = stub_config("/tmp").with_dispatch_concurrency(Some(DispatchConcurrency {
+        enabled: false,
+        ..DispatchConcurrency::default()
+    }));
     let resolved = config.resolved_dispatch_concurrency();
     assert!(!resolved.enabled);
 }
