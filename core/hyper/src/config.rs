@@ -84,6 +84,18 @@ pub struct DispatchConcurrency {
     /// `M` — total in-queue + in-flight bound; a full queue applies
     /// back-pressure up to the node entry loop. Default `256`.
     pub queue_cap: usize,
+    /// Per-dispatch deadline. `None` (default) = no deadline, exactly the M4
+    /// behaviour. When set, the v2 interleaved wasm runner arms this deadline
+    /// on every in-flight dispatch; on expiry the dispatch's in-flight
+    /// `call_concurrent` future is dropped (a CLEAN cancel that does not
+    /// poison the store — validated by the M0 spike's T8/R1), the caller's
+    /// reply resolves `TimedOut`, and the freed conflict key lets the next
+    /// same-key dispatch start without a serial violation. It is deliberately
+    /// enforced *inside* the resident region (a sibling of the guest-awaiting
+    /// future in the `select!`), not from an external timer, so the reply is
+    /// sent only *after* the timed-out dispatch has truly left the region —
+    /// which is what keeps same-key FIFO airtight across a timeout.
+    pub dispatch_timeout: Option<std::time::Duration>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -93,6 +105,7 @@ impl Default for DispatchConcurrency {
             enabled: false,
             budget: 8,
             queue_cap: 256,
+            dispatch_timeout: None,
         }
     }
 }

@@ -804,6 +804,15 @@ impl WasmKernel {
         }
     }
 
+    /// Whether this kernel is the 0.2.0 async world (the only kernel that can
+    /// drive a resident `run_concurrent` region for same-instance interleaved
+    /// concurrency). The interleaved runner arm in [`crate::executor`] routes
+    /// on this: a V2 kernel gets `run_interleaved`; a V1 kernel (0.1.0 sync
+    /// world) always falls back to the serial `run_loop`.
+    pub(crate) fn is_v2(&self) -> bool {
+        matches!(self, WasmKernel::V2(_))
+    }
+
     pub(crate) async fn call_on_start(
         &mut self,
         ctx: InvocationContext,

@@ -37,17 +37,22 @@
 //! one command is converted to an `ActrError` reply and the runner survives to
 //! serve the next command — a single bad message can never orphan the actor.
 //!
-//! ## M5 evolution path (do not break this contract)
+//! ## M5 evolution path (delivered — do not break this contract)
 //!
-//! B1 keeps the runner body a plain serial loop. In M5 the wasm runner will
-//! swap this loop for a resident `store.run_concurrent(async |accessor| { … })`
-//! region that `select!`s new commands off `cmd_rx` and pushes them into a
-//! `FuturesUnordered` (the M0 spike proved this shape works). The stable
-//! contract that makes that swap transparent is: commands carry fully-owned
-//! arguments, `cmd_rx` is owned solely by the runner task (movable into the
-//! region closure), and each reply is sent at the command's completion point.
-//! That completion point is also where B2 will hang the ack / dedup callbacks.
-//! Do not change [`ActorCmd`] / [`ActorHandle`] shapes without preserving these.
+//! B1 keeps the runner body a plain serial loop. M5 **delivered** the wasm
+//! open-concurrency runner: a `Wasm(V2)` workload in `Interleaved` mode now
+//! runs [`crate::wasm::WasmWorkloadV2::run_interleaved`], a resident
+//! `store.run_concurrent(async |accessor| { … })` region that `select!`s new
+//! commands off `cmd_rx` and pushes dispatches into a `FuturesUnordered` (the
+//! M0 spike's proven shape). The stable contract that made that swap
+//! transparent — and which MUST hold for the serial `run_loop` degradation to
+//! stay bit-for-bit B1 — is: [`ActorCmd`] variants carry fully-owned arguments,
+//! `cmd_rx` is owned solely by the runner task (moved whole into the region
+//! runner), and each reply is sent at the command's completion point. That
+//! completion point is also where the ack / dedup callbacks hang. Do **not**
+//! change [`ActorCmd`] / [`ActorHandle`] / `run_loop` shapes without preserving
+//! these — the interleaved wasm runner reuses the *same* `cmd_rx` channel and
+//! the *same* frozen `ActorCmd` variants.
 
 use crate::context::RuntimeContext;
 use crate::workload::{
@@ -84,7 +89,7 @@ pub(crate) enum LifecyclePhase {
 }
 
 impl LifecyclePhase {
-    fn panic_label(self) -> &'static str {
+    pub(crate) fn panic_label(self) -> &'static str {
         match self {
             LifecyclePhase::OnStart => "on_start",
             LifecyclePhase::OnReady => "on_ready",
@@ -339,21 +344,45 @@ pub(crate) enum RunnerMode {
     )
 ))]
 pub(crate) fn spawn_runner(workload: Workload) -> ActorHandle {
-    spawn_runner_with_mode(workload, RunnerMode::Serial)
+    spawn_runner_with_mode(workload, RunnerMode::Serial, None)
 }
 
 /// Spawn a runner in the requested [`RunnerMode`].
 ///
-/// `Interleaved` only applies to `Workload::Linked`; any packaged workload
-/// (`Wasm` / `DynClib`) falls back to the serial loop even if `Interleaved` is
-/// requested, so the single-`Store` contract is never violated — the conflict
-/// key becomes a no-op routing hint there, exactly as B2 intends.
-pub(crate) fn spawn_runner_with_mode(workload: Workload, mode: RunnerMode) -> ActorHandle {
+/// `Interleaved` opens same-instance concurrency for the two workloads whose
+/// dispatch is safe to multiplex:
+///
+/// * `Workload::Linked` — `dispatch` takes `&self`, so distinct-key dispatches
+///   run concurrently in a `FuturesUnordered` (B2 native concurrency).
+/// * `Workload::Wasm(V2)` — the 0.2.0 async world drives a **resident**
+///   `Store::run_concurrent` region ([`crate::wasm::WasmWorkloadV2::run_interleaved`]),
+///   interleaving distinct-key dispatches at their host-import `.await` points
+///   (M5). `dispatch_timeout` is the per-dispatch deadline enforced *inside*
+///   that region.
+///
+/// Every other packaged workload (`Wasm(V1)` 0.1.0 sync world, `DynClib`) falls
+/// back to the serial `run_loop` even when `Interleaved` is requested, so the
+/// single-`Store` / `&mut` guest-ABI contract is never violated — the conflict
+/// key is a no-op routing hint there. This keeps `gate off` a bit-for-bit B1
+/// degradation.
+pub(crate) fn spawn_runner_with_mode(
+    workload: Workload,
+    mode: RunnerMode,
+    dispatch_timeout: Option<std::time::Duration>,
+) -> ActorHandle {
     let (tx, rx) = mpsc::channel(RUNNER_QUEUE_CAPACITY);
     let join = match (mode, workload) {
         (RunnerMode::Interleaved, Workload::Linked(handle)) => {
             tokio::spawn(run_loop_interleaved(handle, rx))
         }
+        #[cfg(feature = "wasm-engine")]
+        (RunnerMode::Interleaved, Workload::Wasm(kernel)) if kernel.is_v2() => match kernel {
+            crate::wasm::WasmKernel::V2(v2) => {
+                tokio::spawn(v2.run_interleaved(rx, dispatch_timeout))
+            }
+            // Unreachable given the `is_v2()` guard, but keeps the match total.
+            other => tokio::spawn(run_loop(Workload::Wasm(other), rx)),
+        },
         (_, workload) => tokio::spawn(run_loop(workload, rx)),
     };
     ActorHandle {

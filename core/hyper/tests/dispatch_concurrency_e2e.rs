@@ -198,6 +198,7 @@ async fn setup(
             enabled: true,
             budget: 8,
             queue_cap: 256,
+            dispatch_timeout: None,
         }));
     }
     let hyper_b = Hyper::new(echo_cfg).await.unwrap();
@@ -277,6 +278,7 @@ async fn setup_serial(
             enabled: true,
             budget: 8,
             queue_cap: 256,
+            dispatch_timeout: None,
         }));
     let hyper_b = Hyper::new(echo_cfg).await.unwrap();
     let mut cfg_b = runtime_config(dir_b, server, "EchoNode", echo_type());

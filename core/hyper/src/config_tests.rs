@@ -323,6 +323,7 @@ fn with_dispatch_concurrency_builder_sets_field() {
         enabled: true,
         budget: 4,
         queue_cap: 32,
+        dispatch_timeout: None,
     }));
     let dc = config.dispatch_concurrency.expect("set");
     assert!(dc.enabled);

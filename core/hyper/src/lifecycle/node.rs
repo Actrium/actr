@@ -1347,35 +1347,40 @@ impl Inner {
             None
         };
 
-        // ── Dispatch scheduling layer (B2) ──────────────────────────────────
-        // Gate is on only when the config enables it. When on, a native
-        // `Linked` workload gets an interleaved runner (distinct-key dispatches
-        // run concurrently); packaged workloads stay serial (the key becomes a
-        // no-op routing hint). When off, everything is bit-for-bit B1.
+        // ── Dispatch scheduling layer (B2 native / M5 wasm) ─────────────────
+        // Gate is on only when the config enables it. When on, the runner mode
+        // is `Interleaved` regardless of world; the executor then routes by the
+        // workload's actual concurrency capability:
+        //   * `Linked`     → native `&self` concurrency (B2)
+        //   * `Wasm(V2)`   → resident `run_concurrent` region (M5 open concurrency)
+        //   * `Wasm(V1)` / `DynClib` → serial `run_loop` (single-Store fallback)
+        // The node stays world-agnostic: it never inspects the wasm kernel
+        // version — that adjudication lives entirely in the executor match, so
+        // the "no-op key on a serial-only package" case degrades silently. When
+        // the gate is off everything is bit-for-bit B1.
         let conflict_keys = Arc::new(conflict_keys.unwrap_or_default());
         let gate_on = dispatch_concurrency.enabled;
         let is_linked = matches!(workload, crate::workload::Workload::Linked(_));
 
-        if gate_on && !conflict_keys.is_empty() && !is_linked {
-            tracing::warn!(
-                "dispatch concurrency is on with conflict keys declared, but this is a packaged \
-                 (WASM/DynClib) workload; the single guest instance stays serial, so the keys are \
-                 no-op routing hints only"
-            );
-        }
-
-        let runner_mode = if gate_on && is_linked {
+        let runner_mode = if gate_on {
             crate::executor::RunnerMode::Interleaved
         } else {
             crate::executor::RunnerMode::Serial
         };
-        let workload_dispatch = crate::executor::spawn_runner_with_mode(workload, runner_mode);
+        let workload_dispatch = crate::executor::spawn_runner_with_mode(
+            workload,
+            runner_mode,
+            dispatch_concurrency.dispatch_timeout,
+        );
 
         let dispatch_scheduler = if gate_on {
             tracing::info!(
                 budget = dispatch_concurrency.budget,
                 queue_cap = dispatch_concurrency.queue_cap,
-                interleaved = is_linked,
+                dispatch_timeout_ms = dispatch_concurrency
+                    .dispatch_timeout
+                    .map(|d| d.as_millis() as u64),
+                is_linked,
                 "dispatch concurrency enabled"
             );
             Some(Arc::new(

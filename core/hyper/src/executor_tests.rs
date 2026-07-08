@@ -338,7 +338,7 @@ fn gated_runner_interleaved() -> (
     };
     let workload = Workload::Linked(Arc::new(handle) as Arc<dyn LinkedWorkloadHandle>);
     (
-        spawn_runner_with_mode(workload, RunnerMode::Interleaved),
+        spawn_runner_with_mode(workload, RunnerMode::Interleaved, None),
         gate,
         entered_rx,
         drop_rx,
@@ -474,7 +474,7 @@ impl LinkedWorkloadHandle for SelectivePanicHandle {
 async fn interleaved_panic_isolated_from_siblings() {
     let workload =
         Workload::Linked(Arc::new(SelectivePanicHandle) as Arc<dyn LinkedWorkloadHandle>);
-    let handle = spawn_runner_with_mode(workload, RunnerMode::Interleaved);
+    let handle = spawn_runner_with_mode(workload, RunnerMode::Interleaved, None);
 
     let rx_boom = enqueue_dispatch(&handle, "boom");
     let rx_ok = enqueue_dispatch(&handle, "fine");

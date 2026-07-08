@@ -84,9 +84,16 @@ pub enum ConflictKeyError {
 /// native `Linked` workload this means the handler's `&self` body for two
 /// different keys can be in flight at the same time; any state it shares across
 /// an `.await` must be synchronized by the handler. The framework cannot verify
-/// this — it is the consumer's contract (design doc §6). WASM / DynClib guests
-/// stay serial regardless (single `Store` / `&mut` ABI), so the key is a no-op
-/// routing hint there.
+/// this — it is the consumer's contract (design doc §6).
+///
+/// A **0.2.0 (async-world) WASM** guest is now isomorphic to the native case
+/// (M5): distinct-key dispatches run inside one resident `run_concurrent`
+/// region and interleave at their host-import `.await` points, sharing the one
+/// instance's linear memory exactly as a native handler shares `&self`. The
+/// same contract applies — any guest state touched across an `.await` must
+/// tolerate a sibling distinct-key dispatch observing it mid-flight. A 0.1.0
+/// (sync-world) WASM guest and a DynClib guest stay serial regardless (single
+/// `Store` / `&mut` ABI), so the key is a no-op routing hint for those.
 #[derive(Debug, Clone, Default)]
 pub struct ConflictKeySpec {
     rules: HashMap<String, KeyRule>,
@@ -96,11 +103,6 @@ impl ConflictKeySpec {
     /// Start building a spec.
     pub fn builder() -> ConflictKeySpecBuilder {
         ConflictKeySpecBuilder::default()
-    }
-
-    /// Whether any rule is declared (an empty spec = fully serial).
-    pub(crate) fn is_empty(&self) -> bool {
-        self.rules.is_empty()
     }
 
     /// Project one inbound RPC to its [`ConflictKey`].
