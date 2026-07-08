@@ -665,4 +665,126 @@ impl TestWasmWorkload {
     pub fn into_workload_runner(self) -> TestWorkloadRunner {
         TestWorkloadRunner::spawn(crate::workload::Workload::Wasm(self.inner))
     }
+
+    /// Move this workload behind an **interleaved** command runner — for a
+    /// 0.2.0 (V2) kernel this drives the resident `run_concurrent` region so
+    /// distinct commands submitted concurrently really interleave inside the
+    /// one instance (M5). `dispatch_timeout` is the per-dispatch deadline
+    /// enforced inside the region.
+    pub fn into_interleaved_runner(
+        self,
+        dispatch_timeout: Option<std::time::Duration>,
+    ) -> TestWorkloadRunner {
+        TestWorkloadRunner {
+            handle: crate::executor::spawn_runner_with_mode(
+                crate::workload::Workload::Wasm(self.inner),
+                crate::executor::RunnerMode::Interleaved,
+                dispatch_timeout,
+            ),
+        }
+    }
+
+    /// Wire this workload behind the full production dispatch path: a
+    /// conflict-key scheduler (budget `C` / queue cap `M`) in front of an
+    /// interleaved runner. This is the exact shape the node builds when the
+    /// dispatch-concurrency gate is on, and is what the M5 concurrency tests
+    /// drive to exercise same-key serial + distinct-key interleave together.
+    pub fn into_concurrent_dispatcher(
+        self,
+        spec: crate::dispatch::ConflictKeySpec,
+        budget: usize,
+        queue_cap: usize,
+        dispatch_timeout: Option<std::time::Duration>,
+    ) -> TestConcurrentDispatcher {
+        let handle = crate::executor::spawn_runner_with_mode(
+            crate::workload::Workload::Wasm(self.inner),
+            crate::executor::RunnerMode::Interleaved,
+            dispatch_timeout,
+        );
+        let scheduler = crate::dispatch::scheduler::SchedulerHandle::spawn(budget, queue_cap);
+        TestConcurrentDispatcher {
+            handle: Arc::new(handle),
+            scheduler: Arc::new(scheduler),
+            spec: Arc::new(spec),
+            next_request_id: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+/// Test driver that mirrors the node's gate-on dispatch path: it projects each
+/// inbound RPC to its [`crate::dispatch::ConflictKey`] via a
+/// [`crate::dispatch::ConflictKeySpec`], submits it to a budgeted conflict-key
+/// scheduler, and lets the scheduler feed an **interleaved** wasm runner. Lets
+/// M5 integration tests assert same-key serial + distinct-key interleave
+/// end-to-end without standing up a whole node.
+#[cfg(feature = "wasm-engine")]
+pub struct TestConcurrentDispatcher {
+    handle: Arc<crate::executor::ActorHandle>,
+    scheduler: Arc<crate::dispatch::scheduler::SchedulerHandle>,
+    spec: Arc<crate::dispatch::ConflictKeySpec>,
+    next_request_id: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(feature = "wasm-engine")]
+impl TestConcurrentDispatcher {
+    fn scratch_ctx() -> crate::context::RuntimeContext {
+        runtime_context_with_host_transport(
+            ActrId::default(),
+            Arc::new(crate::transport::HostTransport::new()),
+        )
+    }
+
+    /// Dispatch one RPC through scheduler → interleaved runner. The conflict key
+    /// is derived from `caller_id` (when the route is declared `KeySource::Sender`)
+    /// so a test controls concurrency purely by which caller it passes: distinct
+    /// callers → distinct keys → concurrent; same caller → same key → serial.
+    pub async fn dispatch(
+        &self,
+        route_key: &str,
+        payload: Vec<u8>,
+        caller_id: Option<ActrId>,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<actr_framework::Bytes> {
+        use std::sync::atomic::Ordering;
+        let rid = self.next_request_id.fetch_add(1, Ordering::SeqCst);
+        let request_id = format!("concurrent-req-{rid}");
+        let payload_bytes = actr_framework::Bytes::from(payload);
+        let envelope = actr_protocol::RpcEnvelope {
+            route_key: route_key.to_string(),
+            payload: Some(payload_bytes.clone()),
+            request_id: request_id.clone(),
+            direction: Some(actr_protocol::Direction::Request as i32),
+            ..Default::default()
+        };
+        let key = self
+            .spec
+            .extract(route_key, caller_id.as_ref(), payload_bytes.as_ref());
+        let invocation = InvocationContext {
+            self_id: ActrId::default(),
+            caller_id,
+            request_id,
+        };
+        let handle = self.handle.clone();
+        let host_abi = host_abi.clone();
+        let ctx = Self::scratch_ctx();
+        let run: crate::dispatch::scheduler::DispatchFn = Box::new(move || {
+            Box::pin(async move {
+                handle
+                    .dispatch_envelope(envelope, ctx, invocation, &host_abi)
+                    .await
+            })
+        });
+        let rx = self.scheduler.submit(key, run).await;
+        rx.await.unwrap_or_else(|_| {
+            Err(actr_protocol::ActrError::Unavailable(
+                "dispatch scheduler terminated".to_string(),
+            ))
+        })
+    }
+
+    /// Deterministically tear down the scheduler then the runner.
+    pub async fn shutdown(&self) {
+        self.scheduler.shutdown().await;
+        self.handle.shutdown().await;
+    }
 }

@@ -25,7 +25,18 @@ use actr_framework::{entry, Context, MessageDispatcher, Workload};
 use actr_protocol::{ActorResult, ActrError, RpcEnvelope};
 use async_trait::async_trait;
 use bytes::Bytes;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::UNIX_EPOCH;
+
+// Shared, per-instance (per-linear-memory) in-flight counters used by the
+// `test/inflight-probe` route to prove same-instance interleaving (M5). wasm is
+// single-threaded, so these atomics are contention-free; they read cleanly as a
+// shared counter that every concurrently-suspended dispatch on the ONE instance
+// increments/decrements. A fresh instance (rebuild after a trap) starts both at
+// zero, so a post-trap probe reporting MAX_SEEN==1 is direct evidence of a
+// rebuilt linear memory.
+static IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
+static MAX_SEEN: AtomicU32 = AtomicU32::new(0);
 
 async fn record_hook<C: Context>(ctx: &C, name: &'static str) {
     record_hook_value(ctx, name.to_string()).await;
@@ -111,6 +122,23 @@ impl MessageDispatcher for DoubleDispatcher {
                     .await?;
 
                 Ok(resp)
+            }
+            "test/inflight-probe" => {
+                // M5 same-instance interleave probe. Bump the shared in-flight
+                // counter on entry (recording the peak), await a host import the
+                // test gates open, then decrement on the way out and return the
+                // peak concurrency this instance ever observed as a 4-byte LE u32.
+                // Two distinct-conflict-key probes suspended here at once make
+                // MAX_SEEN >= 2 — proof they interleaved inside one instance.
+                let cur = IN_FLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+                MAX_SEEN.fetch_max(cur, Ordering::SeqCst);
+                let target = ctx.self_id().clone();
+                let payload = envelope.payload.unwrap_or_default();
+                let gate = ctx.call_raw(&target, "test/gate", payload).await;
+                IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
+                gate?;
+                let peak = MAX_SEEN.load(Ordering::SeqCst);
+                Ok(Bytes::from(peak.to_le_bytes().to_vec()))
             }
             "test/boom-after-await" => {
                 // Exercise Phase 0.5 spike Test 8: perform a host-side
