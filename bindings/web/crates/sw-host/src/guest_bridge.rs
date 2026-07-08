@@ -431,7 +431,7 @@ pub async fn host_tell_async(
         }
     };
 
-    match ctx.tell_raw(&actor_id, &route_key, &payload_bytes).await {
+    match ctx.tell_raw(&actor_id, &route_key, payload_bytes).await {
         Ok(()) => Ok(()),
         Err(e) => Err(actr_error_to_js(e)),
     }

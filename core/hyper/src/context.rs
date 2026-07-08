@@ -517,10 +517,11 @@ impl Context for RuntimeContext {
         )
     )]
     async fn call<R: RpcRequest>(&self, target: &Dest, request: R) -> ActorResult<R::Response> {
-        // Typed call construction goes through the same validated contract as
-        // call_raw: positive deadline, RPC payload type.
+        // Typed call construction reuses call_raw's RPC-payload-type contract.
+        // The deadline is the fixed DEFAULT_CALL_TIMEOUT_MS (always > 0), so it
+        // needs no sender-side timeout validation here; the gate path validates
+        // caller-supplied timeouts (call_raw) instead.
         const DEFAULT_CALL_TIMEOUT_MS: i64 = 30_000;
-        crate::transport::validate_rpc_timeout_ms(DEFAULT_CALL_TIMEOUT_MS)?;
         crate::outbound::ensure_rpc_payload_type(R::payload_type())?;
 
         self.ensure_session_ready().await?;

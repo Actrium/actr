@@ -73,6 +73,16 @@ impl Gate {
     }
 
     /// Relay an envelope that already carries an explicit routing direction.
+    ///
+    /// Unlike `send_message` (which stamps `Direction::Tell`), this preserves
+    /// the sender's Request/Response/Tell label so a relayed request still
+    /// expects a reply on the remote peer.
+    ///
+    /// Only `Gate::Peer` supports relay: `HostGate`'s only send path is
+    /// `send_message`, which would wrongly downgrade a Request to Tell, so
+    /// Host returns `InvalidArgument`. The sole caller
+    /// (`System::init_message_handler`) always runs against a Peer outgate, so
+    /// the Host arm is a defensive guard against misuse, not a live path.
     pub async fn relay_envelope(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         match self {
             Gate::Host(_) => Err(ActrError::InvalidArgument(

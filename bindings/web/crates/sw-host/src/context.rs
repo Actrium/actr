@@ -194,11 +194,18 @@ impl WebContext for RuntimeContext {
 
     async fn tell<R: RpcRequest>(&self, target: &ActrId, message: R) -> ActorResult<()> {
         // 1. Encode the message and delegate to the shared raw tell path.
+        //    Passing the Vec by value lets tell_raw move it into Bytes with
+        //    no extra copy (a &[u8] parameter would force a clone).
         let payload = message.encode_to_vec();
-        self.tell_raw(target, R::route_key(), &payload).await
+        self.tell_raw(target, R::route_key(), payload).await
     }
 
-    async fn tell_raw(&self, target: &ActrId, route_key: &str, payload: &[u8]) -> ActorResult<()> {
+    async fn tell_raw(
+        &self,
+        target: &ActrId,
+        route_key: &str,
+        payload: Vec<u8>,
+    ) -> ActorResult<()> {
         if let Some(bridge) = &self.bridge {
             if let Err(error) = bridge.ensure_connection(target).await {
                 log::warn!(
@@ -215,7 +222,7 @@ impl WebContext for RuntimeContext {
         // — it is no longer a tell marker.
         let envelope = RpcEnvelope {
             route_key: route_key.to_string(),
-            payload: Some(Bytes::from(payload.to_vec())),
+            payload: Some(Bytes::from(payload)),
             error: None,
             direction: Some(Direction::Tell as i32),
             traceparent: Some(self.traceparent.clone()),

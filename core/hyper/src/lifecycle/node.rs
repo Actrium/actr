@@ -669,10 +669,22 @@ impl Inner {
     /// never reach a dispatch loop), or unknown future values — yields
     /// `None`, which the loops warn about and drop.
     pub(crate) fn dispatchable_direction(raw_direction: Option<i32>) -> Option<Direction> {
-        match raw_direction.map(Direction::try_from) {
-            Some(Ok(direction @ (Direction::Request | Direction::Tell))) => Some(direction),
+        match crate::wire::direction_for_routing(raw_direction) {
+            // Response is routed to pending maps by the gates, never
+            // dispatched; missing / Unspecified / unknown are invalid here.
+            Ok(direction @ (Direction::Request | Direction::Tell)) => Some(direction),
             _ => None,
         }
+    }
+
+    /// Whether an inbound envelope expects a reply, decided solely from its
+    /// direction label: `Request` → yes, `Tell` → no (fire-and-forget). Any
+    /// non-dispatchable direction yields `None` so the caller can warn + drop.
+    ///
+    /// Single source of truth for the "does this dispatch expect a response?"
+    /// policy shared by the Shell→Guest and mailbox receive loops.
+    pub(crate) fn dispatch_expects_response(raw_direction: Option<i32>) -> Option<bool> {
+        Self::dispatchable_direction(raw_direction).map(|direction| direction != Direction::Tell)
     }
 
     fn duplicate_wait_timeout(timeout_ms: i64) -> Duration {
@@ -1955,8 +1967,8 @@ impl Inner {
                                         // else (missing / Unspecified / Response / unknown)
                                         // is invalid on a dispatch lane: warn and drop.
                                         // timeout_ms is never consulted for tell-ness.
-                                        let expects_response = match Inner::dispatchable_direction(envelope.direction) {
-                                            Some(direction) => direction != Direction::Tell,
+                                        let expects_response = match Inner::dispatch_expects_response(envelope.direction) {
+                                            Some(v) => v,
                                             None => {
                                                 tracing::warn!(
                                                     request_id = %request_id,
@@ -2350,8 +2362,8 @@ impl Inner {
                                                 // the dispatch mailbox: warn, ack (to avoid
                                                 // redelivery), and drop. timeout_ms is never
                                                 // consulted for tell-ness.
-                                                let expects_response = match Inner::dispatchable_direction(envelope.direction) {
-                                                    Some(direction) => direction != Direction::Tell,
+                                                let expects_response = match Inner::dispatch_expects_response(envelope.direction) {
+                                                    Some(v) => v,
                                                     None => {
                                                         tracing::warn!(
                                                             request_id = %request_id,

@@ -91,7 +91,9 @@ pub trait WebContext {
     ///
     /// The envelope is stamped `Direction::Tell`; the receiver runs the
     /// handler but never replies, and no pending entry is registered here.
-    async fn tell_raw(&self, target: &ActrId, route_key: &str, payload: &[u8]) -> ActorResult<()>;
+    /// `payload` is moved into the envelope with no extra copy.
+    async fn tell_raw(&self, target: &ActrId, route_key: &str, payload: Vec<u8>)
+    -> ActorResult<()>;
 
     /// Discover the target actor through signaling service discovery.
     async fn discover(&self, target_type: &ActrType) -> ActorResult<ActrId>;

@@ -710,7 +710,7 @@ async fn tell_dedup_harness(result: fn() -> ActorResult<FrameworkBytes>) -> Tell
     let workload = Workload::Linked(Arc::new(handle) as Arc<dyn LinkedWorkloadHandle>);
     let config = dedup_test_config(&dir);
     let actor_id = ActrId {
-        realm: config.realm.clone(),
+        realm: config.realm,
         serial_number: 1,
         r#type: config.package.actr_type.clone(),
     };
