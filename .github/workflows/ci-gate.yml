@@ -178,6 +178,53 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --verbose --all-features
 
+  rust_msrv:
+    name: Rust MSRV (1.95)
+    needs: determine
+    if: needs.determine.outputs.rust_core == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      # Force the wasip2 guest fixture to link under the pinned MSRV toolchain
+      # instead of silently compiling the fixture tests out.
+      ACTR_REQUIRE_WASM_FIXTURE: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Rust (MSRV)
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          targets: wasm32-wasip2,wasm32-unknown-unknown
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ github.token }}
+      - name: Cache cargo-installed tools
+        id: cargo-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/wasm-pack
+            ~/.cargo/bin/wasm-component-ld
+            ~/.cargo/bin/wasm-tools
+          key: cargo-tools-v1-${{ runner.os }}-wp0.13.1-wcld0.5.22-wt1.247.0
+      - name: Install wasm-pack
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - name: Install wasm Component Model toolchain
+        if: steps.cargo-tools.outputs.cache-hit != 'true'
+        run: |
+          cargo install wasm-component-ld --version 0.5.22 --locked
+          cargo install wasm-tools --version 1.247.0 --locked
+      - uses: Swatinem/rust-cache@v2
+      - name: Generate CLI web runtime assets
+        run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Build at MSRV (locked)
+        run: cargo build --workspace --all-targets --all-features --locked
+
   typescript:
     name: TypeScript
     needs: determine

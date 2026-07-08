@@ -102,7 +102,7 @@ exclude = [
 [workspace.package]
 version = "0.4.12"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/Actrium/actr"
 authors = ["Actor-RTC Contributors"]
@@ -195,8 +195,8 @@ rusqlite = { version = "0.32", features = ["bundled", "serde_json"] }
 
 # === WASM Runtime ===
 # Pinned to 43.0.1 for Component Model + async bindings (Phase 1 migration).
-# 44.0.0 requires rustc >= 1.92, which exceeds the workspace MSRV of 1.88;
-# revisit the pin once MSRV catches up.
+# The workspace MSRV is 1.95; the wasmtime bump to 44/46 is deferred to a
+# later milestone, so the 43.0.1 pin is retained here regardless of MSRV.
 # The `component-model-async` + `async` features are required because
 # wit-bindgen 0.57 guest components emit async-ABI custom sections even when
 # every WIT function is declared sync.
