@@ -34,6 +34,46 @@ fn generated_handler_impl_contains_rpc_method_stubs() {
 }
 
 #[test]
+fn swift_type_name_uses_declaring_package_for_imported_types() {
+    let generator = SwiftGenerator;
+
+    // An imported type declared in package `ask` resolves to the `Ask_`
+    // prefix, not the current `data_stream_app` service's prefix.
+    let imported = TypeRef {
+        proto_type: "ask.ContinuePromptResultStreamsRequest".to_string(),
+        type_name: "ContinuePromptResultStreamsRequest".to_string(),
+        proto_package: "ask".to_string(),
+        proto_file: "remote/ask-service/ask.proto".to_string(),
+    };
+    assert_eq!(
+        generator.swift_type_name(&imported),
+        "Ask_ContinuePromptResultStreamsRequest"
+    );
+
+    // A local type declared in the service's own package keeps that prefix.
+    let local = TypeRef {
+        proto_type: "echo.EchoRequest".to_string(),
+        type_name: "EchoRequest".to_string(),
+        proto_package: "echo".to_string(),
+        proto_file: "local/echo.proto".to_string(),
+    };
+    assert_eq!(generator.swift_type_name(&local), "Echo_EchoRequest");
+}
+
+#[test]
+fn swift_type_name_preserves_nested_parent_scope() {
+    let generator = SwiftGenerator;
+    let nested = TypeRef {
+        proto_type: "ask.Outer.InnerRequest".to_string(),
+        type_name: "InnerRequest".to_string(),
+        proto_package: "ask".to_string(),
+        proto_file: "remote/ask/ask.proto".to_string(),
+    };
+
+    assert_eq!(generator.swift_type_name(&nested), "Ask_Outer.InnerRequest");
+}
+
+#[test]
 fn generated_scaffold_uses_linked_runtime() {
     let generator = SwiftGenerator;
     let service = sample_echo_service();

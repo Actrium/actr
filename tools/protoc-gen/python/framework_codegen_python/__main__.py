@@ -18,6 +18,15 @@ def main() -> int:
     parameters = parse_parameters(request.parameter)
     local_files = {file for file in parameters.get("LocalFiles", "").split(":") if file}
 
+    # Build fully-qualified message name -> (package, proto file) map from the
+    # full descriptor set so imported RPC message types resolve to their real
+    # owner pb2 module instead of the current service's package.
+    type_to_owner: dict[str, tuple[str, str]] = {}
+    for file in request.proto_file:
+        for message in file.message_type:
+            full_name = f"{file.package}.{message.name}" if file.package else message.name
+            type_to_owner[full_name] = (file.package, file.name)
+
     response = plugin.CodeGeneratorResponse()
     response.supported_features = plugin.CodeGeneratorResponse.FEATURE_PROTO3_OPTIONAL
 
@@ -39,6 +48,7 @@ def main() -> int:
                 file_desc.package,
                 normalized_name,
                 file_desc.service,
+                type_to_owner,
             )
         except NotImplementedError as error:
             response.error = str(error)

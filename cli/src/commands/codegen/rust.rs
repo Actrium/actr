@@ -4,7 +4,7 @@ use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
 use crate::utils::to_snake_case;
 use async_trait::async_trait;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
@@ -521,7 +521,6 @@ entry!(
 
     fn generate_scaffold_content(&self, service: &ScaffoldService) -> String {
         let actor_module = actor_module_name(service);
-        let proto_module = proto_module_name(service);
         let handler_interface =
             service_type_or_default(service, service.handler_interface.as_deref(), "Handler");
         let handler_impl = handler_impl_type(service);
@@ -530,7 +529,7 @@ entry!(
         let method_imports = if message_imports.is_empty() {
             String::new()
         } else {
-            format!("use crate::generated::{proto_module}::{{{message_imports}}};\n")
+            format!("{message_imports}\n")
         };
         let framework_imports = if service.methods.is_empty() {
             String::new()
@@ -1005,12 +1004,69 @@ fn proto_module_name(service: &ScaffoldService) -> String {
 }
 
 fn message_imports(service: &ScaffoldService) -> String {
-    let mut imports = BTreeSet::new();
+    // Group referenced message types by their declaring proto package so
+    // imported types are imported from their real owner module instead of
+    // always assuming the current service's package.
+    let mut by_module: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for method in &service.methods {
-        imports.insert(method.input_type.clone());
-        imports.insert(method.output_type.clone());
+        for type_ref in [&method.input_ref, &method.output_ref] {
+            if type_ref.type_name.is_empty() {
+                continue;
+            }
+            let module = if type_ref.proto_package.is_empty() {
+                proto_module_name(service)
+            } else {
+                type_ref.proto_package.replace('.', "_")
+            };
+            by_module
+                .entry(module)
+                .or_default()
+                .insert(rust_message_import_name(type_ref));
+        }
     }
-    imports.into_iter().collect::<Vec<_>>().join(", ")
+
+    by_module
+        .into_iter()
+        .map(|(module, types)| {
+            let names = types.into_iter().collect::<Vec<_>>().join(", ");
+            format!("use crate::generated::{module}::{{{names}}};")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn rust_message_import_name(type_ref: &crate::commands::codegen::TypeRef) -> String {
+    let Some(relative_type) = owner_relative_proto_type(type_ref) else {
+        return type_ref.type_name.clone();
+    };
+    let parts = relative_type.split('.').collect::<Vec<_>>();
+    let Some((type_name, parents)) = parts.split_last() else {
+        return type_ref.type_name.clone();
+    };
+    if parents.is_empty() {
+        type_name.to_string()
+    } else {
+        let parent_modules = parents
+            .iter()
+            .map(|part| to_snake_case(part))
+            .collect::<Vec<_>>()
+            .join("::");
+        format!("{parent_modules}::{type_name}")
+    }
+}
+
+fn owner_relative_proto_type(type_ref: &crate::commands::codegen::TypeRef) -> Option<&str> {
+    let proto_type = type_ref.proto_type.trim().trim_start_matches('.');
+    if proto_type.is_empty() {
+        return None;
+    }
+    if type_ref.proto_package.is_empty() {
+        Some(proto_type)
+    } else {
+        proto_type
+            .strip_prefix(&type_ref.proto_package)
+            .and_then(|relative| relative.strip_prefix('.'))
+    }
 }
 
 fn handler_method_impls(service: &ScaffoldService) -> String {
@@ -1022,6 +1078,8 @@ fn handler_method_impls(service: &ScaffoldService) -> String {
         .methods
         .iter()
         .map(|method| {
+            let input_type = rust_scaffold_type_name(&method.input_ref, &method.input_type);
+            let output_type = rust_scaffold_type_name(&method.output_ref, &method.output_type);
             format!(
                 r#"    async fn {method_name}<C: Context>(
         &self,
@@ -1032,14 +1090,24 @@ fn handler_method_impls(service: &ScaffoldService) -> String {
     }}
 "#,
                 method_name = method.snake_name,
-                input_type = method.input_type,
-                output_type = method.output_type,
+                input_type = input_type,
+                output_type = output_type,
                 service_name = service.name,
                 rpc_name = method.name,
             )
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn rust_scaffold_type_name(type_ref: &crate::commands::codegen::TypeRef, fallback: &str) -> String {
+    type_ref
+        .type_name
+        .rsplit('.')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 fn is_default_cargo_lib_rs(content: &str) -> bool {

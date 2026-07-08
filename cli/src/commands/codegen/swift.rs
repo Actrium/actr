@@ -1,4 +1,5 @@
 use crate::commands::SupportedLanguage;
+use crate::commands::codegen::TypeRef;
 use crate::commands::codegen::proto_model::ProtoSide;
 use crate::commands::codegen::scaffold::ScaffoldCatalog;
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
@@ -1322,25 +1323,7 @@ impl SwiftGenerator {
             .local_services
             .into_iter()
             .map(|service| {
-                let swift_package_prefix = if service.package.is_empty() {
-                    String::new()
-                } else {
-                    service
-                        .package
-                        .split('_')
-                        .map(|segment| {
-                            let mut chars = segment.chars();
-                            match chars.next() {
-                                None => String::new(),
-                                Some(first) => {
-                                    first.to_uppercase().collect::<String>() + chars.as_str()
-                                }
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("")
-                        + "_"
-                };
+                let swift_package_prefix = swift_package_prefix_from_package(&service.package);
 
                 let methods = service
                     .methods
@@ -1357,10 +1340,8 @@ impl SwiftGenerator {
                         ProtoMethod {
                             name: method.name,
                             swift_name,
-                            input_type: self
-                                .swift_type_from_proto(&method.input_type, &swift_package_prefix),
-                            output_type: self
-                                .swift_type_from_proto(&method.output_type, &swift_package_prefix),
+                            input_type: self.swift_type_name(&method.input_ref),
+                            output_type: self.swift_type_name(&method.output_ref),
                         }
                     })
                     .collect();
@@ -1490,23 +1471,13 @@ impl SwiftGenerator {
         paths
     }
 
-    fn swift_type_from_proto(&self, raw_type: &str, swift_package_prefix: &str) -> String {
-        let trimmed = raw_type.trim().trim_start_matches('.');
-
-        // For fully-qualified types (e.g. ".echo_app.EchoRequest" or "other.Foo"),
-        // take only the last component — matching framework-codegen-swift's behavior of
-        // `method.inputType.split(separator: ".").last!` — then apply the current
-        // service's package prefix.
-        let type_name = if trimmed.contains('.') {
-            trimmed.split('.').next_back().unwrap_or(trimmed)
+    fn swift_type_name(&self, type_ref: &TypeRef) -> String {
+        let prefix = swift_package_prefix_from_package(&type_ref.proto_package);
+        let type_name = swift_owner_relative_type_name(type_ref);
+        if prefix.is_empty() {
+            type_name
         } else {
-            trimmed
-        };
-
-        if swift_package_prefix.is_empty() {
-            type_name.to_string()
-        } else {
-            format!("{}{}", swift_package_prefix, type_name)
+            format!("{prefix}{type_name}")
         }
     }
 
@@ -1689,6 +1660,53 @@ impl SwiftGenerator {
         handlebars.register_escape_fn(handlebars::no_escape);
         Ok(handlebars.render_template(LIFECYCLE_ADAPTER_TEMPLATE, &context)?)
     }
+}
+
+fn swift_owner_relative_type_name(type_ref: &TypeRef) -> String {
+    let relative_type = owner_relative_proto_type(type_ref)
+        .filter(|relative| !relative.is_empty())
+        .unwrap_or(type_ref.type_name.as_str());
+    let mut parts = relative_type.split('.').collect::<Vec<_>>();
+    if parts.len() <= 1 {
+        return relative_type.to_string();
+    }
+    let first = parts.remove(0);
+    format!("{first}.{}", parts.join("."))
+}
+
+fn owner_relative_proto_type(type_ref: &TypeRef) -> Option<&str> {
+    let proto_type = type_ref.proto_type.trim().trim_start_matches('.');
+    if proto_type.is_empty() {
+        return None;
+    }
+    if type_ref.proto_package.is_empty() {
+        Some(proto_type)
+    } else {
+        proto_type
+            .strip_prefix(&type_ref.proto_package)
+            .and_then(|relative| relative.strip_prefix('.'))
+    }
+}
+
+/// SwiftProtobuf-style type prefix derived from a proto package: each
+/// underscore-separated segment is capitalised and joined, with a trailing
+/// underscore (e.g. `data_stream_app` -> `DataStreamApp_`, `ask` -> `Ask_`).
+fn swift_package_prefix_from_package(package: &str) -> String {
+    if package.is_empty() {
+        return String::new();
+    }
+    package
+        .split('_')
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("")
+        + "_"
 }
 
 #[cfg(test)]

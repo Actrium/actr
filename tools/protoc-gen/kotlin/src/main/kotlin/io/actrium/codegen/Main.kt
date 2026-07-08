@@ -13,6 +13,8 @@
  */
 package io.actrium.codegen
 
+import com.google.protobuf.DescriptorProtos.DescriptorProto
+import com.google.protobuf.DescriptorProtos.FileDescriptorProto
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse
 
@@ -21,7 +23,7 @@ fun main(args: Array<String>) {
     if (args.isNotEmpty()) {
         when (args[0]) {
             "--version", "-V" -> {
-                println("protoc-gen-actrframework-kotlin 0.4.11")
+                println("protoc-gen-actrframework-kotlin 0.4.12")
                 return
             }
             "--help", "-h" -> {
@@ -36,7 +38,7 @@ fun main(args: Array<String>) {
                 println("    Version info:     protoc-gen-actrframework-kotlin --version")
                 println()
                 println("VERSION:")
-                println("    0.4.11")
+                println("    0.4.12")
                 return
             }
         }
@@ -59,6 +61,16 @@ fun generateCode(request: CodeGeneratorRequest): CodeGeneratorResponse {
     // Parse parameters
     val params = parseParameters(request.parameter)
 
+    // Build fully-qualified message name -> declaring (package, proto file) map
+    // from the full descriptor set so imported RPC message types resolve to
+    // their real owner outer class instead of the current service's package.
+    val typeOwner = mutableMapOf<String, TypeOwner>()
+    for (file in request.protoFileList) {
+        for (message in file.messageTypeList) {
+            collectTypeOwners(file, message, emptyList(), typeOwner)
+        }
+    }
+
     // Process each file to generate
     for (fileName in request.fileToGenerateList) {
         val fileDescriptor = request.protoFileList.find { it.name == fileName } ?: continue
@@ -74,7 +86,8 @@ fun generateCode(request: CodeGeneratorRequest): CodeGeneratorResponse {
                             serviceName = service.name,
                             methods = service.methodList,
                             params = params,
-                            protoFileName = protoFileName
+                            protoFileName = protoFileName,
+                            typeOwner = typeOwner
                     )
 
             val generatedFile = generator.generate()
@@ -83,6 +96,44 @@ fun generateCode(request: CodeGeneratorRequest): CodeGeneratorResponse {
     }
 
     return responseBuilder.build()
+}
+
+private fun collectTypeOwners(
+        file: FileDescriptorProto,
+        message: DescriptorProto,
+        parentPath: List<String>,
+        owners: MutableMap<String, TypeOwner>,
+) {
+    val messagePath = parentPath + message.name
+    val protoName = (listOf(file.`package`).filter { it.isNotEmpty() } + messagePath).joinToString(".")
+    owners[protoName] =
+            TypeOwner(
+                    packageName = file.`package`,
+                    protoFileName = file.name,
+                    javaPackage = file.options.javaPackage,
+                    javaOuterClassName =
+                            file.options.javaOuterClassname.ifEmpty { defaultJavaOuterClassName(file) },
+                    javaMultipleFiles = file.options.javaMultipleFiles,
+                    messagePath = messagePath,
+            )
+    for (nested in message.nestedTypeList) {
+        collectTypeOwners(file, nested, messagePath, owners)
+    }
+}
+
+private fun defaultJavaOuterClassName(file: FileDescriptorProto): String {
+    val baseName = file.name.substringAfterLast("/").removeSuffix(".proto").toPascalCase()
+    val topLevelNames =
+            file.messageTypeList.map { it.name }.toSet() +
+                    file.enumTypeList.map { it.name } +
+                    file.serviceList.map { it.name }
+    return if (baseName in topLevelNames) "${baseName}OuterClass" else baseName
+}
+
+private fun String.toPascalCase(): String {
+    return this.split("_", "-").joinToString("") { word ->
+        word.replaceFirstChar { it.uppercase() }
+    }
 }
 
 /** Parse parameters from protoc --actrframework-kotlin_opt */

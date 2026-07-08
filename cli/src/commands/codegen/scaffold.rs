@@ -1,5 +1,5 @@
 use crate::commands::SupportedLanguage;
-use crate::commands::codegen::metadata::{ActrGenMetadata, load_metadata};
+use crate::commands::codegen::metadata::{ActrGenMetadata, TypeRef, load_metadata};
 use crate::commands::codegen::proto_model::ProtoModel;
 use crate::commands::codegen::traits::GenContext;
 use crate::error::Result;
@@ -24,21 +24,26 @@ pub struct ScaffoldService {
     pub methods: Vec<ScaffoldMethod>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ScaffoldMethod {
     pub name: String,
     pub snake_name: String,
     pub input_type: String,
     pub output_type: String,
     pub route_key: String,
+    pub input_ref: TypeRef,
+    pub output_ref: TypeRef,
 }
 
 impl ScaffoldCatalog {
     pub fn load(context: &GenContext, language: SupportedLanguage) -> Result<Self> {
         let expected_language = language_key(language);
-        let metadata = load_metadata(&context.output)?
+        let metadata = match load_metadata(&context.output)?
             .filter(|metadata| metadata.language == expected_language)
-            .unwrap_or_else(|| ActrGenMetadata::from_proto_model(language, &context.proto_model));
+        {
+            Some(metadata) => metadata,
+            None => ActrGenMetadata::from_proto_model(language, &context.proto_model)?,
+        };
         Ok(Self::from_metadata(&metadata))
     }
 
@@ -65,6 +70,8 @@ impl ScaffoldCatalog {
                             input_type: method.input_type.clone(),
                             output_type: method.output_type.clone(),
                             route_key: method.route_key.clone(),
+                            input_ref: method.input_ref.clone(),
+                            output_ref: method.output_ref.clone(),
                         })
                         .collect(),
                 })
@@ -90,6 +97,8 @@ impl ScaffoldCatalog {
                             input_type: method.input_type.clone(),
                             output_type: method.output_type.clone(),
                             route_key: method.route_key.clone(),
+                            input_ref: method.input_ref.clone(),
+                            output_ref: method.output_ref.clone(),
                         })
                         .collect(),
                 })

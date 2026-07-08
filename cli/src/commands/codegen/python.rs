@@ -7,6 +7,7 @@ use actr_config::LockFile;
 use async_trait::async_trait;
 use handlebars::Handlebars;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tracing::{debug, info, warn};
@@ -38,6 +39,14 @@ struct ProtoMethod {
     snake_name: String,
     input_type: String,
     output_type: String,
+    /// pb2 module alias for the request type's declaring package
+    /// (e.g. `ask_pb2`), so imported types resolve to their real owner.
+    input_alias: String,
+    output_alias: String,
+    /// Full `from <pkg> import <module>_pb2 as <alias>` import line for the
+    /// request/response type's declaring proto file.
+    input_import: String,
+    output_import: String,
     route_key: String,
 }
 
@@ -567,12 +576,32 @@ impl PythonGenerator {
                 methods: service
                     .methods
                     .into_iter()
-                    .map(|method| ProtoMethod {
-                        name: method.name,
-                        snake_name: method.snake_name,
-                        input_type: method.input_type,
-                        output_type: method.output_type,
-                        route_key: method.route_key,
+                    .map(|method| {
+                        let (input_alias, input_import) = pb2_alias_and_import(
+                            &method.input_ref.proto_package,
+                            &method.input_ref.proto_file,
+                        );
+                        let (output_alias, output_import) = pb2_alias_and_import(
+                            &method.output_ref.proto_package,
+                            &method.output_ref.proto_file,
+                        );
+                        ProtoMethod {
+                            name: method.name,
+                            snake_name: method.snake_name,
+                            input_type: python_proto_type_name(
+                                &method.input_ref,
+                                &method.input_type,
+                            ),
+                            output_type: python_proto_type_name(
+                                &method.output_ref,
+                                &method.output_type,
+                            ),
+                            input_alias,
+                            output_alias,
+                            input_import,
+                            output_import,
+                            route_key: method.route_key,
+                        }
                     })
                     .collect(),
             })
@@ -594,12 +623,10 @@ impl PythonGenerator {
             workload_name: String,
             #[serde(rename = "DISPATCHER_NAME")]
             dispatcher_name: String,
-            #[serde(rename = "PROTO_MODULE")]
-            proto_module: String,
-            #[serde(rename = "PB2_MODULE")]
-            pb2_module: String,
             #[serde(rename = "ACTOR_MODULE")]
             actor_module: String,
+            #[serde(rename = "PB2_IMPORTS")]
+            pb2_imports: Vec<String>,
             #[serde(rename = "SERVICES")]
             services: Vec<ProtoService>,
             #[serde(rename = "HAS_SERVICES")]
@@ -612,9 +639,22 @@ impl PythonGenerator {
             )
         })?;
 
-        let proto_module = first_service.proto_module.clone();
-        let pb2_module = first_service.pb2_package.clone();
         let actor_module = first_service.generated_module.clone();
+
+        // Collect every distinct pb2 import line referenced by the services'
+        // RPC methods, so imported types are imported from their real owner
+        // pb2 module instead of a single local-service package.
+        let mut pb2_imports: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for service in services {
+            for method in &service.methods {
+                for import in [&method.input_import, &method.output_import] {
+                    if !import.is_empty() && seen.insert(import.clone()) {
+                        pb2_imports.push(import.clone());
+                    }
+                }
+            }
+        }
 
         let dispatcher_name = services
             .first()
@@ -625,9 +665,8 @@ impl PythonGenerator {
             service_name: service_name.to_string(),
             workload_name: workload_name.to_string(),
             dispatcher_name,
-            proto_module,
-            pb2_module,
             actor_module,
+            pb2_imports,
             services: services.to_vec(),
             has_services: !services.is_empty(),
         };
@@ -643,6 +682,60 @@ fn proto_module_from_path(path: &Path) -> String {
         .and_then(|stem| stem.to_str())
         .unwrap_or("proto")
         .to_string()
+}
+
+/// pb2 module alias for a declaring proto file, matching the Python protoc
+/// plugin's convention. The proto file path is included so two files in the
+/// same proto package cannot shadow each other.
+fn pb2_alias_for_proto_file(proto_file: &str) -> String {
+    let normalized = proto_file
+        .trim()
+        .trim_end_matches(".proto")
+        .replace(['/', '.', '-'], "_");
+    let base = normalized.to_ascii_lowercase();
+    if base.is_empty() {
+        "local_pb2".to_string()
+    } else {
+        format!("{base}_pb2")
+    }
+}
+
+/// Full `from <pb2_module> import <proto_module>_pb2 as <alias>` import line
+/// for a proto file, as referenced from the user scaffold (`ActrService.py`).
+fn pb2_import_line(proto_file: &str, alias: &str) -> String {
+    let path = Path::new(proto_file);
+    let proto_module = proto_module_from_path(path);
+    let pb2_module = pb2_package_from_path(path);
+    format!("from {pb2_module} import {proto_module}_pb2 as {alias}")
+}
+
+/// Resolve the pb2 alias and import line for a declaring proto package/file.
+fn pb2_alias_and_import(_proto_package: &str, proto_file: &str) -> (String, String) {
+    let alias = pb2_alias_for_proto_file(proto_file);
+    let import = pb2_import_line(proto_file, &alias);
+    (alias, import)
+}
+
+fn python_proto_type_name(type_ref: &crate::commands::codegen::TypeRef, fallback: &str) -> String {
+    owner_relative_proto_type(type_ref)
+        .filter(|relative| !relative.is_empty())
+        .or_else(|| (!type_ref.type_name.is_empty()).then_some(type_ref.type_name.as_str()))
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn owner_relative_proto_type(type_ref: &crate::commands::codegen::TypeRef) -> Option<&str> {
+    let proto_type = type_ref.proto_type.trim().trim_start_matches('.');
+    if proto_type.is_empty() {
+        return None;
+    }
+    if type_ref.proto_package.is_empty() {
+        Some(proto_type)
+    } else {
+        proto_type
+            .strip_prefix(&type_ref.proto_package)
+            .and_then(|relative| relative.strip_prefix('.'))
+    }
 }
 
 fn pb2_package_from_path(path: &Path) -> String {
