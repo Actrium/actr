@@ -380,9 +380,10 @@ async fn shutdown_is_terminal_for_late_dispatch() {
     reg.dispatch(chunk_seq("s1", 1), ActrId::default(), RELIABLE)
         .await;
 
-    match tokio::time::timeout(Duration::from_millis(200), probe.started_rx.recv()).await {
-        Ok(Some(started)) => panic!("callback ran after registry shutdown: {started}"),
-        Ok(None) | Err(_) => {}
+    if let Ok(Some(started)) =
+        tokio::time::timeout(Duration::from_millis(200), probe.started_rx.recv()).await
+    {
+        panic!("callback ran after registry shutdown: {started}");
     }
     assert_eq!(reg.worker_len(), 0, "late dispatch resurrected a worker");
 }
