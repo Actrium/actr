@@ -80,6 +80,14 @@ use actr_framework::guest::dynclib_abi::{
 /// pin behaviour against upstream default drift and as forward wiring for the
 /// M4 async world. Host-side asynchrony (fiber suspension across host calls)
 /// comes from the `async` Cargo feature + `call_async`, independent of this.
+///
+/// We additionally pin `concurrency_support(true)` — the wasmtime 46 gate
+/// (`Config::concurrency_support`, `config.rs`: "This option defaults to
+/// `true`") that governs the component-model concurrency surface. When it is
+/// off, `Store::run_concurrent` panics. It is on by default in 46, but the M5
+/// concurrent runner depends on it, so we set it explicitly to be self-
+/// documenting and to guard against an upstream default flip. Enabling it
+/// alongside `wasm_component_model_async(true)` is the supported combination.
 fn build_engine() -> WasmResult<Engine> {
     let mut config = Config::new();
     // `async_support(true)` was required before wasmtime 43; since then
@@ -87,6 +95,10 @@ fn build_engine() -> WasmResult<Engine> {
     // We pair it with explicit component-model flags to be self-documenting.
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
+    // Explicitly gate the concurrency surface (`run_concurrent`) on. Defaults
+    // to true on wasmtime 46; pinned here so a future default flip can never
+    // silently turn the M5 concurrent runner into a runtime panic.
+    config.concurrency_support(true);
     if std::env::var_os("ACTR_WASM_FAST_COMPILE").is_some() {
         config.cranelift_opt_level(OptLevel::None);
         config.cranelift_regalloc_algorithm(RegallocAlgorithm::SinglePass);
