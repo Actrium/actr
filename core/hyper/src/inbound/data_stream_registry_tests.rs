@@ -131,10 +131,10 @@ impl HarnessProbe {
 #[test]
 fn register_and_default() {
     let reg = DataStreamRegistry::default();
-    assert_eq!(reg.callbacks.len(), 0);
+    assert_eq!(reg.callback_len(), 0);
     let (cb, _) = counting_callback();
     reg.register("s1".into(), cb);
-    assert_eq!(reg.callbacks.len(), 1);
+    assert_eq!(reg.callback_len(), 1);
 }
 
 #[test]
@@ -143,10 +143,10 @@ fn unregister_removes_stream() {
     let (cb, _) = counting_callback();
     reg.register("s1".into(), cb);
     reg.unregister("s1");
-    assert_eq!(reg.callbacks.len(), 0);
+    assert_eq!(reg.callback_len(), 0);
     // Unknown id is a no-op.
     reg.unregister("never");
-    assert_eq!(reg.callbacks.len(), 0);
+    assert_eq!(reg.callback_len(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -165,8 +165,8 @@ async fn dispatch_unknown_stream_is_noop() {
     let reg = DataStreamRegistry::new();
     reg.dispatch(chunk("missing"), ActrId::default(), RELIABLE)
         .await;
-    assert_eq!(reg.callbacks.len(), 0);
-    assert_eq!(reg.workers.len(), 0);
+    assert_eq!(reg.callback_len(), 0);
+    assert_eq!(reg.worker_len(), 0);
 }
 
 /// (1) Same stream, reliable: a slow first chunk cannot be overtaken; the
@@ -240,7 +240,50 @@ async fn callback_panic_is_isolated() {
     assert_eq!(probe.completions(), vec![2]);
     assert_eq!(reg.panic_count(), 1);
     // Worker still alive for this stream.
-    assert_eq!(reg.workers.len(), 1);
+    assert_eq!(reg.worker_len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn synchronous_callback_panic_is_isolated() {
+    let reg = DataStreamRegistry::new();
+    let (done_tx, mut done_rx) = tokio_mpsc::unbounded_channel::<u64>();
+
+    let cb: DataStreamCallback = Arc::new(move |chunk: DataStream, _sender| {
+        let seq = chunk.sequence;
+        if seq == 1 {
+            panic!("intentional synchronous test panic on seq {seq}");
+        }
+
+        let done_tx = done_tx.clone();
+        Box::pin(async move {
+            let _ = done_tx.send(seq);
+            Ok(())
+        })
+    });
+    reg.register("s1".into(), cb);
+
+    reg.dispatch(chunk_seq("s1", 1), ActrId::default(), RELIABLE)
+        .await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if reg.panic_count() == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("synchronous callback panic was not counted");
+
+    reg.dispatch(chunk_seq("s1", 2), ActrId::default(), RELIABLE)
+        .await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+            .await
+            .expect("worker did not continue after synchronous panic")
+            .expect("done channel closed"),
+        2
+    );
 }
 
 /// (4) unregister = drain: chunks queued behind a gate still all run after the
@@ -261,7 +304,7 @@ async fn unregister_drains_queued_chunks() {
 
     // Unregister: drops the stored sender -> worker will drain then exit.
     reg.unregister("s1");
-    assert_eq!(reg.callbacks.len(), 0);
+    assert_eq!(reg.callback_len(), 0);
 
     release1.send(()).unwrap();
     let mut seen = Vec::new();
@@ -324,7 +367,24 @@ async fn shutdown_cancels_queue_and_joins() {
 
     // The in-flight seq 1 completed; queued seq 2/3 were cancelled, not run.
     assert_eq!(*completions.lock().unwrap(), vec![1]);
-    assert_eq!(reg.workers.len(), 0);
+    assert_eq!(reg.worker_len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_is_terminal_for_late_dispatch() {
+    let reg = DataStreamRegistry::new();
+    let (cb, _h, mut probe) = Harness::new();
+    reg.register("s1".into(), cb);
+
+    reg.shutdown().await;
+    reg.dispatch(chunk_seq("s1", 1), ActrId::default(), RELIABLE)
+        .await;
+
+    match tokio::time::timeout(Duration::from_millis(200), probe.started_rx.recv()).await {
+        Ok(Some(started)) => panic!("callback ran after registry shutdown: {started}"),
+        Ok(None) | Err(_) => {}
+    }
+    assert_eq!(reg.worker_len(), 0, "late dispatch resurrected a worker");
 }
 
 /// (6) LatencyFirst overflow: with capacity 1 and a blocked callback,
@@ -489,6 +549,91 @@ async fn reregister_swaps_handler_and_preserves_order() {
     assert_eq!(*record.lock().unwrap(), vec![('A', 1), ('B', 2)]);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unregister_then_reregister_waits_for_draining_worker() {
+    let reg = Arc::new(DataStreamRegistry::with_capacity(8));
+    let record: Arc<Mutex<Vec<(char, u64)>>> = Arc::new(Mutex::new(Vec::new()));
+    let gates: Arc<Mutex<HashMap<u64, oneshot::Receiver<()>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let (started_tx, mut started_rx) = tokio_mpsc::unbounded_channel::<(char, u64)>();
+    let (done_tx, mut done_rx) = tokio_mpsc::unbounded_channel::<(char, u64)>();
+
+    let make_cb = |label: char| -> DataStreamCallback {
+        let record = record.clone();
+        let gates = gates.clone();
+        let started_tx = started_tx.clone();
+        let done_tx = done_tx.clone();
+        Arc::new(move |chunk: DataStream, _sender| {
+            let record = record.clone();
+            let gates = gates.clone();
+            let started_tx = started_tx.clone();
+            let done_tx = done_tx.clone();
+            Box::pin(async move {
+                let seq = chunk.sequence;
+                let _ = started_tx.send((label, seq));
+                let gate = gates.lock().unwrap().remove(&seq);
+                if let Some(rx) = gate {
+                    let _ = rx.await;
+                }
+                record.lock().unwrap().push((label, seq));
+                let _ = done_tx.send((label, seq));
+                Ok(())
+            })
+        })
+    };
+
+    reg.register("s1".into(), make_cb('A'));
+    let (release1_tx, release1_rx) = oneshot::channel();
+    gates.lock().unwrap().insert(1, release1_rx);
+
+    reg.dispatch(chunk_seq("s1", 1), ActrId::default(), RELIABLE)
+        .await;
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), started_rx.recv())
+            .await
+            .expect("seq 1 never started")
+            .unwrap(),
+        ('A', 1)
+    );
+
+    reg.unregister("s1");
+    reg.register("s1".into(), make_cb('B'));
+
+    let reg_dispatch = reg.clone();
+    let dispatch2 = tokio::spawn(async move {
+        reg_dispatch
+            .dispatch(chunk_seq("s1", 2), ActrId::default(), RELIABLE)
+            .await;
+    });
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), started_rx.recv())
+            .await
+            .is_err(),
+        "re-register created a second same-stream worker while the old worker was draining"
+    );
+    assert!(record.lock().unwrap().is_empty());
+
+    release1_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), dispatch2)
+        .await
+        .expect("dispatch after re-register never completed")
+        .expect("dispatch task panicked");
+
+    let first = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+        .await
+        .expect("seq 1 never finished")
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(2), done_rx.recv())
+        .await
+        .expect("seq 2 never finished")
+        .unwrap();
+
+    assert_eq!(first, ('A', 1));
+    assert_eq!(second, ('B', 2));
+    assert_eq!(*record.lock().unwrap(), vec![('A', 1), ('B', 2)]);
+}
+
 /// (8) Dispatching to an unregistered stream only warns; it never panics.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_after_unregister_is_warn_only() {
@@ -499,5 +644,5 @@ async fn dispatch_after_unregister_is_warn_only() {
 
     // No callback registered -> warn + return, no panic, no worker spawned.
     reg.dispatch(chunk("s1"), ActrId::default(), RELIABLE).await;
-    assert_eq!(reg.workers.len(), 0);
+    assert_eq!(reg.worker_len(), 0);
 }

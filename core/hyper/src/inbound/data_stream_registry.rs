@@ -32,6 +32,11 @@
 //!   it was spawned with, which also makes any residual/racing worker benign:
 //!   whichever worker drains a chunk runs the callback the dispatcher captured
 //!   for that chunk, never a stale one.
+//! - **unregister + re-register = drain first**: if a stream is re-registered
+//!   while its previous worker is draining already-accepted chunks, new
+//!   dispatches wait for the previous worker to exit before creating a
+//!   replacement worker. This preserves the single-worker invariant for the
+//!   `stream_id`.
 //! - **shutdown = cancel**: `shutdown()` cancels the shared token so workers
 //!   drop queued chunks, let any in-flight callback finish, then exit; all
 //!   worker handles are joined (with a bounded timeout, else aborted). No
@@ -41,14 +46,14 @@
 //! shut down, a stream stays gone until explicitly re-registered.
 
 use actr_protocol::{ActorResult, ActrId, DataStream, PayloadType};
-use dashmap::DashMap;
 use futures_util::FutureExt as _;
 use futures_util::future::BoxFuture;
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -86,10 +91,65 @@ struct QueuedChunk {
 
 /// Per-stream serial executor: a bounded queue plus the worker task draining it.
 struct StreamWorker {
-    /// Bounded sender into the worker's queue.
-    tx: mpsc::Sender<QueuedChunk>,
-    /// Worker task handle (joined on shutdown, detached-to-drain on unregister).
+    /// Bounded sender into the worker's queue. `None` means the worker is
+    /// draining a previous registration and must finish before a replacement
+    /// worker can be spawned for the same stream.
+    tx: Option<mpsc::Sender<QueuedChunk>>,
+    /// Worker task handle (retained until shutdown or until the task exits).
     handle: JoinHandle<()>,
+    /// Monotonic identity used so an exiting worker only cleans up its own slot.
+    generation: u64,
+    /// Completion signal for dispatches waiting on a draining old worker.
+    done: Arc<WorkerDone>,
+}
+
+struct WorkerDone {
+    finished: AtomicBool,
+    done_tx: watch::Sender<bool>,
+}
+
+impl WorkerDone {
+    fn new() -> Self {
+        let (done_tx, _) = watch::channel(false);
+        Self {
+            finished: AtomicBool::new(false),
+            done_tx,
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    fn subscribe(&self) -> watch::Receiver<bool> {
+        self.done_tx.subscribe()
+    }
+
+    fn mark_finished(&self) {
+        self.finished.store(true, Ordering::Release);
+        let _ = self.done_tx.send(true);
+    }
+}
+
+#[derive(Default)]
+struct StreamEntry {
+    callback: Option<DataStreamCallback>,
+    worker: Option<StreamWorker>,
+}
+
+#[derive(Default)]
+struct RegistryState {
+    streams: HashMap<String, StreamEntry>,
+    shutting_down: bool,
+    next_generation: u64,
+}
+
+struct RegistryInner {
+    state: Mutex<RegistryState>,
+    shutdown: CancellationToken,
+    queue_depth: usize,
+    panic_count: Arc<AtomicU64>,
+    dropped_count: Arc<AtomicU64>,
 }
 
 /// DataStreamRegistry - Stream chunk callback manager
@@ -105,18 +165,7 @@ struct StreamWorker {
 /// - Game state streams (position updates, event streams)
 /// - Log streams, sensor data streams, metrics streams
 pub(crate) struct DataStreamRegistry {
-    /// Concurrent mapping of stream_id → callback function.
-    callbacks: DashMap<String, DataStreamCallback>,
-    /// Concurrent mapping of stream_id → serial worker.
-    workers: DashMap<String, StreamWorker>,
-    /// Cancellation token shared with every worker; cancelling it drains all.
-    shutdown: CancellationToken,
-    /// Bounded queue depth applied to newly-spawned workers.
-    queue_depth: usize,
-    /// Count of callback panics isolated by workers (observability hook).
-    panic_count: Arc<AtomicU64>,
-    /// Count of chunks dropped due to a full LatencyFirst queue (observability hook).
-    dropped_count: Arc<AtomicU64>,
+    inner: Arc<RegistryInner>,
 }
 
 impl Default for DataStreamRegistry {
@@ -148,32 +197,63 @@ impl DataStreamRegistry {
 
     fn build(queue_depth: usize, shutdown: CancellationToken) -> Self {
         Self {
-            callbacks: DashMap::new(),
-            workers: DashMap::new(),
-            shutdown,
-            queue_depth,
-            panic_count: Arc::new(AtomicU64::new(0)),
-            dropped_count: Arc::new(AtomicU64::new(0)),
+            inner: Arc::new(RegistryInner {
+                state: Mutex::new(RegistryState::default()),
+                shutdown,
+                queue_depth,
+                panic_count: Arc::new(AtomicU64::new(0)),
+                dropped_count: Arc::new(AtomicU64::new(0)),
+            }),
         }
     }
 
     /// Number of callback panics isolated so far (observability / metric hook).
     #[allow(dead_code)]
     pub(crate) fn panic_count(&self) -> u64 {
-        self.panic_count.load(Ordering::Relaxed)
+        self.inner.panic_count.load(Ordering::Relaxed)
     }
 
     /// Number of chunks dropped by a full LatencyFirst queue (observability / metric hook).
     #[allow(dead_code)]
     pub(crate) fn dropped_count(&self) -> u64 {
-        self.dropped_count.load(Ordering::Relaxed)
+        self.inner.dropped_count.load(Ordering::Relaxed)
     }
 
     /// Test-only handle to the shared shutdown token so tests can observe
     /// cancellation deterministically without sleeping.
     #[cfg(test)]
     pub(crate) fn shutdown_token(&self) -> CancellationToken {
-        self.shutdown.clone()
+        self.inner.shutdown.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn callback_len(&self) -> usize {
+        self.inner
+            .state
+            .lock()
+            .expect("data stream registry state poisoned")
+            .streams
+            .values()
+            .filter(|entry| entry.callback.is_some())
+            .count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worker_len(&self) -> usize {
+        self.inner
+            .state
+            .lock()
+            .expect("data stream registry state poisoned")
+            .streams
+            .values()
+            .filter(|entry| {
+                entry
+                    .worker
+                    .as_ref()
+                    .and_then(|worker| worker.tx.as_ref())
+                    .is_some()
+            })
+            .count()
     }
 
     /// Register stream callback
@@ -182,7 +262,20 @@ impl DataStreamRegistry {
     /// - `stream_id`: stream identifier (must be globally unique)
     /// - `callback`: data stream handler callback
     pub(crate) fn register(&self, stream_id: String, callback: DataStreamCallback) {
-        self.callbacks.insert(stream_id.clone(), callback);
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("data stream registry state poisoned");
+        if state.shutting_down || self.inner.shutdown.is_cancelled() {
+            tracing::debug!(
+                stream_id = %stream_id,
+                "data stream registry is shut down; ignoring register"
+            );
+            return;
+        }
+
+        state.streams.entry(stream_id.clone()).or_default().callback = Some(callback);
         tracing::info!("📡 Registered data stream handler: {}", stream_id);
     }
 
@@ -192,11 +285,33 @@ impl DataStreamRegistry {
     /// drains any already-queued chunks and then exits on its own; it is never
     /// resurrected.
     pub(crate) fn unregister(&self, stream_id: &str) {
-        self.callbacks.remove(stream_id);
-        // Dropping the StreamWorker drops its sender -> the worker sees the
-        // channel close after draining and exits. The JoinHandle is detached
-        // (dropped), never aborted, so in-flight and queued chunks still run.
-        self.workers.remove(stream_id);
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("data stream registry state poisoned");
+
+        let should_remove = if let Some(entry) = state.streams.get_mut(stream_id) {
+            entry.callback = None;
+            if let Some(worker) = entry.worker.as_mut() {
+                // Dropping the sender closes the worker queue after any
+                // dispatch clones complete. The handle stays tracked so a
+                // re-register cannot create a concurrent same-stream worker.
+                worker.tx.take();
+            }
+
+            entry
+                .worker
+                .as_ref()
+                .is_none_or(|worker| worker.done.is_finished())
+        } else {
+            false
+        };
+
+        if should_remove {
+            state.streams.remove(stream_id);
+        }
+
         tracing::info!("🚫 Unregistered data stream handler: {}", stream_id);
     }
 
@@ -217,15 +332,10 @@ impl DataStreamRegistry {
     ) {
         let stream_id = chunk.stream_id.clone();
 
-        let callback = match self.callbacks.get(&stream_id) {
-            Some(cb) => cb.clone(),
-            None => {
-                tracing::warn!("⚠️ No callback registered for stream: {}", stream_id);
-                return;
-            }
+        let (tx, callback) = match self.worker_tx(&stream_id).await {
+            Some(worker) => worker,
+            None => return,
         };
-
-        let tx = self.worker_tx(&stream_id);
         let queued = QueuedChunk {
             chunk,
             sender_id,
@@ -236,7 +346,7 @@ impl DataStreamRegistry {
             PayloadType::StreamLatencyFirst => match tx.try_send(queued) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    let dropped = self.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
+                    let dropped = self.inner.dropped_count.fetch_add(1, Ordering::Relaxed) + 1;
                     tracing::warn!(
                         stream_id = %stream_id,
                         dropped_total = dropped,
@@ -279,16 +389,25 @@ impl DataStreamRegistry {
     /// Gracefully shut down every worker: cancel queued work, let in-flight
     /// callbacks finish, then join all worker tasks (bounded, else abort).
     pub(crate) async fn shutdown(&self) {
-        self.shutdown.cancel();
+        self.inner.shutdown.cancel();
 
-        // Drain the worker map, taking ownership of the handles.
-        let keys: Vec<String> = self.workers.iter().map(|e| e.key().clone()).collect();
-        let mut handles = Vec::with_capacity(keys.len());
-        for key in keys {
-            if let Some((_, worker)) = self.workers.remove(&key) {
-                handles.push(worker.handle);
+        let handles = {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .expect("data stream registry state poisoned");
+            state.shutting_down = true;
+
+            let mut handles = Vec::new();
+            for (_, mut entry) in state.streams.drain() {
+                if let Some(mut worker) = entry.worker.take() {
+                    worker.tx.take();
+                    handles.push(worker.handle);
+                }
             }
-        }
+            handles
+        };
 
         if handles.is_empty() {
             return;
@@ -315,37 +434,121 @@ impl DataStreamRegistry {
 
     /// Get or lazily create the sender for `stream_id`'s worker.
     ///
-    /// Returns a cloned bounded sender; the DashMap guard is never held across
-    /// an `await` (the caller may block on `send().await`). The worker carries
-    /// no callback of its own — each chunk carries the callback to run (see
-    /// [`QueuedChunk`]).
-    fn worker_tx(&self, stream_id: &str) -> mpsc::Sender<QueuedChunk> {
-        if let Some(worker) = self.workers.get(stream_id) {
-            return worker.tx.clone();
-        }
+    /// The registry lock is never held across an `await` (the caller may block
+    /// on `send().await`). The worker carries no callback of its own — each
+    /// chunk carries the callback to run (see [`QueuedChunk`]).
+    async fn worker_tx(
+        &self,
+        stream_id: &str,
+    ) -> Option<(mpsc::Sender<QueuedChunk>, DataStreamCallback)> {
+        loop {
+            let wait_for = {
+                let mut state = self
+                    .inner
+                    .state
+                    .lock()
+                    .expect("data stream registry state poisoned");
 
-        let entry = self
-            .workers
-            .entry(stream_id.to_string())
-            .or_insert_with(|| {
-                let (tx, rx) = mpsc::channel(self.queue_depth);
-                let handle = tokio::spawn(Self::worker_loop(
-                    stream_id.to_string(),
-                    rx,
-                    self.shutdown.clone(),
-                    self.panic_count.clone(),
-                ));
-                StreamWorker { tx, handle }
-            });
-        entry.tx.clone()
+                if state.shutting_down || self.inner.shutdown.is_cancelled() {
+                    tracing::debug!(
+                        stream_id = %stream_id,
+                        "data stream registry is shut down; dropping chunk"
+                    );
+                    return None;
+                }
+
+                let Some(callback) = state
+                    .streams
+                    .get(stream_id)
+                    .and_then(|entry| entry.callback.clone())
+                else {
+                    tracing::warn!("⚠️ No callback registered for stream: {}", stream_id);
+                    return None;
+                };
+
+                let mut should_spawn = false;
+                let wait_for = {
+                    let entry = state.streams.entry(stream_id.to_string()).or_default();
+                    if let Some(worker) = entry.worker.as_mut() {
+                        if worker.done.is_finished() {
+                            entry.worker.take();
+                            should_spawn = true;
+                            None
+                        } else if let Some(tx) = worker.tx.as_ref() {
+                            return Some((tx.clone(), callback));
+                        } else {
+                            Some(worker.done.clone())
+                        }
+                    } else {
+                        should_spawn = true;
+                        None
+                    }
+                };
+
+                if should_spawn {
+                    let generation = state.next_generation;
+                    state.next_generation += 1;
+                    let (tx, worker) = self.spawn_worker(stream_id, generation);
+                    state
+                        .streams
+                        .get_mut(stream_id)
+                        .expect("stream entry disappeared while locked")
+                        .worker = Some(worker);
+                    return Some((tx, callback));
+                }
+
+                wait_for
+            };
+
+            if let Some(done) = wait_for {
+                let mut done_rx = done.subscribe();
+                if done.is_finished() {
+                    continue;
+                }
+                tokio::select! {
+                    _ = done_rx.changed() => {}
+                    _ = self.inner.shutdown.cancelled() => return None,
+                }
+            }
+        }
+    }
+
+    fn spawn_worker(
+        &self,
+        stream_id: &str,
+        generation: u64,
+    ) -> (mpsc::Sender<QueuedChunk>, StreamWorker) {
+        let (tx, rx) = mpsc::channel(self.inner.queue_depth);
+        let done = Arc::new(WorkerDone::new());
+        let handle = tokio::spawn(Self::worker_loop(
+            stream_id.to_string(),
+            generation,
+            rx,
+            Arc::downgrade(&self.inner),
+            self.inner.shutdown.clone(),
+            self.inner.panic_count.clone(),
+            done.clone(),
+        ));
+        (
+            tx.clone(),
+            StreamWorker {
+                tx: Some(tx),
+                handle,
+                generation,
+                done,
+            },
+        )
     }
 
     /// Per-stream worker loop: drain the queue in order, run-to-completion.
     async fn worker_loop(
         stream_id: String,
+        generation: u64,
         mut rx: mpsc::Receiver<QueuedChunk>,
+        registry: Weak<RegistryInner>,
         shutdown: CancellationToken,
         panic_count: Arc<AtomicU64>,
+        done: Arc<WorkerDone>,
     ) {
         loop {
             tokio::select! {
@@ -375,6 +578,24 @@ impl DataStreamRegistry {
                 }
             }
         }
+
+        done.mark_finished();
+        if let Some(registry) = registry.upgrade() {
+            let mut state = registry
+                .state
+                .lock()
+                .expect("data stream registry state poisoned");
+            let should_remove = state.streams.get(&stream_id).is_some_and(|entry| {
+                entry.callback.is_none()
+                    && entry
+                        .worker
+                        .as_ref()
+                        .is_some_and(|worker| worker.generation == generation)
+            });
+            if should_remove {
+                state.streams.remove(&stream_id);
+            }
+        }
     }
 
     /// Invoke a single callback with panic isolation; errors and panics are
@@ -386,7 +607,13 @@ impl DataStreamRegistry {
             callback,
         } = queued;
         let sequence = chunk.sequence;
-        let fut = callback(chunk, sender_id);
+        let fut = match std::panic::catch_unwind(AssertUnwindSafe(|| callback(chunk, sender_id))) {
+            Ok(fut) => fut,
+            Err(panic_payload) => {
+                Self::record_callback_panic(stream_id, sequence, panic_count, panic_payload);
+                return;
+            }
+        };
         match AssertUnwindSafe(fut).catch_unwind().await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -398,17 +625,26 @@ impl DataStreamRegistry {
                 );
             }
             Err(panic_payload) => {
-                let count = panic_count.fetch_add(1, Ordering::Relaxed) + 1;
-                let info = panic_message(panic_payload);
-                tracing::error!(
-                    stream_id = %stream_id,
-                    sequence,
-                    panic = %info,
-                    panic_total = count,
-                    "❌ data stream callback panicked; isolated, continuing"
-                );
+                Self::record_callback_panic(stream_id, sequence, panic_count, panic_payload);
             }
         }
+    }
+
+    fn record_callback_panic(
+        stream_id: &str,
+        sequence: u64,
+        panic_count: &AtomicU64,
+        panic_payload: Box<dyn std::any::Any + Send>,
+    ) {
+        let count = panic_count.fetch_add(1, Ordering::Relaxed) + 1;
+        let info = panic_message(panic_payload);
+        tracing::error!(
+            stream_id = %stream_id,
+            sequence,
+            panic = %info,
+            panic_total = count,
+            "❌ data stream callback panicked; isolated, continuing"
+        );
     }
 }
 
