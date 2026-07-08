@@ -88,6 +88,11 @@ impl HostGate {
             envelope.request_id
         );
 
+        // Sender-side timeout contract (#254): reject non-positive deadlines
+        // before creating the oneshot / registering pending, mirroring
+        // PeerGate::send_request and RuntimeContext::call_raw.
+        crate::outbound::validate_rpc_timeout_ms(envelope.timeout_ms)?;
+
         envelope.direction = Some(Direction::Request as i32);
 
         // 1. Create a oneshot channel.
@@ -299,6 +304,28 @@ mod tests {
                 .expect("message handler should receive envelope");
             // One-way traffic carries the explicit fire-and-forget label.
             assert_eq!(received.direction, Some(Direction::Tell as i32));
+        });
+    }
+
+    #[test]
+    fn send_request_rejects_non_positive_timeout() {
+        futures::executor::block_on(async {
+            let gate = HostGate::new();
+            let envelope = RpcEnvelope {
+                request_id: "zero-timeout".to_string(),
+                route_key: "pkg.Service.Method".to_string(),
+                direction: Some(Direction::Request as i32),
+                timeout_ms: 0,
+                ..Default::default()
+            };
+            let err = gate
+                .send_request(&ActrId::default(), envelope)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, ActrError::InvalidArgument(_)),
+                "timeout_ms == 0 must be rejected before registering pending, got {err:?}"
+            );
         });
     }
 }
