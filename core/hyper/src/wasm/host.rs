@@ -44,6 +44,8 @@ use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, OptLevel, RegallocAlgorithm, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
+use super::host_v2::WasmWorkloadV2;
+
 use super::component_bindings::ActrWorkloadGuest;
 use super::component_bindings::actr::workload::host::Host as HostImports;
 use super::component_bindings::actr::workload::types::Host as TypesHost;
@@ -678,23 +680,184 @@ impl WasmHost {
 
     /// Instantiate the component into a runnable internal workload.
     ///
+    /// Probes which `actr:workload` world the component implements
+    /// (0.1.0 sync → [`WasmKernel::V1`], 0.2.0 async → [`WasmKernel::V2`])
+    /// and instantiates it on the matching execution path. Old 0.1.0
+    /// sync-lift packages keep taking the serial path unchanged; 0.2.0
+    /// packages run through the `run_concurrent` async path.
+    ///
     /// Builds a fresh [`Linker`] per instance (cheap), registers WASI
     /// p2 as well as the generated `actr:workload/host` linker, and
-    /// runs `Component::instantiate_async` which drives any
-    /// component-model initialisation through the host reactor. The
-    /// resulting bindings are cached on the returned workload
-    /// for subsequent `call_dispatch` and hook invocations.
-    pub(crate) async fn instantiate(&self) -> WasmResult<WasmWorkload> {
-        let (store, bindings) = instantiate_parts(&self.engine, &self.component).await?;
-        tracing::info!("wasm Component instantiated");
-        Ok(WasmWorkload {
-            engine: self.engine.clone(),
-            component: self.component.clone(),
-            store,
-            bindings,
-            poisoned: false,
-            rebuilds: 0,
-        })
+    /// runs `Component::instantiate_async`.
+    pub(crate) async fn instantiate(&self) -> WasmResult<WasmKernel> {
+        match probe_world(&self.component, &self.engine)? {
+            WasmWorkloadKind::V1Serial => {
+                let (store, bindings) = instantiate_parts(&self.engine, &self.component).await?;
+                tracing::info!("wasm Component instantiated (v1 serial world)");
+                Ok(WasmKernel::V1(WasmWorkload {
+                    engine: self.engine.clone(),
+                    component: self.component.clone(),
+                    store,
+                    bindings,
+                    poisoned: false,
+                    rebuilds: 0,
+                }))
+            }
+            WasmWorkloadKind::V2Concurrent => {
+                let v2 = WasmWorkloadV2::instantiate(&self.engine, &self.component).await?;
+                Ok(WasmKernel::V2(v2))
+            }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// World probing + dual-world kernel
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Which `actr:workload` world a compiled component implements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WasmWorkloadKind {
+    /// `actr:workload@0.1.0` — synchronous world, serial `&mut Store` path.
+    V1Serial,
+    /// `actr:workload@0.2.0` — async world, `run_concurrent` path.
+    V2Concurrent,
+}
+
+/// Inspect a compiled [`Component`]'s exported instances and decide which
+/// workload world it implements, purely from the component type — never
+/// reads or writes the `.actr` manifest, so the decision is grounded in
+/// what the binary actually exports. Exactly one recognised `workload`
+/// world must be present; zero or both is a [`WasmError::LoadFailed`] with
+/// a rebuild hint.
+fn probe_world(component: &Component, engine: &Engine) -> WasmResult<WasmWorkloadKind> {
+    let mut saw_v1 = false;
+    let mut saw_v2 = false;
+    for (name, _item) in component.component_type().exports(engine) {
+        if name.starts_with("actr:workload/workload@0.2.0") {
+            saw_v2 = true;
+        } else if name.starts_with("actr:workload/workload@0.1.0") {
+            saw_v1 = true;
+        }
+    }
+    match (saw_v1, saw_v2) {
+        (true, false) => Ok(WasmWorkloadKind::V1Serial),
+        (false, true) => Ok(WasmWorkloadKind::V2Concurrent),
+        (false, false) => Err(WasmError::LoadFailed(
+            "component exports no recognised actr:workload/workload world \
+             (expected @0.1.0 or @0.2.0); rebuild the package with a current SDK"
+                .to_string(),
+        )),
+        (true, true) => Err(WasmError::LoadFailed(
+            "component exports both actr:workload/workload@0.1.0 and @0.2.0; \
+             a package must implement exactly one world"
+                .to_string(),
+        )),
+    }
+}
+
+/// Dual-world execution kernel wrapped by [`crate::workload::Workload::Wasm`].
+///
+/// A thin dispatcher that forwards each guest entry to whichever world the
+/// loaded component implements. The `Workload` enum and its callers see one
+/// uniform `&mut self` surface; the V1/V2 split lives entirely here.
+pub(crate) enum WasmKernel {
+    V1(WasmWorkload),
+    V2(WasmWorkloadV2),
+}
+
+impl std::fmt::Debug for WasmKernel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WasmKernel::V1(w) => f.debug_tuple("WasmKernel::V1").field(w).finish(),
+            WasmKernel::V2(w) => f.debug_tuple("WasmKernel::V2").field(w).finish(),
+        }
+    }
+}
+
+impl WasmKernel {
+    pub(crate) fn init(&mut self, init_payload: &InitPayloadV1) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.init(init_payload),
+            WasmKernel::V2(w) => w.init(init_payload),
+        }
+    }
+
+    pub(crate) fn rebuild_count(&self) -> u64 {
+        match self {
+            WasmKernel::V1(w) => w.rebuild_count(),
+            WasmKernel::V2(w) => w.rebuild_count(),
+        }
+    }
+
+    pub(crate) async fn call_on_start(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.call_on_start(ctx, host_abi).await,
+            WasmKernel::V2(w) => w.call_on_start(ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn call_on_ready(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.call_on_ready(ctx, host_abi).await,
+            WasmKernel::V2(w) => w.call_on_ready(ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn call_on_stop(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.call_on_stop(ctx, host_abi).await,
+            WasmKernel::V2(w) => w.call_on_stop(ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn call_hook_event(
+        &mut self,
+        event: PackageHookEvent,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.call_hook_event(event, ctx, host_abi).await,
+            WasmKernel::V2(w) => w.call_hook_event(event, ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn handle(
+        &mut self,
+        request_bytes: &[u8],
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<Vec<u8>> {
+        match self {
+            WasmKernel::V1(w) => w.handle(request_bytes, ctx, host_abi).await,
+            WasmKernel::V2(w) => w.handle(request_bytes, ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn handle_data_stream(
+        &mut self,
+        chunk: DataStream,
+        sender: ActrId,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.handle_data_stream(chunk, sender, ctx, host_abi).await,
+            WasmKernel::V2(w) => w.handle_data_stream(chunk, sender, ctx, host_abi).await,
+        }
     }
 }
 

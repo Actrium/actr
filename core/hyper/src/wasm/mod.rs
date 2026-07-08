@@ -12,5 +12,4 @@ mod host_v2;
 
 pub use error::WasmError;
 pub use host::WasmHost;
-pub(crate) use host::WasmWorkload;
-pub(crate) use host_v2::WasmWorkloadV2;
+pub(crate) use host::WasmKernel;

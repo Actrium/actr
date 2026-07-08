@@ -528,7 +528,7 @@ pub(crate) enum Workload {
     /// hooks inside the current process without a packaged guest binary.
     Linked(Arc<dyn LinkedWorkloadHandle>),
     #[cfg(feature = "wasm-engine")]
-    Wasm(crate::wasm::WasmWorkload),
+    Wasm(crate::wasm::WasmKernel),
     #[cfg(feature = "dynclib-engine")]
     DynClib(crate::dynclib::DynClibWorkload),
 }
