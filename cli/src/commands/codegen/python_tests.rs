@@ -183,6 +183,106 @@ fn pb2_alias_and_import_distinguishes_same_package_owner_files() {
 }
 
 #[test]
+fn generated_scaffold_uses_imported_rpc_owner_pb2_alias() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let config_path = tmp.path().join("manifest.toml");
+    std::fs::write(
+        &config_path,
+        r#"edition = 1
+exports = []
+
+[package]
+name = "DataStreamApp"
+manufacturer = "acme"
+version = "0.1.0"
+
+[system.signaling]
+url = "ws://127.0.0.1:8080"
+
+[system.ais_endpoint]
+url = "http://127.0.0.1:8080/ais"
+
+[system.deployment]
+realm_id = 1001
+"#,
+    )
+    .unwrap();
+    let config = actr_config::ConfigParser::from_manifest_file(&config_path).unwrap();
+    let local_file = ProtoFileModel {
+        proto_file: "local/data_stream_app.proto".into(),
+        relative_path: "local/data_stream_app.proto".into(),
+        package: "data_stream_app".to_string(),
+        side: ProtoSide::Local,
+        declared_type_names: vec![],
+        services: vec![ServiceModel {
+            name: "DataStreamAppService".to_string(),
+            package: "data_stream_app".to_string(),
+            proto_file: "local/data_stream_app.proto".into(),
+            relative_path: "local/data_stream_app.proto".into(),
+            side: ProtoSide::Local,
+            methods: vec![MethodModel {
+                name: "ContinuePromptResultStreams".to_string(),
+                snake_name: "continue_prompt_result_streams".to_string(),
+                input_type: "ask.ContinuePromptResultStreamsRequest".to_string(),
+                output_type: "ask.ContinuePromptResultStreamsResponse".to_string(),
+                route_key: "data_stream_app.DataStreamAppService.ContinuePromptResultStreams"
+                    .to_string(),
+            }],
+            actr_type: None,
+        }],
+    };
+    let remote_file = ProtoFileModel {
+        proto_file: "remote/ask-service/ask.proto".into(),
+        relative_path: "remote/ask-service/ask.proto".into(),
+        package: "ask".to_string(),
+        side: ProtoSide::Remote,
+        declared_type_names: vec![
+            "ContinuePromptResultStreamsRequest".to_string(),
+            "ContinuePromptResultStreamsResponse".to_string(),
+        ],
+        services: vec![],
+    };
+    let context = GenContext {
+        proto_files: vec![],
+        proto_model: ProtoModel {
+            files: vec![local_file.clone(), remote_file],
+            local_services: local_file.services,
+            remote_services: vec![],
+        },
+        input_path: tmp.path().join("protos"),
+        output: tmp.path().join("generated"),
+        config_path,
+        config,
+        no_scaffold: false,
+        overwrite_user_code: false,
+        no_format: false,
+        debug: false,
+        skip_validation: false,
+    };
+
+    let generator = super::PythonGenerator;
+    let services = generator
+        .parse_local_services(&context)
+        .expect("parse local services");
+    let scaffold = generator
+        .generate_scaffold_content(&context, "ActrService", "Workload", &services)
+        .expect("render scaffold");
+
+    assert!(scaffold.contains(
+        "from generated.remote.ask_service import ask_pb2 as remote_ask_service_ask_pb2"
+    ));
+    assert!(scaffold.contains(
+        "def continue_prompt_result_streams(self, req: remote_ask_service_ask_pb2.ContinuePromptResultStreamsRequest) -> remote_ask_service_ask_pb2.ContinuePromptResultStreamsResponse:"
+    ));
+    assert!(
+        scaffold
+            .contains("return remote_ask_service_ask_pb2.ContinuePromptResultStreamsResponse()")
+    );
+    assert!(!scaffold.contains("local_data_stream_app_pb2.ContinuePromptResultStreamsRequest"));
+    assert!(!scaffold.contains("data_stream_app_pb2.ContinuePromptResultStreamsRequest"));
+}
+
+#[test]
 fn parse_local_services_preserves_nested_python_type_names() {
     let tmp = tempfile::TempDir::new().unwrap();
     let config_path = tmp.path().join("manifest.toml");
