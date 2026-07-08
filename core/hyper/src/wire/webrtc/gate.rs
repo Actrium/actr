@@ -6,6 +6,7 @@ use super::coordinator::WebRtcCoordinator;
 use crate::inbound::DataStreamRegistry;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::set_parent_from_rpc_envelope;
+use crate::wire::{DirectionError, direction_for_routing};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{self, ActrId, DataStream, Direction, PayloadType, RpcEnvelope};
@@ -20,20 +21,6 @@ type PendingRequestsMap =
     Arc<RwLock<HashMap<String, (ActrId, oneshot::Sender<actr_protocol::ActorResult<Bytes>>)>>>;
 #[cfg(feature = "opentelemetry")]
 use tracing::Instrument as _;
-
-/// Why an inbound `RpcEnvelope.direction` could not be routed.
-///
-/// `direction_for_routing` returns this so the caller can decode the peer
-/// (for diagnostics) only on the drop path, never on the happy path.
-#[derive(Debug)]
-enum DirectionError {
-    /// `direction` field absent from the envelope.
-    Missing,
-    /// `direction` present but `DIRECTION_UNSPECIFIED`.
-    Unspecified,
-    /// `direction` present but not a known variant.
-    Unknown,
-}
 
 /// WebRTC Gate - OutboundGate implementation
 ///
@@ -120,7 +107,7 @@ impl WebRtcGate {
     ) {
         let request_id = envelope.request_id.clone();
 
-        let direction = match Self::direction_for_routing(envelope.direction) {
+        let direction = match direction_for_routing(envelope.direction) {
             Ok(direction) => direction,
             Err(error) => {
                 // Drop path only: decode the peer lazily for diagnostics.
@@ -194,25 +181,6 @@ impl WebRtcGate {
         ActrId::decode(from_bytes)
             .map(|peer| peer.to_string_repr())
             .unwrap_or_else(|e| format!("decode_failed:{e}"))
-    }
-
-    /// Classify an inbound `RpcEnvelope.direction` into a routable direction
-    /// or a `DirectionError`.
-    ///
-    /// Pure: performs no logging and no peer decode. The caller handles
-    /// diagnostics on the drop path so the happy path stays free of
-    /// `ActrId::decode` + `to_string_repr()`.
-    fn direction_for_routing(raw_direction: Option<i32>) -> Result<Direction, DirectionError> {
-        match raw_direction {
-            Some(raw) => match Direction::try_from(raw) {
-                Ok(direction @ (Direction::Request | Direction::Response | Direction::Tell)) => {
-                    Ok(direction)
-                }
-                Ok(Direction::Unspecified) => Err(DirectionError::Unspecified),
-                Err(_) => Err(DirectionError::Unknown),
-            },
-            None => Err(DirectionError::Missing),
-        }
     }
 
     /// Enqueue an explicit inbound RPC request or tell to the Mailbox with

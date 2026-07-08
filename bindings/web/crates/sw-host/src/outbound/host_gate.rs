@@ -129,7 +129,9 @@ impl HostGate {
     /// Send a one-way message without waiting for a response.
     ///
     /// One-way traffic carries the explicit `Direction::Tell` label so the
-    /// receiver runs the handler without replying.
+    /// receiver runs the handler without replying. This method is for
+    /// terminal tell traffic only; relayed request envelopes must go through
+    /// `Gate::relay_envelope` so their explicit direction is preserved.
     pub async fn send_message(
         &self,
         target: &ActrId,

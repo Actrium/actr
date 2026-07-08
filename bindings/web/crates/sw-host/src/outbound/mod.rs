@@ -23,7 +23,7 @@ mod peer_gate;
 pub use host_gate::HostGate;
 pub use peer_gate::PeerGate;
 
-use actr_protocol::{ActorResult, ActrId, PayloadType, RpcEnvelope};
+use actr_protocol::{ActorResult, ActrError, ActrId, PayloadType, RpcEnvelope};
 use bytes::Bytes;
 use std::sync::Arc;
 
@@ -64,11 +64,22 @@ impl Gate {
         }
     }
 
-    /// Send a one-way message without waiting for a response.
+    /// Send a one-way tell without waiting for a response.
     pub async fn send_message(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
         match self {
             Gate::Host(gate) => gate.send_message(target, envelope).await,
             Gate::Peer(gate) => gate.send_message(target, envelope).await,
+        }
+    }
+
+    /// Relay an envelope that already carries an explicit routing direction.
+    pub async fn relay_envelope(&self, target: &ActrId, envelope: RpcEnvelope) -> ActorResult<()> {
+        match self {
+            Gate::Host(_) => Err(ActrError::InvalidArgument(
+                "relay_envelope requires a Peer gate; HostGate send_message is tell-only"
+                    .to_string(),
+            )),
+            Gate::Peer(gate) => gate.relay_envelope(target, envelope).await,
         }
     }
 

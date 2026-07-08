@@ -708,20 +708,19 @@ async fn tell_dedup_harness(result: fn() -> ActorResult<FrameworkBytes>) -> Tell
         result,
     };
     let workload = Workload::Linked(Arc::new(handle) as Arc<dyn LinkedWorkloadHandle>);
+    let config = dedup_test_config(&dir);
+    let actor_id = ActrId {
+        realm: config.realm.clone(),
+        serial_number: 1,
+        r#type: config.package.actr_type.clone(),
+    };
 
-    let mut inner = Inner::build(
-        dedup_test_config(&dir),
-        workload,
-        None,
-        None,
-        100,
-        Duration::from_secs(60),
-    )
-    .await
-    .expect("Inner::build must succeed with in-memory mailbox");
+    let mut inner = Inner::build(config, workload, None, None, 100, Duration::from_secs(60))
+        .await
+        .expect("Inner::build must succeed with in-memory mailbox");
     // handle_incoming requires post-start identity/credential state; set it
     // directly instead of driving the full registration path.
-    inner.actor_id = Some(ActrId::default());
+    inner.actor_id = Some(actor_id);
     inner.credential_state = Some(CredentialState::new(AIdCredential::default(), None, None));
 
     TellDedupHarness {
