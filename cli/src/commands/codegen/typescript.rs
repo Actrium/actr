@@ -189,6 +189,9 @@ impl LanguageGenerator for TypeScriptGenerator {
 
         let mut options = Vec::new();
         options.push("target=ts".to_string());
+        if !local_files.is_empty() {
+            options.push(format!("LocalFiles={}", local_files.join(":")));
+        }
         if !remote_files.is_empty() {
             options.push(format!("RemoteFiles={}", remote_files.join(":")));
         }
@@ -202,7 +205,7 @@ impl LanguageGenerator for TypeScriptGenerator {
         }
         let option_str = options.join(",");
 
-        if !remote_files.is_empty() {
+        if !proto_inputs.is_empty() {
             let plugin_path = self.ensure_typescript_plugin()?;
             let mut cmd = StdCommand::new(PROTOC);
             cmd.arg(format!("--proto_path={}", proto_root.display()))
@@ -216,7 +219,7 @@ impl LanguageGenerator for TypeScriptGenerator {
                     context.output.display()
                 ));
 
-            for proto_input in &remote_files {
+            for proto_input in &proto_inputs {
                 cmd.arg(proto_input);
             }
 

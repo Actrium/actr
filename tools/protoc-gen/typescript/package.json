@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc",
     "bundle": "esbuild src/main.ts --bundle --platform=node --target=node20 --outfile=dist/bundle.js",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "npm run bundle && node --test tests/*.test.mjs"
   },
   "engines": {
     "node": ">=20"

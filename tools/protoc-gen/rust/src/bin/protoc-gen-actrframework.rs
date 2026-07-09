@@ -22,6 +22,13 @@ pub enum ProtoSource {
     Remote,
 }
 
+#[derive(Debug, Clone)]
+struct TypeOwner {
+    proto_package: String,
+    proto_file: String,
+    type_name: String,
+}
+
 impl ProtoSource {
     /// Infer source type from proto file
     ///
@@ -104,9 +111,17 @@ struct RemoteServiceMetadata {
 struct MethodMetadata {
     name: String,
     snake_name: String,
-    input_type: String,
-    output_type: String,
     route_key: String,
+    input_ref: TypeRef,
+    output_ref: TypeRef,
+}
+
+#[derive(Serialize)]
+struct TypeRef {
+    proto_type: String,
+    type_name: String,
+    proto_package: String,
+    proto_file: String,
 }
 
 fn main() -> Result<()> {
@@ -201,9 +216,9 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
     // Build fully-qualified message name -> declaring proto package map so
     // imported RPC message types resolve to their declaring module instead of
     // the current service's package.
-    let mut type_owner: HashMap<String, String> = HashMap::new();
+    let mut type_owners: HashMap<String, TypeOwner> = HashMap::new();
     for file in &request.proto_file {
-        collect_type_owners(file, &mut type_owner, file.package());
+        collect_type_owners(file, &mut type_owners, file.package());
     }
 
     // Collect all remote services information
@@ -247,13 +262,18 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
                     methods,
                     actr_type: actr_type.clone(),
                 });
-                metadata
-                    .remote_services
-                    .push(build_remote_service_metadata(file, service, actr_type));
+                metadata.remote_services.push(build_remote_service_metadata(
+                    file,
+                    service,
+                    actr_type,
+                    &type_owners,
+                )?);
             } else {
-                metadata
-                    .local_services
-                    .push(build_local_service_metadata(file, service));
+                metadata.local_services.push(build_local_service_metadata(
+                    file,
+                    service,
+                    &type_owners,
+                )?);
             }
         }
     }
@@ -271,7 +291,7 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
             }
             for service in &file.service {
                 let generated_file =
-                    generate_service_code(file, service, &type_owner, &params, &remote_services)?;
+                    generate_service_code(file, service, &type_owners, &params, &remote_services)?;
                 response.file.push(generated_file);
             }
         }
@@ -288,48 +308,74 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
 
 fn collect_type_owners(
     file: &FileDescriptorProto,
-    owners: &mut HashMap<String, String>,
+    owners: &mut HashMap<String, TypeOwner>,
     package: &str,
 ) {
     for message in &file.message_type {
-        collect_message_type_owner(message, owners, package, package);
+        collect_message_type_owner(message, owners, package, file.name(), "");
     }
 
     // Index file-scope enums so RPC types referencing an imported enum resolve
     // to their declaring package (mirrors the CLI's TypeOwnerIndex, which
     // captures enums via declared_type_names).
     for enum_type in &file.enum_type {
-        let full_name = if package.is_empty() {
-            enum_type.name().to_string()
-        } else {
-            format!("{}.{}", package, enum_type.name())
-        };
-        owners.insert(full_name, package.to_string());
+        insert_type_owner(owners, package, file.name(), enum_type.name());
     }
 }
 
 fn collect_message_type_owner(
     message: &DescriptorProto,
-    owners: &mut HashMap<String, String>,
+    owners: &mut HashMap<String, TypeOwner>,
     package: &str,
-    parent_path: &str,
+    proto_file: &str,
+    parent_type: &str,
 ) {
-    let full_name = if parent_path.is_empty() {
+    let type_name = if parent_type.is_empty() {
         message.name().to_string()
     } else {
-        format!("{}.{}", parent_path, message.name())
+        format!("{}.{}", parent_type, message.name())
     };
-    owners.insert(full_name.clone(), package.to_string());
+    insert_type_owner(owners, package, proto_file, &type_name);
+
+    for enum_type in &message.enum_type {
+        insert_type_owner(
+            owners,
+            package,
+            proto_file,
+            &format!("{}.{}", type_name, enum_type.name()),
+        );
+    }
 
     for nested in &message.nested_type {
-        collect_message_type_owner(nested, owners, package, &full_name);
+        collect_message_type_owner(nested, owners, package, proto_file, &type_name);
     }
+}
+
+fn insert_type_owner(
+    owners: &mut HashMap<String, TypeOwner>,
+    package: &str,
+    proto_file: &str,
+    type_name: &str,
+) {
+    let full_name = if package.is_empty() {
+        type_name.to_string()
+    } else {
+        format!("{package}.{type_name}")
+    };
+    owners.insert(
+        full_name,
+        TypeOwner {
+            proto_package: package.to_string(),
+            proto_file: proto_file.to_string(),
+            type_name: type_name.to_string(),
+        },
+    );
 }
 
 fn generate_service_code(
     file: &FileDescriptorProto,
     service: &ServiceDescriptorProto,
-    type_owner: &HashMap<String, String>,
+    type_owners: &HashMap<String, TypeOwner>,
     params: &HashMap<String, String>,
     remote_services: &[RemoteServiceInfo],
 ) -> Result<File> {
@@ -359,7 +405,11 @@ fn generate_service_code(
         ProtoSource::Remote => GeneratorRole::ClientSide,
     };
 
-    let generator = ModernGenerator::new(package_name, service_name, role, type_owner.clone());
+    let generator_type_owners = type_owners
+        .iter()
+        .map(|(full_name, owner)| (full_name.clone(), owner.proto_package.clone()))
+        .collect();
+    let generator = ModernGenerator::new(package_name, service_name, role, generator_type_owners);
 
     // Pass remote_services only for ServerSide generation
     let final_code = if role == GeneratorRole::ServerSide {
@@ -385,8 +435,9 @@ fn generate_service_code(
 fn build_local_service_metadata(
     file: &FileDescriptorProto,
     service: &ServiceDescriptorProto,
-) -> LocalServiceMetadata {
-    LocalServiceMetadata {
+    type_owners: &HashMap<String, TypeOwner>,
+) -> Result<LocalServiceMetadata> {
+    Ok(LocalServiceMetadata {
         name: service.name().to_string(),
         package: file.package().to_string(),
         proto_file: file.name().to_string(),
@@ -396,17 +447,18 @@ fn build_local_service_metadata(
         methods: service
             .method
             .iter()
-            .map(|method| build_method_metadata(file, service, method))
-            .collect(),
-    }
+            .map(|method| build_method_metadata(file, service, method, type_owners))
+            .collect::<Result<Vec<_>>>()?,
+    })
 }
 
 fn build_remote_service_metadata(
     file: &FileDescriptorProto,
     service: &ServiceDescriptorProto,
     actr_type: String,
-) -> RemoteServiceMetadata {
-    RemoteServiceMetadata {
+    type_owners: &HashMap<String, TypeOwner>,
+) -> Result<RemoteServiceMetadata> {
+    Ok(RemoteServiceMetadata {
         name: service.name().to_string(),
         package: file.package().to_string(),
         proto_file: file.name().to_string(),
@@ -415,38 +467,79 @@ fn build_remote_service_metadata(
         methods: service
             .method
             .iter()
-            .map(|method| build_method_metadata(file, service, method))
-            .collect(),
-    }
+            .map(|method| build_method_metadata(file, service, method, type_owners))
+            .collect::<Result<Vec<_>>>()?,
+    })
 }
 
 fn build_method_metadata(
     file: &FileDescriptorProto,
     service: &ServiceDescriptorProto,
     method: &prost_types::MethodDescriptorProto,
-) -> MethodMetadata {
+    type_owners: &HashMap<String, TypeOwner>,
+) -> Result<MethodMetadata> {
     let package = file.package();
     let route_key = if package.is_empty() {
         format!("{}.{}", service.name(), method.name())
     } else {
         format!("{}.{}.{}", package, service.name(), method.name())
     };
+    let input_ref = build_type_ref(
+        file,
+        service,
+        method,
+        "input",
+        method.input_type(),
+        type_owners,
+    )?;
+    let output_ref = build_type_ref(
+        file,
+        service,
+        method,
+        "output",
+        method.output_type(),
+        type_owners,
+    )?;
 
-    MethodMetadata {
+    Ok(MethodMetadata {
         name: method.name().to_string(),
         snake_name: method.name().to_snake_case(),
-        input_type: short_type_name(method.input_type()),
-        output_type: short_type_name(method.output_type()),
         route_key,
-    }
+        input_ref,
+        output_ref,
+    })
 }
 
-fn short_type_name(raw: &str) -> String {
-    raw.trim_start_matches('.')
-        .split('.')
-        .next_back()
-        .unwrap_or(raw)
-        .to_string()
+fn build_type_ref(
+    file: &FileDescriptorProto,
+    service: &ServiceDescriptorProto,
+    method: &prost_types::MethodDescriptorProto,
+    kind: &str,
+    raw: &str,
+    type_owners: &HashMap<String, TypeOwner>,
+) -> Result<TypeRef> {
+    let proto_type = normalize_type_name(raw);
+    if let Some(owner) = type_owners.get(&proto_type) {
+        return Ok(TypeRef {
+            proto_type,
+            type_name: owner.type_name.clone(),
+            proto_package: owner.proto_package.clone(),
+            proto_file: owner.proto_file.clone(),
+        });
+    }
+
+    Err(anyhow!(
+        "Cannot resolve {} type `{}` for {}.{} in {}: RPC types must be declared in one of the parsed proto files",
+        kind,
+        proto_type,
+        service.name(),
+        method.name(),
+        file.name()
+    ))
+}
+
+fn normalize_type_name(raw: &str) -> String {
+    raw.trim_start_matches('.').to_string()
 }
 
 #[cfg(test)]
@@ -476,6 +569,16 @@ mod tests {
                 FileDescriptorProto {
                     name: Some("remote/echo.proto".to_string()),
                     package: Some("echo".to_string()),
+                    message_type: vec![
+                        DescriptorProto {
+                            name: Some("EchoRequest".to_string()),
+                            ..Default::default()
+                        },
+                        DescriptorProto {
+                            name: Some("EchoResponse".to_string()),
+                            ..Default::default()
+                        },
+                    ],
                     service: vec![ServiceDescriptorProto {
                         name: Some("EchoService".to_string()),
                         method: vec![MethodDescriptorProto {
@@ -509,6 +612,220 @@ mod tests {
     }
 
     #[test]
+    fn generate_code_metadata_preserves_imported_rpc_type_owner() {
+        let request = CodeGeneratorRequest {
+            file_to_generate: vec!["local/data_stream_app.proto".to_string()],
+            parameter: Some(
+                "manufacturer=acme,LocalFiles=local/data_stream_app.proto,RemoteFiles=remote/ask-service/ask.proto"
+                    .to_string(),
+            ),
+            proto_file: vec![
+                FileDescriptorProto {
+                    name: Some("local/data_stream_app.proto".to_string()),
+                    package: Some("data_stream_app".to_string()),
+                    service: vec![ServiceDescriptorProto {
+                        name: Some("DataStreamAppService".to_string()),
+                        method: vec![MethodDescriptorProto {
+                            name: Some("ContinuePromptResultStreams".to_string()),
+                            input_type: Some(
+                                ".ask.ContinuePromptResultStreamsRequest".to_string(),
+                            ),
+                            output_type: Some(
+                                ".ask.ContinuePromptResultStreamsResponse".to_string(),
+                            ),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                FileDescriptorProto {
+                    name: Some("remote/ask-service/ask.proto".to_string()),
+                    package: Some("ask".to_string()),
+                    message_type: vec![
+                        DescriptorProto {
+                            name: Some("ContinuePromptResultStreamsRequest".to_string()),
+                            ..Default::default()
+                        },
+                        DescriptorProto {
+                            name: Some("ContinuePromptResultStreamsResponse".to_string()),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let response = generate_code(request).unwrap();
+        let metadata = response
+            .file
+            .iter()
+            .find(|file| file.name.as_deref() == Some("actr-gen-meta.json"))
+            .and_then(|file| file.content.as_ref())
+            .expect("actr-gen-meta.json should be generated");
+        let metadata: serde_json::Value = serde_json::from_str(metadata).unwrap();
+        let method = &metadata["local_services"][0]["methods"][0];
+
+        assert_eq!(
+            method["input_ref"]["type_name"],
+            "ContinuePromptResultStreamsRequest"
+        );
+        assert_eq!(
+            method["input_ref"]["proto_type"],
+            "ask.ContinuePromptResultStreamsRequest"
+        );
+        assert_eq!(method["input_ref"]["proto_package"], "ask");
+        assert_eq!(
+            method["input_ref"]["proto_file"],
+            "remote/ask-service/ask.proto"
+        );
+        assert_eq!(
+            method["output_ref"]["proto_type"],
+            "ask.ContinuePromptResultStreamsResponse"
+        );
+        assert_eq!(method["output_ref"]["proto_package"], "ask");
+    }
+
+    #[test]
+    fn generate_code_metadata_preserves_nested_imported_rpc_type_owner() {
+        let request = CodeGeneratorRequest {
+            file_to_generate: vec!["local/data_stream_app.proto".to_string()],
+            parameter: Some(
+                "manufacturer=acme,LocalFiles=local/data_stream_app.proto,RemoteFiles=remote/ask-service/ask.proto"
+                    .to_string(),
+            ),
+            proto_file: vec![
+                FileDescriptorProto {
+                    name: Some("local/data_stream_app.proto".to_string()),
+                    package: Some("data_stream_app".to_string()),
+                    service: vec![ServiceDescriptorProto {
+                        name: Some("DataStreamAppService".to_string()),
+                        method: vec![MethodDescriptorProto {
+                            name: Some("ContinuePromptResultStreams".to_string()),
+                            input_type: Some(".ask.Outer.InnerRequest".to_string()),
+                            output_type: Some(".ask.Outer.InnerResponse".to_string()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                FileDescriptorProto {
+                    name: Some("remote/ask-service/ask.proto".to_string()),
+                    package: Some("ask".to_string()),
+                    message_type: vec![DescriptorProto {
+                        name: Some("Outer".to_string()),
+                        nested_type: vec![
+                            DescriptorProto {
+                                name: Some("InnerRequest".to_string()),
+                                ..Default::default()
+                            },
+                            DescriptorProto {
+                                name: Some("InnerResponse".to_string()),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let response = generate_code(request).unwrap();
+        let metadata = response
+            .file
+            .iter()
+            .find(|file| file.name.as_deref() == Some("actr-gen-meta.json"))
+            .and_then(|file| file.content.as_ref())
+            .expect("actr-gen-meta.json should be generated");
+        let metadata: serde_json::Value = serde_json::from_str(metadata).unwrap();
+        let method = &metadata["local_services"][0]["methods"][0];
+
+        assert_eq!(method["input_ref"]["proto_type"], "ask.Outer.InnerRequest");
+        assert_eq!(method["input_ref"]["type_name"], "Outer.InnerRequest");
+        assert_eq!(method["input_ref"]["proto_package"], "ask");
+        assert_eq!(
+            method["input_ref"]["proto_file"],
+            "remote/ask-service/ask.proto"
+        );
+        assert_eq!(
+            method["output_ref"]["proto_type"],
+            "ask.Outer.InnerResponse"
+        );
+        assert_eq!(method["output_ref"]["type_name"], "Outer.InnerResponse");
+    }
+
+    #[test]
+    fn generate_code_metadata_errors_on_unresolved_qualified_rpc_type() {
+        let request = CodeGeneratorRequest {
+            file_to_generate: vec!["local/client.proto".to_string()],
+            parameter: Some("manufacturer=acme,LocalFiles=local/client.proto".to_string()),
+            proto_file: vec![FileDescriptorProto {
+                name: Some("local/client.proto".to_string()),
+                package: Some("client".to_string()),
+                service: vec![ServiceDescriptorProto {
+                    name: Some("Client".to_string()),
+                    method: vec![MethodDescriptorProto {
+                        name: Some("Ping".to_string()),
+                        input_type: Some(".google.protobuf.Empty".to_string()),
+                        output_type: Some(".google.protobuf.Empty".to_string()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let err = generate_code(request).expect_err(
+            "unresolved qualified RPC type should not fall back to current metadata owner",
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("Cannot resolve input type `google.protobuf.Empty`"),
+            "unexpected error message: {message}"
+        );
+    }
+
+    #[test]
+    fn generate_code_metadata_errors_on_unresolved_unqualified_rpc_type() {
+        let request = CodeGeneratorRequest {
+            file_to_generate: vec!["local/client.proto".to_string()],
+            parameter: Some("manufacturer=acme,LocalFiles=local/client.proto".to_string()),
+            proto_file: vec![FileDescriptorProto {
+                name: Some("local/client.proto".to_string()),
+                package: Some("client".to_string()),
+                service: vec![ServiceDescriptorProto {
+                    name: Some("Client".to_string()),
+                    method: vec![MethodDescriptorProto {
+                        name: Some("Ping".to_string()),
+                        input_type: Some("MissingRequest".to_string()),
+                        output_type: Some("MissingResponse".to_string()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let err = generate_code(request).expect_err(
+            "unresolved unqualified RPC type should not fall back to current metadata owner",
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("Cannot resolve input type `MissingRequest`"),
+            "unexpected error message: {message}"
+        );
+    }
+
+    #[test]
     fn collect_type_owners_indexes_file_scope_enums() {
         // The CLI's TypeOwnerIndex captures enums via declared_type_names;
         // the plugin's collect_type_owners must mirror that so an imported
@@ -525,7 +842,9 @@ mod tests {
         let mut owners = HashMap::new();
         collect_type_owners(&file, &mut owners, "ask");
         assert_eq!(
-            owners.get("ask.Status").map(String::as_str),
+            owners
+                .get("ask.Status")
+                .map(|owner| owner.proto_package.as_str()),
             Some("ask"),
             "file-scope enum should be indexed under its declaring package"
         );

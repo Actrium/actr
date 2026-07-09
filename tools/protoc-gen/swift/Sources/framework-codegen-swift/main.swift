@@ -12,12 +12,39 @@ struct ActrFrameworkGenerator {
     let fileName: String
   }
 
+  struct MethodMetadataInput {
+    let packageName: String
+    let serviceName: String
+    let methodName: String
+    let inputType: String
+    let outputType: String
+  }
+
   struct MethodMetadata: Encodable {
     let name: String
     let snake_name: String
-    let input_type: String
-    let output_type: String
     let route_key: String
+    let input_ref: TypeRef
+    let output_ref: TypeRef
+  }
+
+  struct TypeRef: Encodable {
+    let proto_type: String
+    let type_name: String
+    let proto_package: String
+    let proto_file: String
+  }
+
+  enum MetadataError: LocalizedError {
+    case unresolvedType(kind: String, typeName: String, serviceName: String, methodName: String)
+
+    var errorDescription: String? {
+      switch self {
+      case let .unresolvedType(kind, typeName, serviceName, methodName):
+        return
+          "Cannot resolve \(kind) type `\(typeName)` for \(serviceName).\(methodName): qualified RPC types must be declared in one of the parsed proto files"
+      }
+    }
   }
 
   struct LocalServiceMetadata: Encodable {
@@ -97,6 +124,18 @@ struct ActrFrameworkGenerator {
       }
     }
 
+    var typeRefs: [String: TypeRef] = [:]
+    for fileDescriptor in request.protoFile {
+      for message in fileDescriptor.messageType {
+        Self.collectTypeRefs(
+          package: fileDescriptor.package,
+          protoFile: fileDescriptor.name,
+          message: message,
+          parentProtoName: nil,
+          into: &typeRefs)
+      }
+    }
+
     // First pass: Collect info about all files and identify all Remote services
     var remoteServices: [RemoteServiceInfo] = []
     var localServiceMetadata: [LocalServiceMetadata] = []
@@ -115,13 +154,15 @@ struct ActrFrameworkGenerator {
 
       for service in fileDescriptor.service {
         let serviceName = service.name
-        let methods = service.method.map {
-          buildMethodMetadata(
-            packageName: fileDescriptor.package,
-            serviceName: serviceName,
-            methodName: $0.name,
-            inputType: $0.inputType,
-            outputType: $0.outputType)
+        let methods = try service.method.map {
+          try buildMethodMetadata(
+            MethodMetadataInput(
+              packageName: fileDescriptor.package,
+              serviceName: serviceName,
+              methodName: $0.name,
+              inputType: $0.inputType,
+              outputType: $0.outputType),
+            typeRefs: typeRefs)
         }
 
         if isRemote {
@@ -468,30 +509,50 @@ struct ActrFrameworkGenerator {
   }
 
   static func buildMethodMetadata(
-    packageName: String,
-    serviceName: String,
-    methodName: String,
-    inputType: String,
-    outputType: String
-  ) -> MethodMetadata {
+    _ input: MethodMetadataInput,
+    typeRefs: [String: TypeRef]
+  ) throws -> MethodMetadata {
     let routeKey: String
-    if packageName.isEmpty {
-      routeKey = "\(serviceName).\(methodName)"
+    if input.packageName.isEmpty {
+      routeKey = "\(input.serviceName).\(input.methodName)"
     } else {
-      routeKey = "\(packageName).\(serviceName).\(methodName)"
+      routeKey = "\(input.packageName).\(input.serviceName).\(input.methodName)"
     }
 
     return MethodMetadata(
-      name: methodName,
-      snake_name: snakeCase(methodName),
-      input_type: shortTypeName(inputType),
-      output_type: shortTypeName(outputType),
-      route_key: routeKey)
+      name: input.methodName,
+      snake_name: snakeCase(input.methodName),
+      route_key: routeKey,
+      input_ref: try resolveTypeRef(
+        input.inputType,
+        kind: "input",
+        serviceName: input.serviceName,
+        methodName: input.methodName,
+        typeRefs: typeRefs),
+      output_ref: try resolveTypeRef(
+        input.outputType,
+        kind: "output",
+        serviceName: input.serviceName,
+        methodName: input.methodName,
+        typeRefs: typeRefs))
   }
 
-  static func shortTypeName(_ rawType: String) -> String {
+  static func resolveTypeRef(
+    _ rawType: String,
+    kind: String,
+    serviceName: String,
+    methodName: String,
+    typeRefs: [String: TypeRef]
+  ) throws -> TypeRef {
     let trimmed = rawType.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-    return trimmed.split(separator: ".").last.map(String.init) ?? trimmed
+    if let typeRef = typeRefs[trimmed] {
+      return typeRef
+    }
+    throw MetadataError.unresolvedType(
+      kind: kind,
+      typeName: trimmed,
+      serviceName: serviceName,
+      methodName: methodName)
   }
 
   /// Resolve a fully-qualified proto type (as carried by
@@ -535,6 +596,31 @@ struct ActrFrameworkGenerator {
         parentProtoName: protoName,
         parentSwiftName: swiftName,
         into: &typeToSwiftName)
+    }
+  }
+
+  static func collectTypeRefs(
+    package: String,
+    protoFile: String,
+    message: Google_Protobuf_DescriptorProto,
+    parentProtoName: String?,
+    into typeRefs: inout [String: TypeRef]
+  ) {
+    let protoName = parentProtoName.map { "\($0).\(message.name)" } ?? message.name
+    let fullProtoName = package.isEmpty ? protoName : "\(package).\(protoName)"
+    typeRefs[fullProtoName] = TypeRef(
+      proto_type: fullProtoName,
+      type_name: protoName,
+      proto_package: package,
+      proto_file: protoFile)
+
+    for nested in message.nestedType {
+      collectTypeRefs(
+        package: package,
+        protoFile: protoFile,
+        message: nested,
+        parentProtoName: protoName,
+        into: &typeRefs)
     }
   }
 

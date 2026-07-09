@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::commands::codegen::{
-    GenContext, MethodModel, ProtoFileModel, ProtoModel, ProtoSide, ServiceModel,
+    ActrGenMetadata, GenContext, MethodModel, ProtoFileModel, ProtoModel, ProtoSide, ServiceModel,
+    SupportedLanguage, write_metadata,
 };
 
 #[test]
@@ -259,6 +260,9 @@ realm_id = 1001
         debug: false,
         skip_validation: false,
     };
+    let metadata =
+        ActrGenMetadata::from_proto_model(SupportedLanguage::Python, &context.proto_model).unwrap();
+    write_metadata(&context.output, &metadata).unwrap();
 
     let generator = super::PythonGenerator;
     let services = generator
@@ -359,6 +363,9 @@ realm_id = 1001
         debug: false,
         skip_validation: false,
     };
+    let metadata =
+        ActrGenMetadata::from_proto_model(SupportedLanguage::Python, &context.proto_model).unwrap();
+    write_metadata(&context.output, &metadata).unwrap();
 
     let services = super::PythonGenerator
         .parse_local_services(&context)

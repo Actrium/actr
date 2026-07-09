@@ -316,8 +316,6 @@ impl LanguageGenerator for SwiftGenerator {
 
         if !local_paths.is_empty() {
             options.push_str(&format!(",LocalFiles={}", local_paths.join(":")));
-            // Keep LocalFile for backward compatibility with older plugin versions
-            options.push_str(&format!(",LocalFile={}", local_paths[0]));
         }
 
         // Step 1: Generate basic Swift protobuf types for files that contain messages, enums or extensions
@@ -350,20 +348,11 @@ impl LanguageGenerator for SwiftGenerator {
             }
         }
 
-        // Step 2: Generate Actor framework code using protoc-gen-actrframework-swift
-        // We filter to files that have either services (to generate Actor/Workload)
-        // or messages (to generate RpcRequest extensions).
-        // For local files, we always include them even if empty to ensure the Workload is generated.
-        let actr_proto_files: Vec<_> = context
-            .proto_files
-            .iter()
-            .filter(|p| {
-                let is_remote = p.to_string_lossy().contains("/remote/");
-                !is_remote || self.has_messages_enums_or_extensions(p) || self.has_services(p)
-            })
-            .collect();
-
-        if !actr_proto_files.is_empty() {
+        // Step 2: Generate Actor framework code using protoc-gen-actrframework-swift.
+        // The ACTR plugin consumes the full descriptor graph. Language protobuf
+        // generation above may filter inputs, but metadata/type ownership must
+        // not lose imported proto files.
+        if !context.proto_files.is_empty() {
             let mut cmd = StdCommand::new("protoc");
             cmd.arg(format!("--proto_path={}", proto_root.display()))
                 .arg(format!("--actrframework-swift_opt={}", options))
@@ -378,7 +367,7 @@ impl LanguageGenerator for SwiftGenerator {
                 ));
             }
 
-            for proto_file in actr_proto_files {
+            for proto_file in &context.proto_files {
                 cmd.arg(proto_file);
             }
 
@@ -1077,28 +1066,6 @@ impl SwiftGenerator {
                 || trimmed.starts_with("enum ")
                 || trimmed.starts_with("extend ")
             {
-                return true;
-            }
-        }
-        false
-    }
-
-    fn has_services(&self, path: &Path) -> bool {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with("//")
-                || trimmed.starts_with("/*")
-                || trimmed.starts_with('*')
-            {
-                continue;
-            }
-            if trimmed.starts_with("service ") {
                 return true;
             }
         }
