@@ -1820,6 +1820,14 @@ impl Inner {
             let shutdown = shutdown_token.clone();
             let on_stop_handle = tokio::spawn(async move {
                 shutdown.cancelled().await;
+
+                // Stop inbound data stream workers before on_stop tries to
+                // enter the workload. Stream callbacks also hold
+                // workload_dispatch, so draining/aborting them first prevents
+                // on_stop from skipping registry cleanup while waiting on the
+                // same lock.
+                node.data_chunk_registry.shutdown().await;
+
                 let stop_ctx = node
                     .bootstrap_ctx_builder()
                     .build_bootstrap(&actor_id, &credential_state.credential().await);
@@ -1835,12 +1843,6 @@ impl Inner {
                 {
                     tracing::warn!(error = %e, "workload on_stop returned Err");
                 }
-                drop(workload);
-
-                // Drain per-stream data stream workers before the node tears
-                // down: cancel queued chunks, let in-flight callbacks finish,
-                // join all worker tasks (bounded, else abort). Avoids orphans.
-                node.data_chunk_registry.shutdown().await;
             });
             task_handles.push(on_stop_handle);
         }

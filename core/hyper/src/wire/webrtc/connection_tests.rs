@@ -273,7 +273,7 @@ async fn test_close_releases_peer_connection() {
         .create_data_channel("received-probe", None)
         .await
         .expect("data channel should be created");
-    let (message_tx, _message_rx) = mpsc::unbounded_channel();
+    let (message_tx, _message_rx) = mpsc::channel(1);
     let received_lane = conn
         .register_received_data_channel(received_dc, PayloadType::RpcSignal, message_tx)
         .await

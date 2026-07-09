@@ -201,6 +201,54 @@ fn new_test_coordinator(local_id: ActrId) -> Arc<WebRtcCoordinator> {
     ))
 }
 
+#[tokio::test]
+async fn stream_queue_backpressure_does_not_block_rpc_queue() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_bytes = test_actor_id(2).encode_to_vec();
+
+    for _ in 0..WEBRTC_STREAM_INBOUND_QUEUE_DEPTH {
+        coordinator
+            .stream_message_tx
+            .try_send((
+                peer_bytes.clone(),
+                Bytes::from_static(b"stream"),
+                PayloadType::StreamReliable,
+            ))
+            .expect("stream queue should accept up to its configured depth");
+    }
+    assert!(
+        coordinator
+            .stream_message_tx
+            .try_send((
+                peer_bytes.clone(),
+                Bytes::from_static(b"overflow"),
+                PayloadType::StreamReliable,
+            ))
+            .is_err(),
+        "stream queue should be full"
+    );
+
+    coordinator
+        .rpc_message_tx
+        .send((
+            peer_bytes,
+            Bytes::from_static(b"rpc"),
+            PayloadType::RpcReliable,
+        ))
+        .await
+        .expect("full stream queue must not block RPC queue");
+
+    let (_from, data, payload_type) =
+        tokio::time::timeout(Duration::from_secs(1), coordinator.receive_rpc_message())
+            .await
+            .expect("RPC receive should not wait behind stream backpressure")
+            .expect("RPC receive should not fail")
+            .expect("RPC message should be present");
+
+    assert_eq!(payload_type, PayloadType::RpcReliable);
+    assert_eq!(&data[..], b"rpc");
+}
+
 fn install_hook_recorder(
     coordinator: &Arc<WebRtcCoordinator>,
 ) -> mpsc::UnboundedReceiver<crate::wire::webrtc::HookEvent> {

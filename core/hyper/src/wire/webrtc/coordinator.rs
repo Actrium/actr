@@ -24,7 +24,7 @@ use super::connection::WebRtcConnection;
 use super::negotiator::WebRtcNegotiator;
 #[cfg(feature = "opentelemetry")]
 use super::trace;
-use super::{SignalingClient, WebRtcConfig};
+use super::{SignalingClient, WebRtcConfig, WebRtcInboundMessage};
 use crate::INITIAL_CONNECTION_TIMEOUT;
 use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::CredentialState;
@@ -73,6 +73,8 @@ const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const ANSWERER_RECOVERY_STALE_TIMEOUT: Duration = ICE_RESTART_MAX_TOTAL_DURATION;
 const CONNECTION_FACTORY_INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
 const CONNECTION_FACTORY_MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
+const WEBRTC_RPC_INBOUND_QUEUE_DEPTH: usize = 256;
+const WEBRTC_STREAM_INBOUND_QUEUE_DEPTH: usize = 64;
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -138,8 +140,8 @@ struct PeerNegotiationState {
 
 use actr_framework::{ExponentialBackoff, WebRtcPeerStatus};
 
-/// Type alias for message receiver (from all peers)
-type MessageRx = Arc<Mutex<mpsc::UnboundedReceiver<(Vec<u8>, Bytes, PayloadType)>>>;
+/// Type alias for message receivers (from all peers, split by traffic class).
+type MessageRx = Arc<Mutex<mpsc::Receiver<WebRtcInboundMessage>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PublicRtcHookState {
@@ -332,11 +334,15 @@ pub struct WebRtcCoordinator {
     /// ActrId → Vec<candidate_string>
     pending_candidates: Arc<RwLock<HashMap<ActrId, Vec<String>>>>,
 
-    /// Message receive channel (aggregated from all peers)
-    /// (from: ActrId bytes, data: Bytes)
+    /// RPC receive channel (aggregated from all peers)
     /// Format: (sender_id_bytes, message_data, payload_type)
-    message_rx: MessageRx,
-    message_tx: mpsc::UnboundedSender<(Vec<u8>, Bytes, PayloadType)>,
+    rpc_message_rx: MessageRx,
+    rpc_message_tx: mpsc::Sender<WebRtcInboundMessage>,
+
+    /// Stream receive channel (aggregated from all peers)
+    /// Split from RPC so StreamReliable backpressure cannot starve RPC delivery.
+    stream_message_rx: MessageRx,
+    stream_message_tx: mpsc::Sender<WebRtcInboundMessage>,
 
     /// MediaTrack callback registry (for WebRTC native media streams)
     media_frame_registry: Arc<MediaFrameRegistry>,
@@ -388,7 +394,9 @@ impl WebRtcCoordinator {
         webrtc_config: WebRtcConfig,
         media_frame_registry: Arc<MediaFrameRegistry>,
     ) -> Self {
-        let (message_tx, message_rx) = mpsc::unbounded_channel();
+        let (rpc_message_tx, rpc_message_rx) = mpsc::channel(WEBRTC_RPC_INBOUND_QUEUE_DEPTH);
+        let (stream_message_tx, stream_message_rx) =
+            mpsc::channel(WEBRTC_STREAM_INBOUND_QUEUE_DEPTH);
         let negotiator = WebRtcNegotiator::new(webrtc_config, credential_state.clone());
 
         Self {
@@ -398,8 +406,10 @@ impl WebRtcCoordinator {
             negotiator,
             peers: Arc::new(RwLock::new(HashMap::new())),
             pending_candidates: Arc::new(RwLock::new(HashMap::new())),
-            message_rx: Arc::new(Mutex::new(message_rx)),
-            message_tx,
+            rpc_message_rx: Arc::new(Mutex::new(rpc_message_rx)),
+            rpc_message_tx,
+            stream_message_rx: Arc::new(Mutex::new(stream_message_rx)),
+            stream_message_tx,
             media_frame_registry,
             peer_negotiation: Arc::new(Mutex::new(HashMap::new())),
             event_broadcaster: ConnectionEventBroadcaster::new(),
@@ -409,6 +419,20 @@ impl WebRtcCoordinator {
             cleanup_notify: Arc::new(tokio::sync::Notify::new()),
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn message_tx_for_payload(
+        payload_type: PayloadType,
+        rpc_message_tx: &mpsc::Sender<WebRtcInboundMessage>,
+        stream_message_tx: &mpsc::Sender<WebRtcInboundMessage>,
+    ) -> Option<mpsc::Sender<WebRtcInboundMessage>> {
+        match payload_type {
+            PayloadType::RpcReliable | PayloadType::RpcSignal => Some(rpc_message_tx.clone()),
+            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
+                Some(stream_message_tx.clone())
+            }
+            PayloadType::MediaRtp => None,
         }
     }
 
@@ -3110,12 +3134,14 @@ impl WebRtcCoordinator {
 
         let from_id_for_data_channel = from.clone();
         let coord_weak_for_state = Arc::downgrade(self);
-        let message_tx = self.message_tx.clone();
+        let rpc_message_tx = self.rpc_message_tx.clone();
+        let stream_message_tx = self.stream_message_tx.clone();
         peer_connection_arc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let conn = conn_for_data_channel.clone();
             let coord_weak = coord_weak_for_state.clone();
             let peer_id = from_id_for_data_channel.clone();
-            let message_tx = message_tx.clone();
+            let rpc_message_tx = rpc_message_tx.clone();
+            let stream_message_tx = stream_message_tx.clone();
             Box::pin(async move {
                 let channel_id = dc.id();
                 let label = dc.label();
@@ -3151,6 +3177,16 @@ impl WebRtcCoordinator {
 
                 match payload_type {
                     Some(pt) => {
+                        let Some(message_tx) =
+                            Self::message_tx_for_payload(pt, &rpc_message_tx, &stream_message_tx)
+                        else {
+                            tracing::warn!(
+                                "❌ Received unsupported DataChannel label={} id={}",
+                                label,
+                                channel_id
+                            );
+                            return;
+                        };
                         if let Err(e) = conn
                             .register_received_data_channel(dc_for_registration, pt, message_tx)
                             .await
@@ -3626,7 +3662,7 @@ impl WebRtcCoordinator {
 
     /// Start peer receive loop
     ///
-    /// Starts a background task for each peer to receive messages from WebRtcConnection and aggregate to a unified message_tx
+    /// Starts a background task for each peer to receive messages from WebRtcConnection and aggregate by traffic class.
     ///
     /// IMPORTANT: We need to listen to ALL PayloadTypes, not just RpcReliable:
     /// - RpcReliable, RpcSignal: for RPC messages
@@ -3636,7 +3672,8 @@ impl WebRtcCoordinator {
         peer_id: ActrId,
         webrtc_conn: WebRtcConnection,
     ) -> Vec<JoinHandle<()>> {
-        let message_tx = self.message_tx.clone();
+        let rpc_message_tx = self.rpc_message_tx.clone();
+        let stream_message_tx = self.stream_message_tx.clone();
         let mut handles = Vec::new();
 
         // Listen to all relevant PayloadTypes
@@ -3648,7 +3685,11 @@ impl WebRtcCoordinator {
         ];
 
         for payload_type in payload_types {
-            let message_tx_clone = message_tx.clone();
+            let Some(message_tx_clone) =
+                Self::message_tx_for_payload(payload_type, &rpc_message_tx, &stream_message_tx)
+            else {
+                continue;
+            };
             let peer_id_clone = peer_id.clone();
             let webrtc_conn_clone = webrtc_conn.clone();
 
@@ -3687,9 +3728,12 @@ impl WebRtcCoordinator {
                             // Serialize peer_id as bytes
                             let peer_id_bytes = peer_id_clone.encode_to_vec();
 
-                            // Send to aggregation channel (include PayloadType)
-                            if let Err(e) =
-                                message_tx_clone.send((peer_id_bytes, data, payload_type))
+                            // Send to the traffic-class aggregation channel (include PayloadType).
+                            // Stream sends are bounded so reliable stream backpressure can reach
+                            // the lane reader instead of growing an unbounded coordinator queue.
+                            if let Err(e) = message_tx_clone
+                                .send((peer_id_bytes, data, payload_type))
+                                .await
                             {
                                 tracing::error!("❌ Message aggregation failed: {:?}", e);
                                 break;
@@ -3933,13 +3977,31 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
-    /// Receive message (aggregated from all peers)
-    /// Receive message with PayloadType information
+    /// Receive an RPC message (aggregated from all peers).
     ///
-    /// Returns: Option<(sender_id_bytes, message_data, payload_type)>
-    pub async fn receive_message(&self) -> ActorResult<Option<(Vec<u8>, Bytes, PayloadType)>> {
-        let mut rx = self.message_rx.lock().await;
+    /// Returns: Option<(sender_id_bytes, message_data, payload_type)>.
+    pub async fn receive_rpc_message(&self) -> ActorResult<Option<WebRtcInboundMessage>> {
+        let mut rx = self.rpc_message_rx.lock().await;
         Ok(rx.recv().await)
+    }
+
+    /// Receive a stream message (aggregated from all peers).
+    ///
+    /// Stream messages are split from RPC so backpressure while handling
+    /// StreamReliable cannot starve RPC delivery.
+    pub async fn receive_stream_message(&self) -> ActorResult<Option<WebRtcInboundMessage>> {
+        let mut rx = self.stream_message_rx.lock().await;
+        Ok(rx.recv().await)
+    }
+
+    /// Compatibility receive path for existing tests/tools that do not care
+    /// about traffic-class isolation.
+    #[allow(dead_code)]
+    pub async fn receive_message(&self) -> ActorResult<Option<WebRtcInboundMessage>> {
+        tokio::select! {
+            rpc = self.receive_rpc_message() => rpc,
+            stream = self.receive_stream_message() => stream,
+        }
     }
 
     /// Create WebRTC connection (factory method)
