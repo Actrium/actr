@@ -74,7 +74,8 @@ const ANSWERER_RECOVERY_STALE_TIMEOUT: Duration = ICE_RESTART_MAX_TOTAL_DURATION
 const CONNECTION_FACTORY_INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
 const CONNECTION_FACTORY_MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
 const WEBRTC_RPC_INBOUND_QUEUE_DEPTH: usize = 256;
-const WEBRTC_STREAM_INBOUND_QUEUE_DEPTH: usize = 64;
+const WEBRTC_RELIABLE_INBOUND_QUEUE_DEPTH: usize = 64;
+const WEBRTC_LATENCY_FIRST_INBOUND_QUEUE_DEPTH: usize = 64;
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -339,10 +340,17 @@ pub struct WebRtcCoordinator {
     rpc_message_rx: MessageRx,
     rpc_message_tx: mpsc::Sender<WebRtcInboundMessage>,
 
-    /// Stream receive channel (aggregated from all peers)
-    /// Split from RPC so StreamReliable backpressure cannot starve RPC delivery.
-    stream_message_rx: MessageRx,
-    stream_message_tx: mpsc::Sender<WebRtcInboundMessage>,
+    /// Reliable stream receive channel (aggregated from all peers).
+    /// Split from RPC and from LatencyFirst so StreamReliable backpressure can
+    /// starve neither RPC delivery nor LatencyFirst drop-newest handling.
+    reliable_message_rx: MessageRx,
+    reliable_message_tx: mpsc::Sender<WebRtcInboundMessage>,
+
+    /// LatencyFirst stream receive channel (aggregated from all peers).
+    /// Isolated from Reliable so a backpressured reliable stream cannot stall
+    /// LatencyFirst chunks upstream of the registry's drop-newest policy.
+    latency_first_message_rx: MessageRx,
+    latency_first_message_tx: mpsc::Sender<WebRtcInboundMessage>,
 
     /// MediaTrack callback registry (for WebRTC native media streams)
     media_frame_registry: Arc<MediaFrameRegistry>,
@@ -395,8 +403,10 @@ impl WebRtcCoordinator {
         media_frame_registry: Arc<MediaFrameRegistry>,
     ) -> Self {
         let (rpc_message_tx, rpc_message_rx) = mpsc::channel(WEBRTC_RPC_INBOUND_QUEUE_DEPTH);
-        let (stream_message_tx, stream_message_rx) =
-            mpsc::channel(WEBRTC_STREAM_INBOUND_QUEUE_DEPTH);
+        let (reliable_message_tx, reliable_message_rx) =
+            mpsc::channel(WEBRTC_RELIABLE_INBOUND_QUEUE_DEPTH);
+        let (latency_first_message_tx, latency_first_message_rx) =
+            mpsc::channel(WEBRTC_LATENCY_FIRST_INBOUND_QUEUE_DEPTH);
         let negotiator = WebRtcNegotiator::new(webrtc_config, credential_state.clone());
 
         Self {
@@ -408,8 +418,10 @@ impl WebRtcCoordinator {
             pending_candidates: Arc::new(RwLock::new(HashMap::new())),
             rpc_message_rx: Arc::new(Mutex::new(rpc_message_rx)),
             rpc_message_tx,
-            stream_message_rx: Arc::new(Mutex::new(stream_message_rx)),
-            stream_message_tx,
+            reliable_message_rx: Arc::new(Mutex::new(reliable_message_rx)),
+            reliable_message_tx,
+            latency_first_message_rx: Arc::new(Mutex::new(latency_first_message_rx)),
+            latency_first_message_tx,
             media_frame_registry,
             peer_negotiation: Arc::new(Mutex::new(HashMap::new())),
             event_broadcaster: ConnectionEventBroadcaster::new(),
@@ -425,13 +437,13 @@ impl WebRtcCoordinator {
     fn message_tx_for_payload(
         payload_type: PayloadType,
         rpc_message_tx: &mpsc::Sender<WebRtcInboundMessage>,
-        stream_message_tx: &mpsc::Sender<WebRtcInboundMessage>,
+        reliable_message_tx: &mpsc::Sender<WebRtcInboundMessage>,
+        latency_first_message_tx: &mpsc::Sender<WebRtcInboundMessage>,
     ) -> Option<mpsc::Sender<WebRtcInboundMessage>> {
         match payload_type {
             PayloadType::RpcReliable | PayloadType::RpcSignal => Some(rpc_message_tx.clone()),
-            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                Some(stream_message_tx.clone())
-            }
+            PayloadType::StreamReliable => Some(reliable_message_tx.clone()),
+            PayloadType::StreamLatencyFirst => Some(latency_first_message_tx.clone()),
             PayloadType::MediaRtp => None,
         }
     }
@@ -3135,13 +3147,15 @@ impl WebRtcCoordinator {
         let from_id_for_data_channel = from.clone();
         let coord_weak_for_state = Arc::downgrade(self);
         let rpc_message_tx = self.rpc_message_tx.clone();
-        let stream_message_tx = self.stream_message_tx.clone();
+        let reliable_message_tx = self.reliable_message_tx.clone();
+        let latency_first_message_tx = self.latency_first_message_tx.clone();
         peer_connection_arc.on_data_channel(Box::new(move |dc: Arc<RTCDataChannel>| {
             let conn = conn_for_data_channel.clone();
             let coord_weak = coord_weak_for_state.clone();
             let peer_id = from_id_for_data_channel.clone();
             let rpc_message_tx = rpc_message_tx.clone();
-            let stream_message_tx = stream_message_tx.clone();
+            let reliable_message_tx = reliable_message_tx.clone();
+            let latency_first_message_tx = latency_first_message_tx.clone();
             Box::pin(async move {
                 let channel_id = dc.id();
                 let label = dc.label();
@@ -3177,9 +3191,12 @@ impl WebRtcCoordinator {
 
                 match payload_type {
                     Some(pt) => {
-                        let Some(message_tx) =
-                            Self::message_tx_for_payload(pt, &rpc_message_tx, &stream_message_tx)
-                        else {
+                        let Some(message_tx) = Self::message_tx_for_payload(
+                            pt,
+                            &rpc_message_tx,
+                            &reliable_message_tx,
+                            &latency_first_message_tx,
+                        ) else {
                             tracing::warn!(
                                 "❌ Received unsupported DataChannel label={} id={}",
                                 label,
@@ -3673,7 +3690,8 @@ impl WebRtcCoordinator {
         webrtc_conn: WebRtcConnection,
     ) -> Vec<JoinHandle<()>> {
         let rpc_message_tx = self.rpc_message_tx.clone();
-        let stream_message_tx = self.stream_message_tx.clone();
+        let reliable_message_tx = self.reliable_message_tx.clone();
+        let latency_first_message_tx = self.latency_first_message_tx.clone();
         let mut handles = Vec::new();
 
         // Listen to all relevant PayloadTypes
@@ -3685,9 +3703,12 @@ impl WebRtcCoordinator {
         ];
 
         for payload_type in payload_types {
-            let Some(message_tx_clone) =
-                Self::message_tx_for_payload(payload_type, &rpc_message_tx, &stream_message_tx)
-            else {
+            let Some(message_tx_clone) = Self::message_tx_for_payload(
+                payload_type,
+                &rpc_message_tx,
+                &reliable_message_tx,
+                &latency_first_message_tx,
+            ) else {
                 continue;
             };
             let peer_id_clone = peer_id.clone();
@@ -3985,12 +4006,24 @@ impl WebRtcCoordinator {
         Ok(rx.recv().await)
     }
 
-    /// Receive a stream message (aggregated from all peers).
+    /// Receive a reliable stream message (aggregated from all peers).
     ///
-    /// Stream messages are split from RPC so backpressure while handling
-    /// StreamReliable cannot starve RPC delivery.
-    pub async fn receive_stream_message(&self) -> ActorResult<Option<WebRtcInboundMessage>> {
-        let mut rx = self.stream_message_rx.lock().await;
+    /// Reliable stream messages have their own queue and receive loop, split
+    /// from RPC and from LatencyFirst, so StreamReliable backpressure can
+    /// starve neither RPC delivery nor LatencyFirst drop-newest handling.
+    pub async fn receive_reliable_message(&self) -> ActorResult<Option<WebRtcInboundMessage>> {
+        let mut rx = self.reliable_message_rx.lock().await;
+        Ok(rx.recv().await)
+    }
+
+    /// Receive a LatencyFirst stream message (aggregated from all peers).
+    ///
+    /// Isolated from Reliable so a backpressured reliable stream cannot stall
+    /// LatencyFirst chunks upstream of the registry's drop-newest policy.
+    pub async fn receive_latency_first_message(
+        &self,
+    ) -> ActorResult<Option<WebRtcInboundMessage>> {
+        let mut rx = self.latency_first_message_rx.lock().await;
         Ok(rx.recv().await)
     }
 
@@ -4000,7 +4033,8 @@ impl WebRtcCoordinator {
     pub async fn receive_message(&self) -> ActorResult<Option<WebRtcInboundMessage>> {
         tokio::select! {
             rpc = self.receive_rpc_message() => rpc,
-            stream = self.receive_stream_message() => stream,
+            reliable = self.receive_reliable_message() => reliable,
+            latency_first = self.receive_latency_first_message() => latency_first,
         }
     }
 

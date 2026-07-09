@@ -334,61 +334,33 @@ impl WebRtcGate {
             }
         });
 
-        let stream_coordinator = self.coordinator.clone();
+        let reliable_coordinator = self.coordinator.clone();
         let data_chunk_registry = self.data_chunk_registry.clone();
 
         tokio::spawn(async move {
             loop {
-                match stream_coordinator.receive_stream_message().await {
+                match reliable_coordinator.receive_reliable_message().await {
                     Ok(Some((from_bytes, data, payload_type))) => {
                         tracing::debug!(
-                            "📨 WebRtcGate received stream message: {} bytes, PayloadType: {:?}",
+                            "📨 WebRtcGate received reliable stream message: {} bytes, PayloadType: {:?}",
                             data.len(),
                             payload_type
                         );
 
                         match payload_type {
-                            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                                // DataChunk path: deserialize and dispatch to registry
-                                match DataChunk::decode(&data[..]) {
-                                    Ok(chunk) => {
-                                        tracing::debug!(
-                                            "📦 Received DataChunk: stream_id={}, seq={}, {} bytes",
-                                            chunk.stream_id,
-                                            chunk.sequence,
-                                            chunk.payload.len()
-                                        );
-
-                                        // Decode sender ActrId
-                                        match ActrId::decode(&from_bytes[..]) {
-                                            Ok(sender_id) => {
-                                                // Dispatch to the per-stream serial worker.
-                                                // For StreamReliable a full queue makes this
-                                                // await block only the stream receive loop.
-                                                data_chunk_registry
-                                                    .dispatch(chunk, sender_id, payload_type)
-                                                    .await;
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    "❌ Failed to decode sender ActrId: {:?}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "❌ Failed to deserialize DataChunk: {:?}",
-                                            e
-                                        );
-                                    }
-                                }
+                            PayloadType::StreamReliable => {
+                                Self::dispatch_data_chunk(
+                                    &data_chunk_registry,
+                                    &from_bytes,
+                                    &data,
+                                    payload_type,
+                                )
+                                .await;
                             }
                             unexpected => {
                                 tracing::warn!(
                                     payload_type = ?unexpected,
-                                    "unexpected non-stream payload in WebRTC stream receive queue"
+                                    "unexpected non-reliable-stream payload in WebRTC reliable receive queue"
                                 );
                             }
                         }
@@ -397,7 +369,56 @@ impl WebRtcGate {
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
                     Err(e) => {
-                        tracing::error!("❌ Stream message receive failed: {:?}", e);
+                        tracing::error!("❌ Reliable stream message receive failed: {:?}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+
+        let latency_first_coordinator = self.coordinator.clone();
+        let data_chunk_registry = self.data_chunk_registry.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match latency_first_coordinator
+                    .receive_latency_first_message()
+                    .await
+                {
+                    Ok(Some((from_bytes, data, payload_type))) => {
+                        tracing::debug!(
+                            "📨 WebRtcGate received latency-first stream message: {} bytes, PayloadType: {:?}",
+                            data.len(),
+                            payload_type
+                        );
+
+                        match payload_type {
+                            PayloadType::StreamLatencyFirst => {
+                                // LatencyFirst dispatch is non-blocking (try_send + drop on
+                                // full), and this queue/task is isolated from Reliable so a
+                                // backpressured reliable stream cannot stall latency-first
+                                // chunks upstream of the registry's drop-newest policy.
+                                Self::dispatch_data_chunk(
+                                    &data_chunk_registry,
+                                    &from_bytes,
+                                    &data,
+                                    payload_type,
+                                )
+                                .await;
+                            }
+                            unexpected => {
+                                tracing::warn!(
+                                    payload_type = ?unexpected,
+                                    "unexpected non-latency-first payload in WebRTC latency-first receive queue"
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ Latency-first stream message receive failed: {:?}", e);
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -405,6 +426,40 @@ impl WebRtcGate {
         });
 
         Ok(())
+    }
+
+    /// Decode a DataChunk and dispatch it to the per-stream registry worker.
+    ///
+    /// Shared by the reliable and latency-first receive loops, which differ
+    /// only in the traffic-class queue they drain — Reliable may backpressure
+    /// (blocking send) while LatencyFirst drops on overflow (try_send).
+    async fn dispatch_data_chunk(
+        registry: &DataChunkRegistry,
+        from_bytes: &[u8],
+        data: &[u8],
+        payload_type: PayloadType,
+    ) {
+        let chunk = match DataChunk::decode(data) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("❌ Failed to deserialize DataChunk: {:?}", e);
+                return;
+            }
+        };
+        tracing::debug!(
+            "📦 Received DataChunk: stream_id={}, seq={}, {} bytes",
+            chunk.stream_id,
+            chunk.sequence,
+            chunk.payload.len()
+        );
+        let sender_id = match ActrId::decode(from_bytes) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("❌ Failed to decode sender ActrId: {:?}", e);
+                return;
+            }
+        };
+        registry.dispatch(chunk, sender_id, payload_type).await;
     }
 
     /// Send response (called by Mailbox handler loop)

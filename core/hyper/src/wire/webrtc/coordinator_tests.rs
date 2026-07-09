@@ -202,30 +202,30 @@ fn new_test_coordinator(local_id: ActrId) -> Arc<WebRtcCoordinator> {
 }
 
 #[tokio::test]
-async fn stream_queue_backpressure_does_not_block_rpc_queue() {
+async fn reliable_queue_backpressure_does_not_block_rpc_queue() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let peer_bytes = test_actor_id(2).encode_to_vec();
 
-    for _ in 0..WEBRTC_STREAM_INBOUND_QUEUE_DEPTH {
+    for _ in 0..WEBRTC_RELIABLE_INBOUND_QUEUE_DEPTH {
         coordinator
-            .stream_message_tx
+            .reliable_message_tx
             .try_send((
                 peer_bytes.clone(),
-                Bytes::from_static(b"stream"),
+                Bytes::from_static(b"reliable"),
                 PayloadType::StreamReliable,
             ))
-            .expect("stream queue should accept up to its configured depth");
+            .expect("reliable queue should accept up to its configured depth");
     }
     assert!(
         coordinator
-            .stream_message_tx
+            .reliable_message_tx
             .try_send((
                 peer_bytes.clone(),
                 Bytes::from_static(b"overflow"),
                 PayloadType::StreamReliable,
             ))
             .is_err(),
-        "stream queue should be full"
+        "reliable queue should be full"
     );
 
     coordinator
@@ -236,17 +236,72 @@ async fn stream_queue_backpressure_does_not_block_rpc_queue() {
             PayloadType::RpcReliable,
         ))
         .await
-        .expect("full stream queue must not block RPC queue");
+        .expect("full reliable queue must not block RPC queue");
 
     let (_from, data, payload_type) =
         tokio::time::timeout(Duration::from_secs(1), coordinator.receive_rpc_message())
             .await
-            .expect("RPC receive should not wait behind stream backpressure")
+            .expect("RPC receive should not wait behind reliable backpressure")
             .expect("RPC receive should not fail")
             .expect("RPC message should be present");
 
     assert_eq!(payload_type, PayloadType::RpcReliable);
     assert_eq!(&data[..], b"rpc");
+}
+
+#[tokio::test]
+async fn reliable_queue_backpressure_does_not_block_latency_first() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_bytes = test_actor_id(2).encode_to_vec();
+
+    // Saturate the reliable queue so reliable traffic is backpressured.
+    for _ in 0..WEBRTC_RELIABLE_INBOUND_QUEUE_DEPTH {
+        coordinator
+            .reliable_message_tx
+            .try_send((
+                peer_bytes.clone(),
+                Bytes::from_static(b"reliable"),
+                PayloadType::StreamReliable,
+            ))
+            .expect("reliable queue should accept up to its configured depth");
+    }
+    assert!(
+        coordinator
+            .reliable_message_tx
+            .try_send((
+                peer_bytes.clone(),
+                Bytes::from_static(b"overflow"),
+                PayloadType::StreamReliable,
+            ))
+            .is_err(),
+        "reliable queue should be full"
+    );
+
+    // A full reliable queue must not block latency-first delivery: the two
+    // classes have separate queues and receive loops, so a backpressured
+    // reliable stream cannot stall latency-first chunks upstream of the
+    // registry's drop-newest policy.
+    coordinator
+        .latency_first_message_tx
+        .send((
+            peer_bytes,
+            Bytes::from_static(b"lf"),
+            PayloadType::StreamLatencyFirst,
+        ))
+        .await
+        .expect("full reliable queue must not block latency-first queue");
+
+    let (_from, data, payload_type) = tokio::time::timeout(
+        Duration::from_secs(1),
+        coordinator.receive_latency_first_message(),
+    )
+    .await
+    .expect("latency-first receive should not wait behind reliable backpressure")
+    .expect("latency-first receive should not fail")
+    .expect("latency-first message should be present");
+
+    assert_eq!(payload_type, PayloadType::StreamLatencyFirst);
+    assert_eq!(&data[..], b"lf");
 }
 
 fn install_hook_recorder(
