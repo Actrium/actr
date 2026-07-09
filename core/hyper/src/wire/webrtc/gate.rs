@@ -234,31 +234,28 @@ impl WebRtcGate {
     ///   - RpcReliable/RpcSignal: Deserialize RpcEnvelope, check pending_requests, enqueue to Mailbox
     ///   - StreamReliable/StreamLatencyFirst: Deserialize DataChunk, dispatch to DataChunkRegistry
     pub async fn start_receive_loop(&self, mailbox: Arc<dyn Mailbox>) -> ActorResult<()> {
-        let coordinator = self.coordinator.clone();
-        let pending_requests = self.pending_requests.clone();
-        let data_chunk_registry = self.data_chunk_registry.clone();
+        let rpc_coordinator = self.coordinator.clone();
+        let rpc_pending_requests = self.pending_requests.clone();
+        let rpc_mailbox = mailbox.clone();
         #[cfg(feature = "opentelemetry")]
-        let local_id = self.local_id.clone();
+        let rpc_local_id = self.local_id.clone();
 
         tokio::spawn(async move {
             loop {
-                // Receive message from WebRtcCoordinator (now includes PayloadType)
-                match coordinator.receive_message().await {
+                match rpc_coordinator.receive_rpc_message().await {
                     Ok(Some((from_bytes, data, payload_type))) => {
                         tracing::debug!(
-                            "📨 WebRtcGate received message: {} bytes, PayloadType: {:?}",
+                            "📨 WebRtcGate received RPC message: {} bytes, PayloadType: {:?}",
                             data.len(),
                             payload_type
                         );
 
-                        // Route based on PayloadType
                         match payload_type {
                             PayloadType::RpcReliable | PayloadType::RpcSignal => {
-                                // RPC path: deserialize RpcEnvelope and route
                                 match RpcEnvelope::decode(&data[..]) {
                                     Ok(envelope) => {
                                         #[cfg(feature = "opentelemetry")]
-                                        let current_local_id = local_id.read().await.clone();
+                                        let current_local_id = rpc_local_id.read().await.clone();
                                         #[cfg(feature = "opentelemetry")]
                                         let span = {
                                             let actr_id_str = current_local_id
@@ -274,8 +271,8 @@ impl WebRtcGate {
                                             from_bytes,
                                             data,
                                             payload_type,
-                                            pending_requests.clone(),
-                                            mailbox.clone(),
+                                            rpc_pending_requests.clone(),
+                                            rpc_mailbox.clone(),
                                         );
                                         #[cfg(feature = "opentelemetry")]
                                         let handle_envelope_fut =
@@ -291,44 +288,10 @@ impl WebRtcGate {
                                     }
                                 }
                             }
-                            PayloadType::StreamReliable | PayloadType::StreamLatencyFirst => {
-                                // DataChunk path: deserialize and dispatch to registry
-                                match DataChunk::decode(&data[..]) {
-                                    Ok(chunk) => {
-                                        tracing::debug!(
-                                            "📦 Received DataChunk: stream_id={}, seq={}, {} bytes",
-                                            chunk.stream_id,
-                                            chunk.sequence,
-                                            chunk.payload.len()
-                                        );
-
-                                        // Decode sender ActrId
-                                        match ActrId::decode(&from_bytes[..]) {
-                                            Ok(sender_id) => {
-                                                // Dispatch to DataChunkRegistry (async callback invocation)
-                                                data_chunk_registry
-                                                    .dispatch(chunk, sender_id)
-                                                    .await;
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    "❌ Failed to decode sender ActrId: {:?}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        tracing::error!(
-                                            "❌ Failed to deserialize DataChunk: {:?}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
-                            PayloadType::MediaRtp => {
+                            unexpected => {
                                 tracing::warn!(
-                                    "⚠️ MediaRtp received in WebRtcGate (should use RTCTrackRemote)"
+                                    payload_type = ?unexpected,
+                                    "unexpected non-RPC payload in WebRTC RPC receive queue"
                                 );
                             }
                         }
@@ -337,7 +300,98 @@ impl WebRtcGate {
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
                     Err(e) => {
-                        tracing::error!("❌ Message receive failed: {:?}", e);
+                        tracing::error!("❌ RPC message receive failed: {:?}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+
+        let reliable_coordinator = self.coordinator.clone();
+        let data_chunk_registry = self.data_chunk_registry.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match reliable_coordinator.receive_reliable_message().await {
+                    Ok(Some((from_bytes, data, payload_type))) => {
+                        tracing::debug!(
+                            "📨 WebRtcGate received reliable stream message: {} bytes, PayloadType: {:?}",
+                            data.len(),
+                            payload_type
+                        );
+
+                        match payload_type {
+                            PayloadType::StreamReliable => {
+                                Self::dispatch_data_chunk(
+                                    &data_chunk_registry,
+                                    &from_bytes,
+                                    &data,
+                                    payload_type,
+                                )
+                                .await;
+                            }
+                            unexpected => {
+                                tracing::warn!(
+                                    payload_type = ?unexpected,
+                                    "unexpected non-reliable-stream payload in WebRTC reliable receive queue"
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ Reliable stream message receive failed: {:?}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
+
+        let latency_first_coordinator = self.coordinator.clone();
+        let data_chunk_registry = self.data_chunk_registry.clone();
+
+        tokio::spawn(async move {
+            loop {
+                match latency_first_coordinator
+                    .receive_latency_first_message()
+                    .await
+                {
+                    Ok(Some((from_bytes, data, payload_type))) => {
+                        tracing::debug!(
+                            "📨 WebRtcGate received latency-first stream message: {} bytes, PayloadType: {:?}",
+                            data.len(),
+                            payload_type
+                        );
+
+                        match payload_type {
+                            PayloadType::StreamLatencyFirst => {
+                                // LatencyFirst dispatch is non-blocking (try_send + drop on
+                                // full), and this queue/task is isolated from Reliable so a
+                                // backpressured reliable stream cannot stall latency-first
+                                // chunks upstream of the registry's drop-newest policy.
+                                Self::dispatch_data_chunk(
+                                    &data_chunk_registry,
+                                    &from_bytes,
+                                    &data,
+                                    payload_type,
+                                )
+                                .await;
+                            }
+                            unexpected => {
+                                tracing::warn!(
+                                    payload_type = ?unexpected,
+                                    "unexpected non-latency-first payload in WebRTC latency-first receive queue"
+                                );
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ Latency-first stream message receive failed: {:?}", e);
                         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                     }
                 }
@@ -345,6 +399,40 @@ impl WebRtcGate {
         });
 
         Ok(())
+    }
+
+    /// Decode a DataChunk and dispatch it to the per-stream registry worker.
+    ///
+    /// Shared by the reliable and latency-first receive loops, which differ
+    /// only in the traffic-class queue they drain — Reliable may backpressure
+    /// (blocking send) while LatencyFirst drops on overflow (try_send).
+    async fn dispatch_data_chunk(
+        registry: &DataChunkRegistry,
+        from_bytes: &[u8],
+        data: &[u8],
+        payload_type: PayloadType,
+    ) {
+        let chunk = match DataChunk::decode(data) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("❌ Failed to deserialize DataChunk: {:?}", e);
+                return;
+            }
+        };
+        tracing::debug!(
+            "📦 Received DataChunk: stream_id={}, seq={}, {} bytes",
+            chunk.stream_id,
+            chunk.sequence,
+            chunk.payload.len()
+        );
+        let sender_id = match ActrId::decode(from_bytes) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::error!("❌ Failed to decode sender ActrId: {:?}", e);
+                return;
+            }
+        };
+        registry.dispatch(chunk, sender_id, payload_type).await;
     }
 
     /// Send response (called by Mailbox handler loop)

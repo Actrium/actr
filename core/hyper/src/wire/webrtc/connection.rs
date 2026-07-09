@@ -6,10 +6,10 @@ use crate::transport::{
     ConnType, DataLane, NetworkError, NetworkResult, WebRtcDataLane, WireHandle,
 };
 use crate::transport::{ConnectionEvent, ConnectionState};
+use crate::wire::webrtc::WebRtcInboundMessage;
 use actr_protocol::prost::Message;
 use actr_protocol::{ActrId, PayloadType};
 use async_trait::async_trait;
-use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -819,7 +819,7 @@ impl WebRtcConnection {
         &self,
         data_channel: Arc<RTCDataChannel>,
         payload_type: PayloadType,
-        message_tx: mpsc::UnboundedSender<(Vec<u8>, Bytes, PayloadType)>,
+        message_tx: mpsc::Sender<WebRtcInboundMessage>,
     ) -> NetworkResult<Arc<dyn DataLane>> {
         // Check if it's MediaTrack type
         if payload_type == PayloadType::MediaRtp {
@@ -1009,8 +1009,8 @@ impl WebRtcConnection {
                         // Serialize peer_id as bytes
                         let peer_id_bytes = peer_id_clone.encode_to_vec();
 
-                        // Send to aggregation channel (include PayloadType)
-                        if let Err(e) = message_tx.send((peer_id_bytes, data, payload_type)) {
+                        // Send to the traffic-class aggregation channel (include PayloadType).
+                        if let Err(e) = message_tx.send((peer_id_bytes, data, payload_type)).await {
                             tracing::error!("❌ Message aggregation failed: {:?}", e);
                             break;
                         }

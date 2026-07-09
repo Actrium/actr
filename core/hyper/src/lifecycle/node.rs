@@ -1007,7 +1007,12 @@ impl Inner {
         let workload_to_shell = Arc::new(HostTransport::new());
         let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
 
-        let data_chunk_registry = Arc::new(DataChunkRegistry::new());
+        // Root shutdown token; the data chunk registry gets a child so a
+        // node-wide shutdown drains all per-stream workers (no orphans).
+        let shutdown_token = CancellationToken::new();
+        let data_chunk_registry = Arc::new(DataChunkRegistry::with_shutdown(
+            shutdown_token.child_token(),
+        ));
         let media_frame_registry = Arc::new(MediaFrameRegistry::new());
 
         tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Guest)");
@@ -1045,7 +1050,7 @@ impl Inner {
             websocket_gate: None,
             shell_to_workload: Some(shell_to_workload),
             workload_to_shell: Some(workload_to_shell),
-            shutdown_token: CancellationToken::new(),
+            shutdown_token,
             actr_lock,
             network_event_rx: None,
             network_event_debounce_config: None,
@@ -1902,6 +1907,14 @@ impl Inner {
             let shutdown = shutdown_token.clone();
             let on_stop_handle = tokio::spawn(async move {
                 shutdown.cancelled().await;
+
+                // Stop inbound data stream workers before on_stop tries to
+                // enter the workload. Stream callbacks also hold
+                // workload_dispatch, so draining/aborting them first prevents
+                // on_stop from skipping registry cleanup while waiting on the
+                // same lock.
+                node.data_chunk_registry.shutdown().await;
+
                 let stop_ctx = node
                     .bootstrap_ctx_builder()
                     .build_bootstrap(&actor_id, &credential_state.credential().await);

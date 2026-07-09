@@ -531,7 +531,13 @@ impl WebSocketGate {
                                                 );
                                                 match ActrId::decode(&src[..]) {
                                                     Ok(sender_id) => {
-                                                        registry.dispatch(chunk, sender_id).await;
+                                                        // Per-lane task: a full StreamReliable
+                                                        // queue blocks only this stream lane, not
+                                                        // the RPC lanes (unlike the WebRTC single
+                                                        // receive loop).
+                                                        registry
+                                                            .dispatch(chunk, sender_id, pt)
+                                                            .await;
                                                     }
                                                     Err(e) => {
                                                         tracing::error!(

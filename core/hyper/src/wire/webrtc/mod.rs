@@ -12,6 +12,8 @@ pub(crate) mod negotiator;
 mod signaling;
 pub(crate) mod trace;
 
+pub(crate) type WebRtcInboundMessage = (Vec<u8>, actr_framework::Bytes, actr_protocol::PayloadType);
+
 // Re-export public WebRTC surface from this module boundary; internal hook
 // plumbing stays crate-private except under test-utils, where integration
 // tests can install recorders without standing up a full node.
