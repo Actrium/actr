@@ -119,6 +119,8 @@ jobs:
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Check formatting
         run: cargo fmt --all -- --check
+      - name: Test Rust protoc plugin well-known types
+        run: cargo test -p actr-framework-protoc-codegen --test well_known_type_smoke
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
