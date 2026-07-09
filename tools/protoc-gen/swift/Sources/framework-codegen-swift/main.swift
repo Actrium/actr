@@ -37,12 +37,43 @@ struct ActrFrameworkGenerator {
 
   enum MetadataError: LocalizedError {
     case unresolvedType(kind: String, typeName: String, serviceName: String, methodName: String)
+    case malformedPayloadTypeOption(serviceName: String, methodName: String, detail: String)
+    case unsupportedPayloadType(value: UInt64, serviceName: String, methodName: String)
 
     var errorDescription: String? {
       switch self {
       case let .unresolvedType(kind, typeName, serviceName, methodName):
         return
           "Cannot resolve \(kind) type `\(typeName)` for \(serviceName).\(methodName): RPC types must be declared in one of the parsed proto files"
+      case let .malformedPayloadTypeOption(serviceName, methodName, detail):
+        return
+          "Cannot parse (actr.payload_type) option for \(serviceName).\(methodName): \(detail)"
+      case let .unsupportedPayloadType(value, serviceName, methodName):
+        return
+          "Unsupported (actr.payload_type) value \(value) for \(serviceName).\(methodName)"
+      }
+    }
+  }
+
+  enum RpcPayloadType: UInt64 {
+    case rpcReliable = 0
+    case rpcSignal = 1
+    case streamReliable = 2
+    case streamLatencyFirst = 3
+    case mediaRtp = 4
+
+    var swiftCase: String {
+      switch self {
+      case .rpcReliable:
+        return ".rpcReliable"
+      case .rpcSignal:
+        return ".rpcSignal"
+      case .streamReliable:
+        return ".streamReliable"
+      case .streamLatencyFirst:
+        return ".streamLatencyFirst"
+      case .mediaRtp:
+        return ".mediaRtp"
       }
     }
   }
@@ -374,6 +405,10 @@ struct ActrFrameworkGenerator {
             let outputType = Self.swiftTypeName(
               method.outputType, currentPackage: fileDescriptor.package,
               typeToSwiftName: typeToSwiftName)
+            let payloadType = try Self.payloadType(
+              for: method,
+              packageName: fileDescriptor.package,
+              serviceName: serviceName)
 
             let routeKey: String
             if fileDescriptor.package.isEmpty {
@@ -388,6 +423,7 @@ struct ActrFrameworkGenerator {
                   \(accessModifier)typealias Response = \(outputType)
 
                   \(accessModifier)static var routeKey: String { "\(routeKey)" }
+                  \(accessModifier)static var payloadType: PayloadType { \(payloadType.swiftCase) }
               }
               """
           }
@@ -559,6 +595,148 @@ struct ActrFrameworkGenerator {
         serviceName: input.serviceName,
         methodName: input.methodName,
         typeRefs: typeRefs))
+  }
+
+  static func payloadType(
+    for method: Google_Protobuf_MethodDescriptorProto,
+    packageName _: String,
+    serviceName: String
+  ) throws -> RpcPayloadType {
+    if let rawValue = try extractPayloadTypeOption(
+      from: method.options.unknownFields.data,
+      serviceName: serviceName,
+      methodName: method.name)
+    {
+      guard let payloadType = RpcPayloadType(rawValue: rawValue) else {
+        throw MetadataError.unsupportedPayloadType(
+          value: rawValue,
+          serviceName: serviceName,
+          methodName: method.name)
+      }
+      return payloadType
+    }
+
+    if method.clientStreaming || method.serverStreaming {
+      return .streamReliable
+    }
+
+    return .rpcReliable
+  }
+
+  static func extractPayloadTypeOption(
+    from unknownFields: Data,
+    serviceName: String,
+    methodName: String
+  ) throws -> UInt64? {
+    let payloadTypeFieldNumber = 50_001
+    var index = unknownFields.startIndex
+
+    while index < unknownFields.endIndex {
+      let key = try readVarint(
+        from: unknownFields,
+        index: &index,
+        serviceName: serviceName,
+        methodName: methodName)
+      let fieldNumber = Int(key >> 3)
+      let wireType = Int(key & 0x7)
+
+      if fieldNumber == payloadTypeFieldNumber {
+        guard wireType == 0 else {
+          throw MetadataError.malformedPayloadTypeOption(
+            serviceName: serviceName,
+            methodName: methodName,
+            detail: "expected varint wire type, got \(wireType)")
+        }
+        return try readVarint(
+          from: unknownFields,
+          index: &index,
+          serviceName: serviceName,
+          methodName: methodName)
+      }
+
+      try skipUnknownField(
+        wireType: wireType,
+        in: unknownFields,
+        index: &index,
+        serviceName: serviceName,
+        methodName: methodName)
+    }
+
+    return nil
+  }
+
+  static func readVarint(
+    from data: Data,
+    index: inout Data.Index,
+    serviceName: String,
+    methodName: String
+  ) throws -> UInt64 {
+    var result: UInt64 = 0
+    var shift: UInt64 = 0
+
+    while index < data.endIndex, shift < 64 {
+      let byte = data[index]
+      index = data.index(after: index)
+      result |= UInt64(byte & 0x7f) << shift
+      if byte < 0x80 {
+        return result
+      }
+      shift += 7
+    }
+
+    throw MetadataError.malformedPayloadTypeOption(
+      serviceName: serviceName,
+      methodName: methodName,
+      detail: "unterminated varint")
+  }
+
+  static func skipUnknownField(
+    wireType: Int,
+    in data: Data,
+    index: inout Data.Index,
+    serviceName: String,
+    methodName: String
+  ) throws {
+    func advance(by count: Int) throws {
+      guard let next = data.index(index, offsetBy: count, limitedBy: data.endIndex) else {
+        throw MetadataError.malformedPayloadTypeOption(
+          serviceName: serviceName,
+          methodName: methodName,
+          detail: "truncated unknown field")
+      }
+      index = next
+    }
+
+    switch wireType {
+    case 0:
+      _ = try readVarint(
+        from: data,
+        index: &index,
+        serviceName: serviceName,
+        methodName: methodName)
+    case 1:
+      try advance(by: 8)
+    case 2:
+      let length = try readVarint(
+        from: data,
+        index: &index,
+        serviceName: serviceName,
+        methodName: methodName)
+      guard length <= UInt64(Int.max) else {
+        throw MetadataError.malformedPayloadTypeOption(
+          serviceName: serviceName,
+          methodName: methodName,
+          detail: "length-delimited field is too large")
+      }
+      try advance(by: Int(length))
+    case 5:
+      try advance(by: 4)
+    default:
+      throw MetadataError.malformedPayloadTypeOption(
+        serviceName: serviceName,
+        methodName: methodName,
+        detail: "unsupported wire type \(wireType)")
+    }
   }
 
   static func resolveTypeRef(
