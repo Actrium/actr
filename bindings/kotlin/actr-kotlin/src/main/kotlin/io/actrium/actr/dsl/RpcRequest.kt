@@ -5,14 +5,15 @@
  *
  * ```kotlin
  * // 1. Define your RPC contract
- * object EchoRpc : RpcRequest<EchoRequest, EchoResponse> {
+ * object EchoEchoRpc : RpcRequest<EchoRequest, EchoResponse> {
  *     override val routeKey = "echo.EchoService.Echo"
+ *     override val payloadType = PayloadType.RPC_RELIABLE
  *     override fun serializeRequest(request: EchoRequest) = request.toByteArray()
  *     override fun deserializeResponse(bytes: ByteArray) = EchoResponse.parseFrom(bytes)
  * }
  *
  * // 2. Call with type safety
- * val response: EchoResponse = ref.call(EchoRpc, EchoRequest.newBuilder().setMessage("hello").build())
+ * val response: EchoResponse = ref.call(EchoEchoRpc, EchoRequest.newBuilder().setMessage("hello").build())
  * ```
  *
  * ### With lambdas (inline, no object needed)
@@ -43,6 +44,10 @@ interface RpcRequest<Req, Resp> {
     /** RPC route key, e.g., "echo.EchoService.Echo". */
     val routeKey: String
 
+    /** Payload lane for this RPC method. */
+    val payloadType: PayloadType
+        get() = PayloadType.RPC_RELIABLE
+
     /** Serialize the request message to bytes. */
     fun serializeRequest(request: Req): ByteArray
 
@@ -55,22 +60,20 @@ interface RpcRequest<Req, Resp> {
  *
  * Example:
  * ```kotlin
- * val response: EchoResponse = ref.call(EchoRpc, EchoRequest.newBuilder().setMessage("hello").build())
+ * val response: EchoResponse = ref.call(EchoEchoRpc, EchoRequest.newBuilder().setMessage("hello").build())
  * ```
  *
  * @param rpc The RPC contract defining route, serialization, and deserialization
  * @param request The request message
- * @param payloadType Transmission type (default: RPC_RELIABLE)
  * @param timeoutMs Timeout in milliseconds (default: 30000)
  * @return The deserialized response
  */
 suspend fun <Req, Resp> ActrRef.call(
     rpc: RpcRequest<Req, Resp>,
     request: Req,
-    payloadType: PayloadType = PayloadType.RPC_RELIABLE,
     timeoutMs: Long = 30000L,
 ): Resp {
-    val responseBytes = call(rpc.routeKey, payloadType, rpc.serializeRequest(request), timeoutMs)
+    val responseBytes = call(rpc.routeKey, rpc.payloadType, rpc.serializeRequest(request), timeoutMs)
     return rpc.deserializeResponse(responseBytes)
 }
 

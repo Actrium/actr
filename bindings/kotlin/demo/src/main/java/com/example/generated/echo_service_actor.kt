@@ -8,7 +8,9 @@
  */
 package com.example.generated
 
+import io.actrium.actr.PayloadType
 import io.actrium.actr.dsl.ActrContext
+import io.actrium.actr.dsl.RpcRequest
 import io.actrium.actr.dsl.RpcEnvelope
 
 // Import protobuf message types
@@ -38,6 +40,18 @@ interface EchoServiceHandler {
         request: EchoRequest,
         ctx: ActrContext,
     ): EchoResponse
+}
+
+/**
+ * Type-safe outbound RPC contract for Echo.
+ */
+object EchoEchoRpc : RpcRequest<EchoRequest, EchoResponse> {
+    override val routeKey: String = "echo.EchoService.Echo"
+    override val payloadType: PayloadType = PayloadType.RPC_RELIABLE
+
+    override fun serializeRequest(request: EchoRequest): ByteArray = request.toByteArray()
+
+    override fun deserializeResponse(bytes: ByteArray): EchoResponse = EchoResponse.parseFrom(bytes)
 }
 
 /**

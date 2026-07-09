@@ -128,6 +128,7 @@ Detailed API documentation: **[docs/api.md](docs/api.md)**
 ### Package-backed Node
 
 ```kotlin
+import io.actrium.actr.PayloadType
 import io.actrium.actr.dsl.*
 
 // Create a node from config + package file
@@ -143,12 +144,13 @@ val ref = node.start()
 val bytes = ref.call("echo.EchoService.Echo", requestPayload)
 
 // Type-safe RPC with RpcRequest protocol
-object EchoRpc : RpcRequest<EchoRequest, EchoResponse> {
+object EchoEchoRpc : RpcRequest<EchoRequest, EchoResponse> {
     override val routeKey = "echo.EchoService.Echo"
+    override val payloadType = PayloadType.RPC_RELIABLE
     override fun serializeRequest(r: EchoRequest) = r.toByteArray()
     override fun deserializeResponse(b: ByteArray) = EchoResponse.parseFrom(b)
 }
-val response: EchoResponse = ref.call(EchoRpc, request)
+val response: EchoResponse = ref.call(EchoEchoRpc, request)
 
 // Discovery
 val server = ref.discoverOne("acme:EchoService:1.0.0")
@@ -310,7 +312,7 @@ val echoType = manifest.resolveDependency("EchoService")
 | `Workload` | Lifecycle and dispatch callbacks for a Kotlin-owned workload |
 | `RpcEnvelope` | Incoming RPC route, payload, and request identifier |
 | `WebRtcObserver` | WebRTC peer readiness callbacks |
-| `RpcRequest<Req, Resp>` | Type-safe RPC contract (route + serialize/deserialize) |
+| `RpcRequest<Req, Resp>` | Type-safe RPC contract (route + payload lane + serialize/deserialize) |
 | `DynamicWorkload` | Composite workload with lifecycle + optional observers |
 | `NetworkEventHandle` | Platform network/lifecycle event callbacks |
 | `PayloadType` | RPC/stream/media routing: RPC_RELIABLE, RPC_SIGNAL, STREAM_RELIABLE, etc. |

@@ -9,6 +9,21 @@ package io.actrium.codegen
 import com.google.protobuf.DescriptorProtos.MethodDescriptorProto
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse
 
+private const val ACTR_PAYLOAD_TYPE_FIELD_NUMBER = 50001
+
+private enum class RpcPayloadType(val protoValue: Long, val kotlinVariant: String) {
+    RPC_RELIABLE(0, "PayloadType.RPC_RELIABLE"),
+    RPC_SIGNAL(1, "PayloadType.RPC_SIGNAL"),
+    STREAM_RELIABLE(2, "PayloadType.STREAM_RELIABLE"),
+    STREAM_LATENCY_FIRST(3, "PayloadType.STREAM_LATENCY_FIRST"),
+    MEDIA_RTP(4, "PayloadType.MEDIA_RTP");
+
+    companion object {
+        fun fromProtoValue(value: Long): RpcPayloadType? =
+                entries.firstOrNull { it.protoValue == value }
+    }
+}
+
 /** Declaring owner of a proto message type and its generated JVM shape. */
 data class TypeOwner(
         val packageName: String,
@@ -38,6 +53,8 @@ class KotlinActorGenerator(
             appendLine()
             appendLine(generateHandlerInterface())
             appendLine()
+            appendLine(generateRpcContracts())
+            appendLine()
             appendLine(generateDispatcher())
         }
 
@@ -64,7 +81,9 @@ class KotlinActorGenerator(
     /** Generate import statements */
     private fun generateImports(): String {
         return buildString {
+            appendLine("import io.actrium.actr.PayloadType")
             appendLine("import io.actrium.actr.dsl.ActrContext")
+            appendLine("import io.actrium.actr.dsl.RpcRequest")
             appendLine("import io.actrium.actr.dsl.RpcEnvelope")
             appendLine()
             appendLine("// Protobuf message types are referenced by generated JVM owner class.")
@@ -128,6 +147,39 @@ class KotlinActorGenerator(
         """.trimMargin()
     }
 
+    /** Generate outbound RpcRequest contracts for type-safe remote calls. */
+    private fun generateRpcContracts(): String {
+        val contracts =
+                methods.joinToString("\n\n") { method ->
+                    val contractName = rpcContractName(method)
+                    val inputType = kotlinTypeName(method.inputType, "input", method.name)
+                    val outputType = kotlinTypeName(method.outputType, "output", method.name)
+                    val routeKey = routeKey(method)
+                    val payloadType = payloadTypeFor(method).kotlinVariant
+
+                    """
+            |/**
+            | * Type-safe outbound RPC contract for ${method.name}.
+            | */
+            |object $contractName : RpcRequest<$inputType, $outputType> {
+            |    override val routeKey: String = "$routeKey"
+            |    override val payloadType: PayloadType = $payloadType
+            |
+            |    override fun serializeRequest(request: $inputType): ByteArray = request.toByteArray()
+            |
+            |    override fun deserializeResponse(bytes: ByteArray): $outputType = $outputType.parseFrom(bytes)
+            |}
+            """.trimMargin()
+                }
+
+        return """
+            |/**
+            | * Type-safe outbound RPC contracts for $serviceName.
+            | */
+            |$contracts
+        """.trimMargin()
+    }
+
     /** Generate Dispatcher object */
     private fun generateDispatcher(): String {
         val dispatcherName = "${serviceName}Dispatcher"
@@ -135,7 +187,7 @@ class KotlinActorGenerator(
 
         val matchCases =
                 methods.joinToString("\n") { method ->
-                    val routeKey = "$packageName.$serviceName.${method.name}"
+                    val routeKey = routeKey(method)
                     val methodName = method.name.toSnakeCase()
                     val inputType = kotlinTypeName(method.inputType, "input", method.name)
 
@@ -176,6 +228,38 @@ class KotlinActorGenerator(
             |    }
             |}
         """.trimMargin()
+    }
+
+    private fun routeKey(method: MethodDescriptorProto): String {
+        return if (packageName.isEmpty()) {
+            "$serviceName.${method.name}"
+        } else {
+            "$packageName.$serviceName.${method.name}"
+        }
+    }
+
+    private fun payloadTypeFor(method: MethodDescriptorProto): RpcPayloadType {
+        val explicitValue =
+                method.options.unknownFields
+                        .getField(ACTR_PAYLOAD_TYPE_FIELD_NUMBER)
+                        .varintList
+                        .firstOrNull()
+        if (explicitValue != null) {
+            return RpcPayloadType.fromProtoValue(explicitValue)
+                    ?: throw IllegalArgumentException(
+                            "Unsupported (actr.payload_type) value $explicitValue on ${routeKey(method)}")
+        }
+        return if (method.clientStreaming || method.serverStreaming) {
+            RpcPayloadType.STREAM_RELIABLE
+        } else {
+            RpcPayloadType.RPC_RELIABLE
+        }
+    }
+
+    private fun rpcContractName(method: MethodDescriptorProto): String {
+        val serviceBase = serviceName.removeSuffix("Service").toPascalCase()
+        val methodName = method.name.toPascalCase()
+        return "$serviceBase${methodName}Rpc"
     }
 
     /** Resolve a fully-qualified proto type to the generated JVM type name. */

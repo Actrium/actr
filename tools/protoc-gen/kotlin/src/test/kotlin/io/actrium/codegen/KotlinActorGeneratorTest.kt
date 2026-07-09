@@ -4,13 +4,15 @@ import com.google.protobuf.DescriptorProtos.MethodDescriptorProto
 import com.google.protobuf.DescriptorProtos.DescriptorProto
 import com.google.protobuf.DescriptorProtos.FileDescriptorProto
 import com.google.protobuf.DescriptorProtos.FileOptions
+import com.google.protobuf.DescriptorProtos.MethodOptions
 import com.google.protobuf.DescriptorProtos.ServiceDescriptorProto
+import com.google.protobuf.UnknownFieldSet
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse
 import kotlin.test.Test
 import kotlin.test.assertContains
-import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 
 class KotlinActorGeneratorTest {
     @Test
@@ -50,6 +52,144 @@ class KotlinActorGeneratorTest {
                 "suspend fun call(request: ask.Ask.Request, ctx: ActrContext): reply.Reply.Response",
         )
         assertContains(generated, "val request = ask.Ask.Request.parseFrom(envelope.payload)")
+    }
+
+    @Test
+    fun generatedRpcContractsIncludePayloadTypeAndCodecs() {
+        val methods =
+                listOf(
+                        MethodDescriptorProto.newBuilder()
+                                .setName("Echo")
+                                .setInputType(".echo.EchoRequest")
+                                .setOutputType(".echo.EchoResponse")
+                                .build(),
+                        MethodDescriptorProto.newBuilder()
+                                .setName("Signal")
+                                .setInputType(".echo.SignalRequest")
+                                .setOutputType(".echo.SignalResponse")
+                                .setOptions(payloadTypeOption(1))
+                                .build(),
+                )
+        val typeOwner =
+                mapOf(
+                        "echo.EchoRequest" to TypeOwner("echo", "echo.proto"),
+                        "echo.EchoResponse" to TypeOwner("echo", "echo.proto"),
+                        "echo.SignalRequest" to TypeOwner("echo", "echo.proto"),
+                        "echo.SignalResponse" to TypeOwner("echo", "echo.proto"),
+                )
+
+        val generated =
+                KotlinActorGenerator(
+                                packageName = "echo",
+                                serviceName = "EchoService",
+                                methods = methods,
+                                params = mapOf("kotlin_package" to "echo.generated"),
+                                protoFileName = "echo.proto",
+                                typeOwner = typeOwner,
+                        )
+                        .generate()
+                        .content
+
+        assertContains(generated, "import io.actrium.actr.PayloadType")
+        assertContains(generated, "import io.actrium.actr.dsl.RpcRequest")
+        assertContains(
+                generated,
+                "object EchoEchoRpc : RpcRequest<echo.Echo.EchoRequest, echo.Echo.EchoResponse>",
+        )
+        assertContains(generated, "override val routeKey: String = \"echo.EchoService.Echo\"")
+        assertContains(generated, "override val payloadType: PayloadType = PayloadType.RPC_RELIABLE")
+        assertContains(
+                generated,
+                "override fun serializeRequest(request: echo.Echo.EchoRequest): ByteArray = request.toByteArray()",
+        )
+        assertContains(
+                generated,
+                "override fun deserializeResponse(bytes: ByteArray): echo.Echo.EchoResponse = echo.Echo.EchoResponse.parseFrom(bytes)",
+        )
+        assertContains(
+                generated,
+                "object EchoSignalRpc : RpcRequest<echo.Echo.SignalRequest, echo.Echo.SignalResponse>",
+        )
+        assertContains(generated, "override val payloadType: PayloadType = PayloadType.RPC_SIGNAL")
+    }
+
+    @Test
+    fun generatedRpcContractNamesDoNotCollideWhenMethodStartsWithServiceBase() {
+        val methods =
+                listOf(
+                        MethodDescriptorProto.newBuilder()
+                                .setName("Bar")
+                                .setInputType(".echo.BarRequest")
+                                .setOutputType(".echo.BarResponse")
+                                .build(),
+                        MethodDescriptorProto.newBuilder()
+                                .setName("EchoBar")
+                                .setInputType(".echo.EchoBarRequest")
+                                .setOutputType(".echo.EchoBarResponse")
+                                .build(),
+                )
+        val typeOwner =
+                mapOf(
+                        "echo.BarRequest" to TypeOwner("echo", "echo.proto"),
+                        "echo.BarResponse" to TypeOwner("echo", "echo.proto"),
+                        "echo.EchoBarRequest" to TypeOwner("echo", "echo.proto"),
+                        "echo.EchoBarResponse" to TypeOwner("echo", "echo.proto"),
+                )
+
+        val generated =
+                KotlinActorGenerator(
+                                packageName = "echo",
+                                serviceName = "EchoService",
+                                methods = methods,
+                                params = mapOf("kotlin_package" to "echo.generated"),
+                                protoFileName = "echo.proto",
+                                typeOwner = typeOwner,
+                        )
+                        .generate()
+                        .content
+
+        assertContains(
+                generated,
+                "object EchoBarRpc : RpcRequest<echo.Echo.BarRequest, echo.Echo.BarResponse>",
+        )
+        assertContains(
+                generated,
+                "object EchoEchoBarRpc : RpcRequest<echo.Echo.EchoBarRequest, echo.Echo.EchoBarResponse>",
+        )
+    }
+
+    @Test
+    fun unknownPayloadTypeAnnotationFailsCodegen() {
+        val methods =
+                listOf(
+                        MethodDescriptorProto.newBuilder()
+                                .setName("Stream")
+                                .setInputType(".echo.StreamRequest")
+                                .setOutputType(".echo.StreamResponse")
+                                .setServerStreaming(true)
+                                .setOptions(payloadTypeOption(5))
+                                .build()
+                )
+        val typeOwner =
+                mapOf(
+                        "echo.StreamRequest" to TypeOwner("echo", "echo.proto"),
+                        "echo.StreamResponse" to TypeOwner("echo", "echo.proto"),
+                )
+
+        val error =
+                assertFailsWith<IllegalArgumentException> {
+                    KotlinActorGenerator(
+                                    packageName = "echo",
+                                    serviceName = "EchoService",
+                                    methods = methods,
+                                    params = mapOf("kotlin_package" to "echo.generated"),
+                                    protoFileName = "echo.proto",
+                                    typeOwner = typeOwner,
+                            )
+                            .generate()
+                }
+
+        assertContains(error.message.orEmpty(), "Unsupported (actr.payload_type) value 5")
     }
 
     @Test
@@ -366,4 +506,16 @@ class KotlinActorGeneratorTest {
 
 private fun actorContent(response: CodeGeneratorResponse): String {
     return response.fileList.single { it.name != "actr-gen-meta.json" }.content
+}
+
+private fun payloadTypeOption(value: Long): MethodOptions {
+    val field =
+            UnknownFieldSet.Field.newBuilder()
+                    .addVarint(value)
+                    .build()
+    val unknownFields =
+            UnknownFieldSet.newBuilder()
+                    .addField(50001, field)
+                    .build()
+    return MethodOptions.newBuilder().setUnknownFields(unknownFields).build()
 }
