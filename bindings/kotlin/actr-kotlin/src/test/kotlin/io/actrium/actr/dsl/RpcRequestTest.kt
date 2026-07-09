@@ -26,6 +26,7 @@ class RpcRequestTest {
      */
     object EchoRpc : RpcRequest<EchoRequest, EchoResponse> {
         override val routeKey = "echo.EchoService.Echo"
+        override val payloadType = PayloadType.RPC_SIGNAL
 
         override fun serializeRequest(request: EchoRequest): ByteArray =
             request.message.toByteArray()
@@ -39,6 +40,11 @@ class RpcRequestTest {
     @Test
     fun `RpcRequest routeKey is exposed`() {
         assertEquals("echo.EchoService.Echo", EchoRpc.routeKey)
+    }
+
+    @Test
+    fun `RpcRequest payloadType is exposed`() {
+        assertEquals(PayloadType.RPC_SIGNAL, EchoRpc.payloadType)
     }
 
     // --- Serialize / deserialize round-trip ---
@@ -76,6 +82,7 @@ class RpcRequestTest {
 
     private object StreamRpc : RpcRequest<EchoRequest, EchoResponse> {
         override val routeKey = "stream.DataChunk.Send"
+        override val payloadType = PayloadType.STREAM_RELIABLE
         override fun serializeRequest(request: EchoRequest) = request.message.toByteArray()
         override fun deserializeResponse(bytes: ByteArray) = EchoResponse(String(bytes))
     }
@@ -84,6 +91,7 @@ class RpcRequestTest {
     fun `multiple RpcRequest contracts have distinct routeKey`() {
         assertEquals("echo.EchoService.Echo", EchoRpc.routeKey)
         assertEquals("stream.DataChunk.Send", StreamRpc.routeKey)
+        assertEquals(PayloadType.STREAM_RELIABLE, StreamRpc.payloadType)
     }
 
     // --- Contract can be parameterized with protobuf-like types ---
@@ -143,11 +151,16 @@ class RpcRequestTest {
         assertEquals(3, response.body.size)
     }
 
-    // --- PayloadType default parameter is RPC_RELIABLE ---
+    // --- PayloadType default contract metadata is RPC_RELIABLE ---
+
+    private object DefaultPayloadRpc : RpcRequest<EchoRequest, EchoResponse> {
+        override val routeKey = "example.DefaultService.Call"
+        override fun serializeRequest(request: EchoRequest) = request.message.toByteArray()
+        override fun deserializeResponse(bytes: ByteArray) = EchoResponse(String(bytes))
+    }
 
     @Test
-    fun `PayloadType default is RPC_RELIABLE for type-safe calls`() {
-        // Verify that PayloadType.RPC_RELIABLE is the documented default
-        assertEquals(PayloadType.RPC_RELIABLE, PayloadType.RPC_RELIABLE)
+    fun `PayloadType default is RPC_RELIABLE for RPC contracts`() {
+        assertEquals(PayloadType.RPC_RELIABLE, DefaultPayloadRpc.payloadType)
     }
 }

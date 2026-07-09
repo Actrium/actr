@@ -8,7 +8,9 @@
  */
 package com.example.generated
 
+import io.actrium.actr.PayloadType
 import io.actrium.actr.dsl.ActrContext
+import io.actrium.actr.dsl.RpcRequest
 import io.actrium.actr.dsl.RpcEnvelope
 import local.StreamClientOuterClass.ClientStartStreamRequest
 import local.StreamClientOuterClass.ClientStartStreamResponse
@@ -26,6 +28,19 @@ interface StreamClientHandler {
         request: ClientStartStreamRequest,
         ctx: ActrContext,
     ): ClientStartStreamResponse
+}
+
+/**
+ * Type-safe outbound RPC contract for StartStream.
+ */
+object StreamClientStartStreamRpc : RpcRequest<ClientStartStreamRequest, ClientStartStreamResponse> {
+    override val routeKey: String = "data_stream_peer.StreamClient.StartStream"
+    override val payloadType: PayloadType = PayloadType.RPC_RELIABLE
+
+    override fun serializeRequest(request: ClientStartStreamRequest): ByteArray = request.toByteArray()
+
+    override fun deserializeResponse(bytes: ByteArray): ClientStartStreamResponse =
+        ClientStartStreamResponse.parseFrom(bytes)
 }
 
 /**
