@@ -13,7 +13,7 @@ authors = [{name = "Actor-RTC Contributors"}]
 license = {text = "Apache-2.0"}
 
 [project.scripts]
-framework_codegen_python = "framework_codegen_python.__main__:main"
+protoc-gen-actrframework-python = "framework_codegen_python.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
