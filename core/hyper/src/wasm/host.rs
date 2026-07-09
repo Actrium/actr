@@ -30,6 +30,7 @@
 //! parallelism still works because each instantiated runtime owns its own
 //! `Store`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use actr_framework::guest::dynclib_abi::InitPayloadV1;
@@ -42,6 +43,8 @@ use actr_protocol::{
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
 use wasmtime::{Config, Engine, OptLevel, RegallocAlgorithm, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+use super::host_v2::WasmWorkloadV2;
 
 use super::component_bindings::ActrWorkloadGuest;
 use super::component_bindings::actr::workload::host::Host as HostImports;
@@ -70,11 +73,21 @@ use actr_framework::guest::dynclib_abi::{
 
 /// Build a wasmtime [`Config`] enabling the Component Model async path.
 ///
-/// `wasm_component_model_async(true)` is load-bearing even when the WIT
-/// functions are declared sync — wit-bindgen 0.57 with `async: true` on
-/// the guest emits `context.get` (async-ABI primitive), and the host
-/// engine must recognise that opcode to validate the component. See the
-/// Phase 0.5 spike REPORT for details.
+/// Guests are lifted synchronously since M3 (wit-bindgen 0.58 without
+/// `async: true`), so `wasm_component_model_async(true)` is no longer needed
+/// to validate guest custom sections. On wasmtime 46 the component-model
+/// async validation is on by default anyway; we still set it explicitly to
+/// pin behaviour against upstream default drift and as forward wiring for the
+/// M4 async world. Host-side asynchrony (fiber suspension across host calls)
+/// comes from the `async` Cargo feature + `call_async`, independent of this.
+///
+/// We additionally pin `concurrency_support(true)` — the wasmtime 46 gate
+/// (`Config::concurrency_support`, `config.rs`: "This option defaults to
+/// `true`") that governs the component-model concurrency surface. When it is
+/// off, `Store::run_concurrent` panics. It is on by default in 46, but the M5
+/// concurrent runner depends on it, so we set it explicitly to be self-
+/// documenting and to guard against an upstream default flip. Enabling it
+/// alongside `wasm_component_model_async(true)` is the supported combination.
 fn build_engine() -> WasmResult<Engine> {
     let mut config = Config::new();
     // `async_support(true)` was required before wasmtime 43; since then
@@ -82,6 +95,10 @@ fn build_engine() -> WasmResult<Engine> {
     // We pair it with explicit component-model flags to be self-documenting.
     config.wasm_component_model(true);
     config.wasm_component_model_async(true);
+    // Explicitly gate the concurrency surface (`run_concurrent`) on. Defaults
+    // to true on wasmtime 46; pinned here so a future default flip can never
+    // silently turn the M5 concurrent runner into a runtime panic.
+    config.concurrency_support(true);
     if std::env::var_os("ACTR_WASM_FAST_COMPILE").is_some() {
         config.cranelift_opt_level(OptLevel::None);
         config.cranelift_regalloc_algorithm(RegallocAlgorithm::SinglePass);
@@ -110,6 +127,28 @@ pub(crate) struct HostState {
     table: ResourceTable,
     pub(crate) invocation: Option<InvocationContext>,
     pub(crate) host_abi: Option<HostAbiFn>,
+    /// Per-invocation table keyed by `ctx-token`, used by the V2 (0.2.0
+    /// async world) Accessor-based host imports. Under the serial M4 runner
+    /// this holds at most one live entry, but keeping it a map means the M5
+    /// concurrent runner needs zero changes here: each in-flight invocation
+    /// keys its own `HostAbiFn` / `InvocationContext` by its token, so the
+    /// static Accessor import methods recover the correct one without a
+    /// shared single slot that would cross-talk.
+    ///
+    /// The V1 (0.1.0 sync world) path never touches this map — it keeps
+    /// using the `invocation` / `host_abi` single slots above.
+    invocations: HashMap<u64, InvocationEntry>,
+    /// Monotonic token allocator. Reset to zero whenever the map is cleared
+    /// on a trap-poison so a rebuilt instance starts from a clean sheet.
+    next_token: u64,
+}
+
+/// One live invocation's host-facing state, keyed by `ctx-token` in
+/// [`HostState::invocations`].
+pub(crate) struct InvocationEntry {
+    #[allow(dead_code)]
+    pub(crate) ctx: InvocationContext,
+    pub(crate) host_abi: HostAbiFn,
 }
 
 impl std::fmt::Debug for HostState {
@@ -117,18 +156,58 @@ impl std::fmt::Debug for HostState {
         f.debug_struct("HostState")
             .field("invocation", &self.invocation)
             .field("host_abi", &self.host_abi.as_ref().map(|_| "<fn>"))
+            .field("invocations", &self.invocations.len())
+            .field("next_token", &self.next_token)
             .finish_non_exhaustive()
     }
 }
 
 impl HostState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::new(),
             invocation: None,
             host_abi: None,
+            invocations: HashMap::new(),
+            next_token: 0,
         }
+    }
+
+    /// Allocate a fresh `ctx-token` and register a live invocation's
+    /// `InvocationContext` + `HostAbiFn` under it. Returns the token to
+    /// thread into the guest's `invocation-ctx` (V2 world). Tokens are
+    /// monotonic within a Store's lifetime.
+    pub(crate) fn alloc_invocation(&mut self, ctx: InvocationContext, host_abi: HostAbiFn) -> u64 {
+        let token = self.next_token;
+        self.next_token = self.next_token.wrapping_add(1);
+        self.invocations
+            .insert(token, InvocationEntry { ctx, host_abi });
+        token
+    }
+
+    /// Clone the `HostAbiFn` registered for `token`, if any. `HostAbiFn` is
+    /// an `Arc`, so the clone is a refcount bump safe to carry across an
+    /// `.await` inside an Accessor host method (the store borrow is not
+    /// held across the await).
+    pub(crate) fn invocation_host_abi(&self, token: u64) -> Option<HostAbiFn> {
+        self.invocations
+            .get(&token)
+            .map(|e| Arc::clone(&e.host_abi))
+    }
+
+    /// Retire the invocation registered for `token` once its guest call has
+    /// completed (success or business error). No-op if already gone.
+    pub(crate) fn remove_invocation(&mut self, token: u64) {
+        self.invocations.remove(&token);
+    }
+
+    /// Drop every live invocation and reset the token counter. Called when a
+    /// trap poisons the store: the whole in-flight set is dead, so the
+    /// rebuilt instance starts clean.
+    pub(crate) fn clear_invocations(&mut self) {
+        self.invocations.clear();
+        self.next_token = 0;
     }
 }
 
@@ -585,13 +664,28 @@ impl WasmHost {
     /// module saved in a pre-Phase-1 `.actr` package) — callers get a
     /// clear `LoadFailed` in that case and should surface the migration
     /// guidance up to the `.actr` loader.
+    ///
+    /// A second class of legacy input is a package built by an old SDK
+    /// (wit-bindgen <= 0.57 with the async-lift ABI). wasmtime 46 rejects
+    /// the `async` canonical option on a synchronous WIT function type, so
+    /// those binaries fail here; we map that to an actionable rebuild hint.
     pub fn compile(wasm_bytes: &[u8]) -> WasmResult<Self> {
         let engine = build_engine()?;
         let component = Component::from_binary(&engine, wasm_bytes).map_err(|e| {
+            let raw = format!("{e:#}");
+            if raw.contains("`async` canonical option requires an async function type") {
+                return WasmError::LoadFailed(format!(
+                    "this .actr package was built by an old SDK (wit-bindgen \
+                     <= 0.57 async-lift ABI), which wasmtime 46 rejects per \
+                     the Component Model spec. Rebuild it with the current SDK \
+                     (synchronous-lift packages run on both new and old hosts). \
+                     wasmtime reported: {raw}"
+                ));
+            }
             WasmError::LoadFailed(format!(
                 "wasm bytes did not load as a Component (this host \
                  requires Component Model binaries as of .actr format \
-                 bump; wasmtime reported: {e})"
+                 bump; wasmtime reported: {raw})"
             ))
         })?;
         tracing::info!(wasm_bytes = wasm_bytes.len(), "wasm Component compiled");
@@ -600,33 +694,226 @@ impl WasmHost {
 
     /// Instantiate the component into a runnable internal workload.
     ///
+    /// Probes which `actr:workload` world the component implements
+    /// (0.1.0 sync → [`WasmKernel::V1`], 0.2.0 async → [`WasmKernel::V2`])
+    /// and instantiates it on the matching execution path. Old 0.1.0
+    /// sync-lift packages keep taking the serial path unchanged; 0.2.0
+    /// packages run through the `run_concurrent` async path.
+    ///
     /// Builds a fresh [`Linker`] per instance (cheap), registers WASI
     /// p2 as well as the generated `actr:workload/host` linker, and
-    /// runs `Component::instantiate_async` which drives any
-    /// component-model initialisation through the host reactor. The
-    /// resulting bindings are cached on the returned workload
-    /// for subsequent `call_dispatch` and hook invocations.
-    pub(crate) async fn instantiate(&self) -> WasmResult<WasmWorkload> {
-        let mut linker: Linker<HostState> = Linker::new(&self.engine);
-        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
-            WasmError::LoadFailed(format!("failed to register WASI p2 linker imports: {e}"))
-        })?;
-        ActrWorkloadGuest::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| {
-            WasmError::LoadFailed(format!(
-                "failed to register actr:workload/host linker imports: {e}"
-            ))
-        })?;
-
-        let mut store = Store::new(&self.engine, HostState::new());
-        let bindings = ActrWorkloadGuest::instantiate_async(&mut store, &self.component, &linker)
-            .await
-            .map_err(|e| {
-                WasmError::LoadFailed(format!("Component instantiate_async failed: {e:#}"))
-            })?;
-
-        tracing::info!("wasm Component instantiated");
-        Ok(WasmWorkload { store, bindings })
+    /// runs `Component::instantiate_async`.
+    pub(crate) async fn instantiate(&self) -> WasmResult<WasmKernel> {
+        match probe_world(&self.component, &self.engine)? {
+            WasmWorkloadKind::V1Serial => {
+                let (store, bindings) = instantiate_parts(&self.engine, &self.component).await?;
+                tracing::info!("wasm Component instantiated (v1 serial world)");
+                Ok(WasmKernel::V1(WasmWorkload {
+                    engine: self.engine.clone(),
+                    component: self.component.clone(),
+                    store,
+                    bindings,
+                    poisoned: false,
+                    rebuilds: 0,
+                }))
+            }
+            WasmWorkloadKind::V2Concurrent => {
+                let v2 = WasmWorkloadV2::instantiate(&self.engine, &self.component).await?;
+                Ok(WasmKernel::V2(v2))
+            }
+        }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// World probing + dual-world kernel
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Which `actr:workload` world a compiled component implements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WasmWorkloadKind {
+    /// `actr:workload@0.1.0` — synchronous world, serial `&mut Store` path.
+    V1Serial,
+    /// `actr:workload@0.2.0` — async world, `run_concurrent` path.
+    V2Concurrent,
+}
+
+/// Inspect a compiled [`Component`]'s exported instances and decide which
+/// workload world it implements, purely from the component type — never
+/// reads or writes the `.actr` manifest, so the decision is grounded in
+/// what the binary actually exports. Exactly one recognised `workload`
+/// world must be present; zero or both is a [`WasmError::LoadFailed`] with
+/// a rebuild hint.
+fn probe_world(component: &Component, engine: &Engine) -> WasmResult<WasmWorkloadKind> {
+    let mut saw_v1 = false;
+    let mut saw_v2 = false;
+    for (name, _item) in component.component_type().exports(engine) {
+        if name.starts_with("actr:workload/workload@0.2.0") {
+            saw_v2 = true;
+        } else if name.starts_with("actr:workload/workload@0.1.0") {
+            saw_v1 = true;
+        }
+    }
+    match (saw_v1, saw_v2) {
+        (true, false) => Ok(WasmWorkloadKind::V1Serial),
+        (false, true) => Ok(WasmWorkloadKind::V2Concurrent),
+        (false, false) => Err(WasmError::LoadFailed(
+            "component exports no recognised actr:workload/workload world \
+             (expected @0.1.0 or @0.2.0); rebuild the package with a current SDK"
+                .to_string(),
+        )),
+        (true, true) => Err(WasmError::LoadFailed(
+            "component exports both actr:workload/workload@0.1.0 and @0.2.0; \
+             a package must implement exactly one world"
+                .to_string(),
+        )),
+    }
+}
+
+/// Dual-world execution kernel wrapped by [`crate::workload::Workload::Wasm`].
+///
+/// A thin dispatcher that forwards each guest entry to whichever world the
+/// loaded component implements. The `Workload` enum and its callers see one
+/// uniform `&mut self` surface; the V1/V2 split lives entirely here.
+pub(crate) enum WasmKernel {
+    V1(WasmWorkload),
+    V2(WasmWorkloadV2),
+}
+
+impl std::fmt::Debug for WasmKernel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WasmKernel::V1(w) => f.debug_tuple("WasmKernel::V1").field(w).finish(),
+            WasmKernel::V2(w) => f.debug_tuple("WasmKernel::V2").field(w).finish(),
+        }
+    }
+}
+
+impl WasmKernel {
+    pub(crate) fn init(&mut self, init_payload: &InitPayloadV1) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.init(init_payload),
+            WasmKernel::V2(w) => w.init(init_payload),
+        }
+    }
+
+    pub(crate) fn rebuild_count(&self) -> u64 {
+        match self {
+            WasmKernel::V1(w) => w.rebuild_count(),
+            WasmKernel::V2(w) => w.rebuild_count(),
+        }
+    }
+
+    /// Whether this kernel is the 0.2.0 async world (the only kernel that can
+    /// drive a resident `run_concurrent` region for same-instance interleaved
+    /// concurrency). The interleaved runner arm in [`crate::executor`] routes
+    /// on this: a V2 kernel gets `run_interleaved`; a V1 kernel (0.1.0 sync
+    /// world) always falls back to the serial `run_loop`.
+    pub(crate) fn is_v2(&self) -> bool {
+        matches!(self, WasmKernel::V2(_))
+    }
+
+    pub(crate) async fn call_on_start(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.call_on_start(ctx, host_abi).await,
+            WasmKernel::V2(w) => w.call_on_start(ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn call_on_ready(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.call_on_ready(ctx, host_abi).await,
+            WasmKernel::V2(w) => w.call_on_ready(ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn call_on_stop(
+        &mut self,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.call_on_stop(ctx, host_abi).await,
+            WasmKernel::V2(w) => w.call_on_stop(ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn call_hook_event(
+        &mut self,
+        event: PackageHookEvent,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.call_hook_event(event, ctx, host_abi).await,
+            WasmKernel::V2(w) => w.call_hook_event(event, ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn handle(
+        &mut self,
+        request_bytes: &[u8],
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<Vec<u8>> {
+        match self {
+            WasmKernel::V1(w) => w.handle(request_bytes, ctx, host_abi).await,
+            WasmKernel::V2(w) => w.handle(request_bytes, ctx, host_abi).await,
+        }
+    }
+
+    pub(crate) async fn handle_data_chunk(
+        &mut self,
+        chunk: DataChunk,
+        sender: ActrId,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> WasmResult<()> {
+        match self {
+            WasmKernel::V1(w) => w.handle_data_chunk(chunk, sender, ctx, host_abi).await,
+            WasmKernel::V2(w) => w.handle_data_chunk(chunk, sender, ctx, host_abi).await,
+        }
+    }
+}
+
+/// Build a fresh [`Store`] + component instance from an already-compiled
+/// [`Engine`]/[`Component`] pair.
+///
+/// Shared by [`WasmHost::instantiate`] (first instantiation) and
+/// [`WasmWorkload::ensure_instance`] (rebuild after a guest trap poisons
+/// the store). Only re-runs `instantiate_async`; the component compilation
+/// is not repeated — both `Engine` and `Component` are `Arc`-backed and
+/// cheap to clone. A fresh [`Linker`] is built each time (cheap) so the
+/// WASI p2 and `actr:workload/host` imports are registered against the new
+/// store.
+async fn instantiate_parts(
+    engine: &Engine,
+    component: &Component,
+) -> WasmResult<(Store<HostState>, ActrWorkloadGuest)> {
+    let mut linker: Linker<HostState> = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
+        WasmError::LoadFailed(format!("failed to register WASI p2 linker imports: {e}"))
+    })?;
+    ActrWorkloadGuest::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| {
+        WasmError::LoadFailed(format!(
+            "failed to register actr:workload/host linker imports: {e}"
+        ))
+    })?;
+
+    let mut store = Store::new(engine, HostState::new());
+    let bindings = ActrWorkloadGuest::instantiate_async(&mut store, component, &linker)
+        .await
+        .map_err(|e| WasmError::LoadFailed(format!("Component instantiate_async failed: {e:#}")))?;
+
+    Ok((store, bindings))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -640,14 +927,46 @@ impl WasmHost {
 /// borrow checker rejects any caller attempting to drive two hooks on
 /// the same instance concurrently — the single-threaded-actor invariant
 /// is compile-time-enforced.
+///
+/// # Store poisoning and lazy rebuild
+///
+/// A guest trap (panic, unreachable, or a host-import bridge fault raised
+/// through the trappable error path) poisons the underlying wasmtime
+/// [`Store`] as of wasmtime v42+: any further guest entry on that store
+/// fails with a "cannot enter component instance" style error. To keep an
+/// actor serviceable after such a fault, every guest entry method
+/// (`handle`, `handle_data_chunk`, the lifecycle hooks, `call_hook_event`)
+/// first calls [`WasmWorkload::ensure_instance`]: if the store is poisoned
+/// it is transparently rebuilt (fresh [`Store`] + `instantiate_async`) from
+/// the retained [`Engine`]/[`Component`] before the call proceeds. The
+/// rebuild only re-instantiates — no recompilation.
+///
+/// The rebuild is *lazy* (performed on the next inbound call, not at the
+/// trap site) and only re-establishes a serviceable instance. It does
+/// **not** replay `on-start`/lifecycle hooks and does **not** replay any
+/// in-flight or queued message: the guest's in-memory linear-memory state
+/// is lost (a `warn` is logged to make that explicit). Replay / hook
+/// adjudication (rebuild vs discard vs escalate) is out of scope here and
+/// belongs to the later mailbox/replay milestone (v2 plan §3.3 B0 boundary).
 pub(crate) struct WasmWorkload {
+    /// Retained for rebuilding a poisoned store. `Arc`-backed, cheap clone.
+    engine: Engine,
+    /// Retained for rebuilding a poisoned store. `Arc`-backed, cheap clone.
+    component: Component,
     store: Store<HostState>,
     bindings: ActrWorkloadGuest,
+    /// Set when a guest entry trapped; the store is unusable until rebuilt.
+    poisoned: bool,
+    /// Count of successful rebuilds, for observability / tests.
+    rebuilds: u64,
 }
 
 impl std::fmt::Debug for WasmWorkload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WasmWorkload").finish_non_exhaustive()
+        f.debug_struct("WasmWorkload")
+            .field("poisoned", &self.poisoned)
+            .field("rebuilds", &self.rebuilds)
+            .finish_non_exhaustive()
     }
 }
 
@@ -682,6 +1001,75 @@ impl WasmWorkload {
         state.host_abi = None;
     }
 
+    /// Number of times the poisoned store has been rebuilt. Test/observability
+    /// hook — monotonic, incremented once per successful re-instantiation.
+    pub(crate) fn rebuild_count(&self) -> u64 {
+        self.rebuilds
+    }
+
+    /// Ensure the wasm store is usable before a guest entry.
+    ///
+    /// If the store is not poisoned this is a no-op. If a previous guest
+    /// entry trapped (see [`WasmWorkload::trap_poison`]), the store is
+    /// rebuilt from the retained [`Engine`]/[`Component`]: a fresh
+    /// [`Store`] + `instantiate_async`, discarding the guest's prior
+    /// in-memory state. On success the poison flag clears and the rebuild
+    /// counter advances; on failure the instance stays poisoned and the
+    /// next call retries, so a transient rebuild failure is not fatal.
+    async fn ensure_instance(&mut self) -> WasmResult<()> {
+        if !self.poisoned {
+            return Ok(());
+        }
+
+        tracing::warn!(
+            rebuild_attempt = self.rebuilds + 1,
+            "rebuilding poisoned wasm store after a prior guest trap; \
+             guest in-memory state is discarded (lifecycle/queue not replayed)"
+        );
+
+        match instantiate_parts(&self.engine, &self.component).await {
+            Ok((store, bindings)) => {
+                self.store = store;
+                self.bindings = bindings;
+                self.poisoned = false;
+                self.rebuilds += 1;
+                tracing::info!(
+                    rebuilds = self.rebuilds,
+                    "wasm store rebuilt; instance serviceable again"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "failed to rebuild poisoned wasm store; instance stays poisoned, will retry on next call"
+                );
+                Err(WasmError::LoadFailed(format!(
+                    "failed to rebuild poisoned wasm store: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Mark the store poisoned after a guest entry trapped.
+    ///
+    /// A trap (outer `wasmtime::Result` `Err`) is an instance-level fatal
+    /// fault: the store cannot be re-entered. We flag it so the next guest
+    /// entry rebuilds a fresh instance, and return a distinct
+    /// [`WasmError::InstanceTrapped`] so callers/telemetry can tell a
+    /// trap-level failure apart from a guest-visible business error
+    /// (`ExecutionFailed`).
+    fn trap_poison(&mut self, entry: &str, trap: wasmtime::Error) -> WasmError {
+        self.poisoned = true;
+        tracing::error!(
+            entry,
+            error = %trap,
+            "wasm guest trapped; store poisoned (instance-level fatal). \
+             In-memory guest state is lost; a fresh instance is rebuilt before the next call"
+        );
+        WasmError::InstanceTrapped(format!("{entry} trap: {trap}"))
+    }
+
     /// Invoke the workload's `on-start` lifecycle hook.
     ///
     /// Phase 1 exposes this as a distinct entry point so the host can
@@ -693,6 +1081,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
 
         let result = self
@@ -703,9 +1092,11 @@ impl WasmWorkload {
 
         self.clear_invocation();
 
-        let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_start trap: {e}")))?;
-        result.map_err(|e| WasmError::ExecutionFailed(format!("on_start error: {:?}", e)))?;
+        let inner = match result {
+            Ok(inner) => inner,
+            Err(trap) => return Err(self.trap_poison("on_start", trap)),
+        };
+        inner.map_err(|e| WasmError::ExecutionFailed(format!("on_start error: {:?}", e)))?;
         Ok(())
     }
 
@@ -714,6 +1105,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
 
         let result = self
@@ -724,9 +1116,11 @@ impl WasmWorkload {
 
         self.clear_invocation();
 
-        let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_ready trap: {e}")))?;
-        result.map_err(|e| WasmError::ExecutionFailed(format!("on_ready error: {:?}", e)))?;
+        let inner = match result {
+            Ok(inner) => inner,
+            Err(trap) => return Err(self.trap_poison("on_ready", trap)),
+        };
+        inner.map_err(|e| WasmError::ExecutionFailed(format!("on_ready error: {:?}", e)))?;
         Ok(())
     }
 
@@ -735,6 +1129,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
 
         let result = self
@@ -745,9 +1140,11 @@ impl WasmWorkload {
 
         self.clear_invocation();
 
-        let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_stop trap: {e}")))?;
-        result.map_err(|e| WasmError::ExecutionFailed(format!("on_stop error: {:?}", e)))?;
+        let inner = match result {
+            Ok(inner) => inner,
+            Err(trap) => return Err(self.trap_poison("on_stop", trap)),
+        };
+        inner.map_err(|e| WasmError::ExecutionFailed(format!("on_stop error: {:?}", e)))?;
         Ok(())
     }
 
@@ -757,6 +1154,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         let label = event.request_id();
         self.install_invocation(ctx, host_abi);
         let result = match event {
@@ -844,7 +1242,9 @@ impl WasmWorkload {
         };
         self.clear_invocation();
 
-        result.map_err(|e| WasmError::ExecutionFailed(format!("{label} trap: {e}")))?;
+        if let Err(trap) = result {
+            return Err(self.trap_poison(label, trap));
+        }
         Ok(())
     }
 
@@ -865,6 +1265,11 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<Vec<u8>> {
+        // Rebuild the store first if a prior guest entry poisoned it. Done
+        // before envelope decode so a decode failure (which never touches
+        // the guest) does not gate on a rebuild it does not need.
+        self.ensure_instance().await?;
+
         // Decode the envelope. If the caller handed us malformed bytes
         // we surface that as an ExecutionFailed; historically this case
         // could never happen in practice because the caller encodes the
@@ -891,10 +1296,10 @@ impl WasmWorkload {
             .call_dispatch(&mut self.store, &wit_envelope)
             .await;
 
-        // Always clear per-call state regardless of outcome — a trap
-        // poisons the Store (wasmtime drops further use anyway) but
-        // clearing keeps the state machine observable even when the
-        // caller decides to retain the store for a next dispatch.
+        // Always clear per-call state regardless of outcome. On a trap the
+        // Store is poisoned (flagged below via `trap_poison`) and rebuilt
+        // lazily on the next call; clearing here keeps per-call state tidy
+        // either way.
         self.clear_invocation();
 
         match dispatch_result {
@@ -903,9 +1308,7 @@ impl WasmWorkload {
                 "guest dispatch returned error: {:?}",
                 wit_actr_error_to_proto(wit_err)
             ))),
-            Err(trap) => Err(WasmError::ExecutionFailed(format!(
-                "guest dispatch trapped: {trap}"
-            ))),
+            Err(trap) => Err(self.trap_poison("dispatch", trap)),
         }
     }
 
@@ -916,6 +1319,7 @@ impl WasmWorkload {
         ctx: InvocationContext,
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
+        self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
 
         let wit_chunk = proto_data_chunk_to_wit(chunk);
@@ -926,9 +1330,11 @@ impl WasmWorkload {
             .call_on_data_chunk(&mut self.store, &wit_chunk, &wit_sender)
             .await;
         self.clear_invocation();
-        let result =
-            result.map_err(|e| WasmError::ExecutionFailed(format!("on_data_chunk trap: {e}")))?;
-        result.map_err(|e| {
+        let inner = match result {
+            Ok(inner) => inner,
+            Err(trap) => return Err(self.trap_poison("on_data_chunk", trap)),
+        };
+        inner.map_err(|e| {
             WasmError::ExecutionFailed(format!(
                 "on_data_chunk error: {:?}",
                 wit_actr_error_to_proto(e)

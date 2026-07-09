@@ -59,6 +59,89 @@ pub struct HyperConfig {
     /// `lifecycle::node` works against any mailbox backend that supports
     /// the base trait.
     pub mailbox_backpressure_threshold: Option<usize>,
+
+    /// Conflict-key dispatch concurrency (B2). `None` resolves to
+    /// [`DispatchConcurrency::default`], whose gate is now **on** (strategy A).
+    /// Default-on is free for a keyless actor: with no declared conflict key the
+    /// node keeps it bit-for-bit serial and never spawns a scheduler, so the
+    /// resident concurrency machinery only engages once a method declares a
+    /// conflict key on a workload that can multiplex (native `Linked` /
+    /// `Wasm(V2)`). Pass `Some(DispatchConcurrency { enabled: false, .. })` (or
+    /// set `ACTR_DISPATCH_SERIAL=1`) to force the fully-serial B1 runner. See
+    /// [`DispatchConcurrency`].
+    pub dispatch_concurrency: Option<DispatchConcurrency>,
+}
+
+/// Conflict-key dispatch concurrency knobs (design doc §4.2, §7).
+///
+/// The gate defaults **on** (strategy A). Two orthogonal safety nets keep that
+/// free and safe:
+///
+/// * **keyless zero-overhead** — an actor that declares no conflict key is kept
+///   fully serial by the node, which does not even spawn a dispatch scheduler
+///   for it (it stays on the M4 per-dispatch `run_loop`). Default-on therefore
+///   costs a keyless actor nothing.
+/// * **undeclared = global barrier** — when a scheduler *is* running (some
+///   method declared a key), every *undeclared* method still projects to the
+///   global [`crate::dispatch::ConflictKey::Serial`] barrier, so an unkeyed
+///   route can never interleave. These two nets are independent of the gate's
+///   default value.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchConcurrency {
+    /// Master switch. Default `true` (strategy A default-on). A keyless actor is
+    /// unaffected (kept serial with no scheduler); set `false` (or export
+    /// `ACTR_DISPATCH_SERIAL=1`) to force the fully-serial B1 runner everywhere.
+    pub enabled: bool,
+    /// `C` — maximum number of dispatches in flight at once. Default `8`.
+    pub budget: usize,
+    /// `M` — total in-queue + in-flight bound; a full queue applies
+    /// back-pressure up to the node entry loop. Default `256`.
+    pub queue_cap: usize,
+    /// Per-dispatch deadline. `None` (default) = no deadline, exactly the M4
+    /// behaviour. When set, the v2 interleaved wasm runner arms this deadline
+    /// on every in-flight dispatch; on expiry the dispatch's in-flight
+    /// `call_concurrent` future is dropped (a CLEAN cancel that does not
+    /// poison the store — validated by the M0 spike's T8/R1), the caller's
+    /// reply resolves `TimedOut`, and the freed conflict key lets the next
+    /// same-key dispatch start without a serial violation. It is deliberately
+    /// enforced *inside* the resident region (a sibling of the guest-awaiting
+    /// future in the `select!`), not from an external timer, so the reply is
+    /// sent only *after* the timed-out dispatch has truly left the region —
+    /// which is what keeps same-key FIFO airtight across a timeout.
+    ///
+    /// Only in effect on the interleaved runner — a keyed actor with the gate
+    /// on. A keyless (serial) actor runs each dispatch to completion on the
+    /// pre-B2 loop and does not consult this field.
+    pub dispatch_timeout: Option<std::time::Duration>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for DispatchConcurrency {
+    fn default() -> Self {
+        DispatchConcurrency {
+            // Default-on (strategy A): the gate defaults *on*, but an actor that
+            // declares no conflict key stays bit-for-bit serial (the node never
+            // spawns a scheduler for it — see `lifecycle::node`). So turning the
+            // gate on by default costs a keyless actor nothing; concurrency only
+            // materializes once a method declares a conflict key.
+            enabled: true,
+            budget: 8,
+            queue_cap: 256,
+            dispatch_timeout: None,
+        }
+    }
+}
+
+/// Env escape hatch: `ACTR_DISPATCH_SERIAL=1` (or `true`) forces dispatch fully
+/// serial regardless of config. Pure function of the raw env string so it can
+/// be unit-tested without touching process env.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn dispatch_serial_env_override(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(|s| s.trim()),
+        Some("1") | Some("true") | Some("TRUE") | Some("yes")
+    )
 }
 
 /// Default mailbox backpressure threshold (queued-message count).
@@ -86,6 +169,7 @@ impl std::fmt::Debug for HyperConfig {
                 "mailbox_backpressure_threshold",
                 &self.mailbox_backpressure_threshold,
             )
+            .field("dispatch_concurrency", &self.dispatch_concurrency)
             .finish()
     }
 }
@@ -396,6 +480,7 @@ impl HyperConfig {
             trust_provider,
             credential_expiry_warning: DEFAULT_CREDENTIAL_EXPIRY_WARNING,
             mailbox_backpressure_threshold: None,
+            dispatch_concurrency: None,
         }
     }
 
@@ -428,6 +513,31 @@ impl HyperConfig {
     pub fn resolved_mailbox_backpressure_threshold(&self) -> usize {
         self.mailbox_backpressure_threshold
             .unwrap_or(DEFAULT_MAILBOX_BACKPRESSURE_THRESHOLD)
+    }
+
+    /// Set the conflict-key dispatch concurrency config (B2). `None` falls back
+    /// to [`DispatchConcurrency::default`] (gate on, strategy A); pass
+    /// `Some(DispatchConcurrency { enabled: false, .. })` to force serial.
+    pub fn with_dispatch_concurrency(mut self, cfg: Option<DispatchConcurrency>) -> Self {
+        self.dispatch_concurrency = cfg;
+        self
+    }
+
+    /// Resolve the effective dispatch concurrency, applying the
+    /// `ACTR_DISPATCH_SERIAL` escape hatch (which forces `enabled = false`).
+    pub fn resolved_dispatch_concurrency(&self) -> DispatchConcurrency {
+        let mut cfg = self.dispatch_concurrency.unwrap_or_default();
+        let raw = std::env::var("ACTR_DISPATCH_SERIAL").ok();
+        if dispatch_serial_env_override(raw.as_deref()) {
+            if cfg.enabled {
+                tracing::warn!(
+                    "ACTR_DISPATCH_SERIAL is set; forcing fully-serial dispatch \
+                     (dispatch concurrency disabled)"
+                );
+            }
+            cfg.enabled = false;
+        }
+        cfg
     }
 }
 

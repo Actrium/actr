@@ -55,34 +55,6 @@ pub fn peer_status_from_v1(status: u32) -> Option<crate::WebRtcPeerStatus> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn peer_status_from_v1_drops_unknown_discriminants() {
-        use crate::guest::dynclib_abi::webrtc_peer_status as st;
-
-        assert_eq!(
-            peer_status_from_v1(st::IDLE),
-            Some(crate::WebRtcPeerStatus::Idle)
-        );
-        assert_eq!(
-            peer_status_from_v1(st::CONNECTING),
-            Some(crate::WebRtcPeerStatus::Connecting)
-        );
-        assert_eq!(
-            peer_status_from_v1(st::CONNECTED),
-            Some(crate::WebRtcPeerStatus::Connected)
-        );
-        assert_eq!(
-            peer_status_from_v1(st::RECOVERING),
-            Some(crate::WebRtcPeerStatus::Recovering)
-        );
-        assert_eq!(peer_status_from_v1(u32::MAX), None);
-    }
-}
-
 // The Component Model wasm runtime glue is gated on `not(feature = "web")`
 // so the `wasm32-unknown-unknown` + `web` target (which routes through
 // `actr-web-abi` instead) does not link the wit-bindgen host imports that
@@ -115,7 +87,8 @@ pub mod __wasm_macro_support {
     pub use super::wasm::generated::actr::workload::types::{
         ActrError as WitActrError, ActrId as WitActrId, BackpressureEvent as WitBackpressureEvent,
         CredentialEvent as WitCredentialEvent, DataChunk as WitDataChunk,
-        ErrorEvent as WitErrorEvent, PeerEvent as WitPeerEvent, RpcEnvelope as WitRpcEnvelope,
+        ErrorEvent as WitErrorEvent, InvocationCtx as WitInvocationCtx, PeerEvent as WitPeerEvent,
+        RpcEnvelope as WitRpcEnvelope,
     };
     pub use super::wasm::generated::exports::actr::workload::workload::Guest;
 }
@@ -195,6 +168,7 @@ macro_rules! entry {
             impl $crate::guest::__wasm_macro_support::Guest for __ActrEntryAdapter {
                 async fn dispatch(
                     envelope: $crate::guest::__wasm_macro_support::WitRpcEnvelope,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) -> ::core::result::Result<
                     ::std::vec::Vec<u8>,
                     $crate::guest::__wasm_macro_support::WitActrError,
@@ -202,160 +176,176 @@ macro_rules! entry {
                     $crate::guest::__wasm_macro_support::run_dispatch(
                         __actr_workload(),
                         envelope,
-                    )
-                    .await
+                        ctx,
+                    ).await
                 }
 
-                async fn on_start() -> ::core::result::Result<
-                    (),
-                    $crate::guest::__wasm_macro_support::WitActrError,
-                > {
-                    $crate::guest::__wasm_macro_support::run_on_start(__actr_workload()).await
-                }
-
-                async fn on_ready() -> ::core::result::Result<
-                    (),
-                    $crate::guest::__wasm_macro_support::WitActrError,
-                > {
-                    $crate::guest::__wasm_macro_support::run_on_ready(__actr_workload()).await
-                }
-
-                async fn on_stop() -> ::core::result::Result<
-                    (),
-                    $crate::guest::__wasm_macro_support::WitActrError,
-                > {
-                    $crate::guest::__wasm_macro_support::run_on_stop(__actr_workload()).await
-                }
-
-                async fn on_error(
-                    event: $crate::guest::__wasm_macro_support::WitErrorEvent,
+                async fn on_start(
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) -> ::core::result::Result<
                     (),
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_on_error(__actr_workload(), event)
-                        .await
+                    $crate::guest::__wasm_macro_support::run_on_start(__actr_workload(), ctx).await
                 }
 
-                async fn on_signaling_connecting() {
+                async fn on_ready(
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
+                ) -> ::core::result::Result<
+                    (),
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_on_ready(__actr_workload(), ctx).await
+                }
+
+                async fn on_stop(
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
+                ) -> ::core::result::Result<
+                    (),
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_on_stop(__actr_workload(), ctx).await
+                }
+
+                async fn on_error(
+                    event: $crate::guest::__wasm_macro_support::WitErrorEvent,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
+                ) -> ::core::result::Result<
+                    (),
+                    $crate::guest::__wasm_macro_support::WitActrError,
+                > {
+                    $crate::guest::__wasm_macro_support::run_on_error(__actr_workload(), event, ctx).await
+                }
+
+                async fn on_signaling_connecting(ctx_token: u64) {
                     $crate::guest::__wasm_macro_support::run_on_signaling_connecting(
                         __actr_workload(),
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
-                async fn on_signaling_connected() {
+                async fn on_signaling_connected(ctx_token: u64) {
                     $crate::guest::__wasm_macro_support::run_on_signaling_connected(
                         __actr_workload(),
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
-                async fn on_signaling_disconnected() {
+                async fn on_signaling_disconnected(ctx_token: u64) {
                     $crate::guest::__wasm_macro_support::run_on_signaling_disconnected(
                         __actr_workload(),
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_websocket_connecting(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_websocket_connecting(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_websocket_connected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_websocket_connected(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_websocket_disconnected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_websocket_disconnected(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_webrtc_connecting(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_webrtc_connecting(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_webrtc_connected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_webrtc_connected(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_webrtc_disconnected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_webrtc_disconnected(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_credential_renewed(
                     event: $crate::guest::__wasm_macro_support::WitCredentialEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_credential_renewed(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_credential_expiring(
                     event: $crate::guest::__wasm_macro_support::WitCredentialEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_credential_expiring(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_mailbox_backpressure(
                     event: $crate::guest::__wasm_macro_support::WitBackpressureEvent,
+                    ctx_token: u64,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_mailbox_backpressure(
                         __actr_workload(),
                         event,
-                    )
-                    .await
+                        ctx_token,
+                    ).await
                 }
 
                 async fn on_data_chunk(
                     chunk: $crate::guest::__wasm_macro_support::WitDataChunk,
                     sender: $crate::guest::__wasm_macro_support::WitActrId,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) -> ::core::result::Result<
                     (),
                     $crate::guest::__wasm_macro_support::WitActrError,
                 > {
-                    $crate::guest::__wasm_macro_support::run_on_data_chunk(chunk, sender).await
+                    $crate::guest::__wasm_macro_support::run_on_data_chunk(chunk, sender, ctx).await
                 }
             }
 
@@ -862,4 +852,32 @@ macro_rules! entry {
             }
         };
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_status_from_v1_drops_unknown_discriminants() {
+        use crate::guest::dynclib_abi::webrtc_peer_status as st;
+
+        assert_eq!(
+            peer_status_from_v1(st::IDLE),
+            Some(crate::WebRtcPeerStatus::Idle)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::CONNECTING),
+            Some(crate::WebRtcPeerStatus::Connecting)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::CONNECTED),
+            Some(crate::WebRtcPeerStatus::Connected)
+        );
+        assert_eq!(
+            peer_status_from_v1(st::RECOVERING),
+            Some(crate::WebRtcPeerStatus::Recovering)
+        );
+        assert_eq!(peer_status_from_v1(u32::MAX), None);
+    }
 }

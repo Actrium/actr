@@ -1,5 +1,47 @@
 use super::*;
 
+// ── Strategy A: keyless zero-overhead scheduler gate ────────────────────────
+//
+// `scheduler_engaged` is the single predicate the node uses to decide whether
+// to spawn the interleaved runner + conflict-key scheduler. Strategy A's whole
+// promise lives here: default-on (gate on) with NO declared key must NOT engage
+// the scheduler, so a keyless actor stays bit-for-bit the serial M4 path.
+
+#[test]
+fn scheduler_engaged_only_with_gate_on_and_declared_keys() {
+    // Default-on + keyless ⇒ NOT engaged (the strategy A zero-overhead promise).
+    assert!(
+        !scheduler_engaged(true, false),
+        "keyless actor must stay serial (no scheduler) even with the gate on"
+    );
+    // Gate on + at least one key ⇒ engaged.
+    assert!(
+        scheduler_engaged(true, true),
+        "a declared conflict key with the gate on must engage the scheduler"
+    );
+    // Gate off ⇒ never engaged regardless of keys.
+    assert!(!scheduler_engaged(false, false));
+    assert!(!scheduler_engaged(false, true));
+}
+
+#[test]
+fn empty_conflict_key_spec_is_reported_empty() {
+    // The node's keyless predicate rides on `ConflictKeySpec::is_empty`.
+    let keyless = crate::dispatch::ConflictKeySpec::builder()
+        .build()
+        .expect("build empty spec");
+    assert!(keyless.is_empty(), "a spec with no rules must report empty");
+
+    let keyed = crate::dispatch::ConflictKeySpec::builder()
+        .method("svc/method", crate::dispatch::KeySource::Sender)
+        .build()
+        .expect("build keyed spec");
+    assert!(
+        !keyed.is_empty(),
+        "a spec with a rule must report non-empty"
+    );
+}
+
 #[test]
 fn connection_not_ready_has_distinct_wire_code() {
     let err = ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(1200, 6000));
@@ -63,17 +105,17 @@ impl LinkedWorkloadHandle for DummyLinkedHandle {}
 
 async fn harness() -> (
     crate::context::RuntimeContext,
-    Arc<tokio::sync::Mutex<Workload>>,
+    Arc<crate::executor::ActorHandle>,
 ) {
     let ctx =
         runtime_context_with_host_transport(ActrId::default(), Arc::new(HostTransport::new()));
     let wl = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
-    (ctx, Arc::new(tokio::sync::Mutex::new(wl)))
+    (ctx, Arc::new(crate::executor::spawn_runner(wl)))
 }
 
 async fn actorless_harness() -> (
     crate::context::RuntimeContext,
-    Arc<tokio::sync::Mutex<Workload>>,
+    Arc<crate::executor::ActorHandle>,
 ) {
     use crate::inbound::{DataChunkRegistry, MediaFrameRegistry};
     use crate::outbound::{Gate, HostGate};
@@ -104,7 +146,7 @@ async fn actorless_harness() -> (
         0,
     );
     let wl = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
-    (ctx, Arc::new(tokio::sync::Mutex::new(wl)))
+    (ctx, Arc::new(crate::executor::spawn_runner(wl)))
 }
 
 fn expect_error_code(res: HostOperationResult, expected: i32) {
