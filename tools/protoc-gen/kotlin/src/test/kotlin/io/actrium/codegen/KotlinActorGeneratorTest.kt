@@ -326,6 +326,42 @@ class KotlinActorGeneratorTest {
 
         assertContains(error.message ?: "", "Cannot resolve input type `external.MissingRequest`")
     }
+
+    @Test
+    fun metadataUsesCanonicalMethodNamesAndProtoPaths() {
+        val request =
+                CodeGeneratorRequest.newBuilder()
+                        .addFileToGenerate(".\\remote\\ask")
+                        .setParameter(
+                                "RemoteFiles=./remote/ask,RemoteFileMapping=./remote/ask=acme:Ask:1.0.0")
+                        .addProtoFile(
+                                FileDescriptorProto.newBuilder()
+                                        .setName(".\\remote\\ask")
+                                        .setPackage("ask")
+                                        .addMessageType(
+                                                DescriptorProto.newBuilder().setName("Request"))
+                                        .addMessageType(
+                                                DescriptorProto.newBuilder().setName("Response"))
+                                        .addService(
+                                                ServiceDescriptorProto.newBuilder()
+                                                        .setName("AskService")
+                                                        .addMethod(
+                                                                MethodDescriptorProto.newBuilder()
+                                                                        .setName("HTTPServer")
+                                                                        .setInputType(".ask.Request")
+                                                                        .setOutputType(".ask.Response")
+                                                        )
+                                        )
+                        )
+                        .build()
+
+        val response = generateCode(request)
+        val metadata = response.fileList.single { it.name == "actr-gen-meta.json" }.content
+
+        assertContains(metadata, "\"proto_file\": \"remote/ask.proto\"")
+        assertContains(metadata, "\"snake_name\": \"http_server\"")
+        assertContains(actorContent(response), "suspend fun http_server(")
+    }
 }
 
 private fun actorContent(response: CodeGeneratorResponse): String {

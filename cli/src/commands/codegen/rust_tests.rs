@@ -1,5 +1,5 @@
 use super::RustGenerator;
-use crate::commands::codegen::scaffold::{ScaffoldMethod, ScaffoldService};
+use crate::commands::codegen::scaffold::{ScaffoldCatalog, ScaffoldMethod, ScaffoldService};
 use crate::commands::codegen::{
     ActrGenMetadata, GenContext, LanguageGenerator, ProtoModel, SupportedLanguage, TypeRef,
     write_metadata,
@@ -131,8 +131,9 @@ realm_id = 1001
     let metadata =
         ActrGenMetadata::from_proto_model(SupportedLanguage::Rust, &context.proto_model).unwrap();
     write_metadata(&context.output, &metadata).unwrap();
+    let catalog = ScaffoldCatalog::from_metadata(&metadata);
 
-    tokio_test::block_on(RustGenerator.generate_scaffold(&context)).unwrap();
+    tokio_test::block_on(RustGenerator.generate_scaffold(&context, &catalog)).unwrap();
 
     let handler_path = src_dir.join("empty_shell.rs");
     assert!(
@@ -158,7 +159,7 @@ realm_id = 1001
     assert!(lib.contains("EmptyShellWorkload<EmptyShellImpl>"));
 
     std::fs::write(&handler_path, "pub struct UserImplemented;\n").unwrap();
-    tokio_test::block_on(RustGenerator.generate_scaffold(&context)).unwrap();
+    tokio_test::block_on(RustGenerator.generate_scaffold(&context, &catalog)).unwrap();
     assert_eq!(
         std::fs::read_to_string(&handler_path).unwrap(),
         "pub struct UserImplemented;\n",

@@ -40,7 +40,7 @@ impl ScaffoldCatalog {
         Ok(Self::from_metadata(&metadata))
     }
 
-    fn from_metadata(metadata: &ActrGenMetadata) -> Self {
+    pub(crate) fn from_metadata(metadata: &ActrGenMetadata) -> Self {
         Self {
             local_services: metadata
                 .local_services

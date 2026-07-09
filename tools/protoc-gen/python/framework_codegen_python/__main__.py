@@ -18,10 +18,14 @@ def main() -> int:
 
     parameters = parse_parameters(request.parameter)
     local_files = {
-        file.replace("\\", "/") for file in parameters.get("LocalFiles", "").split(":") if file
+        normalize_proto_path(file)
+        for file in parameters.get("LocalFiles", "").split(":")
+        if file
     }
     remote_files = {
-        file.replace("\\", "/") for file in parameters.get("RemoteFiles", "").split(":") if file
+        normalize_proto_path(file)
+        for file in parameters.get("RemoteFiles", "").split(":")
+        if file
     }
     remote_file_mapping = parse_mapping(parameters.get("RemoteFileMapping", ""))
 
@@ -43,7 +47,7 @@ def main() -> int:
         if file_desc is None:
             continue
 
-        normalized_name = file_desc.name.replace("\\", "/")
+        normalized_name = normalize_proto_path(file_desc.name)
         role = classify_file(normalized_name, local_files, remote_files)
 
         if file_desc.service:
@@ -159,13 +163,13 @@ def parse_mapping(param_str: str) -> Dict[str, str]:
         key, sep, value = trimmed.partition("=")
         if not sep or not key.strip() or not value.strip():
             raise ValueError(f"Invalid RemoteFileMapping entry: {trimmed}")
-        mapping[key.strip().replace("\\", "/")] = value.strip()
+        mapping[normalize_proto_path(key.strip())] = value.strip()
     return mapping
 
 
 def classify_file(file_name: str, local_files: set[str], remote_files: set[str]) -> str:
     """Classify a proto file as local or remote from plugin options."""
-    normalized = file_name.replace("\\", "/")
+    normalized = normalize_proto_path(file_name)
     if normalized in remote_files:
         return "remote"
     if normalized in local_files:
@@ -183,7 +187,7 @@ def collect_type_owners(
     """Collect fully-qualified message owners, including nested messages."""
     path = (*parents, message.name)
     full_name = ".".join((*([package_name] if package_name else []), *path))
-    owners[full_name] = (package_name, proto_file.replace("\\", "/"), path)
+    owners[full_name] = (package_name, normalize_proto_path(proto_file), path)
     for nested in message.nested_type:
         collect_type_owners(package_name, proto_file, nested, path, owners)
 
@@ -198,30 +202,68 @@ def build_service_metadata(
     return {
         "name": service.name,
         "package": package_name,
-        "proto_file": proto_file,
+        "proto_file": normalize_proto_path(proto_file),
         "methods": [
-            {
-                "name": method.name,
-                "snake_name": to_snake_case(method.name),
-                "route_key": make_route_key(package_name, service.name, method.name),
-                "input_ref": build_type_ref(method.input_type, type_to_owner),
-                "output_ref": build_type_ref(method.output_type, type_to_owner),
-            }
+            build_method_metadata(
+                package_name,
+                proto_file,
+                service.name,
+                method,
+                type_to_owner,
+            )
             for method in service.method
         ],
+    }
+
+
+def build_method_metadata(
+    package_name: str,
+    proto_file: str,
+    service_name: str,
+    method,
+    type_to_owner: Dict[str, tuple[str, str, tuple[str, ...]]],
+) -> dict:
+    """Build shared ACTR metadata for one protobuf RPC method."""
+    return {
+        "name": method.name,
+        "snake_name": to_snake_case(method.name),
+        "route_key": make_route_key(package_name, service_name, method.name),
+        "input_ref": build_type_ref(
+            method.input_type,
+            type_to_owner,
+            kind="input",
+            service_name=service_name,
+            method_name=method.name,
+            proto_file=proto_file,
+        ),
+        "output_ref": build_type_ref(
+            method.output_type,
+            type_to_owner,
+            kind="output",
+            service_name=service_name,
+            method_name=method.name,
+            proto_file=proto_file,
+        ),
     }
 
 
 def build_type_ref(
     full_type: str,
     type_to_owner: Dict[str, tuple[str, str, tuple[str, ...]]],
+    *,
+    kind: str,
+    service_name: str,
+    method_name: str,
+    proto_file: str,
 ) -> dict:
     """Build a descriptor-owner TypeRef for an RPC input or output."""
     cleaned = full_type.lstrip(".")
     owner = type_to_owner.get(cleaned)
     if owner is None:
         raise ValueError(
-            f"Cannot resolve RPC type `{cleaned}`: RPC types must be declared in one of the parsed proto files"
+            f"Cannot resolve {kind} type `{cleaned}` for {service_name}.{method_name} "
+            f"in {normalize_proto_path(proto_file)}: RPC types must be declared "
+            "in one of the parsed proto files"
         )
     package_name, proto_file, type_path = owner
     return {
@@ -239,6 +281,14 @@ def make_route_key(package_name: str, service_name: str, method_name: str) -> st
         if package_name
         else f"{service_name}.{method_name}"
     )
+
+
+def normalize_proto_path(value: str) -> str:
+    """Normalize a descriptor path for stable cross-language metadata."""
+    normalized = value.replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized if normalized.endswith(".proto") else f"{normalized}.proto"
 
 
 def to_snake_case(name: str) -> str:

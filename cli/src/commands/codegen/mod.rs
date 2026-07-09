@@ -58,9 +58,10 @@ async fn run_codegen_pipeline(
     context: &GenContext,
 ) -> Result<()> {
     let mut all_files = generator.generate_infrastructure(context).await?;
-    load_required_metadata(&context.output, language)?;
+    let metadata = load_required_metadata(&context.output, language)?;
     if !context.no_scaffold {
-        all_files.extend(generator.generate_scaffold(context).await?);
+        let catalog = ScaffoldCatalog::from_metadata(&metadata);
+        all_files.extend(generator.generate_scaffold(context, &catalog).await?);
     }
     if !context.no_format {
         generator.format_code(context, &all_files).await?;

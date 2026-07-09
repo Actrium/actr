@@ -48,6 +48,30 @@ final class MetadataTests: XCTestCase {
     XCTAssertEqual(outputRef["proto_file"] as? String, "remote/ask/ask.proto")
   }
 
+  func testMetadataHelpersUseCanonicalNamesAndPaths() {
+    XCTAssertEqual(ActrFrameworkGenerator.snakeCase("HTTPServer"), "http_server")
+    XCTAssertEqual(ActrFrameworkGenerator.lowerCamelCase("HTTPServer"), "httpServer")
+    XCTAssertEqual(
+      ActrFrameworkGenerator.normalizeProtoPath(".\\remote\\ask"),
+      "remote/ask.proto")
+  }
+
+  func testUnresolvedTypeErrorPreservesTrailingDotAndIncludesContext() {
+    XCTAssertThrowsError(
+      try ActrFrameworkGenerator.resolveTypeRef(
+        ".Missing.",
+        kind: "input",
+        serviceName: "Client",
+        methodName: "Call",
+        typeRefs: [:])
+    ) { error in
+      XCTAssertEqual(
+        error.localizedDescription,
+        "Cannot resolve input type `Missing.` for Client.Call: RPC types must be declared in one of the parsed proto files"
+      )
+    }
+  }
+
   private func encodedJSON<T: Encodable>(_ value: T) throws -> [String: Any] {
     let data = try JSONEncoder().encode(value)
     return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])

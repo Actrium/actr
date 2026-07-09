@@ -40,14 +40,18 @@ impl ProtoSource {
         file: &FileDescriptorProto,
         params: &HashMap<String, String>,
     ) -> Result<Self> {
-        let file_name = file.name();
-        let file_path = std::path::Path::new(file_name);
+        let file_name = normalize_proto_path(file.name());
+        let path_ends_with = |path: &str, suffix: &str| {
+            path == suffix
+                || path
+                    .strip_suffix(suffix)
+                    .is_some_and(|prefix| prefix.ends_with('/'))
+        };
 
         let matches = |list_str: &str| {
             list_str.split(':').filter(|p| !p.is_empty()).any(|p| {
-                p == file_name
-                    || file_path.ends_with(p)
-                    || std::path::Path::new(p).ends_with(file_name)
+                let candidate = normalize_proto_path(p);
+                path_ends_with(&file_name, &candidate) || path_ends_with(&candidate, &file_name)
             })
         };
 
@@ -207,8 +211,10 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
     if let Some(remote_file_actr_types) = params.get("RemoteFileActrTypes") {
         for mapping in remote_file_actr_types.split(';') {
             if let Some((file, actr_type)) = mapping.split_once('=') {
-                remote_file_to_actr_type
-                    .insert(file.trim().to_string(), actr_type.trim().to_string());
+                remote_file_to_actr_type.insert(
+                    normalize_proto_path(file.trim()),
+                    actr_type.trim().to_string(),
+                );
             }
         }
     }
@@ -235,7 +241,7 @@ fn generate_code(request: CodeGeneratorRequest) -> Result<CodeGeneratorResponse>
             let package_name = file.package().to_string();
             let service_name = service.name().to_string();
             let actr_type = remote_file_to_actr_type
-                .get(file.name())
+                .get(&normalize_proto_path(file.name()))
                 .cloned()
                 .unwrap_or_else(|| {
                     let manufacturer = params
@@ -314,13 +320,6 @@ fn collect_type_owners(
     for message in &file.message_type {
         collect_message_type_owner(message, owners, package, file.name(), "");
     }
-
-    // Index file-scope enums so RPC types referencing an imported enum resolve
-    // to their declaring package (mirrors the CLI's TypeOwnerIndex, which
-    // captures enums via declared_type_names).
-    for enum_type in &file.enum_type {
-        insert_type_owner(owners, package, file.name(), enum_type.name());
-    }
 }
 
 fn collect_message_type_owner(
@@ -336,15 +335,6 @@ fn collect_message_type_owner(
         format!("{}.{}", parent_type, message.name())
     };
     insert_type_owner(owners, package, proto_file, &type_name);
-
-    for enum_type in &message.enum_type {
-        insert_type_owner(
-            owners,
-            package,
-            proto_file,
-            &format!("{}.{}", type_name, enum_type.name()),
-        );
-    }
 
     for nested in &message.nested_type {
         collect_message_type_owner(nested, owners, package, proto_file, &type_name);
@@ -366,7 +356,7 @@ fn insert_type_owner(
         full_name,
         TypeOwner {
             proto_package: package.to_string(),
-            proto_file: proto_file.to_string(),
+            proto_file: normalize_proto_path(proto_file),
             type_name: type_name.to_string(),
         },
     );
@@ -440,7 +430,7 @@ fn build_local_service_metadata(
     Ok(LocalServiceMetadata {
         name: service.name().to_string(),
         package: file.package().to_string(),
-        proto_file: file.name().to_string(),
+        proto_file: normalize_proto_path(file.name()),
         handler_interface: format!("{}Handler", service.name()),
         workload_type: format!("{}Workload", service.name()),
         dispatcher_type: format!("{}Dispatcher", service.name()),
@@ -461,7 +451,7 @@ fn build_remote_service_metadata(
     Ok(RemoteServiceMetadata {
         name: service.name().to_string(),
         package: file.package().to_string(),
-        proto_file: file.name().to_string(),
+        proto_file: normalize_proto_path(file.name()),
         actr_type,
         client_type: format!("{}Client", service.name()),
         methods: service
@@ -534,12 +524,25 @@ fn build_type_ref(
         proto_type,
         service.name(),
         method.name(),
-        file.name()
+        normalize_proto_path(file.name())
     ))
 }
 
 fn normalize_type_name(raw: &str) -> String {
     raw.trim_start_matches('.').to_string()
+}
+
+fn normalize_proto_path(raw: &str) -> String {
+    let normalized = raw.replace('\\', "/");
+    let mut path = normalized.as_str();
+    while let Some(stripped) = path.strip_prefix("./") {
+        path = stripped;
+    }
+    if path.ends_with(".proto") {
+        path.to_string()
+    } else {
+        format!("{path}.proto")
+    }
 }
 
 #[cfg(test)]
@@ -826,13 +829,18 @@ mod tests {
     }
 
     #[test]
-    fn collect_type_owners_indexes_file_scope_enums() {
-        // The CLI's TypeOwnerIndex captures enums via declared_type_names;
-        // the plugin's collect_type_owners must mirror that so an imported
-        // enum resolves to its declaring package instead of falling back.
+    fn collect_type_owners_only_indexes_rpc_message_types() {
         let file = FileDescriptorProto {
             name: Some("ask.proto".to_string()),
             package: Some("ask".to_string()),
+            message_type: vec![DescriptorProto {
+                name: Some("Request".to_string()),
+                enum_type: vec![prost_types::EnumDescriptorProto {
+                    name: Some("State".to_string()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
             enum_type: vec![prost_types::EnumDescriptorProto {
                 name: Some("Status".to_string()),
                 ..Default::default()
@@ -841,12 +849,17 @@ mod tests {
         };
         let mut owners = HashMap::new();
         collect_type_owners(&file, &mut owners, "ask");
+        assert!(owners.contains_key("ask.Request"));
+        assert!(!owners.contains_key("ask.Status"));
+        assert!(!owners.contains_key("ask.Request.State"));
+    }
+
+    #[test]
+    fn normalize_proto_path_is_cross_platform_and_stable() {
+        assert_eq!(normalize_proto_path(r".\remote\ask"), "remote/ask.proto");
         assert_eq!(
-            owners
-                .get("ask.Status")
-                .map(|owner| owner.proto_package.as_str()),
-            Some("ask"),
-            "file-scope enum should be indexed under its declaring package"
+            normalize_proto_path("./remote/ask.proto"),
+            "remote/ask.proto"
         );
     }
 }

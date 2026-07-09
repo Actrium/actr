@@ -1,4 +1,3 @@
-use crate::commands::SupportedLanguage;
 use crate::commands::codegen::scaffold::ScaffoldCatalog;
 use crate::commands::codegen::traits::{GenContext, LanguageGenerator};
 use crate::error::{ActrCliError, Result};
@@ -330,12 +329,16 @@ impl LanguageGenerator for PythonGenerator {
         Ok(generated_files)
     }
 
-    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_scaffold(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>> {
         info!("📝 Generating Python user code scaffold...");
         let mut scaffold_files = Vec::new();
 
         // 1. Parse local services to get methods for handler implementation
-        let services = self.parse_local_services(context)?;
+        let services = self.parse_local_services(catalog)?;
 
         // 2. Determine service name for scaffolding
         let service_name = if let Some(service) = services.first() {
@@ -569,12 +572,11 @@ impl PythonGenerator {
         Ok(markers.iter().any(|marker| content.contains(marker)))
     }
 
-    fn parse_local_services(&self, context: &GenContext) -> Result<Vec<ProtoService>> {
-        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Python)?;
-
+    fn parse_local_services(&self, catalog: &ScaffoldCatalog) -> Result<Vec<ProtoService>> {
         Ok(catalog
             .local_services
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|service| ProtoService {
                 name: service.name.clone(),
                 package: service.package.clone(),

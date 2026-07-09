@@ -1,10 +1,29 @@
 import unittest
 from types import SimpleNamespace
 
+from framework_codegen_python.__main__ import build_type_ref, normalize_proto_path
 from framework_codegen_python.generators import generate_local_workload_module
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_metadata_helpers_use_canonical_names_and_paths(self) -> None:
+        self.assertEqual(normalize_proto_path(r".\remote\ask"), "remote/ask.proto")
+        self.assertEqual(normalize_proto_path("./remote/ask.proto"), "remote/ask.proto")
+
+    def test_unresolved_type_error_includes_rpc_context(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            r"Cannot resolve input type `Missing` for Client\.Call in local/client\.proto",
+        ):
+            build_type_ref(
+                ".Missing",
+                {},
+                kind="input",
+                service_name="Client",
+                method_name="Call",
+                proto_file="local/client.proto",
+            )
+
     def test_nested_rpc_types_keep_their_owner_relative_path(self) -> None:
         method = SimpleNamespace(
             name="Call",

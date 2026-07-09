@@ -42,7 +42,7 @@ struct ActrFrameworkGenerator {
       switch self {
       case let .unresolvedType(kind, typeName, serviceName, methodName):
         return
-          "Cannot resolve \(kind) type `\(typeName)` for \(serviceName).\(methodName): qualified RPC types must be declared in one of the parsed proto files"
+          "Cannot resolve \(kind) type `\(typeName)` for \(serviceName).\(methodName): RPC types must be declared in one of the parsed proto files"
       }
     }
   }
@@ -99,15 +99,19 @@ struct ActrFrameworkGenerator {
     let accessModifier = isPublic ? "public " : ""
     let manufacturer = parameters["Manufacturer"] ?? "acme"
 
-    let localFileParam = parameters["LocalFile"]
+    let localFileParam = parameters["LocalFile"].map(normalizeProtoPath)
     let localFilesParam = Set(
-      (parameters["LocalFiles"] ?? "").split(separator: ":").map(String.init))
+      (parameters["LocalFiles"] ?? "").split(separator: ":").map {
+        normalizeProtoPath(String($0))
+      })
     let protoSourceParam = parameters["ProtoSource"]?.lowercased()
     let globalProtoSource =
       protoSourceParam ?? ((localFileParam != nil || !localFilesParam.isEmpty) ? "remote" : "local")
 
     let remoteFilesParam = Set(
-      (parameters["RemoteFiles"] ?? "").split(separator: ":").map(String.init))
+      (parameters["RemoteFiles"] ?? "").split(separator: ":").map {
+        normalizeProtoPath(String($0))
+      })
 
     // Parse RemoteFileActrTypes parameter: file1=actr_type1;file2=actr_type2
     // The top-level protoc parameter string is comma-separated, so mappings
@@ -117,7 +121,7 @@ struct ActrFrameworkGenerator {
       for mapping in remoteFileActrTypesParam.split(separator: ";") {
         let parts = mapping.split(separator: "=", maxSplits: 1)
         if parts.count == 2 {
-          let file = String(parts[0])
+          let file = normalizeProtoPath(String(parts[0]))
           let actrType = String(parts[1])
           remoteFileToActrType[file] = actrType
         }
@@ -129,7 +133,7 @@ struct ActrFrameworkGenerator {
       for message in fileDescriptor.messageType {
         Self.collectTypeRefs(
           package: fileDescriptor.package,
-          protoFile: fileDescriptor.name,
+          protoFile: normalizeProtoPath(fileDescriptor.name),
           message: message,
           parentProtoName: nil,
           into: &typeRefs)
@@ -141,11 +145,12 @@ struct ActrFrameworkGenerator {
     var localServiceMetadata: [LocalServiceMetadata] = []
     var remoteServiceMetadata: [RemoteServiceMetadata] = []
     for fileDescriptor in request.protoFile {
+      let protoFile = normalizeProtoPath(fileDescriptor.name)
       let isRemote: Bool
-      if remoteFilesParam.contains(fileDescriptor.name) {
+      if remoteFilesParam.contains(protoFile) {
         isRemote = true
-      } else if localFilesParam.contains(fileDescriptor.name)
-        || localFileParam == fileDescriptor.name
+      } else if localFilesParam.contains(protoFile)
+        || localFileParam == protoFile
       {
         isRemote = false
       } else {
@@ -169,16 +174,16 @@ struct ActrFrameworkGenerator {
           let routeKeys = methods.map { $0.route_key }
           remoteServices.append(
             RemoteServiceInfo(
-              serviceName: serviceName, routeKeys: routeKeys, fileName: fileDescriptor.name))
+              serviceName: serviceName, routeKeys: routeKeys, fileName: protoFile))
 
           let actrType =
-            remoteFileToActrType[fileDescriptor.name]
+            remoteFileToActrType[protoFile]
             ?? "\(manufacturer):\(serviceName):1.0.0"
           remoteServiceMetadata.append(
             RemoteServiceMetadata(
               name: serviceName,
               package: fileDescriptor.package,
-              proto_file: fileDescriptor.name,
+              proto_file: protoFile,
               actr_type: actrType,
               client_type: "\(serviceName)Client",
               methods: methods))
@@ -187,7 +192,7 @@ struct ActrFrameworkGenerator {
             LocalServiceMetadata(
               name: serviceName,
               package: fileDescriptor.package,
-              proto_file: fileDescriptor.name,
+              proto_file: protoFile,
               handler_interface: "\(serviceName)Handler",
               workload_type: "\(serviceName)Workload",
               dispatcher_type: "\(serviceName)Dispatcher",
@@ -219,11 +224,12 @@ struct ActrFrameworkGenerator {
       // Only generate code for files explicitly requested by protoc
       if !request.fileToGenerate.contains(fileDescriptor.name) { continue }
 
+      let protoFile = normalizeProtoPath(fileDescriptor.name)
       let isRemote: Bool
-      if remoteFilesParam.contains(fileDescriptor.name) {
+      if remoteFilesParam.contains(protoFile) {
         isRemote = true
-      } else if localFilesParam.contains(fileDescriptor.name)
-        || localFileParam == fileDescriptor.name
+      } else if localFilesParam.contains(protoFile)
+        || localFileParam == protoFile
       {
         isRemote = false
       } else {
@@ -232,8 +238,8 @@ struct ActrFrameworkGenerator {
 
       // Skip generating files without services and not explicitly local
       if fileDescriptor.service.isEmpty,
-        localFileParam != fileDescriptor.name,
-        !localFilesParam.contains(fileDescriptor.name)
+        localFileParam != protoFile,
+        !localFilesParam.contains(protoFile)
       {
         continue
       }
@@ -338,11 +344,13 @@ struct ActrFrameworkGenerator {
               """
 
             for method in service.method {
-              let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
+              let methodName = Self.lowerCamelCase(method.name)
               let inputType = Self.swiftTypeName(
-                method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+                method.inputType, currentPackage: fileDescriptor.package,
+                typeToSwiftName: typeToSwiftName)
               let outputType = Self.swiftTypeName(
-                method.outputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+                method.outputType, currentPackage: fileDescriptor.package,
+                typeToSwiftName: typeToSwiftName)
 
               content += """
 
@@ -361,9 +369,11 @@ struct ActrFrameworkGenerator {
           // 2. Generate RpcRequest extensions
           for method in service.method {
             let inputType = Self.swiftTypeName(
-              method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+              method.inputType, currentPackage: fileDescriptor.package,
+              typeToSwiftName: typeToSwiftName)
             let outputType = Self.swiftTypeName(
-              method.outputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+              method.outputType, currentPackage: fileDescriptor.package,
+              typeToSwiftName: typeToSwiftName)
 
             let routeKey: String
             if fileDescriptor.package.isEmpty {
@@ -405,9 +415,10 @@ struct ActrFrameworkGenerator {
 
             // Local Methods
             for method in service.method {
-              let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
+              let methodName = Self.lowerCamelCase(method.name)
               let inputType = Self.swiftTypeName(
-                method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+                method.inputType, currentPackage: fileDescriptor.package,
+                typeToSwiftName: typeToSwiftName)
 
               let routeKey: String
               if fileDescriptor.package.isEmpty {
@@ -498,10 +509,11 @@ struct ActrFrameworkGenerator {
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     var metadataFile = Google_Protobuf_Compiler_CodeGeneratorResponse.File()
     metadataFile.name = "actr-gen-meta.json"
-    metadataFile.content = String(
-      data: try encoder.encode(metadata),
-      encoding: .utf8
-    ) ?? "{}"
+    metadataFile.content =
+      String(
+        data: try encoder.encode(metadata),
+        encoding: .utf8
+      ) ?? "{}"
     response.file.append(metadataFile)
 
     // Write the response back to stdout
@@ -544,7 +556,7 @@ struct ActrFrameworkGenerator {
     methodName: String,
     typeRefs: [String: TypeRef]
   ) throws -> TypeRef {
-    let trimmed = rawType.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    let trimmed = String(rawType.drop(while: { $0 == "." }))
     if let typeRef = typeRefs[trimmed] {
       return typeRef
     }
@@ -566,7 +578,7 @@ struct ActrFrameworkGenerator {
     currentPackage: String,
     typeToSwiftName: [String: String]
   ) -> String {
-    let trimmed = inputType.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    let trimmed = String(inputType.drop(while: { $0 == "." }))
     if let swiftName = typeToSwiftName[trimmed] {
       return swiftName
     }
@@ -612,7 +624,7 @@ struct ActrFrameworkGenerator {
       proto_type: fullProtoName,
       type_name: protoName,
       proto_package: package,
-      proto_file: protoFile)
+      proto_file: normalizeProtoPath(protoFile))
 
     for nested in message.nestedType {
       collectTypeRefs(
@@ -633,14 +645,28 @@ struct ActrFrameworkGenerator {
   }
 
   static func snakeCase(_ value: String) -> String {
-    guard !value.isEmpty else { return value }
-    var output = ""
-    for character in value {
-      if character.isUppercase && !output.isEmpty {
-        output.append("_")
-      }
-      output.append(character.lowercased())
+    let acronymBoundaries = value.replacingOccurrences(
+      of: #"(.)([A-Z][a-z]+)"#,
+      with: "$1_$2",
+      options: .regularExpression)
+    return acronymBoundaries.replacingOccurrences(
+      of: #"([a-z0-9])([A-Z])"#,
+      with: "$1_$2",
+      options: .regularExpression
+    ).lowercased()
+  }
+
+  static func lowerCamelCase(_ value: String) -> String {
+    let parts = snakeCase(value).split(separator: "_")
+    guard let first = parts.first else { return "" }
+    return String(first) + parts.dropFirst().map { $0.capitalized }.joined()
+  }
+
+  static func normalizeProtoPath(_ value: String) -> String {
+    var path = value.replacingOccurrences(of: "\\", with: "/")
+    while path.hasPrefix("./") {
+      path.removeFirst(2)
     }
-    return output
+    return path.hasSuffix(".proto") ? path : "\(path).proto"
   }
 }

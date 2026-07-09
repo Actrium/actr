@@ -492,16 +492,17 @@ impl KotlinGenerator {
 
     /// Collect all service information from proto files
     /// Skips proto files that have no service definitions
-    fn collect_services(&self, context: &GenContext) -> Result<Vec<ServiceInfo>> {
-        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Kotlin)?;
+    fn collect_services(&self, catalog: &ScaffoldCatalog) -> Result<Vec<ServiceInfo>> {
         catalog
             .local_services
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|service| kotlin_service_info(service, true))
             .chain(
                 catalog
                     .remote_services
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .map(|service| kotlin_service_info(service, false)),
             )
             .collect()
@@ -949,7 +950,8 @@ impl LanguageGenerator for KotlinGenerator {
         }
 
         // NOW collect service info (after per-service files are generated)
-        let services = self.collect_services(context)?;
+        let catalog = ScaffoldCatalog::load(context, SupportedLanguage::Kotlin)?;
+        let services = self.collect_services(&catalog)?;
         info!(
             "📊 Found {} services ({} local, {} remote)",
             services.len(),
@@ -974,12 +976,16 @@ impl LanguageGenerator for KotlinGenerator {
         Ok(generated_files)
     }
 
-    async fn generate_scaffold(&self, context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_scaffold(
+        &self,
+        context: &GenContext,
+        catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>> {
         info!("📝 Generating Kotlin user code scaffold...");
 
         let mut generated_files = Vec::new();
         let kotlin_package = self.get_kotlin_package(context);
-        let services = self.collect_services(context)?;
+        let services = self.collect_services(catalog)?;
 
         let output_dir = context.output.parent().unwrap_or(&context.output);
 

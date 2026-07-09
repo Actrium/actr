@@ -219,8 +219,9 @@ realm_id = 1001
     )
     .unwrap();
 
+    let catalog = ScaffoldCatalog::load(&context, SupportedLanguage::Kotlin).unwrap();
     let services = KotlinGenerator
-        .collect_services(&context)
+        .collect_services(&catalog)
         .expect("collect services");
     let method = &services[0].methods[0];
 
@@ -333,8 +334,9 @@ realm_id = 1001
         skip_validation: false,
     };
 
+    let catalog = ScaffoldCatalog::load(&context, SupportedLanguage::Kotlin).unwrap();
     let services = KotlinGenerator
-        .collect_services(&context)
+        .collect_services(&catalog)
         .expect("collect services");
     let method = &services[0].methods[0];
 

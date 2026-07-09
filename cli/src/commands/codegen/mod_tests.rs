@@ -57,7 +57,11 @@ impl LanguageGenerator for SpyGenerator {
         Ok(vec![])
     }
 
-    async fn generate_scaffold(&self, _context: &GenContext) -> Result<Vec<PathBuf>> {
+    async fn generate_scaffold(
+        &self,
+        _context: &GenContext,
+        _catalog: &ScaffoldCatalog,
+    ) -> Result<Vec<PathBuf>> {
         self.scaffold_calls.fetch_add(1, Ordering::SeqCst);
         Ok(vec![])
     }

@@ -380,7 +380,11 @@ private fun routeKey(packageName: String, serviceName: String, methodName: Strin
 }
 
 private fun normalizeProtoPath(value: String): String {
-    return value.replace("\\", "/").removePrefix("./")
+    var normalized = value.replace("\\", "/")
+    while (normalized.startsWith("./")) {
+        normalized = normalized.removePrefix("./")
+    }
+    return if (normalized.endsWith(".proto")) normalized else "$normalized.proto"
 }
 
 private fun collectTypeOwners(
@@ -422,7 +426,9 @@ private fun String.toPascalCase(): String {
 }
 
 private fun String.toSnakeCase(): String {
-    return this.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").lowercase()
+    return this.replace(Regex("(.)([A-Z][a-z]+)"), "$1_$2")
+            .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+            .lowercase()
 }
 
 /** Parse parameters from protoc --actrframework-kotlin_opt */

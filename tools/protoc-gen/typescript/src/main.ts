@@ -487,21 +487,29 @@ function parseActrType(
 }
 
 function normalizePath(value: string): string {
-  return value.replaceAll("\\", "/");
+  let normalized = value.replaceAll("\\", "/");
+  while (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+  return normalized;
 }
 
 function protoFilePath(file: DescFile): string {
-  const normalized = normalizePath(file.name);
+  return normalizeProtoPath(file.name);
+}
+
+function normalizeProtoPath(value: string): string {
+  const normalized = normalizePath(value);
   return normalized.endsWith(".proto") ? normalized : `${normalized}.proto`;
 }
 
 function normalizeProtoFileKey(value: string): string {
-  const normalized = normalizePath(value);
-  return normalized.endsWith(".proto")
-    ? normalized.slice(0, -".proto".length)
-    : normalized;
+  return normalizeProtoPath(value).slice(0, -".proto".length);
 }
 
 function toSnakeCase(value: string): string {
-  return value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+  return value
+    .replace(/(.)([A-Z][a-z]+)/g, "$1_$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase();
 }

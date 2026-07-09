@@ -204,7 +204,9 @@ class KotlinActorGenerator(
 
     /** Convert string to snake_case */
     private fun String.toSnakeCase(): String {
-        return this.replace(Regex("([a-z])([A-Z])"), "$1_$2").lowercase()
+        return this.replace(Regex("(.)([A-Z][a-z]+)"), "$1_$2")
+                .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+                .lowercase()
     }
 
     /** Convert string to PascalCase */
