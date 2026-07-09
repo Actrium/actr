@@ -8,13 +8,20 @@
 //! - **Same stream = FIFO run-to-completion**: chunks of one stream are
 //!   delivered to the callback strictly in arrival order, one at a time. The
 //!   previous chunk's callback future fully resolves before the next starts.
-//! - **Different streams = independent**: each stream has its own worker, so a
-//!   slow callback on stream A never blocks stream B.
-//! - **Reliable overflow = backpressure**: for `StreamReliable`, a full queue
-//!   makes `dispatch` `await` the bounded send. Because the WebRTC gate drives a
-//!   single receive loop, this stalls reading (SCTP stop-read backpressure) —
-//!   it only engages when the app falls behind by a full queue depth. The
-//!   callback still runs on its own worker task; we never inline-await it.
+//! - **Different streams = independent workers**: each stream has its own
+//!   worker, so a slow callback on stream A never blocks stream B's callback
+//!   *execution*. Enqueue runs in a shared per-class receive task, so under
+//!   reliable overload a full stream-A queue can delay stream B's *enqueue*
+//!   until A drains — but never its execution, and never RPC.
+//! - **Reliable overflow = backpressure**: for `StreamReliable`, a full
+//!   per-stream queue makes `dispatch` `await` the bounded send. The stall is
+//!   confined to the **stream** receive path: RPC travels on a separate queue
+//!   and receive task on both transports (WebRTC's split inbound queues,
+//!   WebSocket's per-lane tasks), so stream backpressure can never starve RPC
+//!   delivery. On WebRTC the stall cascades through the bounded lane/coordinator
+//!   queues to the SCTP data channel's receive window, slowing the peer; it
+//!   engages only when the app falls behind by a full queue depth. The callback
+//!   still runs on its own worker task; we never inline-await it.
 //! - **LatencyFirst overflow = drop**: for `StreamLatencyFirst`, a full queue
 //!   drops the newest chunk and bumps `dropped_count`. The wire transport is
 //!   already partially-reliable (maxRetransmits), so the app must not rely on
