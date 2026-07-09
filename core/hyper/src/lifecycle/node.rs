@@ -70,17 +70,14 @@ async fn inproc_send_reply(
         Ok(response_bytes) => {
             if expects_response {
                 #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                let mut response_envelope = RpcEnvelope {
+                let mut response_envelope = Inner::build_response_envelope(
+                    request_id.clone(),
                     route_key,
-                    payload: Some(response_bytes),
-                    error: None,
-                    direction: Some(Direction::Response as i32),
-                    traceparent: None,
-                    tracestate: None,
-                    request_id: request_id.clone(),
-                    metadata: Vec::new(),
-                    timeout_ms: 30000,
-                };
+                    Some(response_bytes),
+                    None,
+                    None,
+                    None,
+                );
                 #[cfg(feature = "opentelemetry")]
                 inject_span_context_to_rpc(&span, &mut response_envelope);
 
@@ -116,17 +113,14 @@ async fn inproc_send_reply(
                     message: e.to_string(),
                 };
                 #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                let mut error_envelope = RpcEnvelope {
+                let mut error_envelope = Inner::build_response_envelope(
+                    request_id.clone(),
                     route_key,
-                    payload: None,
-                    error: Some(error_response),
-                    direction: Some(Direction::Response as i32),
+                    None,
+                    Some(error_response),
                     traceparent,
                     tracestate,
-                    request_id: request_id.clone(),
-                    metadata: Vec::new(),
-                    timeout_ms: 30000,
-                };
+                );
                 #[cfg(feature = "opentelemetry")]
                 inject_span_context_to_rpc(&span, &mut error_envelope);
 
@@ -235,17 +229,14 @@ async fn mailbox_reply_and_ack(
                 Ok(caller) if expects_response => {
                     // Construct response RpcEnvelope (reuse request_id!)
                     #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                    let mut response_envelope = RpcEnvelope {
-                        request_id: request_id.clone(),
+                    let mut response_envelope = Inner::build_response_envelope(
+                        request_id.clone(),
                         route_key,
-                        payload: Some(response_bytes),
-                        error: None,
-                        direction: Some(Direction::Response as i32),
+                        Some(response_bytes),
+                        None,
                         traceparent,
                         tracestate,
-                        metadata: Vec::new(),
-                        timeout_ms: 30000,
-                    };
+                    );
                     #[cfg(feature = "opentelemetry")]
                     inject_span_context_to_rpc(&span, &mut response_envelope);
 
@@ -312,17 +303,14 @@ async fn mailbox_reply_and_ack(
                     message: e.to_string(),
                 };
                 #[cfg_attr(not(feature = "opentelemetry"), allow(unused_mut))]
-                let mut error_envelope = RpcEnvelope {
-                    request_id: request_id.clone(),
+                let mut error_envelope = Inner::build_response_envelope(
+                    request_id.clone(),
                     route_key,
-                    payload: None,
-                    error: Some(error_response),
-                    direction: Some(Direction::Response as i32),
+                    None,
+                    Some(error_response),
                     traceparent,
                     tracestate,
-                    metadata: Vec::new(),
-                    timeout_ms: 30000,
-                };
+                );
                 #[cfg(feature = "opentelemetry")]
                 inject_span_context_to_rpc(&span, &mut error_envelope);
 
