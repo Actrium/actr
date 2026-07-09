@@ -1218,7 +1218,7 @@ impl Inner {
                         route_key = %envelope.route_key,
                         "duplicate tell in-flight; dropping duplicate immediately (fire-and-forget)"
                     );
-                    return Ok(Bytes::new());
+                    return ready_continuation(Ok(Bytes::new()));
                 }
                 tracing::debug!(
                     request_id = %envelope.request_id,
