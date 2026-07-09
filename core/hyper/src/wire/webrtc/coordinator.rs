@@ -4020,9 +4020,7 @@ impl WebRtcCoordinator {
     ///
     /// Isolated from Reliable so a backpressured reliable stream cannot stall
     /// LatencyFirst chunks upstream of the registry's drop-newest policy.
-    pub async fn receive_latency_first_message(
-        &self,
-    ) -> ActorResult<Option<WebRtcInboundMessage>> {
+    pub async fn receive_latency_first_message(&self) -> ActorResult<Option<WebRtcInboundMessage>> {
         let mut rx = self.latency_first_message_rx.lock().await;
         Ok(rx.recv().await)
     }
