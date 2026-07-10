@@ -3,7 +3,16 @@ use actr_protocol::{
     AIdCredential, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
     RouteCandidatesResponse, ServiceAvailabilityState, UnregisterResponse,
 };
+use std::sync::atomic::AtomicBool;
 use tokio::sync::{broadcast, mpsc};
+
+struct TaskDropFlag(Arc<AtomicBool>);
+
+impl Drop for TaskDropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
 
 fn test_actor_id(serial_number: u64) -> ActrId {
     ActrId {
@@ -1099,6 +1108,138 @@ async fn clear_pending_restarts_clears_pending_sdp_exchange() {
     );
     assert!(!state.ice_restart_inflight);
     assert_eq!(state.ice_restart_attempts, 0);
+}
+
+#[test]
+fn ice_candidates_require_the_current_remote_ufrag() {
+    let description = RTCSessionDescription::offer(
+        "v=0\r\n\
+         o=- 0 0 IN IP4 127.0.0.1\r\n\
+         s=-\r\n\
+         t=0 0\r\n\
+         m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         a=mid:0\r\n\
+         a=ice-ufrag:current-generation\r\n\
+         a=ice-pwd:test-password\r\n"
+            .to_string(),
+    )
+    .expect("test SDP should parse");
+    let candidate = |username_fragment: Option<&str>| IceCandidate {
+        candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+        sdp_mid: Some("0".to_string()),
+        sdp_mline_index: Some(0),
+        username_fragment: username_fragment.map(str::to_owned),
+    };
+
+    assert!(candidate_matches_description(
+        &candidate(Some("current-generation")),
+        &description
+    ));
+    assert!(!candidate_matches_description(
+        &candidate(Some("stale-generation")),
+        &description
+    ));
+    assert!(!candidate_matches_description(
+        &candidate(None),
+        &description
+    ));
+    assert!(!candidate_matches_description(
+        &candidate(Some("")),
+        &description
+    ));
+}
+
+#[tokio::test]
+async fn clear_pending_restarts_waits_for_task_cancellation() {
+    let local_id = test_actor_id(1);
+    let target_id = test_actor_id(99);
+    let credential_state = CredentialState::new(test_credential(), None, None);
+    let signaling_client = Arc::new(CapturingSignalingClient::new());
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        local_id,
+        credential_state,
+        signaling_client,
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = oneshot::channel();
+    let task_dropped = Arc::clone(&dropped);
+    let handle = tokio::spawn(async move {
+        let _drop_flag = TaskDropFlag(task_dropped);
+        let _ = started_tx.send(());
+        std::future::pending::<()>().await;
+    });
+    started_rx
+        .await
+        .expect("restart task should enter its pending state");
+
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&target_id).expect("peer should exist");
+        state.restart_task_handle = Some(handle);
+        state.ice_restart_inflight = true;
+    }
+
+    coordinator.clear_pending_restarts().await;
+
+    assert!(
+        dropped.load(Ordering::Acquire),
+        "clear_pending_restarts must await cancellation before returning"
+    );
+}
+
+#[tokio::test]
+async fn restart_cancellation_epoch_rejects_queued_restart() {
+    let local_id = test_actor_id(1);
+    let target_id = test_actor_id(99);
+    let credential_state = CredentialState::new(test_credential(), None, None);
+    let signaling_client = Arc::new(CapturingSignalingClient::new());
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        local_id,
+        credential_state,
+        signaling_client,
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+
+    let signaling_guard = coordinator.restart_signaling_gate.lock().await;
+    let queued_coordinator = Arc::clone(&coordinator);
+    let queued_target = target_id.clone();
+    let queued_restart =
+        tokio::spawn(async move { queued_coordinator.restart_ice(&queued_target).await });
+    tokio::task::yield_now().await;
+
+    let clearing_coordinator = Arc::clone(&coordinator);
+    let clear = tokio::spawn(async move {
+        clearing_coordinator.clear_pending_restarts().await;
+    });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while coordinator
+            .restart_cancellation_epoch
+            .load(Ordering::Acquire)
+            == 0
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restart cancellation should advance the epoch");
+
+    drop(signaling_guard);
+    queued_restart
+        .await
+        .expect("queued restart task should join")
+        .expect("queued restart should be discarded cleanly");
+    clear.await.expect("restart clearing task should join");
+
+    let peers = coordinator.peers.read().await;
+    let state = peers.get(&target_id).expect("peer should remain");
+    assert!(state.restart_task_handle.is_none());
+    assert!(!state.ice_restart_inflight);
 }
 
 #[test]
