@@ -89,14 +89,13 @@ jobs:
           # uses its own CARGO_TARGET_DIR tree under target/e2e-cache/polyglot-echo/.
           key: polyglot-echo-e2e
           workspaces: |
-            .
-            target/e2e-cache/polyglot-echo/actr-cli
-            target/e2e-cache/polyglot-echo/mock-actrix
-            target/e2e-cache/polyglot-echo/service-build
-            target/e2e-cache/polyglot-echo/driver-rust
-            target/e2e-cache/polyglot-echo/linked-rust
-            target/e2e-cache/polyglot-echo/wasm-rust
-            target/e2e-cache/polyglot-echo/stream-server
+            . -> target/e2e-cache/polyglot-echo/actr-cli
+            . -> target/e2e-cache/polyglot-echo/mock-actrix
+            . -> target/e2e-cache/polyglot-echo/service-build
+            . -> target/e2e-cache/polyglot-echo/driver-rust
+            . -> target/e2e-cache/polyglot-echo/linked-rust
+            . -> target/e2e-cache/polyglot-echo/wasm-rust
+            . -> target/e2e-cache/polyglot-echo/stream-server
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Setup Node
@@ -589,4 +588,3 @@ jobs:
           path: e2e/kotlin-echo-app/.tmp/sanitized-logs/
           retention-days: 7
           if-no-files-found: warn
-
