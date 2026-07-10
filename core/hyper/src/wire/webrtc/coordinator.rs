@@ -447,7 +447,9 @@ pub struct WebRtcCoordinator {
 
     /// Serializes the final ICE-restart signaling send with restart cleanup.
     /// Cleanup takes this gate before draining peer state, so no restart offer
-    /// can be emitted after its peer has been removed.
+    /// can be emitted after its peer has been removed. The production
+    /// signaling client bounds each WebSocket send to five seconds, which also
+    /// bounds how long this global gate can delay cleanup.
     restart_signaling_gate: Arc<Mutex<()>>,
 
     /// Invalidates restart work that was queued before cleanup began. Unlike
@@ -1573,10 +1575,6 @@ impl WebRtcCoordinator {
 
     /// Clear pending ICE restart attempts (called on network loss)
     pub async fn clear_pending_restarts(&self) {
-        self.clear_pending_restarts_matching(None).await;
-    }
-
-    async fn clear_pending_restarts_matching(&self, target_filter: Option<&[ActrId]>) {
         self.restart_cancellation_epoch
             .fetch_add(1, Ordering::AcqRel);
         let restart_handles = {
@@ -1588,12 +1586,6 @@ impl WebRtcCoordinator {
             let mut restart_handles = Vec::new();
 
             for (peer_id, state) in peers.iter_mut() {
-                if let Some(target_filter) = target_filter
-                    && !target_filter.iter().any(|target| target == peer_id)
-                {
-                    continue;
-                }
-
                 let handle = state.restart_task_handle.take();
                 if state.ice_restart_inflight || handle.is_some() {
                     tracing::info!("🛑 Aborting pending ICE restart for {:?}", peer_id);
@@ -5137,6 +5129,33 @@ impl WebRtcCoordinator {
     /// Internal ICE restart implementation with retries
     /// Returns Ok(true) if restart succeeded, Ok(false) if all retries exhausted
     #[allow(clippy::too_many_arguments)]
+    async fn send_ice_restart_envelope_if_current(
+        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
+        target: &ActrId,
+        restart_session_id: u64,
+        restart_signaling_gate: &Arc<Mutex<()>>,
+        restart_cancellation_epoch: &Arc<AtomicU64>,
+        cancellation_epoch: u64,
+        signaling_client: &Arc<dyn SignalingClient>,
+        envelope: SignalingEnvelope,
+    ) -> Option<crate::transport::NetworkResult<()>> {
+        let _signaling_guard = restart_signaling_gate.lock().await;
+        let session_is_current = {
+            let peers_guard = peers.read().await;
+            peers_guard
+                .get(target)
+                .is_some_and(|state| state.session_id == restart_session_id)
+        };
+        if restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch
+            || !session_is_current
+        {
+            return None;
+        }
+
+        Some(signaling_client.send_envelope(envelope).await)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn do_ice_restart_inner(
         target: &ActrId,
         restart_session_id: u64,
@@ -5434,17 +5453,18 @@ impl WebRtcCoordinator {
                 tracestate: None,
             };
 
-            let signaling_guard = restart_signaling_gate.lock().await;
-            let session_is_current = {
-                let peers_guard = peers.read().await;
-                peers_guard
-                    .get(target)
-                    .is_some_and(|state| state.session_id == restart_session_id)
-            };
-            if restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch
-                || !session_is_current
-            {
-                drop(signaling_guard);
+            let Some(send_result) = Self::send_ice_restart_envelope_if_current(
+                peers,
+                target,
+                restart_session_id,
+                &restart_signaling_gate,
+                &restart_cancellation_epoch,
+                cancellation_epoch,
+                signaling_client,
+                envelope,
+            )
+            .await
+            else {
                 Self::clear_pending_local_offer_for_peer(
                     peers,
                     target,
@@ -5458,10 +5478,7 @@ impl WebRtcCoordinator {
                     restart_session_id
                 );
                 return Ok(true);
-            }
-
-            let send_result = signaling_client.send_envelope(envelope).await;
-            drop(signaling_guard);
+            };
 
             if let Err(e) = send_result {
                 tracing::error!(

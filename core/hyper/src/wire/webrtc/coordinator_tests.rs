@@ -1242,6 +1242,72 @@ async fn restart_cancellation_epoch_rejects_queued_restart() {
     assert!(!state.ice_restart_inflight);
 }
 
+#[tokio::test]
+async fn stale_peer_at_restart_signaling_boundary_does_not_send_offer() {
+    let local_id = test_actor_id(1);
+    let target_id = test_actor_id(99);
+    let credential_state = CredentialState::new(test_credential(), None, None);
+    let signaling_client = Arc::new(CapturingSignalingClient::new());
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        local_id,
+        credential_state,
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+
+    let signaling_guard = coordinator.restart_signaling_gate.lock().await;
+    let peers = Arc::clone(&coordinator.peers);
+    let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
+    let restart_signaling_gate = Arc::clone(&coordinator.restart_signaling_gate);
+    let restart_cancellation_epoch = Arc::clone(&coordinator.restart_cancellation_epoch);
+    let cancellation_epoch = restart_cancellation_epoch.load(Ordering::Acquire);
+    let target_for_task = target_id.clone();
+    let signaling_task = tokio::spawn(async move {
+        WebRtcCoordinator::send_ice_restart_envelope_if_current(
+            &peers,
+            &target_for_task,
+            session_id,
+            &restart_signaling_gate,
+            &restart_cancellation_epoch,
+            cancellation_epoch,
+            &signaling_for_task,
+            SignalingEnvelope::default(),
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+
+    let removed_state = coordinator
+        .peers
+        .write()
+        .await
+        .remove(&target_id)
+        .expect("peer should still exist before boundary validation");
+    drop(signaling_guard);
+
+    let send_result = tokio::time::timeout(Duration::from_secs(3), signaling_task)
+        .await
+        .expect("signaling task should finish after the gate is released")
+        .expect("signaling task should join");
+    assert!(
+        send_result.is_none(),
+        "the signaling boundary must reject a removed peer"
+    );
+    assert!(
+        signaling_client.sent_envelopes().await.is_empty(),
+        "a restart offer must not be sent after its peer is removed"
+    );
+
+    removed_state
+        .webrtc_conn
+        .close()
+        .await
+        .expect("test peer should close");
+}
+
 #[test]
 fn test_exponential_backoff_basic() {
     // Test basic exponential backoff: 5s -> 10s (capped)
