@@ -751,7 +751,10 @@ build_echo_app() {
     cd "$SCRIPT_DIR"
 
     section "📦 Installing EchoApp deps and generating Swift code"
-    rm -rf EchoApp/Generated
+    # Remove checked-in dependency snapshots before reinstalling. The dependency
+    # cache path is derived from the manifest alias, so retaining an older path
+    # can feed duplicate protobuf definitions to protoc after an alias change.
+    rm -rf EchoApp/Generated protos/remote
     run_actr deps install
     run_actr gen -l swift
     rm -f EchoApp/LocalEchoServiceHandlerImpl.swift
