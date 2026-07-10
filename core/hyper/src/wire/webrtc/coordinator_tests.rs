@@ -67,6 +67,8 @@ async fn insert_pending_offer_peer(
             restart_wake: Arc::new(tokio::sync::Notify::new()),
             restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
             last_ice_restart_offer_at: None,
+            local_ice_generation_pending: false,
+            pending_local_ice_candidates: Vec::new(),
             last_state_change: std::time::Instant::now(),
             current_state: RTCPeerConnectionState::New,
             ever_ice_connected: false,
@@ -1149,6 +1151,185 @@ fn ice_candidates_require_the_current_remote_ufrag() {
     ));
 }
 
+#[test]
+fn media_level_ice_ufrag_overrides_session_level_value() {
+    let description = RTCSessionDescription::offer(
+        "v=0\r\n\
+         o=- 0 0 IN IP4 127.0.0.1\r\n\
+         s=-\r\n\
+         t=0 0\r\n\
+         a=ice-ufrag:session-generation\r\n\
+         m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         a=mid:0\r\n\
+         a=ice-ufrag:media-generation\r\n\
+         a=ice-pwd:test-password\r\n"
+            .to_string(),
+    )
+    .expect("test SDP should parse");
+
+    assert_eq!(
+        ice_ufrag_from_description(&description, Some("0"), Some(0)).as_deref(),
+        Some("media-generation")
+    );
+    assert_eq!(
+        ice_ufrag_from_description(&description, None, None).as_deref(),
+        Some("session-generation")
+    );
+    assert_eq!(
+        ice_ufrag_from_description(&description, Some(""), Some(0)).as_deref(),
+        Some("media-generation")
+    );
+}
+
+#[tokio::test]
+async fn candidate_gathered_before_restart_local_sdp_uses_new_generation_ufrag() {
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(CapturingSignalingClient::new()),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+
+    assert!(
+        WebRtcCoordinator::begin_local_ice_generation(&coordinator.peers, &target_id, session_id,)
+            .await
+    );
+    {
+        let mut peers = coordinator.peers.write().await;
+        peers
+            .get_mut(&target_id)
+            .expect("peer should exist")
+            .pending_local_ice_candidates
+            .push(RTCIceCandidateInit {
+                candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+                sdp_mid: Some("0".to_string()),
+                sdp_mline_index: Some(0),
+                username_fragment: None,
+            });
+    }
+
+    let new_description = RTCSessionDescription::offer(
+        "v=0\r\n\
+         o=- 0 0 IN IP4 127.0.0.1\r\n\
+         s=-\r\n\
+         t=0 0\r\n\
+         m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         a=mid:0\r\n\
+         a=ice-ufrag:new-generation\r\n\
+         a=ice-pwd:test-password\r\n"
+            .to_string(),
+    )
+    .expect("test SDP should parse");
+    let candidates = WebRtcCoordinator::finish_local_ice_generation(
+        &coordinator.peers,
+        &target_id,
+        session_id,
+        &new_description,
+    )
+    .await
+    .expect("buffered candidate should use the new SDP");
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].username_fragment.as_deref(),
+        Some("new-generation")
+    );
+    let peers = coordinator.peers.read().await;
+    assert!(
+        !peers
+            .get(&target_id)
+            .expect("peer should exist")
+            .local_ice_generation_pending
+    );
+}
+
+#[tokio::test]
+async fn candidate_arriving_before_restart_offer_is_buffered() {
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(CapturingSignalingClient::new()),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+
+    let api = webrtc::api::APIBuilder::new().build();
+    let remote_pc = api
+        .new_peer_connection(Default::default())
+        .await
+        .expect("remote peer connection should be created");
+    remote_pc
+        .create_data_channel("test", None)
+        .await
+        .expect("data channel should be created");
+    let current_offer = remote_pc
+        .create_offer(None)
+        .await
+        .expect("current offer should be created");
+    remote_pc
+        .set_local_description(current_offer.clone())
+        .await
+        .expect("remote local description should be set");
+    let peer_connection = coordinator
+        .peers
+        .read()
+        .await
+        .get(&target_id)
+        .expect("peer should exist")
+        .peer_connection
+        .clone();
+    peer_connection
+        .set_remote_description(current_offer)
+        .await
+        .expect("current remote description should be set");
+
+    let future_candidate = IceCandidate {
+        candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+        sdp_mid: Some("0".to_string()),
+        sdp_mline_index: Some(0),
+        username_fragment: Some("future-generation".to_string()),
+    };
+    coordinator
+        .handle_ice_candidate(&target_id, future_candidate.clone())
+        .await
+        .expect("reordered candidate should be accepted for buffering");
+
+    let pending = coordinator.pending_candidates.read().await;
+    assert_eq!(pending.get(&target_id), Some(&vec![future_candidate]));
+    drop(pending);
+    remote_pc.close().await.expect("remote peer should close");
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("coordinator peers should close");
+}
+
+#[tokio::test]
+async fn stalled_restart_commit_for_one_peer_does_not_block_another_peer_gate() {
+    let coordinator = WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(CapturingSignalingClient::new()),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    );
+    let peer_a = test_actor_id(10);
+    let peer_b = test_actor_id(20);
+    let gate_a = coordinator.restart_signaling_gate_for(&peer_a).await;
+    let _blocked_send = gate_a.lock().await;
+    let gate_b = coordinator.restart_signaling_gate_for(&peer_b).await;
+
+    let _peer_b_guard = tokio::time::timeout(Duration::from_millis(100), gate_b.lock())
+        .await
+        .expect("peer B cleanup gate must not wait for peer A signaling");
+}
+
 #[tokio::test]
 async fn clear_pending_restarts_waits_for_task_cancellation() {
     let local_id = test_actor_id(1);
@@ -1206,7 +1387,8 @@ async fn restart_cancellation_epoch_rejects_queued_restart() {
     ));
     insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
 
-    let signaling_guard = coordinator.restart_signaling_gate.lock().await;
+    let restart_signaling_gate = coordinator.restart_signaling_gate_for(&target_id).await;
+    let signaling_guard = restart_signaling_gate.lock().await;
     let queued_coordinator = Arc::clone(&coordinator);
     let queued_target = target_id.clone();
     let queued_restart =
@@ -1258,10 +1440,11 @@ async fn stale_peer_at_restart_signaling_boundary_does_not_send_offer() {
     let session_id =
         insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
 
-    let signaling_guard = coordinator.restart_signaling_gate.lock().await;
+    let restart_signaling_gate = coordinator.restart_signaling_gate_for(&target_id).await;
+    let restart_signaling_gate_for_task = Arc::clone(&restart_signaling_gate);
+    let signaling_guard = restart_signaling_gate.lock().await;
     let peers = Arc::clone(&coordinator.peers);
     let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
-    let restart_signaling_gate = Arc::clone(&coordinator.restart_signaling_gate);
     let restart_cancellation_epoch = Arc::clone(&coordinator.restart_cancellation_epoch);
     let cancellation_epoch = restart_cancellation_epoch.load(Ordering::Acquire);
     let target_for_task = target_id.clone();
@@ -1270,7 +1453,7 @@ async fn stale_peer_at_restart_signaling_boundary_does_not_send_offer() {
             &peers,
             &target_for_task,
             session_id,
-            &restart_signaling_gate,
+            &restart_signaling_gate_for_task,
             &restart_cancellation_epoch,
             cancellation_epoch,
             &signaling_for_task,

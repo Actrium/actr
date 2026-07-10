@@ -52,7 +52,7 @@ use tracing::Instrument;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use webrtc::data_channel::RTCDataChannel;
-use webrtc::ice_transport::ice_candidate::RTCIceCandidate;
+use webrtc::ice_transport::ice_candidate::{RTCIceCandidate, RTCIceCandidateInit};
 use webrtc::ice_transport::ice_gathering_state::RTCIceGatheringState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState};
@@ -78,6 +78,7 @@ const CONNECTION_FACTORY_MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
 const WEBRTC_RPC_INBOUND_QUEUE_DEPTH: usize = 256;
 const WEBRTC_RELIABLE_INBOUND_QUEUE_DEPTH: usize = 64;
 const WEBRTC_LATENCY_FIRST_INBOUND_QUEUE_DEPTH: usize = 64;
+const MAX_PENDING_ICE_CANDIDATES_PER_PEER: usize = 256;
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -137,27 +138,39 @@ fn nonempty_candidate_ufrag(candidate: &IceCandidate) -> Option<&str> {
 fn ice_ufrag_from_description(
     description: &RTCSessionDescription,
     sdp_mid: Option<&str>,
+    sdp_mline_index: Option<u32>,
 ) -> Option<String> {
     let parsed = description.unmarshal().ok()?;
+
+    // RFC 8839 section 5.4: a media-level ICE credential overrides the
+    // session-level value for that media section.
+    let media = sdp_mid
+        .filter(|mid| !mid.is_empty())
+        .and_then(|mid| {
+            parsed.media_descriptions.iter().find(|media| {
+                media
+                    .attribute("mid")
+                    .flatten()
+                    .is_some_and(|media_mid| media_mid == mid)
+            })
+        })
+        .or_else(|| {
+            sdp_mline_index
+                .and_then(|index| usize::try_from(index).ok())
+                .and_then(|index| parsed.media_descriptions.get(index))
+        });
+    if let Some(ufrag) = media
+        .and_then(|media| media.attribute("ice-ufrag").flatten())
+        .filter(|ufrag| !ufrag.is_empty())
+    {
+        return Some(ufrag.to_owned());
+    }
 
     if let Some(ufrag) = parsed
         .attribute("ice-ufrag")
         .filter(|ufrag| !ufrag.is_empty())
     {
         return Some(ufrag.clone());
-    }
-
-    if let Some(sdp_mid) = sdp_mid.filter(|mid| !mid.is_empty()) {
-        if let Some(ufrag) = parsed.media_descriptions.iter().find_map(|media| {
-            let media_mid = media.attribute("mid").flatten()?;
-            (media_mid == sdp_mid)
-                .then(|| media.attribute("ice-ufrag").flatten())
-                .flatten()
-                .filter(|ufrag| !ufrag.is_empty())
-                .map(str::to_owned)
-        }) {
-            return Some(ufrag);
-        }
     }
 
     let mut unique_ufrag = None;
@@ -184,9 +197,11 @@ fn candidate_matches_description(
     let Some(candidate_ufrag) = nonempty_candidate_ufrag(candidate) else {
         return false;
     };
-    let Some(description_ufrag) =
-        ice_ufrag_from_description(description, candidate.sdp_mid.as_deref())
-    else {
+    let Some(description_ufrag) = ice_ufrag_from_description(
+        description,
+        candidate.sdp_mid.as_deref(),
+        candidate.sdp_mline_index,
+    ) else {
         return false;
     };
 
@@ -211,6 +226,8 @@ use actr_framework::{ExponentialBackoff, WebRtcPeerStatus};
 
 /// Type alias for message receivers (from all peers, split by traffic class).
 type MessageRx = Arc<Mutex<mpsc::Receiver<WebRtcInboundMessage>>>;
+type RestartSignalingGate = Arc<Mutex<()>>;
+type RestartSignalingGates = Arc<Mutex<HashMap<ActrId, RestartSignalingGate>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PublicRtcHookState {
@@ -261,6 +278,16 @@ struct PeerState {
 
     /// Last time we sent an ICE restart offer for this peer.
     last_ice_restart_offer_at: Option<Instant>,
+
+    /// True while a new local ICE generation is being created but its SDP has
+    /// not yet been sent. webrtc-rs starts gathering inside ICE restart before
+    /// `set_local_description`, so callbacks in this window must be buffered.
+    local_ice_generation_pending: bool,
+
+    /// Local candidates gathered before the SDP for their ICE generation was
+    /// sent. `RTCIceCandidate::to_json()` in webrtc-rs 0.14 does not expose the
+    /// ufrag, so candidates are labeled from the new SDP when this is drained.
+    pending_local_ice_candidates: Vec<RTCIceCandidateInit>,
 
     /// Last state change timestamp (for health check)
     last_state_change: std::time::Instant,
@@ -445,12 +472,10 @@ pub struct WebRtcCoordinator {
     cleanup_depth: Arc<AtomicUsize>,
     cleanup_notify: Arc<tokio::sync::Notify>,
 
-    /// Serializes the final ICE-restart signaling send with restart cleanup.
-    /// Cleanup takes this gate before draining peer state, so no restart offer
-    /// can be emitted after its peer has been removed. The production
-    /// signaling client bounds each WebSocket send to five seconds, which also
-    /// bounds how long this global gate can delay cleanup.
-    restart_signaling_gate: Arc<Mutex<()>>,
+    /// Per-peer gates serialize the final ICE-restart signaling commit with
+    /// cleanup for that peer. A stalled send for one peer must not delay
+    /// cleanup of unrelated peers.
+    restart_signaling_gates: RestartSignalingGates,
 
     /// Invalidates restart work that was queued before cleanup began. Unlike
     /// `cleanup_depth`, this epoch is specific to restart cancellation, so
@@ -509,7 +534,7 @@ impl WebRtcCoordinator {
             hook_callback: std::sync::OnceLock::new(),
             cleanup_depth: Arc::new(AtomicUsize::new(0)),
             cleanup_notify: Arc::new(tokio::sync::Notify::new()),
-            restart_signaling_gate: Arc::new(Mutex::new(())),
+            restart_signaling_gates: Arc::new(Mutex::new(HashMap::new())),
             restart_cancellation_epoch: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
@@ -615,16 +640,164 @@ impl WebRtcCoordinator {
             .local_description()
             .await
             .ok_or_else(|| "local description is missing for gathered ICE candidate".to_string())?;
-        let username_fragment =
-            ice_ufrag_from_description(&local_description, candidate_json.sdp_mid.as_deref())
-                .ok_or_else(|| "local SDP does not contain an unambiguous ICE ufrag".to_string())?;
+        let username_fragment = ice_ufrag_from_description(
+            &local_description,
+            candidate_json.sdp_mid.as_deref(),
+            candidate_json.sdp_mline_index.map(u32::from),
+        )
+        .ok_or_else(|| "local SDP does not contain an unambiguous ICE ufrag".to_string())?;
 
-        Ok(IceCandidate {
+        Ok(Self::ice_candidate_from_json(
+            candidate_json,
+            username_fragment,
+        ))
+    }
+
+    fn ice_candidate_from_json(
+        candidate_json: RTCIceCandidateInit,
+        username_fragment: String,
+    ) -> IceCandidate {
+        IceCandidate {
             candidate: candidate_json.candidate,
             sdp_mid: candidate_json.sdp_mid,
             sdp_mline_index: candidate_json.sdp_mline_index.map(u32::from),
             username_fragment: Some(username_fragment),
-        })
+        }
+    }
+
+    async fn buffer_local_candidate_if_generation_pending(
+        &self,
+        peer_id: &ActrId,
+        session_id: u64,
+        candidate: &RTCIceCandidate,
+    ) -> Result<bool, String> {
+        let candidate_json = candidate
+            .to_json()
+            .map_err(|err| format!("ICE Candidate serialization failed: {err}"))?;
+        let mut peers = self.peers.write().await;
+        let Some(state) = peers.get_mut(peer_id) else {
+            return Ok(false);
+        };
+        if state.session_id != session_id || !state.local_ice_generation_pending {
+            return Ok(false);
+        }
+
+        if state.pending_local_ice_candidates.len() >= MAX_PENDING_ICE_CANDIDATES_PER_PEER {
+            state.pending_local_ice_candidates.remove(0);
+            tracing::warn!(
+                "⚠️ Local ICE candidate buffer full for {}; dropping oldest candidate",
+                peer_id
+            );
+        }
+        state.pending_local_ice_candidates.push(candidate_json);
+        Ok(true)
+    }
+
+    async fn begin_local_ice_generation(
+        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
+        peer_id: &ActrId,
+        session_id: u64,
+    ) -> bool {
+        let mut peers = peers.write().await;
+        let Some(state) = peers.get_mut(peer_id) else {
+            return false;
+        };
+        if state.session_id != session_id {
+            return false;
+        }
+
+        state.local_ice_generation_pending = true;
+        state.pending_local_ice_candidates.clear();
+        true
+    }
+
+    async fn finish_local_ice_generation(
+        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
+        peer_id: &ActrId,
+        session_id: u64,
+        description: &RTCSessionDescription,
+    ) -> Result<Vec<IceCandidate>, String> {
+        let mut peers = peers.write().await;
+        let Some(state) = peers.get_mut(peer_id) else {
+            return Ok(Vec::new());
+        };
+        if state.session_id != session_id {
+            return Ok(Vec::new());
+        }
+
+        let candidates = std::mem::take(&mut state.pending_local_ice_candidates);
+        let mut prepared = Vec::with_capacity(candidates.len());
+        for candidate_json in candidates {
+            let username_fragment = ice_ufrag_from_description(
+                description,
+                candidate_json.sdp_mid.as_deref(),
+                candidate_json.sdp_mline_index.map(u32::from),
+            )
+            .ok_or_else(|| "new local SDP does not contain an unambiguous ICE ufrag".to_string())?;
+            prepared.push(Self::ice_candidate_from_json(
+                candidate_json,
+                username_fragment,
+            ));
+        }
+        state.local_ice_generation_pending = false;
+        Ok(prepared)
+    }
+
+    async fn restart_signaling_gate_for(&self, peer_id: &ActrId) -> RestartSignalingGate {
+        Self::restart_signaling_gate_for_map(&self.restart_signaling_gates, peer_id).await
+    }
+
+    async fn restart_signaling_gate_for_map(
+        gates: &RestartSignalingGates,
+        peer_id: &ActrId,
+    ) -> RestartSignalingGate {
+        gates
+            .lock()
+            .await
+            .entry(peer_id.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn send_prepared_local_ice_candidates(
+        signaling_client: &Arc<dyn SignalingClient>,
+        local_id: &ActrId,
+        credential_state: &CredentialState,
+        target: &ActrId,
+        candidates: Vec<IceCandidate>,
+    ) {
+        if candidates.is_empty() {
+            return;
+        }
+
+        let credential = credential_state.credential().await;
+        for candidate in candidates {
+            let relay = ActrRelay {
+                source: local_id.clone(),
+                credential: credential.clone(),
+                target: target.clone(),
+                payload: Some(actr_relay::Payload::IceCandidate(candidate)),
+            };
+            let envelope = SignalingEnvelope {
+                envelope_version: 1,
+                envelope_id: Self::new_envelope_id(),
+                reply_for: None,
+                timestamp: prost_types::Timestamp {
+                    seconds: chrono::Utc::now().timestamp(),
+                    nanos: 0,
+                },
+                flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
+                traceparent: None,
+                tracestate: None,
+            };
+            if let Err(err) = signaling_client.send_envelope(envelope).await {
+                tracing::warn!(
+                    "⚠️ Failed to send buffered local ICE candidate to {}: {}",
+                    target,
+                    err
+                );
+            }
+        }
     }
 
     /// Get a subscriber for connection events
@@ -1578,10 +1751,6 @@ impl WebRtcCoordinator {
         self.restart_cancellation_epoch
             .fetch_add(1, Ordering::AcqRel);
         let restart_handles = {
-            // Serialize cancellation with the final restart signaling send.
-            // Once this guard is held, no task can send an offer while peer
-            // restart state is being cleared.
-            let _signaling_guard = self.restart_signaling_gate.lock().await;
             let mut peers = self.peers.write().await;
             let mut restart_handles = Vec::new();
 
@@ -1597,6 +1766,8 @@ impl WebRtcCoordinator {
                     state.ice_restart_attempts = 0;
                     state.pending_local_sdp_exchange_id = None;
                 }
+                state.local_ice_generation_pending = false;
+                state.pending_local_ice_candidates.clear();
             }
 
             restart_handles
@@ -2445,12 +2616,6 @@ impl WebRtcCoordinator {
         self.restart_cancellation_epoch
             .fetch_add(1, Ordering::AcqRel);
 
-        // Serialize peer draining with the final restart signaling send. Any
-        // restart task already at the send boundary completes before this
-        // guard is acquired; every remaining task is aborted before the peer
-        // state becomes unreachable.
-        let _signaling_guard = self.restart_signaling_gate.lock().await;
-
         // Drain all peers (take ownership of full PeerState) and detach every
         // restart handle so cancellation can be awaited deterministically.
         let mut all_peers: Vec<(ActrId, PeerState)> = {
@@ -2475,8 +2640,6 @@ impl WebRtcCoordinator {
         #[cfg(feature = "opentelemetry")]
         self.root_context_map.write().await.clear();
 
-        drop(_signaling_guard);
-
         for (peer_id, handle) in restart_handles {
             if let Err(err) = handle.await
                 && !err.is_cancelled()
@@ -2484,6 +2647,7 @@ impl WebRtcCoordinator {
                 tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
             }
         }
+        self.restart_signaling_gates.lock().await.clear();
 
         // Abort all remaining background tasks and close each connection.
         for (peer_id, state) in &all_peers {
@@ -2805,8 +2969,9 @@ impl WebRtcCoordinator {
 
         // 1. Remove from peers map FIRST, release lock, THEN close
         //    This avoids deadlock: close() sends events that may trigger this method again
+        let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
         let state_to_close = {
-            let _signaling_guard = self.restart_signaling_gate.lock().await;
+            let _signaling_guard = restart_signaling_gate.lock().await;
             let mut peers = self.peers.write().await;
             peers.remove(target)
         }; // Lock released here
@@ -2849,8 +3014,9 @@ impl WebRtcCoordinator {
         abort_restart_task: bool,
         reason: &str,
     ) -> bool {
+        let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
         let state_to_close = {
-            let _signaling_guard = self.restart_signaling_gate.lock().await;
+            let _signaling_guard = restart_signaling_gate.lock().await;
             let mut peers = self.peers.write().await;
             match peers.get(target) {
                 Some(state) if state.session_id == expected_session_id => peers.remove(target),
@@ -2955,6 +3121,8 @@ impl WebRtcCoordinator {
                     restart_wake: Arc::new(tokio::sync::Notify::new()),
                     restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
                     last_ice_restart_offer_at: None,
+                    local_ice_generation_pending: false,
+                    pending_local_ice_candidates: Vec::new(),
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
                     ever_ice_connected: false,
@@ -3071,6 +3239,28 @@ impl WebRtcCoordinator {
                                     candidate_session_id
                                 );
                                 return;
+                            }
+
+                            match coord
+                                .buffer_local_candidate_if_generation_pending(
+                                    &target_id,
+                                    candidate_session_id,
+                                    &cand,
+                                )
+                                .await
+                            {
+                                Ok(true) => {
+                                    tracing::debug!(
+                                        "🔖 Buffered local ICE candidate until restart SDP is sent: peer={}",
+                                        target_id
+                                    );
+                                    return;
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    tracing::error!("❌ Failed to buffer ICE Candidate: {}", e);
+                                    return;
+                                }
                             }
 
                             let ice_candidate = match Self::serialize_local_ice_candidate(
@@ -3254,6 +3444,8 @@ impl WebRtcCoordinator {
                     restart_wake: Arc::new(tokio::sync::Notify::new()),
                     restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
                     last_ice_restart_offer_at: None,
+                    local_ice_generation_pending: false,
+                    pending_local_ice_candidates: Vec::new(),
                     last_state_change: std::time::Instant::now(),
                     current_state: RTCPeerConnectionState::New,
                     ever_ice_connected: false,
@@ -3490,6 +3682,28 @@ impl WebRtcCoordinator {
                                     candidate_session_id
                                 );
                                 return;
+                            }
+
+                            match coord
+                                .buffer_local_candidate_if_generation_pending(
+                                    &target_id,
+                                    candidate_session_id,
+                                    &cand,
+                                )
+                                .await
+                            {
+                                Ok(true) => {
+                                    tracing::debug!(
+                                        "🔖 Buffered local ICE candidate until restart SDP is sent: peer={}",
+                                        target_id
+                                    );
+                                    return;
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    tracing::error!("❌ Failed to buffer ICE Candidate: {}", e);
+                                    return;
+                                }
                             }
 
                             let ice_candidate = match Self::serialize_local_ice_candidate(
@@ -3771,13 +3985,15 @@ impl WebRtcCoordinator {
                 peer_id
             );
 
+            let mut future_generation_candidates = Vec::new();
             for candidate in candidates {
                 if !candidate_matches_description(&candidate, &remote_description) {
-                    tracing::warn!(
-                        "🚫 Dropping stale buffered ICE candidate from {}: candidate_ufrag={:?}",
+                    tracing::debug!(
+                        "🔖 Retaining buffered ICE candidate for a different generation from {}: candidate_ufrag={:?}",
                         peer_id,
                         candidate.username_fragment
                     );
+                    future_generation_candidates.push(candidate);
                     continue;
                 }
                 if let Err(e) = self
@@ -3788,9 +4004,27 @@ impl WebRtcCoordinator {
                     tracing::warn!("⚠️ Failed to add buffered ICE candidate: {}", e);
                 }
             }
+
+            for candidate in future_generation_candidates {
+                self.buffer_pending_remote_candidate(peer_id, candidate)
+                    .await;
+            }
         }
 
         Ok(())
+    }
+
+    async fn buffer_pending_remote_candidate(&self, peer_id: &ActrId, candidate: IceCandidate) {
+        let mut pending = self.pending_candidates.write().await;
+        let candidates = pending.entry(peer_id.clone()).or_default();
+        if candidates.len() >= MAX_PENDING_ICE_CANDIDATES_PER_PEER {
+            candidates.remove(0);
+            tracing::warn!(
+                "⚠️ Remote ICE candidate buffer full for {}; dropping oldest candidate",
+                peer_id
+            );
+        }
+        candidates.push(candidate);
     }
 
     /// Handle received ICE Candidate
@@ -3839,11 +4073,12 @@ impl WebRtcCoordinator {
                 // Check if remote description is set
                 if let Some(remote_description) = peer_connection.remote_description().await {
                     if !candidate_matches_description(&candidate, &remote_description) {
-                        tracing::warn!(
-                            "🚫 Dropping stale ICE candidate from {}: candidate_ufrag={:?}",
+                        tracing::debug!(
+                            "🔖 Buffering ICE candidate from a future or reordered generation for {}: candidate_ufrag={:?}",
                             from,
                             candidate.username_fragment
                         );
+                        self.buffer_pending_remote_candidate(from, candidate).await;
                         return Ok(());
                     }
                     // Can add candidate immediately
@@ -3853,12 +4088,7 @@ impl WebRtcCoordinator {
                     tracing::trace!("✅ Added ICE Candidate from {}", from);
                 } else {
                     // Buffer for later (remote description not yet set)
-                    self.pending_candidates
-                        .write()
-                        .await
-                        .entry(from.clone())
-                        .or_insert_with(Vec::new)
-                        .push(candidate);
+                    self.buffer_pending_remote_candidate(from, candidate).await;
                     tracing::debug!(
                         "🔖 Buffered ICE candidate from {:?} (remote description not yet set)",
                         from
@@ -3867,12 +4097,7 @@ impl WebRtcCoordinator {
             }
             None => {
                 // Buffer for when peer is created
-                self.pending_candidates
-                    .write()
-                    .await
-                    .entry(from.clone())
-                    .or_insert_with(Vec::new)
-                    .push(candidate);
+                self.buffer_pending_remote_candidate(from, candidate).await;
                 tracing::debug!(
                     "🔖 Buffered ICE candidate from {:?} (peer not yet created)",
                     from
@@ -4809,13 +5034,14 @@ impl WebRtcCoordinator {
         let credential_state = self.credential_state.clone();
         let signaling_client = Arc::clone(&self.signaling_client);
         let coordinator_weak = Arc::downgrade(self);
-        let restart_signaling_gate = Arc::clone(&self.restart_signaling_gate);
+        let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
+        let restart_signaling_gate_for_task = Arc::clone(&restart_signaling_gate);
         let restart_cancellation_epoch = Arc::clone(&self.restart_cancellation_epoch);
 
         // Serialize task creation with cleanup. If cleanup started while this
         // call was queued for the gate, discard it; recovery calls that begin
         // afterward capture the new epoch and remain eligible.
-        let _signaling_guard = self.restart_signaling_gate.lock().await;
+        let _signaling_guard = restart_signaling_gate.lock().await;
         if self.restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch {
             tracing::debug!(
                 "⏭️ Skip ICE restart to serial={}: restart cancellation epoch advanced",
@@ -4917,7 +5143,7 @@ impl WebRtcCoordinator {
                     &signaling_client,
                     restart_wake,
                     restart_retry_wake,
-                    restart_signaling_gate,
+                    restart_signaling_gate_for_task,
                     restart_cancellation_epoch,
                     cancellation_epoch,
                 )
@@ -5357,6 +5583,11 @@ impl WebRtcCoordinator {
                 // before each attempt to avoid false positive success detection.
                 state.ice_restart_inflight = true;
                 state.last_ice_restart_offer_at = Some(Instant::now());
+                // webrtc-rs restarts the ICE agent and starts gathering inside
+                // create_offer(ice_restart=true), before the new local SDP is
+                // installed. Buffer callbacks until that SDP is signaled.
+                state.local_ice_generation_pending = true;
+                state.pending_local_ice_candidates.clear();
 
                 state.ice_restart_attempts += 1;
                 state.ice_restart_attempts
@@ -5374,6 +5605,10 @@ impl WebRtcCoordinator {
             let offer_sdp = negotiator
                 .create_ice_restart_offer(&peer_connection)
                 .await?;
+            let offer_description =
+                RTCSessionDescription::offer(offer_sdp.clone()).map_err(|e| {
+                    ActrError::Internal(format!("Failed to parse local ICE restart offer: {e}"))
+                })?;
 
             if restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch {
                 tracing::debug!(
@@ -5528,6 +5763,23 @@ impl WebRtcCoordinator {
                 }
                 continue;
             }
+
+            let buffered_candidates = Self::finish_local_ice_generation(
+                peers,
+                target,
+                restart_session_id,
+                &offer_description,
+            )
+            .await
+            .map_err(ActrError::Internal)?;
+            Self::send_prepared_local_ice_candidates(
+                signaling_client,
+                local_id,
+                &credential_state,
+                target,
+                buffered_candidates,
+            )
+            .await;
 
             tracing::info!(
                 "♻️ ICE restart attempt {} sent to serial={}",
@@ -5844,11 +6096,24 @@ impl WebRtcCoordinator {
             return Ok(());
         }
 
+        if !Self::begin_local_ice_generation(&self.peers, from, session_id).await {
+            tracing::debug!(
+                "⏭️ ICE restart answer cancelled because peer session changed: peer={}, session_id={}",
+                from,
+                session_id
+            );
+            return Ok(());
+        }
+
         // Apply remote restart offer and generate answer
         let answer_sdp = self
             .negotiator
             .create_answer(&peer_connection, offer_sdp)
             .await?;
+        let answer_description =
+            RTCSessionDescription::answer(answer_sdp.clone()).map_err(|e| {
+                ActrError::Internal(format!("Failed to parse local ICE restart answer: {e}"))
+            })?;
 
         // Send restart answer back
         let session_desc = actr_protocol::SessionDescription {
@@ -5858,6 +6123,23 @@ impl WebRtcCoordinator {
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
         self.send_actr_relay(from, payload).await?;
+
+        let buffered_candidates =
+            Self::finish_local_ice_generation(&self.peers, from, session_id, &answer_description)
+                .await
+                .map_err(ActrError::Internal)?;
+        for candidate in buffered_candidates {
+            if let Err(err) = self
+                .send_actr_relay(from, actr_relay::Payload::IceCandidate(candidate))
+                .await
+            {
+                tracing::warn!(
+                    "⚠️ Failed to send buffered ICE restart answer candidate to {}: {}",
+                    from,
+                    err
+                );
+            }
+        }
 
         // Flush any buffered ICE candidates collected before remote description was set
         self.flush_pending_candidates(from, &peer_connection)

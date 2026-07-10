@@ -1973,34 +1973,37 @@ impl SignalingClient for WebSocketSignalingClient {
             ));
         }
 
-        let mut sink_guard = self.ws_sink.lock().await;
-
-        if let Some(sink) = sink_guard.as_mut() {
-            // using protobuf binary serialization
-            let mut buf = Vec::new();
-            envelope.encode(&mut buf)?;
-            let msg = tokio_tungstenite::tungstenite::Message::Binary(buf.into());
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
-                sink.send(msg),
-            )
-            .await
-            {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(e.into()),
-                Err(_) => {
-                    self.connected.store(false, Ordering::Release);
-                    return Err(NetworkError::ConnectionError(
-                        "Signaling WebSocket send timed out".to_string(),
-                    ));
+        // Bound the complete commit, including contention on the shared sink
+        // mutex. Timing out only `sink.send()` still permits an unbounded wait
+        // before the send future is ever created.
+        let mut buf = Vec::new();
+        envelope.encode(&mut buf)?;
+        let msg = tokio_tungstenite::tungstenite::Message::Binary(buf.into());
+        let send_result = tokio::time::timeout(
+            std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
+            async {
+                let mut sink_guard = self.ws_sink.lock().await;
+                match sink_guard.as_mut() {
+                    Some(sink) => sink.send(msg).await.map_err(NetworkError::from),
+                    None => Err(NetworkError::ConnectionError("Not connected".to_string())),
                 }
-            }
+            },
+        )
+        .await;
 
-            self.stats.messages_sent.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!("Stats: {:?}", self.stats.snapshot());
-            Ok(())
-        } else {
-            Err(NetworkError::ConnectionError("Not connected".to_string()))
+        match send_result {
+            Ok(Ok(())) => {
+                self.stats.messages_sent.fetch_add(1, Ordering::Relaxed);
+                tracing::debug!("Stats: {:?}", self.stats.snapshot());
+                Ok(())
+            }
+            Ok(Err(err)) => Err(err),
+            Err(_) => {
+                self.connected.store(false, Ordering::Release);
+                Err(NetworkError::ConnectionError(
+                    "Signaling WebSocket sink lock/send timed out".to_string(),
+                ))
+            }
         }
     }
 
