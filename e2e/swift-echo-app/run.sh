@@ -718,6 +718,13 @@ build_echo_app() {
     local prev_dir="$PWD"
     cd "$SCRIPT_DIR"
 
+    section "📦 Installing EchoApp deps and generating Swift code"
+    rm -rf EchoApp/Generated
+    run_actr deps install
+    run_actr gen -l swift
+    rm -f EchoApp/LocalEchoServiceHandlerImpl.swift
+    rm -f EchoApp/LocalEchoServiceLifecycleAdapter.swift
+
     # Generate Xcode project from project.yml
     rm -rf EchoApp.xcodeproj
     xcodegen generate --spec project.yml --project "$SCRIPT_DIR" >"$LOG_DIR/xcodegen.log" 2>&1
@@ -979,15 +986,18 @@ scaffold_service_guest
 build_service_package
 publish_echoapp_package_identity
 
-# Phase 3: Render EchoApp config, setup simulator, and build app
-# (No service running yet — avoids idling during the ~7 min Xcode build)
+# Phase 3: Render EchoApp config and setup simulator
+# (Service starts in Phase 4 before the app build, because `actr deps install`
+#  inside build_echo_app validates the remote EchoService dependency through
+#  discovery — the service must be registered first, mirroring the Swift
+#  DataStreamApp / SwiftTsWorkloadApp e2e ordering.)
 render_echoapp_config
 setup_ios_simulator
-build_echo_app
 
-# Phase 4: Start EchoService AFTER build completes
+# Phase 4: Start EchoService, then build the app (gen needs the running service)
 run_server_host
 check_service_ready
+build_echo_app
 
 # Phase 5: Install app, launch, and verify
 install_and_launch_app
