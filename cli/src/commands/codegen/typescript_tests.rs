@@ -324,3 +324,26 @@ fn workload_import_errors_on_unresolved_qualified_type() {
         "unexpected error message: {err}"
     );
 }
+
+#[test]
+fn typescript_plugin_extract_command_uses_destination_flag() {
+    // Regression guard: `unzip` selects its destination directory with `-d`.
+    // It has no `-C` flag (that is BSD `tar`); a `-C` here silently breaks
+    // extraction in CI.
+    let archive = Path::new("/tmp/actr-plugin.zip");
+    let extract_dir = Path::new("/tmp/actr-extract");
+    let args = unzip_extract_args(archive, extract_dir);
+
+    let arg_strs: Vec<&str> = args.iter().filter_map(|a| a.to_str()).collect();
+
+    assert!(
+        arg_strs.contains(&"-d"),
+        "unzip must select the destination with -d, got: {arg_strs:?}"
+    );
+    assert!(
+        !arg_strs.contains(&"-C"),
+        "unzip has no -C flag (that is BSD tar); -C silently breaks extraction, got: {arg_strs:?}"
+    );
+    assert!(arg_strs.contains(&"/tmp/actr-plugin.zip"));
+    assert!(arg_strs.contains(&"/tmp/actr-extract"));
+}
