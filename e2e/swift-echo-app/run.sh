@@ -378,6 +378,10 @@ cleanup() {
     fi
     wait 2>/dev/null || true
 
+    # Remove generated project configs that contain the per-run realm secret.
+    rm -f "$ECHOAPP_ACTRIX_CONFIG" "$SCRIPT_DIR/.actr/config.toml"
+    rmdir "$SCRIPT_DIR/.actr" 2>/dev/null || true
+
     # Shut down booted iOS Simulators
     xcrun simctl shutdown all 2>/dev/null || true
 
@@ -481,13 +485,39 @@ actr-service-compat = { path = "$repo_path/core/service-compat" }
 EOF
 }
 
+pin_workspace_actr_dependencies() {
+    local cargo_toml="$1"
+
+    ACTR_FRAMEWORK_PATH="$REPO_ROOT/core/framework" \
+    ACTR_PROTOCOL_PATH="$REPO_ROOT/core/protocol" \
+        perl -i -pe '
+            if (/^actr-framework = /) {
+                $_ = qq{actr-framework = { path = "$ENV{ACTR_FRAMEWORK_PATH}" }\n};
+            } elsif (/^actr-protocol = /) {
+                $_ = qq{actr-protocol = { path = "$ENV{ACTR_PROTOCOL_PATH}" }\n};
+            }
+        ' "$cargo_toml"
+
+    grep -Fq "actr-framework = { path = \"$REPO_ROOT/core/framework\" }" "$cargo_toml" ||
+        fail "Failed to pin actr-framework to the workspace"
+    grep -Fq "actr-protocol = { path = \"$REPO_ROOT/core/protocol\" }" "$cargo_toml" ||
+        fail "Failed to pin actr-protocol to the workspace"
+}
+
 write_project_keychain_config() {
     local project_dir="$1"
     local keychain_path="$2"
     mkdir -p "$project_dir/.actr"
     cat >"$project_dir/.actr/config.toml" <<EOF
 [mfr]
+manufacturer = "$MANUFACTURER"
 keychain = "$keychain_path"
+
+[network]
+signaling_url = "ws://127.0.0.1:${HTTP_PORT}/signaling/ws"
+ais_endpoint = "http://127.0.0.1:${HTTP_PORT}/ais"
+realm_id = $REALM_ID
+realm_secret = "$REALM_SECRET"
 EOF
 }
 
@@ -549,6 +579,7 @@ scaffold_service_guest() {
         --manufacturer "$MANUFACTURER" \
         "$TMP_SERVICE_DIR"
 
+    pin_workspace_actr_dependencies "$TMP_SERVICE_DIR/Cargo.toml"
     append_workspace_patch "$TMP_SERVICE_DIR/Cargo.toml"
     mkdir -p "$(dirname "$SERVICE_KEYCHAIN")"
     cp "$PROVISIONED_KEYCHAIN" "$SERVICE_KEYCHAIN"
@@ -647,6 +678,7 @@ render_echoapp_config() {
         "__ICE_PORT__=$ICE_PORT" \
         "__REALM_ID__=$REALM_ID" \
         "__REALM_SECRET__=$REALM_SECRET"
+    write_project_keychain_config "$SCRIPT_DIR" "$PROVISIONED_KEYCHAIN"
     success "EchoApp actr.toml rendered"
 }
 
