@@ -783,6 +783,7 @@ async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
             "long offline should time out the in-flight request, got: {err}"
         );
         assert_pending_empty(&harness, direction.from_serial, &request_id).await;
+        release_send.notify_waiters();
         drop(hook_guard);
 
         harness.simulate_reconnect();
@@ -809,7 +810,6 @@ async fn inflight_long_offline_fails_bounded_then_retries(case: RoleCase) {
             Duration::from_secs(25),
         )
         .await;
-        drop(release_send);
     }
 }
 
