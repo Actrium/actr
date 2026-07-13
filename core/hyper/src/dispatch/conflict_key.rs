@@ -92,8 +92,10 @@ pub enum ConflictKeyError {
 /// instance's linear memory exactly as a native handler shares `&self`. The
 /// same contract applies — any guest state touched across an `.await` must
 /// tolerate a sibling distinct-key dispatch observing it mid-flight. A 0.1.0
-/// (sync-world) WASM guest and a DynClib guest stay serial regardless (single
-/// `Store` / `&mut` ABI), so the key is a no-op routing hint for those.
+/// (sync-world) WASM guest and a DynClib guest stay serial regardless of the
+/// gate or budget (single `Store` / `&mut` ABI). For those backends, declaring
+/// a key only affects scheduler routing; it does not overlap guest dispatches
+/// and therefore provides no dispatch-throughput benefit.
 #[derive(Debug, Clone, Default)]
 pub struct ConflictKeySpec {
     rules: HashMap<String, KeyRule>,

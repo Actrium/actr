@@ -320,11 +320,10 @@ impl ActorHandle {
 /// Execution discipline for the runner task.
 ///
 /// `Serial` is the B1 contract: one command at a time, run-to-completion. It is
-/// mandatory for `Wasm` / `DynClib` workloads (single `Store` / `&mut` guest
-/// ABI) and is the default. `Interleaved` is the B2 native-concurrency point:
-/// only meaningful for a `Linked` workload, whose `dispatch` takes `&self`, so
-/// distinct-key dispatches (routed concurrently by the scheduler) can be in
-/// flight at once.
+/// mandatory for `Wasm(V1)` / `DynClib` workloads (single `Store` / `&mut`
+/// guest ABI) and is the default. `Interleaved` is the B2 concurrency point for
+/// `Linked` workloads and `Wasm(V2)` async-world guests, whose dispatch APIs can
+/// safely multiplex distinct-key invocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunnerMode {
     Serial,
