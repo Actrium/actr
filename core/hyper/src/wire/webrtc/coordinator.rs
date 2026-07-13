@@ -3444,7 +3444,7 @@ impl WebRtcCoordinator {
                 from,
                 peers.len()
             );
-            for (k, _) in peers.iter() {
+            for k in peers.keys() {
                 tracing::info!("   📌 [LOOKUP] Stored: id={}", k);
             }
             let state = peers.get_mut(from).ok_or_else(|| {
