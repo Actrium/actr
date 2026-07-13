@@ -78,8 +78,15 @@ afterEvaluate {
 }
 
 dependencies {
-    // actr-kotlin library
-    implementation(project(":actr-kotlin"))
+    // actr-kotlin library. The real Maven coordinate is `actr-kotlin`
+    // (the module/artifactId), resolved from mavenLocal after
+    // `./gradlew :actr-kotlin:publishToMavenLocal`, or from GitHub Packages
+    // with gpr credentials. `io.actrium:actr` does not resolve.
+    implementation("io.actrium:actr-kotlin:0.4.11") {
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+    // JNA for UniFFI bindings (re-declared as @aar to match the published POM)
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
 
     // Protobuf runtime
     implementation("com.google.protobuf:protobuf-javalite:3.25.1")

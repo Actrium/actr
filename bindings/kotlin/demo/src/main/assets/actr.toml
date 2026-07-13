@@ -13,8 +13,8 @@ url = "ws://124.71.231.251:9080/signaling/ws"
 url = "http://124.71.231.251:9080/ais"
 
 [deployment]
-realm_id = 33554434
-realm_secret = "rs_m5bEk-i1R9mCOpj3ej1_eN80f6ukR7OS"
+realm_id = 33554450
+realm_secret = "rs_8VyQ0ZuHS89JEyypLeAhpX1fP4HLiio8"
 
 [discovery]
 visible = true
