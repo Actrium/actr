@@ -27,6 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use actr_hyper::config::WasmRuntimeLimits;
 use actr_hyper::test_support::instantiate_wasm_workload;
 use actr_hyper::wasm::{WasmError, WasmHost};
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
@@ -139,6 +140,45 @@ async fn component_model_basic_echo_round_trip() {
         .await
         .expect("echo dispatch should succeed");
     assert_eq!(reply, payload, "test/echo must round-trip the payload");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn non_yielding_guest_is_interrupted_and_store_recovers() {
+    let limits = WasmRuntimeLimits {
+        fuel_per_invocation: 50_000,
+        epoch_tick: Duration::from_millis(10),
+        invocation_timeout: Duration::from_secs(1),
+        ..WasmRuntimeLimits::default()
+    };
+    let host = WasmHost::compile_with_limits(fixture_component_bytes(), &limits)
+        .expect("compile component");
+    let mut workload = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let bridge = unreachable_bridge();
+
+    let started = Instant::now();
+    let error = workload
+        .handle(&make_envelope("test/spin", Vec::new()), test_ctx(), &bridge)
+        .await
+        .expect_err("non-yielding guest must be interrupted");
+    assert!(
+        matches!(error, WasmError::OutOfFuel | WasmError::EpochInterrupted),
+        "expected a stable execution-budget error, got {error:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "non-yielding guest exceeded its bounded execution window"
+    );
+
+    let payload = b"recovered".to_vec();
+    let reply = workload
+        .handle(
+            &make_envelope("test/echo", payload.clone()),
+            test_ctx(),
+            &bridge,
+        )
+        .await
+        .expect("poisoned Store must rebuild before the next invocation");
+    assert_eq!(reply, payload);
 }
 
 // ─── Test 2 — cross-instance parallelism ────────────────────────────────────

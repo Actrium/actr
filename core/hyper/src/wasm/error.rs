@@ -28,3 +28,46 @@ pub enum WasmError {
     #[error("WASM invocation timed out after {0:?}")]
     InvocationTimeout(std::time::Duration),
 }
+
+const MAX_TRAP_MESSAGE_BYTES: usize = 512;
+
+pub(crate) fn classify_trap(entry: &str, trap: wasmtime::Error) -> WasmError {
+    if let Some(trap_code) = trap.downcast_ref::<wasmtime::Trap>() {
+        match trap_code {
+            wasmtime::Trap::OutOfFuel => {
+                super::runtime_limits::record_out_of_fuel();
+                return WasmError::OutOfFuel;
+            }
+            wasmtime::Trap::Interrupt => {
+                super::runtime_limits::record_epoch_trap();
+                return WasmError::EpochInterrupted;
+            }
+            _ => {}
+        }
+    }
+
+    let message = trap.to_string();
+    if message.contains("resource limit exceeded")
+        || message.contains("maximum memory size")
+        || message.contains("maximum table size")
+    {
+        super::runtime_limits::record_resource_denial();
+        return WasmError::ResourceLimitExceeded("per-store Wasmtime resource limit");
+    }
+
+    WasmError::InstanceTrapped(format!(
+        "{entry} trap: {}",
+        truncate_utf8(&message, MAX_TRAP_MESSAGE_BYTES)
+    ))
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> &str {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}

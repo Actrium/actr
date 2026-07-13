@@ -360,3 +360,28 @@ fn env_escape_hatch_parsing() {
     assert!(!dispatch_serial_env_override(Some("")));
     assert!(!dispatch_serial_env_override(None));
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_runtime_limits_reject_zero_security_bounds() {
+    let limits = WasmRuntimeLimits {
+        max_outstanding_invocations: 0,
+        ..WasmRuntimeLimits::default()
+    };
+    let error = limits.validate().expect_err("zero quota must be rejected");
+    assert!(error.to_string().contains("max_outstanding_invocations"));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_runtime_limits_reject_inconsistent_memory_budget() {
+    let limits = WasmRuntimeLimits {
+        max_linear_memory: 128,
+        max_total_linear_memory: 64,
+        ..WasmRuntimeLimits::default()
+    };
+    let error = limits
+        .validate()
+        .expect_err("per-Store memory must fit aggregate memory");
+    assert!(error.to_string().contains("max_total_linear_memory"));
+}

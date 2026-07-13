@@ -49,6 +49,10 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use crate::config::WasmRuntimeLimits;
 
 use super::host_v2::WasmWorkloadV2;
+use super::runtime_limits::{
+    EpochTicker, StorePermit, acquire_compile, acquire_instantiate, acquire_invocation,
+    acquire_store, record_compile_failure, record_instantiate_failure, record_timeout,
+};
 
 use super::component_bindings::ActrWorkloadGuest;
 use super::component_bindings::actr::workload::host::Host as HostImports;
@@ -678,6 +682,7 @@ pub struct WasmHost {
     engine: Engine,
     component: Component,
     limits: WasmRuntimeLimits,
+    epoch_ticker: Arc<EpochTicker>,
 }
 
 impl std::fmt::Debug for WasmHost {
@@ -706,8 +711,12 @@ impl WasmHost {
     /// Compile with explicit resource limits (issue #346). Production callers
     /// thread the configured [`WasmRuntimeLimits`]; tests use [`compile`].
     pub fn compile_with_limits(wasm_bytes: &[u8], limits: &WasmRuntimeLimits) -> WasmResult<Self> {
+        limits.validate().map_err(WasmError::VerificationFailed)?;
+        let _compile_permit = acquire_compile(limits)?;
         let engine = build_engine(limits)?;
+        let epoch_ticker = EpochTicker::spawn(&engine, limits.epoch_tick)?;
         let component = Component::from_binary(&engine, wasm_bytes).map_err(|e| {
+            record_compile_failure();
             let raw = format!("{e:#}");
             if raw.contains("`async` canonical option requires an async function type") {
                 return WasmError::LoadFailed(format!(
@@ -729,6 +738,7 @@ impl WasmHost {
             engine,
             component,
             limits: *limits,
+            epoch_ticker,
         })
     }
 
@@ -744,6 +754,7 @@ impl WasmHost {
     /// p2 as well as the generated `actr:workload/host` linker, and
     /// runs `Component::instantiate_async`.
     pub(crate) async fn instantiate(&self) -> WasmResult<WasmKernel> {
+        let store_permit = acquire_store(&self.limits)?;
         match probe_world(&self.component, &self.engine)? {
             WasmWorkloadKind::V1Serial => {
                 let (store, bindings) =
@@ -755,13 +766,21 @@ impl WasmHost {
                     limits: self.limits,
                     store,
                     bindings,
+                    _epoch_ticker: Arc::clone(&self.epoch_ticker),
+                    _store_permit: store_permit,
                     poisoned: false,
                     rebuilds: 0,
                 }))
             }
             WasmWorkloadKind::V2Concurrent => {
-                let v2 = WasmWorkloadV2::instantiate(&self.engine, &self.component, &self.limits)
-                    .await?;
+                let v2 = WasmWorkloadV2::instantiate(
+                    &self.engine,
+                    &self.component,
+                    &self.limits,
+                    Arc::clone(&self.epoch_ticker),
+                    store_permit,
+                )
+                .await?;
                 Ok(WasmKernel::V2(v2))
             }
         }
@@ -955,6 +974,7 @@ async fn instantiate_parts(
     component: &Component,
     limits: &WasmRuntimeLimits,
 ) -> WasmResult<(Store<HostState>, ActrWorkloadGuest)> {
+    let _instantiate_permit = acquire_instantiate(limits)?;
     let mut linker: Linker<HostState> = Linker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
         WasmError::LoadFailed(format!("failed to register WASI p2 linker imports: {e}"))
@@ -976,13 +996,25 @@ async fn instantiate_parts(
         .set_fuel(limits.fuel_per_invocation)
         .map_err(|e| WasmError::LoadFailed(format!("set fuel: {e}")))?;
     store.set_epoch_deadline(epoch_deadline_ticks(limits));
-    let bindings = tokio::time::timeout(
+    let bindings = match tokio::time::timeout(
         limits.invocation_timeout,
         ActrWorkloadGuest::instantiate_async(&mut store, component, &linker),
     )
     .await
-    .map_err(|_| WasmError::InvocationTimeout(limits.invocation_timeout))?
-    .map_err(|e| WasmError::LoadFailed(format!("Component instantiate_async failed: {e:#}")))?;
+    {
+        Ok(Ok(bindings)) => bindings,
+        Ok(Err(error)) => {
+            record_instantiate_failure();
+            return Err(WasmError::LoadFailed(format!(
+                "Component instantiate_async failed: {error:#}"
+            )));
+        }
+        Err(_) => {
+            record_instantiate_failure();
+            record_timeout();
+            return Err(WasmError::InvocationTimeout(limits.invocation_timeout));
+        }
+    };
 
     Ok((store, bindings))
 }
@@ -1029,6 +1061,8 @@ pub(crate) struct WasmWorkload {
     limits: WasmRuntimeLimits,
     store: Store<HostState>,
     bindings: ActrWorkloadGuest,
+    _epoch_ticker: Arc<EpochTicker>,
+    _store_permit: StorePermit,
     /// Set when a guest entry trapped; the store is unusable until rebuilt.
     poisoned: bool,
     /// Count of successful rebuilds, for observability / tests.
@@ -1145,13 +1179,21 @@ impl WasmWorkload {
     /// (`ExecutionFailed`).
     fn trap_poison(&mut self, entry: &str, trap: wasmtime::Error) -> WasmError {
         self.poisoned = true;
+        self.clear_invocation();
         tracing::error!(
             entry,
             error = %trap,
             "wasm guest trapped; store poisoned (instance-level fatal). \
              In-memory guest state is lost; a fresh instance is rebuilt before the next call"
         );
-        WasmError::InstanceTrapped(format!("{entry} trap: {trap}"))
+        super::error::classify_trap(entry, trap)
+    }
+
+    fn timeout_poison(&mut self) -> WasmError {
+        self.poisoned = true;
+        self.clear_invocation();
+        record_timeout();
+        WasmError::InvocationTimeout(self.limits.invocation_timeout)
     }
 
     /// Invoke the workload's `on-start` lifecycle hook.
@@ -1166,8 +1208,9 @@ impl WasmWorkload {
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
-        self.install_invocation(ctx, host_abi);
+        let _invocation_permit = acquire_invocation(&self.limits)?;
         self.reseed_fuel()?;
+        self.install_invocation(ctx, host_abi);
 
         let result = tokio::time::timeout(
             self.limits.invocation_timeout,
@@ -1175,8 +1218,12 @@ impl WasmWorkload {
                 .actr_workload_workload()
                 .call_on_start(&mut self.store),
         )
-        .await
-        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
+        .await;
+
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => return Err(self.timeout_poison()),
+        };
 
         self.clear_invocation();
 
@@ -1194,8 +1241,9 @@ impl WasmWorkload {
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
-        self.install_invocation(ctx, host_abi);
+        let _invocation_permit = acquire_invocation(&self.limits)?;
         self.reseed_fuel()?;
+        self.install_invocation(ctx, host_abi);
 
         let result = tokio::time::timeout(
             self.limits.invocation_timeout,
@@ -1203,8 +1251,12 @@ impl WasmWorkload {
                 .actr_workload_workload()
                 .call_on_ready(&mut self.store),
         )
-        .await
-        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
+        .await;
+
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => return Err(self.timeout_poison()),
+        };
 
         self.clear_invocation();
 
@@ -1222,8 +1274,9 @@ impl WasmWorkload {
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
-        self.install_invocation(ctx, host_abi);
+        let _invocation_permit = acquire_invocation(&self.limits)?;
         self.reseed_fuel()?;
+        self.install_invocation(ctx, host_abi);
 
         let result = tokio::time::timeout(
             self.limits.invocation_timeout,
@@ -1231,8 +1284,12 @@ impl WasmWorkload {
                 .actr_workload_workload()
                 .call_on_stop(&mut self.store),
         )
-        .await
-        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
+        .await;
+
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => return Err(self.timeout_poison()),
+        };
 
         self.clear_invocation();
 
@@ -1251,91 +1308,99 @@ impl WasmWorkload {
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
+        let _invocation_permit = acquire_invocation(&self.limits)?;
         let label = event.request_id();
-        self.install_invocation(ctx, host_abi);
         self.reseed_fuel()?;
-        let result = match event {
-            PackageHookEvent::SignalingConnecting => {
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_signaling_connecting(&mut self.store)
-                    .await
+        self.install_invocation(ctx, host_abi);
+        let result = tokio::time::timeout(self.limits.invocation_timeout, async {
+            match event {
+                PackageHookEvent::SignalingConnecting => {
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_signaling_connecting(&mut self.store)
+                        .await
+                }
+                PackageHookEvent::SignalingConnected => {
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_signaling_connected(&mut self.store)
+                        .await
+                }
+                PackageHookEvent::SignalingDisconnected => {
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_signaling_disconnected(&mut self.store)
+                        .await
+                }
+                PackageHookEvent::WebSocketConnecting(event) => {
+                    let event = proto_peer_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_websocket_connecting(&mut self.store, &event)
+                        .await
+                }
+                PackageHookEvent::WebSocketConnected(event) => {
+                    let event = proto_peer_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_websocket_connected(&mut self.store, &event)
+                        .await
+                }
+                PackageHookEvent::WebSocketDisconnected(event) => {
+                    let event = proto_peer_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_websocket_disconnected(&mut self.store, &event)
+                        .await
+                }
+                PackageHookEvent::WebRtcConnecting(event) => {
+                    let event = proto_peer_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_webrtc_connecting(&mut self.store, &event)
+                        .await
+                }
+                PackageHookEvent::WebRtcConnected(event) => {
+                    let event = proto_peer_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_webrtc_connected(&mut self.store, &event)
+                        .await
+                }
+                PackageHookEvent::WebRtcDisconnected(event) => {
+                    let event = proto_peer_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_webrtc_disconnected(&mut self.store, &event)
+                        .await
+                }
+                PackageHookEvent::CredentialRenewed(event) => {
+                    let event = proto_credential_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_credential_renewed(&mut self.store, event)
+                        .await
+                }
+                PackageHookEvent::CredentialExpiring(event) => {
+                    let event = proto_credential_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_credential_expiring(&mut self.store, event)
+                        .await
+                }
+                PackageHookEvent::MailboxBackpressure(event) => {
+                    let event = proto_backpressure_event_to_wit(event);
+                    self.bindings
+                        .actr_workload_workload()
+                        .call_on_mailbox_backpressure(&mut self.store, event)
+                        .await
+                }
             }
-            PackageHookEvent::SignalingConnected => {
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_signaling_connected(&mut self.store)
-                    .await
-            }
-            PackageHookEvent::SignalingDisconnected => {
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_signaling_disconnected(&mut self.store)
-                    .await
-            }
-            PackageHookEvent::WebSocketConnecting(event) => {
-                let event = proto_peer_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_websocket_connecting(&mut self.store, &event)
-                    .await
-            }
-            PackageHookEvent::WebSocketConnected(event) => {
-                let event = proto_peer_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_websocket_connected(&mut self.store, &event)
-                    .await
-            }
-            PackageHookEvent::WebSocketDisconnected(event) => {
-                let event = proto_peer_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_websocket_disconnected(&mut self.store, &event)
-                    .await
-            }
-            PackageHookEvent::WebRtcConnecting(event) => {
-                let event = proto_peer_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_webrtc_connecting(&mut self.store, &event)
-                    .await
-            }
-            PackageHookEvent::WebRtcConnected(event) => {
-                let event = proto_peer_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_webrtc_connected(&mut self.store, &event)
-                    .await
-            }
-            PackageHookEvent::WebRtcDisconnected(event) => {
-                let event = proto_peer_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_webrtc_disconnected(&mut self.store, &event)
-                    .await
-            }
-            PackageHookEvent::CredentialRenewed(event) => {
-                let event = proto_credential_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_credential_renewed(&mut self.store, event)
-                    .await
-            }
-            PackageHookEvent::CredentialExpiring(event) => {
-                let event = proto_credential_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_credential_expiring(&mut self.store, event)
-                    .await
-            }
-            PackageHookEvent::MailboxBackpressure(event) => {
-                let event = proto_backpressure_event_to_wit(event);
-                self.bindings
-                    .actr_workload_workload()
-                    .call_on_mailbox_backpressure(&mut self.store, event)
-                    .await
-            }
+        })
+        .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => return Err(self.timeout_poison()),
         };
         self.clear_invocation();
 
@@ -1377,6 +1442,7 @@ impl WasmWorkload {
                 "host failed to decode RpcEnvelope before dispatch: {e}"
             ))
         })?;
+        let _invocation_permit = acquire_invocation(&self.limits)?;
 
         // Thread per-call context into the Store. `HostAbiFn` is an
         // `Arc<...>` (Phase-1 type bump); cloning it is a refcount bump
@@ -1384,8 +1450,8 @@ impl WasmWorkload {
         // dispatch boundary. A fresh clone is installed per dispatch
         // so the bridge is dropped when the dispatch completes or
         // traps.
-        self.install_invocation(ctx, host_abi);
         self.reseed_fuel()?;
+        self.install_invocation(ctx, host_abi);
 
         let wit_envelope = rpc_envelope_to_wit(&envelope);
         let dispatch_result = tokio::time::timeout(
@@ -1394,8 +1460,12 @@ impl WasmWorkload {
                 .actr_workload_workload()
                 .call_dispatch(&mut self.store, &wit_envelope),
         )
-        .await
-        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
+        .await;
+
+        let dispatch_result = match dispatch_result {
+            Ok(result) => result,
+            Err(_) => return Err(self.timeout_poison()),
+        };
 
         // Always clear per-call state regardless of outcome. On a trap the
         // Store is poisoned (flagged below via `trap_poison`) and rebuilt
@@ -1421,8 +1491,9 @@ impl WasmWorkload {
         host_abi: &HostAbiFn,
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
-        self.install_invocation(ctx, host_abi);
+        let _invocation_permit = acquire_invocation(&self.limits)?;
         self.reseed_fuel()?;
+        self.install_invocation(ctx, host_abi);
 
         let wit_chunk = proto_data_chunk_to_wit(chunk);
         let wit_sender = proto_actr_id_to_wit(&sender);
@@ -1434,8 +1505,11 @@ impl WasmWorkload {
                 &wit_sender,
             ),
         )
-        .await
-        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
+        .await;
+        let result = match result {
+            Ok(result) => result,
+            Err(_) => return Err(self.timeout_poison()),
+        };
         self.clear_invocation();
         let inner = match result {
             Ok(inner) => inner,

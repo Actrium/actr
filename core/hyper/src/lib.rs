@@ -1356,31 +1356,34 @@ async fn load_wasm_workload_inner(
             )));
         }
 
-        let wasm_bytes = actr_pack::load_binary(bytes).map_err(|e| {
-            HyperError::Runtime(format!(
-                "failed to extract package binary `{}` for target `{}`: {e}",
-                manifest.binary.path, manifest.binary.target
-            ))
-        })?;
+        let limits = _inner.config.resolved_wasm_limits();
+        limits.validate()?;
+        let wasm_bytes = actr_pack::load_binary_bounded(bytes, limits.max_component_bytes)
+            .map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to extract package binary `{}` for target `{}`: {e}",
+                    manifest.binary.path, manifest.binary.target
+                ))
+            })?;
         // issue #346: resource limits (fuel/epoch/memory/aggregate) drive the
         // engine config + per-store limiter + per-entry re-seed; the byte cap
         // also rejects oversized components before compilation.
-        let limits = _inner.config.resolved_wasm_limits();
-        if wasm_bytes.len() > limits.max_component_bytes {
-            return Err(HyperError::Runtime(format!(
-                "WASM component for target `{}` is {} bytes, exceeds max {} bytes",
-                manifest.binary.target,
-                wasm_bytes.len(),
-                limits.max_component_bytes
-            )));
-        }
-        let host =
-            crate::wasm::WasmHost::compile_with_limits(&wasm_bytes, &limits).map_err(|e| {
-                HyperError::Runtime(format!(
-                    "failed to compile WASM package target `{}`: {e}",
-                    manifest.binary.target
-                ))
-            })?;
+        let target = manifest.binary.target.clone();
+        let host = tokio::task::spawn_blocking(move || {
+            crate::wasm::WasmHost::compile_with_limits(&wasm_bytes, &limits)
+        })
+        .await
+        .map_err(|e| {
+            HyperError::Runtime(format!(
+                "WASM compiler task failed for target `{target}`: {e}"
+            ))
+        })?
+        .map_err(|e| {
+            HyperError::Runtime(format!(
+                "failed to compile WASM package target `{}`: {e}",
+                target
+            ))
+        })?;
         let mut instance = host.instantiate().await.map_err(|e| {
             HyperError::Runtime(format!(
                 "failed to instantiate WASM package target `{}`: {e}",

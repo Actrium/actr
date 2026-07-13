@@ -14,6 +14,24 @@ env:
   ACTR_REQUIRE_WASM_FIXTURE: "1"
 
 jobs:
+  audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit Cargo.lock
+        # Existing advisories outside the WASM host are tracked separately:
+        # maxminddb (framework GeoIP), protobuf 2 (prometheus), rsa (TURN).
+        run: >-
+          cargo audit
+          --ignore RUSTSEC-2025-0132
+          --ignore RUSTSEC-2024-0437
+          --ignore RUSTSEC-2023-0071
+
   format:
     name: Format Check
     runs-on: ubuntu-latest

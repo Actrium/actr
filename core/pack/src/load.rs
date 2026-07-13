@@ -2,7 +2,9 @@ use std::io::Cursor;
 
 use crate::error::PackError;
 use crate::manifest::PackageManifest;
-use crate::util::read_zip_entry;
+use crate::util::{read_zip_entry, read_zip_entry_bounded};
+
+const MAX_MANIFEST_BYTES: usize = 1024 * 1024;
 
 /// Read the manifest from an .actr package without full verification.
 pub fn read_manifest(actr_bytes: &[u8]) -> Result<PackageManifest, PackError> {
@@ -18,8 +20,11 @@ pub fn read_manifest_raw(actr_bytes: &[u8]) -> Result<String, PackError> {
     let cursor = Cursor::new(actr_bytes);
     let mut archive = zip::ZipArchive::new(cursor)?;
 
-    let manifest_bytes =
-        read_zip_entry(&mut archive, "manifest.toml").map_err(|_| PackError::ManifestNotFound)?;
+    let manifest_bytes = read_zip_entry_bounded(&mut archive, "manifest.toml", MAX_MANIFEST_BYTES)
+        .map_err(|e| match e {
+            PackError::ZipError(_) => PackError::ManifestNotFound,
+            other => other,
+        })?;
 
     String::from_utf8(manifest_bytes)
         .map_err(|e| PackError::ManifestParseError(format!("manifest is not valid UTF-8: {e}")))
@@ -41,6 +46,33 @@ pub fn load_binary(actr_bytes: &[u8]) -> Result<Vec<u8>, PackError> {
 
     read_zip_entry(&mut archive, &manifest.binary.path)
         .map_err(|_| PackError::BinaryNotFound(manifest.binary.path.clone()))
+}
+
+/// Load the packaged binary while bounding both the manifest and decompressed
+/// binary before allocation. This is the untrusted-package loading path used
+/// by native WASM execution.
+pub fn load_binary_bounded(
+    actr_bytes: &[u8],
+    max_binary_bytes: usize,
+) -> Result<Vec<u8>, PackError> {
+    let cursor = Cursor::new(actr_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)?;
+
+    let manifest_bytes = read_zip_entry_bounded(&mut archive, "manifest.toml", MAX_MANIFEST_BYTES)
+        .map_err(|e| match e {
+            PackError::ZipError(_) => PackError::ManifestNotFound,
+            other => other,
+        })?;
+    let manifest_str = std::str::from_utf8(&manifest_bytes)
+        .map_err(|e| PackError::ManifestParseError(format!("manifest is not valid UTF-8: {e}")))?;
+    let manifest = PackageManifest::from_toml(manifest_str)?;
+
+    read_zip_entry_bounded(&mut archive, &manifest.binary.path, max_binary_bytes).map_err(|e| {
+        match e {
+            PackError::ZipError(_) => PackError::BinaryNotFound(manifest.binary.path.clone()),
+            other => other,
+        }
+    })
 }
 
 /// Read the raw 64-byte Ed25519 signature from an .actr package.

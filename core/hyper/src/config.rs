@@ -194,6 +194,11 @@ pub struct WasmRuntimeLimits {
     pub max_concurrent_instantiates: usize,
     /// Max live wasm stores process-wide. Default 256.
     pub max_active_stores: usize,
+    /// Max aggregate configured linear-memory budget across live Stores.
+    /// Default 1 GiB.
+    pub max_total_linear_memory: usize,
+    /// Max guest invocations concurrently admitted process-wide. Default 1024.
+    pub max_outstanding_invocations: usize,
     /// Whether a `memory.grow`/`table.grow` over the limit traps (true) or
     /// returns an error the guest can handle (false). Default true (trap).
     pub trap_on_grow_failure: bool,
@@ -218,8 +223,63 @@ impl Default for WasmRuntimeLimits {
             max_concurrent_compiles: 4,
             max_concurrent_instantiates: 16,
             max_active_stores: 256,
+            max_total_linear_memory: 1024 * 1024 * 1024,
+            max_outstanding_invocations: 1024,
             trap_on_grow_failure: true,
         }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl WasmRuntimeLimits {
+    /// Validate that every security boundary is finite and internally
+    /// consistent before loading an untrusted workload.
+    pub fn validate(&self) -> Result<(), HyperError> {
+        let nonzero = [
+            (self.fuel_per_invocation > 0, "fuel_per_invocation"),
+            (!self.epoch_tick.is_zero(), "epoch_tick"),
+            (!self.invocation_timeout.is_zero(), "invocation_timeout"),
+            (self.max_linear_memory > 0, "max_linear_memory"),
+            (self.max_table_elements > 0, "max_table_elements"),
+            (self.max_memories > 0, "max_memories"),
+            (self.max_tables > 0, "max_tables"),
+            (self.max_instances > 0, "max_instances"),
+            (self.max_wasm_stack > 0, "max_wasm_stack"),
+            (self.async_stack_size > 0, "async_stack_size"),
+            (self.max_component_bytes > 0, "max_component_bytes"),
+            (self.max_concurrent_compiles > 0, "max_concurrent_compiles"),
+            (
+                self.max_concurrent_instantiates > 0,
+                "max_concurrent_instantiates",
+            ),
+            (self.max_active_stores > 0, "max_active_stores"),
+            (self.max_total_linear_memory > 0, "max_total_linear_memory"),
+            (
+                self.max_outstanding_invocations > 0,
+                "max_outstanding_invocations",
+            ),
+        ];
+        if let Some((_, field)) = nonzero.into_iter().find(|(valid, _)| !valid) {
+            return Err(HyperError::Config(format!(
+                "WASM runtime limit `{field}` must be greater than zero"
+            )));
+        }
+        if self.epoch_tick > self.invocation_timeout {
+            return Err(HyperError::Config(
+                "WASM epoch_tick must not exceed invocation_timeout".to_string(),
+            ));
+        }
+        if self.max_linear_memory > self.max_total_linear_memory {
+            return Err(HyperError::Config(
+                "WASM max_linear_memory must not exceed max_total_linear_memory".to_string(),
+            ));
+        }
+        if matches!(self.fuel_async_yield_interval, Some(0)) {
+            return Err(HyperError::Config(
+                "WASM fuel_async_yield_interval must be greater than zero when set".to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

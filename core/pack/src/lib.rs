@@ -31,8 +31,8 @@ mod util;
 
 pub use error::PackError;
 pub use load::{
-    load_binary, read_glue_js, read_lock_file, read_manifest, read_manifest_raw, read_proto_files,
-    read_signature,
+    load_binary, load_binary_bounded, read_glue_js, read_lock_file, read_manifest,
+    read_manifest_raw, read_proto_files, read_signature,
 };
 pub use manifest::{
     BinaryEntry, BinaryKind, LockFileEntry, ManifestMetadata, PackageManifest, ProtoFileEntry,
