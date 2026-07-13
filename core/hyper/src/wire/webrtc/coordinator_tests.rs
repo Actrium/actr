@@ -4,7 +4,7 @@ use actr_protocol::{
     RouteCandidatesResponse, ServiceAvailabilityState, UnregisterResponse,
 };
 use std::sync::atomic::AtomicBool;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{Semaphore, broadcast, mpsc};
 
 struct TaskDropFlag(Arc<AtomicBool>);
 
@@ -87,6 +87,45 @@ async fn insert_pending_offer_peer(
 struct CapturingSignalingClient {
     sent: Mutex<Vec<SignalingEnvelope>>,
     event_tx: broadcast::Sender<super::super::SignalingEvent>,
+    send_control: Option<Arc<SendControl>>,
+}
+
+struct SendControl {
+    block: bool,
+    fail: bool,
+    started: Semaphore,
+    release: Semaphore,
+    dropped: Arc<AtomicBool>,
+}
+
+impl SendControl {
+    fn blocking() -> Arc<Self> {
+        Arc::new(Self {
+            block: true,
+            fail: false,
+            started: Semaphore::new(0),
+            release: Semaphore::new(0),
+            dropped: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    fn failing() -> Arc<Self> {
+        Arc::new(Self {
+            block: false,
+            fail: true,
+            started: Semaphore::new(0),
+            release: Semaphore::new(0),
+            dropped: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    async fn wait_until_started(&self) {
+        self.started
+            .acquire()
+            .await
+            .expect("send-start semaphore should remain open")
+            .forget();
+    }
 }
 
 impl CapturingSignalingClient {
@@ -95,6 +134,16 @@ impl CapturingSignalingClient {
         Self {
             sent: Mutex::new(Vec::new()),
             event_tx,
+            send_control: None,
+        }
+    }
+
+    fn with_send_control(send_control: Arc<SendControl>) -> Self {
+        let (event_tx, _rx) = broadcast::channel(16);
+        Self {
+            sent: Mutex::new(Vec::new()),
+            event_tx,
+            send_control: Some(send_control),
         }
     }
 
@@ -175,6 +224,23 @@ impl SignalingClient for CapturingSignalingClient {
         &self,
         envelope: SignalingEnvelope,
     ) -> crate::transport::NetworkResult<()> {
+        if let Some(control) = &self.send_control {
+            let _drop_flag = TaskDropFlag(Arc::clone(&control.dropped));
+            control.started.add_permits(1);
+            if control.block {
+                control
+                    .release
+                    .acquire()
+                    .await
+                    .expect("send-release semaphore should remain open")
+                    .forget();
+            }
+            if control.fail {
+                return Err(crate::transport::NetworkError::ConnectionError(
+                    "injected signaling send failure".to_string(),
+                ));
+            }
+        }
         self.sent.lock().await.push(envelope);
         Ok(())
     }
@@ -1248,6 +1314,114 @@ async fn candidate_gathered_before_restart_local_sdp_uses_new_generation_ufrag()
 }
 
 #[tokio::test]
+async fn ice_restart_answer_create_error_resets_local_generation() {
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(CapturingSignalingClient::new()),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&target_id)
+        .expect("peer should exist")
+        .is_offerer = false;
+
+    let result = coordinator
+        .handle_ice_restart_offer(
+            &target_id,
+            "not-valid-sdp".to_string(),
+            Some("restart-exchange".to_string()),
+        )
+        .await;
+    assert!(result.is_err(), "invalid restart offer should fail");
+
+    let peers = coordinator.peers.read().await;
+    let state = peers.get(&target_id).expect("peer should remain");
+    assert!(!state.local_ice_generation_pending);
+    assert!(state.pending_local_ice_candidates.is_empty());
+    drop(peers);
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("test peer should close");
+}
+
+#[tokio::test]
+async fn ice_restart_answer_send_error_resets_local_generation() {
+    let send_control = SendControl::failing();
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
+            &send_control,
+        ))),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&target_id)
+        .expect("peer should exist")
+        .is_offerer = false;
+
+    let api = webrtc::api::APIBuilder::new().build();
+    let remote_pc = api
+        .new_peer_connection(Default::default())
+        .await
+        .expect("remote peer connection should be created");
+    remote_pc
+        .create_data_channel("test", None)
+        .await
+        .expect("data channel should be created");
+    let restart_offer = remote_pc
+        .create_offer(None)
+        .await
+        .expect("restart offer should be created");
+    remote_pc
+        .set_local_description(restart_offer.clone())
+        .await
+        .expect("restart offer should become the remote local description");
+
+    let error = coordinator
+        .handle_ice_restart_offer(
+            &target_id,
+            restart_offer.sdp,
+            Some("restart-exchange".to_string()),
+        )
+        .await
+        .expect_err("injected Answer send failure should surface");
+    assert!(
+        error
+            .to_string()
+            .contains("injected signaling send failure")
+    );
+    tokio::time::timeout(Duration::from_secs(1), send_control.wait_until_started())
+        .await
+        .expect("the Answer send path must reach the signaling client");
+
+    let peers = coordinator.peers.read().await;
+    let state = peers.get(&target_id).expect("peer should remain");
+    assert!(!state.local_ice_generation_pending);
+    assert!(state.pending_local_ice_candidates.is_empty());
+    drop(peers);
+    remote_pc.close().await.expect("remote peer should close");
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("coordinator peers should close");
+}
+
+#[tokio::test]
 async fn candidate_arriving_before_restart_offer_is_buffered() {
     let coordinator = Arc::new(WebRtcCoordinator::new(
         test_actor_id(1),
@@ -1331,6 +1505,35 @@ async fn stalled_restart_commit_for_one_peer_does_not_block_another_peer_gate() 
 }
 
 #[tokio::test]
+async fn expired_restart_signaling_gates_are_pruned() {
+    let coordinator = WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(CapturingSignalingClient::new()),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    );
+    let peer_a = test_actor_id(10);
+    let peer_b = test_actor_id(20);
+
+    let gate_a = coordinator.restart_signaling_gate_for(&peer_a).await;
+    let gate_a_again = coordinator.restart_signaling_gate_for(&peer_a).await;
+    assert!(Arc::ptr_eq(&gate_a, &gate_a_again));
+    WebRtcCoordinator::prune_restart_signaling_gates(&coordinator.restart_signaling_gates).await;
+    let gate_a_after_prune = coordinator.restart_signaling_gate_for(&peer_a).await;
+    assert!(Arc::ptr_eq(&gate_a, &gate_a_after_prune));
+    assert_eq!(coordinator.restart_signaling_gates.lock().await.len(), 1);
+    drop(gate_a);
+    drop(gate_a_again);
+    drop(gate_a_after_prune);
+
+    let _gate_b = coordinator.restart_signaling_gate_for(&peer_b).await;
+    let gates = coordinator.restart_signaling_gates.lock().await;
+    assert!(!gates.contains_key(&peer_a));
+    assert!(gates.contains_key(&peer_b));
+}
+
+#[tokio::test]
 async fn clear_pending_restarts_waits_for_task_cancellation() {
     let local_id = test_actor_id(1);
     let target_id = test_actor_id(99);
@@ -1370,6 +1573,97 @@ async fn clear_pending_restarts_waits_for_task_cancellation() {
         dropped.load(Ordering::Acquire),
         "clear_pending_restarts must await cancellation before returning"
     );
+}
+
+#[tokio::test]
+async fn clear_pending_restarts_cancels_blocked_answerer_restart_request() {
+    let send_control = SendControl::blocking();
+    let signaling_client = Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
+        &send_control,
+    )));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&target_id)
+        .expect("peer should exist")
+        .is_offerer = false;
+
+    coordinator
+        .restart_ice(&target_id)
+        .await
+        .expect("answerer restart request should be scheduled");
+    tokio::time::timeout(Duration::from_secs(1), send_control.wait_until_started())
+        .await
+        .expect("the Answerer notification must reach the signaling client");
+
+    tokio::time::timeout(Duration::from_secs(1), coordinator.clear_pending_restarts())
+        .await
+        .expect("restart cleanup must cancel the blocked signaling send");
+    assert!(send_control.dropped.load(Ordering::Acquire));
+    assert!(signaling_client.sent_envelopes().await.is_empty());
+    let peers = coordinator.peers.read().await;
+    assert!(
+        peers
+            .get(&target_id)
+            .expect("peer should remain after restart cleanup")
+            .restart_task_handle
+            .is_none()
+    );
+    drop(peers);
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("test peer should close");
+}
+
+#[tokio::test]
+async fn close_all_peers_cancels_blocked_answerer_restart_request() {
+    let send_control = SendControl::blocking();
+    let signaling_client = Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
+        &send_control,
+    )));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&target_id)
+        .expect("peer should exist")
+        .is_offerer = false;
+
+    coordinator
+        .restart_ice(&target_id)
+        .await
+        .expect("answerer restart request should be scheduled");
+    tokio::time::timeout(Duration::from_secs(1), send_control.wait_until_started())
+        .await
+        .expect("the Answerer notification must reach the signaling client");
+
+    tokio::time::timeout(Duration::from_secs(1), coordinator.close_all_peers())
+        .await
+        .expect("peer cleanup must cancel the blocked signaling send")
+        .expect("test peer should close");
+    assert!(send_control.dropped.load(Ordering::Acquire));
+    assert!(signaling_client.sent_envelopes().await.is_empty());
+    assert!(coordinator.peers.read().await.is_empty());
 }
 
 #[tokio::test]
