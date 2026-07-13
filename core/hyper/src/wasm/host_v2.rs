@@ -41,7 +41,8 @@ use super::component_bindings_v2::actr::workload::types::{
     Realm as WitRealm, RpcEnvelope as WitRpcEnvelope, WebrtcPeerStatus as WitWebrtcPeerStatus,
 };
 use super::error::{WasmError, WasmResult};
-use super::host::HostState;
+use super::host::{HostState, epoch_deadline_ticks};
+use crate::config::WasmRuntimeLimits;
 use crate::executor::{ActorCmd, LifecyclePhase};
 use crate::workload::{
     HostAbiFn, HostOperation, HostOperationResult, InvocationContext, PackageHookEvent,
@@ -449,6 +450,7 @@ fn wit_payload_type_to_proto(payload_type: WitPayloadType) -> PayloadType {
 async fn instantiate_parts_v2(
     engine: &Engine,
     component: &Component,
+    limits: &WasmRuntimeLimits,
 ) -> WasmResult<(Store<HostState>, ActrWorkloadGuestV2)> {
     let mut linker: Linker<HostState> = Linker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
@@ -465,12 +467,25 @@ async fn instantiate_parts_v2(
         ))
     })?;
 
-    let mut store = Store::new(engine, HostState::new());
-    let bindings = ActrWorkloadGuestV2::instantiate_async(&mut store, component, &linker)
-        .await
-        .map_err(|e| {
-            WasmError::LoadFailed(format!("Component instantiate_async (v2) failed: {e:#}"))
-        })?;
+    let mut store = Store::new(engine, HostState::new(limits));
+    // issue #346: per-store limiter + fuel/epoch seed, same as the V1 path.
+    store.limiter(|s| &mut s.limits);
+    store
+        .fuel_async_yield_interval(limits.fuel_async_yield_interval)
+        .map_err(|e| WasmError::LoadFailed(format!("set fuel_async_yield_interval: {e}")))?;
+    store
+        .set_fuel(limits.fuel_per_invocation)
+        .map_err(|e| WasmError::LoadFailed(format!("set fuel: {e}")))?;
+    store.set_epoch_deadline(epoch_deadline_ticks(limits));
+    let bindings = tokio::time::timeout(
+        limits.invocation_timeout,
+        ActrWorkloadGuestV2::instantiate_async(&mut store, component, &linker),
+    )
+    .await
+    .map_err(|_| WasmError::InvocationTimeout(limits.invocation_timeout))?
+    .map_err(|e| {
+        WasmError::LoadFailed(format!("Component instantiate_async (v2) failed: {e:#}"))
+    })?;
     Ok((store, bindings))
 }
 
@@ -488,6 +503,9 @@ async fn instantiate_parts_v2(
 pub(crate) struct WasmWorkloadV2 {
     engine: Engine,
     component: Component,
+    /// issue #346: resource limits retained for post-trap rebuild + per-entry
+    /// fuel/epoch re-seed.
+    limits: WasmRuntimeLimits,
     store: Store<HostState>,
     bindings: ActrWorkloadGuestV2,
     poisoned: bool,
@@ -505,12 +523,17 @@ impl std::fmt::Debug for WasmWorkloadV2 {
 
 impl WasmWorkloadV2 {
     /// Build a V2 instance from an already-compiled engine/component pair.
-    pub(crate) async fn instantiate(engine: &Engine, component: &Component) -> WasmResult<Self> {
-        let (store, bindings) = instantiate_parts_v2(engine, component).await?;
+    pub(crate) async fn instantiate(
+        engine: &Engine,
+        component: &Component,
+        limits: &WasmRuntimeLimits,
+    ) -> WasmResult<Self> {
+        let (store, bindings) = instantiate_parts_v2(engine, component, limits).await?;
         tracing::info!("wasm Component instantiated (v2 async world)");
         Ok(Self {
             engine: engine.clone(),
             component: component.clone(),
+            limits: *limits,
             store,
             bindings,
             poisoned: false,
@@ -532,6 +555,18 @@ impl WasmWorkloadV2 {
         self.rebuilds
     }
 
+    /// issue #346: re-seed per-entry fuel + epoch deadline. Call before every
+    /// guest entry so a runaway compute loop is preempted (fuel check points)
+    /// and the epoch backstop is armed.
+    fn reseed_fuel(&mut self) -> WasmResult<()> {
+        self.store
+            .set_fuel(self.limits.fuel_per_invocation)
+            .map_err(|e| WasmError::ExecutionFailed(format!("set fuel: {e}")))?;
+        self.store
+            .set_epoch_deadline(epoch_deadline_ticks(&self.limits));
+        Ok(())
+    }
+
     /// Rebuild a poisoned store (fresh Store + re-instantiate), discarding
     /// the guest's in-memory state. No-op if not poisoned.
     async fn ensure_instance(&mut self) -> WasmResult<()> {
@@ -543,7 +578,7 @@ impl WasmWorkloadV2 {
             "rebuilding poisoned wasm store (v2) after a prior guest trap; \
              guest in-memory state is discarded (lifecycle/queue not replayed)"
         );
-        match instantiate_parts_v2(&self.engine, &self.component).await {
+        match instantiate_parts_v2(&self.engine, &self.component, &self.limits).await {
             Ok((store, bindings)) => {
                 self.store = store;
                 self.bindings = bindings;
@@ -599,16 +634,17 @@ impl WasmWorkloadV2 {
             .alloc_invocation(ctx.clone(), host_abi.clone());
         let inv = invocation_ctx_to_wit(&ctx, token);
 
+        self.reseed_fuel()?;
         let bindings = &self.bindings;
-        let region = self
-            .store
-            .run_concurrent(async move |accessor| {
-                bindings
-                    .actr_workload_workload()
-                    .call_dispatch(accessor, wit_envelope, inv)
-                    .await
-            })
-            .await;
+        let region_fut = self.store.run_concurrent(async move |accessor| {
+            bindings
+                .actr_workload_workload()
+                .call_dispatch(accessor, wit_envelope, inv)
+                .await
+        });
+        let region = tokio::time::timeout(self.limits.invocation_timeout, region_fut)
+            .await
+            .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
 
         // Region closed: retire the token (unless the whole table was
         // cleared by a trap-poison below).
@@ -641,16 +677,21 @@ impl WasmWorkloadV2 {
             .data_mut()
             .alloc_invocation(ctx.clone(), host_abi.clone());
         let inv = invocation_ctx_to_wit(&ctx, token);
+        // issue #346: re-seed fuel + epoch deadline before the guest entry,
+        // then bound the whole run_concurrent region with the wall-clock
+        // timeout. fuel/epoch preempt non-yielding compute; the timeout bounds
+        // a guest that awaits a host import indefinitely.
+        self.reseed_fuel()?;
         let bindings = &self.bindings;
-        let region = self
-            .store
-            .run_concurrent(async move |accessor| {
-                bindings
-                    .actr_workload_workload()
-                    .call_on_start(accessor, inv)
-                    .await
-            })
-            .await;
+        let region_fut = self.store.run_concurrent(async move |accessor| {
+            bindings
+                .actr_workload_workload()
+                .call_on_start(accessor, inv)
+                .await
+        });
+        let region = tokio::time::timeout(self.limits.invocation_timeout, region_fut)
+            .await
+            .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
         self.finish_lifecycle("on_start", token, region)
     }
 
@@ -665,16 +706,17 @@ impl WasmWorkloadV2 {
             .data_mut()
             .alloc_invocation(ctx.clone(), host_abi.clone());
         let inv = invocation_ctx_to_wit(&ctx, token);
+        self.reseed_fuel()?;
         let bindings = &self.bindings;
-        let region = self
-            .store
-            .run_concurrent(async move |accessor| {
-                bindings
-                    .actr_workload_workload()
-                    .call_on_ready(accessor, inv)
-                    .await
-            })
-            .await;
+        let region_fut = self.store.run_concurrent(async move |accessor| {
+            bindings
+                .actr_workload_workload()
+                .call_on_ready(accessor, inv)
+                .await
+        });
+        let region = tokio::time::timeout(self.limits.invocation_timeout, region_fut)
+            .await
+            .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
         self.finish_lifecycle("on_ready", token, region)
     }
 
@@ -689,16 +731,17 @@ impl WasmWorkloadV2 {
             .data_mut()
             .alloc_invocation(ctx.clone(), host_abi.clone());
         let inv = invocation_ctx_to_wit(&ctx, token);
+        self.reseed_fuel()?;
         let bindings = &self.bindings;
-        let region = self
-            .store
-            .run_concurrent(async move |accessor| {
-                bindings
-                    .actr_workload_workload()
-                    .call_on_stop(accessor, inv)
-                    .await
-            })
-            .await;
+        let region_fut = self.store.run_concurrent(async move |accessor| {
+            bindings
+                .actr_workload_workload()
+                .call_on_stop(accessor, inv)
+                .await
+        });
+        let region = tokio::time::timeout(self.limits.invocation_timeout, region_fut)
+            .await
+            .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
         self.finish_lifecycle("on_stop", token, region)
     }
 
@@ -745,16 +788,17 @@ impl WasmWorkloadV2 {
             .alloc_invocation(ctx.clone(), host_abi.clone());
         let inv = invocation_ctx_to_wit(&ctx, token);
 
+        self.reseed_fuel()?;
         let bindings = &self.bindings;
-        let region = self
-            .store
-            .run_concurrent(async move |accessor| {
-                bindings
-                    .actr_workload_workload()
-                    .call_on_data_chunk(accessor, wit_chunk, wit_sender, inv)
-                    .await
-            })
-            .await;
+        let region_fut = self.store.run_concurrent(async move |accessor| {
+            bindings
+                .actr_workload_workload()
+                .call_on_data_chunk(accessor, wit_chunk, wit_sender, inv)
+                .await
+        });
+        let region = tokio::time::timeout(self.limits.invocation_timeout, region_fut)
+            .await
+            .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
 
         if !self.poisoned {
             self.store.data_mut().remove_invocation(token);
@@ -790,13 +834,14 @@ impl WasmWorkloadV2 {
             .data_mut()
             .alloc_invocation(ctx, host_abi.clone());
 
+        self.reseed_fuel()?;
         let bindings = &self.bindings;
-        let region = self
-            .store
-            .run_concurrent(async move |accessor| {
-                run_hook_region(accessor, bindings, event, token).await
-            })
-            .await;
+        let region_fut = self.store.run_concurrent(async move |accessor| {
+            run_hook_region(accessor, bindings, event, token).await
+        });
+        let region = tokio::time::timeout(self.limits.invocation_timeout, region_fut)
+            .await
+            .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
 
         if !self.poisoned {
             self.store.data_mut().remove_invocation(token);

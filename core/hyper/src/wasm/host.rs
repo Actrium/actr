@@ -41,8 +41,12 @@ use actr_protocol::{
     Realm, RpcEnvelope,
 };
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
-use wasmtime::{Config, Engine, OptLevel, RegallocAlgorithm, Store};
+use wasmtime::{
+    Config, Engine, OptLevel, RegallocAlgorithm, Store, StoreLimits, StoreLimitsBuilder,
+};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+use crate::config::WasmRuntimeLimits;
 
 use super::host_v2::WasmWorkloadV2;
 
@@ -88,7 +92,7 @@ use actr_framework::guest::dynclib_abi::{
 /// concurrent runner depends on it, so we set it explicitly to be self-
 /// documenting and to guard against an upstream default flip. Enabling it
 /// alongside `wasm_component_model_async(true)` is the supported combination.
-fn build_engine() -> WasmResult<Engine> {
+fn build_engine(limits: &WasmRuntimeLimits) -> WasmResult<Engine> {
     let mut config = Config::new();
     // `async_support(true)` was required before wasmtime 43; since then
     // the `async` Cargo feature alone enables async at the engine level.
@@ -99,6 +103,18 @@ fn build_engine() -> WasmResult<Engine> {
     // to true on wasmtime 46; pinned here so a future default flip can never
     // silently turn the M5 concurrent runner into a runtime panic.
     config.concurrency_support(true);
+    // issue #346: fuel + epoch preempt non-yielding compute (a pure-compute
+    // infinite loop never awaits a host import, so DispatchConcurrency's
+    // dispatch_timeout cannot interrupt it — fuel/epoch insert check points
+    // into the compiled wasm). Stack caps guard against stack-overflow
+    // recursion. `fuel_async_yield_interval = None` traps on exhaustion; the
+    // instance is rebuilt on the next entry (`WasmWorkload::ensure_instance`).
+    config.consume_fuel(true);
+    config.epoch_interruption(true);
+    config.max_wasm_stack(limits.max_wasm_stack);
+    config.async_stack_size(limits.async_stack_size);
+    // NOTE: `fuel_async_yield_interval` is a `Store` method in wasmtime 46
+    // (not `Config`); set per-store in `instantiate_parts` / `instantiate_parts_v2`.
     if std::env::var_os("ACTR_WASM_FAST_COMPILE").is_some() {
         config.cranelift_opt_level(OptLevel::None);
         config.cranelift_regalloc_algorithm(RegallocAlgorithm::SinglePass);
@@ -141,6 +157,10 @@ pub(crate) struct HostState {
     /// Monotonic token allocator. Reset to zero whenever the map is cleared
     /// on a trap-poison so a rebuilt instance starts from a clean sheet.
     next_token: u64,
+    /// issue #346: per-store resource limits (memory/table/instance caps).
+    /// Installed via `Store::limiter` so `memory.grow`/`table.grow` over the
+    /// bound trap (or return an error, per `trap_on_grow_failure`).
+    pub(crate) limits: StoreLimits,
 }
 
 /// One live invocation's host-facing state, keyed by `ctx-token` in
@@ -163,7 +183,15 @@ impl std::fmt::Debug for HostState {
 }
 
 impl HostState {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(limits: &WasmRuntimeLimits) -> Self {
+        let store_limits = StoreLimitsBuilder::new()
+            .memory_size(limits.max_linear_memory)
+            .table_elements(limits.max_table_elements as usize)
+            .memories(limits.max_memories as usize)
+            .tables(limits.max_tables as usize)
+            .instances(limits.max_instances as usize)
+            .trap_on_grow_failure(limits.trap_on_grow_failure)
+            .build();
         Self {
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::new(),
@@ -171,6 +199,7 @@ impl HostState {
             host_abi: None,
             invocations: HashMap::new(),
             next_token: 0,
+            limits: store_limits,
         }
     }
 
@@ -648,6 +677,7 @@ fn wit_payload_type_to_proto(payload_type: WitPayloadType) -> PayloadType {
 pub struct WasmHost {
     engine: Engine,
     component: Component,
+    limits: WasmRuntimeLimits,
 }
 
 impl std::fmt::Debug for WasmHost {
@@ -670,7 +700,13 @@ impl WasmHost {
     /// the `async` canonical option on a synchronous WIT function type, so
     /// those binaries fail here; we map that to an actionable rebuild hint.
     pub fn compile(wasm_bytes: &[u8]) -> WasmResult<Self> {
-        let engine = build_engine()?;
+        Self::compile_with_limits(wasm_bytes, &WasmRuntimeLimits::default())
+    }
+
+    /// Compile with explicit resource limits (issue #346). Production callers
+    /// thread the configured [`WasmRuntimeLimits`]; tests use [`compile`].
+    pub fn compile_with_limits(wasm_bytes: &[u8], limits: &WasmRuntimeLimits) -> WasmResult<Self> {
+        let engine = build_engine(limits)?;
         let component = Component::from_binary(&engine, wasm_bytes).map_err(|e| {
             let raw = format!("{e:#}");
             if raw.contains("`async` canonical option requires an async function type") {
@@ -689,7 +725,11 @@ impl WasmHost {
             ))
         })?;
         tracing::info!(wasm_bytes = wasm_bytes.len(), "wasm Component compiled");
-        Ok(Self { engine, component })
+        Ok(Self {
+            engine,
+            component,
+            limits: *limits,
+        })
     }
 
     /// Instantiate the component into a runnable internal workload.
@@ -706,11 +746,13 @@ impl WasmHost {
     pub(crate) async fn instantiate(&self) -> WasmResult<WasmKernel> {
         match probe_world(&self.component, &self.engine)? {
             WasmWorkloadKind::V1Serial => {
-                let (store, bindings) = instantiate_parts(&self.engine, &self.component).await?;
+                let (store, bindings) =
+                    instantiate_parts(&self.engine, &self.component, &self.limits).await?;
                 tracing::info!("wasm Component instantiated (v1 serial world)");
                 Ok(WasmKernel::V1(WasmWorkload {
                     engine: self.engine.clone(),
                     component: self.component.clone(),
+                    limits: self.limits,
                     store,
                     bindings,
                     poisoned: false,
@@ -718,7 +760,8 @@ impl WasmHost {
                 }))
             }
             WasmWorkloadKind::V2Concurrent => {
-                let v2 = WasmWorkloadV2::instantiate(&self.engine, &self.component).await?;
+                let v2 = WasmWorkloadV2::instantiate(&self.engine, &self.component, &self.limits)
+                    .await?;
                 Ok(WasmKernel::V2(v2))
             }
         }
@@ -894,9 +937,23 @@ impl WasmKernel {
 /// cheap to clone. A fresh [`Linker`] is built each time (cheap) so the
 /// WASI p2 and `actr:workload/host` imports are registered against the new
 /// store.
+/// Convert the invocation timeout into an epoch deadline (tick count).
+/// Rounded up so the deadline is never shorter than the timeout. The epoch
+/// interrupt is a backstop for fuel: it fires even if a tight loop burns no
+/// fuel in a single Wasm op, provided a background ticker is advancing the
+/// engine epoch (`Store::set_epoch_deadline` is relative to the engine epoch
+/// at call time).
+pub(crate) fn epoch_deadline_ticks(limits: &WasmRuntimeLimits) -> u64 {
+    let tick_ms = limits.epoch_tick.as_millis().max(1);
+    u64::try_from(limits.invocation_timeout.as_millis() / tick_ms)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
+}
+
 async fn instantiate_parts(
     engine: &Engine,
     component: &Component,
+    limits: &WasmRuntimeLimits,
 ) -> WasmResult<(Store<HostState>, ActrWorkloadGuest)> {
     let mut linker: Linker<HostState> = Linker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| {
@@ -908,10 +965,24 @@ async fn instantiate_parts(
         ))
     })?;
 
-    let mut store = Store::new(engine, HostState::new());
-    let bindings = ActrWorkloadGuest::instantiate_async(&mut store, component, &linker)
-        .await
-        .map_err(|e| WasmError::LoadFailed(format!("Component instantiate_async failed: {e:#}")))?;
+    let mut store = Store::new(engine, HostState::new(limits));
+    // issue #346: install the per-store resource limiter (memory/table/instance
+    // caps) and seed fuel + epoch deadline so instantiation itself is bounded.
+    store.limiter(|s| &mut s.limits);
+    store
+        .fuel_async_yield_interval(limits.fuel_async_yield_interval)
+        .map_err(|e| WasmError::LoadFailed(format!("set fuel_async_yield_interval: {e}")))?;
+    store
+        .set_fuel(limits.fuel_per_invocation)
+        .map_err(|e| WasmError::LoadFailed(format!("set fuel: {e}")))?;
+    store.set_epoch_deadline(epoch_deadline_ticks(limits));
+    let bindings = tokio::time::timeout(
+        limits.invocation_timeout,
+        ActrWorkloadGuest::instantiate_async(&mut store, component, &linker),
+    )
+    .await
+    .map_err(|_| WasmError::InvocationTimeout(limits.invocation_timeout))?
+    .map_err(|e| WasmError::LoadFailed(format!("Component instantiate_async failed: {e:#}")))?;
 
     Ok((store, bindings))
 }
@@ -953,6 +1024,9 @@ pub(crate) struct WasmWorkload {
     engine: Engine,
     /// Retained for rebuilding a poisoned store. `Arc`-backed, cheap clone.
     component: Component,
+    /// issue #346: resource limits retained to re-seed fuel/epoch/limiter on
+    /// a post-trap rebuild (`ensure_instance`).
+    limits: WasmRuntimeLimits,
     store: Store<HostState>,
     bindings: ActrWorkloadGuest,
     /// Set when a guest entry trapped; the store is unusable until rebuilt.
@@ -1007,6 +1081,16 @@ impl WasmWorkload {
         self.rebuilds
     }
 
+    /// issue #346: re-seed per-entry fuel + epoch deadline (V1 serial path).
+    fn reseed_fuel(&mut self) -> WasmResult<()> {
+        self.store
+            .set_fuel(self.limits.fuel_per_invocation)
+            .map_err(|e| WasmError::ExecutionFailed(format!("set fuel: {e}")))?;
+        self.store
+            .set_epoch_deadline(epoch_deadline_ticks(&self.limits));
+        Ok(())
+    }
+
     /// Ensure the wasm store is usable before a guest entry.
     ///
     /// If the store is not poisoned this is a no-op. If a previous guest
@@ -1027,7 +1111,7 @@ impl WasmWorkload {
              guest in-memory state is discarded (lifecycle/queue not replayed)"
         );
 
-        match instantiate_parts(&self.engine, &self.component).await {
+        match instantiate_parts(&self.engine, &self.component, &self.limits).await {
             Ok((store, bindings)) => {
                 self.store = store;
                 self.bindings = bindings;
@@ -1083,12 +1167,16 @@ impl WasmWorkload {
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
+        self.reseed_fuel()?;
 
-        let result = self
-            .bindings
-            .actr_workload_workload()
-            .call_on_start(&mut self.store)
-            .await;
+        let result = tokio::time::timeout(
+            self.limits.invocation_timeout,
+            self.bindings
+                .actr_workload_workload()
+                .call_on_start(&mut self.store),
+        )
+        .await
+        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
 
         self.clear_invocation();
 
@@ -1107,12 +1195,16 @@ impl WasmWorkload {
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
+        self.reseed_fuel()?;
 
-        let result = self
-            .bindings
-            .actr_workload_workload()
-            .call_on_ready(&mut self.store)
-            .await;
+        let result = tokio::time::timeout(
+            self.limits.invocation_timeout,
+            self.bindings
+                .actr_workload_workload()
+                .call_on_ready(&mut self.store),
+        )
+        .await
+        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
 
         self.clear_invocation();
 
@@ -1131,12 +1223,16 @@ impl WasmWorkload {
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
+        self.reseed_fuel()?;
 
-        let result = self
-            .bindings
-            .actr_workload_workload()
-            .call_on_stop(&mut self.store)
-            .await;
+        let result = tokio::time::timeout(
+            self.limits.invocation_timeout,
+            self.bindings
+                .actr_workload_workload()
+                .call_on_stop(&mut self.store),
+        )
+        .await
+        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
 
         self.clear_invocation();
 
@@ -1157,6 +1253,7 @@ impl WasmWorkload {
         self.ensure_instance().await?;
         let label = event.request_id();
         self.install_invocation(ctx, host_abi);
+        self.reseed_fuel()?;
         let result = match event {
             PackageHookEvent::SignalingConnecting => {
                 self.bindings
@@ -1288,13 +1385,17 @@ impl WasmWorkload {
         // so the bridge is dropped when the dispatch completes or
         // traps.
         self.install_invocation(ctx, host_abi);
+        self.reseed_fuel()?;
 
         let wit_envelope = rpc_envelope_to_wit(&envelope);
-        let dispatch_result = self
-            .bindings
-            .actr_workload_workload()
-            .call_dispatch(&mut self.store, &wit_envelope)
-            .await;
+        let dispatch_result = tokio::time::timeout(
+            self.limits.invocation_timeout,
+            self.bindings
+                .actr_workload_workload()
+                .call_dispatch(&mut self.store, &wit_envelope),
+        )
+        .await
+        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
 
         // Always clear per-call state regardless of outcome. On a trap the
         // Store is poisoned (flagged below via `trap_poison`) and rebuilt
@@ -1321,14 +1422,20 @@ impl WasmWorkload {
     ) -> WasmResult<()> {
         self.ensure_instance().await?;
         self.install_invocation(ctx, host_abi);
+        self.reseed_fuel()?;
 
         let wit_chunk = proto_data_chunk_to_wit(chunk);
         let wit_sender = proto_actr_id_to_wit(&sender);
-        let result = self
-            .bindings
-            .actr_workload_workload()
-            .call_on_data_chunk(&mut self.store, &wit_chunk, &wit_sender)
-            .await;
+        let result = tokio::time::timeout(
+            self.limits.invocation_timeout,
+            self.bindings.actr_workload_workload().call_on_data_chunk(
+                &mut self.store,
+                &wit_chunk,
+                &wit_sender,
+            ),
+        )
+        .await
+        .map_err(|_| WasmError::InvocationTimeout(self.limits.invocation_timeout))?;
         self.clear_invocation();
         let inner = match result {
             Ok(inner) => inner,

@@ -26,7 +26,8 @@ fn compile_rejects_legacy_core_module_magic() {
 /// engine configured exactly like production ([`build_engine`]).
 fn probe_wat(src: &str) -> WasmResult<WasmWorkloadKind> {
     let bytes = wat::parse_str(src).expect("test WAT must assemble");
-    let engine = build_engine().expect("engine must build");
+    let engine =
+        build_engine(&crate::config::WasmRuntimeLimits::default()).expect("engine must build");
     let component = Component::from_binary(&engine, &bytes).expect("component must load");
     probe_world(&component, &engine)
 }

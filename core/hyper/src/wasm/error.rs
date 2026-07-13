@@ -18,4 +18,13 @@ pub enum WasmError {
 
     #[error("WASM instance trapped (store poisoned; rebuilt on next call): {0}")]
     InstanceTrapped(String),
+
+    #[error("WASM invocation exceeded fuel budget")]
+    OutOfFuel,
+    #[error("WASM invocation interrupted by epoch deadline")]
+    EpochInterrupted,
+    #[error("WASM resource limit exceeded: {0}")]
+    ResourceLimitExceeded(&'static str),
+    #[error("WASM invocation timed out after {0:?}")]
+    InvocationTimeout(std::time::Duration),
 }

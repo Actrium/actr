@@ -1362,12 +1362,25 @@ async fn load_wasm_workload_inner(
                 manifest.binary.path, manifest.binary.target
             ))
         })?;
-        let host = crate::wasm::WasmHost::compile(&wasm_bytes).map_err(|e| {
-            HyperError::Runtime(format!(
-                "failed to compile WASM package target `{}`: {e}",
-                manifest.binary.target
-            ))
-        })?;
+        // issue #346: resource limits (fuel/epoch/memory/aggregate) drive the
+        // engine config + per-store limiter + per-entry re-seed; the byte cap
+        // also rejects oversized components before compilation.
+        let limits = _inner.config.resolved_wasm_limits();
+        if wasm_bytes.len() > limits.max_component_bytes {
+            return Err(HyperError::Runtime(format!(
+                "WASM component for target `{}` is {} bytes, exceeds max {} bytes",
+                manifest.binary.target,
+                wasm_bytes.len(),
+                limits.max_component_bytes
+            )));
+        }
+        let host =
+            crate::wasm::WasmHost::compile_with_limits(&wasm_bytes, &limits).map_err(|e| {
+                HyperError::Runtime(format!(
+                    "failed to compile WASM package target `{}`: {e}",
+                    manifest.binary.target
+                ))
+            })?;
         let mut instance = host.instantiate().await.map_err(|e| {
             HyperError::Runtime(format!(
                 "failed to instantiate WASM package target `{}`: {e}",

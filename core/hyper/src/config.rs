@@ -70,6 +70,11 @@ pub struct HyperConfig {
     /// set `ACTR_DISPATCH_SERIAL=1`) to force the fully-serial B1 runner. See
     /// [`DispatchConcurrency`].
     pub dispatch_concurrency: Option<DispatchConcurrency>,
+
+    /// WASM runtime resource limits (issue #346). `None` resolves to
+    /// [`WasmRuntimeLimits::default`] (safe finite defaults — hardening on by
+    /// default). See [`WasmRuntimeLimits`].
+    pub wasm_limits: Option<WasmRuntimeLimits>,
 }
 
 /// Conflict-key dispatch concurrency knobs (design doc §4.2, §7).
@@ -133,6 +138,91 @@ impl Default for DispatchConcurrency {
     }
 }
 
+/// WASM runtime resource limits (issue #346: untrusted-workload DoS hardening).
+///
+/// Bounds a single wasm actor's CPU, stack, memory, and aggregate footprint so
+/// a malicious or buggy guest cannot monopolize the host: fuel + epoch
+/// interrupt runaway compute, wasmtime `StoreLimits` caps linear memory /
+/// tables / instances, and the aggregate knobs (compile/instantiate/store
+/// semaphores) bound process-wide resource use. `None` on [`HyperConfig`]
+/// resolves to [`WasmRuntimeLimits::default`], whose values are safe finite
+/// defaults (not unbounded) — the hardening is on by default.
+///
+/// This complements [`DispatchConcurrency::dispatch_timeout`]: that timeout
+/// drops the in-flight `call_concurrent` future and only interrupts a guest
+/// that is *awaiting* a host import. A non-yielding pure-compute loop never
+/// awaits, so the drop cannot preempt it; fuel/epoch insert check points into
+/// the compiled wasm that trip on pure compute, which is why both are needed.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WasmRuntimeLimits {
+    /// Fuel granted to a single guest entry (instantiation or one
+    /// lifecycle/hook/dispatch/data-chunk call). Reset before every entry.
+    /// Default `1_000_000` (a few ms of Cranelift-compiled compute).
+    pub fuel_per_invocation: u64,
+    /// Period at which a background task calls `Engine::increment_epoch`; each
+    /// entry sets a deadline of a few ticks. Default `50ms`.
+    pub epoch_tick: Duration,
+    /// Wall-clock deadline wrapping each guest entry (`tokio::time::timeout`).
+    /// Default `5s`. Distinct from fuel/epoch: a guest that awaits a host
+    /// import indefinitely is interrupted here.
+    pub invocation_timeout: Duration,
+    /// Max linear memory bytes per store. Default 64 MiB.
+    pub max_linear_memory: usize,
+    /// Max table elements per store. Default 10_000.
+    pub max_table_elements: u32,
+    /// Max memories per store. Default 256 (component adapters use several).
+    pub max_memories: u32,
+    /// Max tables per store. Default 256.
+    pub max_tables: u32,
+    /// Max internal core instances per store. Default 256.
+    pub max_instances: u32,
+    /// Max wasm stack size. Default 2 MiB.
+    pub max_wasm_stack: usize,
+    /// Async support stack size (wasmtime fibers). Default 3 MiB.
+    pub async_stack_size: usize,
+    /// If set, wasmtime cooperatively yields the guest back to the host every
+    /// `n` fuel instead of trapping on exhaustion — enabling fair interleaving
+    /// under `run_concurrent`. `None` (default) = trap on exhaustion; the
+    /// instance is rebuilt on the next entry (`WasmWorkload::ensure_instance`).
+    pub fuel_async_yield_interval: Option<u64>,
+    /// Max `.actr` component byte size accepted by the loader. Default 64 MiB.
+    pub max_component_bytes: usize,
+    /// Max concurrent component compilations process-wide. Default 4.
+    pub max_concurrent_compiles: usize,
+    /// Max concurrent instantiations process-wide. Default 16.
+    pub max_concurrent_instantiates: usize,
+    /// Max live wasm stores process-wide. Default 256.
+    pub max_active_stores: usize,
+    /// Whether a `memory.grow`/`table.grow` over the limit traps (true) or
+    /// returns an error the guest can handle (false). Default true (trap).
+    pub trap_on_grow_failure: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for WasmRuntimeLimits {
+    fn default() -> Self {
+        WasmRuntimeLimits {
+            fuel_per_invocation: 1_000_000,
+            epoch_tick: Duration::from_millis(50),
+            invocation_timeout: Duration::from_secs(5),
+            max_linear_memory: 64 * 1024 * 1024,
+            max_table_elements: 10_000,
+            max_memories: 256,
+            max_tables: 256,
+            max_instances: 256,
+            max_wasm_stack: 2 * 1024 * 1024,
+            async_stack_size: 3 * 1024 * 1024,
+            fuel_async_yield_interval: None,
+            max_component_bytes: 64 * 1024 * 1024,
+            max_concurrent_compiles: 4,
+            max_concurrent_instantiates: 16,
+            max_active_stores: 256,
+            trap_on_grow_failure: true,
+        }
+    }
+}
+
 /// Env escape hatch: `ACTR_DISPATCH_SERIAL=1` (or `true`) forces dispatch fully
 /// serial regardless of config. Pure function of the raw env string so it can
 /// be unit-tested without touching process env.
@@ -170,6 +260,7 @@ impl std::fmt::Debug for HyperConfig {
                 &self.mailbox_backpressure_threshold,
             )
             .field("dispatch_concurrency", &self.dispatch_concurrency)
+            .field("wasm_limits", &self.wasm_limits)
             .finish()
     }
 }
@@ -481,6 +572,7 @@ impl HyperConfig {
             credential_expiry_warning: DEFAULT_CREDENTIAL_EXPIRY_WARNING,
             mailbox_backpressure_threshold: None,
             dispatch_concurrency: None,
+            wasm_limits: None,
         }
     }
 
@@ -538,6 +630,20 @@ impl HyperConfig {
             cfg.enabled = false;
         }
         cfg
+    }
+
+    /// Set the WASM runtime resource limits (issue #346). `None` falls back to
+    /// [`WasmRuntimeLimits::default`] (safe finite defaults).
+    pub fn with_wasm_limits(mut self, cfg: Option<WasmRuntimeLimits>) -> Self {
+        self.wasm_limits = cfg;
+        self
+    }
+
+    /// Resolve the effective WASM runtime limits. `None` resolves to
+    /// [`WasmRuntimeLimits::default`]; no env escape hatch yet (fuel/epoch are
+    /// safety-critical, not a tuning surface).
+    pub fn resolved_wasm_limits(&self) -> WasmRuntimeLimits {
+        self.wasm_limits.unwrap_or_default()
     }
 }
 
