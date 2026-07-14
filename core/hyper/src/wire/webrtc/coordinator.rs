@@ -473,8 +473,8 @@ pub struct WebRtcCoordinator {
     cleanup_depth: Arc<AtomicUsize>,
     cleanup_notify: Arc<tokio::sync::Notify>,
 
-    /// Per-peer gates serialize the final ICE-restart signaling commit with
-    /// cleanup for that peer. A stalled send for one peer must not delay
+    /// Per-peer gates serialize ICE-restart commits and local candidate sends
+    /// with cleanup for that peer. A stalled send for one peer must not delay
     /// cleanup of unrelated peers.
     restart_signaling_gates: RestartSignalingGates,
 
@@ -2820,6 +2820,32 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
+    async fn send_actr_relay_if_session_current(
+        &self,
+        target: &ActrId,
+        session_id: u64,
+        payload: actr_relay::Payload,
+    ) -> ActorResult<bool> {
+        let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
+        let send_result = {
+            let _signaling_guard = restart_signaling_gate.lock().await;
+            let session_is_current = {
+                let peers = self.peers.read().await;
+                peers
+                    .get(target)
+                    .is_some_and(|state| state.session_id == session_id)
+            };
+            if session_is_current {
+                self.send_actr_relay(target, payload).await.map(|()| true)
+            } else {
+                Ok(false)
+            }
+        };
+        drop(restart_signaling_gate);
+        Self::prune_restart_signaling_gates(&self.restart_signaling_gates).await;
+        send_result
+    }
+
     /// Initiate connection (create Offer)
     ///
     /// Acts as the initiator, sending a WebRTC connection request to the target peer
@@ -3380,13 +3406,23 @@ impl WebRtcCoordinator {
                                 }
                                 span
                             };
-                            let send_actr_relay_fut = coord.send_actr_relay(&target_id, payload);
+                            let send_actr_relay_fut = coord.send_actr_relay_if_session_current(
+                                &target_id,
+                                candidate_session_id,
+                                payload,
+                            );
                             #[cfg(feature = "opentelemetry")]
                             let send_actr_relay_fut = send_actr_relay_fut.instrument(span);
-                            if let Err(e) = send_actr_relay_fut.await {
-                                tracing::error!("❌ Failed to send ICE Candidate: {}", e);
-                            } else {
-                                tracing::debug!("✅ Sent ICE Candidate");
+                            match send_actr_relay_fut.await {
+                                Ok(true) => tracing::debug!("✅ Sent ICE Candidate"),
+                                Ok(false) => tracing::debug!(
+                                    "⏭️ Skipped ICE Candidate from stale local session: peer={}, session_id={}",
+                                    target_id,
+                                    candidate_session_id
+                                ),
+                                Err(e) => {
+                                    tracing::error!("❌ Failed to send ICE Candidate: {}", e)
+                                }
                             }
                         }
                     } else {
@@ -3831,16 +3867,27 @@ impl WebRtcCoordinator {
                                 }
                                 span
                             };
-                            let send_actr_relay_fut = coord.send_actr_relay(&target_id, payload);
+                            let send_actr_relay_fut = coord.send_actr_relay_if_session_current(
+                                &target_id,
+                                candidate_session_id,
+                                payload,
+                            );
                             #[cfg(feature = "opentelemetry")]
                             let send_actr_relay_fut = send_actr_relay_fut.instrument(span);
-                            if let Err(e) = send_actr_relay_fut.await {
-                                tracing::error!("❌ Failed to send ICE Candidate: {}", e);
+                            match send_actr_relay_fut.await {
+                                Ok(true) => tracing::debug!(
+                                    "🔄 Handle offer Sent ICE Candidate to serial={}",
+                                    target_id
+                                ),
+                                Ok(false) => tracing::debug!(
+                                    "⏭️ Skipped ICE Candidate from stale local session: peer={}, session_id={}",
+                                    target_id,
+                                    candidate_session_id
+                                ),
+                                Err(e) => {
+                                    tracing::error!("❌ Failed to send ICE Candidate: {}", e)
+                                }
                             }
-                            tracing::debug!(
-                                "🔄 Handle offer Sent ICE Candidate to serial={}",
-                                target_id
-                            );
                         }
                     }
                 })
@@ -6210,6 +6257,7 @@ impl WebRtcCoordinator {
             );
             return Ok(());
         };
+        let cancellation_epoch = self.restart_cancellation_epoch.load(Ordering::Acquire);
 
         // Locate peer state and ensure we are not the offerer
         let (peer_connection, is_offerer, session_id) = {
@@ -6251,56 +6299,108 @@ impl WebRtcCoordinator {
             return Ok(());
         }
 
-        let answer_result: ActorResult<RTCSessionDescription> = async {
-            // Apply remote restart offer and generate answer.
-            let answer_sdp = self
-                .negotiator
-                .create_answer(&peer_connection, offer_sdp)
-                .await?;
-            let answer_description =
-                RTCSessionDescription::answer(answer_sdp.clone()).map_err(|e| {
-                    ActrError::Internal(format!("Failed to parse local ICE restart answer: {e}"))
-                })?;
-
-            // Send the Answer before releasing candidates from this generation.
-            let session_desc = actr_protocol::SessionDescription {
-                r#type: SdpType::Answer as i32,
-                sdp: answer_sdp,
-                sdp_exchange_id: Some(sdp_exchange_id),
-            };
-            let payload = actr_relay::Payload::SessionDescription(session_desc);
-            self.send_actr_relay(from, payload).await?;
-            Ok(answer_description)
-        }
-        .await;
-        let answer_description = match answer_result {
+        // Apply remote restart offer and generate answer outside the signaling
+        // gate. Cleanup may proceed during this work; the current-session check
+        // below decides whether the result is still eligible to be committed.
+        let answer_sdp = match self
+            .negotiator
+            .create_answer(&peer_connection, offer_sdp)
+            .await
+        {
+            Ok(answer_sdp) => answer_sdp,
+            Err(err) => {
+                Self::abort_local_ice_generation(&self.peers, from, session_id).await;
+                return Err(err.into());
+            }
+        };
+        let answer_description = match RTCSessionDescription::answer(answer_sdp.clone()) {
             Ok(answer_description) => answer_description,
             Err(err) => {
                 Self::abort_local_ice_generation(&self.peers, from, session_id).await;
-                return Err(err);
+                return Err(ActrError::Internal(format!(
+                    "Failed to parse local ICE restart answer: {err}"
+                )));
             }
         };
 
-        let buffered_candidates =
-            Self::finish_local_ice_generation(&self.peers, from, session_id, &answer_description)
-                .await
-                .map_err(ActrError::Internal)?;
-        for candidate in buffered_candidates {
-            if let Err(err) = self
-                .send_actr_relay(from, actr_relay::Payload::IceCandidate(candidate))
-                .await
+        let restart_signaling_gate = self.restart_signaling_gate_for(from).await;
+        let commit_result: Option<ActorResult<()>> = {
+            let _signaling_guard = restart_signaling_gate.lock().await;
+            let session_is_current = {
+                let peers = self.peers.read().await;
+                peers
+                    .get(from)
+                    .is_some_and(|state| state.session_id == session_id)
+            };
+            if self.restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch
+                || !session_is_current
             {
-                tracing::warn!(
-                    "⚠️ Failed to send buffered ICE restart answer candidate to {}: {}",
-                    from,
-                    err
-                );
-            }
-        }
+                None
+            } else {
+                Some(
+                    async {
+                        // Finish the generation while holding the gate. Any
+                        // cleanup must wait until the Answer and candidates are
+                        // committed, and cannot remove the peer in between them.
+                        let buffered_candidates = Self::finish_local_ice_generation(
+                            &self.peers,
+                            from,
+                            session_id,
+                            &answer_description,
+                        )
+                        .await
+                        .map_err(ActrError::Internal)?;
 
-        // Flush any buffered ICE candidates collected before remote description was set
-        self.flush_pending_candidates(from, &peer_connection)
-            .await?;
+                        let session_desc = actr_protocol::SessionDescription {
+                            r#type: SdpType::Answer as i32,
+                            sdp: answer_sdp,
+                            sdp_exchange_id: Some(sdp_exchange_id),
+                        };
+                        self.send_actr_relay(
+                            from,
+                            actr_relay::Payload::SessionDescription(session_desc),
+                        )
+                        .await?;
+
+                        for candidate in buffered_candidates {
+                            if let Err(err) = self
+                                .send_actr_relay(
+                                    from,
+                                    actr_relay::Payload::IceCandidate(candidate),
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    "⚠️ Failed to send buffered ICE restart answer candidate to {}: {}",
+                                    from,
+                                    err
+                                );
+                            }
+                        }
+
+                        // Flush any buffered remote candidates before cleanup
+                        // can close the PeerConnection used by this exchange.
+                        self.flush_pending_candidates(from, &peer_connection)
+                            .await?;
+                        Ok(())
+                    }
+                    .await,
+                )
+            }
+        };
+        drop(restart_signaling_gate);
+        Self::prune_restart_signaling_gates(&self.restart_signaling_gates).await;
+
+        let Some(commit_result) = commit_result else {
+            Self::abort_local_ice_generation(&self.peers, from, session_id).await;
+            tracing::debug!(
+                "⏭️ ICE restart answer signalling cancelled at commit boundary: peer={}, session_id={}",
+                from,
+                session_id
+            );
+            return Ok(());
+        };
+        commit_result?;
 
         tracing::info!(
             "✅ Completed ICE restart answer to serial={}, session_id={}; waiting for ICE Connected before marking sendable",

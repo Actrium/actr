@@ -1438,6 +1438,166 @@ async fn ice_restart_answer_send_error_resets_local_generation() {
 }
 
 #[tokio::test]
+async fn cleanup_waits_for_inflight_restart_answer_signaling() {
+    let send_control = SendControl::blocking();
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
+            &send_control,
+        ))),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&target_id)
+        .expect("peer should exist")
+        .is_offerer = false;
+
+    let api = webrtc::api::APIBuilder::new().build();
+    let remote_pc = api
+        .new_peer_connection(Default::default())
+        .await
+        .expect("remote peer connection should be created");
+    remote_pc
+        .create_data_channel("test", None)
+        .await
+        .expect("data channel should be created");
+    let restart_offer = remote_pc
+        .create_offer(None)
+        .await
+        .expect("restart offer should be created");
+    remote_pc
+        .set_local_description(restart_offer.clone())
+        .await
+        .expect("restart offer should become the remote local description");
+
+    let restart_coordinator = Arc::clone(&coordinator);
+    let restart_target = target_id.clone();
+    let restart_handler = tokio::spawn(async move {
+        restart_coordinator
+            .handle_ice_restart_offer(
+                &restart_target,
+                restart_offer.sdp,
+                Some("restart-exchange".to_string()),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), send_control.wait_until_started())
+        .await
+        .expect("restart Answer must reach the signaling boundary");
+
+    let cleanup_coordinator = Arc::clone(&coordinator);
+    let cleanup_target = target_id.clone();
+    let cleanup = tokio::spawn(async move {
+        cleanup_coordinator
+            .cleanup_cancelled_connection(&cleanup_target, "test concurrent cleanup")
+            .await;
+    });
+    let peer_removed_before_send_release = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if !coordinator.peers.read().await.contains_key(&target_id) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok();
+
+    send_control.release.add_permits(256);
+    restart_handler
+        .await
+        .expect("restart handler task should join")
+        .expect("restart handler should complete");
+    cleanup.await.expect("cleanup task should join");
+    remote_pc.close().await.expect("remote peer should close");
+
+    assert!(
+        !peer_removed_before_send_release,
+        "cleanup must not remove the peer while restart Answer signaling is in flight"
+    );
+    assert!(coordinator.peers.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn session_guarded_candidate_send_serializes_with_cleanup() {
+    let send_control = SendControl::blocking();
+    let signaling_client = Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
+        &send_control,
+    )));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
+    let candidate = IceCandidate {
+        candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+        sdp_mid: Some("0".to_string()),
+        sdp_mline_index: Some(0),
+        username_fragment: Some("current-generation".to_string()),
+    };
+
+    let send_coordinator = Arc::clone(&coordinator);
+    let send_target = target_id.clone();
+    let send = tokio::spawn(async move {
+        send_coordinator
+            .send_actr_relay_if_session_current(
+                &send_target,
+                session_id,
+                actr_relay::Payload::IceCandidate(candidate),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), send_control.wait_until_started())
+        .await
+        .expect("candidate send must reach the signaling boundary");
+
+    let cleanup_coordinator = Arc::clone(&coordinator);
+    let cleanup_target = target_id.clone();
+    let cleanup = tokio::spawn(async move {
+        cleanup_coordinator
+            .cleanup_cancelled_connection(&cleanup_target, "test candidate cleanup")
+            .await;
+    });
+    let peer_removed_before_send_release = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if !coordinator.peers.read().await.contains_key(&target_id) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok();
+
+    send_control.release.add_permits(1);
+    assert!(
+        send.await
+            .expect("candidate send task should join")
+            .expect("candidate send should succeed"),
+        "current-session candidate should be sent"
+    );
+    cleanup.await.expect("cleanup task should join");
+
+    assert!(
+        !peer_removed_before_send_release,
+        "cleanup must wait for the current-session candidate signaling commit"
+    );
+    assert_eq!(signaling_client.sent_envelopes().await.len(), 1);
+}
+
+#[tokio::test]
 async fn candidate_arriving_before_restart_offer_is_buffered() {
     let coordinator = Arc::new(WebRtcCoordinator::new(
         test_actor_id(1),
