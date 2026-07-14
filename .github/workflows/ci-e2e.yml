@@ -108,11 +108,18 @@ jobs:
       - name: Run polyglot-echo (--server linked-rust --client rust)
         run: bash e2e/polyglot-echo/run.sh --server linked-rust --client rust polyglot-ci-linked
       - name: Run polyglot-echo (--server wasm-rust --client rust)
+        # The wasm-rust first call occasionally hits a transient startup timeout.
+        # Retry once, but surface attempt 1's exit code so a real regression is
+        # distinguishable from the known-transient flake in the logs.
         run: |
-          bash e2e/polyglot-echo/run.sh --server wasm-rust --client rust polyglot-ci-wasm || {
-            echo "::warning::wasm-rust echo attempt 1 failed; retrying once with fresh processes"
+          set +e
+          bash e2e/polyglot-echo/run.sh --server wasm-rust --client rust polyglot-ci-wasm
+          attempt1=$?
+          if [ "$attempt1" -ne 0 ]; then
+            echo "::warning::wasm-rust echo attempt 1 failed with exit code $attempt1; retrying once with fresh processes"
+            set -e
             bash e2e/polyglot-echo/run.sh --server wasm-rust --client rust polyglot-ci-wasm
-          }
+          fi
       # ── streaming scenarios (Rust client, dedicated linked stream server) ───
       - name: Run polyglot-echo (--client rust --scenario server-stream)
         run: bash e2e/polyglot-echo/run.sh --client rust --scenario server-stream polyglot-ci-stream
