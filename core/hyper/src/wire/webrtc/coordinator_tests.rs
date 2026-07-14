@@ -1414,14 +1414,15 @@ async fn ice_restart_answer_create_error_resets_local_generation() {
 }
 
 #[tokio::test]
-async fn ice_restart_answer_send_error_resets_local_generation() {
+async fn answer_send_failure_suppresses_candidates_and_removes_matching_session() {
     let send_control = SendControl::failing();
+    let signaling_client = Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
+        &send_control,
+    )));
     let coordinator = Arc::new(WebRtcCoordinator::new(
         test_actor_id(1),
         CredentialState::new(test_credential(), None, None),
-        Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
-            &send_control,
-        ))),
+        signaling_client.clone(),
         WebRtcConfig::default(),
         Arc::new(MediaFrameRegistry::new()),
     ));
@@ -1470,18 +1471,12 @@ async fn ice_restart_answer_send_error_resets_local_generation() {
         .await
         .expect("the Answer send path must reach the signaling client");
 
-    let peers = coordinator.peers.read().await;
-    let state = peers.get(&target_id).expect("peer should remain");
-    assert!(!matches!(
-        state.ice_signaling.local_generation,
-        LocalIceGenerationState::Buffering(_)
-    ));
-    drop(peers);
+    assert!(
+        !coordinator.peers.read().await.contains_key(&target_id),
+        "a Session with an uncommitted local Answer cannot remain active"
+    );
+    assert!(signaling_client.sent_envelopes().await.is_empty());
     remote_pc.close().await.expect("remote peer should close");
-    coordinator
-        .close_all_peers()
-        .await
-        .expect("coordinator peers should close");
 }
 
 #[tokio::test]
@@ -1569,6 +1564,71 @@ async fn cleanup_waits_for_inflight_restart_answer_signaling() {
         !peer_removed_before_send_release,
         "cleanup must not remove the peer while restart Answer signaling is in flight"
     );
+    assert!(coordinator.peers.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn offerer_commit_keeps_cleanup_out_until_offer_and_candidates_finish() {
+    let control = SendControl::blocking();
+    let client = Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
+        &control,
+    )));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target.clone(), "restart-exchange").await;
+    let epoch = coordinator
+        .peer_signaling
+        .restart_cancellation_epoch
+        .load(Ordering::Acquire);
+    let context = coordinator.peer_signaling_commit_context();
+    let commit_target = target.clone();
+    let commit_client: Arc<dyn SignalingClient> = client.clone();
+    let commit = tokio::spawn(async move {
+        let Some(_guard) = context
+            .acquire_commit(&commit_target, session_id, Some(epoch))
+            .await
+        else {
+            return false;
+        };
+        commit_client
+            .send_envelope(SignalingEnvelope::default())
+            .await
+            .expect("offer send should succeed");
+        commit_client
+            .send_envelope(SignalingEnvelope::default())
+            .await
+            .expect("candidate send should succeed");
+        true
+    });
+
+    control.wait_until_started().await;
+    control.release.add_permits(1);
+    control.wait_until_started().await;
+
+    let cleanup_coordinator = Arc::clone(&coordinator);
+    let cleanup_target = target.clone();
+    let cleanup = tokio::spawn(async move {
+        cleanup_coordinator
+            .cleanup_cancelled_connection(&cleanup_target, "test restart commit")
+            .await;
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        coordinator.peers.read().await.contains_key(&target),
+        "cleanup must wait for the complete peer signaling commit"
+    );
+
+    control.release.add_permits(1);
+    assert!(commit.await.expect("commit task should join"));
+    cleanup.await.expect("cleanup task should join");
+    assert_eq!(client.sent_envelopes().await.len(), 2);
     assert!(coordinator.peers.read().await.is_empty());
 }
 
@@ -1955,25 +2015,22 @@ async fn close_all_peers_waits_for_restart_signaling_commit_before_drain() {
     let target_id = test_actor_id(99);
     let session_id =
         insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
-    let restart_signaling_gate = coordinator.restart_signaling_gate_for(&target_id).await;
-    let peers = Arc::clone(&coordinator.peers);
-    let restart_cancellation_epoch =
-        Arc::clone(&coordinator.peer_signaling.restart_cancellation_epoch);
-    let cancellation_epoch = restart_cancellation_epoch.load(Ordering::Acquire);
+    let commit_context = coordinator.peer_signaling_commit_context();
+    let cancellation_epoch = coordinator
+        .peer_signaling
+        .restart_cancellation_epoch
+        .load(Ordering::Acquire);
     let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
     let target_for_task = target_id.clone();
     let signaling_task = tokio::spawn(async move {
-        WebRtcCoordinator::send_ice_restart_envelope_if_current(
-            &peers,
-            &target_for_task,
-            session_id,
-            &restart_signaling_gate,
-            &restart_cancellation_epoch,
-            cancellation_epoch,
-            &signaling_for_task,
-            SignalingEnvelope::default(),
+        let _commit_guard = commit_context
+            .acquire_commit(&target_for_task, session_id, Some(cancellation_epoch))
+            .await?;
+        Some(
+            signaling_for_task
+                .send_envelope(SignalingEnvelope::default())
+                .await,
         )
-        .await
     });
     tokio::time::timeout(Duration::from_secs(1), send_control.wait_until_started())
         .await
@@ -2099,27 +2156,24 @@ async fn stale_peer_at_restart_signaling_boundary_does_not_send_offer() {
     let session_id =
         insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
 
-    let restart_signaling_gate = coordinator.restart_signaling_gate_for(&target_id).await;
-    let restart_signaling_gate_for_task = Arc::clone(&restart_signaling_gate);
+    let commit_context = coordinator.peer_signaling_commit_context();
+    let restart_signaling_gate = commit_context.gate_for(&target_id).await;
     let signaling_guard = restart_signaling_gate.lock().await;
-    let peers = Arc::clone(&coordinator.peers);
     let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
-    let restart_cancellation_epoch =
-        Arc::clone(&coordinator.peer_signaling.restart_cancellation_epoch);
-    let cancellation_epoch = restart_cancellation_epoch.load(Ordering::Acquire);
+    let cancellation_epoch = coordinator
+        .peer_signaling
+        .restart_cancellation_epoch
+        .load(Ordering::Acquire);
     let target_for_task = target_id.clone();
     let signaling_task = tokio::spawn(async move {
-        WebRtcCoordinator::send_ice_restart_envelope_if_current(
-            &peers,
-            &target_for_task,
-            session_id,
-            &restart_signaling_gate_for_task,
-            &restart_cancellation_epoch,
-            cancellation_epoch,
-            &signaling_for_task,
-            SignalingEnvelope::default(),
+        let _commit_guard = commit_context
+            .acquire_commit(&target_for_task, session_id, Some(cancellation_epoch))
+            .await?;
+        Some(
+            signaling_for_task
+                .send_envelope(SignalingEnvelope::default())
+                .await,
         )
-        .await
     });
     tokio::task::yield_now().await;
 

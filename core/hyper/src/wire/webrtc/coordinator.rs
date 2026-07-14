@@ -293,14 +293,48 @@ impl Default for PeerSignalingCommitState {
 
 #[derive(Clone)]
 struct PeerSignalingCommitContext {
-    #[allow(dead_code)] // Used by the unified commit acquisition path added next.
     peers: Arc<RwLock<HashMap<ActrId, PeerState>>>,
     state: Arc<PeerSignalingCommitState>,
+}
+
+struct PeerSignalingCommitGuard {
+    _guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl PeerSignalingCommitContext {
     async fn gate_for(&self, peer_id: &ActrId) -> RestartSignalingGate {
         WebRtcCoordinator::restart_signaling_gate_for_map(&self.state.gates, peer_id).await
+    }
+
+    async fn acquire_commit(
+        &self,
+        peer_id: &ActrId,
+        session_id: u64,
+        restart_epoch: Option<u64>,
+    ) -> Option<PeerSignalingCommitGuard> {
+        if self.state.closing_all.load(Ordering::Acquire) {
+            return None;
+        }
+
+        let guard = self.gate_for(peer_id).await.lock_owned().await;
+        if self.state.closing_all.load(Ordering::Acquire)
+            || restart_epoch.is_some_and(|epoch| {
+                self.state
+                    .restart_cancellation_epoch
+                    .load(Ordering::Acquire)
+                    != epoch
+            })
+            || !self
+                .peers
+                .read()
+                .await
+                .get(peer_id)
+                .is_some_and(|peer| peer.session_id == session_id)
+        {
+            return None;
+        }
+
+        Some(PeerSignalingCommitGuard { _guard: guard })
     }
 }
 
@@ -866,7 +900,8 @@ impl WebRtcCoordinator {
         gates.lock().await.retain(|_, gate| gate.strong_count() > 0);
     }
 
-    async fn send_prepared_local_ice_candidates(
+    async fn send_prepared_local_ice_candidates_while_guarded(
+        _commit_guard: &PeerSignalingCommitGuard,
         signaling_client: &Arc<dyn SignalingClient>,
         local_id: &ActrId,
         credential_state: &CredentialState,
@@ -2974,22 +3009,15 @@ impl WebRtcCoordinator {
         session_id: u64,
         payload: actr_relay::Payload,
     ) -> ActorResult<bool> {
-        let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
-        let send_result = {
-            let _signaling_guard = restart_signaling_gate.lock().await;
-            let session_is_current = {
-                let peers = self.peers.read().await;
-                peers
-                    .get(target)
-                    .is_some_and(|state| state.session_id == session_id)
-            };
-            if session_is_current && !self.peer_signaling.closing_all.load(Ordering::Acquire) {
-                self.send_actr_relay(target, payload).await.map(|()| true)
-            } else {
-                Ok(false)
-            }
+        let commit_context = self.peer_signaling_commit_context();
+        let Some(commit_guard) = commit_context
+            .acquire_commit(target, session_id, None)
+            .await
+        else {
+            return Ok(false);
         };
-        drop(restart_signaling_gate);
+        let send_result = self.send_actr_relay(target, payload).await.map(|()| true);
+        drop(commit_guard);
         Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
         send_result
     }
@@ -5332,11 +5360,8 @@ impl WebRtcCoordinator {
         let credential_state = self.credential_state.clone();
         let signaling_client = Arc::clone(&self.signaling_client);
         let coordinator_weak = Arc::downgrade(self);
-        let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
-        let restart_signaling_gate_for_task = Arc::clone(&restart_signaling_gate);
-        let restart_signaling_gates = Arc::clone(&self.peer_signaling.gates);
-        let restart_cancellation_epoch =
-            Arc::clone(&self.peer_signaling.restart_cancellation_epoch);
+        let commit_context = self.peer_signaling_commit_context();
+        let restart_signaling_gate = commit_context.gate_for(target).await;
 
         // Serialize task creation with cleanup. If cleanup started while this
         // call was queued for the gate, discard it; recovery calls that begin
@@ -5435,11 +5460,9 @@ impl WebRtcCoordinator {
                     let send_result = Self::send_ice_restart_request_if_current(
                         &target_clone,
                         restart_session_id,
-                        &peers_arc,
+                        &commit_context,
                         &local_id,
                         &credential_state,
-                        &restart_signaling_gate_for_task,
-                        &restart_cancellation_epoch,
                         cancellation_epoch,
                         &signaling_client,
                         "network_recovered",
@@ -5465,8 +5488,7 @@ impl WebRtcCoordinator {
                         ),
                     }
 
-                    drop(restart_signaling_gate_for_task);
-                    Self::prune_restart_signaling_gates(&restart_signaling_gates).await;
+                    Self::prune_restart_signaling_gates(&commit_context.state.gates).await;
 
                     let mut peers = peers_arc.write().await;
                     if let Some(state) = peers.get_mut(&target_clone)
@@ -5510,8 +5532,7 @@ impl WebRtcCoordinator {
                     &signaling_client,
                     restart_wake,
                     restart_retry_wake,
-                    restart_signaling_gate_for_task,
-                    restart_cancellation_epoch,
+                    commit_context,
                     cancellation_epoch,
                 )
                 .await;
@@ -5623,11 +5644,9 @@ impl WebRtcCoordinator {
     async fn send_ice_restart_request_if_current(
         target: &ActrId,
         restart_session_id: u64,
-        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
+        commit_context: &PeerSignalingCommitContext,
         local_id: &ActrId,
         credential_state: &CredentialState,
-        restart_signaling_gate: &RestartSignalingGate,
-        restart_cancellation_epoch: &Arc<AtomicU64>,
         cancellation_epoch: u64,
         signaling_client: &Arc<dyn SignalingClient>,
         reason: &str,
@@ -5659,17 +5678,10 @@ impl WebRtcCoordinator {
             tracestate: None,
         };
 
-        Self::send_ice_restart_envelope_if_current(
-            peers,
-            target,
-            restart_session_id,
-            restart_signaling_gate,
-            restart_cancellation_epoch,
-            cancellation_epoch,
-            signaling_client,
-            envelope,
-        )
-        .await
+        let _commit_guard = commit_context
+            .acquire_commit(target, restart_session_id, Some(cancellation_epoch))
+            .await?;
+        Some(signaling_client.send_envelope(envelope).await)
     }
 
     /// Handle incoming IceRestartRequest from Answerer (Approach A).
@@ -5737,35 +5749,8 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
-    /// Internal ICE restart implementation with retries
-    /// Returns Ok(true) if restart succeeded, Ok(false) if all retries exhausted
-    #[allow(clippy::too_many_arguments)]
-    async fn send_ice_restart_envelope_if_current(
-        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
-        target: &ActrId,
-        restart_session_id: u64,
-        restart_signaling_gate: &Arc<Mutex<()>>,
-        restart_cancellation_epoch: &Arc<AtomicU64>,
-        cancellation_epoch: u64,
-        signaling_client: &Arc<dyn SignalingClient>,
-        envelope: SignalingEnvelope,
-    ) -> Option<crate::transport::NetworkResult<()>> {
-        let _signaling_guard = restart_signaling_gate.lock().await;
-        let session_is_current = {
-            let peers_guard = peers.read().await;
-            peers_guard
-                .get(target)
-                .is_some_and(|state| state.session_id == restart_session_id)
-        };
-        if restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch
-            || !session_is_current
-        {
-            return None;
-        }
-
-        Some(signaling_client.send_envelope(envelope).await)
-    }
-
+    /// Internal ICE restart implementation with retries.
+    /// Returns Ok(true) if restart succeeded, Ok(false) if all retries exhausted.
     #[allow(clippy::too_many_arguments)]
     async fn do_ice_restart_inner(
         target: &ActrId,
@@ -5778,10 +5763,10 @@ impl WebRtcCoordinator {
         signaling_client: &Arc<dyn SignalingClient>,
         restart_wake: Arc<tokio::sync::Notify>,
         restart_retry_wake: Arc<tokio::sync::Notify>,
-        restart_signaling_gate: Arc<Mutex<()>>,
-        restart_cancellation_epoch: Arc<AtomicU64>,
+        commit_context: PeerSignalingCommitContext,
         cancellation_epoch: u64,
     ) -> ActorResult<bool> {
+        let restart_cancellation_epoch = &commit_context.state.restart_cancellation_epoch;
         // Use enhanced backoff with total duration limit
         let backoff = ExponentialBackoff::with_total_duration(
             Duration::from_millis(ICE_RESTART_INITIAL_BACKOFF_MS),
@@ -6030,22 +6015,6 @@ impl WebRtcCoordinator {
 
             // Send ICE restart offer
             let sdp_exchange_id = Self::new_envelope_id();
-            if !Self::record_pending_local_offer_for_peer(
-                peers,
-                target,
-                restart_session_id,
-                sdp_exchange_id.clone(),
-            )
-            .await
-            {
-                tracing::debug!(
-                    "⏭️ Stopping stale ICE restart before send for serial={}, session_id={}",
-                    target,
-                    restart_session_id
-                );
-                return Ok(true);
-            }
-
             let relay = ActrRelay {
                 source: local_id.clone(),
                 credential: credential_state.credential().await,
@@ -6072,25 +6041,11 @@ impl WebRtcCoordinator {
                 tracestate: None,
             };
 
-            let Some(send_result) = Self::send_ice_restart_envelope_if_current(
-                peers,
-                target,
-                restart_session_id,
-                &restart_signaling_gate,
-                &restart_cancellation_epoch,
-                cancellation_epoch,
-                signaling_client,
-                envelope,
-            )
-            .await
+            let Some(commit_guard) = commit_context
+                .acquire_commit(target, restart_session_id, Some(cancellation_epoch))
+                .await
             else {
-                Self::clear_pending_local_offer_for_peer(
-                    peers,
-                    target,
-                    restart_session_id,
-                    &sdp_exchange_id,
-                )
-                .await;
+                Self::suppress_local_ice_generation(peers, target, restart_session_id).await;
                 tracing::debug!(
                     "⏭️ Stopping stale ICE restart at signaling boundary for serial={}, session_id={}",
                     target,
@@ -6099,7 +6054,25 @@ impl WebRtcCoordinator {
                 return Ok(true);
             };
 
-            if let Err(e) = send_result {
+            if !Self::record_pending_local_offer_for_peer(
+                peers,
+                target,
+                restart_session_id,
+                sdp_exchange_id.clone(),
+            )
+            .await
+            {
+                Self::suppress_local_ice_generation(peers, target, restart_session_id).await;
+                drop(commit_guard);
+                tracing::debug!(
+                    "⏭️ Stopping stale ICE restart before send for serial={}, session_id={}",
+                    target,
+                    restart_session_id
+                );
+                return Ok(true);
+            }
+
+            if let Err(e) = signaling_client.send_envelope(envelope).await {
                 tracing::error!(
                     "❌ Failed to send ICE restart offer to serial={}: {}",
                     target,
@@ -6112,6 +6085,7 @@ impl WebRtcCoordinator {
                     &sdp_exchange_id,
                 )
                 .await;
+                Self::suppress_local_ice_generation(peers, target, restart_session_id).await;
                 // Mark inflight as false and continue to next retry
                 let mut peers_guard = peers.write().await;
                 match peers_guard.get_mut(target) {
@@ -6130,6 +6104,8 @@ impl WebRtcCoordinator {
                     None => return Ok(true),
                 }
                 drop(peers_guard);
+                drop(commit_guard);
+                Self::prune_restart_signaling_gates(&commit_context.state.gates).await;
                 tokio::select! {
                     _ = tokio::time::sleep(delay) => {}
                     _ = restart_wake.notified() => {
@@ -6156,7 +6132,8 @@ impl WebRtcCoordinator {
             )
             .await
             .map_err(ActrError::Internal)?;
-            Self::send_prepared_local_ice_candidates(
+            Self::send_prepared_local_ice_candidates_while_guarded(
+                &commit_guard,
                 signaling_client,
                 local_id,
                 &credential_state,
@@ -6164,6 +6141,8 @@ impl WebRtcCoordinator {
                 buffered_candidates,
             )
             .await;
+            drop(commit_guard);
+            Self::prune_restart_signaling_gates(&commit_context.state.gates).await;
 
             tracing::info!(
                 "♻️ ICE restart attempt {} sent to serial={}",
@@ -6519,80 +6498,11 @@ impl WebRtcCoordinator {
             }
         };
 
-        let restart_signaling_gate = self.restart_signaling_gate_for(from).await;
-        let commit_result: Option<ActorResult<()>> = {
-            let _signaling_guard = restart_signaling_gate.lock().await;
-            let session_is_current = {
-                let peers = self.peers.read().await;
-                peers
-                    .get(from)
-                    .is_some_and(|state| state.session_id == session_id)
-            };
-            if self.peer_signaling.closing_all.load(Ordering::Acquire)
-                || self
-                    .peer_signaling
-                    .restart_cancellation_epoch
-                    .load(Ordering::Acquire)
-                    != cancellation_epoch
-                || !session_is_current
-            {
-                None
-            } else {
-                Some(
-                    async {
-                        // Finish the generation while holding the gate. Any
-                        // cleanup must wait until the Answer and candidates are
-                        // committed, and cannot remove the peer in between them.
-                        let buffered_candidates = Self::finish_local_ice_generation(
-                            &self.peers,
-                            from,
-                            session_id,
-                            &answer_description,
-                        )
-                        .await
-                        .map_err(ActrError::Internal)?;
-
-                        let session_desc = actr_protocol::SessionDescription {
-                            r#type: SdpType::Answer as i32,
-                            sdp: answer_sdp,
-                            sdp_exchange_id: Some(sdp_exchange_id),
-                        };
-                        self.send_actr_relay(
-                            from,
-                            actr_relay::Payload::SessionDescription(session_desc),
-                        )
-                        .await?;
-
-                        for candidate in buffered_candidates {
-                            if let Err(err) = self
-                                .send_actr_relay(
-                                    from,
-                                    actr_relay::Payload::IceCandidate(candidate),
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    "⚠️ Failed to send buffered ICE restart answer candidate to {}: {}",
-                                    from,
-                                    err
-                                );
-                            }
-                        }
-
-                        // Flush any buffered remote candidates before cleanup
-                        // can close the PeerConnection used by this exchange.
-                        self.flush_pending_candidates(from, &peer_connection)
-                            .await?;
-                        Ok(())
-                    }
-                    .await,
-                )
-            }
-        };
-        drop(restart_signaling_gate);
-        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
-
-        let Some(commit_result) = commit_result else {
+        let commit_context = self.peer_signaling_commit_context();
+        let Some(commit_guard) = commit_context
+            .acquire_commit(from, session_id, Some(cancellation_epoch))
+            .await
+        else {
             Self::suppress_local_ice_generation(&self.peers, from, session_id).await;
             tracing::debug!(
                 "⏭️ ICE restart answer signalling cancelled at commit boundary: peer={}, session_id={}",
@@ -6601,7 +6511,52 @@ impl WebRtcCoordinator {
             );
             return Ok(());
         };
-        commit_result?;
+
+        let session_desc = actr_protocol::SessionDescription {
+            r#type: SdpType::Answer as i32,
+            sdp: answer_sdp,
+            sdp_exchange_id: Some(sdp_exchange_id),
+        };
+        if let Err(err) = self
+            .send_actr_relay(from, actr_relay::Payload::SessionDescription(session_desc))
+            .await
+        {
+            Self::suppress_local_ice_generation(&self.peers, from, session_id).await;
+            drop(commit_guard);
+            Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
+            self.cleanup_connection_if_session(
+                from,
+                session_id,
+                true,
+                "ICE restart Answer signaling failed",
+            )
+            .await;
+            return Err(err);
+        }
+
+        let buffered_candidates =
+            Self::finish_local_ice_generation(&self.peers, from, session_id, &answer_description)
+                .await
+                .map_err(ActrError::Internal)?;
+        for candidate in buffered_candidates {
+            if let Err(err) = self
+                .send_actr_relay(from, actr_relay::Payload::IceCandidate(candidate))
+                .await
+            {
+                tracing::warn!(
+                    "⚠️ Failed to send buffered ICE restart answer candidate to {}: {}",
+                    from,
+                    err
+                );
+            }
+        }
+
+        // Flush any buffered remote candidates before cleanup can close the
+        // PeerConnection used by this exchange.
+        self.flush_pending_candidates(from, &peer_connection)
+            .await?;
+        drop(commit_guard);
+        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
 
         tracing::info!(
             "✅ Completed ICE restart answer to serial={}, session_id={}; waiting for ICE Connected before marking sendable",
