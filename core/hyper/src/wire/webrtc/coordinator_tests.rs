@@ -60,15 +60,16 @@ async fn insert_pending_offer_peer(
             webrtc_conn,
             ready_tx: Some(ready_tx),
             is_offerer: true,
-            pending_local_sdp_exchange_id: Some(sdp_exchange_id.to_string()),
+            ice_signaling: PeerIceSignalingState {
+                pending_local_sdp_exchange_id: Some(sdp_exchange_id.to_string()),
+                ..PeerIceSignalingState::default()
+            },
             ice_restart_inflight: false,
             ice_restart_attempts: 0,
             restart_task_handle: None,
             restart_wake: Arc::new(tokio::sync::Notify::new()),
             restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
             last_ice_restart_offer_at: None,
-            local_ice_generation_pending: false,
-            pending_local_ice_candidates: Vec::new(),
             last_state_change: std::time::Instant::now(),
             current_state: RTCPeerConnectionState::New,
             ever_ice_connected: false,
@@ -1138,6 +1139,7 @@ async fn stale_answer_sdp_exchange_id_does_not_consume_pending_offer() {
         "stale Answer must not consume the initial connection ready signal"
     );
     let pending = state
+        .ice_signaling
         .pending_local_sdp_exchange_id
         .as_deref()
         .expect("stale Answer must not clear the active pending offer");
@@ -1171,7 +1173,7 @@ async fn clear_pending_restarts_clears_pending_sdp_exchange() {
     let peers = coordinator.peers.read().await;
     let state = peers.get(&target_id).expect("peer should remain");
     assert!(
-        state.pending_local_sdp_exchange_id.is_none(),
+        state.ice_signaling.pending_local_sdp_exchange_id.is_none(),
         "aborted ICE restart must not leave a stale pending SDP exchange"
     );
     assert!(!state.ice_restart_inflight);
@@ -1264,6 +1266,43 @@ fn media_level_ice_ufrag_overrides_session_level_value() {
 }
 
 #[tokio::test]
+async fn aborted_local_generation_suppresses_late_candidates_until_next_generation() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target.clone(), "restart-exchange").await;
+
+    assert!(
+        WebRtcCoordinator::begin_local_ice_generation(&coordinator.peers, &target, session_id)
+            .await
+    );
+    WebRtcCoordinator::suppress_local_ice_generation(&coordinator.peers, &target, session_id).await;
+
+    let disposition = WebRtcCoordinator::local_candidate_disposition(
+        &coordinator.peers,
+        &target,
+        session_id,
+        RTCIceCandidateInit::default(),
+    )
+    .await;
+    assert_eq!(disposition, LocalCandidateDisposition::Suppressed);
+
+    assert!(
+        WebRtcCoordinator::begin_local_ice_generation(&coordinator.peers, &target, session_id)
+            .await
+    );
+    let peers = coordinator.peers.read().await;
+    assert!(matches!(
+        peers
+            .get(&target)
+            .expect("peer should exist")
+            .ice_signaling
+            .local_generation,
+        LocalIceGenerationState::Buffering(_)
+    ));
+}
+
+#[tokio::test]
 async fn candidate_gathered_before_restart_local_sdp_uses_new_generation_ufrag() {
     let coordinator = Arc::new(WebRtcCoordinator::new(
         test_actor_id(1),
@@ -1282,16 +1321,18 @@ async fn candidate_gathered_before_restart_local_sdp_uses_new_generation_ufrag()
     );
     {
         let mut peers = coordinator.peers.write().await;
-        peers
-            .get_mut(&target_id)
-            .expect("peer should exist")
-            .pending_local_ice_candidates
-            .push(RTCIceCandidateInit {
-                candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
-                sdp_mid: Some("0".to_string()),
-                sdp_mline_index: Some(0),
-                username_fragment: None,
-            });
+        let state = peers.get_mut(&target_id).expect("peer should exist");
+        let LocalIceGenerationState::Buffering(candidates) =
+            &mut state.ice_signaling.local_generation
+        else {
+            panic!("local generation should be buffering");
+        };
+        candidates.push(RTCIceCandidateInit {
+            candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+            sdp_mid: Some("0".to_string()),
+            sdp_mline_index: Some(0),
+            username_fragment: None,
+        });
     }
 
     let new_description = RTCSessionDescription::offer(
@@ -1321,12 +1362,14 @@ async fn candidate_gathered_before_restart_local_sdp_uses_new_generation_ufrag()
         Some("new-generation")
     );
     let peers = coordinator.peers.read().await;
-    assert!(
-        !peers
+    assert!(matches!(
+        peers
             .get(&target_id)
             .expect("peer should exist")
-            .local_ice_generation_pending
-    );
+            .ice_signaling
+            .local_generation,
+        LocalIceGenerationState::Idle
+    ));
 }
 
 #[tokio::test]
@@ -1359,8 +1402,10 @@ async fn ice_restart_answer_create_error_resets_local_generation() {
 
     let peers = coordinator.peers.read().await;
     let state = peers.get(&target_id).expect("peer should remain");
-    assert!(!state.local_ice_generation_pending);
-    assert!(state.pending_local_ice_candidates.is_empty());
+    assert!(matches!(
+        state.ice_signaling.local_generation,
+        LocalIceGenerationState::Suppressed
+    ));
     drop(peers);
     coordinator
         .close_all_peers()
@@ -1427,8 +1472,10 @@ async fn ice_restart_answer_send_error_resets_local_generation() {
 
     let peers = coordinator.peers.read().await;
     let state = peers.get(&target_id).expect("peer should remain");
-    assert!(!state.local_ice_generation_pending);
-    assert!(state.pending_local_ice_candidates.is_empty());
+    assert!(!matches!(
+        state.ice_signaling.local_generation,
+        LocalIceGenerationState::Buffering(_)
+    ));
     drop(peers);
     remote_pc.close().await.expect("remote peer should close");
     coordinator
@@ -1745,16 +1792,16 @@ async fn expired_restart_signaling_gates_are_pruned() {
     let gate_a = coordinator.restart_signaling_gate_for(&peer_a).await;
     let gate_a_again = coordinator.restart_signaling_gate_for(&peer_a).await;
     assert!(Arc::ptr_eq(&gate_a, &gate_a_again));
-    WebRtcCoordinator::prune_restart_signaling_gates(&coordinator.restart_signaling_gates).await;
+    WebRtcCoordinator::prune_restart_signaling_gates(&coordinator.peer_signaling.gates).await;
     let gate_a_after_prune = coordinator.restart_signaling_gate_for(&peer_a).await;
     assert!(Arc::ptr_eq(&gate_a, &gate_a_after_prune));
-    assert_eq!(coordinator.restart_signaling_gates.lock().await.len(), 1);
+    assert_eq!(coordinator.peer_signaling.gates.lock().await.len(), 1);
     drop(gate_a);
     drop(gate_a_again);
     drop(gate_a_after_prune);
 
     let _gate_b = coordinator.restart_signaling_gate_for(&peer_b).await;
-    let gates = coordinator.restart_signaling_gates.lock().await;
+    let gates = coordinator.peer_signaling.gates.lock().await;
     assert!(!gates.contains_key(&peer_a));
     assert!(gates.contains_key(&peer_b));
 }
@@ -1910,7 +1957,8 @@ async fn close_all_peers_waits_for_restart_signaling_commit_before_drain() {
         insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
     let restart_signaling_gate = coordinator.restart_signaling_gate_for(&target_id).await;
     let peers = Arc::clone(&coordinator.peers);
-    let restart_cancellation_epoch = Arc::clone(&coordinator.restart_cancellation_epoch);
+    let restart_cancellation_epoch =
+        Arc::clone(&coordinator.peer_signaling.restart_cancellation_epoch);
     let cancellation_epoch = restart_cancellation_epoch.load(Ordering::Acquire);
     let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
     let target_for_task = target_id.clone();
@@ -1934,7 +1982,11 @@ async fn close_all_peers_waits_for_restart_signaling_commit_before_drain() {
     let close_coordinator = Arc::clone(&coordinator);
     let close = tokio::spawn(async move { close_coordinator.close_all_peers().await });
     tokio::time::timeout(Duration::from_secs(1), async {
-        while !coordinator.closing_all_peers.load(Ordering::Acquire) {
+        while !coordinator
+            .peer_signaling
+            .closing_all
+            .load(Ordering::Acquire)
+        {
             tokio::task::yield_now().await;
         }
     })
@@ -2007,6 +2059,7 @@ async fn restart_cancellation_epoch_rejects_queued_restart() {
     });
     tokio::time::timeout(Duration::from_secs(1), async {
         while coordinator
+            .peer_signaling
             .restart_cancellation_epoch
             .load(Ordering::Acquire)
             == 0
@@ -2051,7 +2104,8 @@ async fn stale_peer_at_restart_signaling_boundary_does_not_send_offer() {
     let signaling_guard = restart_signaling_gate.lock().await;
     let peers = Arc::clone(&coordinator.peers);
     let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
-    let restart_cancellation_epoch = Arc::clone(&coordinator.restart_cancellation_epoch);
+    let restart_cancellation_epoch =
+        Arc::clone(&coordinator.peer_signaling.restart_cancellation_epoch);
     let cancellation_epoch = restart_cancellation_epoch.load(Ordering::Acquire);
     let target_for_task = target_id.clone();
     let signaling_task = tokio::spawn(async move {
