@@ -1041,6 +1041,54 @@ async fn shutdown_actor_runner(
     abort_guard.disarm();
 }
 
+/// Spawn the workload stop coordinator behind a boxed future boundary.
+///
+/// Keeping this concrete async state machine out of [`Inner::start`] prevents
+/// Rust 1.95 consumers from recursively laying it out as part of the public
+/// node-start future.
+fn spawn_workload_stop_task(
+    node: Arc<Inner>,
+    actor_id: ActrId,
+    credential_state: CredentialState,
+    shutdown: CancellationToken,
+) -> tokio::task::JoinHandle<()> {
+    let task: ShutdownStep = Box::pin(async move {
+        shutdown.cancelled().await;
+        let data_chunk_registry = node.data_chunk_registry.clone();
+        let scheduler = node.dispatch_scheduler.clone();
+        let runner = node.workload_dispatch.clone();
+        let runner_for_stop = runner.clone();
+        let stop_stream_workers = async move {
+            // Once this returns, no stream callback can still enqueue actor
+            // work or retain its RuntimeContext ownership chain.
+            data_chunk_registry.shutdown().await;
+        };
+        let stop = async move {
+            let stop_ctx = node
+                .bootstrap_ctx_builder()
+                .build_bootstrap(&actor_id, &credential_state.credential().await);
+            let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
+            let call_executor = lifecycle_host_abi(stop_ctx.clone(), runner_for_stop.clone());
+            if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
+                "on_stop",
+                runner_for_stop.on_stop(stop_ctx, invocation, &call_executor),
+            )
+            .await
+            {
+                tracing::warn!(error = %e, "workload on_stop returned Err");
+            }
+        };
+        shutdown_actor_runner(
+            scheduler,
+            runner,
+            Box::pin(stop_stream_workers),
+            Box::pin(stop),
+        )
+        .await;
+    });
+    tokio::spawn(task)
+}
+
 impl Inner {
     #[allow(dead_code)]
     pub(crate) fn package_manifest(&self) -> Option<&actr_pack::PackageManifest> {
@@ -2451,45 +2499,12 @@ impl Inner {
         // 3.2. Register workload-level stop hook.
         // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         {
-            let node = node_ref.clone();
-            let actor_id = actor_id.clone();
-            let credential_state = credential_state.clone();
-            let shutdown = shutdown_token.clone();
-            let on_stop_handle = tokio::spawn(async move {
-                shutdown.cancelled().await;
-                let data_chunk_registry = node.data_chunk_registry.clone();
-                let scheduler = node.dispatch_scheduler.clone();
-                let runner = node.workload_dispatch.clone();
-                let runner_for_stop = runner.clone();
-                let stop_stream_workers = async move {
-                    // Once this returns, no stream callback can still enqueue
-                    // actor work or retain its RuntimeContext ownership chain.
-                    data_chunk_registry.shutdown().await;
-                };
-                let stop = async move {
-                    let stop_ctx = node
-                        .bootstrap_ctx_builder()
-                        .build_bootstrap(&actor_id, &credential_state.credential().await);
-                    let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
-                    let call_executor =
-                        lifecycle_host_abi(stop_ctx.clone(), runner_for_stop.clone());
-                    if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
-                        "on_stop",
-                        runner_for_stop.on_stop(stop_ctx, invocation, &call_executor),
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %e, "workload on_stop returned Err");
-                    }
-                };
-                shutdown_actor_runner(
-                    scheduler,
-                    runner,
-                    Box::pin(stop_stream_workers),
-                    Box::pin(stop),
-                )
-                .await;
-            });
+            let on_stop_handle = spawn_workload_stop_task(
+                node_ref.clone(),
+                actor_id.clone(),
+                credential_state.clone(),
+                shutdown_token.clone(),
+            );
             task_handles.push(on_stop_handle);
         }
 
