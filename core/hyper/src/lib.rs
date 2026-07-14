@@ -705,10 +705,11 @@ impl Hyper {
     /// the provider decides how to authenticate the package (static key,
     /// registry lookup, keyless transparency log, etc).
     pub async fn verify_package(&self, package: &WorkloadPackage) -> HyperResult<VerifiedPackage> {
+        let max_entry_bytes = self.inner.config.resolved_wasm_limits().max_component_bytes;
         self.inner
             .config
             .trust_provider
-            .verify_package(package.bytes())
+            .verify_package_bounded(package.bytes(), max_entry_bytes)
             .await
     }
 
@@ -872,17 +873,31 @@ impl Node<Init> {
         let conflict_keys = self.pending_conflict_keys;
         let hyper_inner = self.hyper;
         let loaded = load_workload_package_inner(&hyper_inner, package).await?;
-        let packaged_lock = actr_pack::read_lock_file(package.bytes())
+        // Only consume the lock entry when the verified manifest authenticates
+        // it. An attacker may otherwise append an unsigned ZIP entry with the
+        // conventional name after the manifest has been signed.
+        let packaged_lock = if let Some(lock_file) = &loaded.verified.manifest.lock_file {
+            actr_pack::read_lock_file_bounded(
+                package.bytes(),
+                &lock_file.path,
+                hyper_inner
+                    .config
+                    .resolved_wasm_limits()
+                    .max_component_bytes,
+            )
             .map_err(|e| HyperError::Runtime(e.to_string()))?
-            .map(|bytes| {
-                let raw = std::str::from_utf8(&bytes).map_err(|e| {
-                    HyperError::Runtime(format!("manifest.lock.toml is not valid UTF-8: {e}"))
-                })?;
-                actr_config::lock::LockFile::from_str(raw).map_err(|e| {
-                    HyperError::Runtime(format!("failed to parse manifest.lock.toml: {e}"))
-                })
+        } else {
+            None
+        }
+        .map(|bytes| {
+            let raw = std::str::from_utf8(&bytes).map_err(|e| {
+                HyperError::Runtime(format!("manifest.lock.toml is not valid UTF-8: {e}"))
+            })?;
+            actr_config::lock::LockFile::from_str(raw).map_err(|e| {
+                HyperError::Runtime(format!("failed to parse manifest.lock.toml: {e}"))
             })
-            .transpose()?;
+        })
+        .transpose()?;
         let mailbox_backpressure_threshold =
             hyper_inner.config.resolved_mailbox_backpressure_threshold();
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
@@ -1319,7 +1334,12 @@ pub(crate) async fn load_workload_package_inner(
     package: &WorkloadPackage,
 ) -> HyperResult<LoadedWorkload> {
     let bytes = package.bytes();
-    let verified = inner.config.trust_provider.verify_package(bytes).await?;
+    let max_entry_bytes = inner.config.resolved_wasm_limits().max_component_bytes;
+    let verified = inner
+        .config
+        .trust_provider
+        .verify_package_bounded(bytes, max_entry_bytes)
+        .await?;
     let binary_kind = detect_binary_kind(&verified.manifest)?;
     let workload = match binary_kind {
         BinaryKind::Wasm => load_wasm_workload_inner(inner, bytes, &verified.manifest).await?,
