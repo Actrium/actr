@@ -1453,6 +1453,9 @@ fn classify_unit(label: &str, res: Result<(), WitActrError>) -> ActorResult<()> 
 /// The resident `select!` loop that runs *inside* the live `run_concurrent`
 /// region. Accepts new commands off `cmd_rx`, drives dispatches concurrently in
 /// a `FuturesUnordered`, and runs every non-dispatch command as a barrier.
+// Keep the borrowed region state explicit: grouping it behind another owner
+// would obscure which values must outlive every in-flight guest future.
+#[allow(clippy::too_many_arguments)]
 async fn resident_region(
     accessor: &Accessor<HostState>,
     bindings: &ActrWorkloadGuestV2,
@@ -1623,6 +1626,9 @@ async fn resident_region(
 /// Run one barrier command alone inside the region (in-flight already drained).
 /// Registers its reply in the ledger *before* the guest call so a trap during
 /// the barrier fails it via the outer supervisor.
+// These are the same explicit borrowed region dependencies as resident_region;
+// keeping them separate makes the barrier's cancellation boundaries visible.
+#[allow(clippy::too_many_arguments)]
 async fn run_barrier(
     accessor: &Accessor<HostState>,
     bindings: &ActrWorkloadGuestV2,
