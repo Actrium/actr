@@ -22,10 +22,9 @@
 //! This replaces the M3 synchronous lift. Per-call identity is no longer
 //! read back through `get-self-id` / `get-caller-id` / `get-request-id`
 //! imports (removed in 0.2.0); it arrives as an explicit `invocation-ctx`
-//! parameter on `dispatch` / the lifecycle hooks / `on-data-stream`, and a
-//! bare `ctx-token: u64` on the twelve observation hooks. The SDK carries
-//! the token into every host import so the host can key the calling
-//! invocation even under concurrent in-flight calls.
+//! parameter on every guest export. The SDK carries its token into every
+//! host import so the host can key the calling invocation even under
+//! concurrent in-flight calls.
 //!
 //! # `generate_all`
 //!

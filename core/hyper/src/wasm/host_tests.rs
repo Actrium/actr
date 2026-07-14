@@ -14,6 +14,19 @@ fn compile_rejects_empty_bytes() {
 }
 
 #[test]
+fn compile_with_limits_rejects_oversized_component_before_parsing() {
+    let limits = WasmRuntimeLimits {
+        max_component_bytes: 3,
+        ..WasmRuntimeLimits::default()
+    };
+    let error = WasmHost::compile_with_limits(b"\0asm", &limits).unwrap_err();
+    assert!(matches!(
+        error,
+        WasmError::ResourceLimitExceeded("component byte size")
+    ));
+}
+
+#[test]
 fn compile_rejects_legacy_core_module_magic() {
     // `\0asm` magic + invalid body must still fail (host requires
     // Component Model binaries).
@@ -63,4 +76,26 @@ fn probe_world_rejects_component_exporting_both_worlds() {
         err.to_string().contains("both"),
         "unexpected message: {err}"
     );
+}
+
+#[test]
+fn epoch_deadline_preserves_sub_millisecond_precision() {
+    let limits = WasmRuntimeLimits {
+        epoch_tick: std::time::Duration::from_micros(1),
+        invocation_timeout: std::time::Duration::from_secs(5),
+        ..WasmRuntimeLimits::default()
+    };
+
+    assert_eq!(epoch_deadline_ticks(&limits), 5_000_001);
+}
+
+#[test]
+fn epoch_deadline_rounds_fractional_tick_up() {
+    let limits = WasmRuntimeLimits {
+        epoch_tick: std::time::Duration::from_micros(1_900),
+        invocation_timeout: std::time::Duration::from_millis(5),
+        ..WasmRuntimeLimits::default()
+    };
+
+    assert_eq!(epoch_deadline_ticks(&limits), 3);
 }

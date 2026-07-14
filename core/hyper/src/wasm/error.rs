@@ -46,10 +46,18 @@ pub(crate) fn classify_trap(entry: &str, trap: wasmtime::Error) -> WasmError {
         }
     }
 
-    let message = trap.to_string();
+    if let Some(limit) = trap.downcast_ref::<super::runtime_limits::StoreResourceLimit>() {
+        return WasmError::ResourceLimitExceeded(limit.label());
+    }
+
+    let message = format!("{trap:#}");
     if message.contains("resource limit exceeded")
         || message.contains("maximum memory size")
         || message.contains("maximum table size")
+        || message.contains("forcing trap when growing memory")
+        || message.contains("forcing trap when growing table")
+        || message.contains("forcing a memory growth failure to be a trap")
+        || message.contains("forcing a table growth failure to be a trap")
     {
         super::runtime_limits::record_resource_denial();
         return WasmError::ResourceLimitExceeded("per-store Wasmtime resource limit");

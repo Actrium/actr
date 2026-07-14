@@ -10,10 +10,10 @@
 //! 3. concurrency never exceeds the scheduler budget C
 //! 4. an in-flight guest trap fails ALL siblings together and rebuilds (5. the
 //!    whole-region teardown is asserted explicitly there too)
-//! 6. a per-dispatch timeout cleanly cancels the stuck dispatch (bounded, no
-//!    hang), frees its key, and does not poison the store; and (6b) the same-key
-//!    timeout seam stays sealed — a same-key sibling never enters the region
-//!    before a timed-out first dispatch actually leaves it
+//! 6. a per-dispatch timeout hard-cancels the stuck Store (bounded, no hang),
+//!    fails co-resident siblings, rebuilds, and frees the timed-out key; and
+//!    (6b) the same-key timeout seam stays sealed — a same-key sibling never
+//!    enters before the old Store has been discarded
 //! 7. gate-off degrades to the serial M4 path (MAX_SEEN==1)
 //! 8. the node-integration seam: the dedup write-back (node.rs:~1204) is correct
 //!    around a gate-on interleaved wasm V2 dispatch (see the scope note on that
@@ -249,10 +249,10 @@ async fn inflight_trap_fails_all_siblings_then_rebuilds() {
     );
 }
 
-// ── Facet 6 — per-dispatch timeout: clean cancel, bounded, no poison ─────────
+// ── Facet 6 — per-dispatch timeout: hard cancel, sibling failure, rebuild ────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dispatch_timeout_cancels_frees_key_and_survives() {
+async fn dispatch_timeout_discards_store_fails_siblings_and_recovers() {
     let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
     let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
     // 300ms per-dispatch deadline, enforced inside the region.
@@ -264,9 +264,9 @@ async fn dispatch_timeout_cancels_frees_key_and_survives() {
     ));
     let (bridge, mut ctl) = gate_bridge();
 
-    // Two distinct-key dispatches both park at the gate forever (never
-    // released). Each must independently hit its deadline even while the other
-    // occupies the region (RA7: the in-region timer stays prompt under load).
+    // Two distinct-key dispatches both park at the gate forever. The first
+    // deadline must discard the whole Store: Wasmtime does not cancel a guest
+    // task merely because its `call_concurrent` future is dropped.
     let a = spawn_dispatch(&dispatcher, PROBE, vec![], caller(1), &bridge);
     let b = spawn_dispatch(&dispatcher, PROBE, vec![], caller(2), &bridge);
     wait_entered(&mut ctl.gate_entered, 2).await;
@@ -280,27 +280,23 @@ async fn dispatch_timeout_cancels_frees_key_and_survives() {
         .await
         .expect("dispatch B must resolve within the watchdog, not hang")
         .unwrap();
-    assert!(
-        matches!(ra, Err(actr_protocol::ActrError::TimedOut)),
-        "dispatch A must resolve TimedOut, got {ra:?}"
+    let outcomes = [&ra, &rb];
+    let timed_out = usize::from(matches!(&ra, Err(actr_protocol::ActrError::TimedOut)))
+        + usize::from(matches!(&rb, Err(actr_protocol::ActrError::TimedOut)));
+    let unavailable = usize::from(matches!(&ra, Err(actr_protocol::ActrError::Unavailable(_))))
+        + usize::from(matches!(&rb, Err(actr_protocol::ActrError::Unavailable(_))));
+    assert_eq!(
+        timed_out, 1,
+        "exactly the deadline that collapses the Store reports TimedOut: {outcomes:?}"
     );
-    assert!(
-        matches!(rb, Err(actr_protocol::ActrError::TimedOut)),
-        "dispatch B must resolve TimedOut, got {rb:?}"
+    assert_eq!(
+        unavailable, 1,
+        "the co-resident sibling must fail retryably when the Store is discarded: {outcomes:?}"
     );
 
-    // Layer-2 landed: the timed-out dispatches were truly cancelled and their
-    // keys freed, and the store was NOT poisoned. A NEW dispatch on the SAME
-    // key as A must now complete promptly on the same instance — it can only be
-    // admitted + run if the cancelled dispatch really left the region (else the
-    // scheduler would never re-arm this key and this await would hang past the
-    // watchdog). We use the un-gated `test/echo` route so the recovery does not
-    // depend on the gate: a CLEAN cancel is a drop (not an unwind), so the
-    // guest's own in-flight counter leaks and — more subtly — the cancelled
-    // dispatch's guest-side host-import teardown lags slightly behind the prompt
-    // reply/key-free, which would otherwise let a lingering waiter steal a fresh
-    // gate permit. Echo has no host import, so it isolates the property under
-    // test: same-key advance + a healthy (un-poisoned) store.
+    // A NEW dispatch on A's key must complete promptly after a fresh Store is
+    // instantiated. The un-gated echo route isolates key release + rebuild
+    // serviceability from the intentionally unreleased old gate waiters.
     let payload = b"post-timeout".to_vec();
     let recovered = tokio::time::timeout(
         Duration::from_secs(5),
@@ -308,11 +304,11 @@ async fn dispatch_timeout_cancels_frees_key_and_survives() {
     )
     .await
     .expect("same-key dispatch after a timeout must not hang (key was freed)")
-    .expect("same-key dispatch after a timeout must succeed (store not poisoned)");
+    .expect("same-key dispatch after a timeout must succeed on the rebuilt Store");
     assert_eq!(
         recovered.as_ref(),
         payload.as_slice(),
-        "the recovered dispatch must round-trip on the same (un-poisoned) instance"
+        "the recovered dispatch must round-trip on the rebuilt instance"
     );
 }
 
@@ -362,21 +358,18 @@ async fn same_key_timeout_seam_seals_region_until_first_leaves() {
     );
 
     // The first hits its deadline (bounded — a real hang trips the watchdog),
-    // which cancels it and frees the key. Only *after* this can the same key be
-    // re-armed for the sibling — the seam under test.
+    // which discards its Store and frees the key. Only *after* this can the same
+    // key be re-armed for the sibling on a rebuilt Store.
     let r1 = await_dispatch(first, "seam first").await;
     assert!(
         matches!(r1, Err(actr_protocol::ActrError::TimedOut)),
         "the parked same-key dispatch must resolve TimedOut, got {r1:?}"
     );
 
-    // The second, queued behind a first that held the key for the entire deadline
-    // window, resolves promptly (bounded by the watchdog) instead of hanging, and
-    // — proven above — never stole the region while the first occupied it. Its own
-    // result is intentionally not asserted: under a single per-dispatch deadline a
-    // same-key sibling queued for the full window legitimately times out from the
-    // queue too. The sealing property lives entirely in the two assertions above
-    // (empty entry channel during the first's occupancy + the first's TimedOut).
+    // The second is admitted only after the first reply releases the scheduler
+    // key. It may then hit its own deadline because this test deliberately never
+    // releases the gate; the important property is bounded resolution with no
+    // overlap on the discarded Store.
     let _second_resolved = await_dispatch(second, "seam second").await;
 
     dispatcher.shutdown().await;

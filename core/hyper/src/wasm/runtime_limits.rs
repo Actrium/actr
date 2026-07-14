@@ -3,11 +3,154 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use wasmtime::Engine;
+use thiserror::Error;
+use wasmtime::{Engine, ResourceLimiter};
 
 use crate::config::WasmRuntimeLimits;
 
 use super::error::{WasmError, WasmResult};
+
+#[derive(Debug, Error)]
+#[error("WASM resource limit exceeded: {label}")]
+pub(crate) struct StoreResourceLimit {
+    label: &'static str,
+}
+
+impl StoreResourceLimit {
+    fn new(label: &'static str) -> Self {
+        Self { label }
+    }
+
+    pub(crate) fn label(&self) -> &'static str {
+        self.label
+    }
+}
+
+/// Store-local limiter whose memory/table limits are aggregate across all
+/// resources in the Store. Wasmtime's `StoreLimitsBuilder::memory_size` and
+/// `table_elements` limits apply to each memory/table independently, which is
+/// not the contract exposed by `WasmRuntimeLimits`.
+#[derive(Debug)]
+pub(crate) struct StoreResourceLimiter {
+    max_linear_memory: usize,
+    max_table_elements: usize,
+    max_memories: usize,
+    max_tables: usize,
+    max_instances: usize,
+    trap_on_grow_failure: bool,
+    linear_memory: usize,
+    table_elements: usize,
+}
+
+impl StoreResourceLimiter {
+    pub(crate) fn new(limits: &WasmRuntimeLimits) -> Self {
+        Self {
+            max_linear_memory: limits.max_linear_memory,
+            max_table_elements: limits.max_table_elements as usize,
+            max_memories: limits.max_memories as usize,
+            max_tables: limits.max_tables as usize,
+            max_instances: limits.max_instances as usize,
+            trap_on_grow_failure: limits.trap_on_grow_failure,
+            linear_memory: 0,
+            table_elements: 0,
+        }
+    }
+
+    fn deny(&self, label: &'static str) -> wasmtime::Result<bool> {
+        record_resource_denial();
+        if self.trap_on_grow_failure {
+            Err(StoreResourceLimit::new(label).into())
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn reserve_growth(
+        total: &mut usize,
+        current: usize,
+        desired: usize,
+        limit: usize,
+    ) -> Option<bool> {
+        let delta = desired.checked_sub(current)?;
+        let next = total.checked_add(delta)?;
+        if next > limit {
+            return Some(false);
+        }
+        *total = next;
+        Some(true)
+    }
+}
+
+impl ResourceLimiter for StoreResourceLimiter {
+    fn memory_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        match Self::reserve_growth(
+            &mut self.linear_memory,
+            current,
+            desired,
+            self.max_linear_memory,
+        ) {
+            Some(true) => Ok(true),
+            Some(false) | None => self.deny("aggregate linear memory per Store"),
+        }
+    }
+
+    fn memory_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        // ResourceLimiter has no successful-growth callback or resource ID,
+        // and Wasmtime may report a failure that occurred before calling
+        // `memory_growing`. Retain the conservative reservation: rolling back
+        // here could subtract a prior successful memory's bytes and let a
+        // multi-memory guest exceed the aggregate Store limit.
+        if self.trap_on_grow_failure {
+            Err(error.context("forcing a memory growth failure to be a trap"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn table_growing(
+        &mut self,
+        current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        match Self::reserve_growth(
+            &mut self.table_elements,
+            current,
+            desired,
+            self.max_table_elements,
+        ) {
+            Some(true) => Ok(true),
+            Some(false) | None => self.deny("aggregate table elements per Store"),
+        }
+    }
+
+    fn table_grow_failed(&mut self, error: wasmtime::Error) -> wasmtime::Result<()> {
+        // See `memory_grow_failed`: fail closed rather than risk undercounting
+        // a different table when Wasmtime reports a pre-limiter failure.
+        if self.trap_on_grow_failure {
+            Err(error.context("forcing a table growth failure to be a trap"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn instances(&self) -> usize {
+        self.max_instances
+    }
+
+    fn tables(&self) -> usize {
+        self.max_tables
+    }
+
+    fn memories(&self) -> usize {
+        self.max_memories
+    }
+}
 
 static ACTIVE_COMPILES: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_INSTANTIATES: AtomicUsize = AtomicUsize::new(0);
@@ -243,5 +386,61 @@ impl Drop for EpochTicker {
                 tracing::error!("WASM epoch ticker thread panicked");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn non_trapping_limits(memory: usize, tables: u32) -> WasmRuntimeLimits {
+        WasmRuntimeLimits {
+            max_linear_memory: memory,
+            max_table_elements: tables,
+            trap_on_grow_failure: false,
+            ..WasmRuntimeLimits::default()
+        }
+    }
+
+    #[test]
+    fn aggregate_memory_limit_spans_multiple_memories() {
+        let mut limiter = StoreResourceLimiter::new(&non_trapping_limits(64, 64));
+
+        assert!(limiter.memory_growing(0, 40, None).unwrap());
+        assert!(!limiter.memory_growing(0, 40, None).unwrap());
+        assert!(limiter.memory_growing(0, 24, None).unwrap());
+    }
+
+    #[test]
+    fn failed_memory_growth_retains_conservative_reservation() {
+        let mut limiter = StoreResourceLimiter::new(&non_trapping_limits(64, 64));
+
+        assert!(limiter.memory_growing(0, 48, None).unwrap());
+        limiter
+            .memory_grow_failed(wasmtime::Error::msg("allocation failed"))
+            .unwrap();
+        assert!(!limiter.memory_growing(0, 64, None).unwrap());
+        assert!(limiter.memory_growing(0, 16, None).unwrap());
+    }
+
+    #[test]
+    fn aggregate_table_limit_spans_multiple_tables() {
+        let mut limiter = StoreResourceLimiter::new(&non_trapping_limits(64, 10));
+
+        assert!(limiter.table_growing(0, 6, None).unwrap());
+        assert!(!limiter.table_growing(0, 5, None).unwrap());
+        assert!(limiter.table_growing(0, 4, None).unwrap());
+    }
+
+    #[test]
+    fn trapping_denial_has_typed_cause() {
+        let mut limiter = StoreResourceLimiter::new(&WasmRuntimeLimits {
+            max_linear_memory: 64,
+            ..WasmRuntimeLimits::default()
+        });
+
+        let error = limiter.memory_growing(0, 65, None).unwrap_err();
+        let limit = error.downcast_ref::<StoreResourceLimit>().unwrap();
+        assert_eq!(limit.label(), "aggregate linear memory per Store");
     }
 }

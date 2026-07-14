@@ -122,15 +122,10 @@ fn unreachable_bridge() -> HostAbiFn {
 async fn component_model_basic_echo_round_trip() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // NB: `call_on_start` is skipped in every test in this module. The
-    // Phase 1 Commit 3 guest adapter unconditionally builds a
-    // `WasmContext` via the `get-self-id` / `get-caller-id` /
-    // `get-request-id` host imports from inside every lifecycle hook,
-    // and the host deliberately traps those imports when no invocation
-    // context is installed (see core/hyper/src/wasm/host.rs). Threading
-    // an invocation through the lifecycle path is Phase 1 follow-up
-    // scope; these tests cover only `handle`, which installs the
-    // context before dispatching.
+    // This dispatch-focused test drives `handle` directly. Lifecycle context
+    // propagation has dedicated coverage in `component_model_call_on_start_*`
+    // below; the V2 ABI now threads an explicit invocation context into every
+    // guest export.
     let payload = b"hello-component".to_vec();
     let req = make_envelope("test/echo", payload.clone());
     let bridge = unreachable_bridge();
@@ -193,9 +188,6 @@ async fn component_model_cross_instance_parallelism() {
         .await
         .expect("instantiate B");
 
-    // on_start skipped on both instances — see
-    // `component_model_basic_echo_round_trip` for why.
-
     // Each instance gets a bridge that sleeps 50 ms before responding —
     // if the two dispatches are truly concurrent the wall-clock total is
     // ~50 ms, not ~100 ms.
@@ -243,8 +235,6 @@ async fn component_model_cross_instance_parallelism() {
 async fn component_model_executor_non_blocking_during_host_await() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // on_start skipped — see `component_model_basic_echo_round_trip`.
-
     let tick_count = Arc::new(AtomicU64::new(0));
     let tick_stop = Arc::new(AtomicBool::new(false));
 
@@ -286,8 +276,6 @@ async fn component_model_executor_non_blocking_during_host_await() {
 async fn component_model_error_variant_propagates() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // on_start skipped — see `component_model_basic_echo_round_trip`.
-
     let bridge = unreachable_bridge();
     let req = make_envelope("unknown/route", Vec::new());
 
@@ -313,8 +301,6 @@ async fn component_model_error_variant_propagates() {
 async fn component_model_panic_after_await_surfaces_as_trap() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // on_start skipped — see `component_model_basic_echo_round_trip`.
-
     // Bridge replies with any bytes; the guest panics immediately after
     // the .await returns.
     let (bridge, counter) = doubling_bridge(Some(Duration::from_millis(10)));
@@ -459,8 +445,6 @@ async fn component_model_business_error_does_not_rebuild() {
 async fn component_model_per_call_overhead() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
     let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
-    // on_start skipped — see `component_model_basic_echo_round_trip`.
-
     let bridge = unreachable_bridge();
     let payload = vec![0u8; 64];
     let req = make_envelope("test/echo", payload);

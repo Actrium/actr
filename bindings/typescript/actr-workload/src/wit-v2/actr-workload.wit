@@ -29,11 +29,12 @@
 //    plus a `ctx-token` through each fallible/dispatch export as an explicit
 //    `invocation-ctx` record; the SDK answers `ctx.self_id()` etc. locally.
 //
-// 3. Every host import takes a `ctx-token: u64` first parameter, and the
-//    twelve infallible observation hooks take a bare `ctx-token: u64`. The
-//    token keys the host's per-invocation table (`HostState.invocations`),
-//    letting the host recover the correct `HostAbiFn` / `InvocationContext`
-//    for the calling task even when several are interleaved on one instance.
+// 3. Every host import takes a `ctx-token: u64` first parameter. Every guest
+//    export, including the twelve infallible observation hooks, receives a
+//    complete `invocation-ctx`. Its token keys the host's per-invocation table
+//    (`HostState.invocations`), letting the host recover the correct
+//    `HostAbiFn` / `InvocationContext` for the calling task even when several
+//    are interleaved on one instance.
 //
 // Type naming: WIT kebab-case with a prefix to avoid colliding with
 // stdlib-ish names during binding generation (e.g. `actr-error` rather
@@ -208,11 +209,11 @@ interface types {
     // Carries the identity triple that the 0.1.0 world exposed through the
     // `get-self-id` / `get-caller-id` / `get-request-id` getters, plus the
     // `ctx-token` that keys the host's per-invocation table. Threaded as an
-    // explicit parameter through the dispatch / lifecycle / data-chunk
-    // exports so several concurrently in-flight invocations on one instance
-    // never cross-read a shared context slot. `self-id` is an instance
-    // constant; `caller-id` is None for host-originated lifecycle hooks;
-    // `request-id` is empty for lifecycle hooks with no inbound envelope.
+    // explicit parameter through every export so several concurrently
+    // in-flight invocations on one instance never cross-read a shared context
+    // slot. `self-id` is an instance constant; `caller-id` is None for
+    // host-originated lifecycle and observation hooks; `request-id` identifies
+    // the originating operation.
     record invocation-ctx {
         ctx-token: u64,
         self-id: actr-id,
@@ -290,8 +291,8 @@ interface host {
 // `on-data-chunk`, and the four lifecycle hooks additionally take an
 // `invocation-ctx` so the guest SDK can answer `ctx.self_id()` /
 // `caller_id()` / `request_id()` locally and carry the `ctx-token` into
-// host imports. The twelve infallible observation hooks take only a bare
-// `ctx-token: u64` (the host has no meaningful caller identity for them).
+// host imports. The twelve infallible observation hooks receive the same
+// complete context so identity semantics match linked and dynclib workloads.
 
 interface workload {
     use types.{
@@ -322,30 +323,30 @@ interface workload {
 
     // ── Signaling (3, infallible) ────────────────────────────────────────
 
-    on-signaling-connecting: async func(ctx-token: u64);
-    on-signaling-connected: async func(ctx-token: u64);
-    on-signaling-disconnected: async func(ctx-token: u64);
+    on-signaling-connecting: async func(ctx: invocation-ctx);
+    on-signaling-connected: async func(ctx: invocation-ctx);
+    on-signaling-disconnected: async func(ctx: invocation-ctx);
 
     // ── Transport: WebSocket (3, infallible) ─────────────────────────────
 
-    on-websocket-connecting: async func(event: peer-event, ctx-token: u64);
-    on-websocket-connected: async func(event: peer-event, ctx-token: u64);
-    on-websocket-disconnected: async func(event: peer-event, ctx-token: u64);
+    on-websocket-connecting: async func(event: peer-event, ctx: invocation-ctx);
+    on-websocket-connected: async func(event: peer-event, ctx: invocation-ctx);
+    on-websocket-disconnected: async func(event: peer-event, ctx: invocation-ctx);
 
     // ── Transport: WebRTC P2P (3, infallible) ────────────────────────────
 
-    on-webrtc-connecting: async func(event: peer-event, ctx-token: u64);
-    on-webrtc-connected: async func(event: peer-event, ctx-token: u64);
-    on-webrtc-disconnected: async func(event: peer-event, ctx-token: u64);
+    on-webrtc-connecting: async func(event: peer-event, ctx: invocation-ctx);
+    on-webrtc-connected: async func(event: peer-event, ctx: invocation-ctx);
+    on-webrtc-disconnected: async func(event: peer-event, ctx: invocation-ctx);
 
     // ── Credential (2, infallible) ───────────────────────────────────────
 
-    on-credential-renewed: async func(event: credential-event, ctx-token: u64);
-    on-credential-expiring: async func(event: credential-event, ctx-token: u64);
+    on-credential-renewed: async func(event: credential-event, ctx: invocation-ctx);
+    on-credential-expiring: async func(event: credential-event, ctx: invocation-ctx);
 
     // ── Mailbox (1, infallible) ──────────────────────────────────────────
 
-    on-mailbox-backpressure: async func(event: backpressure-event, ctx-token: u64);
+    on-mailbox-backpressure: async func(event: backpressure-event, ctx: invocation-ctx);
 
     // ── Fast path: DataChunk ────────────────────────────────────────────
 

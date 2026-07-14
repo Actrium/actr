@@ -41,17 +41,16 @@ use actr_protocol::{
     Realm, RpcEnvelope,
 };
 use wasmtime::component::{Component, HasSelf, Linker, ResourceTable};
-use wasmtime::{
-    Config, Engine, OptLevel, RegallocAlgorithm, Store, StoreLimits, StoreLimitsBuilder,
-};
+use wasmtime::{Config, Engine, OptLevel, RegallocAlgorithm, Store};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::config::WasmRuntimeLimits;
 
 use super::host_v2::WasmWorkloadV2;
 use super::runtime_limits::{
-    EpochTicker, StorePermit, acquire_compile, acquire_instantiate, acquire_invocation,
-    acquire_store, record_compile_failure, record_instantiate_failure, record_timeout,
+    EpochTicker, StorePermit, StoreResourceLimiter, acquire_compile, acquire_instantiate,
+    acquire_invocation, acquire_store, record_compile_failure, record_instantiate_failure,
+    record_resource_denial, record_timeout,
 };
 
 use super::component_bindings::ActrWorkloadGuest;
@@ -164,7 +163,7 @@ pub(crate) struct HostState {
     /// issue #346: per-store resource limits (memory/table/instance caps).
     /// Installed via `Store::limiter` so `memory.grow`/`table.grow` over the
     /// bound trap (or return an error, per `trap_on_grow_failure`).
-    pub(crate) limits: StoreLimits,
+    pub(crate) limits: StoreResourceLimiter,
 }
 
 /// One live invocation's host-facing state, keyed by `ctx-token` in
@@ -188,14 +187,6 @@ impl std::fmt::Debug for HostState {
 
 impl HostState {
     pub(crate) fn new(limits: &WasmRuntimeLimits) -> Self {
-        let store_limits = StoreLimitsBuilder::new()
-            .memory_size(limits.max_linear_memory)
-            .table_elements(limits.max_table_elements as usize)
-            .memories(limits.max_memories as usize)
-            .tables(limits.max_tables as usize)
-            .instances(limits.max_instances as usize)
-            .trap_on_grow_failure(limits.trap_on_grow_failure)
-            .build();
         Self {
             wasi: WasiCtxBuilder::new().inherit_stdio().build(),
             table: ResourceTable::new(),
@@ -203,7 +194,7 @@ impl HostState {
             host_abi: None,
             invocations: HashMap::new(),
             next_token: 0,
-            limits: store_limits,
+            limits: StoreResourceLimiter::new(limits),
         }
     }
 
@@ -233,6 +224,10 @@ impl HostState {
     /// completed (success or business error). No-op if already gone.
     pub(crate) fn remove_invocation(&mut self, token: u64) {
         self.invocations.remove(&token);
+    }
+
+    pub(crate) fn invocation_count(&self) -> usize {
+        self.invocations.len()
     }
 
     /// Drop every live invocation and reset the token counter. Called when a
@@ -712,6 +707,10 @@ impl WasmHost {
     /// thread the configured [`WasmRuntimeLimits`]; tests use [`compile`].
     pub fn compile_with_limits(wasm_bytes: &[u8], limits: &WasmRuntimeLimits) -> WasmResult<Self> {
         limits.validate().map_err(WasmError::VerificationFailed)?;
+        if wasm_bytes.len() > limits.max_component_bytes {
+            record_resource_denial();
+            return Err(WasmError::ResourceLimitExceeded("component byte size"));
+        }
         let _compile_permit = acquire_compile(limits)?;
         let engine = build_engine(limits)?;
         let epoch_ticker = EpochTicker::spawn(&engine, limits.epoch_tick)?;
@@ -764,7 +763,7 @@ impl WasmHost {
                     engine: self.engine.clone(),
                     component: self.component.clone(),
                     limits: self.limits,
-                    store,
+                    store: Some(store),
                     bindings,
                     _epoch_ticker: Arc::clone(&self.epoch_ticker),
                     _store_permit: store_permit,
@@ -859,6 +858,7 @@ impl WasmKernel {
         }
     }
 
+    #[cfg(feature = "test-utils")]
     pub(crate) fn rebuild_count(&self) -> u64 {
         match self {
             WasmKernel::V1(w) => w.rebuild_count(),
@@ -963,8 +963,8 @@ impl WasmKernel {
 /// engine epoch (`Store::set_epoch_deadline` is relative to the engine epoch
 /// at call time).
 pub(crate) fn epoch_deadline_ticks(limits: &WasmRuntimeLimits) -> u64 {
-    let tick_ms = limits.epoch_tick.as_millis().max(1);
-    u64::try_from(limits.invocation_timeout.as_millis() / tick_ms)
+    let tick_nanos = limits.epoch_tick.as_nanos().max(1);
+    u64::try_from(limits.invocation_timeout.as_nanos() / tick_nanos)
         .unwrap_or(u64::MAX)
         .saturating_add(1)
 }
@@ -1059,7 +1059,7 @@ pub(crate) struct WasmWorkload {
     /// issue #346: resource limits retained to re-seed fuel/epoch/limiter on
     /// a post-trap rebuild (`ensure_instance`).
     limits: WasmRuntimeLimits,
-    store: Store<HostState>,
+    store: Option<Store<HostState>>,
     bindings: ActrWorkloadGuest,
     _epoch_ticker: Arc<EpochTicker>,
     _store_permit: StorePermit,
@@ -1098,19 +1098,28 @@ impl WasmWorkload {
 
     fn install_invocation(&mut self, ctx: InvocationContext, host_abi: &HostAbiFn) {
         let host_abi_clone: HostAbiFn = Arc::clone(host_abi);
-        let state = self.store.data_mut();
+        let state = self
+            .store
+            .as_mut()
+            .expect("serviceable wasm instance must have a Store")
+            .data_mut();
         state.invocation = Some(ctx);
         state.host_abi = Some(host_abi_clone);
     }
 
     fn clear_invocation(&mut self) {
-        let state = self.store.data_mut();
+        let state = self
+            .store
+            .as_mut()
+            .expect("serviceable wasm instance must have a Store")
+            .data_mut();
         state.invocation = None;
         state.host_abi = None;
     }
 
     /// Number of times the poisoned store has been rebuilt. Test/observability
     /// hook — monotonic, incremented once per successful re-instantiation.
+    #[cfg(feature = "test-utils")]
     pub(crate) fn rebuild_count(&self) -> u64 {
         self.rebuilds
     }
@@ -1118,9 +1127,13 @@ impl WasmWorkload {
     /// issue #346: re-seed per-entry fuel + epoch deadline (V1 serial path).
     fn reseed_fuel(&mut self) -> WasmResult<()> {
         self.store
+            .as_mut()
+            .expect("serviceable wasm instance must have a Store")
             .set_fuel(self.limits.fuel_per_invocation)
             .map_err(|e| WasmError::ExecutionFailed(format!("set fuel: {e}")))?;
         self.store
+            .as_mut()
+            .expect("serviceable wasm instance must have a Store")
             .set_epoch_deadline(epoch_deadline_ticks(&self.limits));
         Ok(())
     }
@@ -1145,9 +1158,15 @@ impl WasmWorkload {
              guest in-memory state is discarded (lifecycle/queue not replayed)"
         );
 
+        // A poisoned Store can no longer execute guest code but still owns all
+        // of its linear memories. Drop it before constructing the replacement,
+        // so rebuilds never transiently hold two physical Stores. The owning
+        // workload deliberately retains its process reservation throughout.
+        drop(self.store.take());
+
         match instantiate_parts(&self.engine, &self.component, &self.limits).await {
             Ok((store, bindings)) => {
-                self.store = store;
+                self.store = Some(store);
                 self.bindings = bindings;
                 self.poisoned = false;
                 self.rebuilds += 1;
@@ -1162,9 +1181,12 @@ impl WasmWorkload {
                     error = %e,
                     "failed to rebuild poisoned wasm store; instance stays poisoned, will retry on next call"
                 );
-                Err(WasmError::LoadFailed(format!(
-                    "failed to rebuild poisoned wasm store: {e}"
-                )))
+                match e {
+                    e @ WasmError::ResourceLimitExceeded(_) => Err(e),
+                    e => Err(WasmError::LoadFailed(format!(
+                        "failed to rebuild poisoned wasm store: {e}"
+                    ))),
+                }
             }
         }
     }
@@ -1179,11 +1201,18 @@ impl WasmWorkload {
     /// (`ExecutionFailed`).
     fn trap_poison(&mut self, entry: &str, trap: wasmtime::Error) -> WasmError {
         self.poisoned = true;
-        self.clear_invocation();
+        if let Some(store) = self.store.as_mut() {
+            let state = store.data_mut();
+            state.invocation = None;
+            state.host_abi = None;
+        }
+        // A trapped Store is not serviceable. Discard it immediately so no
+        // linear memory or latent guest task survives until the next entry.
+        drop(self.store.take());
         tracing::error!(
             entry,
             error = %trap,
-            "wasm guest trapped; store poisoned (instance-level fatal). \
+            "wasm guest trapped; store discarded (instance-level fatal). \
              In-memory guest state is lost; a fresh instance is rebuilt before the next call"
         );
         super::error::classify_trap(entry, trap)
@@ -1191,7 +1220,12 @@ impl WasmWorkload {
 
     fn timeout_poison(&mut self) -> WasmError {
         self.poisoned = true;
-        self.clear_invocation();
+        if let Some(store) = self.store.as_mut() {
+            let state = store.data_mut();
+            state.invocation = None;
+            state.host_abi = None;
+        }
+        drop(self.store.take());
         record_timeout();
         WasmError::InvocationTimeout(self.limits.invocation_timeout)
     }
@@ -1214,9 +1248,11 @@ impl WasmWorkload {
 
         let result = tokio::time::timeout(
             self.limits.invocation_timeout,
-            self.bindings
-                .actr_workload_workload()
-                .call_on_start(&mut self.store),
+            self.bindings.actr_workload_workload().call_on_start(
+                self.store
+                    .as_mut()
+                    .expect("serviceable wasm instance must have a Store"),
+            ),
         )
         .await;
 
@@ -1247,9 +1283,11 @@ impl WasmWorkload {
 
         let result = tokio::time::timeout(
             self.limits.invocation_timeout,
-            self.bindings
-                .actr_workload_workload()
-                .call_on_ready(&mut self.store),
+            self.bindings.actr_workload_workload().call_on_ready(
+                self.store
+                    .as_mut()
+                    .expect("serviceable wasm instance must have a Store"),
+            ),
         )
         .await;
 
@@ -1280,9 +1318,11 @@ impl WasmWorkload {
 
         let result = tokio::time::timeout(
             self.limits.invocation_timeout,
-            self.bindings
-                .actr_workload_workload()
-                .call_on_stop(&mut self.store),
+            self.bindings.actr_workload_workload().call_on_stop(
+                self.store
+                    .as_mut()
+                    .expect("serviceable wasm instance must have a Store"),
+            ),
         )
         .await;
 
@@ -1317,82 +1357,139 @@ impl WasmWorkload {
                 PackageHookEvent::SignalingConnecting => {
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_signaling_connecting(&mut self.store)
+                        .call_on_signaling_connecting(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                        )
                         .await
                 }
                 PackageHookEvent::SignalingConnected => {
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_signaling_connected(&mut self.store)
+                        .call_on_signaling_connected(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                        )
                         .await
                 }
                 PackageHookEvent::SignalingDisconnected => {
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_signaling_disconnected(&mut self.store)
+                        .call_on_signaling_disconnected(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                        )
                         .await
                 }
                 PackageHookEvent::WebSocketConnecting(event) => {
                     let event = proto_peer_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_websocket_connecting(&mut self.store, &event)
+                        .call_on_websocket_connecting(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            &event,
+                        )
                         .await
                 }
                 PackageHookEvent::WebSocketConnected(event) => {
                     let event = proto_peer_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_websocket_connected(&mut self.store, &event)
+                        .call_on_websocket_connected(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            &event,
+                        )
                         .await
                 }
                 PackageHookEvent::WebSocketDisconnected(event) => {
                     let event = proto_peer_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_websocket_disconnected(&mut self.store, &event)
+                        .call_on_websocket_disconnected(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            &event,
+                        )
                         .await
                 }
                 PackageHookEvent::WebRtcConnecting(event) => {
                     let event = proto_peer_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_webrtc_connecting(&mut self.store, &event)
+                        .call_on_webrtc_connecting(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            &event,
+                        )
                         .await
                 }
                 PackageHookEvent::WebRtcConnected(event) => {
                     let event = proto_peer_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_webrtc_connected(&mut self.store, &event)
+                        .call_on_webrtc_connected(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            &event,
+                        )
                         .await
                 }
                 PackageHookEvent::WebRtcDisconnected(event) => {
                     let event = proto_peer_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_webrtc_disconnected(&mut self.store, &event)
+                        .call_on_webrtc_disconnected(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            &event,
+                        )
                         .await
                 }
                 PackageHookEvent::CredentialRenewed(event) => {
                     let event = proto_credential_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_credential_renewed(&mut self.store, event)
+                        .call_on_credential_renewed(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            event,
+                        )
                         .await
                 }
                 PackageHookEvent::CredentialExpiring(event) => {
                     let event = proto_credential_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_credential_expiring(&mut self.store, event)
+                        .call_on_credential_expiring(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            event,
+                        )
                         .await
                 }
                 PackageHookEvent::MailboxBackpressure(event) => {
                     let event = proto_backpressure_event_to_wit(event);
                     self.bindings
                         .actr_workload_workload()
-                        .call_on_mailbox_backpressure(&mut self.store, event)
+                        .call_on_mailbox_backpressure(
+                            self.store
+                                .as_mut()
+                                .expect("serviceable wasm instance must have a Store"),
+                            event,
+                        )
                         .await
                 }
             }
@@ -1456,9 +1553,12 @@ impl WasmWorkload {
         let wit_envelope = rpc_envelope_to_wit(&envelope);
         let dispatch_result = tokio::time::timeout(
             self.limits.invocation_timeout,
-            self.bindings
-                .actr_workload_workload()
-                .call_dispatch(&mut self.store, &wit_envelope),
+            self.bindings.actr_workload_workload().call_dispatch(
+                self.store
+                    .as_mut()
+                    .expect("serviceable wasm instance must have a Store"),
+                &wit_envelope,
+            ),
         )
         .await;
 
@@ -1500,7 +1600,9 @@ impl WasmWorkload {
         let result = tokio::time::timeout(
             self.limits.invocation_timeout,
             self.bindings.actr_workload_workload().call_on_data_chunk(
-                &mut self.store,
+                self.store
+                    .as_mut()
+                    .expect("serviceable wasm instance must have a Store"),
                 &wit_chunk,
                 &wit_sender,
             ),

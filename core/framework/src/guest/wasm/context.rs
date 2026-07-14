@@ -153,7 +153,7 @@ pub(crate) async fn dispatch_registered_stream(
 
 impl WasmContext {
     /// Build a context from the explicit `invocation-ctx` the host threads
-    /// into `dispatch` / the fallible lifecycle hooks / `on-data-stream`.
+    /// into every guest export.
     /// Carries the full identity triple plus the `ctx-token` used to route
     /// outbound host imports.
     pub(crate) fn from_invocation(inv: wit_types::InvocationCtx) -> Self {
@@ -162,20 +162,6 @@ impl WasmContext {
             self_id: actr_id_from_wit(&inv.self_id),
             caller_id: inv.caller_id.as_ref().map(actr_id_from_wit),
             request_id: inv.request_id,
-        }
-    }
-
-    /// Build a context for the twelve infallible observation hooks, which
-    /// carry only a bare `ctx-token: u64` (the host has no meaningful caller
-    /// identity for them). Identity fields are zero-valued; the token still
-    /// routes any outbound `ctx.call` / `ctx.tell` / `ctx.discover` the hook
-    /// performs.
-    pub(crate) fn from_token(ctx_token: u64) -> Self {
-        Self {
-            ctx_token,
-            self_id: ActrId::default(),
-            caller_id: None,
-            request_id: String::new(),
         }
     }
 }

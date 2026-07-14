@@ -22,16 +22,13 @@
 //!
 //! Under the 0.2.0 async world each adapter method constructs a fresh
 //! [`super::WasmContext`] from the explicit `invocation-ctx` the host
-//! threads into `dispatch` / the fallible lifecycle hooks / `on-data-stream`
-//! ([`WasmContext::from_invocation`][fi]), or from the bare `ctx-token` the
-//! twelve observation hooks carry ([`WasmContext::from_token`][ft]). The
+//! threads into every export ([`WasmContext::from_invocation`][fi]). The
 //! 0.1.0 getter imports (`get-self-id` / `get-caller-id` / `get-request-id`)
 //! are gone; identity arrives as data. The token is carried into every
 //! outbound host import so the host routes the right bridge under concurrent
 //! in-flight calls.
 //!
 //! [fi]: super::context::WasmContext::from_invocation
-//! [ft]: super::context::WasmContext::from_token
 
 use std::sync::OnceLock;
 
@@ -268,18 +265,21 @@ pub async fn run_on_error<W: Workload>(
 // case (where the pre-Phase-1 host passed `None`) does not fire through
 // the guest runtime path.
 
-pub async fn run_on_signaling_connecting<W: Workload>(workload: &W, ctx_token: u64) {
-    let ctx = WasmContext::from_token(ctx_token);
+pub async fn run_on_signaling_connecting<W: Workload>(workload: &W, inv: wit_types::InvocationCtx) {
+    let ctx = WasmContext::from_invocation(inv);
     workload.on_signaling_connecting(Some(&ctx)).await;
 }
 
-pub async fn run_on_signaling_connected<W: Workload>(workload: &W, ctx_token: u64) {
-    let ctx = WasmContext::from_token(ctx_token);
+pub async fn run_on_signaling_connected<W: Workload>(workload: &W, inv: wit_types::InvocationCtx) {
+    let ctx = WasmContext::from_invocation(inv);
     workload.on_signaling_connected(Some(&ctx)).await;
 }
 
-pub async fn run_on_signaling_disconnected<W: Workload>(workload: &W, ctx_token: u64) {
-    let ctx = WasmContext::from_token(ctx_token);
+pub async fn run_on_signaling_disconnected<W: Workload>(
+    workload: &W,
+    inv: wit_types::InvocationCtx,
+) {
+    let ctx = WasmContext::from_invocation(inv);
     workload.on_signaling_disconnected(&ctx).await;
 }
 
@@ -288,9 +288,9 @@ pub async fn run_on_signaling_disconnected<W: Workload>(workload: &W, ctx_token:
 pub async fn run_on_websocket_connecting<W: Workload>(
     workload: &W,
     event: wit_types::PeerEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_websocket_connecting(&ctx, &event).await;
 }
@@ -298,9 +298,9 @@ pub async fn run_on_websocket_connecting<W: Workload>(
 pub async fn run_on_websocket_connected<W: Workload>(
     workload: &W,
     event: wit_types::PeerEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_websocket_connected(&ctx, &event).await;
 }
@@ -308,9 +308,9 @@ pub async fn run_on_websocket_connected<W: Workload>(
 pub async fn run_on_websocket_disconnected<W: Workload>(
     workload: &W,
     event: wit_types::PeerEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_websocket_disconnected(&ctx, &event).await;
 }
@@ -320,9 +320,9 @@ pub async fn run_on_websocket_disconnected<W: Workload>(
 pub async fn run_on_webrtc_connecting<W: Workload>(
     workload: &W,
     event: wit_types::PeerEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_webrtc_connecting(&ctx, &event).await;
 }
@@ -330,9 +330,9 @@ pub async fn run_on_webrtc_connecting<W: Workload>(
 pub async fn run_on_webrtc_connected<W: Workload>(
     workload: &W,
     event: wit_types::PeerEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_webrtc_connected(&ctx, &event).await;
 }
@@ -340,9 +340,9 @@ pub async fn run_on_webrtc_connected<W: Workload>(
 pub async fn run_on_webrtc_disconnected<W: Workload>(
     workload: &W,
     event: wit_types::PeerEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = peer_event_from_wit(event);
     workload.on_webrtc_disconnected(&ctx, &event).await;
 }
@@ -352,9 +352,9 @@ pub async fn run_on_webrtc_disconnected<W: Workload>(
 pub async fn run_on_credential_renewed<W: Workload>(
     workload: &W,
     event: wit_types::CredentialEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = credential_event_from_wit(event);
     workload.on_credential_renewed(&ctx, &event).await;
 }
@@ -362,9 +362,9 @@ pub async fn run_on_credential_renewed<W: Workload>(
 pub async fn run_on_credential_expiring<W: Workload>(
     workload: &W,
     event: wit_types::CredentialEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = credential_event_from_wit(event);
     workload.on_credential_expiring(&ctx, &event).await;
 }
@@ -374,9 +374,9 @@ pub async fn run_on_credential_expiring<W: Workload>(
 pub async fn run_on_mailbox_backpressure<W: Workload>(
     workload: &W,
     event: wit_types::BackpressureEvent,
-    ctx_token: u64,
+    inv: wit_types::InvocationCtx,
 ) {
-    let ctx = WasmContext::from_token(ctx_token);
+    let ctx = WasmContext::from_invocation(inv);
     let event = backpressure_event_from_wit(event);
     workload.on_mailbox_backpressure(&ctx, &event).await;
 }

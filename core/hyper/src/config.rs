@@ -104,18 +104,15 @@ pub struct DispatchConcurrency {
     /// back-pressure up to the node entry loop. Default `256`.
     pub queue_cap: usize,
     /// Per-dispatch deadline. `None` (default) = no deadline, exactly the M4
-    /// behaviour. When set, the v2 interleaved wasm runner arms this deadline
-    /// on every in-flight dispatch; on expiry the dispatch's in-flight
-    /// `call_concurrent` future is dropped (a CLEAN cancel that does not
-    /// poison the store — validated by the M0 spike's T8/R1), the caller's
-    /// reply resolves `TimedOut`, and the freed conflict key lets the next
-    /// same-key dispatch start without a serial violation. It is deliberately
-    /// enforced *inside* the resident region (a sibling of the guest-awaiting
-    /// future in the `select!`), not from an external timer, so the reply is
-    /// sent only *after* the timed-out dispatch has truly left the region —
-    /// which is what keeps same-key FIFO airtight across a timeout.
+    /// behaviour. When set, the V2 wasm runner arms an external deadline for
+    /// every resident dispatch. On expiry it first drops the whole Store (the
+    /// only hard cancellation boundary for Wasmtime concurrent calls), then
+    /// resolves the triggering caller as `TimedOut`, fails co-resident calls
+    /// retryably, and rebuilds before accepting more guest work. The native
+    /// linked runner applies the same fail-closed rule but terminates because
+    /// it has no generic way to reconstruct an arbitrary actor instance.
     ///
-    /// Only in effect on the interleaved runner — a keyed actor with the gate
+    /// Only in effect on an interleaved runner — a keyed actor with the gate
     /// on. A keyless (serial) actor runs each dispatch to completion on the
     /// pre-B2 loop and does not consult this field.
     pub dispatch_timeout: Option<std::time::Duration>,
@@ -142,22 +139,27 @@ impl Default for DispatchConcurrency {
 ///
 /// Bounds a single wasm actor's CPU, stack, memory, and aggregate footprint so
 /// a malicious or buggy guest cannot monopolize the host: fuel + epoch
-/// interrupt runaway compute, wasmtime `StoreLimits` caps linear memory /
+/// interrupt runaway compute, a store-local resource limiter caps linear memory /
 /// tables / instances, and the aggregate knobs (compile/instantiate/store
 /// semaphores) bound process-wide resource use. `None` on [`HyperConfig`]
 /// resolves to [`WasmRuntimeLimits::default`], whose values are safe finite
 /// defaults (not unbounded) — the hardening is on by default.
 ///
-/// This complements [`DispatchConcurrency::dispatch_timeout`]: that timeout
-/// drops the in-flight `call_concurrent` future and only interrupts a guest
-/// that is *awaiting* a host import. A non-yielding pure-compute loop never
-/// awaits, so the drop cannot preempt it; fuel/epoch insert check points into
-/// the compiled wasm that trip on pure compute, which is why both are needed.
+/// This complements [`DispatchConcurrency::dispatch_timeout`]: on the V2
+/// concurrent path a deadline discards the entire Store, because dropping an
+/// individual Wasmtime `call_concurrent` future does not cancel its guest task.
+/// Fuel and epoch interruption remain necessary so non-yielding pure compute
+/// reaches a compiled check point and cannot monopolize an executor thread.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WasmRuntimeLimits {
     /// Fuel granted to a single guest entry (instantiation or one
-    /// lifecycle/hook/dispatch/data-chunk call). Reset before every entry.
+    /// lifecycle/hook/dispatch/data-chunk call). Serial Stores reset this
+    /// before every entry. Concurrent V2 calls share Store-level accounting:
+    /// a busy cohort earns another slice only when it reaches a new concurrency
+    /// high-water mark; the high-water mark resets once the Store is quiescent.
+    /// This prevents short-call admission churn from repeatedly refilling a
+    /// long-lived sibling while retaining same-instance interleaving.
     /// Default `1_000_000` (a few ms of Cranelift-compiled compute).
     pub fuel_per_invocation: u64,
     /// Period at which a background task calls `Engine::increment_epoch`; each
@@ -186,7 +188,10 @@ pub struct WasmRuntimeLimits {
     /// under `run_concurrent`. `None` (default) = trap on exhaustion; the
     /// instance is rebuilt on the next entry (`WasmWorkload::ensure_instance`).
     pub fuel_async_yield_interval: Option<u64>,
-    /// Max `.actr` component byte size accepted by the loader. Default 64 MiB.
+    /// Max `.actr` component byte size accepted by the loader. Package
+    /// verification also uses this as both the per-entry and cumulative
+    /// decompressed budget across the binary/resources/protos/lock file.
+    /// Default 64 MiB.
     pub max_component_bytes: usize,
     /// Max concurrent component compilations process-wide. Default 4.
     pub max_concurrent_compiles: usize,

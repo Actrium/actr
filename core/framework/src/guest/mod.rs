@@ -217,123 +217,129 @@ macro_rules! entry {
                     $crate::guest::__wasm_macro_support::run_on_error(__actr_workload(), event, ctx).await
                 }
 
-                async fn on_signaling_connecting(ctx_token: u64) {
+                async fn on_signaling_connecting(
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
+                ) {
                     $crate::guest::__wasm_macro_support::run_on_signaling_connecting(
                         __actr_workload(),
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
-                async fn on_signaling_connected(ctx_token: u64) {
+                async fn on_signaling_connected(
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
+                ) {
                     $crate::guest::__wasm_macro_support::run_on_signaling_connected(
                         __actr_workload(),
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
-                async fn on_signaling_disconnected(ctx_token: u64) {
+                async fn on_signaling_disconnected(
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
+                ) {
                     $crate::guest::__wasm_macro_support::run_on_signaling_disconnected(
                         __actr_workload(),
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_websocket_connecting(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_websocket_connecting(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_websocket_connected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_websocket_connected(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_websocket_disconnected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_websocket_disconnected(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_webrtc_connecting(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_webrtc_connecting(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_webrtc_connected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_webrtc_connected(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_webrtc_disconnected(
                     event: $crate::guest::__wasm_macro_support::WitPeerEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_webrtc_disconnected(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_credential_renewed(
                     event: $crate::guest::__wasm_macro_support::WitCredentialEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_credential_renewed(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_credential_expiring(
                     event: $crate::guest::__wasm_macro_support::WitCredentialEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_credential_expiring(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
                 async fn on_mailbox_backpressure(
                     event: $crate::guest::__wasm_macro_support::WitBackpressureEvent,
-                    ctx_token: u64,
+                    ctx: $crate::guest::__wasm_macro_support::WitInvocationCtx,
                 ) {
                     $crate::guest::__wasm_macro_support::run_on_mailbox_backpressure(
                         __actr_workload(),
                         event,
-                        ctx_token,
+                        ctx,
                     ).await
                 }
 
