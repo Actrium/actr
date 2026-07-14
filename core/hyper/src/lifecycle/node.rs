@@ -42,6 +42,14 @@ use tracing::Instrument as _;
 /// into a `FuturesUnordered` and keep dequeuing.
 pub(crate) type IncomingContinuation = Pin<Box<dyn Future<Output = ActorResult<Bytes>> + Send>>;
 
+/// Type-erased startup future kept behind the crate-private node boundary.
+///
+/// `Inner::start_inner` intentionally contains several large background-loop
+/// state machines. Erasing that concrete layout here keeps it from propagating
+/// into every downstream caller of the public typestate API.
+pub(crate) type NodeStartFuture =
+    Pin<Box<dyn Future<Output = ActorResult<ActrRef>> + Send + 'static>>;
+
 /// Wrap an already-known result as an immediately-ready continuation.
 fn ready_continuation(result: ActorResult<Bytes>) -> IncomingContinuation {
     Box::pin(async move { result })
@@ -1043,9 +1051,9 @@ async fn shutdown_actor_runner(
 
 /// Spawn the workload stop coordinator behind a boxed future boundary.
 ///
-/// Keeping this concrete async state machine out of [`Inner::start`] prevents
-/// Rust 1.95 consumers from recursively laying it out as part of the public
-/// node-start future.
+/// Keeping this concrete async state machine out of [`Inner::start_inner`]
+/// also keeps the boxed startup future smaller and easier for older compilers
+/// to lay out.
 fn spawn_workload_stop_task(
     node: Arc<Inner>,
     actor_id: ActrId,
@@ -1771,8 +1779,12 @@ impl Inner {
         self.preregistered_registration_context = Some(ctx);
     }
 
-    /// Start the system
-    pub async fn start(mut self) -> ActorResult<ActrRef> {
+    /// Start the system behind a type-erased future boundary.
+    pub fn start(self) -> NodeStartFuture {
+        Box::pin(self.start_inner())
+    }
+
+    async fn start_inner(mut self) -> ActorResult<ActrRef> {
         tracing::info!("🚀 Starting ActrNode");
         tracing::info!("Actr Rust version: {}", env!("CARGO_PKG_VERSION"));
 

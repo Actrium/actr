@@ -1,3 +1,7 @@
+// `lifecycle::node::Inner::start` boxes a deliberately large startup state
+// machine here so downstream crates never need to lay out its nested loops.
+#![recursion_limit = "256"]
+
 //! # actr-hyper
 //!
 //! Hyper — Actor platform layer + runtime infrastructure
