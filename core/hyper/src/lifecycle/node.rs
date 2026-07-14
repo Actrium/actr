@@ -330,7 +330,7 @@ async fn mailbox_reply_and_ack(
     }
 }
 
-/// Clears stream callbacks when the node's owning state is released.
+/// Force-closes stream callbacks when the node's owning state is released.
 struct DataChunkRegistryCleanupGuard {
     registry: Weak<DataChunkRegistry>,
 }
@@ -382,7 +382,8 @@ pub(crate) struct Inner {
 
     /// Breaks `registry -> callback -> RuntimeContext -> registry` ownership
     /// cycles on every `Inner` exit path, including startup failures. It is
-    /// declared before the registry so callbacks are cleared first on drop.
+    /// declared before the registry so callbacks are force-closed first on
+    /// drop.
     _data_chunk_registry_cleanup: DataChunkRegistryCleanupGuard,
 
     /// DataChunk callback registry shared between the inbound WebRTC / WS
@@ -1014,20 +1015,24 @@ impl Drop for AbortActorRunnerOnDrop {
 
 /// Ordered actor teardown:
 ///
-/// 1. stop scheduler intake and drain all admitted queued + in-flight work;
-/// 2. close direct dispatch admission and wait for earlier sends to enqueue;
-/// 3. invoke `on_stop` as a runner barrier;
-/// 4. stop and join the owning runner task.
+/// 1. run the cancellation-sensitive prelude (for example, stop stream workers);
+/// 2. stop scheduler intake and drain all admitted queued + in-flight work;
+/// 3. close direct dispatch admission and wait for earlier sends to enqueue;
+/// 4. invoke `on_stop` as a runner barrier;
+/// 5. stop and join the owning runner task.
 ///
 /// The abort guard makes cancellation of this coordinator deterministic too.
-async fn shutdown_actor_runner<F>(
+async fn shutdown_actor_runner<P, F>(
     scheduler: Option<Arc<crate::dispatch::scheduler::SchedulerHandle>>,
     runner: Arc<crate::executor::ActorHandle>,
+    pre_shutdown: P,
     on_stop: F,
 ) where
+    P: Future<Output = ()>,
     F: Future<Output = ()>,
 {
     let mut abort_guard = AbortActorRunnerOnDrop::new(runner.clone());
+    pre_shutdown.await;
     if let Some(scheduler) = scheduler {
         scheduler.shutdown().await;
     }
@@ -1495,7 +1500,12 @@ impl Inner {
         let workload_to_shell = Arc::new(HostTransport::new());
         let inproc_gate = Gate::Host(Arc::new(HostGate::new(shell_to_workload.clone())));
 
-        let data_chunk_registry = Arc::new(DataChunkRegistry::new());
+        // Root shutdown token; the data chunk registry gets a child so a
+        // node-wide shutdown drains all per-stream workers (no orphans).
+        let shutdown_token = CancellationToken::new();
+        let data_chunk_registry = Arc::new(DataChunkRegistry::with_shutdown(
+            shutdown_token.child_token(),
+        ));
         let media_frame_registry = Arc::new(MediaFrameRegistry::new());
 
         tracing::info!("✅ Inproc infrastructure initialized (bidirectional Shell ↔ Guest)");
@@ -1589,7 +1599,7 @@ impl Inner {
             websocket_gate: None,
             shell_to_workload: Some(shell_to_workload),
             workload_to_shell: Some(workload_to_shell),
-            shutdown_token: CancellationToken::new(),
+            shutdown_token,
             actr_lock,
             network_event_rx: None,
             network_event_debounce_config: None,
@@ -2448,10 +2458,15 @@ impl Inner {
             let shutdown = shutdown_token.clone();
             let on_stop_handle = tokio::spawn(async move {
                 shutdown.cancelled().await;
+                let data_chunk_registry = node.data_chunk_registry.clone();
                 let scheduler = node.dispatch_scheduler.clone();
                 let runner = node.workload_dispatch.clone();
                 let runner_for_stop = runner.clone();
-                let data_chunk_registry = node.data_chunk_registry.clone();
+                let stop_stream_workers = async move {
+                    // Once this returns, no stream callback can still enqueue
+                    // actor work or retain its RuntimeContext ownership chain.
+                    data_chunk_registry.shutdown().await;
+                };
                 let stop = async move {
                     let stop_ctx = node
                         .bootstrap_ctx_builder()
@@ -2468,8 +2483,7 @@ impl Inner {
                         tracing::warn!(error = %e, "workload on_stop returned Err");
                     }
                 };
-                shutdown_actor_runner(scheduler, runner, stop).await;
-                data_chunk_registry.clear();
+                shutdown_actor_runner(scheduler, runner, stop_stream_workers, stop).await;
             });
             task_handles.push(on_stop_handle);
         }

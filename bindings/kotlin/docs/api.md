@@ -98,10 +98,13 @@ High-level wrapper around the generated `ActrRefWrapper`. Retains `DynamicWorklo
 ### RpcRequest<Req, Resp>
 
 Type-safe RPC contract interface. Implement once per RPC method for compile-time type safety.
+Generated Kotlin actor files emit one `RpcRequest` object per service method,
+including route key, payload lane, and protobuf codecs.
 
 ```kotlin
 interface RpcRequest<Req, Resp> {
     val routeKey: String
+    val payloadType: PayloadType
     fun serializeRequest(request: Req): ByteArray
     fun deserializeResponse(bytes: ByteArray): Resp
 }
@@ -114,7 +117,6 @@ interface RpcRequest<Req, Resp> {
 suspend fun <Req, Resp> ActrRef.call(
     rpc: RpcRequest<Req, Resp>,
     request: Req,
-    payloadType: PayloadType = RPC_RELIABLE,
     timeoutMs: Long = 30000L,
 ): Resp
 

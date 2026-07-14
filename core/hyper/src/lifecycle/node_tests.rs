@@ -178,7 +178,7 @@ async fn graceful_shutdown_drains_admitted_scheduler_work_before_on_stop() {
     let shutdown_runner = runner.clone();
     let shutdown_scheduler = scheduler.clone();
     let shutdown = tokio::spawn(async move {
-        shutdown_actor_runner(Some(shutdown_scheduler), shutdown_runner, stop).await;
+        shutdown_actor_runner(Some(shutdown_scheduler), shutdown_runner, async {}, stop).await;
     });
 
     release_first.add_permits(1);
@@ -202,6 +202,32 @@ async fn graceful_shutdown_drains_admitted_scheduler_work_before_on_stop() {
         .await
         .expect("shutdown coordinator watchdog")
         .expect("shutdown coordinator task");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_shutdown_prelude_aborts_runner() {
+    let workload = Workload::Linked(Arc::new(DummyLinkedHandle) as Arc<dyn LinkedWorkloadHandle>);
+    let runner = Arc::new(crate::executor::spawn_runner(workload));
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let pre_shutdown = async move {
+        let _ = entered_tx.send(());
+        std::future::pending::<()>().await;
+    };
+
+    let shutdown_runner = runner.clone();
+    let shutdown = tokio::spawn(async move {
+        shutdown_actor_runner(None, shutdown_runner, pre_shutdown, async {}).await;
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx)
+        .await
+        .expect("shutdown prelude did not start")
+        .expect("shutdown prelude signal dropped");
+
+    shutdown.abort();
+    let _ = shutdown.await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), runner.join())
+        .await
+        .expect("cancelled shutdown coordinator detached the actor runner");
 }
 
 #[test]

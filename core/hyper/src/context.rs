@@ -461,7 +461,7 @@ impl BootstrapContextBuilder {
         self.generation = generation;
     }
 
-    /// Drop registered stream callbacks during forced node teardown.
+    /// Force-close registered stream callbacks during node teardown.
     ///
     /// The builder is owned by `ActrRefShared`, so it remains available even
     /// when background tasks holding `Inner` cannot be joined synchronously.

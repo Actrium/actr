@@ -4,7 +4,7 @@ import SwiftProtobufPluginLibrary
 
 @main
 struct ActrFrameworkGenerator {
-  static let version = "0.4.13"
+  static let version = "0.4.15"
 
   struct RemoteServiceInfo {
     let serviceName: String
@@ -12,12 +12,70 @@ struct ActrFrameworkGenerator {
     let fileName: String
   }
 
+  struct MethodMetadataInput {
+    let packageName: String
+    let serviceName: String
+    let methodName: String
+    let inputType: String
+    let outputType: String
+  }
+
   struct MethodMetadata: Encodable {
     let name: String
     let snake_name: String
-    let input_type: String
-    let output_type: String
     let route_key: String
+    let input_ref: TypeRef
+    let output_ref: TypeRef
+  }
+
+  struct TypeRef: Encodable {
+    let proto_type: String
+    let type_name: String
+    let proto_package: String
+    let proto_file: String
+  }
+
+  enum MetadataError: LocalizedError {
+    case unresolvedType(kind: String, typeName: String, serviceName: String, methodName: String)
+    case malformedPayloadTypeOption(serviceName: String, methodName: String, detail: String)
+    case unsupportedPayloadType(value: UInt64, serviceName: String, methodName: String)
+
+    var errorDescription: String? {
+      switch self {
+      case let .unresolvedType(kind, typeName, serviceName, methodName):
+        return
+          "Cannot resolve \(kind) type `\(typeName)` for \(serviceName).\(methodName): RPC types must be declared in one of the parsed proto files"
+      case let .malformedPayloadTypeOption(serviceName, methodName, detail):
+        return
+          "Cannot parse (actr.payload_type) option for \(serviceName).\(methodName): \(detail)"
+      case let .unsupportedPayloadType(value, serviceName, methodName):
+        return
+          "Unsupported (actr.payload_type) value \(value) for \(serviceName).\(methodName)"
+      }
+    }
+  }
+
+  enum RpcPayloadType: UInt64 {
+    case rpcReliable = 0
+    case rpcSignal = 1
+    case streamReliable = 2
+    case streamLatencyFirst = 3
+    case mediaRtp = 4
+
+    var swiftCase: String {
+      switch self {
+      case .rpcReliable:
+        return ".rpcReliable"
+      case .rpcSignal:
+        return ".rpcSignal"
+      case .streamReliable:
+        return ".streamReliable"
+      case .streamLatencyFirst:
+        return ".streamLatencyFirst"
+      case .mediaRtp:
+        return ".mediaRtp"
+      }
+    }
   }
 
   struct LocalServiceMetadata: Encodable {
@@ -72,15 +130,19 @@ struct ActrFrameworkGenerator {
     let accessModifier = isPublic ? "public " : ""
     let manufacturer = parameters["Manufacturer"] ?? "acme"
 
-    let localFileParam = parameters["LocalFile"]
+    let localFileParam = parameters["LocalFile"].map(normalizeProtoPath)
     let localFilesParam = Set(
-      (parameters["LocalFiles"] ?? "").split(separator: ":").map(String.init))
+      (parameters["LocalFiles"] ?? "").split(separator: ":").map {
+        normalizeProtoPath(String($0))
+      })
     let protoSourceParam = parameters["ProtoSource"]?.lowercased()
     let globalProtoSource =
       protoSourceParam ?? ((localFileParam != nil || !localFilesParam.isEmpty) ? "remote" : "local")
 
     let remoteFilesParam = Set(
-      (parameters["RemoteFiles"] ?? "").split(separator: ":").map(String.init))
+      (parameters["RemoteFiles"] ?? "").split(separator: ":").map {
+        normalizeProtoPath(String($0))
+      })
 
     // Parse RemoteFileActrTypes parameter: file1=actr_type1;file2=actr_type2
     // The top-level protoc parameter string is comma-separated, so mappings
@@ -90,10 +152,22 @@ struct ActrFrameworkGenerator {
       for mapping in remoteFileActrTypesParam.split(separator: ";") {
         let parts = mapping.split(separator: "=", maxSplits: 1)
         if parts.count == 2 {
-          let file = String(parts[0])
+          let file = normalizeProtoPath(String(parts[0]))
           let actrType = String(parts[1])
           remoteFileToActrType[file] = actrType
         }
+      }
+    }
+
+    var typeRefs: [String: TypeRef] = [:]
+    for fileDescriptor in request.protoFile {
+      for message in fileDescriptor.messageType {
+        Self.collectTypeRefs(
+          package: fileDescriptor.package,
+          protoFile: normalizeProtoPath(fileDescriptor.name),
+          message: message,
+          parentProtoName: nil,
+          into: &typeRefs)
       }
     }
 
@@ -102,11 +176,12 @@ struct ActrFrameworkGenerator {
     var localServiceMetadata: [LocalServiceMetadata] = []
     var remoteServiceMetadata: [RemoteServiceMetadata] = []
     for fileDescriptor in request.protoFile {
+      let protoFile = normalizeProtoPath(fileDescriptor.name)
       let isRemote: Bool
-      if remoteFilesParam.contains(fileDescriptor.name) {
+      if remoteFilesParam.contains(protoFile) {
         isRemote = true
-      } else if localFilesParam.contains(fileDescriptor.name)
-        || localFileParam == fileDescriptor.name
+      } else if localFilesParam.contains(protoFile)
+        || localFileParam == protoFile
       {
         isRemote = false
       } else {
@@ -115,29 +190,31 @@ struct ActrFrameworkGenerator {
 
       for service in fileDescriptor.service {
         let serviceName = service.name
-        let methods = service.method.map {
-          buildMethodMetadata(
-            packageName: fileDescriptor.package,
-            serviceName: serviceName,
-            methodName: $0.name,
-            inputType: $0.inputType,
-            outputType: $0.outputType)
+        let methods = try service.method.map {
+          try buildMethodMetadata(
+            MethodMetadataInput(
+              packageName: fileDescriptor.package,
+              serviceName: serviceName,
+              methodName: $0.name,
+              inputType: $0.inputType,
+              outputType: $0.outputType),
+            typeRefs: typeRefs)
         }
 
         if isRemote {
           let routeKeys = methods.map { $0.route_key }
           remoteServices.append(
             RemoteServiceInfo(
-              serviceName: serviceName, routeKeys: routeKeys, fileName: fileDescriptor.name))
+              serviceName: serviceName, routeKeys: routeKeys, fileName: protoFile))
 
           let actrType =
-            remoteFileToActrType[fileDescriptor.name]
+            remoteFileToActrType[protoFile]
             ?? "\(manufacturer):\(serviceName):1.0.0"
           remoteServiceMetadata.append(
             RemoteServiceMetadata(
               name: serviceName,
               package: fileDescriptor.package,
-              proto_file: fileDescriptor.name,
+              proto_file: protoFile,
               actr_type: actrType,
               client_type: "\(serviceName)Client",
               methods: methods))
@@ -146,7 +223,7 @@ struct ActrFrameworkGenerator {
             LocalServiceMetadata(
               name: serviceName,
               package: fileDescriptor.package,
-              proto_file: fileDescriptor.name,
+              proto_file: protoFile,
               handler_interface: "\(serviceName)Handler",
               workload_type: "\(serviceName)Workload",
               dispatcher_type: "\(serviceName)Dispatcher",
@@ -178,11 +255,12 @@ struct ActrFrameworkGenerator {
       // Only generate code for files explicitly requested by protoc
       if !request.fileToGenerate.contains(fileDescriptor.name) { continue }
 
+      let protoFile = normalizeProtoPath(fileDescriptor.name)
       let isRemote: Bool
-      if remoteFilesParam.contains(fileDescriptor.name) {
+      if remoteFilesParam.contains(protoFile) {
         isRemote = true
-      } else if localFilesParam.contains(fileDescriptor.name)
-        || localFileParam == fileDescriptor.name
+      } else if localFilesParam.contains(protoFile)
+        || localFileParam == protoFile
       {
         isRemote = false
       } else {
@@ -191,8 +269,8 @@ struct ActrFrameworkGenerator {
 
       // Skip generating files without services and not explicitly local
       if fileDescriptor.service.isEmpty,
-        localFileParam != fileDescriptor.name,
-        !localFilesParam.contains(fileDescriptor.name)
+        localFileParam != protoFile,
+        !localFilesParam.contains(protoFile)
       {
         continue
       }
@@ -226,7 +304,7 @@ struct ActrFrameworkGenerator {
           }
 
           extension \(workloadName) {
-              \(accessModifier)func __dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
+              \(accessModifier)func __dispatch(ctx: any ActrContext, envelope: RpcEnvelope) async throws(ActrError) -> Data {
                   switch envelope.routeKey {
           """
 
@@ -274,7 +352,7 @@ struct ActrFrameworkGenerator {
                   }
               }
 
-              private func remoteTargetType(for routeKey: String) throws -> ActrType {
+              private func remoteTargetType(for routeKey: String) throws(ActrError) -> ActrType {
                   guard let targetType = remoteTargets[routeKey] else {
                       throw ActrError.UnknownRoute(msg: "No remote target configured for route: \\(routeKey)")
                   }
@@ -297,19 +375,21 @@ struct ActrFrameworkGenerator {
               """
 
             for method in service.method {
-              let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
+              let methodName = Self.lowerCamelCase(method.name)
               let inputType = Self.swiftTypeName(
-                method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+                method.inputType, currentPackage: fileDescriptor.package,
+                typeToSwiftName: typeToSwiftName)
               let outputType = Self.swiftTypeName(
-                method.outputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+                method.outputType, currentPackage: fileDescriptor.package,
+                typeToSwiftName: typeToSwiftName)
 
               content += """
 
                 /// RPC method: \(method.name)
                 func \(methodName)(
                     req: \(inputType),
-                    ctx: Context
-                ) async throws -> \(outputType)
+                    ctx: any ActrContext
+                ) async throws(ActrError) -> \(outputType)
 
                 """
             }
@@ -320,9 +400,15 @@ struct ActrFrameworkGenerator {
           // 2. Generate RpcRequest extensions
           for method in service.method {
             let inputType = Self.swiftTypeName(
-              method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+              method.inputType, currentPackage: fileDescriptor.package,
+              typeToSwiftName: typeToSwiftName)
             let outputType = Self.swiftTypeName(
-              method.outputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+              method.outputType, currentPackage: fileDescriptor.package,
+              typeToSwiftName: typeToSwiftName)
+            let payloadType = try Self.payloadType(
+              for: method,
+              packageName: fileDescriptor.package,
+              serviceName: serviceName)
 
             let routeKey: String
             if fileDescriptor.package.isEmpty {
@@ -337,6 +423,7 @@ struct ActrFrameworkGenerator {
                   \(accessModifier)typealias Response = \(outputType)
 
                   \(accessModifier)static var routeKey: String { "\(routeKey)" }
+                  \(accessModifier)static var payloadType: PayloadType { \(payloadType.swiftCase) }
               }
               """
           }
@@ -358,15 +445,19 @@ struct ActrFrameworkGenerator {
               }
 
               extension \(workloadName) {
-                  \(accessModifier)func __dispatch(ctx: Context, envelope: RpcEnvelope) async throws -> Data {
+                  \(accessModifier)func __dispatch(ctx: any ActrContext, envelope: RpcEnvelope) async throws(ActrError) -> Data {
                       switch envelope.routeKey {
               """
 
             // Local Methods
             for method in service.method {
-              let methodName = method.name.prefix(1).lowercased() + method.name.dropFirst()
+              let methodName = Self.lowerCamelCase(method.name)
               let inputType = Self.swiftTypeName(
-                method.inputType, currentPackage: fileDescriptor.package, typeToSwiftName: typeToSwiftName)
+                method.inputType, currentPackage: fileDescriptor.package,
+                typeToSwiftName: typeToSwiftName)
+              let outputType = Self.swiftTypeName(
+                method.outputType, currentPackage: fileDescriptor.package,
+                typeToSwiftName: typeToSwiftName)
 
               let routeKey: String
               if fileDescriptor.package.isEmpty {
@@ -378,9 +469,18 @@ struct ActrFrameworkGenerator {
               content += """
 
                 case "\(routeKey)":
-                    let req = try \(inputType)(serializedBytes: envelope.payload)
+                    let req: \(inputType)
+                    do {
+                        req = try \(inputType)(serializedBytes: envelope.payload)
+                    } catch {
+                        throw ActrError.DecodeFailure(msg: "Failed to decode \(inputType) for route \\(envelope.routeKey): \\(error)")
+                    }
                     let resp = try await handler.\(methodName)(req: req, ctx: ctx)
-                    return try resp.serializedData()
+                    do {
+                        return try resp.serializedData()
+                    } catch {
+                        throw ActrError.DecodeFailure(msg: "Failed to encode \(outputType) for route \\(envelope.routeKey): \\(error)")
+                    }
                 """
             }
 
@@ -428,7 +528,7 @@ struct ActrFrameworkGenerator {
                       }
                   }
 
-              private func remoteTargetType(for routeKey: String) throws -> ActrType {
+              private func remoteTargetType(for routeKey: String) throws(ActrError) -> ActrType {
                   guard let targetType = remoteTargets[routeKey] else {
                       throw ActrError.UnknownRoute(msg: "No remote target configured for route: \\(routeKey)")
                   }
@@ -457,10 +557,11 @@ struct ActrFrameworkGenerator {
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     var metadataFile = Google_Protobuf_Compiler_CodeGeneratorResponse.File()
     metadataFile.name = "actr-gen-meta.json"
-    metadataFile.content = String(
-      data: try encoder.encode(metadata),
-      encoding: .utf8
-    ) ?? "{}"
+    metadataFile.content =
+      String(
+        data: try encoder.encode(metadata),
+        encoding: .utf8
+      ) ?? "{}"
     response.file.append(metadataFile)
 
     // Write the response back to stdout
@@ -468,30 +569,192 @@ struct ActrFrameworkGenerator {
   }
 
   static func buildMethodMetadata(
-    packageName: String,
-    serviceName: String,
-    methodName: String,
-    inputType: String,
-    outputType: String
-  ) -> MethodMetadata {
+    _ input: MethodMetadataInput,
+    typeRefs: [String: TypeRef]
+  ) throws -> MethodMetadata {
     let routeKey: String
-    if packageName.isEmpty {
-      routeKey = "\(serviceName).\(methodName)"
+    if input.packageName.isEmpty {
+      routeKey = "\(input.serviceName).\(input.methodName)"
     } else {
-      routeKey = "\(packageName).\(serviceName).\(methodName)"
+      routeKey = "\(input.packageName).\(input.serviceName).\(input.methodName)"
     }
 
     return MethodMetadata(
-      name: methodName,
-      snake_name: snakeCase(methodName),
-      input_type: shortTypeName(inputType),
-      output_type: shortTypeName(outputType),
-      route_key: routeKey)
+      name: input.methodName,
+      snake_name: snakeCase(input.methodName),
+      route_key: routeKey,
+      input_ref: try resolveTypeRef(
+        input.inputType,
+        kind: "input",
+        serviceName: input.serviceName,
+        methodName: input.methodName,
+        typeRefs: typeRefs),
+      output_ref: try resolveTypeRef(
+        input.outputType,
+        kind: "output",
+        serviceName: input.serviceName,
+        methodName: input.methodName,
+        typeRefs: typeRefs))
   }
 
-  static func shortTypeName(_ rawType: String) -> String {
-    let trimmed = rawType.trimmingCharacters(in: CharacterSet(charactersIn: "."))
-    return trimmed.split(separator: ".").last.map(String.init) ?? trimmed
+  static func payloadType(
+    for method: Google_Protobuf_MethodDescriptorProto,
+    packageName _: String,
+    serviceName: String
+  ) throws -> RpcPayloadType {
+    if let rawValue = try extractPayloadTypeOption(
+      from: method.options.unknownFields.data,
+      serviceName: serviceName,
+      methodName: method.name)
+    {
+      guard let payloadType = RpcPayloadType(rawValue: rawValue) else {
+        throw MetadataError.unsupportedPayloadType(
+          value: rawValue,
+          serviceName: serviceName,
+          methodName: method.name)
+      }
+      return payloadType
+    }
+
+    if method.clientStreaming || method.serverStreaming {
+      return .streamReliable
+    }
+
+    return .rpcReliable
+  }
+
+  static func extractPayloadTypeOption(
+    from unknownFields: Data,
+    serviceName: String,
+    methodName: String
+  ) throws -> UInt64? {
+    let payloadTypeFieldNumber = 50_001
+    var index = unknownFields.startIndex
+
+    while index < unknownFields.endIndex {
+      let key = try readVarint(
+        from: unknownFields,
+        index: &index,
+        serviceName: serviceName,
+        methodName: methodName)
+      let fieldNumber = Int(key >> 3)
+      let wireType = Int(key & 0x7)
+
+      if fieldNumber == payloadTypeFieldNumber {
+        guard wireType == 0 else {
+          throw MetadataError.malformedPayloadTypeOption(
+            serviceName: serviceName,
+            methodName: methodName,
+            detail: "expected varint wire type, got \(wireType)")
+        }
+        return try readVarint(
+          from: unknownFields,
+          index: &index,
+          serviceName: serviceName,
+          methodName: methodName)
+      }
+
+      try skipUnknownField(
+        wireType: wireType,
+        in: unknownFields,
+        index: &index,
+        serviceName: serviceName,
+        methodName: methodName)
+    }
+
+    return nil
+  }
+
+  static func readVarint(
+    from data: Data,
+    index: inout Data.Index,
+    serviceName: String,
+    methodName: String
+  ) throws -> UInt64 {
+    var result: UInt64 = 0
+    var shift: UInt64 = 0
+
+    while index < data.endIndex, shift < 64 {
+      let byte = data[index]
+      index = data.index(after: index)
+      result |= UInt64(byte & 0x7f) << shift
+      if byte < 0x80 {
+        return result
+      }
+      shift += 7
+    }
+
+    throw MetadataError.malformedPayloadTypeOption(
+      serviceName: serviceName,
+      methodName: methodName,
+      detail: "unterminated varint")
+  }
+
+  static func skipUnknownField(
+    wireType: Int,
+    in data: Data,
+    index: inout Data.Index,
+    serviceName: String,
+    methodName: String
+  ) throws {
+    func advance(by count: Int) throws {
+      guard let next = data.index(index, offsetBy: count, limitedBy: data.endIndex) else {
+        throw MetadataError.malformedPayloadTypeOption(
+          serviceName: serviceName,
+          methodName: methodName,
+          detail: "truncated unknown field")
+      }
+      index = next
+    }
+
+    switch wireType {
+    case 0:
+      _ = try readVarint(
+        from: data,
+        index: &index,
+        serviceName: serviceName,
+        methodName: methodName)
+    case 1:
+      try advance(by: 8)
+    case 2:
+      let length = try readVarint(
+        from: data,
+        index: &index,
+        serviceName: serviceName,
+        methodName: methodName)
+      guard length <= UInt64(Int.max) else {
+        throw MetadataError.malformedPayloadTypeOption(
+          serviceName: serviceName,
+          methodName: methodName,
+          detail: "length-delimited field is too large")
+      }
+      try advance(by: Int(length))
+    case 5:
+      try advance(by: 4)
+    default:
+      throw MetadataError.malformedPayloadTypeOption(
+        serviceName: serviceName,
+        methodName: methodName,
+        detail: "unsupported wire type \(wireType)")
+    }
+  }
+
+  static func resolveTypeRef(
+    _ rawType: String,
+    kind: String,
+    serviceName: String,
+    methodName: String,
+    typeRefs: [String: TypeRef]
+  ) throws -> TypeRef {
+    let trimmed = String(rawType.drop(while: { $0 == "." }))
+    if let typeRef = typeRefs[trimmed] {
+      return typeRef
+    }
+    throw MetadataError.unresolvedType(
+      kind: kind,
+      typeName: trimmed,
+      serviceName: serviceName,
+      methodName: methodName)
   }
 
   /// Resolve a fully-qualified proto type (as carried by
@@ -505,7 +768,7 @@ struct ActrFrameworkGenerator {
     currentPackage: String,
     typeToSwiftName: [String: String]
   ) -> String {
-    let trimmed = inputType.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    let trimmed = String(inputType.drop(while: { $0 == "." }))
     if let swiftName = typeToSwiftName[trimmed] {
       return swiftName
     }
@@ -538,6 +801,31 @@ struct ActrFrameworkGenerator {
     }
   }
 
+  static func collectTypeRefs(
+    package: String,
+    protoFile: String,
+    message: Google_Protobuf_DescriptorProto,
+    parentProtoName: String?,
+    into typeRefs: inout [String: TypeRef]
+  ) {
+    let protoName = parentProtoName.map { "\($0).\(message.name)" } ?? message.name
+    let fullProtoName = package.isEmpty ? protoName : "\(package).\(protoName)"
+    typeRefs[fullProtoName] = TypeRef(
+      proto_type: fullProtoName,
+      type_name: protoName,
+      proto_package: package,
+      proto_file: normalizeProtoPath(protoFile))
+
+    for nested in message.nestedType {
+      collectTypeRefs(
+        package: package,
+        protoFile: protoFile,
+        message: nested,
+        parentProtoName: protoName,
+        into: &typeRefs)
+    }
+  }
+
   static func swiftPackagePrefix(_ packageName: String) -> String {
     if packageName.isEmpty { return "" }
     let components = packageName.split(separator: ".").map { component in
@@ -547,14 +835,28 @@ struct ActrFrameworkGenerator {
   }
 
   static func snakeCase(_ value: String) -> String {
-    guard !value.isEmpty else { return value }
-    var output = ""
-    for character in value {
-      if character.isUppercase && !output.isEmpty {
-        output.append("_")
-      }
-      output.append(character.lowercased())
+    let acronymBoundaries = value.replacingOccurrences(
+      of: #"(.)([A-Z][a-z]+)"#,
+      with: "$1_$2",
+      options: .regularExpression)
+    return acronymBoundaries.replacingOccurrences(
+      of: #"([a-z0-9])([A-Z])"#,
+      with: "$1_$2",
+      options: .regularExpression
+    ).lowercased()
+  }
+
+  static func lowerCamelCase(_ value: String) -> String {
+    let parts = snakeCase(value).split(separator: "_")
+    guard let first = parts.first else { return "" }
+    return String(first) + parts.dropFirst().map { $0.capitalized }.joined()
+  }
+
+  static func normalizeProtoPath(_ value: String) -> String {
+    var path = value.replacingOccurrences(of: "\\", with: "/")
+    while path.hasPrefix("./") {
+      path.removeFirst(2)
     }
-    return output
+    return path.hasSuffix(".proto") ? path : "\(path).proto"
   }
 }
