@@ -404,6 +404,10 @@ impl TestHarness {
         }
 
         for peer in self.peers.values() {
+            peer.coordinator.shutdown_background_tasks().await;
+        }
+
+        for peer in self.peers.values() {
             let _ = peer.transport_manager.close_all().await;
             let _ = peer.coordinator.close_all_peers().await;
             let _ = peer.signaling_client.disconnect().await;

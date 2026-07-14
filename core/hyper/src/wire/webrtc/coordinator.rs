@@ -352,6 +352,12 @@ impl Default for PeerSignalingCommitState {
     }
 }
 
+#[derive(Default)]
+struct CoordinatorBackgroundTasks {
+    lifecycle_gate: Mutex<()>,
+    handles: Mutex<Vec<JoinHandle<()>>>,
+}
+
 #[derive(Clone)]
 struct PeerSignalingCommitContext {
     peers: Arc<RwLock<HashMap<ActrId, PeerState>>>,
@@ -635,6 +641,9 @@ pub struct WebRtcCoordinator {
     /// Peer-scoped signaling serialization and full-shutdown lifecycle state.
     peer_signaling: Arc<PeerSignalingCommitState>,
 
+    /// Long-running tasks created by `start`, owned for deterministic shutdown.
+    background_tasks: CoordinatorBackgroundTasks,
+
     /// Root tracing contexts for connection initiation (ActrId → Context)
     #[cfg(feature = "opentelemetry")]
     root_context_map: Arc<RwLock<HashMap<ActrId, opentelemetry::Context>>>,
@@ -778,6 +787,7 @@ impl WebRtcCoordinator {
             cleanup_depth: Arc::new(AtomicUsize::new(0)),
             cleanup_notify: Arc::new(tokio::sync::Notify::new()),
             peer_signaling: Arc::new(PeerSignalingCommitState::default()),
+            background_tasks: CoordinatorBackgroundTasks::default(),
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -2795,18 +2805,29 @@ impl WebRtcCoordinator {
     /// Start signaling coordinator (listen for ActrRelay messages)
     ///
     /// This method starts a background task that continuously listens for messages from SignalingClient
-    /// and handles WebRTC-related signaling (Offer/Answer/ICE)
+    /// and handles WebRTC-related signaling (Offer/Answer/ICE). Repeated calls
+    /// while running are idempotent; calling `start` after a completed
+    /// [`Self::shutdown_background_tasks`] starts a fresh task set.
     pub async fn start(self: Arc<Self>) -> ActorResult<()> {
         tracing::info!("🚀 WebRtcCoordinator starting signaling loop");
 
+        // Keep start, shutdown, and restart linearizable without holding the
+        // handle-ownership lock while tasks are joined.
+        let _lifecycle_guard = self.background_tasks.lifecycle_gate.lock().await;
+        let mut background_tasks = self.background_tasks.handles.lock().await;
+        if !background_tasks.is_empty() {
+            tracing::debug!("WebRtcCoordinator background tasks already started");
+            return Ok(());
+        }
+
         // Start internal event listener for connection close handling
-        self.spawn_internal_event_listener();
+        let internal_event_listener = self.spawn_internal_event_listener();
 
         // Start health check task for cleaning up stale connections
-        self.spawn_health_check_task();
+        let health_check = self.spawn_health_check_task();
 
         let coordinator = self.clone();
-        tokio::spawn(async move {
+        let signaling_loop = tokio::spawn(async move {
             loop {
                 // 1. Receive message from SignalingClient
                 match coordinator.signaling_client.receive_envelope().await {
@@ -2847,8 +2868,29 @@ impl WebRtcCoordinator {
 
             tracing::info!("🛑 WebRtcCoordinator signaling loop exited");
         });
+        background_tasks.extend([internal_event_listener, health_check, signaling_loop]);
 
         Ok(())
+    }
+
+    /// Abort and join every long-running task created by [`Self::start`].
+    ///
+    /// Shutdown calls are serialized with each other and with `start`. Handles
+    /// are removed while holding the ownership lock, then awaited after
+    /// releasing that lock so task completion cannot deadlock registration.
+    pub async fn shutdown_background_tasks(&self) {
+        let _lifecycle_guard = self.background_tasks.lifecycle_gate.lock().await;
+        let handles = {
+            let mut background_tasks = self.background_tasks.handles.lock().await;
+            std::mem::take(&mut *background_tasks)
+        };
+
+        for handle in &handles {
+            handle.abort();
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
     }
 
     /// Handle received signaling envelope

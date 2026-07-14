@@ -247,7 +247,7 @@ impl SignalingClient for CapturingSignalingClient {
     }
 
     async fn receive_envelope(&self) -> crate::transport::NetworkResult<Option<SignalingEnvelope>> {
-        Ok(None)
+        std::future::pending().await
     }
 
     fn is_connected(&self) -> bool {
@@ -277,6 +277,94 @@ fn new_test_coordinator(local_id: ActrId) -> Arc<WebRtcCoordinator> {
         WebRtcConfig::default(),
         Arc::new(MediaFrameRegistry::new()),
     ))
+}
+
+#[tokio::test]
+async fn coordinator_background_tasks_are_joined_by_shutdown() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    Arc::clone(&coordinator)
+        .start()
+        .await
+        .expect("coordinator should start");
+    Arc::clone(&coordinator)
+        .start()
+        .await
+        .expect("repeated start should be idempotent");
+
+    let abort_handles = {
+        let handles = coordinator.background_tasks.handles.lock().await;
+        assert_eq!(handles.len(), 3, "start should own exactly three tasks");
+        handles
+            .iter()
+            .map(JoinHandle::abort_handle)
+            .collect::<Vec<_>>()
+    };
+
+    let ((), ()) = tokio::join!(
+        coordinator.shutdown_background_tasks(),
+        coordinator.shutdown_background_tasks()
+    );
+
+    assert!(coordinator.background_tasks.handles.lock().await.is_empty());
+    assert!(
+        abort_handles
+            .iter()
+            .all(tokio::task::AbortHandle::is_finished),
+        "shutdown must not return before all three tasks have finished"
+    );
+
+    Arc::clone(&coordinator)
+        .start()
+        .await
+        .expect("start after shutdown should restart the task set");
+    assert_eq!(coordinator.background_tasks.handles.lock().await.len(), 3);
+    coordinator.shutdown_background_tasks().await;
+}
+
+#[tokio::test]
+async fn coordinator_start_is_linearized_after_inflight_shutdown() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    Arc::clone(&coordinator)
+        .start()
+        .await
+        .expect("coordinator should start");
+    let original_abort_handles = {
+        let handles = coordinator.background_tasks.handles.lock().await;
+        handles
+            .iter()
+            .map(JoinHandle::abort_handle)
+            .collect::<Vec<_>>()
+    };
+
+    let lifecycle_guard = coordinator.background_tasks.lifecycle_gate.lock().await;
+    let shutdown_task = tokio::spawn({
+        let coordinator = Arc::clone(&coordinator);
+        async move { coordinator.shutdown_background_tasks().await }
+    });
+    tokio::task::yield_now().await;
+    let restart_task = tokio::spawn({
+        let coordinator = Arc::clone(&coordinator);
+        async move { coordinator.start().await }
+    });
+    tokio::task::yield_now().await;
+    drop(lifecycle_guard);
+
+    shutdown_task
+        .await
+        .expect("overlapping shutdown should finish");
+    assert!(
+        original_abort_handles
+            .iter()
+            .all(tokio::task::AbortHandle::is_finished),
+        "the original task set must finish before the queued restart"
+    );
+    restart_task
+        .await
+        .expect("queued restart task should finish")
+        .expect("queued restart should succeed");
+    assert_eq!(coordinator.background_tasks.handles.lock().await.len(), 3);
+
+    coordinator.shutdown_background_tasks().await;
 }
 
 #[tokio::test]
