@@ -391,12 +391,12 @@ impl PeerSignalingCommitContext {
                     .load(Ordering::Acquire)
                     != epoch
             })
-            || !self
+            || self
                 .peers
                 .read()
                 .await
                 .get(peer_id)
-                .is_some_and(|peer| peer.session_id == session_id)
+                .is_none_or(|peer| peer.session_id != session_id)
         {
             return None;
         }
@@ -4862,9 +4862,9 @@ impl WebRtcCoordinator {
     ) -> bool {
         let mut pending = self.pending_candidates.write().await;
         let peers = self.peers.read().await;
-        if !peers
+        if peers
             .get(peer_id)
-            .is_some_and(|state| state.session_id == expected_session_id)
+            .is_none_or(|state| state.session_id != expected_session_id)
         {
             tracing::debug!(
                 "⏭️ Discarding buffered ICE candidate after peer session changed: peer={}, expected_session_id={}",
