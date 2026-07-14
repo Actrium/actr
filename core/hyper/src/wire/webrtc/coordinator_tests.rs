@@ -1893,6 +1893,92 @@ async fn close_all_peers_cancels_blocked_answerer_restart_request() {
 }
 
 #[tokio::test]
+async fn close_all_peers_waits_for_restart_signaling_commit_before_drain() {
+    let send_control = SendControl::blocking();
+    let signaling_client = Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
+        &send_control,
+    )));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+    let restart_signaling_gate = coordinator.restart_signaling_gate_for(&target_id).await;
+    let peers = Arc::clone(&coordinator.peers);
+    let restart_cancellation_epoch = Arc::clone(&coordinator.restart_cancellation_epoch);
+    let cancellation_epoch = restart_cancellation_epoch.load(Ordering::Acquire);
+    let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
+    let target_for_task = target_id.clone();
+    let signaling_task = tokio::spawn(async move {
+        WebRtcCoordinator::send_ice_restart_envelope_if_current(
+            &peers,
+            &target_for_task,
+            session_id,
+            &restart_signaling_gate,
+            &restart_cancellation_epoch,
+            cancellation_epoch,
+            &signaling_for_task,
+            SignalingEnvelope::default(),
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(1), send_control.wait_until_started())
+        .await
+        .expect("restart signaling must pass its final current-session check");
+
+    let close_coordinator = Arc::clone(&coordinator);
+    let close = tokio::spawn(async move { close_coordinator.close_all_peers().await });
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !coordinator.closing_all_peers.load(Ordering::Acquire) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("close-all must enter its signaling quiescence window");
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        coordinator.restart_ice(&target_id),
+    )
+    .await
+    .expect("a new restart must not queue behind signaling while close-all is active")
+    .expect("restart rejection during close-all should be clean");
+
+    let peer_removed_before_send_release = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if !coordinator.peers.read().await.contains_key(&target_id) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok();
+
+    send_control.release.add_permits(1);
+    signaling_task
+        .await
+        .expect("restart signaling task should join")
+        .expect("current restart signaling should not be rejected")
+        .expect("restart signaling commit should succeed");
+    close
+        .await
+        .expect("close-all task should join")
+        .expect("all peers should close");
+
+    assert!(
+        !peer_removed_before_send_release,
+        "close_all_peers must not drain a peer while its restart signaling commit is in flight"
+    );
+    assert_eq!(signaling_client.sent_envelopes().await.len(), 1);
+    assert!(coordinator.peers.read().await.is_empty());
+}
+
+#[tokio::test]
 async fn restart_cancellation_epoch_rejects_queued_restart() {
     let local_id = test_actor_id(1);
     let target_id = test_actor_id(99);

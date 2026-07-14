@@ -41,7 +41,7 @@ use std::collections::{HashMap, hash_map::Entry};
 use std::{
     sync::{
         Arc, RwLock as StdRwLock, Weak,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -478,6 +478,11 @@ pub struct WebRtcCoordinator {
     /// cleanup of unrelated peers.
     restart_signaling_gates: RestartSignalingGates,
 
+    /// Serializes full peer shutdowns and prevents new peer-scoped signaling
+    /// from entering while `close_all_peers` is quiescing existing sends.
+    close_all_gate: Mutex<()>,
+    closing_all_peers: AtomicBool,
+
     /// Invalidates restart work that was queued before cleanup began. Unlike
     /// `cleanup_depth`, this epoch is specific to restart cancellation, so
     /// network recovery may start a fresh restart inside its lifecycle barrier.
@@ -536,6 +541,8 @@ impl WebRtcCoordinator {
             cleanup_depth: Arc::new(AtomicUsize::new(0)),
             cleanup_notify: Arc::new(tokio::sync::Notify::new()),
             restart_signaling_gates: Arc::new(Mutex::new(HashMap::new())),
+            close_all_gate: Mutex::new(()),
+            closing_all_peers: AtomicBool::new(false),
             restart_cancellation_epoch: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "opentelemetry")]
             root_context_map: Arc::new(RwLock::new(HashMap::new())),
@@ -2635,34 +2642,32 @@ impl WebRtcCoordinator {
     /// RTCPeerConnection instances are closed and associated state
     /// (pending ICE candidates, WebRtcConnection state) is dropped.
     pub async fn close_all_peers(&self) -> ActorResult<()> {
+        let _close_all_guard = self.close_all_gate.lock().await;
+        self.closing_all_peers.store(true, Ordering::Release);
         tracing::info!("🔻 Closing all WebRTC peer connections");
 
         self.restart_cancellation_epoch
             .fetch_add(1, Ordering::AcqRel);
 
-        // Drain all peers (take ownership of full PeerState) and detach every
-        // restart handle so cancellation can be awaited deterministically.
-        let mut all_peers: Vec<(ActrId, PeerState)> = {
+        // Abort tracked restart tasks before waiting for their signaling gates.
+        // A blocked tracked send holds its gate, so waiting first would prevent
+        // close_all_peers from reaching the handle that can cancel it.
+        let restart_handles = {
             let mut peers = self.peers.write().await;
-            peers.drain().collect()
-        };
-        let mut restart_handles = Vec::new();
-        for (peer_id, state) in &mut all_peers {
-            if let Some(handle) = state.restart_task_handle.take() {
-                handle.abort();
-                restart_handles.push((peer_id.clone(), handle));
+            let mut restart_handles = Vec::new();
+            for (peer_id, state) in peers.iter_mut() {
+                if let Some(handle) = state.restart_task_handle.take() {
+                    handle.abort();
+                    restart_handles.push((peer_id.clone(), handle));
+                }
+                state.ice_restart_inflight = false;
+                state.ice_restart_attempts = 0;
+                state.pending_local_sdp_exchange_id = None;
+                state.local_ice_generation_pending = false;
+                state.pending_local_ice_candidates.clear();
             }
-        }
-
-        // Clear pending ICE candidates
-        {
-            let mut pending = self.pending_candidates.write().await;
-            pending.clear();
-        }
-
-        // Clear root tracing contexts (if enabled)
-        #[cfg(feature = "opentelemetry")]
-        self.root_context_map.write().await.clear();
+            restart_handles
+        };
 
         for (peer_id, handle) in restart_handles {
             if let Err(err) = handle.await
@@ -2671,6 +2676,68 @@ impl WebRtcCoordinator {
                 tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
             }
         }
+
+        // Acquire every current peer's signaling gate in a stable order, then
+        // drain while those gates are held. A send that already crossed its
+        // final current-session check must finish while its peer is still
+        // current; queued sends observe the drained state and are discarded.
+        let (all_peers, late_restart_handles) = loop {
+            let mut peer_ids: Vec<ActrId> = {
+                let peers = self.peers.read().await;
+                peers.keys().cloned().collect()
+            };
+            peer_ids.sort_by_key(|peer_id| peer_id.encode_to_vec());
+
+            let mut peer_gates = Vec::with_capacity(peer_ids.len());
+            for peer_id in &peer_ids {
+                peer_gates.push((
+                    peer_id.clone(),
+                    self.restart_signaling_gate_for(peer_id).await,
+                ));
+            }
+            let mut signaling_guards = Vec::with_capacity(peer_gates.len());
+            for (_, gate) in &peer_gates {
+                signaling_guards.push(gate.lock().await);
+            }
+
+            let mut peers = self.peers.write().await;
+            if peers.keys().any(|peer_id| !peer_ids.contains(peer_id)) {
+                drop(peers);
+                drop(signaling_guards);
+                drop(peer_gates);
+                continue;
+            }
+
+            let mut all_peers: Vec<(ActrId, PeerState)> = peers.drain().collect();
+            drop(peers);
+            let mut late_restart_handles = Vec::new();
+            for (peer_id, state) in &mut all_peers {
+                if let Some(handle) = state.restart_task_handle.take() {
+                    handle.abort();
+                    late_restart_handles.push((peer_id.clone(), handle));
+                }
+            }
+
+            drop(signaling_guards);
+            drop(peer_gates);
+            break (all_peers, late_restart_handles);
+        };
+
+        for (peer_id, handle) in late_restart_handles {
+            if let Err(err) = handle.await
+                && !err.is_cancelled()
+            {
+                tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
+            }
+        }
+
+        // Clear pending ICE candidates
+        self.pending_candidates.write().await.clear();
+
+        // Clear root tracing contexts (if enabled)
+        #[cfg(feature = "opentelemetry")]
+        self.root_context_map.write().await.clear();
+
         // Keep entries that still have live holders. Removing one would allow a
         // concurrent lookup to create a second gate for the same peer and break
         // signaling serialization. Dead weak entries can be discarded safely.
@@ -2707,6 +2774,7 @@ impl WebRtcCoordinator {
             }
         }
 
+        self.closing_all_peers.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -2835,7 +2903,7 @@ impl WebRtcCoordinator {
                     .get(target)
                     .is_some_and(|state| state.session_id == session_id)
             };
-            if session_is_current {
+            if session_is_current && !self.closing_all_peers.load(Ordering::Acquire) {
                 self.send_actr_relay(target, payload).await.map(|()| true)
             } else {
                 Ok(false)
@@ -5150,6 +5218,13 @@ impl WebRtcCoordinator {
     /// Uses atomic state management within peers lock for complete de-duplication.
     /// If ICE restart fails after all retries, attempts to establish a new connection.
     pub async fn restart_ice(self: &Arc<Self>, target: &actr_protocol::ActrId) -> ActorResult<()> {
+        if self.closing_all_peers.load(Ordering::Acquire) {
+            tracing::debug!(
+                "⏭️ Skip ICE restart to serial={}: all peers are closing",
+                target
+            );
+            return Ok(());
+        }
         let cancellation_epoch = self.restart_cancellation_epoch.load(Ordering::Acquire);
 
         // Prepare all clones needed for the spawned task
@@ -5169,9 +5244,11 @@ impl WebRtcCoordinator {
         // call was queued for the gate, discard it; recovery calls that begin
         // afterward capture the new epoch and remain eligible.
         let _signaling_guard = restart_signaling_gate.lock().await;
-        if self.restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch {
+        if self.closing_all_peers.load(Ordering::Acquire)
+            || self.restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch
+        {
             tracing::debug!(
-                "⏭️ Skip ICE restart to serial={}: restart cancellation epoch advanced",
+                "⏭️ Skip ICE restart to serial={}: peer shutdown or cancellation advanced",
                 target
             );
             return Ok(());
@@ -5180,6 +5257,15 @@ impl WebRtcCoordinator {
         // CRITICAL FIX: Perform all state checks, spawn, and handle assignment
         // within a SINGLE lock scope to eliminate race condition window
         let mut peers = self.peers.write().await;
+        if self.closing_all_peers.load(Ordering::Acquire)
+            || self.restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch
+        {
+            tracing::debug!(
+                "⏭️ Skip ICE restart to serial={}: shutdown began before peer state update",
+                target
+            );
+            return Ok(());
+        }
         tracing::info!("Restarting ICE for target: {}", target);
         if let Some(state) = peers.get_mut(target) {
             // 1. Check if restart is already in-flight using restart_task_handle
@@ -6332,7 +6418,8 @@ impl WebRtcCoordinator {
                     .get(from)
                     .is_some_and(|state| state.session_id == session_id)
             };
-            if self.restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch
+            if self.closing_all_peers.load(Ordering::Acquire)
+                || self.restart_cancellation_epoch.load(Ordering::Acquire) != cancellation_epoch
                 || !session_is_current
             {
                 None
