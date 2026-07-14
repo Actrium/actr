@@ -45,6 +45,22 @@ fn unregister_removes_stream() {
     assert_eq!(reg.callbacks.len(), 0);
 }
 
+#[test]
+fn clear_removes_all_streams_and_allows_reregistration() {
+    let reg = DataChunkRegistry::new();
+    let (first, _) = counting_callback();
+    let (second, _) = counting_callback();
+    reg.register("s1".into(), first);
+    reg.register("s2".into(), second);
+
+    reg.clear();
+    assert!(reg.callbacks.is_empty());
+
+    let (replacement, _) = counting_callback();
+    reg.register("s3".into(), replacement);
+    assert_eq!(reg.callbacks.len(), 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dispatch_invokes_registered_callback() {
     let reg = DataChunkRegistry::new();

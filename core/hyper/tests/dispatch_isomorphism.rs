@@ -24,44 +24,40 @@
 //! | P1 distinct keys interleave (MAX_SEEN≥2)   | ✅ `p1::native` | ✅ `p1::wasm` |
 //! | P2 same key strictly serial (MAX_SEEN==1)  | ✅ `p2::native` | ✅ `p2::wasm` |
 //! | P3 concurrency capped at budget C          | ✅ `p3::native` | ✅ `p3::wasm` |
-//! | P5 per-dispatch timeout ⇒ TimedOut+free key | ✅ `p5::native` | ✅ `p5::wasm` |
+//! | P5 timeout hard-cancels unsafe execution    | ✅ terminate runner | ✅ rebuild Store |
 //! | P6 keyless ⇒ degenerate serial (MAX_SEEN==1)| ✅ `p6::native` | ✅ `p6::wasm` |
 //! | SA default-on keyless ⇒ serial, no scheduler| ✅ `sa::native` | ✅ `sa::wasm` |
-//! | P4 fault does not orphan siblings (WEAK)   | ⚠️ different form — see below |
+//! | P4 panic/trap fails co-resident work safely | ✅ terminate runner | ✅ rebuild Store |
 //!
-//! ### P4 — a DESIGN difference, not a bug
+//! ### P4 — same fail-closed rule, different recovery capability
 //!
-//! P4 is the one property that is deliberately NOT isomorphic, because the two
-//! bases have structurally different failure containment, and the tests assert
-//! each correct-but-different form separately (`p4_native_*` / `p4_wasm_*`):
+//! Both bases stop co-resident work after an unexpected guest fault. Continuing
+//! would expose shared state that may have been partially mutated before the
+//! unwind/trap. Their post-fault availability differs only because the host can
+//! reconstruct one basis but not the other:
 //!
 //! * **native** — a dispatch that panics after a host await is caught by
-//!   `executor::run_loop_interleaved`'s per-dispatch `catch_unwind`
-//!   (`executor.rs`'s `guarded`). Only that one dispatch fails; its co-resident
-//!   siblings keep running and the instance is NOT rebuilt (native `Linked`
-//!   guests share no linear memory that a panic could poison).
+//!   `executor::run_loop_interleaved`; the triggering caller receives
+//!   `Internal`, then the runner terminates and drops all siblings/queued work.
+//!   A generic `LinkedWorkloadHandle` has no reconstruction factory, so later
+//!   calls remain unavailable.
 //! * **WASM** — a guest trap unwinds the whole resident `run_concurrent` region,
 //!   so every co-resident sibling fails together and the instance is rebuilt
 //!   (a shared linear memory CAN be left mid-mutation, so tearing the region
 //!   down is the only safe recovery).
 //!
-//! The two P4 tests therefore assert OPPOSITE post-fault behaviour on purpose:
-//! native siblings SURVIVE and a follow-up probe sees the RETAINED peak (>1),
-//! whereas WASM siblings all FAIL and a follow-up probe sees a fresh MAX_SEEN==1
-//! (rebuilt linear memory). Do NOT "unify" these — they are both correct.
+//! The two P4 tests therefore both assert sibling failure, then assert the
+//! intentionally different recovery result: native follow-up is unavailable;
+//! WASM rebuilds and a fresh probe reports MAX_SEEN==1.
 //!
-//! ### P5 — per-dispatch timeout, now dual-basis (M6 §1)
+//! ### P5 — same hard-cancellation rule, different recovery capability
 //!
-//! A per-dispatch deadline is enforced identically on both bases: inside the
-//! WASM `run_interleaved` region and, as of M6 §1, inside the native
-//! `run_loop_interleaved` (each in-flight future wrapped in
-//! `tokio::time::timeout`). On expiry the in-flight dispatch future is **dropped**
-//! — a clean cancel on either basis (a native `&self` future shares no poisoned
-//! state; the WASM cancel is the spike-validated T8/R1 clean drop) — the caller's
-//! reply resolves `TimedOut`, the freed conflict key lets the next same-key
-//! dispatch start, and the instance survives. `prop_dispatch_timeout` asserts all
-//! four of those on both bases; the WASM region also has the deeper sealing /
-//! store-health coverage in `wasm_open_concurrency::dispatch_timeout_*`.
+//! Dropping either future is not proof that execution stopped: Wasmtime 46 keeps
+//! a `call_concurrent` guest task alive, and an arbitrary native future has no
+//! cancellation-safety contract. Both runners therefore fail co-resident work
+//! before releasing scheduler keys. WASM can recover by dropping and rebuilding
+//! its Store; a linked native actor has no generic re-instantiation mechanism,
+//! so its runner terminates and later calls are unavailable.
 //!
 //! ### SA — strategy-A default-on keyless serialization (M6 §1)
 //!
@@ -138,6 +134,8 @@ trait Basis {
     type SerialDispatcher: ConcurrentDispatch + 'static;
     /// Human-readable label used in assertion messages.
     const NAME: &'static str;
+    /// Whether hard cancellation can construct a fresh actor instance.
+    const RECOVERS_AFTER_TIMEOUT: bool;
 
     /// Build a dispatcher (budgeted conflict-key scheduler → interleaved runner)
     /// over `spec` with an optional per-dispatch deadline, plus the guest→host
@@ -173,6 +171,7 @@ impl Basis for WasmBasis {
     type Dispatcher = TestConcurrentDispatcher;
     type SerialDispatcher = TestSerialDispatcher;
     const NAME: &'static str = "wasm";
+    const RECOVERS_AFTER_TIMEOUT: bool = true;
 
     async fn build_with_timeout(
         spec: ConflictKeySpec,
@@ -213,6 +212,7 @@ impl Basis for NativeBasis {
     type Dispatcher = TestNativeConcurrentDispatcher;
     type SerialDispatcher = TestNativeSerialDispatcher;
     const NAME: &'static str = "native";
+    const RECOVERS_AFTER_TIMEOUT: bool = false;
 
     async fn build_with_timeout(
         spec: ConflictKeySpec,
@@ -400,21 +400,20 @@ async fn prop_keyless_serial<B: Basis>() {
 }
 iso_test!(p6_keyless_serial, prop_keyless_serial);
 
-// ── P5 — per-dispatch timeout: clean cancel, bounded, frees key, survives ────
+// ── P5 — per-dispatch timeout: hard cancel, bounded, safe recovery policy ───
 //
-// Now isomorphic (M6 §1): the deadline is enforced identically on both bases. A
-// parked-forever dispatch must resolve `TimedOut` within its deadline (never
-// hang), its conflict key must be freed so a same-key follow-up advances, and
-// the instance must survive (a fresh dispatch succeeds). No sleeps: the gate
-// bridge parks guest calls forever and the deadline does the releasing.
+// A parked-forever dispatch must resolve within its deadline, and no sibling may
+// keep using potentially partial state. WASM rebuilds a fresh Store; native
+// linked workloads terminate because the host cannot generically reconstruct
+// them. No sleeps: the gate bridge parks guest calls forever.
 
 async fn prop_dispatch_timeout<B: Basis>() {
     // 300ms per-dispatch deadline, enforced inside the interleaved runner.
     let (d, bridge, mut ctl) =
         B::build_with_timeout(probe_spec(), 8, 256, Some(Duration::from_millis(300))).await;
 
-    // Two distinct-key dispatches park at the gate FOREVER (never released).
-    // Each must independently hit its deadline even while the other is co-resident.
+    // Two distinct-key dispatches park at the gate forever. The first deadline
+    // hard-cancels the actor basis and fails the co-resident sibling.
     let a = spawn_dispatch(&d, PROBE, vec![], caller(1), &bridge);
     let b = spawn_dispatch(&d, PROBE, vec![], caller(2), &bridge);
     wait_entered(&mut ctl.gate_entered, 2).await;
@@ -422,24 +421,29 @@ async fn prop_dispatch_timeout<B: Basis>() {
     // Bounded resolution to TimedOut — a real hang trips the await watchdog.
     let ra = await_dispatch(a, "p5 A").await;
     let rb = await_dispatch(b, "p5 B").await;
-    assert!(
-        matches!(ra, Err(actr_protocol::ActrError::TimedOut)),
-        "[{}] parked dispatch A must resolve TimedOut, got {ra:?}",
+    let outcomes = [&ra, &rb];
+    let timed_out = usize::from(matches!(&ra, Err(actr_protocol::ActrError::TimedOut)))
+        + usize::from(matches!(&rb, Err(actr_protocol::ActrError::TimedOut)));
+    let unavailable = usize::from(matches!(&ra, Err(actr_protocol::ActrError::Unavailable(_))))
+        + usize::from(matches!(&rb, Err(actr_protocol::ActrError::Unavailable(_))));
+    assert_eq!(
+        timed_out,
+        1,
+        "[{}] exactly the triggering deadline reports TimedOut: {outcomes:?}",
         B::NAME
     );
-    assert!(
-        matches!(rb, Err(actr_protocol::ActrError::TimedOut)),
-        "[{}] parked dispatch B must resolve TimedOut, got {rb:?}",
+    assert_eq!(
+        unavailable,
+        1,
+        "[{}] the co-resident sibling must fail retryably: {outcomes:?}",
         B::NAME
     );
 
-    // The timed-out dispatch truly left and freed its key: a NEW same-key (as A)
-    // dispatch on the un-gated ECHO route must complete promptly (bounded), which
-    // is only possible if the cancelled dispatch released the key AND the
-    // instance was not left poisoned. ECHO has no host import, so it isolates
-    // same-key advance + instance survival from the still-parked gate.
+    // Probe the post-timeout policy on A's key. WASM must rebuild and answer;
+    // native linked execution must reject because it cannot be reconstructed.
+    // The un-gated ECHO route isolates that policy from old gate waiters.
     let payload = b"post-timeout".to_vec();
-    let recovered = tokio::time::timeout(
+    let follow_up = tokio::time::timeout(
         Duration::from_secs(5),
         d.dispatch(ECHO, payload.clone(), caller(1), &bridge),
     )
@@ -449,19 +453,27 @@ async fn prop_dispatch_timeout<B: Basis>() {
             "[{}] same-key dispatch after a timeout must not hang",
             B::NAME
         )
-    })
-    .unwrap_or_else(|e| {
-        panic!(
-            "[{}] same-key dispatch after a timeout must succeed: {e:?}",
-            B::NAME
-        )
     });
-    assert_eq!(
-        recovered.as_ref(),
-        payload.as_slice(),
-        "[{}] the recovered dispatch must round-trip on the surviving instance",
-        B::NAME
-    );
+    if B::RECOVERS_AFTER_TIMEOUT {
+        let recovered = follow_up.unwrap_or_else(|e| {
+            panic!(
+                "[{}] same-key dispatch must succeed on a rebuilt instance: {e:?}",
+                B::NAME
+            )
+        });
+        assert_eq!(
+            recovered.as_ref(),
+            payload.as_slice(),
+            "[{}] rebuilt instance must round-trip the follow-up",
+            B::NAME
+        );
+    } else {
+        assert!(
+            matches!(follow_up, Err(actr_protocol::ActrError::Unavailable(_))),
+            "[{}] linked actor must stay unavailable after unsafe cancellation, got {follow_up:?}",
+            B::NAME
+        );
+    }
     d.shutdown().await;
 }
 iso_test!(p5_dispatch_timeout, prop_dispatch_timeout);
@@ -521,17 +533,15 @@ iso_test!(
     stress_default_on_keyless_serial
 );
 
-// ── P4 — fault containment (WEAK: two DIFFERENT correct forms per basis) ─────
+// ── P4 — fault containment: fail co-resident work, recover if possible ─
 //
-// See the module header. These are intentionally NOT one generic body: native
-// per-dispatch panic isolation and WASM whole-region trap teardown are both
-// correct, and each test asserts its own form (including the opposite post-fault
-// probe value).
+// See the module header. These remain separate because native termination and
+// WASM rebuild have different post-fault availability.
 
-/// native `Linked`: a dispatch panic is caught per-dispatch (`catch_unwind`);
-/// co-resident siblings SURVIVE and the instance is NOT rebuilt.
+/// Native `Linked`: return `Internal` to the panicking dispatch, then terminate
+/// the runner and fail every co-resident sibling.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn p4_native_panic_isolates_only_the_faulting_dispatch() {
+async fn p4_native_panic_terminates_runner_and_fails_siblings() {
     const SIBLINGS: u64 = 3;
     let (d, bridge, mut ctl) = NativeBasis::build(probe_spec(), 8, 256).await;
 
@@ -547,41 +557,31 @@ async fn p4_native_panic_isolates_only_the_faulting_dispatch() {
     wait_entered(&mut ctl.impl_entered, 1).await;
 
     // Release ONLY boom's host import: it returns, the guest panics after the
-    // await, and `run_loop_interleaved`'s per-dispatch catch_unwind converts it
-    // to an error WITHOUT touching the co-resident siblings.
+    // await, and `run_loop_interleaved` reports Internal before terminating the
+    // runner and dropping every co-resident future.
     ctl.impl_release.add_permits(1);
     let boom_res = await_dispatch(boom, "p4-native boom").await;
     assert!(
-        boom_res.is_err(),
-        "the panicking dispatch itself must fail (caught by catch_unwind)"
+        matches!(boom_res, Err(actr_protocol::ActrError::Internal(_))),
+        "the panicking dispatch itself must receive Internal, got {boom_res:?}"
     );
 
-    // The siblings must ALL still complete — native guests share no linear
-    // memory, so a co-resident panic cannot poison them.
-    ctl.gate_release.add_permits(SIBLINGS as usize);
-    let mut peak = 0u32;
+    // Siblings stay parked at their host await until runner termination drops
+    // them; none may resume against potentially partial native actor state.
     for (i, h) in siblings.into_iter().enumerate() {
-        let bytes = await_dispatch(h, "p4-native sibling").await.unwrap_or_else(|e| {
-            panic!("native sibling {i} must SURVIVE a co-resident panic (per-task isolation), got {e:?}")
-        });
-        peak = peak.max(read_u32(&bytes));
+        let result = await_dispatch(h, "p4-native sibling").await;
+        assert!(
+            matches!(result, Err(actr_protocol::ActrError::Unavailable(_))),
+            "native sibling {i} must fail unavailable after a co-resident panic, got {result:?}"
+        );
     }
-    assert!(
-        peak >= 2,
-        "native siblings ran concurrently on the surviving instance, got peak {peak}"
-    );
 
-    // NO rebuild: the SAME instance persists, so a follow-up probe observes the
-    // RETAINED peak (>1) — the exact opposite of the WASM rebuild (==1 below).
-    ctl.gate_release.add_permits(1);
-    let after = read_u32(
-        &d.dispatch(PROBE, vec![], caller(777), &bridge)
-            .await
-            .expect("post-panic dispatch must run on the SAME native instance"),
-    );
+    // A generic linked actor cannot be reconstructed, so the scheduler may
+    // accept a follow-up but the terminated runner must reject it.
+    let after = d.dispatch(ECHO, vec![], caller(777), &bridge).await;
     assert!(
-        after > 1,
-        "native: no rebuild ⇒ post-panic probe sees the retained peak (>1), got {after}"
+        matches!(after, Err(actr_protocol::ActrError::Unavailable(_))),
+        "native follow-up must remain unavailable after panic, got {after:?}"
     );
     d.shutdown().await;
 }

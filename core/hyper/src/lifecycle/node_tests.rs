@@ -42,6 +42,168 @@ fn empty_conflict_key_spec_is_reported_empty() {
     );
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ShutdownOrderEvent {
+    FirstStarted,
+    FirstFinished,
+    SecondStarted,
+    OnStop,
+}
+
+async fn next_shutdown_event(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<ShutdownOrderEvent>,
+) -> ShutdownOrderEvent {
+    tokio::time::timeout(std::time::Duration::from_secs(5), events.recv())
+        .await
+        .expect("shutdown-order event watchdog")
+        .expect("shutdown-order event channel open")
+}
+
+/// Linked actor used to prove that graceful teardown drains the scheduler's
+/// same-key tail before the lifecycle barrier is allowed to run.
+struct ShutdownOrderHandle {
+    events: tokio::sync::mpsc::UnboundedSender<ShutdownOrderEvent>,
+    release_first: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait::async_trait]
+impl LinkedWorkloadHandle for ShutdownOrderHandle {
+    async fn dispatch(
+        &self,
+        envelope: RpcEnvelope,
+        _ctx: Arc<crate::context::RuntimeContext>,
+    ) -> ActorResult<bytes::Bytes> {
+        match envelope.request_id.as_str() {
+            "first" => {
+                let _ = self.events.send(ShutdownOrderEvent::FirstStarted);
+                self.release_first
+                    .acquire()
+                    .await
+                    .expect("release semaphore open")
+                    .forget();
+                let _ = self.events.send(ShutdownOrderEvent::FirstFinished);
+            }
+            "second" => {
+                let _ = self.events.send(ShutdownOrderEvent::SecondStarted);
+            }
+            other => panic!("unexpected dispatch {other}"),
+        }
+        Ok(bytes::Bytes::new())
+    }
+
+    async fn on_stop(&self, _ctx: &crate::context::RuntimeContext) -> ActorResult<()> {
+        let _ = self.events.send(ShutdownOrderEvent::OnStop);
+        Ok(())
+    }
+}
+
+fn shutdown_order_dispatch(
+    runner: Arc<crate::executor::ActorHandle>,
+    ctx: crate::context::RuntimeContext,
+    request_id: &'static str,
+) -> crate::dispatch::scheduler::DispatchFn {
+    Box::new(move || {
+        Box::pin(async move {
+            let envelope = RpcEnvelope {
+                request_id: request_id.to_string(),
+                ..RpcEnvelope::default()
+            };
+            let invocation = crate::workload::InvocationContext {
+                self_id: ActrId::default(),
+                caller_id: None,
+                request_id: request_id.to_string(),
+            };
+            let host_abi: crate::workload::HostAbiFn =
+                Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
+            runner
+                .dispatch_envelope(envelope, ctx, invocation, &host_abi)
+                .await
+        })
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn graceful_shutdown_drains_admitted_scheduler_work_before_on_stop() {
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let release_first = Arc::new(tokio::sync::Semaphore::new(0));
+    let workload = Workload::Linked(Arc::new(ShutdownOrderHandle {
+        events: events_tx,
+        release_first: release_first.clone(),
+    }) as Arc<dyn LinkedWorkloadHandle>);
+    let runner = Arc::new(crate::executor::spawn_runner_with_mode(
+        workload,
+        crate::executor::RunnerMode::Interleaved,
+        None,
+    ));
+    let scheduler = Arc::new(crate::dispatch::scheduler::SchedulerHandle::spawn(2, 8));
+    let ctx =
+        runtime_context_with_host_transport(ActrId::default(), Arc::new(HostTransport::new()));
+    let key = crate::dispatch::conflict_key::ConflictKey::Scoped {
+        domain: Arc::from("shutdown-order"),
+        value: bytes::Bytes::from_static(b"same"),
+    };
+
+    let first = scheduler
+        .submit(
+            key.clone(),
+            shutdown_order_dispatch(runner.clone(), ctx.clone(), "first"),
+        )
+        .await;
+    let second = scheduler
+        .submit(
+            key,
+            shutdown_order_dispatch(runner.clone(), ctx.clone(), "second"),
+        )
+        .await;
+    assert_eq!(
+        next_shutdown_event(&mut events_rx).await,
+        ShutdownOrderEvent::FirstStarted
+    );
+
+    let stop_runner = runner.clone();
+    let stop_ctx = ctx.clone();
+    let stop = async move {
+        let invocation = crate::workload::InvocationContext {
+            self_id: ActrId::default(),
+            caller_id: None,
+            request_id: "lifecycle:on_stop".to_string(),
+        };
+        let host_abi: crate::workload::HostAbiFn =
+            Arc::new(|_| Box::pin(async { HostOperationResult::Done }));
+        stop_runner
+            .on_stop(stop_ctx, invocation, &host_abi)
+            .await
+            .expect("on_stop succeeds");
+    };
+    let shutdown_runner = runner.clone();
+    let shutdown_scheduler = scheduler.clone();
+    let shutdown = tokio::spawn(async move {
+        shutdown_actor_runner(Some(shutdown_scheduler), shutdown_runner, stop).await;
+    });
+
+    release_first.add_permits(1);
+    assert_eq!(
+        next_shutdown_event(&mut events_rx).await,
+        ShutdownOrderEvent::FirstFinished
+    );
+    assert_eq!(
+        next_shutdown_event(&mut events_rx).await,
+        ShutdownOrderEvent::SecondStarted,
+        "the admitted same-key tail must execute during graceful drain"
+    );
+    assert_eq!(
+        next_shutdown_event(&mut events_rx).await,
+        ShutdownOrderEvent::OnStop,
+        "on_stop must follow every admitted scheduler job"
+    );
+    assert!(first.await.expect("scheduler alive").is_ok());
+    assert!(second.await.expect("scheduler alive").is_ok());
+    tokio::time::timeout(std::time::Duration::from_secs(5), shutdown)
+        .await
+        .expect("shutdown coordinator watchdog")
+        .expect("shutdown coordinator task");
+}
+
 #[test]
 fn connection_not_ready_has_distinct_wire_code() {
     let err = ActrError::ConnectionNotReady(ConnectionNotReadyInfo::new(1200, 6000));
@@ -156,11 +318,21 @@ fn expect_error_code(res: HostOperationResult, expected: i32) {
     }
 }
 
+fn weak_runner(
+    runner: &Arc<crate::executor::ActorHandle>,
+) -> std::sync::Weak<crate::executor::ActorHandle> {
+    Arc::downgrade(runner)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn callraw_without_peer_returns_error_code() {
     let (ctx, wl) = actorless_harness().await;
-    let res =
-        host_operation_handler(ctx, wl, HostOperation::CallRaw(HostCallRawV1::default())).await;
+    let res = host_operation_handler(
+        ctx,
+        weak_runner(&wl),
+        HostOperation::CallRaw(HostCallRawV1::default()),
+    )
+    .await;
     // No remote actor gate is installed, so routing fails immediately.
     expect_error_code(res, abi_code::GENERIC_ERROR);
 }
@@ -168,22 +340,36 @@ async fn callraw_without_peer_returns_error_code() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn call_with_default_dest_returns_error() {
     let (ctx, wl) = harness().await;
-    let res = host_operation_handler(ctx, wl, HostOperation::Call(HostCallV1::default())).await;
+    let res = host_operation_handler(
+        ctx,
+        weak_runner(&wl),
+        HostOperation::Call(HostCallV1::default()),
+    )
+    .await;
     expect_error_code(res, abi_code::PROTOCOL_ERROR);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tell_with_default_dest_returns_error() {
     let (ctx, wl) = harness().await;
-    let res = host_operation_handler(ctx, wl, HostOperation::Tell(HostTellV1::default())).await;
+    let res = host_operation_handler(
+        ctx,
+        weak_runner(&wl),
+        HostOperation::Tell(HostTellV1::default()),
+    )
+    .await;
     expect_error_code(res, abi_code::PROTOCOL_ERROR);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn discover_without_realm_returns_error() {
     let (ctx, wl) = harness().await;
-    let res =
-        host_operation_handler(ctx, wl, HostOperation::Discover(HostDiscoverV1::default())).await;
+    let res = host_operation_handler(
+        ctx,
+        weak_runner(&wl),
+        HostOperation::Discover(HostDiscoverV1::default()),
+    )
+    .await;
     // Default ActrType with unreachable signaling → discover errors.
     expect_error_code(res, abi_code::GENERIC_ERROR);
 }
@@ -193,7 +379,7 @@ async fn register_and_unregister_stream_roundtrip() {
     let (ctx, wl) = harness().await;
     let register = host_operation_handler(
         ctx.clone(),
-        wl.clone(),
+        weak_runner(&wl),
         HostOperation::RegisterStream(HostRegisterStreamV1 {
             stream_id: "stream-1".to_string(),
         }),
@@ -206,7 +392,7 @@ async fn register_and_unregister_stream_roundtrip() {
 
     let unregister = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::UnregisterStream(HostUnregisterStreamV1 {
             stream_id: "stream-1".to_string(),
         }),
@@ -219,11 +405,61 @@ async fn register_and_unregister_stream_roundtrip() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn node_teardown_releases_registered_stream_callback_cycle() {
+    let (ctx, wl) = harness().await;
+    let registry = ctx.data_chunk_registry_for_test();
+    let weak_registry = Arc::downgrade(&registry);
+    let cleanup = DataChunkRegistryCleanupGuard::new(&registry);
+
+    let register = host_operation_handler(
+        ctx.clone(),
+        weak_runner(&wl),
+        HostOperation::RegisterStream(HostRegisterStreamV1 {
+            stream_id: "cycle-stream".to_string(),
+        }),
+    )
+    .await;
+    assert!(matches!(register, HostOperationResult::Done));
+
+    // Execute the exact callback installed by the host bridge. A linked
+    // workload intentionally reports NotImplemented for package stream
+    // callbacks, which proves the callback reached the live actor runner.
+    let callback_result = registry
+        .invoke_for_test(
+            actr_protocol::DataChunk {
+                stream_id: "cycle-stream".to_string(),
+                sequence: 1,
+                ..Default::default()
+            },
+            ActrId::default(),
+        )
+        .await
+        .expect("registered callback");
+    assert!(matches!(callback_result, Err(ActrError::NotImplemented(_))));
+
+    drop(ctx);
+    drop(wl);
+    drop(registry);
+    assert!(
+        weak_registry.upgrade().is_some(),
+        "the regression fixture must retain the registry through its callback"
+    );
+
+    // `Inner` owns this guard in production. Dropping it clears callbacks,
+    // which drops the captured RuntimeContext and releases the registry.
+    drop(cleanup);
+    assert!(
+        weak_registry.upgrade().is_none(),
+        "node teardown must break the stream callback ownership cycle"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unregister_unknown_stream_is_idempotent_done() {
     let (ctx, wl) = harness().await;
     let res = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::UnregisterStream(HostUnregisterStreamV1 {
             stream_id: "never-registered".to_string(),
         }),
@@ -242,7 +478,7 @@ async fn send_data_chunk_rejects_non_stream_payload_type() {
     // RpcReliable is a valid PayloadType but not a stream type → PROTOCOL_ERROR.
     let res = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::workload(),
             payload_type: PayloadType::RpcReliable as i32,
@@ -258,7 +494,7 @@ async fn send_data_chunk_rejects_unknown_payload_type() {
     let (ctx, wl) = harness().await;
     let res = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::workload(),
             payload_type: 9999,
@@ -275,7 +511,7 @@ async fn send_data_chunk_valid_type_routes_and_errors() {
     // Valid stream payload type, but no route to the default dest → routing error.
     let res = host_operation_handler(
         ctx,
-        wl,
+        weak_runner(&wl),
         HostOperation::SendDataChunk(HostSendDataChunkV1 {
             dest: DestV1::workload(),
             payload_type: PayloadType::StreamReliable as i32,

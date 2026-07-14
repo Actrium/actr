@@ -669,8 +669,8 @@ impl TestWasmWorkload {
     /// Move this workload behind an **interleaved** command runner — for a
     /// 0.2.0 (V2) kernel this drives the resident `run_concurrent` region so
     /// distinct commands submitted concurrently really interleave inside the
-    /// one instance (M5). `dispatch_timeout` is the per-dispatch deadline
-    /// enforced inside the region.
+    /// one instance (M5). `dispatch_timeout` is supervised outside the region
+    /// so expiry can discard the physical Store before replying.
     pub fn into_interleaved_runner(
         self,
         dispatch_timeout: Option<std::time::Duration>,
@@ -866,10 +866,11 @@ pub struct TestNativeConcurrentDispatcher {
 impl TestNativeConcurrentDispatcher {
     /// Wire a native `Linked` workload behind the production gate-on shape: a
     /// conflict-key scheduler (budget `C` / queue cap `M`) in front of an
-    /// interleaved runner. `dispatch_timeout` arms the same per-dispatch deadline
-    /// the WASM path uses; the native `run_loop_interleaved` now honours it (M6
-    /// P5 — a timed-out dispatch is cleanly cancelled, resolves `TimedOut`, and
-    /// frees its conflict key), so both bases are isomorphic on timeout too.
+    /// interleaved runner. `dispatch_timeout` uses the same fail-closed policy as
+    /// the WASM path: the triggering call resolves `TimedOut`, siblings fail,
+    /// and the native runner terminates because arbitrary linked actor state
+    /// cannot be reconstructed safely after cancellation. An unexpected guest
+    /// panic is contained the same way after returning `Internal` to its caller.
     pub fn spawn<W: actr_framework::Workload>(
         workload: W,
         spec: crate::dispatch::ConflictKeySpec,

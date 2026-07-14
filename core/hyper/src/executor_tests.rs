@@ -313,10 +313,41 @@ async fn queued_cmds_after_shutdown_get_no_reply() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abort_and_join_drops_a_stuck_runner() {
+    let (handle, _gate, mut entered_rx, drop_rx) = gated_runner();
+
+    let reply = enqueue_on_start(&handle);
+    tokio::time::timeout(WATCHDOG, entered_rx.recv())
+        .await
+        .expect("watchdog: stuck command did not enter")
+        .expect("entered channel open");
+
+    tokio::time::timeout(WATCHDOG, handle.abort_and_join())
+        .await
+        .expect("watchdog: runner abort did not join");
+    assert!(reply.await.is_err(), "aborted command reply must close");
+    tokio::time::timeout(WATCHDOG, drop_rx)
+        .await
+        .expect("watchdog: aborted runner retained its workload")
+        .expect("workload drop signal");
+}
+
 // ── Interleaved runner (B2 native concurrency) ───────────────────────────────
 
 /// Build a gated runner in `Interleaved` mode (native `Linked` concurrency).
 fn gated_runner_interleaved() -> (
+    ActorHandle,
+    Arc<Gate>,
+    mpsc::UnboundedReceiver<u64>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    gated_runner_interleaved_with_timeout(None)
+}
+
+fn gated_runner_interleaved_with_timeout(
+    dispatch_timeout: Option<Duration>,
+) -> (
     ActorHandle,
     Arc<Gate>,
     mpsc::UnboundedReceiver<u64>,
@@ -338,7 +369,7 @@ fn gated_runner_interleaved() -> (
     };
     let workload = Workload::Linked(Arc::new(handle) as Arc<dyn LinkedWorkloadHandle>);
     (
-        spawn_runner_with_mode(workload, RunnerMode::Interleaved, None),
+        spawn_runner_with_mode(workload, RunnerMode::Interleaved, dispatch_timeout),
         gate,
         entered_rx,
         drop_rx,
@@ -364,6 +395,103 @@ fn enqueue_dispatch(
     };
     handle.tx.try_send(cmd).expect("queue has capacity");
     rx
+}
+
+/// Dispatch gate that reports request ids, allowing cancellation tests to
+/// distinguish a skipped queued command from the command behind it.
+struct CancellationHandle {
+    entered: mpsc::UnboundedSender<String>,
+    release: Arc<Semaphore>,
+    _drop: DropSignal,
+}
+
+#[async_trait]
+impl LinkedWorkloadHandle for CancellationHandle {
+    async fn dispatch(
+        &self,
+        envelope: RpcEnvelope,
+        _ctx: Arc<RuntimeContext>,
+    ) -> ActorResult<bytes::Bytes> {
+        let _ = self.entered.send(envelope.request_id);
+        self.release
+            .acquire()
+            .await
+            .expect("release semaphore open")
+            .forget();
+        Ok(bytes::Bytes::new())
+    }
+}
+
+fn cancellation_runner() -> (
+    ActorHandle,
+    mpsc::UnboundedReceiver<String>,
+    Arc<Semaphore>,
+    tokio::sync::oneshot::Receiver<()>,
+) {
+    let (entered_tx, entered_rx) = mpsc::unbounded_channel();
+    let release = Arc::new(Semaphore::new(0));
+    let (drop_tx, drop_rx) = tokio::sync::oneshot::channel();
+    let workload = Workload::Linked(Arc::new(CancellationHandle {
+        entered: entered_tx,
+        release: release.clone(),
+        _drop: DropSignal(Some(drop_tx)),
+    }) as Arc<dyn LinkedWorkloadHandle>);
+    (spawn_runner(workload), entered_rx, release, drop_rx)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn queued_command_with_canceled_reply_is_skipped() {
+    let (handle, mut entered, release, _drop_rx) = cancellation_runner();
+    let first = enqueue_dispatch(&handle, "first");
+    assert_eq!(
+        tokio::time::timeout(WATCHDOG, entered.recv())
+            .await
+            .expect("first entry watchdog")
+            .expect("entry channel open"),
+        "first"
+    );
+
+    let canceled = enqueue_dispatch(&handle, "canceled");
+    drop(canceled);
+    release.add_permits(1);
+    assert!(first.await.expect("runner alive").is_ok());
+
+    let last = enqueue_dispatch(&handle, "last");
+    assert_eq!(
+        tokio::time::timeout(WATCHDOG, entered.recv())
+            .await
+            .expect("last entry watchdog")
+            .expect("entry channel open"),
+        "last",
+        "the canceled queued command must not enter guest code"
+    );
+    release.add_permits(1);
+    assert!(last.await.expect("runner alive").is_ok());
+    handle.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn canceling_a_running_command_poisons_the_runner() {
+    let (handle, mut entered, _release, drop_rx) = cancellation_runner();
+    let running = enqueue_dispatch(&handle, "running");
+    assert_eq!(
+        tokio::time::timeout(WATCHDOG, entered.recv())
+            .await
+            .expect("running entry watchdog")
+            .expect("entry channel open"),
+        "running"
+    );
+
+    drop(running);
+    tokio::time::timeout(WATCHDOG, drop_rx)
+        .await
+        .expect("canceled runner retained its workload")
+        .expect("workload drop signal");
+    let late = handle
+        .on_start(test_ctx(), test_invocation(), &noop_host_abi())
+        .await
+        .expect_err("poisoned runner must reject later commands");
+    assert!(matches!(late, ActrError::Unavailable(_)), "got {late:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -401,6 +529,52 @@ async fn interleaved_dispatches_run_concurrently() {
             .unwrap()
             .is_ok()
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_dispatch_timeout_poisons_and_terminates_runner() {
+    let (handle, _gate, mut entered_rx, drop_rx) =
+        gated_runner_interleaved_with_timeout(Some(Duration::from_millis(20)));
+
+    let rx1 = enqueue_dispatch(&handle, "timeout-1");
+    let rx2 = enqueue_dispatch(&handle, "timeout-2");
+    for _ in 0..2 {
+        tokio::time::timeout(WATCHDOG, entered_rx.recv())
+            .await
+            .expect("watchdog: dispatch did not enter")
+            .expect("entered channel open");
+    }
+
+    let first = tokio::time::timeout(WATCHDOG, rx1)
+        .await
+        .expect("watchdog: first timeout reply");
+    let second = tokio::time::timeout(WATCHDOG, rx2)
+        .await
+        .expect("watchdog: sibling timeout reply");
+    let outcomes = [first, second];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|result| matches!(result, Ok(Err(ActrError::TimedOut))))
+            .count(),
+        1,
+        "exactly the dispatch that poisons the runner reports TimedOut: {outcomes:?}"
+    );
+    assert_eq!(
+        outcomes.iter().filter(|result| result.is_err()).count(),
+        1,
+        "the sibling must be canceled when the poisoned runner exits: {outcomes:?}"
+    );
+
+    tokio::time::timeout(WATCHDOG, drop_rx)
+        .await
+        .expect("watchdog: poisoned runner retained its workload")
+        .expect("workload drop signal");
+    let late = handle
+        .on_start(test_ctx(), test_invocation(), &noop_host_abi())
+        .await
+        .expect_err("poisoned actor must reject later commands");
+    assert!(matches!(late, ActrError::Unavailable(_)), "got {late:?}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -452,9 +626,14 @@ async fn interleaved_lifecycle_is_a_barrier() {
     );
 }
 
-/// Linked handle whose dispatch panics for a specific request id, so we can
-/// prove sibling isolation under interleaving.
-struct SelectivePanicHandle;
+/// Linked handle whose `boom` dispatch panics only after the test has placed a
+/// sibling in flight. The sibling parks forever, so terminating the runner is
+/// the only way its reply can resolve.
+struct SelectivePanicHandle {
+    entered: mpsc::UnboundedSender<String>,
+    release_panic: Arc<Semaphore>,
+    _drop: DropSignal,
+}
 
 #[async_trait]
 impl LinkedWorkloadHandle for SelectivePanicHandle {
@@ -463,39 +642,129 @@ impl LinkedWorkloadHandle for SelectivePanicHandle {
         envelope: RpcEnvelope,
         _ctx: Arc<RuntimeContext>,
     ) -> ActorResult<bytes::Bytes> {
+        let _ = self.entered.send(envelope.request_id.clone());
         if envelope.request_id == "boom" {
+            self.release_panic
+                .acquire()
+                .await
+                .expect("panic release semaphore open")
+                .forget();
             panic!("intentional dispatch panic");
         }
-        Ok(bytes::Bytes::from_static(b"ok"))
+        std::future::pending().await
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn interleaved_panic_isolated_from_siblings() {
-    let workload =
-        Workload::Linked(Arc::new(SelectivePanicHandle) as Arc<dyn LinkedWorkloadHandle>);
+async fn interleaved_panic_terminates_runner_and_fails_other_work() {
+    let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+    let release_panic = Arc::new(Semaphore::new(0));
+    let (drop_tx, drop_rx) = tokio::sync::oneshot::channel();
+    let workload = Workload::Linked(Arc::new(SelectivePanicHandle {
+        entered: entered_tx,
+        release_panic: release_panic.clone(),
+        _drop: DropSignal(Some(drop_tx)),
+    }) as Arc<dyn LinkedWorkloadHandle>);
     let handle = spawn_runner_with_mode(workload, RunnerMode::Interleaved, None);
 
     let rx_boom = enqueue_dispatch(&handle, "boom");
-    let rx_ok = enqueue_dispatch(&handle, "fine");
+    let rx_sibling = enqueue_dispatch(&handle, "sibling");
+    let mut entered = vec![
+        tokio::time::timeout(WATCHDOG, entered_rx.recv())
+            .await
+            .expect("first dispatch entry watchdog")
+            .expect("entry channel open"),
+        tokio::time::timeout(WATCHDOG, entered_rx.recv())
+            .await
+            .expect("second dispatch entry watchdog")
+            .expect("entry channel open"),
+    ];
+    entered.sort();
+    assert_eq!(entered, ["boom", "sibling"]);
 
-    // The panicking dispatch yields an Internal error; the sibling still succeeds.
+    // Queue a lifecycle barrier as well. It must be dropped with the in-flight
+    // sibling once the panic marks the actor instance unsafe to reuse.
+    let queued = enqueue_on_start(&handle);
+    release_panic.add_permits(1);
+
+    // The triggering caller receives the specific panic error before the
+    // runner exits.
     let boom = tokio::time::timeout(WATCHDOG, rx_boom)
         .await
         .unwrap()
         .unwrap();
     assert!(matches!(boom, Err(ActrError::Internal(_))), "got {boom:?}");
-    let ok = tokio::time::timeout(WATCHDOG, rx_ok)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(ok.unwrap(), bytes::Bytes::from_static(b"ok"));
 
-    // Runner survives a panic: a third dispatch still completes.
-    let rx_after = enqueue_dispatch(&handle, "after");
-    let after = tokio::time::timeout(WATCHDOG, rx_after)
+    assert!(
+        tokio::time::timeout(WATCHDOG, rx_sibling)
+            .await
+            .expect("sibling reply watchdog")
+            .is_err(),
+        "co-resident sibling must lose its reply when the runner terminates"
+    );
+    assert!(
+        tokio::time::timeout(WATCHDOG, queued)
+            .await
+            .expect("queued barrier reply watchdog")
+            .is_err(),
+        "queued work must not run on the panicked actor"
+    );
+    tokio::time::timeout(WATCHDOG, drop_rx)
         .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(after.unwrap(), bytes::Bytes::from_static(b"ok"));
+        .expect("panicked runner retained its workload")
+        .expect("workload drop signal");
+
+    let late = handle
+        .on_start(test_ctx(), test_invocation(), &noop_host_abi())
+        .await
+        .expect_err("panicked actor must reject follow-up commands");
+    assert!(matches!(late, ActrError::Unavailable(_)), "got {late:?}");
+}
+
+/// Lifecycle barriers use the same fail-closed panic policy as interleaved
+/// dispatches: report the panic to the active caller, then retire the actor.
+struct LifecyclePanicHandle {
+    _drop: DropSignal,
+}
+
+#[async_trait]
+impl LinkedWorkloadHandle for LifecyclePanicHandle {
+    async fn on_start(&self, _ctx: &RuntimeContext) -> ActorResult<()> {
+        panic!("intentional lifecycle panic");
+    }
+
+    async fn dispatch(
+        &self,
+        _envelope: RpcEnvelope,
+        _ctx: Arc<RuntimeContext>,
+    ) -> ActorResult<bytes::Bytes> {
+        Ok(bytes::Bytes::new())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn interleaved_lifecycle_panic_terminates_runner() {
+    let (drop_tx, drop_rx) = tokio::sync::oneshot::channel();
+    let workload = Workload::Linked(Arc::new(LifecyclePanicHandle {
+        _drop: DropSignal(Some(drop_tx)),
+    }) as Arc<dyn LinkedWorkloadHandle>);
+    let handle = spawn_runner_with_mode(workload, RunnerMode::Interleaved, None);
+
+    let result = handle
+        .on_start(test_ctx(), test_invocation(), &noop_host_abi())
+        .await;
+    assert!(
+        matches!(result, Err(ActrError::Internal(_))),
+        "lifecycle caller must receive Internal, got {result:?}"
+    );
+    tokio::time::timeout(WATCHDOG, drop_rx)
+        .await
+        .expect("panicked lifecycle retained its workload")
+        .expect("workload drop signal");
+
+    let late = handle
+        .on_ready(test_ctx(), test_invocation(), &noop_host_abi())
+        .await
+        .expect_err("panicked lifecycle actor must reject follow-up commands");
+    assert!(matches!(late, ActrError::Unavailable(_)), "got {late:?}");
 }

@@ -30,12 +30,16 @@
 //! in-flight dispatch and runs after it. The runner never sends to its own
 //! channel during a guest call, so no self-deadlock is structurally possible.
 //!
-//! ## Panic isolation
+//! ## Panic containment
 //!
 //! Each command body runs under `catch_unwind`, matching the existing lifecycle
-//! hook isolation ([`crate::lifecycle::hooks::call_lifecycle_hook`]). A panic in
-//! one command is converted to an `ActrError` reply and the runner survives to
-//! serve the next command — a single bad message can never orphan the actor.
+//! hook isolation ([`crate::lifecycle::hooks::call_lifecycle_hook`]). The serial
+//! runner preserves the existing per-command isolation: a panic becomes an
+//! `ActrError` reply and the runner continues. A native interleaved runner must
+//! fail closed instead. Its `&self` futures may mutate shared state through
+//! interior mutability before unwinding, so the triggering call receives
+//! `Internal` and the runner then terminates, failing sibling and queued work
+//! rather than reusing a potentially inconsistent actor instance.
 //!
 //! ## M5 evolution path (delivered — do not break this contract)
 //!
@@ -65,7 +69,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::Instrument as _;
 
@@ -136,19 +140,40 @@ pub(crate) enum ActorCmd {
     },
     /// Deterministic teardown. The runner breaks its loop immediately; any
     /// commands still queued behind this one have their reply oneshots dropped,
-    /// so their senders observe [`runner_terminated`]. Production teardown
-    /// happens implicitly when the last [`ActorHandle`] drops (channel closes →
-    /// `recv()` returns `None`); `Shutdown` exists for tests and explicit,
-    /// ordered disposal.
+    /// so their senders observe [`runner_terminated`]. Production graceful
+    /// teardown sends this command after closing dispatch admission; dropping
+    /// the handle is the forced fallback and aborts the owning task.
     Shutdown { done: Option<oneshot::Sender<()>> },
 }
 
-/// Cheap, `&self` handle to the runner task. Held behind an `Arc` on the node
-/// and cloned into deferred callbacks; when every clone drops the channel
-/// closes and the runner task exits, dropping the `Workload` (and its `Store`).
+impl ActorCmd {
+    /// A command whose caller disappeared before execution must not enter guest
+    /// code. `Shutdown` is intentionally never skipped: it controls runner
+    /// ownership rather than merely replying to a caller.
+    fn reply_is_closed(&self) -> bool {
+        match self {
+            ActorCmd::Dispatch { reply, .. } => reply.is_closed(),
+            ActorCmd::DataChunk { reply, .. } => reply.is_closed(),
+            ActorCmd::Hook { reply, .. } => reply.is_closed(),
+            ActorCmd::Lifecycle { reply, .. } => reply.is_closed(),
+            ActorCmd::Shutdown { .. } => false,
+        }
+    }
+}
+
+/// Cheap, `&self` handle to the runner task. Held behind an `Arc` on the node.
+/// Deferred host callbacks retain only `Weak` references so they cannot form an
+/// ownership cycle; dropping the final strong handle aborts the owning task and
+/// drops the `Workload` (and its `Store`).
 pub(crate) struct ActorHandle {
     tx: mpsc::Sender<ActorCmd>,
     join: std::sync::Mutex<Option<JoinHandle<()>>>,
+    abort: tokio::task::AbortHandle,
+    /// Admission gate for ordinary actor commands. Shutdown takes the write
+    /// side, which waits for every earlier send to finish and rejects every
+    /// later dispatch / stream / hook command; the privileged `on_stop` barrier
+    /// can then be enqueued behind the complete admitted prefix.
+    intake_open: RwLock<bool>,
 }
 
 impl std::fmt::Debug for ActorHandle {
@@ -158,9 +183,16 @@ impl std::fmt::Debug for ActorHandle {
 }
 
 impl ActorHandle {
-    /// Send a command and await its reply, mapping any channel failure (only
-    /// reachable once the runner is gone) to [`runner_terminated`].
-    async fn call<T>(
+    async fn await_reply<T>(rx: oneshot::Receiver<ActorResult<T>>) -> ActorResult<T> {
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(runner_terminated()),
+        }
+    }
+
+    /// Send a privileged command without consulting the ordinary-work intake
+    /// gate. This is reserved for the ordered `on_stop` barrier and `Shutdown`.
+    async fn call_raw<T>(
         &self,
         make: impl FnOnce(oneshot::Sender<ActorResult<T>>) -> ActorCmd,
     ) -> ActorResult<T> {
@@ -168,10 +200,37 @@ impl ActorHandle {
         if self.tx.send(make(reply)).await.is_err() {
             return Err(runner_terminated());
         }
-        match rx.await {
-            Ok(result) => result,
-            Err(_) => Err(runner_terminated()),
+        Self::await_reply(rx).await
+    }
+
+    /// Send ordinary work under ordered shutdown admission. The read guard is
+    /// held through the channel send, so acquiring the write side proves that
+    /// every pre-close sender has enqueued and every post-close sender rejects.
+    async fn call_admitted<T>(
+        &self,
+        make: impl FnOnce(oneshot::Sender<ActorResult<T>>) -> ActorCmd,
+    ) -> ActorResult<T> {
+        let (reply, rx) = oneshot::channel();
+        let intake = self.intake_open.read().await;
+        if !*intake {
+            return Err(runner_terminated());
         }
+        if self.tx.send(make(reply)).await.is_err() {
+            return Err(runner_terminated());
+        }
+        // Only the enqueue belongs to admission. The shutdown barrier must not
+        // wait on the command reply; FIFO in the runner channel plus the
+        // interleaved runner's barrier drain provides completion ordering.
+        drop(intake);
+        Self::await_reply(rx).await
+    }
+
+    /// Stop accepting ordinary actor work and wait until every command that won
+    /// admission has been enqueued. Lifecycle shutdown can then safely append
+    /// privileged `on_stop` behind that complete prefix.
+    pub(crate) async fn stop_intake(&self) {
+        let mut intake = self.intake_open.write().await;
+        *intake = false;
     }
 
     /// Dispatch one inbound RPC envelope. Mirrors the former
@@ -185,7 +244,7 @@ impl ActorHandle {
     ) -> ActorResult<Bytes> {
         let host_abi = host_abi.clone();
         let span = tracing::Span::current();
-        self.call(move |reply| ActorCmd::Dispatch {
+        self.call_admitted(move |reply| ActorCmd::Dispatch {
             envelope,
             ctx,
             invocation,
@@ -207,7 +266,7 @@ impl ActorHandle {
     ) -> ActorResult<()> {
         let host_abi = host_abi.clone();
         let span = tracing::Span::current();
-        self.call(move |reply| ActorCmd::DataChunk {
+        self.call_admitted(move |reply| ActorCmd::DataChunk {
             chunk,
             sender,
             invocation,
@@ -228,7 +287,7 @@ impl ActorHandle {
     ) -> ActorResult<()> {
         let host_abi = host_abi.clone();
         let span = tracing::Span::current();
-        self.call(move |reply| ActorCmd::Hook {
+        self.call_admitted(move |reply| ActorCmd::Hook {
             event,
             invocation,
             host_abi,
@@ -247,15 +306,18 @@ impl ActorHandle {
     ) -> ActorResult<()> {
         let host_abi = host_abi.clone();
         let span = tracing::Span::current();
-        self.call(move |reply| ActorCmd::Lifecycle {
+        let make = move |reply| ActorCmd::Lifecycle {
             phase,
             ctx,
             invocation,
             host_abi,
             span,
             reply,
-        })
-        .await
+        };
+        match phase {
+            LifecyclePhase::OnStop => self.call_raw(make).await,
+            LifecyclePhase::OnStart | LifecyclePhase::OnReady => self.call_admitted(make).await,
+        }
     }
 
     /// Invoke `on_start`. Mirrors the former `Workload::on_start`.
@@ -295,6 +357,7 @@ impl ActorHandle {
     /// task to finish. Used for deterministic teardown in tests.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn shutdown(&self) {
+        self.stop_intake().await;
         let (done, wait) = oneshot::channel();
         if self
             .tx
@@ -307,6 +370,21 @@ impl ActorHandle {
         self.join().await;
     }
 
+    /// Abort the owning runner task without waiting. Used by teardown guards so
+    /// cancellation of the shutdown coordinator cannot detach a stuck runner.
+    pub(crate) fn abort(&self) {
+        self.abort.abort();
+    }
+
+    /// Abort the owning runner task and wait until its workload has been
+    /// dropped. This is the deterministic fallback for non-cooperative actor
+    /// code; normal node shutdown first runs `on_stop` and sends `Shutdown`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn abort_and_join(&self) {
+        self.abort();
+        self.join().await;
+    }
+
     /// Join the runner task if it is still owned here.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn join(&self) {
@@ -314,6 +392,14 @@ impl ActorHandle {
         if let Some(handle) = handle {
             let _ = handle.await;
         }
+    }
+}
+
+impl Drop for ActorHandle {
+    fn drop(&mut self) {
+        // Tokio detaches a task when its JoinHandle is dropped. Always abort so
+        // abrupt node teardown cannot orphan a runner that owns a workload.
+        self.abort.abort();
     }
 }
 
@@ -354,13 +440,16 @@ pub(crate) fn spawn_runner(workload: Workload) -> ActorHandle {
 /// * `Workload::Linked` — `dispatch` takes `&self`, so distinct-key dispatches
 ///   run concurrently in a `FuturesUnordered` (B2 native concurrency).
 ///   `dispatch_timeout` arms a per-dispatch deadline on each in-flight native
-///   future (dropping it on expiry is a clean cancel), the native mirror of the
-///   WASM region deadline.
+///   future. Because an arbitrary native future is not cancellation-safe, a
+///   timeout poisons and terminates the whole runner after replying `TimedOut`;
+///   sibling and queued commands fail rather than touching partially-mutated
+///   actor state. A caught guest panic follows the same fail-closed path after
+///   replying `Internal`.
 /// * `Workload::Wasm(V2)` — the 0.2.0 async world drives a **resident**
 ///   `Store::run_concurrent` region ([`crate::wasm::WasmWorkloadV2::run_interleaved`]),
 ///   interleaving distinct-key dispatches at their host-import `.await` points
-///   (M5). `dispatch_timeout` is the per-dispatch deadline enforced *inside*
-///   that region.
+///   (M5). External per-dispatch deadlines supervise that region and discard
+///   the whole Store before any timeout reply releases a scheduler key.
 ///
 /// Every other packaged workload (`Wasm(V1)` 0.1.0 sync world, `DynClib`) falls
 /// back to the serial `run_loop` even when `Interleaved` is requested, so the
@@ -389,9 +478,12 @@ pub(crate) fn spawn_runner_with_mode(
         },
         (_, workload) => tokio::spawn(run_loop(workload, rx)),
     };
+    let abort = join.abort_handle();
     ActorHandle {
         tx,
         join: std::sync::Mutex::new(Some(join)),
+        abort,
+        intake_open: RwLock::new(true),
     }
 }
 
@@ -400,6 +492,9 @@ pub(crate) fn spawn_runner_with_mode(
 /// handles dropped) or on an explicit `Shutdown`.
 async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
     while let Some(cmd) = rx.recv().await {
+        if cmd.reply_is_closed() {
+            continue;
+        }
         match cmd {
             ActorCmd::Dispatch {
                 envelope,
@@ -407,14 +502,20 @@ async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
                 invocation,
                 host_abi,
                 span,
-                reply,
+                mut reply,
             } => {
-                let result = guarded(
-                    "dispatch",
-                    workload.dispatch_envelope(envelope, ctx, invocation, &host_abi),
+                let Some(result) = run_until_reply_closed(
+                    guarded(
+                        "dispatch",
+                        workload.dispatch_envelope(envelope, ctx, invocation, &host_abi),
+                    )
+                    .instrument(span),
+                    &mut reply,
                 )
-                .instrument(span)
-                .await;
+                .await
+                else {
+                    break;
+                };
                 let _ = reply.send(result);
             }
             ActorCmd::DataChunk {
@@ -423,14 +524,20 @@ async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
                 invocation,
                 host_abi,
                 span,
-                reply,
+                mut reply,
             } => {
-                let result = guarded(
-                    "data_chunk",
-                    workload.dispatch_data_chunk(chunk, sender, invocation, &host_abi),
+                let Some(result) = run_until_reply_closed(
+                    guarded(
+                        "data_chunk",
+                        workload.dispatch_data_chunk(chunk, sender, invocation, &host_abi),
+                    )
+                    .instrument(span),
+                    &mut reply,
                 )
-                .instrument(span)
-                .await;
+                .await
+                else {
+                    break;
+                };
                 let _ = reply.send(result);
             }
             ActorCmd::Hook {
@@ -438,14 +545,20 @@ async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
                 invocation,
                 host_abi,
                 span,
-                reply,
+                mut reply,
             } => {
-                let result = guarded(
-                    "hook",
-                    workload.dispatch_hook_event(event, invocation, &host_abi),
+                let Some(result) = run_until_reply_closed(
+                    guarded(
+                        "hook",
+                        workload.dispatch_hook_event(event, invocation, &host_abi),
+                    )
+                    .instrument(span),
+                    &mut reply,
                 )
-                .instrument(span)
-                .await;
+                .await
+                else {
+                    break;
+                };
                 let _ = reply.send(result);
             }
             ActorCmd::Lifecycle {
@@ -454,14 +567,21 @@ async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
                 invocation,
                 host_abi,
                 span,
-                reply,
+                mut reply,
             } => {
                 let fut = match phase {
                     LifecyclePhase::OnStart => workload.on_start(ctx, invocation, &host_abi),
                     LifecyclePhase::OnReady => workload.on_ready(ctx, invocation, &host_abi),
                     LifecyclePhase::OnStop => workload.on_stop(ctx, invocation, &host_abi),
                 };
-                let result = guarded(phase.panic_label(), fut).instrument(span).await;
+                let Some(result) = run_until_reply_closed(
+                    guarded(phase.panic_label(), fut).instrument(span),
+                    &mut reply,
+                )
+                .await
+                else {
+                    break;
+                };
                 let _ = reply.send(result);
             }
             ActorCmd::Shutdown { done } => {
@@ -488,31 +608,55 @@ async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
 ///
 /// `dispatch_timeout`, when set, arms a per-dispatch deadline on every in-flight
 /// dispatch — the native mirror of the WASM `run_interleaved` deadline. On
-/// expiry the in-flight native `dispatch` future is **dropped** (a clean cancel:
-/// unlike a poisoned wasm linear memory, a native `&self` future leaves no
-/// shared state mid-mutation, so dropping it is a complete cancel), the caller's
-/// reply resolves [`ActrError::TimedOut`], and the freed conflict key lets the
-/// next same-key dispatch start. Because the reply is sent from *inside* the
-/// in-flight future — only after `tokio::time::timeout` has dropped the guest
-/// future — the upstream scheduler frees the key strictly after the timed-out
-/// dispatch has truly left, keeping same-key FIFO airtight across a timeout.
+/// expiry the caller's reply resolves [`ActrError::TimedOut`] and the runner is
+/// terminated immediately. A caught guest panic likewise returns `Internal`
+/// before terminating. Dropping an arbitrary Rust future or unwinding through
+/// actor code can leave shared state partially mutated (or detached work still
+/// running), so the actor instance is not reused: all sibling/queued commands
+/// lose their reply channel and subsequent sends fail `Unavailable`.
 ///
 /// The shape (`select!` over `cmd_rx` + a `FuturesUnordered`) deliberately
 /// mirrors the M5 `store.run_concurrent` evolution path documented above so M5
 /// swaps only the execution kernel, not this skeleton.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterleavedDispatchCompletion {
+    Completed,
+    Panicked,
+    TimedOut,
+    CallerCanceled,
+}
+
+impl InterleavedDispatchCompletion {
+    fn poisons_runner(self) -> bool {
+        !matches!(self, InterleavedDispatchCompletion::Completed)
+    }
+}
+
 async fn run_loop_interleaved(
     handle: Arc<dyn LinkedWorkloadHandle>,
     mut rx: mpsc::Receiver<ActorCmd>,
     dispatch_timeout: Option<std::time::Duration>,
 ) {
-    let mut inflight: FuturesUnordered<Pin<Box<dyn std::future::Future<Output = ()> + Send>>> =
-        FuturesUnordered::new();
+    let mut inflight: FuturesUnordered<
+        Pin<Box<dyn std::future::Future<Output = InterleavedDispatchCompletion> + Send>>,
+    > = FuturesUnordered::new();
     loop {
         tokio::select! {
             biased;
+            Some(completion) = inflight.next(), if !inflight.is_empty() => {
+                // Observe poison before admitting more commands. In
+                // particular, a ready panic/timeout/cancellation must close
+                // the runner even while the command channel remains busy.
+                if completion.poisons_runner() {
+                    break;
+                }
+            }
             maybe_cmd = rx.recv() => {
                 match maybe_cmd {
-                    Some(ActorCmd::Dispatch { envelope, ctx, invocation, host_abi, span, reply }) => {
+                    Some(ActorCmd::Dispatch { envelope, ctx, invocation, host_abi, span, mut reply }) => {
+                        if reply.is_closed() {
+                            continue;
+                        }
                         let _ = (&invocation, &host_abi);
                         let handle = handle.clone();
                         inflight.push(Box::pin(async move {
@@ -520,45 +664,99 @@ async fn run_loop_interleaved(
                             // Instrument the guest call so it stays a child of the
                             // caller's span, then (optionally) arm the deadline
                             // around the instrumented future.
-                            let guarded_fut = guarded("dispatch", fut).instrument(span);
-                            let result = match dispatch_timeout {
-                                // Layer 2 (real cancel): on expiry `timeout`
-                                // drops the in-flight native dispatch future — a
-                                // clean cancel — and the reply resolves TimedOut,
-                                // freeing the key for the next same-key dispatch.
-                                Some(d) => match tokio::time::timeout(d, guarded_fut).await {
-                                    Ok(result) => result,
-                                    Err(_elapsed) => Err(ActrError::TimedOut),
-                                },
-                                None => guarded_fut.await,
+                            let guarded_fut = guarded_with_panic_status("dispatch", fut).instrument(span);
+                            let execution = async {
+                                match dispatch_timeout {
+                                    // A native future has no general cancellation-
+                                    // safety contract. Mark the runner poisoned on
+                                    // expiry so no sibling can reuse this handle.
+                                    Some(d) => match tokio::time::timeout(d, guarded_fut).await {
+                                        Ok((result, panicked)) => (
+                                            result,
+                                            if panicked {
+                                                InterleavedDispatchCompletion::Panicked
+                                            } else {
+                                                InterleavedDispatchCompletion::Completed
+                                            },
+                                        ),
+                                        Err(_elapsed) => (
+                                            Err(ActrError::TimedOut),
+                                            InterleavedDispatchCompletion::TimedOut,
+                                        ),
+                                    },
+                                    None => {
+                                        let (result, panicked) = guarded_fut.await;
+                                        (
+                                            result,
+                                            if panicked {
+                                                InterleavedDispatchCompletion::Panicked
+                                            } else {
+                                                InterleavedDispatchCompletion::Completed
+                                            },
+                                        )
+                                    }
+                                }
+                            };
+                            let (result, completion) = tokio::select! {
+                                biased;
+                                result = execution => result,
+                                _ = reply.closed() => {
+                                    return InterleavedDispatchCompletion::CallerCanceled;
+                                }
                             };
                             let _ = reply.send(result);
+                            completion
                         }));
                     }
                     Some(barrier) => {
+                        if barrier.reply_is_closed() {
+                            continue;
+                        }
                         // Drain in-flight dispatches, then run the barrier alone.
-                        while inflight.next().await.is_some() {}
-                        if run_barrier(&handle, barrier).await {
+                        let mut poisoned = false;
+                        while let Some(completion) = inflight.next().await {
+                            if completion.poisons_runner() {
+                                poisoned = true;
+                                break;
+                            }
+                        }
+                        if poisoned {
                             break;
+                        }
+                        match run_barrier(&handle, barrier).await {
+                            BarrierOutcome::Continue => {}
+                            BarrierOutcome::Shutdown
+                            | BarrierOutcome::Panicked
+                            | BarrierOutcome::CallerCanceled => break,
                         }
                     }
                     None => {
                         // All handles dropped: drain remaining dispatches and exit.
-                        while inflight.next().await.is_some() {}
+                        while let Some(completion) = inflight.next().await {
+                            if completion.poisons_runner() {
+                                break;
+                            }
+                        }
                         break;
                     }
                 }
-            }
-            Some(()) = inflight.next(), if !inflight.is_empty() => {
-                // A dispatch completed; its reply was already sent.
             }
         }
     }
 }
 
-/// Run one barrier command against the linked handle. Returns `true` when the
-/// runner should stop (an explicit `Shutdown`).
-async fn run_barrier(handle: &Arc<dyn LinkedWorkloadHandle>, cmd: ActorCmd) -> bool {
+enum BarrierOutcome {
+    Continue,
+    Shutdown,
+    Panicked,
+    CallerCanceled,
+}
+
+/// Run one barrier command against the linked handle. A caller disappearing
+/// during a lifecycle hook poisons the runner just like cancellation of an
+/// in-flight dispatch; queued commands with an already-closed reply are skipped
+/// before reaching this function.
+async fn run_barrier(handle: &Arc<dyn LinkedWorkloadHandle>, cmd: ActorCmd) -> BarrierOutcome {
     match cmd {
         ActorCmd::Lifecycle {
             phase,
@@ -566,7 +764,7 @@ async fn run_barrier(handle: &Arc<dyn LinkedWorkloadHandle>, cmd: ActorCmd) -> b
             invocation,
             host_abi,
             span,
-            reply,
+            mut reply,
         } => {
             let _ = (&invocation, &host_abi);
             let fut = async {
@@ -576,15 +774,26 @@ async fn run_barrier(handle: &Arc<dyn LinkedWorkloadHandle>, cmd: ActorCmd) -> b
                     LifecyclePhase::OnStop => handle.on_stop(&ctx).await,
                 }
             };
-            let result = guarded(phase.panic_label(), fut).instrument(span).await;
+            let Some((result, panicked)) = run_until_reply_closed(
+                guarded_with_panic_status(phase.panic_label(), fut).instrument(span),
+                &mut reply,
+            )
+            .await
+            else {
+                return BarrierOutcome::CallerCanceled;
+            };
             let _ = reply.send(result);
-            false
+            if panicked {
+                BarrierOutcome::Panicked
+            } else {
+                BarrierOutcome::Continue
+            }
         }
         // Linked workloads receive hooks via the observer path; the ABI hook
         // command is a no-op for them (mirrors `Workload::dispatch_hook_event`).
         ActorCmd::Hook { reply, .. } => {
             let _ = reply.send(Ok(()));
-            false
+            BarrierOutcome::Continue
         }
         // Linked stream callbacks register directly on RuntimeContext; the ABI
         // stream command is not applicable (mirrors `dispatch_data_chunk`).
@@ -593,30 +802,59 @@ async fn run_barrier(handle: &Arc<dyn LinkedWorkloadHandle>, cmd: ActorCmd) -> b
                 "linked workload stream callbacks are registered directly on RuntimeContext"
                     .to_string(),
             )));
-            false
+            BarrierOutcome::Continue
         }
         ActorCmd::Shutdown { done } => {
             if let Some(done) = done {
                 let _ = done.send(());
             }
-            true
+            BarrierOutcome::Shutdown
         }
         ActorCmd::Dispatch { .. } => unreachable!("dispatch is handled before the barrier path"),
     }
 }
 
-/// Run a command body with panic isolation, converting a panic into an
+/// Poll one command body until it completes or its caller drops the reply
+/// receiver. Cancellation while guest code is running returns `None`; both
+/// owning runner loops treat that as poison and drop the workload rather than
+/// continuing from potentially partial state.
+async fn run_until_reply_closed<T, R>(
+    fut: impl std::future::Future<Output = T>,
+    reply: &mut oneshot::Sender<ActorResult<R>>,
+) -> Option<T> {
+    tokio::select! {
+        biased;
+        result = fut => Some(result),
+        _ = reply.closed() => None,
+    }
+}
+
+/// Run a serial command body with panic isolation, converting a panic into an
 /// `ActrError::Internal("{label} panicked: {info}")` — the same shape the
-/// lifecycle hook path already produces — so the runner survives.
+/// lifecycle hook path already produces — while preserving the serial runner's
+/// existing survive-and-continue behaviour.
 async fn guarded<T>(
     label: &'static str,
     fut: impl std::future::Future<Output = ActorResult<T>>,
 ) -> ActorResult<T> {
+    guarded_with_panic_status(label, fut).await.0
+}
+
+/// Catch a guest panic while retaining whether unwinding occurred. Native
+/// interleaved execution uses the flag to send the triggering `Internal` reply
+/// before terminating the runner and dropping every co-resident future.
+async fn guarded_with_panic_status<T>(
+    label: &'static str,
+    fut: impl std::future::Future<Output = ActorResult<T>>,
+) -> (ActorResult<T>, bool) {
     match AssertUnwindSafe(fut).catch_unwind().await {
-        Ok(result) => result,
+        Ok(result) => (result, false),
         Err(panic_payload) => {
             let info = crate::lifecycle::hooks::extract_panic_info(panic_payload);
-            Err(ActrError::Internal(format!("{label} panicked: {info}")))
+            (
+                Err(ActrError::Internal(format!("{label} panicked: {info}"))),
+                true,
+            )
         }
     }
 }

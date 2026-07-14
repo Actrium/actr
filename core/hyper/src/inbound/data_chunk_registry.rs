@@ -64,6 +64,20 @@ impl DataChunkRegistry {
         tracing::info!("🚫 Unregistered data stream handler: {}", stream_id);
     }
 
+    /// Remove every registered stream callback.
+    ///
+    /// Node teardown uses this to break callback ownership chains before the
+    /// transport and runtime contexts are released. `DashMap::clear` is safe
+    /// to race with dispatch: a callback already cloned by [`Self::dispatch`]
+    /// is allowed to finish while the registered entries are removed.
+    pub(crate) fn clear(&self) {
+        let count = self.callbacks.len();
+        self.callbacks.clear();
+        if count > 0 {
+            tracing::debug!(count, "Cleared data stream callbacks");
+        }
+    }
+
     /// Dispatch data stream to callback (concurrent execution)
     ///
     /// # Arguments
@@ -89,6 +103,21 @@ impl DataChunkRegistry {
         } else {
             tracing::warn!("⚠️ No callback registered for stream: {}", chunk.stream_id);
         }
+    }
+
+    /// Invoke one callback inline so ownership and host-bridge behaviour can
+    /// be asserted deterministically without observing a detached task.
+    #[cfg(test)]
+    pub(crate) async fn invoke_for_test(
+        &self,
+        chunk: DataChunk,
+        sender_id: ActrId,
+    ) -> Option<ActorResult<()>> {
+        let callback = self
+            .callbacks
+            .get(&chunk.stream_id)
+            .map(|entry| entry.value().clone())?;
+        Some(callback(chunk, sender_id).await)
     }
 }
 

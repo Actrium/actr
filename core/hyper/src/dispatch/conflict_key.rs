@@ -33,6 +33,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
+/// Upper bound for attacker-controlled bytes retained in one scheduler key.
+///
+/// Conflict keys are meant to be compact identifiers. Falling back to the
+/// global serial lane for larger values preserves correctness while preventing
+/// a full scheduler queue from duplicating arbitrarily large request fields.
+const MAX_CONFLICT_KEY_BYTES: usize = 4 * 1024;
+
 /// Where a method's conflict key is projected from.
 ///
 /// `#[non_exhaustive]`: future key sources (chunk headers, composite keys)
@@ -48,10 +55,11 @@ pub enum KeySource {
     /// to a fixed empty value *within the domain*, i.e. all callerless messages
     /// on that method share one serial lane.
     Sender,
-    /// Key = the raw encoded value of the top-level protobuf field with this
+    /// Key = the canonical value of the top-level protobuf field with this
     /// `tag` in the request payload (varint / fixed32 / fixed64 /
     /// length-delimited — integers, strings, bytes). A missing field, an
-    /// unsupported wire type (groups), or a repeated field falls back to
+    /// unsupported wire type (groups), a repeated field, or a value larger
+    /// than the scheduler's bounded key size falls back to
     /// [`ConflictKey::Serial`] with a rate-limited warning.
     PayloadField { tag: u32 },
 }
@@ -225,26 +233,47 @@ impl ConflictKey {
 /// on truncation / overflow.
 fn read_varint(buf: &[u8], off: usize) -> Result<(u64, usize), ()> {
     let mut result: u64 = 0;
-    let mut shift = 0u32;
     let mut i = off;
-    loop {
+    for byte_index in 0..10u32 {
         let byte = *buf.get(i).ok_or(())?;
-        if shift >= 64 {
+        // A u64 varint has at most one payload bit in byte ten. Rejecting the
+        // remaining bits avoids silently truncating hostile encodings.
+        if byte_index == 9 && byte > 1 {
             return Err(());
         }
-        result |= u64::from(byte & 0x7f) << shift;
+        result |= u64::from(byte & 0x7f) << (byte_index * 7);
         i += 1;
         if byte & 0x80 == 0 {
             return Ok((result, i - off));
         }
-        shift += 7;
+    }
+    Err(())
+}
+
+/// Encode a decoded protobuf varint in its unique minimal representation.
+/// This makes alternate overlong wire encodings of the same scalar map to the
+/// same scheduler key.
+fn canonical_varint(mut value: u64) -> Bytes {
+    let mut out = [0u8; 10];
+    let mut len = 0usize;
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value != 0 {
+            byte |= 0x80;
+        }
+        out[len] = byte;
+        len += 1;
+        if value == 0 {
+            return Bytes::copy_from_slice(&out[..len]);
+        }
     }
 }
 
 /// Scan the *top level* of a protobuf message for the field numbered `target`
 /// and return its raw value bytes.
 ///
-/// * varint → the raw varint bytes
+/// * varint → the canonical (minimal) varint bytes
 /// * fixed32 / fixed64 → the 4 / 8 raw bytes
 /// * length-delimited → the content bytes (length prefix stripped)
 ///
@@ -259,20 +288,26 @@ pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option
     while i < payload.len() {
         let (tag, n) = read_varint(payload, i)?;
         i += n;
-        let field_no = (tag >> 3) as u32;
+        let field_no = tag >> 3;
+        // Protobuf field numbers are 1..=2^29-1. Reject zero and oversized
+        // wire keys before narrowing so a hostile high tag cannot truncate to
+        // the configured conflict field and escape conservative serialization.
+        if field_no == 0 || field_no > 0x1fff_ffff {
+            return Err(());
+        }
+        let field_no = u32::try_from(field_no).map_err(|_| ())?;
         let wire = (tag & 0x7) as u8;
         let is_target = field_no == target;
         match wire {
             0 => {
                 // varint
-                let start = i;
-                let (_v, m) = read_varint(payload, i)?;
+                let (value, m) = read_varint(payload, i)?;
                 i += m;
                 if is_target {
                     if found.is_some() {
                         return Ok(None);
                     }
-                    found = Some(Bytes::copy_from_slice(&payload[start..i]));
+                    found = Some(canonical_varint(value));
                 }
             }
             1 => {
@@ -294,7 +329,7 @@ pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option
                 // length-delimited
                 let (len, m) = read_varint(payload, i)?;
                 i += m;
-                let len = len as usize;
+                let len = usize::try_from(len).map_err(|_| ())?;
                 // Checked bound: a hostile length prefix can be up to
                 // `u64::MAX`, so `i + len` would overflow (debug panic) or wrap
                 // past the length check (release out-of-bounds slice panic).
@@ -306,6 +341,9 @@ pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option
                 if is_target {
                     if found.is_some() {
                         return Ok(None);
+                    }
+                    if len > MAX_CONFLICT_KEY_BYTES {
+                        return Err(());
                     }
                     found = Some(Bytes::copy_from_slice(&payload[i..i + len]));
                 }
@@ -349,7 +387,7 @@ fn warn_extract_fallback(route_key: &str, tag: u32) {
         tracing::warn!(
             route_key,
             payload_tag = tag,
-            "conflict-key extraction failed (missing/unsupported/repeated field); \
+            "conflict-key extraction failed (missing/malformed/unsupported/repeated/oversized field); \
              falling back to serial dispatch"
         );
     }

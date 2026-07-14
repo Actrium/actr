@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument as _;
@@ -51,13 +51,18 @@ struct DispatchJob {
 }
 
 /// Cheap, `&self` handle to the scheduler task. Cloned onto the node behind an
-/// `Arc`; when the last clone (and the cancel token) drops, the task drains its
-/// in-flight jobs and exits, leaving no orphans.
+/// `Arc`. Explicit shutdown closes admission and drains admitted work; dropping
+/// the final handle is the forced fallback and aborts the owning task.
 pub(crate) struct SchedulerHandle {
     intake_tx: mpsc::Sender<DispatchJob>,
     slots: Arc<Semaphore>,
     cancel: CancellationToken,
     join: std::sync::Mutex<Option<JoinHandle<()>>>,
+    abort: tokio::task::AbortHandle,
+    /// Admission barrier. A submitter holds the read side through slot
+    /// acquisition and channel send; graceful shutdown takes the write side,
+    /// thereby waiting for the complete pre-shutdown submission prefix.
+    intake_open: RwLock<bool>,
     budget: usize,
     queue_cap: usize,
 }
@@ -83,11 +88,14 @@ impl SchedulerHandle {
         let cancel = CancellationToken::new();
         let task = SchedulerTask::new(intake_rx, budget, cancel.clone());
         let join = tokio::spawn(task.run());
+        let abort = join.abort_handle();
         SchedulerHandle {
             intake_tx,
             slots,
             cancel,
             join: std::sync::Mutex::new(Some(join)),
+            abort,
+            intake_open: RwLock::new(true),
             budget,
             queue_cap,
         }
@@ -103,6 +111,11 @@ impl SchedulerHandle {
         run: DispatchFn,
     ) -> oneshot::Receiver<ActorResult<Bytes>> {
         let (reply, rx) = oneshot::channel();
+        let intake = self.intake_open.read().await;
+        if !*intake || self.cancel.is_cancelled() {
+            let _ = reply.send(Err(scheduler_terminated()));
+            return rx;
+        }
         // Acquire a slot: fast path, else await (back-pressure).
         let permit = match self.slots.clone().try_acquire_owned() {
             Ok(p) => p,
@@ -136,14 +149,23 @@ impl SchedulerHandle {
             // receiver would lose ordering — instead rely on rx erroring, which
             // the node maps to `scheduler_terminated`.
         }
+        drop(intake);
         rx
     }
 
-    /// Explicit, ordered teardown for tests: cancel intake, let in-flight jobs
-    /// finish, then join the task.
+    /// Explicit, ordered teardown: close intake, drain every already-admitted
+    /// queued and in-flight job, then join the task.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn shutdown(&self) {
+        // Tokio's RwLock is write-preferring: after this writer queues, later
+        // submitters cannot jump ahead. When it acquires, every earlier submit
+        // has finished its slot acquisition + channel send and is therefore
+        // part of the lossless drain set.
+        let mut intake = self.intake_open.write().await;
+        *intake = false;
+        self.slots.close();
         self.cancel.cancel();
+        drop(intake);
         self.join().await;
     }
 
@@ -158,6 +180,17 @@ impl SchedulerHandle {
     #[cfg(test)]
     pub(crate) fn budget(&self) -> usize {
         self.budget
+    }
+}
+
+impl Drop for SchedulerHandle {
+    fn drop(&mut self) {
+        // A dropped JoinHandle detaches its task. Abort explicitly so an
+        // abrupt node drop cannot leave a scheduler (and its captured actor
+        // handles) resident forever.
+        self.slots.close();
+        self.cancel.cancel();
+        self.abort.abort();
     }
 }
 
@@ -202,7 +235,16 @@ impl SchedulerTask {
                 biased;
                 _ = self.cancel.cancelled(), if intake_open => {
                     intake_open = false;
-                    self.drop_queued();
+                    // Admission has already been write-closed by `shutdown`, so
+                    // no sender can race this close. Move every buffered job
+                    // into the normal per-key queues and drain them together
+                    // with in-flight work; graceful shutdown must not ACK away
+                    // an admitted durable RPC without executing it.
+                    self.intake_rx.close();
+                    while let Ok(job) = self.intake_rx.try_recv() {
+                        self.enqueue(job);
+                    }
+                    self.pump();
                 }
                 maybe = self.intake_rx.recv(), if intake_open => {
                     match maybe {
@@ -299,9 +341,9 @@ impl SchedulerTask {
         self.pump();
     }
 
-    /// On shutdown / intake close: drop every queued (not yet started) job.
-    /// Their reply senders drop with them, so submitters observe a closed
-    /// channel → `scheduler_terminated`. In-flight jobs are left to finish.
+    /// When every sender disappears without ordered shutdown, reject work that
+    /// has not started. Explicit graceful shutdown uses the cancellation branch
+    /// above and drains the complete admitted prefix instead.
     fn drop_queued(&mut self) {
         self.queues.clear();
         self.ready.clear();

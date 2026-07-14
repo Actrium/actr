@@ -183,7 +183,34 @@ async fn queue_cap_applies_back_pressure() {
 }
 
 #[tokio::test]
-async fn shutdown_leaves_no_orphans() {
+async fn shutdown_admits_a_preexisting_submit_blocked_on_queue_capacity() {
+    let sched = SchedulerHandle::spawn(1, 1);
+    let first = gated(b"first");
+    let second = gated(b"second");
+    let first_rx = sched.submit(scoped("d", b"first"), first.run).await;
+    first.started.await.unwrap();
+
+    // Poll submission far enough to acquire the admission read guard and block
+    // on M. Graceful shutdown's write guard must wait for this submitter.
+    let mut second_submit = Box::pin(sched.submit(scoped("d", b"second"), second.run));
+    assert!(matches!(poll!(second_submit.as_mut()), Poll::Pending));
+    let mut shutdown = Box::pin(sched.shutdown());
+    assert!(
+        matches!(poll!(shutdown.as_mut()), Poll::Pending),
+        "shutdown must wait for the preexisting blocked submit"
+    );
+
+    first.release.send(()).unwrap();
+    assert!(first_rx.await.unwrap().is_ok());
+    let second_rx = second_submit.await;
+    second.started.await.unwrap();
+    second.release.send(()).unwrap();
+    assert!(second_rx.await.unwrap().is_ok());
+    shutdown.await;
+}
+
+#[tokio::test]
+async fn shutdown_drains_every_admitted_job() {
     let sched = Arc::new(SchedulerHandle::spawn(8, 64));
 
     // A1 in flight, A2 queued behind it (same key). Same for B.
@@ -199,20 +226,49 @@ async fn shutdown_leaves_no_orphans() {
     a1.started.await.unwrap();
     b1.started.await.unwrap();
 
-    // Shut down: cancels intake, drops queued jobs, drains in-flight.
+    // Shut down: closes intake, then losslessly drains queued + in-flight jobs.
     let sched2 = sched.clone();
     let shutdown = tokio::spawn(async move { sched2.shutdown().await });
 
-    // Queued jobs are dropped: their reply senders drop, so the receiver errors
-    // (the node path maps this RecvError to a "scheduler terminated" result).
-    assert!(rx_a2.await.is_err(), "queued job must not silently vanish");
-    assert!(rx_b2.await.is_err(), "queued job must not silently vanish");
-
-    // In-flight jobs finish once released.
+    // In-flight jobs finish once released, then the already-admitted same-key
+    // jobs must run rather than being discarded during graceful teardown.
     a1.release.send(()).unwrap();
     b1.release.send(()).unwrap();
     assert!(rx_a1.await.unwrap().is_ok());
     assert!(rx_b1.await.unwrap().is_ok());
 
+    a2.started.await.unwrap();
+    b2.started.await.unwrap();
+    a2.release.send(()).unwrap();
+    b2.release.send(()).unwrap();
+    assert!(rx_a2.await.unwrap().is_ok());
+    assert!(rx_b2.await.unwrap().is_ok());
+
     shutdown.await.unwrap();
+
+    // The write-side admission close rejects work submitted after shutdown.
+    let late = gated(b"late");
+    let late_rx = sched.submit(scoped("d", b"late"), late.run).await;
+    assert!(
+        matches!(
+            late_rx.await,
+            Ok(Err(actr_protocol::ActrError::Unavailable(_)))
+        ),
+        "post-shutdown work must be rejected"
+    );
+}
+
+#[tokio::test]
+async fn dropping_scheduler_aborts_inflight_jobs() {
+    let sched = SchedulerHandle::spawn(1, 8);
+    let job = gated(b"stuck");
+    let reply = sched.submit(scoped("d", b"stuck"), job.run).await;
+    job.started.await.unwrap();
+
+    drop(sched);
+
+    assert!(
+        reply.await.is_err(),
+        "forced-drop fallback must abort the scheduler task and close replies"
+    );
 }

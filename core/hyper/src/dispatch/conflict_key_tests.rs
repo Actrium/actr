@@ -51,10 +51,52 @@ fn scan_varint_field() {
 }
 
 #[test]
+fn scan_overlong_varint_uses_canonical_key() {
+    let canonical = msg_varint(1, 1);
+    // The same scalar encoded non-canonically as 0x81 0x00.
+    let overlong = [tag(1, 0).as_slice(), &[0x81, 0x00]].concat();
+    assert_eq!(
+        scan_top_level_field_for_tests(&canonical, 1).unwrap(),
+        scan_top_level_field_for_tests(&overlong, 1).unwrap()
+    );
+}
+
+#[test]
+fn scan_varint_overflow_is_error() {
+    let payload = [
+        0x08, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02,
+    ];
+    assert!(scan_top_level_field_for_tests(&payload, 1).is_err());
+}
+
+#[test]
+fn scan_rejects_zero_and_oversized_field_numbers() {
+    assert!(scan_top_level_field_for_tests(&[0x00, 0x01], 1).is_err());
+
+    // Field number 2^29 is one beyond protobuf's maximum. Its key is
+    // (2^29 << 3) | varint, encoded minimally as 0x80 0x80 0x80 0x80 0x10.
+    let oversized_tag = [0x80, 0x80, 0x80, 0x80, 0x10, 0x01];
+    assert!(scan_top_level_field_for_tests(&oversized_tag, 1).is_err());
+}
+
+#[test]
 fn scan_string_field_returns_content() {
     let payload = msg_len_delim(2, b"room-42");
     let got = scan_top_level_field_for_tests(&payload, 2).unwrap();
     assert_eq!(got, Some(Bytes::from_static(b"room-42")));
+}
+
+#[test]
+fn oversized_length_delimited_key_falls_back_to_serial() {
+    let spec = ConflictKeySpec::builder()
+        .method("chat.Chat.Send", KeySource::PayloadField { tag: 1 })
+        .build()
+        .unwrap();
+    let payload = msg_len_delim(1, &vec![b'x'; 4 * 1024 + 1]);
+    assert_eq!(
+        spec.extract("chat.Chat.Send", None, &payload),
+        ConflictKey::Serial
+    );
 }
 
 #[test]

@@ -108,6 +108,11 @@ impl RuntimeContext {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn data_chunk_registry_for_test(&self) -> Arc<DataChunkRegistry> {
+        self.data_chunk_registry.clone()
+    }
+
     /// Select the appropriate gate based on `Dest`.
     ///
     /// - `Dest::Host` -> `inproc_gate`
@@ -454,6 +459,14 @@ impl BootstrapContextBuilder {
     /// Update the generation (called after hard rebind).
     pub(crate) fn set_generation(&mut self, generation: u64) {
         self.generation = generation;
+    }
+
+    /// Drop registered stream callbacks during forced node teardown.
+    ///
+    /// The builder is owned by `ActrRefShared`, so it remains available even
+    /// when background tasks holding `Inner` cannot be joined synchronously.
+    pub(crate) fn clear_data_chunk_callbacks(&self) {
+        self.data_chunk_registry.clear();
     }
 
     /// Materialize a bootstrap `RuntimeContext` for lifecycle hooks.

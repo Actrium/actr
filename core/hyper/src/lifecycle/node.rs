@@ -29,7 +29,7 @@ use actr_runtime::check_acl_permission;
 use actr_runtime_mailbox::{DeadLetterQueue, Mailbox};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
@@ -330,6 +330,27 @@ async fn mailbox_reply_and_ack(
     }
 }
 
+/// Clears stream callbacks when the node's owning state is released.
+struct DataChunkRegistryCleanupGuard {
+    registry: Weak<DataChunkRegistry>,
+}
+
+impl DataChunkRegistryCleanupGuard {
+    fn new(registry: &Arc<DataChunkRegistry>) -> Self {
+        Self {
+            registry: Arc::downgrade(registry),
+        }
+    }
+}
+
+impl Drop for DataChunkRegistryCleanupGuard {
+    fn drop(&mut self) {
+        if let Some(registry) = self.registry.upgrade() {
+            registry.clear();
+        }
+    }
+}
+
 /// Internal running-state of an attached node.
 ///
 /// Holds every field required to run a workload after `Hyper::attach` has
@@ -358,6 +379,11 @@ pub(crate) struct Inner {
     /// outbound call issued before that point returns `Internal("PeerGate
     /// not initialized yet")` — see `RuntimeContext::select_gate`.
     pub(crate) outproc_gate: Option<Gate>,
+
+    /// Breaks `registry -> callback -> RuntimeContext -> registry` ownership
+    /// cycles on every `Inner` exit path, including startup failures. It is
+    /// declared before the registry so callbacks are cleared first on drop.
+    _data_chunk_registry_cleanup: DataChunkRegistryCleanupGuard,
 
     /// DataChunk callback registry shared between the inbound WebRTC / WS
     /// gates (which dispatch into it) and `RuntimeContext`
@@ -557,7 +583,7 @@ impl CredentialState {
 /// Called by the workload dispatch path in `handle_incoming`.
 async fn host_operation_handler(
     ctx: crate::context::RuntimeContext,
-    workload_dispatch: Arc<crate::executor::ActorHandle>,
+    workload_dispatch: std::sync::Weak<crate::executor::ActorHandle>,
     pending: crate::workload::HostOperation,
 ) -> crate::workload::HostOperationResult {
     use crate::workload::{HostOperation, HostOperationResult, decode_dest};
@@ -663,6 +689,11 @@ async fn host_operation_handler(
                     let ctx_for_executor = callback_ctx.clone();
                     let workload_dispatch = callback_workload_dispatch.clone();
                     Box::pin(async move {
+                        let Some(workload_dispatch) = workload_dispatch.upgrade() else {
+                            return Err(ActrError::Unavailable(
+                                "actor runner terminated".to_string(),
+                            ));
+                        };
                         let invocation = crate::workload::InvocationContext {
                             self_id: actr_framework::Context::self_id(&ctx_for_executor).clone(),
                             caller_id: Some(sender.clone()),
@@ -755,6 +786,7 @@ pub(crate) fn lifecycle_host_abi(
     ctx: crate::context::RuntimeContext,
     workload_dispatch: Arc<crate::executor::ActorHandle>,
 ) -> crate::workload::HostAbiFn {
+    let workload_dispatch = Arc::downgrade(&workload_dispatch);
     std::sync::Arc::new(move |pending| {
         let ctx = ctx.clone();
         let workload_dispatch = workload_dispatch.clone();
@@ -949,6 +981,60 @@ fn parse_connection_not_ready_retry_hint(message: &str) -> Option<u64> {
 /// testable without standing up a node.
 fn scheduler_engaged(gate_on: bool, has_conflict_keys: bool) -> bool {
     gate_on && has_conflict_keys
+}
+
+/// Abort fallback armed for the complete shutdown sequence. `ActrRef` bounds
+/// background-task shutdown; if that outer task is aborted while a guest is
+/// stuck, dropping this guard aborts the detached owning runner as well.
+struct AbortActorRunnerOnDrop {
+    runner: Arc<crate::executor::ActorHandle>,
+    armed: bool,
+}
+
+impl AbortActorRunnerOnDrop {
+    fn new(runner: Arc<crate::executor::ActorHandle>) -> Self {
+        Self {
+            runner,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AbortActorRunnerOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.runner.abort();
+        }
+    }
+}
+
+/// Ordered actor teardown:
+///
+/// 1. stop scheduler intake and drain all admitted queued + in-flight work;
+/// 2. close direct dispatch admission and wait for earlier sends to enqueue;
+/// 3. invoke `on_stop` as a runner barrier;
+/// 4. stop and join the owning runner task.
+///
+/// The abort guard makes cancellation of this coordinator deterministic too.
+async fn shutdown_actor_runner<F>(
+    scheduler: Option<Arc<crate::dispatch::scheduler::SchedulerHandle>>,
+    runner: Arc<crate::executor::ActorHandle>,
+    on_stop: F,
+) where
+    F: Future<Output = ()>,
+{
+    let mut abort_guard = AbortActorRunnerOnDrop::new(runner.clone());
+    if let Some(scheduler) = scheduler {
+        scheduler.shutdown().await;
+    }
+    runner.stop_intake().await;
+    on_stop.await;
+    runner.shutdown().await;
+    abort_guard.disarm();
 }
 
 impl Inner {
@@ -1252,12 +1338,7 @@ impl Inner {
             request_id: envelope.request_id.clone(),
         };
         let ctx_for_executor = ctx.clone();
-        let workload_for_executor = self.workload_dispatch.clone();
-        let call_executor: crate::workload::HostAbiFn = std::sync::Arc::new(move |pending| {
-            let ctx = ctx_for_executor.clone();
-            let workload_dispatch = workload_for_executor.clone();
-            Box::pin(async move { host_operation_handler(ctx, workload_dispatch, pending).await })
-        });
+        let call_executor = lifecycle_host_abi(ctx_for_executor, self.workload_dispatch.clone());
 
         // The continuation logs its result and writes the dedup completion at the
         // dispatch completion point — same write-back timing as the old inline
@@ -1495,6 +1576,7 @@ impl Inner {
             dlq,
             inproc_gate,
             outproc_gate: None, // Populated in start() once WebRTC / PeerGate is ready.
+            _data_chunk_registry_cleanup: DataChunkRegistryCleanupGuard::new(&data_chunk_registry),
             data_chunk_registry,
             media_frame_registry,
             signaling_client,
@@ -2366,21 +2448,28 @@ impl Inner {
             let shutdown = shutdown_token.clone();
             let on_stop_handle = tokio::spawn(async move {
                 shutdown.cancelled().await;
-                let stop_ctx = node
-                    .bootstrap_ctx_builder()
-                    .build_bootstrap(&actor_id, &credential_state.credential().await);
-                let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
-                let call_executor =
-                    lifecycle_host_abi(stop_ctx.clone(), node.workload_dispatch.clone());
-                if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
-                    "on_stop",
-                    node.workload_dispatch
-                        .on_stop(stop_ctx, invocation, &call_executor),
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, "workload on_stop returned Err");
-                }
+                let scheduler = node.dispatch_scheduler.clone();
+                let runner = node.workload_dispatch.clone();
+                let runner_for_stop = runner.clone();
+                let data_chunk_registry = node.data_chunk_registry.clone();
+                let stop = async move {
+                    let stop_ctx = node
+                        .bootstrap_ctx_builder()
+                        .build_bootstrap(&actor_id, &credential_state.credential().await);
+                    let invocation = lifecycle_invocation(&actor_id, "lifecycle:on_stop");
+                    let call_executor =
+                        lifecycle_host_abi(stop_ctx.clone(), runner_for_stop.clone());
+                    if let Err(e) = crate::lifecycle::hooks::call_lifecycle_hook(
+                        "on_stop",
+                        runner_for_stop.on_stop(stop_ctx, invocation, &call_executor),
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, "workload on_stop returned Err");
+                    }
+                };
+                shutdown_actor_runner(scheduler, runner, stop).await;
+                data_chunk_registry.clear();
             });
             task_handles.push(on_stop_handle);
         }
