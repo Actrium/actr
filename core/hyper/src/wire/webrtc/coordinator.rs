@@ -2988,6 +2988,26 @@ impl WebRtcCoordinator {
     /// IMPORTANT: This method must release all locks before calling close() methods
     /// to avoid deadlock, since close() may trigger events that call this method again.
     async fn cleanup_cancelled_connection(&self, target: &ActrId, reason: &str) {
+        self.cleanup_cancelled_connection_inner(target, reason, None)
+            .await;
+    }
+
+    async fn cleanup_cancelled_connection_for_offer(
+        &self,
+        target: &ActrId,
+        reason: &str,
+        incoming_offer: &RTCSessionDescription,
+    ) {
+        self.cleanup_cancelled_connection_inner(target, reason, Some(incoming_offer))
+            .await;
+    }
+
+    async fn cleanup_cancelled_connection_inner(
+        &self,
+        target: &ActrId,
+        reason: &str,
+        incoming_offer: Option<&RTCSessionDescription>,
+    ) {
         tracing::debug!(
             "🧹 Starting cleanup for cancelled connection serial={}, reason={}",
             target,
@@ -3020,9 +3040,29 @@ impl WebRtcCoordinator {
                 .await;
         }
 
-        // 4. Clear pending candidates
-        self.pending_candidates.write().await.remove(target);
-        tracing::debug!("🧹 Clearing pending candidates for serial={}", target);
+        // 4. Clear pending candidates, except candidates already received for
+        //    the replacement Offer's ICE generation.
+        let mut pending_candidates = self.pending_candidates.write().await;
+        if let Some(incoming_offer) = incoming_offer {
+            let remove_entry = if let Some(candidates) = pending_candidates.get_mut(target) {
+                candidates
+                    .retain(|candidate| candidate_matches_description(candidate, incoming_offer));
+                candidates.is_empty()
+            } else {
+                false
+            };
+            if remove_entry {
+                pending_candidates.remove(target);
+            }
+            tracing::debug!(
+                "🧹 Retained pending candidates matching replacement Offer for serial={}",
+                target
+            );
+        } else {
+            pending_candidates.remove(target);
+            tracing::debug!("🧹 Clearing pending candidates for serial={}", target);
+        }
+        drop(pending_candidates);
 
         // 5. Clear negotiation state
         if self.peer_negotiation.lock().await.remove(target).is_some() {
@@ -3427,9 +3467,17 @@ impl WebRtcCoordinator {
                 from
             );
 
+            let incoming_offer = RTCSessionDescription::offer(offer_sdp.clone()).map_err(|e| {
+                ActrError::Internal(format!("Failed to parse replacement Offer: {e}"))
+            })?;
+
             // Clean up old connection using unified cleanup method
-            self.cleanup_cancelled_connection(from, "replaced by incoming offer")
-                .await;
+            self.cleanup_cancelled_connection_for_offer(
+                from,
+                "replaced by incoming offer",
+                &incoming_offer,
+            )
+            .await;
         }
         // ========== PrepareForIncomingOffer END ==========
 

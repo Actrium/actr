@@ -1501,6 +1501,56 @@ async fn candidate_arriving_before_restart_offer_is_buffered() {
 }
 
 #[tokio::test]
+async fn replacement_cleanup_preserves_candidates_for_incoming_offer() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target_id = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
+
+    let incoming_offer = RTCSessionDescription::offer(
+        "v=0\r\n\
+         o=- 0 0 IN IP4 127.0.0.1\r\n\
+         s=-\r\n\
+         t=0 0\r\n\
+         m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         a=mid:0\r\n\
+         a=ice-ufrag:incoming-generation\r\n\
+         a=ice-pwd:test-password\r\n"
+            .to_string(),
+    )
+    .expect("incoming Offer should parse");
+    let stale_candidate = IceCandidate {
+        candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+        sdp_mid: Some("0".to_string()),
+        sdp_mline_index: Some(0),
+        username_fragment: Some("old-generation".to_string()),
+    };
+    let incoming_candidate = IceCandidate {
+        candidate: "candidate:2 1 UDP 1 127.0.0.1 5001 typ host".to_string(),
+        sdp_mid: Some("0".to_string()),
+        sdp_mline_index: Some(0),
+        username_fragment: Some("incoming-generation".to_string()),
+    };
+    coordinator.pending_candidates.write().await.insert(
+        target_id.clone(),
+        vec![stale_candidate, incoming_candidate.clone()],
+    );
+
+    coordinator
+        .cleanup_cancelled_connection_for_offer(
+            &target_id,
+            "replaced by incoming Offer",
+            &incoming_offer,
+        )
+        .await;
+
+    assert!(coordinator.peers.read().await.get(&target_id).is_none());
+    assert_eq!(
+        coordinator.pending_candidates.read().await.get(&target_id),
+        Some(&vec![incoming_candidate])
+    );
+}
+
+#[tokio::test]
 async fn stalled_restart_commit_for_one_peer_does_not_block_another_peer_gate() {
     let coordinator = WebRtcCoordinator::new(
         test_actor_id(1),
