@@ -650,7 +650,7 @@ pom_reconcile_position = kotlin_publish.find(
 )
 module_reconcile_position = kotlin_publish.find("reconcile_gradle_module\n")
 metadata_position = kotlin_publish.find("ensure_maven_metadata\n")
-tag_push_position = kotlin_publish.find('push origin "refs/tags/${sync_tag}"')
+tag_push_position = kotlin_publish.find('"HEAD:refs/heads/${SYNC_BRANCH}"')
 require(
     0
     <= aar_reconcile_position
@@ -722,6 +722,34 @@ for filtered_path in (
 require(
     "published package-sync assets remain hash-locked" in preamble,
     "replace_assets input must document immutable package-sync assets",
+)
+
+require(
+    'package_sync_branch="release-${base_version}"' in workflow
+    and "package_sync_branch: ${{ steps.resolve.outputs.package_sync_branch }}" in workflow,
+    "package-sync release branches must derive from the validated base version",
+)
+require(
+    workflow.count("ref: ${{ needs.context.outputs.package_sync_branch }}") == 3
+    and "ref: main" not in workflow,
+    "package-sync checkouts must use the versioned release branch, never main",
+)
+for sync_job, language in ((swift_prepare_job, "Swift"), (kotlin_publish_job, "Kotlin")):
+    require(
+        "merge-base --is-ancestor" in sync_job
+        and '"origin/${SYNC_BRANCH}"' in sync_job,
+        f"existing {language} package-sync tags must belong to the release branch",
+    )
+require(
+    '"HEAD:refs/heads/${SYNC_BRANCH}"' in swift_publish
+    and '"HEAD:refs/heads/${SYNC_BRANCH}"' in kotlin_publish,
+    "new package-sync commits must advance the release branch before publishing tags",
+)
+require(
+    "group: release-asset-validation-swift-package-sync-${{ github.repository_owner }}"
+    in swift_publish_job
+    and "cancel-in-progress: false" in swift_publish_job,
+    "Swift package-sync branch updates must be serialized",
 )
 
 print("release asset validation workflow checks passed")
