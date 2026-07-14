@@ -57,6 +57,7 @@ jobs:
       package_sync_owner: ${{ steps.resolve.outputs.package_sync_owner }}
       swift_sync_repo: ${{ steps.resolve.outputs.swift_sync_repo }}
       kotlin_sync_repo: ${{ steps.resolve.outputs.kotlin_sync_repo }}
+      package_sync_branch: ${{ steps.resolve.outputs.package_sync_branch }}
     steps:
       - name: Checkout source ref
         uses: actions/checkout@v5
@@ -95,6 +96,7 @@ jobs:
           short_sha=$(git rev-parse --short=12 HEAD)
           source_ref="${INPUT_SOURCE_REF:-${GITHUB_REF_NAME:-${source_sha}}}"
           package_sync_owner="${GITHUB_REPOSITORY_OWNER}"
+          package_sync_branch="release-${base_version}"
           release_tag="validation-v${PRE_RELEASE_VERSION}"
 
           {
@@ -109,6 +111,7 @@ jobs:
             echo "package_sync_owner=${package_sync_owner}"
             echo "swift_sync_repo=${package_sync_owner}/actr-swift-package-sync"
             echo "kotlin_sync_repo=${package_sync_owner}/actr-kotlin-package-sync"
+            echo "package_sync_branch=${package_sync_branch}"
           } >> "$GITHUB_OUTPUT"
 
   prepare-validation-source:
@@ -1122,7 +1125,7 @@ jobs:
         with:
           repository: ${{ needs.context.outputs.swift_sync_repo }}
           token: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
-          ref: main
+          ref: ${{ needs.context.outputs.package_sync_branch }}
           path: swift-sync
           fetch-depth: 0
           fetch-tags: true
@@ -1134,6 +1137,7 @@ jobs:
         env:
           PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
           SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
+          SYNC_BRANCH: ${{ needs.context.outputs.package_sync_branch }}
           SOURCE_REPO: ${{ needs.context.outputs.repository }}
           SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
           SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
@@ -1141,6 +1145,11 @@ jobs:
           set -euo pipefail
           sync_tag="v${PRE_VERSION}"
           if git -C swift-sync rev-parse -q --verify "refs/tags/${sync_tag}" >/dev/null 2>&1; then
+            git -C swift-sync merge-base --is-ancestor \
+              "refs/tags/${sync_tag}" "origin/${SYNC_BRANCH}" || {
+              echo "::error::Swift package-sync tag ${sync_tag} is not contained in ${SYNC_BRANCH}"
+              exit 1
+            }
             git -C swift-sync checkout --detach "refs/tags/${sync_tag}"
             python3 - <<'PY'
           from __future__ import annotations
@@ -1343,6 +1352,9 @@ jobs:
       - kotlin-package
       - prepare-swift-package-sync
     runs-on: ubuntu-latest
+    concurrency:
+      group: release-asset-validation-swift-package-sync-${{ github.repository_owner }}
+      cancel-in-progress: false
     steps:
       - name: Download Swift package-sync inputs
         uses: actions/download-artifact@v4
@@ -1363,7 +1375,7 @@ jobs:
         with:
           repository: ${{ needs.context.outputs.swift_sync_repo }}
           token: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
-          ref: main
+          ref: ${{ needs.context.outputs.package_sync_branch }}
           path: swift-sync
           fetch-depth: 0
           persist-credentials: false
@@ -1399,6 +1411,7 @@ jobs:
           GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
           PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
           SYNC_REPO: ${{ needs.context.outputs.swift_sync_repo }}
+          SYNC_BRANCH: ${{ needs.context.outputs.package_sync_branch }}
           SOURCE_REPO: ${{ needs.context.outputs.repository }}
           SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
           SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
@@ -1485,7 +1498,9 @@ jobs:
             echo "::add-mask::${basic_auth}"
             git -C swift-sync \
               -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_auth}" \
-              push origin "refs/tags/${sync_tag}"
+              push origin \
+                "HEAD:refs/heads/${SYNC_BRANCH}" \
+                "refs/tags/${sync_tag}"
           fi
 
           cat > swift-release-notes.md <<EOF
@@ -1582,7 +1597,7 @@ jobs:
         with:
           repository: ${{ needs.context.outputs.kotlin_sync_repo }}
           token: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
-          ref: main
+          ref: ${{ needs.context.outputs.package_sync_branch }}
           path: kotlin-sync
           fetch-depth: 0
           fetch-tags: true
@@ -1733,6 +1748,7 @@ jobs:
           GH_TOKEN: ${{ secrets.PACKAGE_SYNC_GITHUB_TOKEN }}
           PRE_VERSION: ${{ needs.context.outputs.pre_release_version }}
           SYNC_REPO: ${{ needs.context.outputs.kotlin_sync_repo }}
+          SYNC_BRANCH: ${{ needs.context.outputs.package_sync_branch }}
           SOURCE_REPO: ${{ needs.context.outputs.repository }}
           SOURCE_SHA: ${{ needs.prepare-validation-source.outputs.validation_sha }}
           SOURCE_TAG: ${{ needs.context.outputs.release_tag }}
@@ -2225,6 +2241,11 @@ jobs:
           current_native_checksum=$(sha256sum "$current_native_asset" | awk '{print $1}')
 
           if git -C kotlin-sync rev-parse -q --verify "refs/tags/${sync_tag}" >/dev/null 2>&1; then
+            git -C kotlin-sync merge-base --is-ancestor \
+              "refs/tags/${sync_tag}" "origin/${SYNC_BRANCH}" || {
+              echo "::error::Kotlin package-sync tag ${sync_tag} is not contained in ${SYNC_BRANCH}"
+              exit 1
+            }
             git -C kotlin-sync checkout --detach "refs/tags/${sync_tag}"
             native_checksum=$(MAVEN_AAR_CHECKSUM="$maven_aar_checksum" \
               MAVEN_SOURCES_CHECKSUM="$maven_sources_checksum" python3 - <<'PY'
@@ -2400,7 +2421,9 @@ jobs:
             echo "::add-mask::${basic_auth}"
             git -C kotlin-sync \
               -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${basic_auth}" \
-              push origin "refs/tags/${sync_tag}"
+              push origin \
+                "HEAD:refs/heads/${SYNC_BRANCH}" \
+                "refs/tags/${sync_tag}"
           fi
 
           if [[ "$release_exists" == "true" ]]; then
