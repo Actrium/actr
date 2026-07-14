@@ -660,7 +660,9 @@ impl WebRtcCoordinator {
     ) -> IceCandidate {
         IceCandidate {
             candidate: candidate_json.candidate,
-            sdp_mid: candidate_json.sdp_mid,
+            sdp_mid: candidate_json
+                .sdp_mid
+                .filter(|sdp_mid| !sdp_mid.trim().is_empty()),
             sdp_mline_index: candidate_json.sdp_mline_index.map(u32::from),
             username_fragment: Some(username_fragment),
         }

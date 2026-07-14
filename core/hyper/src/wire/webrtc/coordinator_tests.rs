@@ -1179,6 +1179,22 @@ async fn clear_pending_restarts_clears_pending_sdp_exchange() {
 }
 
 #[test]
+fn ice_candidate_serialization_omits_empty_sdp_mid() {
+    let candidate = WebRtcCoordinator::ice_candidate_from_json(
+        RTCIceCandidateInit {
+            candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+            sdp_mid: Some(String::new()),
+            sdp_mline_index: Some(0),
+            username_fragment: None,
+        },
+        "generation".to_string(),
+    );
+
+    assert_eq!(candidate.sdp_mid, None);
+    assert_eq!(candidate.sdp_mline_index, Some(0));
+}
+
+#[test]
 fn ice_candidates_require_the_current_remote_ufrag() {
     let description = RTCSessionDescription::offer(
         "v=0\r\n\
