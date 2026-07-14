@@ -1236,6 +1236,59 @@ fn ice_candidates_require_the_current_remote_ufrag() {
 }
 
 #[test]
+fn known_old_remote_generation_is_dropped_instead_of_rebuffered() {
+    let mut state = PeerIceSignalingState::default();
+    state.remember_remote_ufrag("old".to_string());
+    state.remember_remote_ufrag("current".to_string());
+
+    assert_eq!(
+        classify_remote_candidate_ufrag("old", "current", &state.known_remote_ufrags),
+        RemoteCandidateDisposition::DropStale,
+    );
+}
+
+#[test]
+fn unknown_future_remote_generation_stays_buffered_until_its_sdp_arrives() {
+    let mut state = PeerIceSignalingState::default();
+    state.remember_remote_ufrag("current".to_string());
+
+    assert_eq!(
+        classify_remote_candidate_ufrag("future", "current", &state.known_remote_ufrags),
+        RemoteCandidateDisposition::BufferFuture,
+    );
+    assert_eq!(
+        classify_remote_candidate_ufrag("future", "future", &state.known_remote_ufrags),
+        RemoteCandidateDisposition::Apply,
+    );
+}
+
+#[test]
+fn remote_generation_history_is_bounded_and_session_scoped() {
+    let mut state = PeerIceSignalingState::default();
+    for generation in 0..9 {
+        state.remember_remote_ufrag(format!("generation-{generation}"));
+    }
+    assert_eq!(state.known_remote_ufrags.len(), 8);
+    assert_eq!(
+        state
+            .known_remote_ufrags
+            .front()
+            .expect("bounded history should retain entries"),
+        "generation-1"
+    );
+    assert_eq!(
+        state
+            .known_remote_ufrags
+            .back()
+            .expect("bounded history should retain entries"),
+        "generation-8"
+    );
+
+    let replacement = PeerIceSignalingState::default();
+    assert!(replacement.known_remote_ufrags.is_empty());
+}
+
+#[test]
 fn media_level_ice_ufrag_overrides_session_level_value() {
     let description = RTCSessionDescription::offer(
         "v=0\r\n\
@@ -1246,6 +1299,10 @@ fn media_level_ice_ufrag_overrides_session_level_value() {
          m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
          a=mid:0\r\n\
          a=ice-ufrag:media-generation\r\n\
+         a=ice-pwd:test-password\r\n\
+         m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         a=mid:1\r\n\
+         a=ice-ufrag:second-media-generation\r\n\
          a=ice-pwd:test-password\r\n"
             .to_string(),
     )
@@ -1262,6 +1319,15 @@ fn media_level_ice_ufrag_overrides_session_level_value() {
     assert_eq!(
         ice_ufrag_from_description(&description, Some(""), Some(0)).as_deref(),
         Some("media-generation")
+    );
+    assert_eq!(
+        ice_ufrags_from_description(&description),
+        vec![
+            "session-generation".to_string(),
+            "media-generation".to_string(),
+            "second-media-generation".to_string(),
+        ],
+        "generation history must include every current media-level ufrag"
     );
 }
 
@@ -1760,6 +1826,194 @@ async fn candidate_arriving_before_restart_offer_is_buffered() {
     let pending = coordinator.pending_candidates.read().await;
     assert_eq!(pending.get(&target_id), Some(&vec![future_candidate]));
     drop(pending);
+    remote_pc.close().await.expect("remote peer should close");
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("coordinator peers should close");
+}
+
+#[tokio::test]
+async fn pending_candidate_flush_drops_known_old_generation_and_keeps_unknown_future() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target_id = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+
+    let api = webrtc::api::APIBuilder::new().build();
+    let remote_pc = api
+        .new_peer_connection(Default::default())
+        .await
+        .expect("remote peer connection should be created");
+    remote_pc
+        .create_data_channel("test", None)
+        .await
+        .expect("data channel should be created");
+    let current_offer = remote_pc
+        .create_offer(None)
+        .await
+        .expect("current offer should be created");
+    let current_ufrag = ice_ufrag_from_description(&current_offer, None, None)
+        .expect("generated offer should contain one ICE generation");
+    remote_pc
+        .set_local_description(current_offer.clone())
+        .await
+        .expect("remote local description should be set");
+
+    let peer_connection = {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&target_id).expect("peer should exist");
+        state
+            .ice_signaling
+            .remember_remote_ufrag("known-old-generation".to_string());
+        state.peer_connection.clone()
+    };
+    peer_connection
+        .set_remote_description(current_offer)
+        .await
+        .expect("current remote description should be set");
+
+    let known_old_candidate = IceCandidate {
+        candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+        sdp_mid: None,
+        sdp_mline_index: Some(0),
+        username_fragment: Some("known-old-generation".to_string()),
+    };
+    let unknown_future_candidate = IceCandidate {
+        candidate: "candidate:2 1 UDP 1 127.0.0.1 5001 typ host".to_string(),
+        sdp_mid: None,
+        sdp_mline_index: Some(0),
+        username_fragment: Some("unknown-future-generation".to_string()),
+    };
+    coordinator.pending_candidates.write().await.insert(
+        target_id.clone(),
+        vec![
+            known_old_candidate.clone(),
+            unknown_future_candidate.clone(),
+        ],
+    );
+
+    coordinator
+        .flush_pending_candidates(&target_id, session_id.wrapping_add(1), &peer_connection)
+        .await
+        .expect("stale-session flush should be ignored cleanly");
+    assert_eq!(
+        coordinator.pending_candidates.read().await.get(&target_id),
+        Some(&vec![
+            known_old_candidate.clone(),
+            unknown_future_candidate.clone()
+        ]),
+        "a stale flush must not consume the current session's candidate buffer"
+    );
+    {
+        let peers = coordinator.peers.read().await;
+        let history = &peers
+            .get(&target_id)
+            .expect("peer should remain current")
+            .ice_signaling
+            .known_remote_ufrags;
+        assert_eq!(
+            history,
+            &VecDeque::from(["known-old-generation".to_string()]),
+            "a stale flush must not record SDP state into the current session"
+        );
+    }
+
+    coordinator
+        .flush_pending_candidates(&target_id, session_id, &peer_connection)
+        .await
+        .expect("pending candidate flush should succeed");
+
+    assert_eq!(
+        coordinator.pending_candidates.read().await.get(&target_id),
+        Some(&vec![unknown_future_candidate.clone()])
+    );
+
+    coordinator
+        .handle_ice_candidate(&target_id, known_old_candidate)
+        .await
+        .expect("a late stale candidate should be discarded cleanly");
+    assert_eq!(
+        coordinator.pending_candidates.read().await.get(&target_id),
+        Some(&vec![unknown_future_candidate.clone()]),
+        "a known stale candidate arriving after flush must not be rebuffered"
+    );
+    let peers = coordinator.peers.read().await;
+    let history = &peers
+        .get(&target_id)
+        .expect("peer should remain current")
+        .ice_signaling
+        .known_remote_ufrags;
+    assert!(history.iter().any(|known| known == "known-old-generation"));
+    assert!(history.iter().any(|known| known == &current_ufrag));
+    drop(peers);
+
+    remote_pc.close().await.expect("remote peer should close");
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("coordinator peers should close");
+}
+
+#[tokio::test(start_paused = true)]
+async fn pending_candidate_flush_obeys_its_total_deadline() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target_id = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+
+    let api = webrtc::api::APIBuilder::new().build();
+    let remote_pc = api
+        .new_peer_connection(Default::default())
+        .await
+        .expect("remote peer connection should be created");
+    remote_pc
+        .create_data_channel("test", None)
+        .await
+        .expect("data channel should be created");
+    let current_offer = remote_pc
+        .create_offer(None)
+        .await
+        .expect("current offer should be created");
+    remote_pc
+        .set_local_description(current_offer.clone())
+        .await
+        .expect("remote local description should be set");
+
+    let peer_connection = coordinator
+        .peers
+        .read()
+        .await
+        .get(&target_id)
+        .expect("peer should exist")
+        .peer_connection
+        .clone();
+    peer_connection
+        .set_remote_description(current_offer)
+        .await
+        .expect("current remote description should be set");
+
+    let pending_guard = coordinator.pending_candidates.write().await;
+    let flush_task = tokio::spawn({
+        let coordinator = Arc::clone(&coordinator);
+        let target_id = target_id.clone();
+        let peer_connection = Arc::clone(&peer_connection);
+        async move {
+            coordinator
+                .flush_pending_candidates(&target_id, session_id, &peer_connection)
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    tokio::time::advance(REMOTE_CANDIDATE_FLUSH_TIMEOUT + Duration::from_millis(1)).await;
+
+    let error = flush_task
+        .await
+        .expect("flush task should finish")
+        .expect_err("flush should time out while its state lock is blocked");
+    assert!(matches!(error, ActrError::TimedOut));
+    drop(pending_guard);
+
     remote_pc.close().await.expect("remote peer should close");
     coordinator
         .close_all_peers()

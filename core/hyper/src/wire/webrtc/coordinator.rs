@@ -73,6 +73,7 @@ const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(6);
 const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PEER_CONNECTION_CLOSE_FALLBACK_TIMEOUT: Duration = Duration::from_millis(500);
+const REMOTE_CANDIDATE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(not(test))]
 const CLOSE_ALL_QUIESCE_TIMEOUT: Duration = Duration::from_secs(6);
 #[cfg(test)]
@@ -84,6 +85,7 @@ const WEBRTC_RPC_INBOUND_QUEUE_DEPTH: usize = 256;
 const WEBRTC_RELIABLE_INBOUND_QUEUE_DEPTH: usize = 64;
 const WEBRTC_LATENCY_FIRST_INBOUND_QUEUE_DEPTH: usize = 64;
 const MAX_PENDING_ICE_CANDIDATES_PER_PEER: usize = 256;
+const MAX_KNOWN_REMOTE_ICE_GENERATIONS: usize = 8;
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -195,6 +197,33 @@ fn ice_ufrag_from_description(
     unique_ufrag
 }
 
+fn ice_ufrags_from_description(description: &RTCSessionDescription) -> Vec<String> {
+    let Ok(parsed) = description.unmarshal() else {
+        return Vec::new();
+    };
+
+    let mut ufrags = Vec::new();
+    let mut remember = |ufrag: &str| {
+        if !ufrag.is_empty() && !ufrags.iter().any(|known| known == ufrag) {
+            ufrags.push(ufrag.to_owned());
+        }
+    };
+
+    if let Some(ufrag) = parsed.attribute("ice-ufrag") {
+        remember(ufrag);
+    }
+    for ufrag in parsed.media_descriptions.iter().filter_map(|media| {
+        media
+            .attribute("ice-ufrag")
+            .flatten()
+            .filter(|ufrag| !ufrag.is_empty())
+    }) {
+        remember(ufrag);
+    }
+
+    ufrags
+}
+
 fn candidate_matches_description(
     candidate: &IceCandidate,
     description: &RTCSessionDescription,
@@ -246,7 +275,6 @@ enum LocalIceGenerationState {
 struct PeerIceSignalingState {
     pending_local_sdp_exchange_id: Option<String>,
     local_generation: LocalIceGenerationState,
-    #[allow(dead_code)] // Used by the session-scoped remote generation filter added next.
     known_remote_ufrags: VecDeque<String>,
 }
 
@@ -265,6 +293,14 @@ impl PeerIceSignalingState {
             self.suppress_local_generation();
         }
     }
+
+    fn remember_remote_ufrag(&mut self, ufrag: String) {
+        self.known_remote_ufrags.retain(|known| known != &ufrag);
+        self.known_remote_ufrags.push_back(ufrag);
+        while self.known_remote_ufrags.len() > MAX_KNOWN_REMOTE_ICE_GENERATIONS {
+            self.known_remote_ufrags.pop_front();
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -273,6 +309,27 @@ enum LocalCandidateDisposition {
     Buffered,
     Suppressed,
     StaleSession,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemoteCandidateDisposition {
+    Apply,
+    DropStale,
+    BufferFuture,
+}
+
+fn classify_remote_candidate_ufrag(
+    candidate_ufrag: &str,
+    current_ufrag: &str,
+    known: &VecDeque<String>,
+) -> RemoteCandidateDisposition {
+    if candidate_ufrag == current_ufrag {
+        RemoteCandidateDisposition::Apply
+    } else if known.iter().any(|ufrag| ufrag == candidate_ufrag) {
+        RemoteCandidateDisposition::DropStale
+    } else {
+        RemoteCandidateDisposition::BufferFuture
+    }
 }
 
 struct PeerSignalingCommitState {
@@ -4428,7 +4485,7 @@ impl WebRtcCoordinator {
         tracing::info!("✅ Sent Answer to {}", from);
 
         // 8. Flush any buffered ICE candidates (remote description is now set)
-        self.flush_pending_candidates(from, &peer_connection_arc)
+        self.flush_pending_candidates(from, webrtc_conn.session_id(), &peer_connection_arc)
             .await?;
 
         // Note: ready notification is sent in on_data_channel callback
@@ -4539,7 +4596,7 @@ impl WebRtcCoordinator {
             .await;
 
         // Flush any buffered ICE candidates (remote description is now set)
-        self.flush_pending_candidates(from, &peer_connection)
+        self.flush_pending_candidates(from, session_id, &peer_connection)
             .await?;
 
         tracing::info!("✅ WebRTC connection negotiation completed: {}", from);
@@ -4608,6 +4665,32 @@ impl WebRtcCoordinator {
     async fn flush_pending_candidates(
         &self,
         peer_id: &ActrId,
+        expected_session_id: u64,
+        peer_connection: &RTCPeerConnection,
+    ) -> ActorResult<()> {
+        match tokio::time::timeout(
+            REMOTE_CANDIDATE_FLUSH_TIMEOUT,
+            self.flush_pending_candidates_inner(peer_id, expected_session_id, peer_connection),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                tracing::warn!(
+                    peer_id = %peer_id,
+                    expected_session_id,
+                    timeout_ms = REMOTE_CANDIDATE_FLUSH_TIMEOUT.as_millis(),
+                    "Timed out flushing remote ICE candidates"
+                );
+                Err(ActrError::TimedOut)
+            }
+        }
+    }
+
+    async fn flush_pending_candidates_inner(
+        &self,
+        peer_id: &ActrId,
+        expected_session_id: u64,
         peer_connection: &RTCPeerConnection,
     ) -> ActorResult<()> {
         let remote_description = peer_connection.remote_description().await.ok_or_else(|| {
@@ -4616,42 +4699,108 @@ impl WebRtcCoordinator {
             ))
         })?;
 
-        // Extract buffered candidates for this peer
-        let candidates = {
+        // Classify the complete buffer and retain unknown future generations
+        // in one session-guarded state commit. The pending-candidate lock is
+        // acquired before `peers`, matching the close-all lock order. Only
+        // candidates ready to apply leave shared state before an await.
+        let candidates_to_apply = {
             let mut pending = self.pending_candidates.write().await;
-            pending.remove(peer_id)
-        };
+            let mut peers = self.peers.write().await;
+            let Some(state) = peers.get_mut(peer_id) else {
+                tracing::debug!(
+                    "⏭️ Skip pending ICE flush for removed peer={}, expected_session_id={}",
+                    peer_id,
+                    expected_session_id
+                );
+                return Ok(());
+            };
+            if state.session_id != expected_session_id {
+                tracing::debug!(
+                    "⏭️ Skip stale pending ICE flush for peer={}: active_session_id={} expected_session_id={}",
+                    peer_id,
+                    state.session_id,
+                    expected_session_id
+                );
+                return Ok(());
+            }
 
-        if let Some(candidates) = candidates {
+            for current_ufrag in ice_ufrags_from_description(&remote_description) {
+                state.ice_signaling.remember_remote_ufrag(current_ufrag);
+            }
+            let known_remote_ufrags = state.ice_signaling.known_remote_ufrags.clone();
+            let candidates = pending.remove(peer_id).unwrap_or_default();
             tracing::debug!(
                 "🔄 Flushing {} buffered ICE candidates for {:?}",
                 candidates.len(),
                 peer_id
             );
 
+            let mut candidates_to_apply = Vec::new();
             let mut future_generation_candidates = Vec::new();
             for candidate in candidates {
-                if !candidate_matches_description(&candidate, &remote_description) {
+                let Some(candidate_ufrag) = nonempty_candidate_ufrag(&candidate) else {
+                    tracing::warn!(
+                        "🚫 Dropping buffered ICE candidate from {} without username_fragment",
+                        peer_id
+                    );
+                    continue;
+                };
+                let Some(current_ufrag) = ice_ufrag_from_description(
+                    &remote_description,
+                    candidate.sdp_mid.as_deref(),
+                    candidate.sdp_mline_index,
+                ) else {
                     tracing::debug!(
-                        "🔖 Retaining buffered ICE candidate for a different generation from {}: candidate_ufrag={:?}",
+                        "🔖 Retaining buffered ICE candidate until its media generation is known: peer={}, candidate_ufrag={}",
                         peer_id,
-                        candidate.username_fragment
+                        candidate_ufrag
                     );
                     future_generation_candidates.push(candidate);
                     continue;
-                }
-                if let Err(e) = self
-                    .negotiator
-                    .add_ice_candidate(peer_connection, candidate)
-                    .await
-                {
-                    tracing::warn!("⚠️ Failed to add buffered ICE candidate: {}", e);
+                };
+
+                match classify_remote_candidate_ufrag(
+                    candidate_ufrag,
+                    &current_ufrag,
+                    &known_remote_ufrags,
+                ) {
+                    RemoteCandidateDisposition::Apply => {
+                        candidates_to_apply.push(candidate);
+                    }
+                    RemoteCandidateDisposition::DropStale => {
+                        tracing::debug!(
+                            "🗑️ Dropping buffered ICE candidate from known stale generation: peer={}, candidate_ufrag={}, current_ufrag={}",
+                            peer_id,
+                            candidate_ufrag,
+                            current_ufrag
+                        );
+                    }
+                    RemoteCandidateDisposition::BufferFuture => {
+                        tracing::debug!(
+                            "🔖 Retaining buffered ICE candidate for an unknown future generation: peer={}, candidate_ufrag={}, current_ufrag={}",
+                            peer_id,
+                            candidate_ufrag,
+                            current_ufrag
+                        );
+                        future_generation_candidates.push(candidate);
+                    }
                 }
             }
 
-            for candidate in future_generation_candidates {
-                self.buffer_pending_remote_candidate(peer_id, candidate)
-                    .await;
+            if !future_generation_candidates.is_empty() {
+                pending.insert(peer_id.clone(), future_generation_candidates);
+            }
+
+            candidates_to_apply
+        };
+
+        for candidate in candidates_to_apply {
+            if let Err(e) = self
+                .negotiator
+                .add_ice_candidate(peer_connection, candidate)
+                .await
+            {
+                tracing::warn!("⚠️ Failed to add buffered ICE candidate: {}", e);
             }
         }
 
@@ -4660,6 +4809,38 @@ impl WebRtcCoordinator {
 
     async fn buffer_pending_remote_candidate(&self, peer_id: &ActrId, candidate: IceCandidate) {
         let mut pending = self.pending_candidates.write().await;
+        Self::push_pending_remote_candidate(&mut pending, peer_id, candidate);
+    }
+
+    async fn buffer_pending_remote_candidate_if_session_current(
+        &self,
+        peer_id: &ActrId,
+        expected_session_id: u64,
+        candidate: IceCandidate,
+    ) -> bool {
+        let mut pending = self.pending_candidates.write().await;
+        let peers = self.peers.read().await;
+        if !peers
+            .get(peer_id)
+            .is_some_and(|state| state.session_id == expected_session_id)
+        {
+            tracing::debug!(
+                "⏭️ Discarding buffered ICE candidate after peer session changed: peer={}, expected_session_id={}",
+                peer_id,
+                expected_session_id
+            );
+            return false;
+        }
+
+        Self::push_pending_remote_candidate(&mut pending, peer_id, candidate);
+        true
+    }
+
+    fn push_pending_remote_candidate(
+        pending: &mut HashMap<ActrId, Vec<IceCandidate>>,
+        peer_id: &ActrId,
+        candidate: IceCandidate,
+    ) {
         let candidates = pending.entry(peer_id.clone()).or_default();
         if candidates.len() >= MAX_PENDING_ICE_CANDIDATES_PER_PEER {
             candidates.remove(0);
@@ -4691,13 +4872,13 @@ impl WebRtcCoordinator {
     ) -> ActorResult<()> {
         tracing::trace!("📥 Received ICE Candidate from {}", from);
 
-        if nonempty_candidate_ufrag(&candidate).is_none() {
+        let Some(candidate_ufrag) = nonempty_candidate_ufrag(&candidate).map(str::to_owned) else {
             tracing::warn!(
                 "🚫 Dropping ICE candidate from {} without username_fragment",
                 from
             );
             return Ok(());
-        }
+        };
 
         // DEBUG: Temporarily disable candidate filtering for local testing
         // TODO: Re-enable proper filtering for production
@@ -4709,34 +4890,96 @@ impl WebRtcCoordinator {
         // Try to get peer and check if remote description is set
         let peer_opt = {
             let peers = self.peers.read().await;
-            peers.get(from).map(|state| state.peer_connection.clone())
+            peers.get(from).map(|state| {
+                (
+                    state.peer_connection.clone(),
+                    state.session_id,
+                    state.ice_signaling.known_remote_ufrags.clone(),
+                )
+            })
         };
 
         match peer_opt {
-            Some(peer_connection) => {
+            Some((peer_connection, session_id, known_remote_ufrags)) => {
                 // Check if remote description is set
                 if let Some(remote_description) = peer_connection.remote_description().await {
-                    if !candidate_matches_description(&candidate, &remote_description) {
+                    let Some(current_ufrag) = ice_ufrag_from_description(
+                        &remote_description,
+                        candidate.sdp_mid.as_deref(),
+                        candidate.sdp_mline_index,
+                    ) else {
                         tracing::debug!(
-                            "🔖 Buffering ICE candidate from a future or reordered generation for {}: candidate_ufrag={:?}",
+                            "🔖 Buffering ICE candidate until its media generation is known: peer={}, candidate_ufrag={}",
                             from,
-                            candidate.username_fragment
+                            candidate_ufrag
                         );
-                        self.buffer_pending_remote_candidate(from, candidate).await;
+                        self.buffer_pending_remote_candidate_if_session_current(
+                            from, session_id, candidate,
+                        )
+                        .await;
                         return Ok(());
+                    };
+
+                    match classify_remote_candidate_ufrag(
+                        &candidate_ufrag,
+                        &current_ufrag,
+                        &known_remote_ufrags,
+                    ) {
+                        RemoteCandidateDisposition::Apply => {
+                            match tokio::time::timeout(
+                                REMOTE_CANDIDATE_FLUSH_TIMEOUT,
+                                self.negotiator
+                                    .add_ice_candidate(&peer_connection, candidate),
+                            )
+                            .await
+                            {
+                                Ok(result) => result?,
+                                Err(_) => {
+                                    tracing::warn!(
+                                        peer_id = %from,
+                                        session_id,
+                                        timeout_ms = REMOTE_CANDIDATE_FLUSH_TIMEOUT.as_millis(),
+                                        "Timed out adding remote ICE candidate"
+                                    );
+                                    return Err(ActrError::TimedOut);
+                                }
+                            }
+                            tracing::trace!("✅ Added ICE Candidate from {}", from);
+                        }
+                        RemoteCandidateDisposition::DropStale => {
+                            tracing::debug!(
+                                "🗑️ Dropping ICE candidate from known stale generation: peer={}, candidate_ufrag={}, current_ufrag={}",
+                                from,
+                                candidate_ufrag,
+                                current_ufrag
+                            );
+                        }
+                        RemoteCandidateDisposition::BufferFuture => {
+                            tracing::debug!(
+                                "🔖 Buffering ICE candidate from an unknown future generation: peer={}, candidate_ufrag={}, current_ufrag={}",
+                                from,
+                                candidate_ufrag,
+                                current_ufrag
+                            );
+                            self.buffer_pending_remote_candidate_if_session_current(
+                                from, session_id, candidate,
+                            )
+                            .await;
+                        }
                     }
-                    // Can add candidate immediately
-                    self.negotiator
-                        .add_ice_candidate(&peer_connection, candidate)
-                        .await?;
-                    tracing::trace!("✅ Added ICE Candidate from {}", from);
                 } else {
                     // Buffer for later (remote description not yet set)
-                    self.buffer_pending_remote_candidate(from, candidate).await;
-                    tracing::debug!(
-                        "🔖 Buffered ICE candidate from {:?} (remote description not yet set)",
-                        from
-                    );
+                    if self
+                        .buffer_pending_remote_candidate_if_session_current(
+                            from, session_id, candidate,
+                        )
+                        .await
+                    {
+                        tracing::debug!(
+                            "🔖 Buffered ICE candidate from {:?} (remote description not yet set)",
+                            from
+                        );
+                    }
                 }
             }
             None => {
@@ -6881,7 +7124,7 @@ impl WebRtcCoordinator {
 
         // Flush any buffered remote candidates before cleanup can close the
         // PeerConnection used by this exchange.
-        self.flush_pending_candidates(from, &peer_connection)
+        self.flush_pending_candidates(from, session_id, &peer_connection)
             .await?;
         drop(commit_guard);
         Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
