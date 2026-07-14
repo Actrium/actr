@@ -178,7 +178,13 @@ async fn graceful_shutdown_drains_admitted_scheduler_work_before_on_stop() {
     let shutdown_runner = runner.clone();
     let shutdown_scheduler = scheduler.clone();
     let shutdown = tokio::spawn(async move {
-        shutdown_actor_runner(Some(shutdown_scheduler), shutdown_runner, async {}, stop).await;
+        shutdown_actor_runner(
+            Some(shutdown_scheduler),
+            shutdown_runner,
+            Box::pin(async {}),
+            Box::pin(stop),
+        )
+        .await;
     });
 
     release_first.add_permits(1);
@@ -216,7 +222,13 @@ async fn cancelling_shutdown_prelude_aborts_runner() {
 
     let shutdown_runner = runner.clone();
     let shutdown = tokio::spawn(async move {
-        shutdown_actor_runner(None, shutdown_runner, pre_shutdown, async {}).await;
+        shutdown_actor_runner(
+            None,
+            shutdown_runner,
+            Box::pin(pre_shutdown),
+            Box::pin(async {}),
+        )
+        .await;
     });
     tokio::time::timeout(std::time::Duration::from_secs(2), entered_rx)
         .await

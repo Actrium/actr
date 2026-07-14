@@ -1013,6 +1013,8 @@ impl Drop for AbortActorRunnerOnDrop {
     }
 }
 
+type ShutdownStep = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
 /// Ordered actor teardown:
 ///
 /// 1. run the cancellation-sensitive prelude (for example, stop stream workers);
@@ -1022,15 +1024,12 @@ impl Drop for AbortActorRunnerOnDrop {
 /// 5. stop and join the owning runner task.
 ///
 /// The abort guard makes cancellation of this coordinator deterministic too.
-async fn shutdown_actor_runner<P, F>(
+async fn shutdown_actor_runner(
     scheduler: Option<Arc<crate::dispatch::scheduler::SchedulerHandle>>,
     runner: Arc<crate::executor::ActorHandle>,
-    pre_shutdown: P,
-    on_stop: F,
-) where
-    P: Future<Output = ()>,
-    F: Future<Output = ()>,
-{
+    pre_shutdown: ShutdownStep,
+    on_stop: ShutdownStep,
+) {
     let mut abort_guard = AbortActorRunnerOnDrop::new(runner.clone());
     pre_shutdown.await;
     if let Some(scheduler) = scheduler {
@@ -2483,7 +2482,13 @@ impl Inner {
                         tracing::warn!(error = %e, "workload on_stop returned Err");
                     }
                 };
-                shutdown_actor_runner(scheduler, runner, stop_stream_workers, stop).await;
+                shutdown_actor_runner(
+                    scheduler,
+                    runner,
+                    Box::pin(stop_stream_workers),
+                    Box::pin(stop),
+                )
+                .await;
             });
             task_handles.push(on_stop_handle);
         }
