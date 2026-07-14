@@ -72,6 +72,11 @@ const ROLE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(6);
 const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+const PEER_CONNECTION_CLOSE_FALLBACK_TIMEOUT: Duration = Duration::from_millis(500);
+#[cfg(not(test))]
+const CLOSE_ALL_QUIESCE_TIMEOUT: Duration = Duration::from_secs(6);
+#[cfg(test)]
+const CLOSE_ALL_QUIESCE_TIMEOUT: Duration = Duration::from_millis(500);
 const ANSWERER_RECOVERY_STALE_TIMEOUT: Duration = ICE_RESTART_MAX_TOTAL_DURATION;
 const CONNECTION_FACTORY_INITIAL_RETRY_DELAY: Duration = Duration::from_secs(1);
 const CONNECTION_FACTORY_MAX_RETRY_DELAY: Duration = Duration::from_secs(10);
@@ -274,9 +279,8 @@ struct PeerSignalingCommitState {
     gates: RestartSignalingGates,
     lifecycle_gate: Mutex<()>,
     closing_all: AtomicBool,
-    #[allow(dead_code)] // Used by the peer insertion barrier added next.
     peer_lifecycle_epoch: AtomicU64,
-    restart_cancellation_epoch: Arc<AtomicU64>,
+    restart_cancellation_epoch: AtomicU64,
 }
 
 impl Default for PeerSignalingCommitState {
@@ -286,7 +290,7 @@ impl Default for PeerSignalingCommitState {
             lifecycle_gate: Mutex::new(()),
             closing_all: AtomicBool::new(false),
             peer_lifecycle_epoch: AtomicU64::new(0),
-            restart_cancellation_epoch: Arc::new(AtomicU64::new(0)),
+            restart_cancellation_epoch: AtomicU64::new(0),
         }
     }
 }
@@ -587,6 +591,96 @@ pub struct CleanupGuard {
 impl Drop for CleanupGuard {
     fn drop(&mut self) {
         self.coordinator.finish_cleanup();
+    }
+}
+
+struct CloseAllStateGuard {
+    state: Arc<PeerSignalingCommitState>,
+}
+
+impl CloseAllStateGuard {
+    fn try_enter(state: Arc<PeerSignalingCommitState>) -> Option<Self> {
+        state
+            .closing_all
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        state.peer_lifecycle_epoch.fetch_add(1, Ordering::AcqRel);
+        state
+            .restart_cancellation_epoch
+            .fetch_add(1, Ordering::AcqRel);
+        Some(Self { state })
+    }
+}
+
+impl Drop for CloseAllStateGuard {
+    fn drop(&mut self) {
+        self.state.closing_all.store(false, Ordering::Release);
+    }
+}
+
+/// Owns peer states after the close-all state commit.
+///
+/// If the caller is cancelled while running a lifecycle hook, `Drop` moves all
+/// remaining states into hook-free teardown tasks. This keeps physical cleanup
+/// cancellation-safe without allowing an old session's delayed Idle hook to
+/// arrive after a replacement session has connected.
+struct DrainedPeerCleanupGuard {
+    peers: Vec<(ActrId, PeerState)>,
+    network_recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
+}
+
+impl DrainedPeerCleanupGuard {
+    fn new(
+        peers: Vec<(ActrId, PeerState)>,
+        network_recovering_peers: Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
+    ) -> Self {
+        Self {
+            peers,
+            network_recovering_peers,
+        }
+    }
+
+    fn last(&self) -> Option<&(ActrId, PeerState)> {
+        self.peers.last()
+    }
+
+    fn pop(&mut self) -> Option<(ActrId, PeerState)> {
+        self.peers.pop()
+    }
+}
+
+impl Drop for DrainedPeerCleanupGuard {
+    fn drop(&mut self) {
+        let peers = std::mem::take(&mut self.peers);
+        if peers.is_empty() {
+            return;
+        }
+
+        let network_recovering_peers = Arc::clone(&self.network_recovering_peers);
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            for (_, state) in peers {
+                for handle in &state.receive_handles {
+                    handle.abort();
+                }
+            }
+            tracing::error!("Cannot finish cancelled WebRTC peer teardown without a Tokio runtime");
+            return;
+        };
+
+        for (peer_id, state) in peers {
+            let network_recovering_peers = Arc::clone(&network_recovering_peers);
+            runtime.spawn(async move {
+                WebRtcCoordinator::teardown_removed_peer_state_with(
+                    &network_recovering_peers,
+                    None,
+                    &peer_id,
+                    state,
+                    false,
+                    "cancelled close all peers",
+                )
+                .await;
+            });
+        }
     }
 }
 
@@ -952,10 +1046,17 @@ impl WebRtcCoordinator {
         let _ = self.hook_callback.set(cb);
     }
 
-    async fn invoke_hook(&self, event: crate::wire::webrtc::HookEvent) {
-        if let Some(cb) = self.hook_callback.get() {
+    async fn invoke_hook_callback(
+        hook_callback: Option<&crate::wire::webrtc::HookCallback>,
+        event: crate::wire::webrtc::HookEvent,
+    ) {
+        if let Some(cb) = hook_callback {
             cb(event).await;
         }
+    }
+
+    async fn invoke_hook(&self, event: crate::wire::webrtc::HookEvent) {
+        Self::invoke_hook_callback(self.hook_callback.get(), event).await;
     }
 
     pub(crate) async fn notify_data_chunk_delivery_uncertain(
@@ -1168,16 +1269,18 @@ impl WebRtcCoordinator {
     }
 
     async fn notify_removed_peer_idle_if_needed(
-        &self,
+        hook_callback: Option<&crate::wire::webrtc::HookCallback>,
         peer_id: &ActrId,
         session_id: u64,
         state: &PeerState,
         reason: &str,
     ) {
-        if matches!(
-            state.public_hook_state,
-            PublicRtcHookState::Unknown | PublicRtcHookState::Idle
-        ) {
+        if hook_callback.is_none()
+            || matches!(
+                state.public_hook_state,
+                PublicRtcHookState::Unknown | PublicRtcHookState::Idle
+            )
+        {
             return;
         }
 
@@ -1188,15 +1291,19 @@ impl WebRtcCoordinator {
             reason = reason,
             "WebRTC peer cleanup reached terminal idle; emitting hook"
         );
-        self.invoke_hook(crate::wire::webrtc::HookEvent::WebRtcDisconnected {
-            peer_id: peer_id.clone(),
-            status: WebRtcPeerStatus::Idle,
-        })
+        Self::invoke_hook_callback(
+            hook_callback,
+            crate::wire::webrtc::HookEvent::WebRtcDisconnected {
+                peer_id: peer_id.clone(),
+                status: WebRtcPeerStatus::Idle,
+            },
+        )
         .await;
     }
 
-    async fn teardown_removed_peer_state(
-        &self,
+    async fn teardown_removed_peer_state_with(
+        network_recovering_peers: &Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
+        hook_callback: Option<&crate::wire::webrtc::HookCallback>,
         target: &ActrId,
         mut state: PeerState,
         abort_restart_task: bool,
@@ -1240,8 +1347,8 @@ impl WebRtcCoordinator {
             );
         }
 
-        self.clear_peer_recovering(target, session_id, reason).await;
-        self.notify_removed_peer_idle_if_needed(target, session_id, &state, reason)
+        Self::clear_peer_recovering_in(network_recovering_peers, target, session_id, reason).await;
+        Self::notify_removed_peer_idle_if_needed(hook_callback, target, session_id, &state, reason)
             .await;
 
         if let Err(e) = state.webrtc_conn.close().await {
@@ -1252,16 +1359,50 @@ impl WebRtcCoordinator {
                 reason,
                 e
             );
-            if let Err(e) = state.peer_connection.close().await {
-                tracing::warn!(
-                    "⚠️ Failed to close peer_connection during cleanup for {} (session_id={}, reason={}): {}",
-                    target,
-                    session_id,
-                    reason,
-                    e
-                );
+            match tokio::time::timeout(
+                PEER_CONNECTION_CLOSE_FALLBACK_TIMEOUT,
+                state.peer_connection.close(),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "⚠️ Failed to close peer_connection during cleanup for {} (session_id={}, reason={}): {}",
+                        target,
+                        session_id,
+                        reason,
+                        e
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "⚠️ Timed out closing peer_connection during cleanup for {} (session_id={}, reason={})",
+                        target,
+                        session_id,
+                        reason
+                    );
+                }
             }
         }
+    }
+
+    async fn teardown_removed_peer_state(
+        &self,
+        target: &ActrId,
+        state: PeerState,
+        abort_restart_task: bool,
+        reason: &str,
+    ) {
+        Self::teardown_removed_peer_state_with(
+            &self.network_recovering_peers,
+            self.hook_callback.get(),
+            target,
+            state,
+            abort_restart_task,
+            reason,
+        )
+        .await;
     }
 
     /// Inject a virtual network for integration testing.
@@ -1664,8 +1805,13 @@ impl WebRtcCoordinator {
         }
     }
 
-    async fn clear_peer_recovering(&self, peer_id: &ActrId, session_id: u64, reason: &str) {
-        let mut recovering = self.network_recovering_peers.write().await;
+    async fn clear_peer_recovering_in(
+        network_recovering_peers: &Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
+        peer_id: &ActrId,
+        session_id: u64,
+        reason: &str,
+    ) {
+        let mut recovering = network_recovering_peers.write().await;
         let should_clear = recovering
             .get(peer_id)
             .map(|status| status.session_id == session_id)
@@ -1680,6 +1826,11 @@ impl WebRtcCoordinator {
                 "✅ Peer left network recovery"
             );
         }
+    }
+
+    async fn clear_peer_recovering(&self, peer_id: &ActrId, session_id: u64, reason: &str) {
+        Self::clear_peer_recovering_in(&self.network_recovering_peers, peer_id, session_id, reason)
+            .await;
     }
 
     async fn clear_peer_recovering_if_sendable(
@@ -2753,19 +2904,25 @@ impl WebRtcCoordinator {
     /// RTCPeerConnection instances are closed and associated state
     /// (pending ICE candidates, WebRtcConnection state) is dropped.
     pub async fn close_all_peers(&self) -> ActorResult<()> {
-        let _close_all_guard = self.peer_signaling.lifecycle_gate.lock().await;
-        self.peer_signaling
-            .closing_all
-            .store(true, Ordering::Release);
+        let lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+        let Some(close_state_guard) =
+            CloseAllStateGuard::try_enter(Arc::clone(&self.peer_signaling))
+        else {
+            tracing::debug!("WebRTC peer shutdown is already in progress");
+            return Ok(());
+        };
         tracing::info!("🔻 Closing all WebRTC peer connections");
 
-        self.peer_signaling
-            .restart_cancellation_epoch
-            .fetch_add(1, Ordering::AcqRel);
+        // Clone everything needed after the drain up front. Once peer states
+        // leave `self.peers`, they are synchronously handed to a cancellation
+        // guard so they cannot be dropped before physical teardown completes.
+        let restart_signaling_gates = Arc::clone(&self.peer_signaling.gates);
+        let network_recovering_peers = Arc::clone(&self.network_recovering_peers);
+        let hook_callback = self.hook_callback.get().cloned();
 
         // Abort tracked restart tasks before waiting for their signaling gates.
-        // A blocked tracked send holds its gate, so waiting first would prevent
-        // close_all_peers from reaching the handle that can cancel it.
+        // A blocked tracked send holds its gate, so cancellation must complete
+        // before the state phase attempts to acquire every peer gate.
         let restart_handles = {
             let mut peers = self.peers.write().await;
             let mut restart_handles = Vec::new();
@@ -2781,115 +2938,215 @@ impl WebRtcCoordinator {
             restart_handles
         };
 
-        for (peer_id, handle) in restart_handles {
-            if let Err(err) = handle.await
-                && !err.is_cancelled()
-            {
-                tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
+        let state_phase_deadline = tokio::time::Instant::now() + CLOSE_ALL_QUIESCE_TIMEOUT;
+        let restart_count = restart_handles.len();
+        if tokio::time::timeout_at(state_phase_deadline, async move {
+            for (peer_id, handle) in restart_handles {
+                if let Err(err) = handle.await
+                    && !err.is_cancelled()
+                {
+                    tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
+                }
             }
+        })
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                task_count = restart_count,
+                timeout_ms = CLOSE_ALL_QUIESCE_TIMEOUT.as_millis(),
+                "Timed out waiting for aborted WebRTC restart tasks"
+            );
+            return Err(ActrError::TimedOut);
         }
 
         // Acquire every current peer's signaling gate in a stable order, then
         // drain while those gates are held. A send that already crossed its
         // final current-session check must finish while its peer is still
         // current; queued sends observe the drained state and are discarded.
-        let (all_peers, late_restart_handles) = loop {
-            let mut peer_ids: Vec<ActrId> = {
-                let peers = self.peers.read().await;
-                peers.keys().cloned().collect()
-            };
-            peer_ids.sort_by_key(|peer_id| peer_id.encode_to_vec());
+        let (all_peers, late_restart_handles) =
+            tokio::time::timeout_at(state_phase_deadline, async {
+                loop {
+                    let mut peer_ids: Vec<ActrId> = {
+                        let peers = self.peers.read().await;
+                        peers.keys().cloned().collect()
+                    };
+                    peer_ids.sort_by_key(|peer_id| peer_id.encode_to_vec());
 
-            let mut peer_gates = Vec::with_capacity(peer_ids.len());
-            for peer_id in &peer_ids {
-                peer_gates.push((
-                    peer_id.clone(),
-                    self.restart_signaling_gate_for(peer_id).await,
-                ));
-            }
-            let mut signaling_guards = Vec::with_capacity(peer_gates.len());
-            for (_, gate) in &peer_gates {
-                signaling_guards.push(gate.lock().await);
-            }
+                    let mut peer_gates = Vec::with_capacity(peer_ids.len());
+                    for peer_id in &peer_ids {
+                        peer_gates.push((
+                            peer_id.clone(),
+                            self.restart_signaling_gate_for(peer_id).await,
+                        ));
+                    }
+                    let mut signaling_guards = Vec::with_capacity(peer_gates.len());
+                    for (_, gate) in &peer_gates {
+                        signaling_guards.push(gate.lock().await);
+                    }
 
-            let mut peers = self.peers.write().await;
-            if peers.keys().any(|peer_id| !peer_ids.contains(peer_id)) {
-                drop(peers);
-                drop(signaling_guards);
-                drop(peer_gates);
-                continue;
-            }
+                    // Acquire auxiliary-state locks before `peers`, but do not
+                    // mutate them until all locks needed for the state commit
+                    // are held. Cancellation before the drain therefore leaves
+                    // both peer and auxiliary state intact.
+                    let mut pending_candidates = self.pending_candidates.write().await;
+                    #[cfg(feature = "opentelemetry")]
+                    let mut root_contexts = self.root_context_map.write().await;
+                    let mut peers = self.peers.write().await;
+                    if peers.keys().any(|peer_id| !peer_ids.contains(peer_id)) {
+                        drop(peers);
+                        #[cfg(feature = "opentelemetry")]
+                        drop(root_contexts);
+                        drop(pending_candidates);
+                        drop(signaling_guards);
+                        drop(peer_gates);
+                        continue;
+                    }
 
-            let mut all_peers: Vec<(ActrId, PeerState)> = peers.drain().collect();
-            drop(peers);
-            let mut late_restart_handles = Vec::new();
-            for (peer_id, state) in &mut all_peers {
-                if let Some(handle) = state.restart_task_handle.take() {
-                    handle.abort();
-                    late_restart_handles.push((peer_id.clone(), handle));
+                    let mut all_peers: Vec<(ActrId, PeerState)> = peers.drain().collect();
+                    pending_candidates.clear();
+                    #[cfg(feature = "opentelemetry")]
+                    root_contexts.clear();
+                    drop(peers);
+                    #[cfg(feature = "opentelemetry")]
+                    drop(root_contexts);
+                    drop(pending_candidates);
+                    let mut late_restart_handles = Vec::new();
+                    for (peer_id, state) in &mut all_peers {
+                        if let Some(handle) = state.restart_task_handle.take() {
+                            handle.abort();
+                            late_restart_handles.push((peer_id.clone(), handle));
+                        }
+                    }
+
+                    drop(signaling_guards);
+                    drop(peer_gates);
+                    break (all_peers, late_restart_handles);
+                }
+            })
+            .await
+            .map_err(|_| {
+                tracing::warn!(
+                    timeout_ms = CLOSE_ALL_QUIESCE_TIMEOUT.as_millis(),
+                    "Timed out waiting for WebRTC peer signaling commits to quiesce"
+                );
+                ActrError::TimedOut
+            })?;
+
+        // This handoff is synchronous with the successful drain. If this
+        // future is cancelled at any later await, the guard finishes physical
+        // cleanup without emitting a potentially stale old-session hook.
+        let mut drained_peers =
+            DrainedPeerCleanupGuard::new(all_peers, Arc::clone(&network_recovering_peers));
+
+        // Hooks and connection shutdown may call back into the coordinator or
+        // stall in WebRTC. They must run after every coordinator gate is free.
+        drop(lifecycle_guard);
+
+        // Keep entries that still have live holders. Removing one would allow
+        // a concurrent lookup to create a second gate for the same peer and
+        // break signaling serialization. Dead weak entries can be discarded.
+        Self::prune_restart_signaling_gates(&restart_signaling_gates).await;
+
+        let restart_count = late_restart_handles.len();
+        if tokio::time::timeout(CLOSE_ALL_QUIESCE_TIMEOUT, async move {
+            for (peer_id, handle) in late_restart_handles {
+                if let Err(err) = handle.await
+                    && !err.is_cancelled()
+                {
+                    tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
                 }
             }
-
-            drop(signaling_guards);
-            drop(peer_gates);
-            break (all_peers, late_restart_handles);
-        };
-
-        for (peer_id, handle) in late_restart_handles {
-            if let Err(err) = handle.await
-                && !err.is_cancelled()
-            {
-                tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
-            }
+        })
+        .await
+        .is_err()
+        {
+            tracing::warn!(
+                task_count = restart_count,
+                timeout_ms = CLOSE_ALL_QUIESCE_TIMEOUT.as_millis(),
+                "Timed out waiting for aborted WebRTC restart tasks"
+            );
         }
 
-        // Clear pending ICE candidates
-        self.pending_candidates.write().await.clear();
-
-        // Clear root tracing contexts (if enabled)
-        #[cfg(feature = "opentelemetry")]
-        self.root_context_map.write().await.clear();
-
-        // Keep entries that still have live holders. Removing one would allow a
-        // concurrent lookup to create a second gate for the same peer and break
-        // signaling serialization. Dead weak entries can be discarded safely.
-        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
-
-        // Abort all remaining background tasks and close each connection.
-        for (peer_id, state) in &all_peers {
-            // Abort receive loops
+        // Hooks remain in the caller's future. If the caller is cancelled while
+        // a hook is pending, that hook future is dropped and the guard closes
+        // the old session without emitting a late Idle event. Once a hook has
+        // completed, move that peer into its own owned physical-close task.
+        let mut close_tasks = Vec::new();
+        while let Some((peer_id, state)) = drained_peers.last() {
             for handle in &state.receive_handles {
                 handle.abort();
             }
+            Self::clear_peer_recovering_in(
+                &network_recovering_peers,
+                peer_id,
+                state.session_id,
+                "close all peers",
+            )
+            .await;
+            Self::notify_removed_peer_idle_if_needed(
+                hook_callback.as_ref(),
+                peer_id,
+                state.session_id,
+                state,
+                "close all peers",
+            )
+            .await;
 
-            tracing::info!("🔻 Closing PeerConnection for {}", peer_id);
-
-            if state.public_hook_state != PublicRtcHookState::Idle {
-                self.invoke_hook(crate::wire::webrtc::HookEvent::WebRtcDisconnected {
-                    peer_id: peer_id.clone(),
-                    status: WebRtcPeerStatus::Idle,
-                })
+            let (peer_id, state) = drained_peers
+                .pop()
+                .expect("drained peer must remain owned until its hook completes");
+            let recovery_state = Arc::clone(&network_recovering_peers);
+            let task_peer_id = peer_id.clone();
+            let task = tokio::spawn(async move {
+                tracing::info!("🔻 Closing PeerConnection for {}", task_peer_id);
+                Self::teardown_removed_peer_state_with(
+                    &recovery_state,
+                    None,
+                    &task_peer_id,
+                    state,
+                    false,
+                    "close all peers",
+                )
                 .await;
-            }
+            });
+            close_tasks.push((peer_id, task));
+        }
 
-            // Send ConnectionClosed event BEFORE closing PeerConnection
-            self.event_broadcaster
-                .send(ConnectionEvent::ConnectionClosed {
-                    peer_id: peer_id.clone(),
-                    session_id: state.session_id,
-                });
-
-            if let Err(e) = state.peer_connection.close().await {
-                tracing::warn!("⚠️ Failed to close PeerConnection: {}", e);
-            } else {
-                tracing::info!("✅ PeerConnection closed");
+        let mut first_join_error = None;
+        for (peer_id, task) in close_tasks {
+            if let Err(err) = task.await {
+                tracing::error!(
+                    peer_id = %peer_id,
+                    error = %err,
+                    "WebRTC peer teardown task failed"
+                );
+                first_join_error.get_or_insert(err);
             }
         }
 
-        self.peer_signaling
-            .closing_all
-            .store(false, Ordering::Release);
-        Ok(())
+        // Signaling may have delivered more auxiliary data while physical
+        // cleanup was running. Sweep it once more while `closing_all` still
+        // rejects new peer sessions. Because this remains in the caller's
+        // future, cancellation cannot make the sweep run after the flag resets.
+        let mut pending_candidates = self.pending_candidates.write().await;
+        #[cfg(feature = "opentelemetry")]
+        let mut root_contexts = self.root_context_map.write().await;
+        pending_candidates.clear();
+        #[cfg(feature = "opentelemetry")]
+        root_contexts.clear();
+        #[cfg(feature = "opentelemetry")]
+        drop(root_contexts);
+        drop(pending_candidates);
+        drop(close_state_guard);
+
+        if let Some(err) = first_join_error {
+            Err(ActrError::Internal(format!(
+                "WebRTC peer teardown task failed: {err}"
+            )))
+        } else {
+            Ok(())
+        }
     }
 
     fn new_envelope_id() -> String {
@@ -3344,11 +3601,55 @@ impl WebRtcCoordinator {
         true
     }
 
+    async fn capture_peer_lifecycle_epoch(&self) -> Option<u64> {
+        if self.peer_signaling.closing_all.load(Ordering::Acquire) {
+            return None;
+        }
+
+        let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+        if self.peer_signaling.closing_all.load(Ordering::Acquire) {
+            return None;
+        }
+
+        Some(
+            self.peer_signaling
+                .peer_lifecycle_epoch
+                .load(Ordering::Acquire),
+        )
+    }
+
+    async fn insert_peer_if_lifecycle_current(
+        &self,
+        peer_id: ActrId,
+        state: PeerState,
+        expected_epoch: u64,
+    ) -> Result<(), PeerState> {
+        let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+        if self.peer_signaling.closing_all.load(Ordering::Acquire)
+            || self
+                .peer_signaling
+                .peer_lifecycle_epoch
+                .load(Ordering::Acquire)
+                != expected_epoch
+        {
+            return Err(state);
+        }
+
+        self.peers.write().await.insert(peer_id, state);
+        Ok(())
+    }
+
     /// Perform a single offer connection attempt (without retry logic)
     async fn do_single_offer_connection(
         self: &Arc<Self>,
         target: &ActrId,
     ) -> ActorResult<(oneshot::Receiver<()>, WebRtcConnection)> {
+        let Some(peer_lifecycle_epoch) = self.capture_peer_lifecycle_epoch().await else {
+            return Err(ActrError::Unavailable(format!(
+                "WebRTC peer shutdown is active: {target}"
+            )));
+        };
+
         // Retrieve remote_fixed from peer negotiation state
         let remote_fixed = {
             let neg = self.peer_negotiation.lock().await;
@@ -3378,38 +3679,47 @@ impl WebRtcCoordinator {
         // 2.5. CRITICAL: Insert peer state early as placeholder to prevent race conditions
         // Create ready channel now, will be populated in step 8
         let (ready_tx, ready_rx) = oneshot::channel();
+        let peer_state = PeerState {
+            peer_connection: peer_connection_arc.clone(),
+            webrtc_conn: webrtc_conn.clone(),
+            ready_tx: Some(ready_tx),
+            is_offerer: true,
+            ice_signaling: PeerIceSignalingState::default(),
+            ice_restart_inflight: false,
+            ice_restart_attempts: 0,
+            restart_task_handle: None,
+            restart_wake: Arc::new(tokio::sync::Notify::new()),
+            restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
+            last_ice_restart_offer_at: None,
+            last_state_change: std::time::Instant::now(),
+            current_state: RTCPeerConnectionState::New,
+            ever_ice_connected: false,
+            ever_data_channel_opened: false,
+            sendable_hook_reported: false,
+            unavailable_hook_reported: false,
+            public_hook_state: PublicRtcHookState::Unknown,
+            session_id: webrtc_conn.session_id(),
+            receive_handles: Vec::new(),
+        };
+        if let Err(peer_state) = self
+            .insert_peer_if_lifecycle_current(target.clone(), peer_state, peer_lifecycle_epoch)
+            .await
         {
-            let mut peers = self.peers.write().await;
-            peers.insert(
-                target.clone(),
-                PeerState {
-                    peer_connection: peer_connection_arc.clone(),
-                    webrtc_conn: webrtc_conn.clone(),
-                    ready_tx: Some(ready_tx),
-                    is_offerer: true,
-                    ice_signaling: PeerIceSignalingState::default(),
-                    ice_restart_inflight: false,
-                    ice_restart_attempts: 0,
-                    restart_task_handle: None,
-                    restart_wake: Arc::new(tokio::sync::Notify::new()),
-                    restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
-                    last_ice_restart_offer_at: None,
-                    last_state_change: std::time::Instant::now(),
-                    current_state: RTCPeerConnectionState::New,
-                    ever_ice_connected: false,
-                    ever_data_channel_opened: false,
-                    sendable_hook_reported: false,
-                    unavailable_hook_reported: false,
-                    public_hook_state: PublicRtcHookState::Unknown,
-                    session_id: webrtc_conn.session_id(),
-                    receive_handles: Vec::new(),
-                },
-            );
-            tracing::debug!(
-                "🔒 Inserted placeholder peer state for {} (offerer)",
-                target
-            );
-        } // Release lock immediately
+            self.teardown_removed_peer_state(
+                target,
+                peer_state,
+                false,
+                "peer lifecycle changed during offerer setup",
+            )
+            .await;
+            return Err(ActrError::Unavailable(format!(
+                "WebRTC peer lifecycle changed during connection setup: {target}"
+            )));
+        }
+        tracing::debug!(
+            "🔒 Inserted placeholder peer state for {} (offerer)",
+            target
+        );
 
         // 3. Pre-create negotiated DataChannel for Reliable to trigger ICE gathering
         let _reliable_lane = webrtc_conn
@@ -3665,6 +3975,13 @@ impl WebRtcCoordinator {
         offer_sdp: String,
         sdp_exchange_id: Option<String>,
     ) -> ActorResult<()> {
+        let Some(peer_lifecycle_epoch) = self.capture_peer_lifecycle_epoch().await else {
+            tracing::debug!(
+                "Ignoring Offer from {} because WebRTC peer shutdown is active",
+                from
+            );
+            return Ok(());
+        };
         let Some(sdp_exchange_id) = sdp_exchange_id else {
             tracing::warn!(
                 "🚫 Ignoring Offer from {} without sdp_exchange_id correlation",
@@ -3725,35 +4042,46 @@ impl WebRtcCoordinator {
         // This prevents ensure_connection from creating a duplicate connection while we're
         // still setting up callbacks and negotiating the connection.
         // The state will be updated later after Answer is sent (step 6).
+        let peer_state = PeerState {
+            peer_connection: peer_connection_arc.clone(),
+            webrtc_conn: webrtc_conn.clone(),
+            ready_tx: None,
+            is_offerer: false,
+            ice_signaling: PeerIceSignalingState::default(),
+            ice_restart_inflight: false,
+            ice_restart_attempts: 0,
+            restart_task_handle: None,
+            restart_wake: Arc::new(tokio::sync::Notify::new()),
+            restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
+            last_ice_restart_offer_at: None,
+            last_state_change: std::time::Instant::now(),
+            current_state: RTCPeerConnectionState::New,
+            ever_ice_connected: false,
+            ever_data_channel_opened: false,
+            sendable_hook_reported: false,
+            unavailable_hook_reported: false,
+            public_hook_state: PublicRtcHookState::Unknown,
+            session_id: webrtc_conn.session_id(),
+            receive_handles: Vec::new(),
+        };
+        if let Err(peer_state) = self
+            .insert_peer_if_lifecycle_current(from.clone(), peer_state, peer_lifecycle_epoch)
+            .await
         {
-            let mut peers = self.peers.write().await;
-            peers.insert(
-                from.clone(),
-                PeerState {
-                    peer_connection: peer_connection_arc.clone(),
-                    webrtc_conn: webrtc_conn.clone(),
-                    ready_tx: None,
-                    is_offerer: false,
-                    ice_signaling: PeerIceSignalingState::default(),
-                    ice_restart_inflight: false,
-                    ice_restart_attempts: 0,
-                    restart_task_handle: None,
-                    restart_wake: Arc::new(tokio::sync::Notify::new()),
-                    restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
-                    last_ice_restart_offer_at: None,
-                    last_state_change: std::time::Instant::now(),
-                    current_state: RTCPeerConnectionState::New,
-                    ever_ice_connected: false,
-                    ever_data_channel_opened: false,
-                    sendable_hook_reported: false,
-                    unavailable_hook_reported: false,
-                    public_hook_state: PublicRtcHookState::Unknown,
-                    session_id: webrtc_conn.session_id(),
-                    receive_handles: Vec::new(),
-                },
+            self.teardown_removed_peer_state(
+                from,
+                peer_state,
+                false,
+                "peer lifecycle changed during answerer setup",
+            )
+            .await;
+            tracing::debug!(
+                "Ignoring Offer from {} because WebRTC peer shutdown crossed setup",
+                from
             );
-            tracing::debug!("🔒 Inserted placeholder peer state for {} (answerer)", from);
-        } // Release lock immediately
+            return Ok(());
+        }
+        tracing::debug!("🔒 Inserted placeholder peer state for {} (answerer)", from);
 
         // 3. Register state change handler (combines cleanup + ready notification)
         // NOTE: on_peer_connection_state_change can only have ONE callback, so we combine:

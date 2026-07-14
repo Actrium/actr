@@ -1960,6 +1960,386 @@ async fn clear_pending_restarts_cancels_blocked_answerer_restart_request() {
 }
 
 #[tokio::test]
+async fn close_all_hook_reentry_returns_without_self_deadlock() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&target)
+        .expect("peer should exist")
+        .public_hook_state = PublicRtcHookState::Connected;
+
+    let reentrant = Arc::clone(&coordinator);
+    let hook: crate::wire::webrtc::HookCallback = Arc::new(move |event| {
+        let reentrant = Arc::clone(&reentrant);
+        Box::pin(async move {
+            if matches!(
+                event,
+                crate::wire::webrtc::HookEvent::WebRtcDisconnected { .. }
+            ) {
+                reentrant
+                    .close_all_peers()
+                    .await
+                    .expect("reentrant close-all should return cleanly");
+            }
+        })
+    });
+    coordinator.set_hook_callback(hook);
+
+    tokio::time::timeout(Duration::from_secs(1), coordinator.close_all_peers())
+        .await
+        .expect("reentrant close-all must not deadlock")
+        .expect("outer close-all should succeed");
+    assert!(coordinator.peers.read().await.is_empty());
+}
+
+#[tokio::test]
+async fn cancelled_close_all_restores_shutdown_state() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
+
+    let gate = coordinator
+        .peer_signaling_commit_context()
+        .gate_for(&target)
+        .await;
+    let held_gate = gate.lock().await;
+    let closing = {
+        let coordinator = Arc::clone(&coordinator);
+        tokio::spawn(async move { coordinator.close_all_peers().await })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !coordinator
+            .peer_signaling
+            .closing_all
+            .load(Ordering::Acquire)
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("close-all should enter shutdown state");
+
+    closing.abort();
+    assert!(
+        closing
+            .await
+            .expect_err("close-all should be cancelled")
+            .is_cancelled(),
+        "aborting close-all should cancel its future"
+    );
+    assert!(
+        !coordinator
+            .peer_signaling
+            .closing_all
+            .load(Ordering::Acquire),
+        "cancellation must restore the shutdown flag"
+    );
+
+    drop(held_gate);
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("test peer should close after cancellation");
+}
+
+#[tokio::test]
+async fn cancelled_close_all_after_drain_still_finishes_owned_teardown() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
+    let (connection, old_peer_connection) = {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&target).expect("peer should exist");
+        state.public_hook_state = PublicRtcHookState::Connected;
+        (state.webrtc_conn.clone(), state.peer_connection.clone())
+    };
+
+    let hook_started = Arc::new(Semaphore::new(0));
+    let hook_release = Arc::new(Semaphore::new(0));
+    let hook_completions = Arc::new(Mutex::new(Vec::new()));
+    let hook: crate::wire::webrtc::HookCallback = Arc::new({
+        let hook_started = Arc::clone(&hook_started);
+        let hook_release = Arc::clone(&hook_release);
+        let hook_completions = Arc::clone(&hook_completions);
+        move |event| {
+            let hook_started = Arc::clone(&hook_started);
+            let hook_release = Arc::clone(&hook_release);
+            let hook_completions = Arc::clone(&hook_completions);
+            Box::pin(async move {
+                match event {
+                    crate::wire::webrtc::HookEvent::WebRtcDisconnected { .. } => {
+                        hook_started.add_permits(1);
+                        hook_release
+                            .acquire()
+                            .await
+                            .expect("hook release semaphore should remain open")
+                            .forget();
+                        hook_completions.lock().await.push("old-idle");
+                    }
+                    crate::wire::webrtc::HookEvent::WebRtcConnected { .. } => {
+                        hook_completions.lock().await.push("new-connected");
+                    }
+                    _ => {}
+                }
+            })
+        }
+    });
+    coordinator.set_hook_callback(hook);
+
+    let closing = {
+        let coordinator = Arc::clone(&coordinator);
+        tokio::spawn(async move { coordinator.close_all_peers().await })
+    };
+    tokio::time::timeout(Duration::from_secs(1), hook_started.acquire())
+        .await
+        .expect("teardown hook should start after peers are drained")
+        .expect("hook-start semaphore should remain open")
+        .forget();
+
+    assert!(
+        coordinator.peers.read().await.is_empty(),
+        "close-all must drain peer state before invoking the teardown hook"
+    );
+    assert!(crate::transport::WireHandle::is_connected(&connection));
+
+    closing.abort();
+    assert!(
+        closing
+            .await
+            .expect_err("outer close-all should be cancelled")
+            .is_cancelled()
+    );
+    assert!(
+        !coordinator
+            .peer_signaling
+            .closing_all
+            .load(Ordering::Acquire),
+        "cancelling the outer close-all must restore the shutdown flag"
+    );
+
+    let new_session_id =
+        insert_pending_offer_peer(&coordinator, target.clone(), "new-exchange").await;
+    coordinator
+        .pending_candidates
+        .write()
+        .await
+        .insert(target.clone(), Vec::new());
+    coordinator
+        .invoke_hook(crate::wire::webrtc::HookEvent::WebRtcConnected {
+            peer_id: target.clone(),
+            relayed: false,
+        })
+        .await;
+
+    hook_release.add_permits(1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while crate::transport::WireHandle::is_connected(&connection)
+            || Arc::strong_count(&old_peer_connection) > 2
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("owned teardown must fully close and release the old peer after outer cancellation");
+
+    assert_eq!(
+        hook_completions.lock().await.as_slice(),
+        ["new-connected"],
+        "a cancelled old-session hook must not complete after the new session hook"
+    );
+    assert_eq!(
+        coordinator
+            .peers
+            .read()
+            .await
+            .get(&target)
+            .expect("new session must survive old-session teardown")
+            .session_id,
+        new_session_id
+    );
+    assert!(
+        coordinator
+            .pending_candidates
+            .read()
+            .await
+            .contains_key(&target),
+        "old-session teardown must not clear new-session candidate state"
+    );
+
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("new test session should close");
+}
+
+#[tokio::test]
+async fn peer_creation_epoch_capture_rejects_active_close_all() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let lifecycle_guard = coordinator.peer_signaling.lifecycle_gate.lock().await;
+    let close_state_guard = CloseAllStateGuard::try_enter(Arc::clone(&coordinator.peer_signaling))
+        .expect("test close-all state should start");
+    drop(lifecycle_guard);
+
+    assert!(
+        coordinator.capture_peer_lifecycle_epoch().await.is_none(),
+        "peer creation must stop before allocating a PeerConnection during close-all"
+    );
+
+    drop(close_state_guard);
+    assert!(
+        coordinator.capture_peer_lifecycle_epoch().await.is_some(),
+        "peer creation may capture an epoch again after close-all finishes"
+    );
+}
+
+#[tokio::test]
+async fn stale_peer_creation_epoch_cannot_insert_after_close_all() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
+    let stale_epoch = coordinator
+        .peer_signaling
+        .peer_lifecycle_epoch
+        .load(Ordering::Acquire);
+    let peer = coordinator
+        .peers
+        .write()
+        .await
+        .remove(&target)
+        .expect("test peer should exist");
+
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("empty close-all should succeed");
+
+    let rejected = coordinator
+        .insert_peer_if_lifecycle_current(target.clone(), peer, stale_epoch)
+        .await;
+    let peer = match rejected {
+        Ok(()) => panic!("stale peer creation must not cross the shutdown barrier"),
+        Err(peer) => peer,
+    };
+    assert!(coordinator.peers.read().await.is_empty());
+    coordinator
+        .teardown_removed_peer_state(&target, peer, false, "stale test insertion")
+        .await;
+}
+
+#[tokio::test]
+async fn close_all_times_out_when_peer_commit_cannot_quiesce() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
+
+    let gate = coordinator
+        .peer_signaling_commit_context()
+        .gate_for(&target)
+        .await;
+    let held_gate = gate.lock().await;
+    let result = tokio::time::timeout(Duration::from_secs(1), coordinator.close_all_peers())
+        .await
+        .expect("close-all should enforce its own quiesce deadline");
+    assert!(matches!(result, Err(ActrError::TimedOut)));
+    assert!(
+        coordinator.peers.read().await.contains_key(&target),
+        "a timed-out state commit must not partially drain peers"
+    );
+    assert!(
+        !coordinator
+            .peer_signaling
+            .closing_all
+            .load(Ordering::Acquire),
+        "the shutdown flag must be restored after a deadline"
+    );
+
+    drop(held_gate);
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("test peer should close after releasing its commit gate");
+}
+
+#[tokio::test]
+async fn close_all_restart_join_timeout_restores_shutdown_state_without_drain() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
+
+    let (started_tx, started_rx) = oneshot::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let restart_handle = tokio::task::spawn_blocking(move || {
+        let _ = started_tx.send(());
+        let _ = release_rx.recv();
+    });
+    started_rx
+        .await
+        .expect("blocking restart task should start before close-all");
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&target)
+        .expect("peer should exist")
+        .restart_task_handle = Some(restart_handle);
+
+    let result = tokio::time::timeout(Duration::from_secs(1), coordinator.close_all_peers())
+        .await
+        .expect("close-all must enforce its own restart-join deadline");
+    assert!(matches!(result, Err(ActrError::TimedOut)));
+    assert!(
+        coordinator.peers.read().await.contains_key(&target),
+        "a restart-join timeout must happen before peer state is drained"
+    );
+    assert!(
+        !coordinator
+            .peer_signaling
+            .closing_all
+            .load(Ordering::Acquire),
+        "the shutdown flag must be restored after restart-join timeout"
+    );
+
+    release_tx
+        .send(())
+        .expect("blocking restart task should still be releasable");
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("peer should close after the blocking restart task is released");
+}
+
+#[tokio::test]
+async fn close_all_closes_the_session_aware_webrtc_connection() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let target = test_actor_id(99);
+    insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
+    let connection = coordinator
+        .peers
+        .read()
+        .await
+        .get(&target)
+        .expect("test peer should exist")
+        .webrtc_conn
+        .clone();
+    assert!(crate::transport::WireHandle::is_connected(&connection));
+
+    coordinator
+        .close_all_peers()
+        .await
+        .expect("close-all should succeed");
+
+    assert!(
+        !crate::transport::WireHandle::is_connected(&connection),
+        "close-all must close the WebRtcConnection session, not only the raw peer"
+    );
+}
+
+#[tokio::test]
 async fn close_all_peers_cancels_blocked_answerer_restart_request() {
     let send_control = SendControl::blocking();
     let signaling_client = Arc::new(CapturingSignalingClient::with_send_control(Arc::clone(
@@ -2057,16 +2437,17 @@ async fn close_all_peers_waits_for_restart_signaling_commit_before_drain() {
     .expect("a new restart must not queue behind signaling while close-all is active")
     .expect("restart rejection during close-all should be clean");
 
-    let peer_removed_before_send_release = tokio::time::timeout(Duration::from_secs(1), async {
-        loop {
-            if !coordinator.peers.read().await.contains_key(&target_id) {
-                break;
+    let peer_removed_before_send_release =
+        tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                if !coordinator.peers.read().await.contains_key(&target_id) {
+                    break;
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .is_ok();
+        })
+        .await
+        .is_ok();
 
     send_control.release.add_permits(1);
     signaling_task
