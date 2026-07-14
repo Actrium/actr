@@ -387,11 +387,9 @@ substitute_local_aar() {
         "$app_dir/settings.gradle.kts" \
         "__PROJECT_NAME__=$(basename "$app_dir")"
 
-    # 2. Point the dependency at the locally published AAR. publishToMavenLocal
-    #    publishes under the module's artifactId `actr-kotlin` (the published GitHub
-    #    Packages artifact is renamed to `actr`, but the local artifact is
-    #    `actr-kotlin`), so rewrite the coordinate accordingly.
-    perl -0pi -e "s/io\\.actrium:actr:[0-9][0-9a-z.\\-]*/io.actrium:actr-kotlin:${ACTR_KOTLIN_VERSION}/g" \
+    # 2. Keep the canonical artifactId but replace the scaffold's fixed version
+    #    with the version that was published to mavenLocal.
+    perl -0pi -e "s/io\\.actrium:actr:[0-9][0-9a-z.\\-]*/io.actrium:actr:${ACTR_KOTLIN_VERSION}/g" \
         "$app_dir/app/build.gradle.kts"
 
     # 3. Write local.properties pointing at the Android SDK (gradle needs it).
@@ -422,9 +420,9 @@ build_and_publish_aar() {
 
     (
         cd "$kotlin_dir"
-        ./gradlew :actr-kotlin:publishToMavenLocal --no-daemon
+        ./gradlew :actr-kotlin:publishToMavenLocal --no-daemon -PactrVersion="$ACTR_KOTLIN_VERSION"
     )
-    success "actr-kotlin AAR published to mavenLocal (io.actrium:actr:${ACTR_KOTLIN_VERSION})"
+    success "ACTR Kotlin AAR published to mavenLocal (io.actrium:actr:${ACTR_KOTLIN_VERSION})"
 }
 
 # Render the linked-mode actr.toml for the client into <app_dir>/app/src/androidTest/assets.
