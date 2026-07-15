@@ -45,7 +45,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -74,6 +74,7 @@ pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(6);
 const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PEER_CONNECTION_CLOSE_FALLBACK_TIMEOUT: Duration = Duration::from_millis(500);
 const REMOTE_CANDIDATE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+const CLOSE_ALL_HOOK_TIMEOUT: Duration = Duration::from_secs(1);
 #[cfg(not(test))]
 const CLOSE_ALL_QUIESCE_TIMEOUT: Duration = Duration::from_secs(6);
 #[cfg(test)]
@@ -86,6 +87,12 @@ const WEBRTC_RELIABLE_INBOUND_QUEUE_DEPTH: usize = 64;
 const WEBRTC_LATENCY_FIRST_INBOUND_QUEUE_DEPTH: usize = 64;
 const MAX_PENDING_ICE_CANDIDATES_PER_PEER: usize = 256;
 const MAX_KNOWN_REMOTE_ICE_GENERATIONS: usize = 8;
+
+tokio::task_local! {
+    /// Marks a hook invoked by close-all so direct callback re-entry can return
+    /// without waiting for the operation that is currently awaiting the hook.
+    static CLOSE_ALL_HOOK_REENTRY: ();
+}
 
 // Health check constants
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
@@ -248,6 +255,8 @@ fn candidate_matches_description(
 struct PeerNegotiationState {
     /// Role negotiation responder
     role_tx: Option<oneshot::Sender<bool>>,
+    /// Lifecycle epoch captured before the matching RoleNegotiation was sent.
+    role_lifecycle_epoch: Option<u64>,
     /// Ready notifier for answerer path
     ready_tx: Option<oneshot::Sender<()>>,
     /// Ready receiver for proactive offerer path
@@ -338,16 +347,32 @@ struct PeerSignalingCommitState {
     closing_all: AtomicBool,
     peer_lifecycle_epoch: AtomicU64,
     restart_cancellation_epoch: AtomicU64,
+    close_all_generation: AtomicU64,
+    close_all_status: watch::Sender<CloseAllStatus>,
+}
+
+#[derive(Clone, Debug)]
+struct CloseAllStatus {
+    generation: u64,
+    active: bool,
+    result: Option<ActorResult<()>>,
 }
 
 impl Default for PeerSignalingCommitState {
     fn default() -> Self {
+        let (close_all_status, _receiver) = watch::channel(CloseAllStatus {
+            generation: 0,
+            active: false,
+            result: Some(Ok(())),
+        });
         Self {
             gates: Arc::new(Mutex::new(HashMap::new())),
             lifecycle_gate: Mutex::new(()),
             closing_all: AtomicBool::new(false),
             peer_lifecycle_epoch: AtomicU64::new(0),
             restart_cancellation_epoch: AtomicU64::new(0),
+            close_all_generation: AtomicU64::new(0),
+            close_all_status,
         }
     }
 }
@@ -408,6 +433,45 @@ impl PeerSignalingCommitContext {
         }
 
         Some(PeerSignalingCommitGuard { _guard: guard })
+    }
+
+    async fn acquire_pre_session_commit(
+        &self,
+        peer_id: &ActrId,
+        lifecycle_epoch: u64,
+    ) -> Option<PeerSignalingCommitGuard> {
+        if self.state.closing_all.load(Ordering::Acquire)
+            || self.state.peer_lifecycle_epoch.load(Ordering::Acquire) != lifecycle_epoch
+        {
+            return None;
+        }
+
+        let guard = self.gate_for(peer_id).await.lock_owned().await;
+        if self.state.closing_all.load(Ordering::Acquire)
+            || self.state.peer_lifecycle_epoch.load(Ordering::Acquire) != lifecycle_epoch
+        {
+            return None;
+        }
+
+        Some(PeerSignalingCommitGuard { _guard: guard })
+    }
+
+    async fn wait_for_close_all(&self, generation: u64) -> ActorResult<()> {
+        let mut status_rx = self.state.close_all_status.subscribe();
+        loop {
+            let status = status_rx.borrow().clone();
+            if status.generation >= generation && !status.active {
+                return status.result.unwrap_or_else(|| {
+                    Err(ActrError::Internal(
+                        "WebRTC close-all completed without a result".to_string(),
+                    ))
+                });
+            }
+
+            status_rx.changed().await.map_err(|_| {
+                ActrError::Internal("WebRTC close-all completion channel closed".to_string())
+            })?;
+        }
     }
 }
 
@@ -668,6 +732,8 @@ impl Drop for CleanupGuard {
 
 struct CloseAllStateGuard {
     state: Arc<PeerSignalingCommitState>,
+    generation: u64,
+    completed: bool,
 }
 
 impl CloseAllStateGuard {
@@ -680,13 +746,44 @@ impl CloseAllStateGuard {
         state
             .restart_cancellation_epoch
             .fetch_add(1, Ordering::AcqRel);
-        Some(Self { state })
+        let generation = state.close_all_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        state.close_all_status.send_replace(CloseAllStatus {
+            generation,
+            active: true,
+            result: None,
+        });
+        Some(Self {
+            state,
+            generation,
+            completed: false,
+        })
+    }
+
+    fn publish(&self, result: ActorResult<()>) {
+        // Publish completion before reopening the lifecycle. A new leader can
+        // only enter after `closing_all` becomes false, so it cannot have its
+        // newer active status overwritten by this generation's result.
+        self.state.close_all_status.send_replace(CloseAllStatus {
+            generation: self.generation,
+            active: false,
+            result: Some(result),
+        });
+        self.state.closing_all.store(false, Ordering::Release);
+    }
+
+    fn complete(mut self, result: ActorResult<()>) {
+        self.publish(result);
+        self.completed = true;
     }
 }
 
 impl Drop for CloseAllStateGuard {
     fn drop(&mut self) {
-        self.state.closing_all.store(false, Ordering::Release);
+        if !self.completed {
+            self.publish(Err(ActrError::Unavailable(
+                "WebRTC close-all operation was cancelled".to_string(),
+            )));
+        }
     }
 }
 
@@ -1068,12 +1165,15 @@ impl WebRtcCoordinator {
         gates.lock().await.retain(|_, gate| gate.strong_count() > 0);
     }
 
-    async fn send_prepared_local_ice_candidates_while_guarded(
-        commit_guard: &PeerSignalingCommitGuard,
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_prepared_local_ice_candidates(
+        commit_context: &PeerSignalingCommitContext,
         signaling_client: &Arc<dyn SignalingClient>,
         local_id: &ActrId,
         credential_state: &CredentialState,
         target: &ActrId,
+        session_id: u64,
+        restart_epoch: Option<u64>,
         candidates: Vec<IceCandidate>,
     ) {
         if candidates.is_empty() {
@@ -1088,8 +1188,19 @@ impl WebRtcCoordinator {
                 target,
                 actr_relay::Payload::IceCandidate(candidate),
             );
+            let Some(commit_guard) = commit_context
+                .acquire_commit(target, session_id, restart_epoch)
+                .await
+            else {
+                tracing::debug!(
+                    peer_id = %target,
+                    session_id,
+                    "Stopping buffered local ICE candidate commits for a stale peer session"
+                );
+                break;
+            };
             if let Err(err) = Self::send_peer_signaling_envelope_while_guarded(
-                commit_guard,
+                &commit_guard,
                 signaling_client,
                 envelope,
             )
@@ -1100,8 +1211,15 @@ impl WebRtcCoordinator {
                     target,
                     err
                 );
+                drop(commit_guard);
+                break;
             }
+            // A batch may contain hundreds of candidates. Release the peer
+            // gate after every bounded send so close-all can quiesce the peer
+            // instead of waiting for the entire batch.
+            drop(commit_guard);
         }
+        WebRtcCoordinator::prune_restart_signaling_gates(&commit_context.state.gates).await;
     }
 
     /// Get a subscriber for connection events
@@ -3028,9 +3146,36 @@ impl WebRtcCoordinator {
         let Some(close_state_guard) =
             CloseAllStateGuard::try_enter(Arc::clone(&self.peer_signaling))
         else {
-            tracing::debug!("WebRTC peer shutdown is already in progress");
-            return Ok(());
+            let generation = self
+                .peer_signaling
+                .close_all_generation
+                .load(Ordering::Acquire);
+            drop(lifecycle_guard);
+            if CLOSE_ALL_HOOK_REENTRY.try_with(|_| ()).is_ok() {
+                tracing::debug!("Returning from close-all re-entry made by its own lifecycle hook");
+                return Ok(());
+            }
+
+            tracing::debug!(
+                generation,
+                "WebRTC peer shutdown is already in progress; joining its result"
+            );
+            return self
+                .peer_signaling_commit_context()
+                .wait_for_close_all(generation)
+                .await;
         };
+
+        let result = self.run_close_all_peers(close_mode, lifecycle_guard).await;
+        close_state_guard.complete(result.clone());
+        result
+    }
+
+    async fn run_close_all_peers(
+        &self,
+        close_mode: PeerCloseMode,
+        lifecycle_guard: tokio::sync::MutexGuard<'_, ()>,
+    ) -> ActorResult<()> {
         tracing::info!("🔻 Closing all WebRTC peer connections");
 
         // Clone everything needed after the drain up front. Once peer states
@@ -3080,10 +3225,10 @@ impl WebRtcCoordinator {
             return Err(ActrError::TimedOut);
         }
 
-        // Acquire every current peer's signaling gate in a stable order, then
-        // drain while those gates are held. A send that already crossed its
-        // final current-session check must finish while its peer is still
-        // current; queued sends observe the drained state and are discarded.
+        // Acquire every active-session and pre-session signaling gate in a
+        // stable order, then drain while those gates are held. A send that
+        // already crossed its final lifecycle/session check must finish before
+        // its state is discarded; queued sends observe the epoch change.
         let (all_peers, late_restart_handles) =
             tokio::time::timeout_at(state_phase_deadline, async {
                 loop {
@@ -3091,7 +3236,12 @@ impl WebRtcCoordinator {
                         let peers = self.peers.read().await;
                         peers.keys().cloned().collect()
                     };
+                    peer_ids.extend({
+                        let negotiations = self.peer_negotiation.lock().await;
+                        negotiations.keys().cloned().collect::<Vec<_>>()
+                    });
                     peer_ids.sort_by_key(|peer_id| peer_id.encode_to_vec());
+                    peer_ids.dedup();
 
                     let mut peer_gates = Vec::with_capacity(peer_ids.len());
                     for peer_id in &peer_ids {
@@ -3112,9 +3262,15 @@ impl WebRtcCoordinator {
                     let mut pending_candidates = self.pending_candidates.write().await;
                     #[cfg(feature = "opentelemetry")]
                     let mut root_contexts = self.root_context_map.write().await;
+                    let mut peer_negotiation = self.peer_negotiation.lock().await;
                     let mut peers = self.peers.write().await;
-                    if peers.keys().any(|peer_id| !peer_ids.contains(peer_id)) {
+                    if peers.keys().any(|peer_id| !peer_ids.contains(peer_id))
+                        || peer_negotiation
+                            .keys()
+                            .any(|peer_id| !peer_ids.contains(peer_id))
+                    {
                         drop(peers);
+                        drop(peer_negotiation);
                         #[cfg(feature = "opentelemetry")]
                         drop(root_contexts);
                         drop(pending_candidates);
@@ -3124,10 +3280,12 @@ impl WebRtcCoordinator {
                     }
 
                     let mut all_peers: Vec<(ActrId, PeerState)> = peers.drain().collect();
+                    peer_negotiation.clear();
                     pending_candidates.clear();
                     #[cfg(feature = "opentelemetry")]
                     root_contexts.clear();
                     drop(peers);
+                    drop(peer_negotiation);
                     #[cfg(feature = "opentelemetry")]
                     drop(root_contexts);
                     drop(pending_candidates);
@@ -3188,11 +3346,12 @@ impl WebRtcCoordinator {
             );
         }
 
-        // Hooks remain in the caller's future. If the caller is cancelled while
-        // a hook is pending, that hook future is dropped and the guard closes
-        // the old session without emitting a late Idle event. Once a hook has
-        // completed, move that peer into its own owned physical-close task.
+        // Hooks remain in the caller's future. Direct close-all re-entry is
+        // identified with task-local context; indirect/custom hook stalls are
+        // bounded by one deadline for the whole batch. Once a hook completes
+        // (or is cancelled at the deadline), physical teardown owns the peer.
         let mut close_tasks = Vec::new();
+        let hook_deadline = tokio::time::Instant::now() + CLOSE_ALL_HOOK_TIMEOUT;
         while let Some((peer_id, state)) = drained_peers.last() {
             for handle in &state.receive_handles {
                 handle.abort();
@@ -3204,14 +3363,24 @@ impl WebRtcCoordinator {
                 "close all peers",
             )
             .await;
-            Self::notify_removed_peer_idle_if_needed(
-                hook_callback.as_ref(),
-                peer_id,
-                state.session_id,
-                state,
-                "close all peers",
-            )
-            .await;
+            let hook = CLOSE_ALL_HOOK_REENTRY.scope(
+                (),
+                Self::notify_removed_peer_idle_if_needed(
+                    hook_callback.as_ref(),
+                    peer_id,
+                    state.session_id,
+                    state,
+                    "close all peers",
+                ),
+            );
+            if tokio::time::timeout_at(hook_deadline, hook).await.is_err() {
+                tracing::warn!(
+                    peer_id = %peer_id,
+                    session_id = state.session_id,
+                    timeout_ms = CLOSE_ALL_HOOK_TIMEOUT.as_millis(),
+                    "Timed out invoking WebRTC close-all lifecycle hook"
+                );
+            }
 
             let (peer_id, state) = drained_peers
                 .pop()
@@ -3247,19 +3416,21 @@ impl WebRtcCoordinator {
         }
 
         // Signaling may have delivered more auxiliary data while physical
-        // cleanup was running. Sweep it once more while `closing_all` still
-        // rejects new peer sessions. Because this remains in the caller's
-        // future, cancellation cannot make the sweep run after the flag resets.
+        // cleanup was running. Sweep it once more under the lifecycle gate
+        // while `closing_all` still rejects new peer sessions.
+        let _final_lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
         let mut pending_candidates = self.pending_candidates.write().await;
         #[cfg(feature = "opentelemetry")]
         let mut root_contexts = self.root_context_map.write().await;
+        let mut peer_negotiation = self.peer_negotiation.lock().await;
         pending_candidates.clear();
+        peer_negotiation.clear();
         #[cfg(feature = "opentelemetry")]
         root_contexts.clear();
+        drop(peer_negotiation);
         #[cfg(feature = "opentelemetry")]
         drop(root_contexts);
         drop(pending_candidates);
-        drop(close_state_guard);
 
         if let Some(err) = first_join_error {
             Err(ActrError::Internal(format!(
@@ -3371,11 +3542,11 @@ impl WebRtcCoordinator {
         }
     }
 
-    /// The only raw send boundary for signaling tied to an existing peer.
+    /// The only raw send boundary for peer-scoped signaling.
     ///
     /// Requiring the peer commit guard in the type signature prevents new
-    /// Offer/Answer/ICE call sites from accidentally bypassing cleanup and
-    /// current-session validation.
+    /// RoleNegotiation/Offer/Answer/ICE call sites from accidentally bypassing
+    /// cleanup and lifecycle/session validation.
     async fn send_peer_signaling_envelope_while_guarded(
         _commit_guard: &PeerSignalingCommitGuard,
         signaling_client: &Arc<dyn SignalingClient>,
@@ -3437,23 +3608,125 @@ impl WebRtcCoordinator {
         send_result
     }
 
-    /// Role negotiation happens before a peer session exists, so there is no
-    /// session id against which the peer-scoped commit guard could validate.
     async fn send_role_negotiation(
         &self,
         target: &ActrId,
         role_negotiation: RoleNegotiation,
-    ) -> ActorResult<()> {
+        lifecycle_epoch: u64,
+    ) -> ActorResult<bool> {
         let envelope = Self::build_actr_relay_envelope(
             self.local_id_snapshot(),
             self.credential_state.credential().await,
             target,
             actr_relay::Payload::RoleNegotiation(role_negotiation),
         );
-        self.signaling_client
-            .send_envelope(envelope)
+        let commit_context = self.peer_signaling_commit_context();
+        let Some(commit_guard) = commit_context
+            .acquire_pre_session_commit(target, lifecycle_epoch)
             .await
-            .map_err(|e| ActrError::Unavailable(format!("Signaling server unavailable: {e}")))
+        else {
+            return Ok(false);
+        };
+        let result = Self::send_peer_signaling_envelope_while_guarded(
+            &commit_guard,
+            &self.signaling_client,
+            envelope,
+        )
+        .await
+        .map(|()| true)
+        .map_err(|e| ActrError::Unavailable(format!("Signaling server unavailable: {e}")));
+        drop(commit_guard);
+        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
+        result
+    }
+
+    async fn clear_pending_role_if_epoch(&self, target: &ActrId, lifecycle_epoch: u64) {
+        let mut negotiations = self.peer_negotiation.lock().await;
+        if let Some(state) = negotiations.get_mut(target)
+            && state.role_lifecycle_epoch == Some(lifecycle_epoch)
+        {
+            state.role_tx = None;
+            state.role_lifecycle_epoch = None;
+        }
+    }
+
+    async fn prepare_answerer_wait_if_lifecycle_current(
+        &self,
+        target: &ActrId,
+        lifecycle_epoch: u64,
+    ) -> ActorResult<oneshot::Receiver<()>> {
+        let (tx, rx) = oneshot::channel();
+        let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+        if self.peer_signaling.closing_all.load(Ordering::Acquire)
+            || self
+                .peer_signaling
+                .peer_lifecycle_epoch
+                .load(Ordering::Acquire)
+                != lifecycle_epoch
+        {
+            return Err(ActrError::Unavailable(format!(
+                "WebRTC peer lifecycle changed before answerer wait: {target}"
+            )));
+        }
+
+        self.peer_negotiation
+            .lock()
+            .await
+            .entry(target.clone())
+            .or_default()
+            .ready_tx = Some(tx);
+        Ok(rx)
+    }
+
+    async fn store_ready_receiver_if_lifecycle_current(
+        &self,
+        target: &ActrId,
+        lifecycle_epoch: u64,
+        ready_rx: oneshot::Receiver<()>,
+    ) {
+        let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+        if self.peer_signaling.closing_all.load(Ordering::Acquire)
+            || self
+                .peer_signaling
+                .peer_lifecycle_epoch
+                .load(Ordering::Acquire)
+                != lifecycle_epoch
+        {
+            return;
+        }
+        self.peer_negotiation
+            .lock()
+            .await
+            .entry(target.clone())
+            .or_default()
+            .ready_rx = Some(ready_rx);
+    }
+
+    async fn ensure_answerer_wait_if_lifecycle_current(
+        &self,
+        target: &ActrId,
+        lifecycle_epoch: u64,
+    ) -> ActorResult<()> {
+        let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+        if self.peer_signaling.closing_all.load(Ordering::Acquire)
+            || self
+                .peer_signaling
+                .peer_lifecycle_epoch
+                .load(Ordering::Acquire)
+                != lifecycle_epoch
+        {
+            return Err(ActrError::Unavailable(format!(
+                "WebRTC peer lifecycle changed before answerer wait: {target}"
+            )));
+        }
+
+        let mut negotiations = self.peer_negotiation.lock().await;
+        let state = negotiations.entry(target.clone()).or_default();
+        if state.ready_tx.is_none() {
+            let (tx, _rx) = oneshot::channel();
+            state.ready_tx = Some(tx);
+        }
+        Ok(())
     }
 
     /// Initiate connection (create Offer)
@@ -3469,18 +3742,29 @@ impl WebRtcCoordinator {
     ) -> ActorResult<oneshot::Receiver<()>> {
         tracing::info!("🚀 Initiating P2P connection to {}", target);
 
+        let Some(peer_lifecycle_epoch) = self.capture_peer_lifecycle_epoch().await else {
+            return Err(ActrError::Unavailable(format!(
+                "WebRTC peer shutdown is active: {target}"
+            )));
+        };
+
         // Role negotiation: determine if we should be offerer or answerer
-        let role_result =
-            tokio::time::timeout(ROLE_NEGOTIATION_TIMEOUT, self.negotiate_role(target)).await;
+        let role_result = tokio::time::timeout(
+            ROLE_NEGOTIATION_TIMEOUT,
+            self.negotiate_role(target, peer_lifecycle_epoch),
+        )
+        .await;
 
         let is_offerer = match role_result {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
-                self.peer_negotiation.lock().await.remove(target);
+                self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
+                    .await;
                 return Err(e);
             }
             Err(_) => {
-                self.peer_negotiation.lock().await.remove(target);
+                self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
+                    .await;
                 return Err(ActrError::TimedOut);
             }
         };
@@ -3490,17 +3774,13 @@ impl WebRtcCoordinator {
             target
         );
         if !is_offerer {
-            let (tx, rx) = oneshot::channel();
-            self.peer_negotiation
-                .lock()
-                .await
-                .entry(target.clone())
-                .or_default()
-                .ready_tx = Some(tx);
-            return Ok(rx);
+            return self
+                .prepare_answerer_wait_if_lifecycle_current(target, peer_lifecycle_epoch)
+                .await;
         }
 
-        self.start_offer_connection(target, true).await
+        self.start_offer_connection(target, true, peer_lifecycle_epoch)
+            .await
     }
 
     /// Create and send an offer (offerer path). If `skip_negotiation` is true, assumes role is already determined.
@@ -3513,19 +3793,25 @@ impl WebRtcCoordinator {
         self: &Arc<Self>,
         target: &ActrId,
         skip_negotiation: bool,
+        peer_lifecycle_epoch: u64,
     ) -> ActorResult<oneshot::Receiver<()>> {
         if !skip_negotiation {
-            let role_result =
-                tokio::time::timeout(ROLE_NEGOTIATION_TIMEOUT, self.negotiate_role(target)).await;
+            let role_result = tokio::time::timeout(
+                ROLE_NEGOTIATION_TIMEOUT,
+                self.negotiate_role(target, peer_lifecycle_epoch),
+            )
+            .await;
 
             let role_result = match role_result {
                 Ok(Ok(v)) => v,
                 Ok(Err(e)) => {
-                    self.peer_negotiation.lock().await.remove(target);
+                    self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
+                        .await;
                     return Err(e);
                 }
                 Err(_) => {
-                    self.peer_negotiation.lock().await.remove(target);
+                    self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
+                        .await;
                     return Err(ActrError::TimedOut);
                 }
             };
@@ -3535,21 +3821,19 @@ impl WebRtcCoordinator {
                     "🎭 Role negotiation decided we are answerer for {}, waiting for offer",
                     target
                 );
-                let (tx, rx) = oneshot::channel();
-                self.peer_negotiation
-                    .lock()
-                    .await
-                    .entry(target.clone())
-                    .or_default()
-                    .ready_tx = Some(tx);
-                return Ok(rx);
+                return self
+                    .prepare_answerer_wait_if_lifecycle_current(target, peer_lifecycle_epoch)
+                    .await;
             }
         }
 
         // Single connection attempt (no retry)
         tracing::info!("🔄 Starting connection to actr_id={}", target);
 
-        match self.do_single_offer_connection(target).await {
+        match self
+            .do_single_offer_connection(target, peer_lifecycle_epoch)
+            .await
+        {
             Ok((ready_rx, webrtc_conn)) => {
                 // Wait for connection to be ready with timeout
                 match tokio::time::timeout(INITIAL_CONNECTION_TIMEOUT, ready_rx).await {
@@ -3820,13 +4104,8 @@ impl WebRtcCoordinator {
     async fn do_single_offer_connection(
         self: &Arc<Self>,
         target: &ActrId,
+        peer_lifecycle_epoch: u64,
     ) -> ActorResult<(oneshot::Receiver<()>, WebRtcConnection)> {
-        let Some(peer_lifecycle_epoch) = self.capture_peer_lifecycle_epoch().await else {
-            return Err(ActrError::Unavailable(format!(
-                "WebRTC peer shutdown is active: {target}"
-            )));
-        };
-
         // Retrieve remote_fixed from peer negotiation state
         let remote_fixed = {
             let neg = self.peer_negotiation.lock().await;
@@ -6817,6 +7096,10 @@ impl WebRtcCoordinator {
                 continue;
             }
 
+            // The Offer is one atomic signaling commit. Candidate delivery is
+            // a sequence of separate commits so cleanup can win between sends.
+            drop(commit_guard);
+
             let buffered_candidates = Self::finish_local_ice_generation(
                 peers,
                 target,
@@ -6825,17 +7108,17 @@ impl WebRtcCoordinator {
             )
             .await
             .map_err(ActrError::Internal)?;
-            Self::send_prepared_local_ice_candidates_while_guarded(
-                &commit_guard,
+            Self::commit_prepared_local_ice_candidates(
+                &commit_context,
                 signaling_client,
                 local_id,
                 &credential_state,
                 target,
+                restart_session_id,
+                Some(cancellation_epoch),
                 buffered_candidates,
             )
             .await;
-            drop(commit_guard);
-            Self::prune_restart_signaling_gates(&commit_context.state.gates).await;
 
             tracing::info!(
                 "♻️ ICE restart attempt {} sent to serial={}",
@@ -7240,34 +7523,30 @@ impl WebRtcCoordinator {
             .await;
             return Err(err);
         }
+        drop(commit_guard);
 
         let buffered_candidates =
             Self::finish_local_ice_generation(&self.peers, from, session_id, &answer_description)
                 .await
                 .map_err(ActrError::Internal)?;
-        for candidate in buffered_candidates {
-            if let Err(err) = self
-                .send_peer_actr_relay_while_guarded(
-                    &commit_guard,
-                    from,
-                    actr_relay::Payload::IceCandidate(candidate),
-                )
-                .await
-            {
-                tracing::warn!(
-                    "⚠️ Failed to send buffered ICE restart answer candidate to {}: {}",
-                    from,
-                    err
-                );
-            }
-        }
+        let local_id = self.local_id_snapshot();
+        Self::commit_prepared_local_ice_candidates(
+            &commit_context,
+            &self.signaling_client,
+            &local_id,
+            &self.credential_state,
+            from,
+            session_id,
+            Some(cancellation_epoch),
+            buffered_candidates,
+        )
+        .await;
 
-        // Flush any buffered remote candidates before cleanup can close the
-        // PeerConnection used by this exchange.
+        // Candidate application is bounded independently and intentionally
+        // runs without the signaling gate. A concurrent close may remove the
+        // session; the flush's session checks then turn it into a no-op.
         self.flush_pending_candidates(from, session_id, &peer_connection)
             .await?;
-        drop(commit_guard);
-        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
 
         tracing::info!(
             "✅ Completed ICE restart answer to serial={}, session_id={}; waiting for ICE Connected before marking sendable",
@@ -7286,17 +7565,42 @@ impl WebRtcCoordinator {
     async fn handle_role_assignment(self: &Arc<Self>, assign: RoleAssignment, peer: ActrId) {
         tracing::debug!(?assign, ?peer, "handle_role_assignment");
 
-        // Store remote_fixed information in peer negotiation state
-        {
+        // Bind both pending and unsolicited assignments to the lifecycle that
+        // observed them. Close-all holds this same gate while advancing the
+        // epoch and clearing negotiation waiters.
+        let (peer_lifecycle_epoch, role_sender) = {
+            let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+            if self.peer_signaling.closing_all.load(Ordering::Acquire) {
+                tracing::debug!(
+                    peer_id = %peer,
+                    "Ignoring RoleAssignment while WebRTC close-all is active"
+                );
+                return;
+            }
+            let peer_lifecycle_epoch = self
+                .peer_signaling
+                .peer_lifecycle_epoch
+                .load(Ordering::Acquire);
             let mut neg = self.peer_negotiation.lock().await;
             let state = neg.entry(peer.clone()).or_default();
             state.remote_fixed = assign.remote_fixed.unwrap_or(false);
+            let role_sender = if state.role_lifecycle_epoch == Some(peer_lifecycle_epoch) {
+                state.role_lifecycle_epoch = None;
+                state.role_tx.take()
+            } else {
+                // A waiter from an older lifecycle must not be completed by a
+                // delayed assignment observed in the current lifecycle.
+                state.role_tx = None;
+                state.role_lifecycle_epoch = None;
+                None
+            };
             tracing::info!(
                 "🔧 Stored remote_fixed={} for peer {}",
                 state.remote_fixed,
                 peer
             );
-        }
+            (peer_lifecycle_epoch, role_sender)
+        };
 
         // ========== Check for role change to offerer and clean up if needed ==========
         // Only clean up when becoming offerer (we need to initiate a new connection)
@@ -7348,10 +7652,6 @@ impl WebRtcCoordinator {
         // ========== End role change check ==========
 
         // First try to wake up pending negotiation
-        let role_sender = {
-            let mut neg = self.peer_negotiation.lock().await;
-            neg.get_mut(&peer).and_then(|s| s.role_tx.take())
-        };
         if let Some(sender) = role_sender {
             if sender.send(assign.is_offerer).is_ok() {
                 return;
@@ -7383,17 +7683,21 @@ impl WebRtcCoordinator {
             #[cfg(feature = "opentelemetry")]
             let current_span = tracing::Span::current();
             tokio::spawn(async move {
-                let start_offer_fut = this.start_offer_connection(&peer_clone, true);
+                // No current waiter means this assignment may be delayed from
+                // an older lifecycle. Start a fresh guarded role transaction
+                // before creating a peer rather than trusting it directly.
+                let start_offer_fut =
+                    this.start_offer_connection(&peer_clone, false, peer_lifecycle_epoch);
                 #[cfg(feature = "opentelemetry")]
                 let start_offer_fut = start_offer_fut.instrument(current_span);
                 match start_offer_fut.await {
                     Ok(ready_rx) => {
-                        this.peer_negotiation
-                            .lock()
-                            .await
-                            .entry(peer_clone.clone())
-                            .or_default()
-                            .ready_rx = Some(ready_rx);
+                        this.store_ready_receiver_if_lifecycle_current(
+                            &peer_clone,
+                            peer_lifecycle_epoch,
+                            ready_rx,
+                        )
+                        .await;
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -7409,13 +7713,17 @@ impl WebRtcCoordinator {
                 "🎭 Assignment marks us as answerer for {}, waiting for offer (no pending negotiation)",
                 peer
             );
-            let (tx, _rx) = oneshot::channel();
-            self.peer_negotiation
-                .lock()
+            if let Err(err) = self
+                .ensure_answerer_wait_if_lifecycle_current(&peer, peer_lifecycle_epoch)
                 .await
-                .entry(peer.clone())
-                .or_default()
-                .ready_tx = Some(tx);
+            {
+                tracing::debug!(
+                    peer_id = %peer,
+                    error = %err,
+                    "RoleAssignment became stale before answerer wait was installed"
+                );
+                return;
+            }
 
             // If the offer is lost, keep waiting as answerer. RoleNegotiation broadcasts
             // RoleAssignment to both peers, so retrying it here can make the original
@@ -7451,15 +7759,32 @@ impl WebRtcCoordinator {
         feature = "opentelemetry",
         tracing::instrument(skip_all, fields(actr_id = %self.local_id_snapshot(), target_id = %target))
     )]
-    async fn negotiate_role(&self, target: &ActrId) -> ActorResult<bool> {
+    async fn negotiate_role(
+        &self,
+        target: &ActrId,
+        peer_lifecycle_epoch: u64,
+    ) -> ActorResult<bool> {
         let (tx, rx) = oneshot::channel();
-        // Record pending role assignment by target ActorId
-        self.peer_negotiation
-            .lock()
-            .await
-            .entry(target.clone())
-            .or_default()
-            .role_tx = Some(tx);
+        // Install the waiter under the lifecycle gate so close-all either sees
+        // and cancels it, or advances the epoch before this transaction starts.
+        {
+            let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+            if self.peer_signaling.closing_all.load(Ordering::Acquire)
+                || self
+                    .peer_signaling
+                    .peer_lifecycle_epoch
+                    .load(Ordering::Acquire)
+                    != peer_lifecycle_epoch
+            {
+                return Err(ActrError::Unavailable(format!(
+                    "WebRTC peer lifecycle changed before role negotiation: {target}"
+                )));
+            }
+            let mut negotiations = self.peer_negotiation.lock().await;
+            let state = negotiations.entry(target.clone()).or_default();
+            state.role_tx = Some(tx);
+            state.role_lifecycle_epoch = Some(peer_lifecycle_epoch);
+        }
 
         let local_id = self.local_id_snapshot();
         let role_negotiation = RoleNegotiation {
@@ -7469,10 +7794,27 @@ impl WebRtcCoordinator {
         };
 
         tracing::debug!("🔄 Sending role negotiation to serial={}", target);
-        self.send_role_negotiation(target, role_negotiation).await?;
+        match self
+            .send_role_negotiation(target, role_negotiation, peer_lifecycle_epoch)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
+                    .await;
+                return Err(ActrError::Unavailable(format!(
+                    "WebRTC peer lifecycle changed before RoleNegotiation commit: {target}"
+                )));
+            }
+            Err(err) => {
+                self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
+                    .await;
+                return Err(err);
+            }
+        }
 
         rx.await.map_err(|_| {
-            ActrError::Internal("Role negotiation channel closed before assignment".to_string())
+            ActrError::Unavailable("Role negotiation was cancelled before assignment".to_string())
         })
     }
 

@@ -735,6 +735,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     /// - Intended for app lifecycle management, not network event response
     async fn cleanup_connections(&self) -> Result<(), String> {
         let _cleanup_guard = self.lifecycle_barrier();
+        let mut coordinator_cleanup_error = None;
 
         tracing::info!("🧹 Manually cleaning up all connections...");
 
@@ -753,7 +754,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             if let Err(e) = coordinator.close_all_peers_immediately().await {
                 let err_msg = format!("Failed to close all peers: {}", e);
                 tracing::warn!("⚠️  {}", err_msg);
-                // Do not fail the whole cleanup; continue releasing other resources.
+                coordinator_cleanup_error = Some(err_msg);
             } else {
                 tracing::info!("✅ All WebRTC peer connections closed");
             }
@@ -785,9 +786,16 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             }
         }
 
-        tracing::info!("✅ Connection cleanup completed");
-
-        Ok(())
+        if let Some(err) = coordinator_cleanup_error {
+            tracing::warn!(
+                error = %err,
+                "Connection cleanup released remaining resources but WebRTC peers did not quiesce"
+            );
+            Err(err)
+        } else {
+            tracing::info!("✅ Connection cleanup completed");
+            Ok(())
+        }
     }
 
     async fn probe_connectivity(&self) -> Result<(), String> {
