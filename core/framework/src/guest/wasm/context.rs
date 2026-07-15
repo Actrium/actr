@@ -14,10 +14,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use prost::Message as ProstMessage;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::rc::Rc;
 
-use crate::{Context, Dest, MediaSample};
+use crate::{Context, Dest, MaybeSendBoxFuture, MaybeSendSync, MediaSample};
 
 use super::context_helpers::{
     actr_id_from_wit, actr_id_to_wit, actr_type_to_wit, data_chunk_from_wit, data_chunk_to_wit,
@@ -119,12 +120,14 @@ pub(crate) struct WasmContext {
     request_id: String,
 }
 
-type StreamCallback =
-    Arc<dyn Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync>;
+type StreamCallback = Rc<dyn Fn(DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>>;
 
-fn stream_callbacks() -> &'static Mutex<HashMap<String, StreamCallback>> {
-    static CALLBACKS: OnceLock<Mutex<HashMap<String, StreamCallback>>> = OnceLock::new();
-    CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+thread_local! {
+    /// A Component Model guest runs cooperatively on one WASM thread. Keeping
+    /// callbacks local lets ordinary generic handlers capture `C: Context`
+    /// without manufacturing native-only `Send + Sync` bounds.
+    static STREAM_CALLBACKS: RefCell<HashMap<String, StreamCallback>> =
+        RefCell::new(HashMap::new());
 }
 
 pub(crate) async fn dispatch_registered_stream(
@@ -133,12 +136,8 @@ pub(crate) async fn dispatch_registered_stream(
 ) -> ActorResult<()> {
     let chunk = data_chunk_from_wit(chunk);
     let sender = actr_id_from_wit(&sender);
-    let callback = {
-        let callbacks = stream_callbacks()
-            .lock()
-            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?;
-        callbacks.get(&chunk.stream_id).cloned()
-    };
+    let callback =
+        STREAM_CALLBACKS.with(|callbacks| callbacks.borrow().get(&chunk.stream_id).cloned());
 
     match callback {
         Some(callback) => callback(chunk, sender).await,
@@ -210,7 +209,9 @@ impl Context for WasmContext {
 
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
+            + 'static,
     {
         // Register host-side first. The runner queues DataChunk delivery behind
         // this invocation, so installing the guest callback immediately after
@@ -219,10 +220,9 @@ impl Context for WasmContext {
         wit_host::register_stream(self.ctx_token, stream_id.clone())
             .await
             .map_err(wit_actr_error_to_proto)?;
-        stream_callbacks()
-            .lock()
-            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?
-            .insert(stream_id.clone(), Arc::new(callback));
+        STREAM_CALLBACKS.with(|callbacks| {
+            callbacks.borrow_mut().insert(stream_id, Rc::new(callback));
+        });
         Ok(())
     }
 
@@ -230,10 +230,9 @@ impl Context for WasmContext {
         wit_host::unregister_stream(self.ctx_token, stream_id.to_string())
             .await
             .map_err(wit_actr_error_to_proto)?;
-        stream_callbacks()
-            .lock()
-            .map_err(|_| ActrError::Internal("stream callback registry poisoned".into()))?
-            .remove(stream_id);
+        STREAM_CALLBACKS.with(|callbacks| {
+            callbacks.borrow_mut().remove(stream_id);
+        });
         Ok(())
     }
 

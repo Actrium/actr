@@ -9,7 +9,9 @@ use crate::wire::webrtc::SignalingClient;
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::inject_span_context_to_rpc;
 use actr_config::lock::LockFile;
-use actr_framework::{Bytes, Context, DataChunk, Dest, MediaSample};
+use actr_framework::{
+    Bytes, Context, DataChunk, Dest, MaybeSendBoxFuture, MaybeSendSync, MediaSample,
+};
 use actr_protocol::{
     AIdCredential, ActorResult, ActrError, ActrId, ActrType, ConnectionNotReadyInfo, Direction,
     PayloadType, RouteCandidatesRequest, RpcEnvelope, RpcRequest, route_candidates_request,
@@ -635,7 +637,9 @@ impl Context for RuntimeContext {
 
     async fn register_stream<F>(&self, stream_id: String, callback: F) -> ActorResult<()>
     where
-        F: Fn(DataChunk, ActrId) -> BoxFuture<'static, ActorResult<()>> + Send + Sync + 'static,
+        F: Fn(DataChunk, ActrId) -> MaybeSendBoxFuture<'static, ActorResult<()>>
+            + MaybeSendSync
+            + 'static,
     {
         tracing::debug!(
             "📊 Registering DataChunk callback for stream_id: {}",
