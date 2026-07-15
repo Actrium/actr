@@ -127,7 +127,8 @@ pub mod workload;
 pub(crate) mod executor;
 
 // In-memory conflict-key dispatch scheduling layer (B2): sits between the node
-// entry loops and the serial command runner. Default off.
+// entry loops and the actor runner. The gate defaults on, but a keyless actor
+// never creates the scheduler and remains on the serial path.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dispatch;
 
@@ -184,7 +185,9 @@ pub use ais_client::AisClient;
 #[cfg(not(target_arch = "wasm32"))]
 pub use config::DispatchConcurrency;
 #[cfg(not(target_arch = "wasm32"))]
-pub use dispatch::{ConflictKeyError, ConflictKeySpec, ConflictKeySpecBuilder, KeySource};
+pub use dispatch::{
+    ConflictKeyError, ConflictKeySpec, ConflictKeySpecBuilder, KeySource, PayloadFieldKind,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use storage::ActorStore;
 #[cfg(not(target_arch = "wasm32"))]

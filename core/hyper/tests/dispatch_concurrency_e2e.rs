@@ -22,7 +22,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use actr_framework::{Bytes, Context, MessageDispatcher, Workload};
 use actr_hyper::test_support::TestSignalingServer;
 use actr_hyper::{
-    ActrRef, ConflictKeySpec, DispatchConcurrency, Hyper, HyperConfig, KeySource, Node, StaticTrust,
+    ActrRef, ConflictKeySpec, DispatchConcurrency, Hyper, HyperConfig, KeySource, Node,
+    PayloadFieldKind, StaticTrust,
 };
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, RpcRequest};
@@ -210,7 +211,13 @@ async fn setup(
     if declare_key {
         node_b = node_b.with_conflict_keys(
             ConflictKeySpec::builder()
-                .method(ROUTE, KeySource::PayloadField { tag: 1 })
+                .method(
+                    ROUTE,
+                    KeySource::PayloadField {
+                        tag: 1,
+                        kind: PayloadFieldKind::Bytes,
+                    },
+                )
                 .build()
                 .unwrap(),
         );

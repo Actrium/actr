@@ -55,13 +55,55 @@ pub enum KeySource {
     /// to a fixed empty value *within the domain*, i.e. all callerless messages
     /// on that method share one serial lane.
     Sender,
-    /// Key = the canonical value of the top-level protobuf field with this
-    /// `tag` in the request payload (varint / fixed32 / fixed64 /
-    /// length-delimited — integers, strings, bytes). A missing field, an
-    /// unsupported wire type (groups), a repeated field, or a value larger
-    /// than the scheduler's bounded key size falls back to
-    /// [`ConflictKey::Serial`] with a rate-limited warning.
-    PayloadField { tag: u32 },
+    /// Key = the schema-aware canonical value of the top-level protobuf field
+    /// with this `tag` in the request payload. `kind` must match the field's
+    /// declared protobuf scalar type; carrying it explicitly prevents distinct
+    /// wire values that decode to the same logical value (for example `bool`
+    /// values `1` and `2`, or out-of-range 32-bit varints) from escaping
+    /// same-key serialization. A missing field, type mismatch, invalid scalar,
+    /// unsupported wire type (groups), repeated field, or oversized value
+    /// falls back to [`ConflictKey::Serial`] with a rate-limited warning.
+    PayloadField { tag: u32, kind: PayloadFieldKind },
+}
+
+/// Protobuf scalar type used by a [`KeySource::PayloadField`] projection.
+///
+/// The type is part of the consumer's conflict declaration rather than inferred
+/// from the wire type: protobuf deliberately shares one wire representation
+/// between several scalar types whose decoded equality differs. Floating-point
+/// and embedded-message fields are intentionally unsupported as conflict keys;
+/// prefer a stable integer, string, or bytes identifier instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PayloadFieldKind {
+    /// Protobuf `bool` (only canonical wire values 0 and 1 are accepted).
+    Bool,
+    /// Protobuf `int32`.
+    Int32,
+    /// Protobuf `int64`.
+    Int64,
+    /// Protobuf `uint32`.
+    Uint32,
+    /// Protobuf `uint64`.
+    Uint64,
+    /// Zig-zag encoded protobuf `sint32`.
+    Sint32,
+    /// Zig-zag encoded protobuf `sint64`.
+    Sint64,
+    /// Protobuf `fixed32`.
+    Fixed32,
+    /// Protobuf `fixed64`.
+    Fixed64,
+    /// Protobuf `sfixed32`.
+    Sfixed32,
+    /// Protobuf `sfixed64`.
+    Sfixed64,
+    /// Protobuf enum numeric value.
+    Enum,
+    /// UTF-8 protobuf `string`.
+    String,
+    /// Protobuf `bytes`.
+    Bytes,
 }
 
 /// Per-method conflict-key rule: a source plus an optional explicit domain.
@@ -145,18 +187,20 @@ impl ConflictKeySpec {
         match &rule.source {
             KeySource::Sender => {
                 let value = match caller_id {
-                    Some(id) => Bytes::from(id.to_string().into_bytes()),
+                    Some(id) => Bytes::from(id.to_string_repr().into_bytes()),
                     None => Bytes::new(),
                 };
                 ConflictKey::Scoped { domain, value }
             }
-            KeySource::PayloadField { tag } => match scan_top_level_field(payload, *tag) {
-                Ok(Some(value)) => ConflictKey::Scoped { domain, value },
-                _ => {
-                    warn_extract_fallback(route_key, *tag);
-                    ConflictKey::Serial
+            KeySource::PayloadField { tag, kind } => {
+                match scan_top_level_field(payload, *tag, *kind) {
+                    Ok(Some(value)) => ConflictKey::Scoped { domain, value },
+                    _ => {
+                        warn_extract_fallback(route_key, *tag, *kind);
+                        ConflictKey::Serial
+                    }
                 }
-            },
+            }
         }
     }
 }
@@ -179,6 +223,8 @@ impl ConflictKeySpecBuilder {
     ///
     /// Methods naming the same `domain` share one conflict space, so equal
     /// projected values across those methods serialize against each other.
+    /// Payload-backed methods in one shared domain should use compatible field
+    /// kinds and logical meanings; the consumer owns that cross-method contract.
     pub fn method_in_domain(
         self,
         route_key: impl Into<String>,
@@ -270,19 +316,46 @@ fn canonical_varint(mut value: u64) -> Bytes {
     }
 }
 
+/// Canonicalize a varint according to the protobuf schema type. Values that a
+/// generated decoder may coerce or truncate, but that are not valid encodings
+/// for the declared scalar, fail closed to the global serial lane.
+fn canonical_typed_varint(value: u64, kind: PayloadFieldKind) -> Result<Bytes, ()> {
+    match kind {
+        PayloadFieldKind::Bool if value <= 1 => Ok(canonical_varint(value)),
+        PayloadFieldKind::Int32 | PayloadFieldKind::Enum
+            if value <= i32::MAX as u64 || value >= i32::MIN as i64 as u64 =>
+        {
+            Ok(canonical_varint(value))
+        }
+        PayloadFieldKind::Uint32 | PayloadFieldKind::Sint32 if value <= u32::MAX as u64 => {
+            Ok(canonical_varint(value))
+        }
+        PayloadFieldKind::Int64 | PayloadFieldKind::Uint64 | PayloadFieldKind::Sint64 => {
+            Ok(canonical_varint(value))
+        }
+        _ => Err(()),
+    }
+}
+
 /// Scan the *top level* of a protobuf message for the field numbered `target`
-/// and return its raw value bytes.
+/// and return its schema-aware canonical value bytes.
 ///
-/// * varint → the canonical (minimal) varint bytes
+/// * varint → validated for `kind`, then encoded as a minimal varint
 /// * fixed32 / fixed64 → the 4 / 8 raw bytes
-/// * length-delimited → the content bytes (length prefix stripped)
+/// * string / bytes → the content bytes (length prefix stripped; strings must
+///   be valid UTF-8)
 ///
 /// Returns `Ok(None)` when the field is absent or appears more than once
 /// (repeated → ambiguous → fall back), and `Err(())` on a malformed buffer or
-/// an unsupported wire type (groups). Nested message fields are only usable via
-/// their length-delimited raw bytes; the caller treats any error/none as a
-/// serial fallback.
-pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option<Bytes>, ()> {
+/// an unsupported wire type (groups). Length-delimited values are accepted only
+/// as declared strings or bytes; an embedded message must not be mislabeled as
+/// bytes because its semantic value has multiple valid wire encodings. The
+/// caller treats any error/none as a serial fallback.
+pub(crate) fn scan_top_level_field(
+    payload: &[u8],
+    target: u32,
+    kind: PayloadFieldKind,
+) -> Result<Option<Bytes>, ()> {
     let mut i = 0usize;
     let mut found: Option<Bytes> = None;
     while i < payload.len() {
@@ -307,7 +380,7 @@ pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option
                     if found.is_some() {
                         return Ok(None);
                     }
-                    found = Some(canonical_varint(value));
+                    found = Some(canonical_typed_varint(value, kind)?);
                 }
             }
             1 => {
@@ -320,6 +393,9 @@ pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option
                 if is_target {
                     if found.is_some() {
                         return Ok(None);
+                    }
+                    if !matches!(kind, PayloadFieldKind::Fixed64 | PayloadFieldKind::Sfixed64) {
+                        return Err(());
                     }
                     found = Some(Bytes::copy_from_slice(&payload[i..i + 8]));
                 }
@@ -342,7 +418,15 @@ pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option
                     if found.is_some() {
                         return Ok(None);
                     }
+                    if !matches!(kind, PayloadFieldKind::String | PayloadFieldKind::Bytes) {
+                        return Err(());
+                    }
                     if len > MAX_CONFLICT_KEY_BYTES {
+                        return Err(());
+                    }
+                    if matches!(kind, PayloadFieldKind::String)
+                        && std::str::from_utf8(&payload[i..i + len]).is_err()
+                    {
                         return Err(());
                     }
                     found = Some(Bytes::copy_from_slice(&payload[i..i + len]));
@@ -360,6 +444,9 @@ pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option
                     if found.is_some() {
                         return Ok(None);
                     }
+                    if !matches!(kind, PayloadFieldKind::Fixed32 | PayloadFieldKind::Sfixed32) {
+                        return Err(());
+                    }
                     found = Some(Bytes::copy_from_slice(&payload[i..i + 4]));
                 }
                 i += 4;
@@ -373,7 +460,7 @@ pub(crate) fn scan_top_level_field(payload: &[u8], target: u32) -> Result<Option
 
 /// Rate-limited (≈ 1 Hz) warning for an extraction fallback, so a hot method
 /// projecting to Serial cannot flood the log.
-fn warn_extract_fallback(route_key: &str, tag: u32) {
+fn warn_extract_fallback(route_key: &str, tag: u32, kind: PayloadFieldKind) {
     static LAST_WARN_MS: AtomicU64 = AtomicU64::new(0);
     static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let start = START.get_or_init(Instant::now);
@@ -387,7 +474,8 @@ fn warn_extract_fallback(route_key: &str, tag: u32) {
         tracing::warn!(
             route_key,
             payload_tag = tag,
-            "conflict-key extraction failed (missing/malformed/unsupported/repeated/oversized field); \
+            payload_kind = ?kind,
+            "conflict-key extraction failed (missing/malformed/type-mismatched/unsupported/repeated/oversized field); \
              falling back to serial dispatch"
         );
     }

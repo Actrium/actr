@@ -59,7 +59,9 @@
 pub(crate) mod conflict_key;
 pub(crate) mod scheduler;
 
-pub use conflict_key::{ConflictKeyError, ConflictKeySpec, ConflictKeySpecBuilder, KeySource};
+pub use conflict_key::{
+    ConflictKeyError, ConflictKeySpec, ConflictKeySpecBuilder, KeySource, PayloadFieldKind,
+};
 
 #[cfg(test)]
 #[path = "conflict_key_tests.rs"]
