@@ -294,13 +294,13 @@ test_maintenance_policy_allows_only_next_patch_and_fix_history() {
   configure_release_channel
   validate_maintenance_release_policy
 
-  sed -i 's/version = "0.4.17"/version = "0.4.19"/' "$temp_repo/Cargo.toml"
+  printf '[workspace.package]\nversion = "0.4.19"\n' >"$temp_repo/Cargo.toml"
   VERSION="0.4.19"
   if validate_maintenance_release_policy 2>/dev/null; then
     printf 'maintenance policy must reject skipped patch versions\n' >&2
     exit 1
   fi
-  sed -i 's/version = "0.4.19"/version = "0.4.17"/' "$temp_repo/Cargo.toml"
+  printf '[workspace.package]\nversion = "0.4.17"\n' >"$temp_repo/Cargo.toml"
 
   printf 'feature\n' >"$temp_repo/feature.txt"
   git -C "$temp_repo" add feature.txt
