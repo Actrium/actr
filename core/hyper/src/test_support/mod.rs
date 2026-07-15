@@ -461,7 +461,7 @@ pub async fn inspect_workload_package(
 #[cfg(feature = "wasm-engine")]
 #[derive(Debug)]
 pub struct TestWasmWorkload {
-    inner: crate::wasm::WasmKernel,
+    inner: crate::wasm::WasmWorkloadV2,
 }
 
 #[cfg(feature = "wasm-engine")]

@@ -37,7 +37,7 @@ fn compile_rejects_legacy_core_module_magic() {
 
 /// Compile a WAT component source into a real wasmtime [`Component`] on an
 /// engine configured exactly like production ([`build_engine`]).
-fn probe_wat(src: &str) -> WasmResult<WasmWorkloadKind> {
+fn probe_wat(src: &str) -> WasmResult<()> {
     let bytes = wat::parse_str(src).expect("test WAT must assemble");
     let engine =
         build_engine(&crate::config::WasmRuntimeLimits::default()).expect("engine must build");

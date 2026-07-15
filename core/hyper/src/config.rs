@@ -186,7 +186,7 @@ pub struct WasmRuntimeLimits {
     /// If set, wasmtime cooperatively yields the guest back to the host every
     /// `n` fuel instead of trapping on exhaustion — enabling fair interleaving
     /// under `run_concurrent`. `None` (default) = trap on exhaustion; the
-    /// instance is rebuilt on the next entry (`WasmWorkload::ensure_instance`).
+    /// instance is rebuilt on the next entry (`WasmWorkloadV2::ensure_instance`).
     pub fuel_async_yield_interval: Option<u64>,
     /// Max `.actr` component byte size accepted by the loader. Package
     /// verification also uses this as both the per-entry and cumulative

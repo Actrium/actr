@@ -451,13 +451,12 @@ pub(crate) fn spawn_runner(workload: Workload) -> ActorHandle {
 ///   (M5). External per-dispatch deadlines supervise that region and discard
 ///   the whole Store before any timeout reply releases a scheduler key.
 ///
-/// Every other packaged workload (`Wasm(V1)` 0.1.0 sync world, `DynClib`) falls
-/// back to the serial `run_loop` even when `Interleaved` is requested, so the
-/// single-`Store` / `&mut` guest-ABI contract is never violated — the conflict
-/// key is a no-op routing hint there. Combined with the node's strategy-A gate
-/// (`Interleaved` is only ever requested for a *keyed* actor), this keeps every
-/// keyless or serial-only workload a bit-for-bit B1 degradation even though the
-/// dispatch gate now defaults on.
+/// `DynClib` falls back to the serial `run_loop` even when `Interleaved` is
+/// requested, so its single-threaded guest-ABI contract is never violated —
+/// the conflict key is a no-op routing hint there. Combined with the node's
+/// strategy-A gate (`Interleaved` is only ever requested for a *keyed*
+/// actor), this keeps every keyless or serial-only workload a bit-for-bit
+/// B1 degradation even though the dispatch gate now defaults on.
 pub(crate) fn spawn_runner_with_mode(
     workload: Workload,
     mode: RunnerMode,
@@ -469,13 +468,9 @@ pub(crate) fn spawn_runner_with_mode(
             tokio::spawn(run_loop_interleaved(handle, rx, dispatch_timeout))
         }
         #[cfg(feature = "wasm-engine")]
-        (RunnerMode::Interleaved, Workload::Wasm(kernel)) if kernel.is_v2() => match kernel {
-            crate::wasm::WasmKernel::V2(v2) => {
-                tokio::spawn(v2.run_interleaved(rx, dispatch_timeout))
-            }
-            // Unreachable given the `is_v2()` guard, but keeps the match total.
-            other => tokio::spawn(run_loop(Workload::Wasm(other), rx)),
-        },
+        (RunnerMode::Interleaved, Workload::Wasm(v2)) => {
+            tokio::spawn(v2.run_interleaved(rx, dispatch_timeout))
+        }
         (_, workload) => tokio::spawn(run_loop(workload, rx)),
     };
     let abort = join.abort_handle();

@@ -607,7 +607,7 @@ async fn component_model_call_on_start_does_not_trap() {
 
 /// A guest trap poisons the store; the runner's *next* command must trigger
 /// B0's lazy rebuild and recover — proving the runner reuses the underlying
-/// `WasmWorkload` (with its `ensure_instance` / `trap_poison` logic) unchanged.
+/// `WasmWorkloadV2` (with its `ensure_instance` / `trap_poison` logic) unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runner_trap_then_next_cmd_rebuilds() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
