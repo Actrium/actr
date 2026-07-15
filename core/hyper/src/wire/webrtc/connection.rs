@@ -28,6 +28,13 @@ type LaneCache<const N: usize> = Arc<RwLock<[Option<Arc<dyn DataLane>>; N]>>;
 
 const PEER_CONNECTION_CLOSE_TIMEOUT: Duration = Duration::from_millis(500);
 
+fn should_wait_for_data_channel_drain(
+    connection_state: RTCPeerConnectionState,
+    buffered_amount: usize,
+) -> bool {
+    buffered_amount > 0 && connection_state == RTCPeerConnectionState::Connected
+}
+
 /// WebRtcConnection - WebRTC P2P Connect
 #[derive(Clone)]
 pub(crate) struct WebRtcConnection {
@@ -258,6 +265,20 @@ impl WebRtcConnection {
                         );
                     }
                     break;
+                }
+
+                let connection_state = self.peer_connection.connection_state();
+                if !should_wait_for_data_channel_drain(connection_state, buffered) {
+                    tracing::warn!(
+                        peer_id = %self.peer_id,
+                        channel = %label,
+                        channel_idx = idx,
+                        connection_state = ?connection_state,
+                        buffered_bytes = buffered,
+                        "Skipping DataChannel send-buffer drain because PeerConnection is not connected; \
+                         data may be lost for the peer",
+                    );
+                    return;
                 }
 
                 if attempt == MAX_POLLS - 1 {

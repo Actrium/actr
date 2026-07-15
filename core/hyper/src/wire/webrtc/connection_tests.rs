@@ -24,6 +24,32 @@ async fn create_test_connection() -> WebRtcConnection {
     WebRtcConnection::new(peer_id, Arc::new(peer_connection), event_tx)
 }
 
+#[test]
+fn data_channel_drain_waits_only_while_peer_connection_is_connected() {
+    assert!(should_wait_for_data_channel_drain(
+        RTCPeerConnectionState::Connected,
+        95,
+    ));
+    assert!(!should_wait_for_data_channel_drain(
+        RTCPeerConnectionState::Connected,
+        0,
+    ));
+
+    for state in [
+        RTCPeerConnectionState::Unspecified,
+        RTCPeerConnectionState::New,
+        RTCPeerConnectionState::Connecting,
+        RTCPeerConnectionState::Disconnected,
+        RTCPeerConnectionState::Failed,
+        RTCPeerConnectionState::Closed,
+    ] {
+        assert!(
+            !should_wait_for_data_channel_drain(state, 95),
+            "drain must not wait while PeerConnection is {state:?}",
+        );
+    }
+}
+
 /// Test: multiple tasks calling close() concurrently do not deadlock
 ///
 /// close() acquires write locks on multiple RwLocks sequentially (connected, data_channels,
