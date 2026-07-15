@@ -157,6 +157,14 @@ pub(crate) struct HostState {
     /// The V1 (0.1.0 sync world) path never touches this map — it keeps
     /// using the `invocation` / `host_abi` single slots above.
     invocations: HashMap<u64, InvocationEntry>,
+    /// V2 stream callbacks are registered during one invocation but execute
+    /// later, after that invocation's token has been retired. Guest callbacks
+    /// commonly capture the registering `WasmContext`, so remember which token
+    /// that context carries for each stream. While a DataChunk callback is
+    /// active, `stream_token_aliases` temporarily resolves the captured token
+    /// to the callback invocation's live token/HostAbiFn.
+    stream_context_tokens: HashMap<String, u64>,
+    stream_token_aliases: HashMap<u64, u64>,
     /// Monotonic token allocator. Reset to zero whenever the map is cleared
     /// on a trap-poison so a rebuilt instance starts from a clean sheet.
     next_token: u64,
@@ -180,6 +188,8 @@ impl std::fmt::Debug for HostState {
             .field("invocation", &self.invocation)
             .field("host_abi", &self.host_abi.as_ref().map(|_| "<fn>"))
             .field("invocations", &self.invocations.len())
+            .field("stream_context_tokens", &self.stream_context_tokens.len())
+            .field("stream_token_aliases", &self.stream_token_aliases.len())
             .field("next_token", &self.next_token)
             .finish_non_exhaustive()
     }
@@ -193,6 +203,8 @@ impl HostState {
             invocation: None,
             host_abi: None,
             invocations: HashMap::new(),
+            stream_context_tokens: HashMap::new(),
+            stream_token_aliases: HashMap::new(),
             next_token: 0,
             limits: StoreResourceLimiter::new(limits),
         }
@@ -215,9 +227,57 @@ impl HostState {
     /// `.await` inside an Accessor host method (the store borrow is not
     /// held across the await).
     pub(crate) fn invocation_host_abi(&self, token: u64) -> Option<HostAbiFn> {
+        let token = self
+            .stream_token_aliases
+            .get(&token)
+            .copied()
+            .unwrap_or(token);
         self.invocations
             .get(&token)
             .map(|e| Arc::clone(&e.host_abi))
+    }
+
+    /// Associate a successfully registered stream with the token embedded in
+    /// the guest callback's captured `WasmContext`.
+    pub(crate) fn register_stream_context(&mut self, stream_id: String, token: u64) {
+        self.stream_context_tokens.insert(stream_id, token);
+    }
+
+    /// Forget the captured context associated with an unregistered stream.
+    pub(crate) fn unregister_stream_context(&mut self, stream_id: &str) {
+        self.stream_context_tokens.remove(stream_id);
+    }
+
+    /// Temporarily route a registered callback's captured token through the
+    /// currently-active DataChunk invocation. DataChunk commands are runner
+    /// barriers, so at most one alias for a stream callback is active.
+    pub(crate) fn begin_stream_callback(
+        &mut self,
+        stream_id: &str,
+        invocation_token: u64,
+    ) -> Option<u64> {
+        let captured_token = self.stream_context_tokens.get(stream_id).copied()?;
+        if captured_token != invocation_token {
+            self.stream_token_aliases
+                .insert(captured_token, invocation_token);
+        }
+        Some(captured_token)
+    }
+
+    /// Remove the temporary alias installed by [`Self::begin_stream_callback`].
+    pub(crate) fn end_stream_callback(
+        &mut self,
+        captured_token: Option<u64>,
+        invocation_token: u64,
+    ) {
+        let Some(captured_token) = captured_token else {
+            return;
+        };
+        if captured_token != invocation_token
+            && self.stream_token_aliases.get(&captured_token) == Some(&invocation_token)
+        {
+            self.stream_token_aliases.remove(&captured_token);
+        }
     }
 
     /// Retire the invocation registered for `token` once its guest call has
@@ -235,6 +295,8 @@ impl HostState {
     /// rebuilt instance starts clean.
     pub(crate) fn clear_invocations(&mut self) {
         self.invocations.clear();
+        self.stream_context_tokens.clear();
+        self.stream_token_aliases.clear();
         self.next_token = 0;
     }
 }

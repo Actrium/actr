@@ -31,7 +31,9 @@ use actr_hyper::config::WasmRuntimeLimits;
 use actr_hyper::test_support::instantiate_wasm_workload;
 use actr_hyper::wasm::{WasmError, WasmHost};
 use actr_hyper::workload::{HostAbiFn, HostOperation, HostOperationResult, InvocationContext};
-use actr_protocol::{ActrId, ActrType, Realm, RpcEnvelope, prost::Message as ProstMessage};
+use actr_protocol::{
+    ActrId, ActrType, DataChunk, Realm, RpcEnvelope, prost::Message as ProstMessage,
+};
 
 #[path = "wasm_actor_fixture.rs"]
 mod wasm_actor_fixture;
@@ -116,6 +118,49 @@ fn unreachable_bridge() -> HostAbiFn {
     Arc::new(|_| Box::pin(async move { HostOperationResult::Error(-1) }))
 }
 
+fn stream_registration_bridge() -> HostAbiFn {
+    Arc::new(|operation| {
+        Box::pin(async move {
+            match operation {
+                HostOperation::RegisterStream(request)
+                    if request.stream_id == "test/captured-context-stream" =>
+                {
+                    HostOperationResult::Done
+                }
+                _ => HostOperationResult::Error(-1),
+            }
+        })
+    })
+}
+
+fn stream_callback_bridge() -> (HostAbiFn, Arc<AtomicU64>) {
+    let calls = Arc::new(AtomicU64::new(0));
+    let calls_for_bridge = Arc::clone(&calls);
+    let bridge: HostAbiFn = Arc::new(move |operation| {
+        let calls = Arc::clone(&calls_for_bridge);
+        Box::pin(async move {
+            match operation {
+                HostOperation::CallRaw(request) if request.route_key == "test/stream-callback" => {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    HostOperationResult::Bytes(Vec::new())
+                }
+                _ => HostOperationResult::Error(-1),
+            }
+        })
+    });
+    (bridge, calls)
+}
+
+fn captured_context_chunk() -> DataChunk {
+    DataChunk {
+        stream_id: "test/captured-context-stream".to_string(),
+        sequence: 1,
+        payload: Vec::new().into(),
+        metadata: Vec::new(),
+        timestamp_ms: None,
+    }
+}
+
 // ─── Test 1 — basic async dispatch round-trip ───────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -135,6 +180,60 @@ async fn component_model_basic_echo_round_trip() {
         .await
         .expect("echo dispatch should succeed");
     assert_eq!(reply, payload, "test/echo must round-trip the payload");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serial_stream_callback_rebinds_captured_context_token() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let mut workload = instantiate_wasm_workload(&host).await.expect("instantiate");
+    workload
+        .handle(
+            &make_envelope("test/register-stream-context", Vec::new()),
+            test_ctx(),
+            &stream_registration_bridge(),
+        )
+        .await
+        .expect("register stream callback");
+
+    let (bridge, calls) = stream_callback_bridge();
+    workload
+        .handle_data_chunk(
+            captured_context_chunk(),
+            test_actr_id(),
+            test_ctx(),
+            &bridge,
+        )
+        .await
+        .expect("captured context must use the DataChunk invocation's live host bridge");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resident_stream_callback_rebinds_captured_context_token() {
+    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
+    let workload = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let runner = workload.into_interleaved_runner(None);
+    runner
+        .dispatch(
+            &make_envelope("test/register-stream-context", Vec::new()),
+            test_ctx(),
+            &stream_registration_bridge(),
+        )
+        .await
+        .expect("register stream callback through resident region");
+
+    let (bridge, calls) = stream_callback_bridge();
+    runner
+        .data_chunk(
+            captured_context_chunk(),
+            test_actr_id(),
+            test_ctx(),
+            &bridge,
+        )
+        .await
+        .expect("resident DataChunk barrier must rebind the captured context token");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    runner.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

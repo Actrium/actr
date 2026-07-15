@@ -512,6 +512,18 @@ impl TestWasmWorkload {
         self.inner.handle(request_bytes, ctx, host_abi).await
     }
 
+    pub async fn handle_data_chunk(
+        &mut self,
+        chunk: actr_protocol::DataChunk,
+        sender: ActrId,
+        ctx: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> Result<(), crate::wasm::WasmError> {
+        self.inner
+            .handle_data_chunk(chunk, sender, ctx, host_abi)
+            .await
+    }
+
     /// Number of times the underlying store was rebuilt after a guest trap.
     /// Lets integration tests assert that a trap triggered a rebuild and a
     /// business error did not.
@@ -649,6 +661,19 @@ impl TestWorkloadRunner {
     ) -> actr_protocol::ActorResult<()> {
         self.handle
             .on_start(Self::scratch_ctx(), invocation, host_abi)
+            .await
+    }
+
+    /// Deliver a DataChunk barrier through the production actor runner.
+    pub async fn data_chunk(
+        &self,
+        chunk: actr_protocol::DataChunk,
+        sender: ActrId,
+        invocation: InvocationContext,
+        host_abi: &HostAbiFn,
+    ) -> actr_protocol::ActorResult<()> {
+        self.handle
+            .dispatch_data_chunk(chunk, sender, invocation, host_abi)
             .await
     }
 

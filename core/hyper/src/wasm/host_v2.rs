@@ -178,9 +178,16 @@ impl HostWithStore<HostState> for HostState {
         stream_id: String,
     ) -> wasmtime::Result<Result<(), WitActrError>> {
         let host_abi = accessor.with(|mut a| a.get().invocation_host_abi(ctx_token));
-        let op = HostOperation::RegisterStream(HostRegisterStreamV1 { stream_id });
+        let op = HostOperation::RegisterStream(HostRegisterStreamV1 {
+            stream_id: stream_id.clone(),
+        });
         match run_host_operation(host_abi, op).await? {
-            Ok(_) => Ok(Ok(())),
+            Ok(_) => {
+                accessor.with(|mut a| {
+                    a.get().register_stream_context(stream_id, ctx_token);
+                });
+                Ok(Ok(()))
+            }
             Err(e) => Ok(Err(e)),
         }
     }
@@ -191,9 +198,16 @@ impl HostWithStore<HostState> for HostState {
         stream_id: String,
     ) -> wasmtime::Result<Result<(), WitActrError>> {
         let host_abi = accessor.with(|mut a| a.get().invocation_host_abi(ctx_token));
-        let op = HostOperation::UnregisterStream(HostUnregisterStreamV1 { stream_id });
+        let op = HostOperation::UnregisterStream(HostUnregisterStreamV1 {
+            stream_id: stream_id.clone(),
+        });
         match run_host_operation(host_abi, op).await? {
-            Ok(_) => Ok(Ok(())),
+            Ok(_) => {
+                accessor.with(|mut a| {
+                    a.get().unregister_stream_context(&stream_id);
+                });
+                Ok(Ok(()))
+            }
             Err(e) => Ok(Err(e)),
         }
     }
@@ -867,14 +881,19 @@ impl WasmWorkloadV2 {
         self.ensure_instance().await?;
         let _invocation_permit = acquire_invocation(&self.limits)?;
         self.reseed_fuel()?;
+        let stream_id = chunk.stream_id.clone();
         let wit_chunk = proto_data_chunk_to_wit(chunk);
         let wit_sender = proto_actr_id_to_wit(&sender);
-        let token = self
-            .store
-            .as_mut()
-            .expect("serviceable wasm instance must have a Store")
-            .data_mut()
-            .alloc_invocation(ctx.clone(), host_abi.clone());
+        let (token, captured_token) = {
+            let state = self
+                .store
+                .as_mut()
+                .expect("serviceable wasm instance must have a Store")
+                .data_mut();
+            let token = state.alloc_invocation(ctx.clone(), host_abi.clone());
+            let captured_token = state.begin_stream_callback(&stream_id, token);
+            (token, captured_token)
+        };
         let inv = invocation_ctx_to_wit(&ctx, token);
 
         let bindings = &self.bindings;
@@ -894,11 +913,13 @@ impl WasmWorkloadV2 {
         };
 
         if !self.poisoned {
-            self.store
+            let state = self
+                .store
                 .as_mut()
                 .expect("serviceable wasm instance must have a Store")
-                .data_mut()
-                .remove_invocation(token);
+                .data_mut();
+            state.end_stream_callback(captured_token, token);
+            state.remove_invocation(token);
         }
 
         match region {
@@ -1729,11 +1750,14 @@ async fn run_barrier(
                     return BarrierNext::Continue;
                 }
             };
+            let stream_id = chunk.stream_id.clone();
             let (token, live) = accessor.with(|mut a| {
                 let state = a.get();
                 let token = state.alloc_invocation(invocation.clone(), host_abi);
                 (token, state.invocation_count())
             });
+            let captured_token =
+                accessor.with(|mut a| a.get().begin_stream_callback(&stream_id, token));
             let wit_chunk = proto_data_chunk_to_wit(chunk);
             let wit_sender = proto_actr_id_to_wit(&sender);
             let inv = invocation_ctx_to_wit(&invocation, token);
@@ -1769,6 +1793,7 @@ async fn run_barrier(
             };
             let live = accessor.with(|mut a| {
                 let state = a.get();
+                state.end_stream_callback(captured_token, token);
                 state.remove_invocation(token);
                 state.invocation_count()
             });

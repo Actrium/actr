@@ -7,10 +7,10 @@
 //! # Execution contract
 //!
 //! - One loaded guest instance corresponds to one logical actor instance.
-//! - The runtime serialises dispatch into the guest instance. Concurrent
-//!   dispatches within the same instance are forbidden by the host
-//!   (wasmtime enforces this via `&mut Store<HostState>`; dynclib hosts
-//!   enforce via handle ownership).
+//! - DynClib and the legacy 0.1.0 WASM world serialize dispatch into the guest
+//!   instance. The 0.2.0 async WASM world may cooperatively interleave
+//!   distinct-conflict-key dispatches at host-import await points; same-key and
+//!   undeclared dispatches remain serialized by the host scheduler.
 //!
 //! # Supported platforms
 //!

@@ -143,7 +143,9 @@ pub trait Context: Clone + MaybeSendSync + 'static {
     /// Register a DataChunk callback for a specific stream
     ///
     /// When a DataChunk with matching stream_id arrives, the registered callback will be invoked.
-    /// Callbacks are executed concurrently and do not block other streams.
+    /// Delivery is FIFO and run-to-completion for one stream. Different streams
+    /// use independent inbound workers, although a serial-only workload backend
+    /// may still serialize their final guest callbacks.
     ///
     /// # Parameters
     ///

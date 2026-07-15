@@ -167,6 +167,31 @@ impl MessageDispatcher for DoubleDispatcher {
                 let peak = workload.max_seen.load(Ordering::SeqCst);
                 Ok(Bytes::from(peak.to_le_bytes().to_vec()))
             }
+            "test/register-stream-context" => {
+                // A stream callback executes after this dispatch has returned.
+                // Capturing Context is the only way the callback-only API can
+                // issue host operations later, so this locks in the V2 token
+                // rebinding contract.
+                let callback_ctx = ctx.clone();
+                ctx.register_stream(
+                    "test/captured-context-stream".to_string(),
+                    move |_chunk, _sender| {
+                        let callback_ctx = callback_ctx.clone();
+                        Box::pin(async move {
+                            callback_ctx
+                                .call_raw(
+                                    callback_ctx.self_id(),
+                                    "test/stream-callback",
+                                    Bytes::from_static(b"stream-callback"),
+                                )
+                                .await?;
+                            Ok(())
+                        })
+                    },
+                )
+                .await?;
+                Ok(Bytes::new())
+            }
             "test/boom-after-await" => {
                 // Exercise Phase 0.5 spike Test 8: perform a host-side
                 // await, then panic once control returns to the guest.
