@@ -447,7 +447,7 @@ async fn run_hard_rebind(
             coordinator
                 .set_local_id(new_snapshot.actor_id.clone())
                 .await;
-            if let Err(err) = coordinator.close_all_peers().await {
+            if let Err(err) = coordinator.close_all_peers_immediately().await {
                 tracing::warn!(error = %err, "hard rebind failed to close old WebRTC peers");
             }
         }

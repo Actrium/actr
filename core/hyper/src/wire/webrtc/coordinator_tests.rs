@@ -1241,27 +1241,33 @@ async fn relay_source_uses_updated_local_id_after_re_registration() {
     let target_id = test_actor_id(99);
     let credential_state = CredentialState::new(test_credential(), None, None);
     let signaling_client = Arc::new(CapturingSignalingClient::new());
-    let coordinator = WebRtcCoordinator::new(
+    let coordinator = Arc::new(WebRtcCoordinator::new(
         initial_id,
         credential_state,
         signaling_client.clone(),
         WebRtcConfig::default(),
         Arc::new(MediaFrameRegistry::new()),
-    );
+    ));
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
 
     coordinator.set_local_id(renewed_id.clone()).await;
-    coordinator
-        .send_actr_relay(
-            &target_id,
-            actr_relay::Payload::IceCandidate(actr_protocol::IceCandidate {
-                candidate: "candidate:0 1 UDP 1 127.0.0.1 9 typ host".to_string(),
-                sdp_mid: None,
-                sdp_mline_index: None,
-                username_fragment: None,
-            }),
-        )
-        .await
-        .expect("relay should be sent");
+    assert!(
+        coordinator
+            .commit_peer_signaling(
+                &target_id,
+                session_id,
+                None,
+                actr_relay::Payload::IceCandidate(actr_protocol::IceCandidate {
+                    candidate: "candidate:0 1 UDP 1 127.0.0.1 9 typ host".to_string(),
+                    sdp_mid: None,
+                    sdp_mline_index: None,
+                    username_fragment: None,
+                }),
+            )
+            .await
+            .expect("relay should be sent")
+    );
 
     assert_eq!(signaling_client.last_relay_source().await, renewed_id);
 }
@@ -1272,23 +1278,27 @@ async fn actr_relay_answer_can_carry_sdp_exchange_id() {
     let target_id = test_actor_id(99);
     let credential_state = CredentialState::new(test_credential(), None, None);
     let signaling_client = Arc::new(CapturingSignalingClient::new());
-    let coordinator = WebRtcCoordinator::new(
+    let coordinator = Arc::new(WebRtcCoordinator::new(
         local_id,
         credential_state,
         signaling_client.clone(),
         WebRtcConfig::default(),
         Arc::new(MediaFrameRegistry::new()),
-    );
+    ));
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
 
     let payload = actr_relay::Payload::SessionDescription(actr_protocol::SessionDescription {
         r#type: SdpType::Answer as i32,
         sdp: "answer-sdp".to_string(),
         sdp_exchange_id: Some("exchange-1".to_string()),
     });
-    coordinator
-        .send_actr_relay(&target_id, payload)
-        .await
-        .expect("relay answer should be sent");
+    assert!(
+        coordinator
+            .commit_peer_signaling(&target_id, session_id, None, payload)
+            .await
+            .expect("relay answer should be sent")
+    );
 
     let sent = signaling_client.sent_envelopes().await;
     assert_eq!(sent.len(), 1);
@@ -1923,9 +1933,10 @@ async fn session_guarded_candidate_send_serializes_with_cleanup() {
     let send_target = target_id.clone();
     let send = tokio::spawn(async move {
         send_coordinator
-            .send_actr_relay_if_session_current(
+            .commit_peer_signaling(
                 &send_target,
                 session_id,
+                None,
                 actr_relay::Payload::IceCandidate(candidate),
             )
             .await
@@ -2855,13 +2866,16 @@ async fn close_all_peers_waits_for_restart_signaling_commit_before_drain() {
     let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
     let target_for_task = target_id.clone();
     let signaling_task = tokio::spawn(async move {
-        let _commit_guard = commit_context
+        let commit_guard = commit_context
             .acquire_commit(&target_for_task, session_id, Some(cancellation_epoch))
             .await?;
         Some(
-            signaling_for_task
-                .send_envelope(SignalingEnvelope::default())
-                .await,
+            WebRtcCoordinator::send_peer_signaling_envelope_while_guarded(
+                &commit_guard,
+                &signaling_for_task,
+                SignalingEnvelope::default(),
+            )
+            .await,
         )
     });
     tokio::time::timeout(Duration::from_secs(1), send_control.wait_until_started())
@@ -2989,24 +3003,27 @@ async fn stale_peer_at_restart_signaling_boundary_does_not_send_offer() {
     let session_id =
         insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
 
-    let commit_context = coordinator.peer_signaling_commit_context();
-    let restart_signaling_gate = commit_context.gate_for(&target_id).await;
+    let restart_signaling_gate = coordinator.restart_signaling_gate_for(&target_id).await;
     let signaling_guard = restart_signaling_gate.lock().await;
-    let signaling_for_task: Arc<dyn SignalingClient> = signaling_client.clone();
     let cancellation_epoch = coordinator
         .peer_signaling
         .restart_cancellation_epoch
         .load(Ordering::Acquire);
+    let signaling_coordinator = Arc::clone(&coordinator);
     let target_for_task = target_id.clone();
     let signaling_task = tokio::spawn(async move {
-        let _commit_guard = commit_context
-            .acquire_commit(&target_for_task, session_id, Some(cancellation_epoch))
-            .await?;
-        Some(
-            signaling_for_task
-                .send_envelope(SignalingEnvelope::default())
-                .await,
-        )
+        signaling_coordinator
+            .commit_peer_signaling(
+                &target_for_task,
+                session_id,
+                Some(cancellation_epoch),
+                actr_relay::Payload::SessionDescription(actr_protocol::SessionDescription {
+                    r#type: SdpType::IceRestartOffer as i32,
+                    sdp: "restart-offer".to_string(),
+                    sdp_exchange_id: Some("restart-exchange".to_string()),
+                }),
+            )
+            .await
     });
     tokio::task::yield_now().await;
 
@@ -3021,9 +3038,10 @@ async fn stale_peer_at_restart_signaling_boundary_does_not_send_offer() {
     let send_result = tokio::time::timeout(Duration::from_secs(3), signaling_task)
         .await
         .expect("signaling task should finish after the gate is released")
-        .expect("signaling task should join");
+        .expect("signaling task should join")
+        .expect("stale signaling should be rejected without transport error");
     assert!(
-        send_result.is_none(),
+        !send_result,
         "the signaling boundary must reject a removed peer"
     );
     assert!(

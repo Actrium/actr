@@ -31,12 +31,12 @@ use crate::lifecycle::CredentialState;
 use crate::transport::{ConnectionEvent, ConnectionEventBroadcaster, ConnectionState};
 use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
-use actr_protocol::{ActorResult, ActrError};
 use actr_protocol::{
-    ActrId, ActrRelay, IceCandidate, IceRestartRequest, PayloadType, RoleAssignment,
+    AIdCredential, ActrId, ActrRelay, IceCandidate, IceRestartRequest, PayloadType, RoleAssignment,
     RoleNegotiation, SignalingEnvelope, actr_relay, session_description::Type as SdpType,
     signaling_envelope,
 };
+use actr_protocol::{ActorResult, ActrError};
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
 use std::{
     sync::{
@@ -366,6 +366,12 @@ struct PeerSignalingCommitContext {
 
 struct PeerSignalingCommitGuard {
     _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PeerCloseMode {
+    Graceful,
+    Immediate,
 }
 
 impl PeerSignalingCommitContext {
@@ -742,6 +748,7 @@ impl Drop for DrainedPeerCleanupGuard {
                     &peer_id,
                     state,
                     false,
+                    PeerCloseMode::Immediate,
                     "cancelled close all peers",
                 )
                 .await;
@@ -1062,7 +1069,7 @@ impl WebRtcCoordinator {
     }
 
     async fn send_prepared_local_ice_candidates_while_guarded(
-        _commit_guard: &PeerSignalingCommitGuard,
+        commit_guard: &PeerSignalingCommitGuard,
         signaling_client: &Arc<dyn SignalingClient>,
         local_id: &ActrId,
         credential_state: &CredentialState,
@@ -1075,25 +1082,19 @@ impl WebRtcCoordinator {
 
         let credential = credential_state.credential().await;
         for candidate in candidates {
-            let relay = ActrRelay {
-                source: local_id.clone(),
-                credential: credential.clone(),
-                target: target.clone(),
-                payload: Some(actr_relay::Payload::IceCandidate(candidate)),
-            };
-            let envelope = SignalingEnvelope {
-                envelope_version: 1,
-                envelope_id: Self::new_envelope_id(),
-                reply_for: None,
-                timestamp: prost_types::Timestamp {
-                    seconds: chrono::Utc::now().timestamp(),
-                    nanos: 0,
-                },
-                flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
-                traceparent: None,
-                tracestate: None,
-            };
-            if let Err(err) = signaling_client.send_envelope(envelope).await {
+            let envelope = Self::build_actr_relay_envelope(
+                local_id.clone(),
+                credential.clone(),
+                target,
+                actr_relay::Payload::IceCandidate(candidate),
+            );
+            if let Err(err) = Self::send_peer_signaling_envelope_while_guarded(
+                commit_guard,
+                signaling_client,
+                envelope,
+            )
+            .await
+            {
                 tracing::warn!(
                     "⚠️ Failed to send buffered local ICE candidate to {}: {}",
                     target,
@@ -1374,6 +1375,7 @@ impl WebRtcCoordinator {
         target: &ActrId,
         mut state: PeerState,
         abort_restart_task: bool,
+        close_mode: PeerCloseMode,
         reason: &str,
     ) {
         let session_id = state.session_id;
@@ -1418,7 +1420,11 @@ impl WebRtcCoordinator {
         Self::notify_removed_peer_idle_if_needed(hook_callback, target, session_id, &state, reason)
             .await;
 
-        if let Err(e) = state.webrtc_conn.close().await {
+        let close_result = match close_mode {
+            PeerCloseMode::Graceful => state.webrtc_conn.close().await,
+            PeerCloseMode::Immediate => state.webrtc_conn.close_immediately().await,
+        };
+        if let Err(e) = close_result {
             tracing::warn!(
                 "⚠️ Failed to close webrtc_conn during cleanup for {} (session_id={}, reason={}): {}",
                 target,
@@ -1467,6 +1473,7 @@ impl WebRtcCoordinator {
             target,
             state,
             abort_restart_task,
+            PeerCloseMode::Immediate,
             reason,
         )
         .await;
@@ -3003,6 +3010,20 @@ impl WebRtcCoordinator {
     /// RTCPeerConnection instances are closed and associated state
     /// (pending ICE candidates, WebRtcConnection state) is dropped.
     pub async fn close_all_peers(&self) -> ActorResult<()> {
+        self.close_all_peers_with_mode(PeerCloseMode::Graceful)
+            .await
+    }
+
+    /// Close all peers without waiting for DataChannel buffers to drain.
+    ///
+    /// Mobile recovery paths use this because the OS can leave WebRTC's
+    /// connection state at `Connected` after the underlying route is gone.
+    pub async fn close_all_peers_immediately(&self) -> ActorResult<()> {
+        self.close_all_peers_with_mode(PeerCloseMode::Immediate)
+            .await
+    }
+
+    async fn close_all_peers_with_mode(&self, close_mode: PeerCloseMode) -> ActorResult<()> {
         let lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
         let Some(close_state_guard) =
             CloseAllStateGuard::try_enter(Arc::clone(&self.peer_signaling))
@@ -3205,6 +3226,7 @@ impl WebRtcCoordinator {
                     &task_peer_id,
                     state,
                     false,
+                    close_mode,
                     "close all peers",
                 )
                 .await;
@@ -3322,23 +3344,20 @@ impl WebRtcCoordinator {
         }
     }
 
-    /// Send ActrRelay message (internal helper method)
-    async fn send_actr_relay(
-        &self,
+    fn build_actr_relay_envelope(
+        local_id: ActrId,
+        credential: AIdCredential,
         target: &ActrId,
         payload: actr_relay::Payload,
-    ) -> ActorResult<()> {
-        let credential = self.credential_state.credential().await;
+    ) -> SignalingEnvelope {
         let relay = ActrRelay {
-            source: self.local_id_snapshot(),
+            source: local_id,
             credential,
             target: target.clone(),
             payload: Some(payload),
         };
 
-        let flow = signaling_envelope::Flow::ActrRelay(relay);
-
-        let envelope = SignalingEnvelope {
+        SignalingEnvelope {
             envelope_version: 1,
             envelope_id: Self::new_envelope_id(),
             reply_for: None,
@@ -3348,34 +3367,93 @@ impl WebRtcCoordinator {
             },
             traceparent: None,
             tracestate: None,
-            flow: Some(flow),
-        };
+            flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
+        }
+    }
 
-        self.signaling_client
-            .send_envelope(envelope)
-            .await
-            .map_err(|e| ActrError::Unavailable(format!("Signaling server unavailable: {e}")))?;
+    /// The only raw send boundary for signaling tied to an existing peer.
+    ///
+    /// Requiring the peer commit guard in the type signature prevents new
+    /// Offer/Answer/ICE call sites from accidentally bypassing cleanup and
+    /// current-session validation.
+    async fn send_peer_signaling_envelope_while_guarded(
+        _commit_guard: &PeerSignalingCommitGuard,
+        signaling_client: &Arc<dyn SignalingClient>,
+        envelope: SignalingEnvelope,
+    ) -> crate::transport::NetworkResult<()> {
+        signaling_client.send_envelope(envelope).await
+    }
+
+    async fn send_peer_actr_relay_while_guarded(
+        &self,
+        commit_guard: &PeerSignalingCommitGuard,
+        target: &ActrId,
+        payload: actr_relay::Payload,
+    ) -> ActorResult<()> {
+        let credential = self.credential_state.credential().await;
+        let envelope =
+            Self::build_actr_relay_envelope(self.local_id_snapshot(), credential, target, payload);
+
+        Self::send_peer_signaling_envelope_while_guarded(
+            commit_guard,
+            &self.signaling_client,
+            envelope,
+        )
+        .await
+        .map_err(|e| ActrError::Unavailable(format!("Signaling server unavailable: {e}")))?;
 
         Ok(())
     }
 
-    async fn send_actr_relay_if_session_current(
+    async fn commit_peer_signaling(
         &self,
         target: &ActrId,
         session_id: u64,
+        restart_epoch: Option<u64>,
         payload: actr_relay::Payload,
     ) -> ActorResult<bool> {
+        // Resolve mutable identity state before taking the per-peer gate so a
+        // credential refresh cannot unnecessarily block cleanup for this peer.
+        let credential = self.credential_state.credential().await;
+        let envelope =
+            Self::build_actr_relay_envelope(self.local_id_snapshot(), credential, target, payload);
         let commit_context = self.peer_signaling_commit_context();
         let Some(commit_guard) = commit_context
-            .acquire_commit(target, session_id, None)
+            .acquire_commit(target, session_id, restart_epoch)
             .await
         else {
             return Ok(false);
         };
-        let send_result = self.send_actr_relay(target, payload).await.map(|()| true);
+        let send_result = Self::send_peer_signaling_envelope_while_guarded(
+            &commit_guard,
+            &self.signaling_client,
+            envelope,
+        )
+        .await
+        .map(|()| true)
+        .map_err(|e| ActrError::Unavailable(format!("Signaling server unavailable: {e}")));
         drop(commit_guard);
         Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
         send_result
+    }
+
+    /// Role negotiation happens before a peer session exists, so there is no
+    /// session id against which the peer-scoped commit guard could validate.
+    async fn send_role_negotiation(
+        &self,
+        target: &ActrId,
+        role_negotiation: RoleNegotiation,
+    ) -> ActorResult<()> {
+        let envelope = Self::build_actr_relay_envelope(
+            self.local_id_snapshot(),
+            self.credential_state.credential().await,
+            target,
+            actr_relay::Payload::RoleNegotiation(role_negotiation),
+        );
+        self.signaling_client
+            .send_envelope(envelope)
+            .await
+            .map_err(|e| ActrError::Unavailable(format!("Signaling server unavailable: {e}")))
     }
 
     /// Initiate connection (create Offer)
@@ -3997,9 +4075,10 @@ impl WebRtcCoordinator {
                                 }
                                 span
                             };
-                            let send_actr_relay_fut = coord.send_actr_relay_if_session_current(
+                            let send_actr_relay_fut = coord.commit_peer_signaling(
                                 &target_id,
                                 candidate_session_id,
+                                None,
                                 payload,
                             );
                             #[cfg(feature = "opentelemetry")]
@@ -4036,10 +4115,23 @@ impl WebRtcCoordinator {
             sdp_exchange_id: Some(sdp_exchange_id.clone()),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
-        if let Err(e) = self.send_actr_relay(target, payload).await {
-            self.clear_pending_local_offer(target, webrtc_conn.session_id(), &sdp_exchange_id)
-                .await;
-            return Err(e);
+        match self
+            .commit_peer_signaling(target, webrtc_conn.session_id(), None, payload)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.clear_pending_local_offer(target, webrtc_conn.session_id(), &sdp_exchange_id)
+                    .await;
+                return Err(ActrError::Unavailable(format!(
+                    "Peer session changed before Offer signaling commit: {target}"
+                )));
+            }
+            Err(err) => {
+                self.clear_pending_local_offer(target, webrtc_conn.session_id(), &sdp_exchange_id)
+                    .await;
+                return Err(err);
+            }
         }
 
         tracing::info!("✅ Sent Offer to {}", target);
@@ -4454,9 +4546,10 @@ impl WebRtcCoordinator {
                                 }
                                 span
                             };
-                            let send_actr_relay_fut = coord.send_actr_relay_if_session_current(
+                            let send_actr_relay_fut = coord.commit_peer_signaling(
                                 &target_id,
                                 candidate_session_id,
+                                None,
                                 payload,
                             );
                             #[cfg(feature = "opentelemetry")]
@@ -4494,7 +4587,17 @@ impl WebRtcCoordinator {
             sdp_exchange_id: Some(sdp_exchange_id),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
-        self.send_actr_relay(from, payload).await?;
+        if !self
+            .commit_peer_signaling(from, webrtc_conn.session_id(), None, payload)
+            .await?
+        {
+            tracing::debug!(
+                "⏭️ Skipped Answer for stale peer session: peer={}, session_id={}",
+                from,
+                webrtc_conn.session_id()
+            );
+            return Ok(());
+        }
 
         tracing::info!("✅ Sent Answer to {}", from);
 
@@ -5906,10 +6009,23 @@ impl WebRtcCoordinator {
             sdp_exchange_id: Some(sdp_exchange_id.clone()),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
-        if let Err(e) = self.send_actr_relay(target, payload).await {
-            self.clear_pending_local_offer(target, session_id, &sdp_exchange_id)
-                .await;
-            return Err(e);
+        match self
+            .commit_peer_signaling(target, session_id, None, payload)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.clear_pending_local_offer(target, session_id, &sdp_exchange_id)
+                    .await;
+                return Err(ActrError::Unavailable(format!(
+                    "Peer session changed before renegotiation Offer signaling commit: {target}"
+                )));
+            }
+            Err(err) => {
+                self.clear_pending_local_offer(target, session_id, &sdp_exchange_id)
+                    .await;
+                return Err(err);
+            }
         }
 
         tracing::info!("✅ Sent renegotiation Offer to {}", target);
@@ -6248,31 +6364,26 @@ impl WebRtcCoordinator {
             reason
         );
 
-        let relay = ActrRelay {
-            source: local_id.clone(),
-            credential: credential_state.credential().await,
-            target: target.clone(),
-            payload: Some(actr_relay::Payload::IceRestartRequest(IceRestartRequest {
+        let envelope = Self::build_actr_relay_envelope(
+            local_id.clone(),
+            credential_state.credential().await,
+            target,
+            actr_relay::Payload::IceRestartRequest(IceRestartRequest {
                 reason: Some(reason.to_string()),
-            })),
-        };
-        let envelope = SignalingEnvelope {
-            envelope_version: 1,
-            envelope_id: Self::new_envelope_id(),
-            reply_for: None,
-            timestamp: prost_types::Timestamp {
-                seconds: chrono::Utc::now().timestamp(),
-                nanos: 0,
-            },
-            flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
-            traceparent: None,
-            tracestate: None,
-        };
+            }),
+        );
 
-        let _commit_guard = commit_context
+        let commit_guard = commit_context
             .acquire_commit(target, restart_session_id, Some(cancellation_epoch))
             .await?;
-        Some(signaling_client.send_envelope(envelope).await)
+        Some(
+            Self::send_peer_signaling_envelope_while_guarded(
+                &commit_guard,
+                signaling_client,
+                envelope,
+            )
+            .await,
+        )
     }
 
     /// Handle incoming IceRestartRequest from Answerer (Approach A).
@@ -6606,31 +6717,16 @@ impl WebRtcCoordinator {
 
             // Send ICE restart offer
             let sdp_exchange_id = Self::new_envelope_id();
-            let relay = ActrRelay {
-                source: local_id.clone(),
-                credential: credential_state.credential().await,
-                target: target.clone(),
-                payload: Some(actr_relay::Payload::SessionDescription(
-                    actr_protocol::SessionDescription {
-                        r#type: SdpType::IceRestartOffer as i32,
-                        sdp: offer_sdp,
-                        sdp_exchange_id: Some(sdp_exchange_id.clone()),
-                    },
-                )),
-            };
-
-            let envelope = SignalingEnvelope {
-                envelope_version: 1,
-                envelope_id: Self::new_envelope_id(),
-                reply_for: None,
-                timestamp: prost_types::Timestamp {
-                    seconds: chrono::Utc::now().timestamp(),
-                    nanos: 0,
-                },
-                flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
-                traceparent: None,
-                tracestate: None,
-            };
+            let envelope = Self::build_actr_relay_envelope(
+                local_id.clone(),
+                credential_state.credential().await,
+                target,
+                actr_relay::Payload::SessionDescription(actr_protocol::SessionDescription {
+                    r#type: SdpType::IceRestartOffer as i32,
+                    sdp: offer_sdp,
+                    sdp_exchange_id: Some(sdp_exchange_id.clone()),
+                }),
+            );
 
             let Some(commit_guard) = commit_context
                 .acquire_commit(target, restart_session_id, Some(cancellation_epoch))
@@ -6663,7 +6759,13 @@ impl WebRtcCoordinator {
                 return Ok(true);
             }
 
-            if let Err(e) = signaling_client.send_envelope(envelope).await {
+            if let Err(e) = Self::send_peer_signaling_envelope_while_guarded(
+                &commit_guard,
+                signaling_client,
+                envelope,
+            )
+            .await
+            {
                 tracing::error!(
                     "❌ Failed to send ICE restart offer to serial={}: {}",
                     target,
@@ -6948,12 +7050,12 @@ impl WebRtcCoordinator {
         tracing::info!("🔄 Processing renegotiation Offer from {}", from);
 
         // 1. Get existing peer connection
-        let peer_connection = {
+        let (peer_connection, session_id) = {
             let peers = self.peers.read().await;
             let state = peers.get(from).ok_or_else(|| {
                 ActrError::Internal("Peer state not found for renegotiation".to_string())
             })?;
-            state.peer_connection.clone()
+            (state.peer_connection.clone(), state.session_id)
         };
 
         // 2. Set remote description (new Offer)
@@ -6995,7 +7097,17 @@ impl WebRtcCoordinator {
             sdp_exchange_id: Some(sdp_exchange_id),
         };
         let payload = actr_relay::Payload::SessionDescription(session_desc);
-        self.send_actr_relay(from, payload).await?;
+        if !self
+            .commit_peer_signaling(from, session_id, None, payload)
+            .await?
+        {
+            tracing::debug!(
+                "⏭️ Skipped renegotiation Answer for stale peer session: peer={}, session_id={}",
+                from,
+                session_id
+            );
+            return Ok(());
+        }
 
         tracing::info!("✅ Sent renegotiation Answer to {}", from);
 
@@ -7109,7 +7221,11 @@ impl WebRtcCoordinator {
             sdp_exchange_id: Some(sdp_exchange_id),
         };
         if let Err(err) = self
-            .send_actr_relay(from, actr_relay::Payload::SessionDescription(session_desc))
+            .send_peer_actr_relay_while_guarded(
+                &commit_guard,
+                from,
+                actr_relay::Payload::SessionDescription(session_desc),
+            )
             .await
         {
             Self::suppress_local_ice_generation(&self.peers, from, session_id).await;
@@ -7131,7 +7247,11 @@ impl WebRtcCoordinator {
                 .map_err(ActrError::Internal)?;
         for candidate in buffered_candidates {
             if let Err(err) = self
-                .send_actr_relay(from, actr_relay::Payload::IceCandidate(candidate))
+                .send_peer_actr_relay_while_guarded(
+                    &commit_guard,
+                    from,
+                    actr_relay::Payload::IceCandidate(candidate),
+                )
                 .await
             {
                 tracing::warn!(
@@ -7342,14 +7462,14 @@ impl WebRtcCoordinator {
             .role_tx = Some(tx);
 
         let local_id = self.local_id_snapshot();
-        let payload = actr_relay::Payload::RoleNegotiation(RoleNegotiation {
+        let role_negotiation = RoleNegotiation {
             from: local_id.clone(),
             to: target.clone(),
             realm_id: local_id.realm.realm_id,
-        });
+        };
 
         tracing::debug!("🔄 Sending role negotiation to serial={}", target);
-        self.send_actr_relay(target, payload).await?;
+        self.send_role_negotiation(target, role_negotiation).await?;
 
         rx.await.map_err(|_| {
             ActrError::Internal("Role negotiation channel closed before assignment".to_string())

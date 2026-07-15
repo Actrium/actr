@@ -744,7 +744,23 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             coordinator.clear_pending_restarts().await;
         }
 
-        // Step 2: Cancel PeerTransport singleflight and close established transports.
+        // Step 2: Remove coordinator-owned peer sessions first and force-close
+        // them without draining DataChannels. On mobile, WebRTC may continue to
+        // report Connected after the OS route has disappeared, so a graceful
+        // drain here can only wait for data that can no longer be delivered.
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("🔻 Force-closing all WebRTC peer connections...");
+            if let Err(e) = coordinator.close_all_peers_immediately().await {
+                let err_msg = format!("Failed to close all peers: {}", e);
+                tracing::warn!("⚠️  {}", err_msg);
+                // Do not fail the whole cleanup; continue releasing other resources.
+            } else {
+                tracing::info!("✅ All WebRTC peer connections closed");
+            }
+        }
+
+        // Step 3: Cancel PeerTransport singleflight and close any remaining
+        // established transport handles after the coordinator sessions are gone.
         if let Some(ref peer_transport) = self.peer_transport {
             tracing::info!("🔻 Closing all PeerTransport connections...");
             if let Err(e) = peer_transport.close_all().await {
@@ -753,18 +769,6 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
                 // Do not fail the whole cleanup; continue releasing other resources.
             } else {
                 tracing::info!("✅ All PeerTransport connections closed");
-            }
-        }
-
-        // Step 3: Close all WebRTC peer connections
-        if let Some(ref coordinator) = self.webrtc_coordinator {
-            tracing::info!("🔻 Closing all WebRTC peer connections...");
-            if let Err(e) = coordinator.close_all_peers().await {
-                let err_msg = format!("Failed to close all peers: {}", e);
-                tracing::warn!("⚠️  {}", err_msg);
-                // Do not fail the whole cleanup; continue releasing other resources.
-            } else {
-                tracing::info!("✅ All WebRTC peer connections closed");
             }
         }
 
