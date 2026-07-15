@@ -3,7 +3,7 @@
 //! WIT <-> DynClib C ABI shape lint.
 //!
 //! Cross-checks the canonical WIT contract at
-//! `core/framework/wit/actr-workload.wit` against the hand-rolled C ABI in
+//! `core/framework/wit-v2/actr-workload.wit` against the hand-rolled C ABI in
 //! `core/framework/src/guest/dynclib_abi.rs`, surfacing field-, type-, variant- and
 //! function-shape drift between the two.
 //!

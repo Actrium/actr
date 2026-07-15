@@ -343,7 +343,7 @@ fn check_function(
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// The canonical mapping table for actr-workload@0.1.0.
+// The canonical mapping table for actr-workload@0.2.0.
 // ─────────────────────────────────────────────────────────────────────────
 
 /// Canonical mapping used by the production lint invocation.
@@ -412,7 +412,8 @@ pub fn default_mapping() -> Mapping {
             // GuestHandleV1 }` frame; the guest unwraps it. Context
             // (self-id / caller-id / request-id) is embedded inside
             // GuestHandleV1.ctx because the DynClib path has no counterpart
-            // to the WIT `host` interface's context accessors.
+            // to the WIT `invocation-ctx` export parameter that the 0.2.0
+            // contract threads through `dispatch` and the lifecycle hooks.
             FunctionMapping {
                 wit_key: "workload.dispatch",
                 rust_payload: "GuestHandleV1",
@@ -453,12 +454,16 @@ pub fn default_mapping() -> Mapping {
             "actr-type",
             "actr-id",
             "rpc-envelope",
-            // Per-dispatch context accessors — DynClib threads context
-            // through GuestHandleV1.ctx instead.
+            // Per-invocation context record threaded through every 0.2.0
+            // export — WASM only; DynClib threads context through
+            // GuestHandleV1.ctx instead of the WIT `invocation-ctx`
+            // parameter. The 0.1.0 `host` interface's `get-self-id` /
+            // `get-caller-id` / `get-request-id` accessors were removed in
+            // 0.2.0, so they no longer appear here.
+            "invocation-ctx",
+            // Structured log sink — WASM only; DynClib has no WIT-mapped
+            // counterpart (it routes logs through its own host ABI bridge).
             "host.log-message",
-            "host.get-self-id",
-            "host.get-caller-id",
-            "host.get-request-id",
         ]
         .into_iter()
         .collect(),
