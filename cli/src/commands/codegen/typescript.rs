@@ -1698,8 +1698,9 @@ fn rewrite_imports(output: &Path) -> Result<()> {
 /// Build the argument vector for the `unzip` invocation that extracts
 /// `archive_path` into `extract_dir`. Extracted as a helper so the exact flag
 /// set is unit-testable: `unzip` selects its destination directory with `-d`;
-/// it has no `-C` flag (that is BSD `tar`), so a `-C` here silently breaks
-/// extraction in CI.
+/// `-C` enables case-insensitive member matching rather than selecting a
+/// destination, so using it here makes the extract path a member pattern and
+/// breaks extraction in CI.
 fn unzip_extract_args(archive_path: &Path, extract_dir: &Path) -> Vec<std::ffi::OsString> {
     vec![
         "-q".into(),
