@@ -46,18 +46,27 @@ export function resetHostCalls(): void {
   hostCalls.sendDataChunk.length = 0;
 }
 
-export function registerStream(streamId: string): void {
+// V2 host imports take a `ctx-token: bigint` first parameter and are async.
+// The test runtime resolves the token to `0n` when no invocation context is
+// active, so the mocks ignore it and record only the user-facing payload —
+// keeping the existing assertions stable.
+
+export async function registerStream(_ctxToken: bigint, streamId: string): Promise<void> {
   hostCalls.registerStream.push(streamId);
 }
 
-export function unregisterStream(streamId: string): void {
+export async function unregisterStream(
+  _ctxToken: bigint,
+  streamId: string,
+): Promise<void> {
   hostCalls.unregisterStream.push(streamId);
 }
 
-export function sendDataChunk(
+export async function sendDataChunk(
+  _ctxToken: bigint,
   target: Dest,
   chunk: DataChunk,
   payloadType: PayloadType,
-): void {
+): Promise<void> {
   hostCalls.sendDataChunk.push({ target, chunk, payloadType });
 }

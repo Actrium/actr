@@ -10,13 +10,13 @@
   },
   "files": [
     "dist",
-    "src/wit/actr-workload.wit"
+    "src/wit-v2/actr-workload.wit"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/wit', 'dist/wit', { recursive: true })\"",
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/wit-v2', 'dist/wit-v2', { recursive: true })\"",
     "check": "tsc -p tsconfig.json --noEmit",
     "format": "prettier --check .",
     "format:write": "prettier --write .",

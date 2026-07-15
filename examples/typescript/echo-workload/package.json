@@ -6,7 +6,7 @@
   "scripts": {
     "codegen": "cargo run -p actr-cli -- gen -l typescript --input protos --output src/generated",
     "build": "tsc -p tsconfig.json",
-    "componentize": "actr-workload-ts componentize dist/actr_service.js -o dist/echo-typescript-0.1.0-wasm32-wasip2.wasm --wit ../../../core/framework/wit/actr-workload.wit",
+    "componentize": "actr-workload-ts componentize dist/actr_service.js -o dist/echo-typescript-0.2.0-wasm32-wasip2.wasm --wit ../../../core/framework/wit-v2/actr-workload.wit",
     "package": "actr build --manifest-path manifest.toml --no-compile"
   },
   "dependencies": {

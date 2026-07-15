@@ -17,15 +17,16 @@ export interface ComponentizeOptions {
 
 function toPublicEnvelope(): string {
   return `{
-    method: envelope?.routeKey ?? envelope?.method ?? '',
+    method: envelope?.routeKey ?? '',
+    routeKey: envelope?.routeKey ?? '',
+    requestId: envelope?.requestId ?? '',
     payload: envelope?.payload,
-    correlationId: envelope?.requestId ?? envelope?.correlationId,
   }`;
 }
 
 function shimSource(entry: string, runtimeEntry: string): string {
   return `
-	import { __dispatchDataChunk } from ${JSON.stringify(runtimeEntry)};
+	import { __dispatchDataChunk, withInvocationCtx } from ${JSON.stringify(runtimeEntry)};
 	import userWorkload from ${JSON.stringify(entry)};
 
 function activeWorkload() {
@@ -65,47 +66,83 @@ function errorMessage(event) {
 }
 
 export const workload = {
-  async dispatch(envelope) {
-    const result = await activeWorkload().dispatch(${toPublicEnvelope()});
-    return toUint8Array(result);
+  async dispatch(envelope, ctx) {
+    return await withInvocationCtx(ctx, async () => {
+      const result = await activeWorkload().dispatch(${toPublicEnvelope()});
+      return toUint8Array(result);
+    });
   },
 
-  async onStart() {
-    await activeWorkload().onStart?.();
+  async onStart(ctx) {
+    return await withInvocationCtx(ctx, async () => {
+      await activeWorkload().onStart?.(ctx);
+    });
   },
 
-  async onReady() {
-    await activeWorkload().onReady?.();
+  async onReady(ctx) {
+    return await withInvocationCtx(ctx, async () => {
+      await activeWorkload().onReady?.(ctx);
+    });
   },
 
-  async onStop() {
-    await activeWorkload().onStop?.();
+  async onStop(ctx) {
+    return await withInvocationCtx(ctx, async () => {
+      await activeWorkload().onStop?.(ctx);
+    });
   },
 
-	  async onError(event) {
-	    await activeWorkload().onError?.(errorMessage(event));
-	  },
+  async onError(event, ctx) {
+    return await withInvocationCtx(ctx, async () => {
+      await activeWorkload().onError?.(errorMessage(event), ctx);
+    });
+  },
 
-	  async onDataChunk(chunk, sender) {
-	    if (typeof activeWorkload().onDataChunk === 'function') {
-	      await activeWorkload().onDataChunk(chunk, sender);
-	      return;
-	    }
-	    await __dispatchDataChunk(chunk, sender);
-	  },
+  async onDataChunk(chunk, sender, ctx) {
+    return await withInvocationCtx(ctx, async () => {
+      if (typeof activeWorkload().onDataChunk === 'function') {
+        await activeWorkload().onDataChunk(chunk, sender, ctx);
+        return;
+      }
+      await __dispatchDataChunk(chunk, sender);
+    });
+  },
 
-  onSignalingConnecting() {},
-  onSignalingConnected() {},
-  onSignalingDisconnected() {},
-  onWebsocketConnecting(_event) {},
-  onWebsocketConnected(_event) {},
-  onWebsocketDisconnected(_event) {},
-  onWebrtcConnecting(_event) {},
-  onWebrtcConnected(_event) {},
-  onWebrtcDisconnected(_event) {},
-  onCredentialRenewed(_event) {},
-  onCredentialExpiring(_event) {},
-  onMailboxBackpressure(_event) {},
+  async onSignalingConnecting(ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onSignalingConnected(ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onSignalingDisconnected(ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onWebsocketConnecting(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onWebsocketConnected(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onWebsocketDisconnected(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onWebrtcConnecting(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onWebrtcConnected(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onWebrtcDisconnected(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onCredentialRenewed(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onCredentialExpiring(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
+  async onMailboxBackpressure(_event, ctx) {
+    await withInvocationCtx(ctx, async () => {});
+  },
 };
 `;
 }
@@ -138,7 +175,7 @@ export async function componentize(
       format: 'esm',
       platform: 'node',
       target: 'es2022',
-      external: ['actr:workload/host@0.1.0'],
+      external: ['actr:workload/host@0.2.0'],
       absWorkingDir: projectDir,
       sourcemap: false,
       logLevel: 'silent',
@@ -150,7 +187,7 @@ export async function componentize(
       '--wit',
       wit,
       '-n',
-      'actr-workload-guest',
+      'actr-workload-guest-v2',
       '--disable',
       'http',
       'fetch-event',

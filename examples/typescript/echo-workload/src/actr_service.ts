@@ -6,6 +6,7 @@ import {
   toUint8Array,
   unregisterStream,
 } from '@actrium/actr-workload';
+import type { InvocationCtx } from '@actrium/actr-workload';
 import { create } from '@bufbuild/protobuf';
 
 import type {
@@ -39,28 +40,34 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
 
   async prepareStream(
     request: StreamPrepareRequest,
+    ctx?: InvocationCtx,
   ): Promise<StreamPrepareResponse> {
     const inboundStreamId = request.inboundStreamId;
     const replyStreamId = request.replyStreamId;
     const replyMessage = request.replyMessage;
 
-    await registerStream(inboundStreamId, async (chunk, sender) => {
-      const incoming = textDecoder.decode(toUint8Array(chunk.payload));
+    await registerStream(
+      inboundStreamId,
+      async (chunk, sender) => {
+        const incoming = textDecoder.decode(toUint8Array(chunk.payload));
 
-      await sendDataChunk(
-        { peer: sender },
-        {
-          streamId: replyStreamId,
-          sequence: BigInt(chunk.sequence) + 1n,
-          payload: textEncoder.encode(`${replyMessage}: ${incoming}`),
-          metadata: [{ key: 'echo-runtime', value: 'typescript-wasm' }],
-          timestampMs: BigInt(Date.now()),
-        },
-        PayloadType.StreamReliable,
-      );
+        await sendDataChunk(
+          { peer: sender },
+          {
+            streamId: replyStreamId,
+            sequence: BigInt(chunk.sequence) + 1n,
+            payload: textEncoder.encode(`${replyMessage}: ${incoming}`),
+            metadata: [{ key: 'echo-runtime', value: 'typescript-wasm' }],
+            timestampMs: BigInt(Date.now()),
+          },
+          PayloadType.StreamReliable,
+          ctx,
+        );
 
-      await unregisterStream(inboundStreamId);
-    });
+        await unregisterStream(inboundStreamId, ctx);
+      },
+      ctx,
+    );
 
     return create(StreamPrepareResponseSchema, {
       status: `registered:${inboundStreamId}`,
@@ -69,8 +76,9 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
 
   async releaseStream(
     request: StreamReleaseRequest,
+    ctx?: InvocationCtx,
   ): Promise<StreamReleaseResponse> {
-    await unregisterStream(request.streamId);
+    await unregisterStream(request.streamId, ctx);
     return create(StreamReleaseResponseSchema, {
       status: `unregistered:${request.streamId}`,
     });
@@ -88,7 +96,7 @@ export default defineWorkload({
     console.log('Generated TypeScript EchoService workload stopped');
   },
 
-  async dispatch(envelope): Promise<Uint8Array> {
-    return dispatcher.dispatch(envelope);
+  async dispatch(envelope, ctx): Promise<Uint8Array> {
+    return dispatcher.dispatch(envelope, ctx);
   },
 });
