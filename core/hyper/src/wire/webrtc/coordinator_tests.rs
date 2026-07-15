@@ -73,6 +73,17 @@ async fn insert_pending_offer_peer(
     session_id
 }
 
+async fn mark_peer_as_answerer(
+    coordinator: &Arc<WebRtcCoordinator>,
+    peer_id: &ActrId,
+) -> (u64, WebRtcConnection) {
+    let mut peers = coordinator.peers.write().await;
+    let state = peers.get_mut(peer_id).expect("peer should exist");
+    state.is_offerer = false;
+    state.update_connection_state(RTCPeerConnectionState::Connected);
+    (state.session_id, state.webrtc_conn.clone())
+}
+
 struct CapturingSignalingClient {
     sent: Mutex<Vec<SignalingEnvelope>>,
     event_tx: broadcast::Sender<super::super::SignalingEvent>,
@@ -199,6 +210,91 @@ fn new_test_coordinator(local_id: ActrId) -> Arc<WebRtcCoordinator> {
         WebRtcConfig::default(),
         Arc::new(MediaFrameRegistry::new()),
     ))
+}
+
+#[tokio::test]
+async fn answerer_unavailable_states_request_offerer_ice_restart() {
+    for unavailable_state in [
+        RTCPeerConnectionState::Disconnected,
+        RTCPeerConnectionState::Failed,
+    ] {
+        let local_id = test_actor_id(1);
+        let peer_id = test_actor_id(99);
+        let credential_state = CredentialState::new(test_credential(), None, None);
+        let signaling_client = Arc::new(CapturingSignalingClient::new());
+        let coordinator = Arc::new(WebRtcCoordinator::new(
+            local_id,
+            credential_state,
+            signaling_client.clone(),
+            WebRtcConfig::default(),
+            Arc::new(MediaFrameRegistry::new()),
+        ));
+
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+        let (session_id, webrtc_conn) = mark_peer_as_answerer(&coordinator, &peer_id).await;
+
+        coordinator
+            .handle_peer_state_change(&webrtc_conn, &peer_id, session_id, unavailable_state)
+            .await;
+
+        let sent = signaling_client.sent_envelopes().await;
+        assert_eq!(
+            sent.len(),
+            1,
+            "Answerer should send one recovery request after {unavailable_state:?}"
+        );
+        let Some(signaling_envelope::Flow::ActrRelay(relay)) = &sent[0].flow else {
+            panic!("expected ActrRelay envelope");
+        };
+        assert!(
+            matches!(
+                relay.payload.as_ref(),
+                Some(actr_relay::Payload::IceRestartRequest(_))
+            ),
+            "Answerer must request the Offerer to restart ICE, not create an offer"
+        );
+    }
+}
+
+#[tokio::test]
+async fn stale_answerer_state_does_not_request_ice_restart() {
+    let local_id = test_actor_id(1);
+    let peer_id = test_actor_id(99);
+    let credential_state = CredentialState::new(test_credential(), None, None);
+    let signaling_client = Arc::new(CapturingSignalingClient::new());
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        local_id,
+        credential_state,
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+    let (session_id, webrtc_conn) = mark_peer_as_answerer(&coordinator, &peer_id).await;
+
+    coordinator
+        .handle_peer_state_change(
+            &webrtc_conn,
+            &peer_id,
+            session_id + 1,
+            RTCPeerConnectionState::Disconnected,
+        )
+        .await;
+
+    assert!(
+        signaling_client.sent_envelopes().await.is_empty(),
+        "stale Answerer callbacks must not send IceRestartRequest"
+    );
+    let peers = coordinator.peers.read().await;
+    assert_eq!(
+        peers
+            .get(&peer_id)
+            .expect("active peer should remain")
+            .current_state,
+        RTCPeerConnectionState::Connected,
+        "stale callbacks must not update the active session"
+    );
 }
 
 #[tokio::test]
