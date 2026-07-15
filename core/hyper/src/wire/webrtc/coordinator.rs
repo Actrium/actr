@@ -24,7 +24,7 @@ use super::connection::WebRtcConnection;
 use super::negotiator::WebRtcNegotiator;
 #[cfg(feature = "opentelemetry")]
 use super::trace;
-use super::{SignalingClient, WebRtcConfig, WebRtcInboundMessage};
+use super::{SignalingClient, SignalingEvent, WebRtcConfig, WebRtcInboundMessage};
 use crate::INITIAL_CONNECTION_TIMEOUT;
 use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::CredentialState;
@@ -68,6 +68,7 @@ const ICE_CONNECTED_TIMEOUT: Duration = Duration::from_secs(10);
 const DATA_CHANNEL_AFTER_ICE_TIMEOUT: Duration = Duration::from_secs(2);
 const ROLE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(6);
 const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const ANSWERER_RECOVERY_STALE_TIMEOUT: Duration = ICE_RESTART_MAX_TOTAL_DURATION;
@@ -88,9 +89,10 @@ const MAX_FAILED_DURATION: Duration = Duration::from_secs(60); // 1 minute
 /// recovery either succeeds — leaving Disconnected and resetting
 /// `last_state_change` — or exhausts its budget and self-cleans within 60s of
 /// the transition. Anything still Disconnected past 90s (budget + margin) is
-/// unrecoverable (answerer-side peers never run a restart task; offerer-side
-/// tasks can be aborted by `clear_pending_restarts`) and would otherwise pin
-/// its RTCPeerConnection — and the ICE UDP sockets it holds — forever.
+/// unrecoverable (answerer-side signaling wait tasks are bounded to 5s;
+/// offerer-side tasks can be aborted by `clear_pending_restarts`) and would
+/// otherwise pin its RTCPeerConnection — and the ICE UDP sockets it holds —
+/// forever.
 const MAX_DISCONNECTED_DURATION: Duration = Duration::from_secs(90);
 
 /// Decide whether the health check should reap a peer, given its real-time
@@ -4631,10 +4633,59 @@ impl WebRtcCoordinator {
                 // Approach A: Answerer sends IceRestartRequest to Offerer
                 // instead of silently skipping. This notifies the Offerer
                 // to immediately interrupt its backoff and retry ICE restart.
+                let restart_session_id = state.session_id;
                 tracing::info!(
                     "📤 Not offerer for serial={}, sending IceRestartRequest to notify offerer",
                     target
                 );
+
+                if !self.signaling_client.is_connected() {
+                    tracing::info!(
+                        "⏳ Signaling unavailable for Answerer IceRestartRequest to serial={}, session_id={}; waiting for reconnect",
+                        target,
+                        restart_session_id
+                    );
+
+                    let answerer_target = target.clone();
+                    let answerer_coordinator = Arc::downgrade(self);
+                    let handle = tokio::spawn(async move {
+                        if let Some(coordinator) = answerer_coordinator.upgrade() {
+                            if coordinator
+                                .wait_for_signaling_reconnect_for_answerer(&answerer_target)
+                                .await
+                                && coordinator
+                                    .answerer_restart_request_is_current(
+                                        &answerer_target,
+                                        restart_session_id,
+                                    )
+                                    .await
+                            {
+                                let _ = coordinator
+                                    .request_ice_restart_from_peer(
+                                        &answerer_target,
+                                        "network_recovered",
+                                    )
+                                    .await;
+                            } else {
+                                tracing::debug!(
+                                    "⏭️ Skipping deferred IceRestartRequest to serial={}, session_id={}: signaling did not recover or peer recovery is no longer current",
+                                    answerer_target,
+                                    restart_session_id
+                                );
+                            }
+
+                            let mut peers = coordinator.peers.write().await;
+                            if let Some(state) = peers.get_mut(&answerer_target)
+                                && state.session_id == restart_session_id
+                            {
+                                state.restart_task_handle = None;
+                            }
+                        }
+                    });
+                    state.restart_task_handle = Some(handle);
+                    return Ok(());
+                }
+
                 // Release lock before async call
                 drop(peers);
                 return self
@@ -4777,6 +4828,87 @@ impl WebRtcCoordinator {
 
         // Lock is released here - all state is consistent
         Ok(())
+    }
+
+    async fn wait_for_signaling_reconnect_for_answerer(&self, target: &ActrId) -> bool {
+        let mut events = self.signaling_client.subscribe_events();
+        if self.signaling_client.is_connected() {
+            return true;
+        }
+
+        let connected = tokio::time::timeout(ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT, async {
+            loop {
+                match events.recv().await {
+                    Ok(SignalingEvent::Connected) => {
+                        if self.signaling_client.is_connected() {
+                            return true;
+                        }
+                    }
+                    Ok(_) => {
+                        if self.signaling_client.is_connected() {
+                            return true;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            "Answerer signaling reconnect wait lagged by {} events for serial={}",
+                            skipped,
+                            target
+                        );
+                        if self.signaling_client.is_connected() {
+                            return true;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return self.signaling_client.is_connected();
+                    }
+                }
+            }
+        })
+        .await;
+
+        match connected {
+            Ok(true) => true,
+            _ if self.signaling_client.is_connected() => true,
+            _ => {
+                tracing::warn!(
+                    "⚠️ Signaling did not reconnect within {:?}; skipping Answerer IceRestartRequest to serial={}",
+                    ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT,
+                    target
+                );
+                false
+            }
+        }
+    }
+
+    async fn answerer_restart_request_is_current(
+        &self,
+        target: &ActrId,
+        expected_session_id: u64,
+    ) -> bool {
+        let unavailable = {
+            let peers = self.peers.read().await;
+            let Some(state) = peers.get(target) else {
+                return false;
+            };
+            if state.session_id != expected_session_id || state.is_offerer {
+                return false;
+            }
+            matches!(
+                state.current_state,
+                RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+            )
+        };
+
+        if unavailable {
+            return true;
+        }
+
+        self.network_recovering_peers
+            .read()
+            .await
+            .get(target)
+            .is_some_and(|status| status.session_id == expected_session_id)
     }
 
     /// Answerer notifies Offerer that its network has recovered.
