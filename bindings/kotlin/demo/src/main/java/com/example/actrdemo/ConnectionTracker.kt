@@ -60,41 +60,52 @@ class ConnectionTracker {
         pendingRetry.set(null)
     }
 
-    val signalingObserver = object : SignalingObserver {
-        override suspend fun onConnecting(ctx: ActrContext?) {
-            signalingReady.set(false)
-            emit("signaling: connecting")
+    val signalingObserver =
+        object : SignalingObserver {
+            override suspend fun onConnecting(ctx: ActrContext?) {
+                signalingReady.set(false)
+                emit("signaling: connecting")
+            }
+
+            override suspend fun onConnected(ctx: ActrContext?) {
+                signalingReady.set(true)
+                emit("signaling: connected")
+            }
+
+            override suspend fun onDisconnected(ctx: ActrContext) {
+                signalingReady.set(false)
+                emit("signaling: disconnected")
+            }
         }
 
-        override suspend fun onConnected(ctx: ActrContext?) {
-            signalingReady.set(true)
-            emit("signaling: connected")
-        }
+    val webRtcObserver =
+        object : WebRtcObserver {
+            override suspend fun onConnecting(
+                ctx: ActrContext,
+                e: PeerEvent,
+            ) {
+                webRtcStatus[e.peer] = WebRtcPeerStatus.CONNECTING
+                emit("webrtc ${e.peer.serialNumber}: connecting")
+            }
 
-        override suspend fun onDisconnected(ctx: ActrContext) {
-            signalingReady.set(false)
-            emit("signaling: disconnected")
-        }
-    }
+            override suspend fun onConnected(
+                ctx: ActrContext,
+                e: PeerEvent,
+            ) {
+                webRtcStatus[e.peer] = WebRtcPeerStatus.CONNECTED
+                emit("webrtc ${e.peer.serialNumber}: connected (relayed=${e.relayed})")
+                takeRetry()?.invoke()
+            }
 
-    val webRtcObserver = object : WebRtcObserver {
-        override suspend fun onConnecting(ctx: ActrContext, e: PeerEvent) {
-            webRtcStatus[e.peer] = WebRtcPeerStatus.CONNECTING
-            emit("webrtc ${e.peer.serialNumber}: connecting")
+            override suspend fun onDisconnected(
+                ctx: ActrContext,
+                e: PeerEvent,
+            ) {
+                val s = e.status ?: WebRtcPeerStatus.IDLE
+                webRtcStatus[e.peer] = s
+                emit("webrtc ${e.peer.serialNumber}: ${s.name.lowercase()}")
+            }
         }
-
-        override suspend fun onConnected(ctx: ActrContext, e: PeerEvent) {
-            webRtcStatus[e.peer] = WebRtcPeerStatus.CONNECTED
-            emit("webrtc ${e.peer.serialNumber}: connected (relayed=${e.relayed})")
-            takeRetry()?.invoke()
-        }
-
-        override suspend fun onDisconnected(ctx: ActrContext, e: PeerEvent) {
-            val s = e.status ?: WebRtcPeerStatus.IDLE
-            webRtcStatus[e.peer] = s
-            emit("webrtc ${e.peer.serialNumber}: ${s.name.lowercase()}")
-        }
-    }
 
     /**
      * Stash [retry] for later re-send. If [retryAfterMs] is present, arm a

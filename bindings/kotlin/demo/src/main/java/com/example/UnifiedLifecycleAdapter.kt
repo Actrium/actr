@@ -13,8 +13,8 @@ import io.actrium.actr.dsl.ErrorEvent
 import io.actrium.actr.dsl.MailboxObserver
 import io.actrium.actr.dsl.RpcEnvelope
 import io.actrium.actr.dsl.SignalingObserver
-import io.actrium.actr.dsl.WebSocketObserver
 import io.actrium.actr.dsl.WebRtcObserver
+import io.actrium.actr.dsl.WebSocketObserver
 import io.actrium.actr.dsl.Workload
 import io.actrium.actr.dsl.dynamicWorkload
 

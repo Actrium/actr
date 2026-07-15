@@ -266,14 +266,15 @@ class ClientActivity : AppCompatActivity() {
 
                 // Host-side transport hooks: signaling + per-peer WebRTC state drive the
                 // status text and the Send button, and own the ConnectionNotReady retry.
-                val t = ConnectionTracker().apply {
-                    onEvent = { msg ->
-                        lifecycleScope.launch(Dispatchers.Main) {
-                            logMessage("🔌 $msg")
-                            refreshUi()
+                val t =
+                    ConnectionTracker().apply {
+                        onEvent = { msg ->
+                            lifecycleScope.launch(Dispatchers.Main) {
+                                logMessage("🔌 $msg")
+                                refreshUi()
+                            }
                         }
                     }
-                }
                 tracker = t
 
                 val workload = UnifiedWorkload(MyUnifiedHandler())
@@ -282,10 +283,11 @@ class ClientActivity : AppCompatActivity() {
                     linkedWithMonitoring(
                         configPath = configPath,
                         actorType = actorType,
-                        workload = lifecycle.toDynamicWorkload(
-                            signaling = t.signalingObserver,
-                            webrtc = t.webRtcObserver,
-                        ),
+                        workload =
+                            lifecycle.toDynamicWorkload(
+                                signaling = t.signalingObserver,
+                                webrtc = t.webRtcObserver,
+                            ),
                         context = this@ClientActivity,
                         scope = lifecycleScope,
                         onNetworkStatusLog = { message ->
@@ -379,7 +381,10 @@ class ClientActivity : AppCompatActivity() {
      * let on_webrtc_connected (or a retryAfterMs fallback timer) re-send. The
      * retry re-enters [attemptEcho] so a still-not-ready target re-schedules.
      */
-    private suspend fun attemptEcho(ref: ActrRef, message: String) {
+    private suspend fun attemptEcho(
+        ref: ActrRef,
+        message: String,
+    ) {
         val t = tracker ?: return
         val doSend: suspend () -> Unit = {
             val request = EchoRequest.newBuilder().setMessage(message).build()
@@ -504,7 +509,8 @@ class ClientActivity : AppCompatActivity() {
         }
         val sig = if (t.signalingReady.get()) "✓" else "✗"
         val webrtc =
-            t.webRtcStatus.entries.firstOrNull()
+            t.webRtcStatus.entries
+                .firstOrNull()
                 ?.let { "${it.key.serialNumber}:${it.value.name.lowercase()}" }
                 ?: "idle"
         statusText.text = "Status: signaling=$sig webrtc=$webrtc"
