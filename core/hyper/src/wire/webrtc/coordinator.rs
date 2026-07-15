@@ -4839,16 +4839,10 @@ impl WebRtcCoordinator {
         let connected = tokio::time::timeout(ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT, async {
             loop {
                 match events.recv().await {
-                    Ok(SignalingEvent::Connected) => {
-                        if self.signaling_client.is_connected() {
-                            return true;
-                        }
+                    Ok(SignalingEvent::Connected) if self.signaling_client.is_connected() => {
+                        return true;
                     }
-                    Ok(_) => {
-                        if self.signaling_client.is_connected() {
-                            return true;
-                        }
-                    }
+                    Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!(
                             "Answerer signaling reconnect wait lagged by {} events for serial={}",
