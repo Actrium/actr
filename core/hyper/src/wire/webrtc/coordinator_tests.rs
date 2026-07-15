@@ -2644,8 +2644,11 @@ async fn cancelled_close_all_after_drain_still_finishes_owned_teardown() {
 async fn peer_creation_epoch_capture_rejects_active_close_all() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let lifecycle_guard = coordinator.peer_signaling.lifecycle_gate.lock().await;
-    let close_state_guard = CloseAllStateGuard::try_enter(Arc::clone(&coordinator.peer_signaling))
-        .expect("test close-all state should start");
+    let close_state_guard =
+        match CloseAllStateGuard::enter(Arc::clone(&coordinator.peer_signaling)).await {
+            CloseAllEntry::Leader(guard) => guard,
+            CloseAllEntry::Follower(_) => panic!("test close-all state should start"),
+        };
     drop(lifecycle_guard);
 
     assert!(

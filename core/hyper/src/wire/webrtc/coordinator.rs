@@ -89,9 +89,9 @@ const MAX_PENDING_ICE_CANDIDATES_PER_PEER: usize = 256;
 const MAX_KNOWN_REMOTE_ICE_GENERATIONS: usize = 8;
 
 tokio::task_local! {
-    /// Marks a hook invoked by close-all so direct callback re-entry can return
-    /// without waiting for the operation that is currently awaiting the hook.
-    static CLOSE_ALL_HOOK_REENTRY: ();
+    /// Identifies the exact close-all flight invoking a lifecycle hook so only
+    /// re-entry into that same coordinator flight bypasses its own wait.
+    static CLOSE_ALL_HOOK_REENTRY: Arc<CloseAllFlight>;
 }
 
 // Health check constants
@@ -253,16 +253,19 @@ fn candidate_matches_description(
 /// Consolidates multiple related fields into a single lock to reduce contention.
 #[derive(Default)]
 struct PeerNegotiationState {
-    /// Role negotiation responder
-    role_tx: Option<oneshot::Sender<bool>>,
-    /// Lifecycle epoch captured before the matching RoleNegotiation was sent.
-    role_lifecycle_epoch: Option<u64>,
+    /// Shared in-flight role arbitration for this peer.
+    role_flight: Option<RoleNegotiationFlight>,
     /// Ready notifier for answerer path
     ready_tx: Option<oneshot::Sender<()>>,
     /// Ready receiver for proactive offerer path
     ready_rx: Option<oneshot::Receiver<()>>,
     /// Whether remote peer has fixed network configuration
     remote_fixed: bool,
+}
+
+struct RoleNegotiationFlight {
+    lifecycle_epoch: u64,
+    result_tx: watch::Sender<Option<ActorResult<bool>>>,
 }
 
 use actr_framework::{ExponentialBackoff, WebRtcPeerStatus};
@@ -348,23 +351,39 @@ struct PeerSignalingCommitState {
     peer_lifecycle_epoch: AtomicU64,
     restart_cancellation_epoch: AtomicU64,
     close_all_generation: AtomicU64,
-    close_all_status: watch::Sender<CloseAllStatus>,
+    close_all_flight: Mutex<Option<Arc<CloseAllFlight>>>,
 }
 
-#[derive(Clone, Debug)]
-struct CloseAllStatus {
+#[derive(Debug)]
+struct CloseAllFlight {
     generation: u64,
-    active: bool,
-    result: Option<ActorResult<()>>,
+    result_tx: watch::Sender<Option<ActorResult<()>>>,
+}
+
+impl CloseAllFlight {
+    fn new(generation: u64) -> Self {
+        let (result_tx, _result_rx) = watch::channel(None);
+        Self {
+            generation,
+            result_tx,
+        }
+    }
+
+    async fn wait(&self) -> ActorResult<()> {
+        let mut result_rx = self.result_tx.subscribe();
+        loop {
+            if let Some(result) = result_rx.borrow().clone() {
+                return result;
+            }
+            result_rx.changed().await.map_err(|_| {
+                ActrError::Internal("WebRTC close-all result channel closed".to_string())
+            })?;
+        }
+    }
 }
 
 impl Default for PeerSignalingCommitState {
     fn default() -> Self {
-        let (close_all_status, _receiver) = watch::channel(CloseAllStatus {
-            generation: 0,
-            active: false,
-            result: Some(Ok(())),
-        });
         Self {
             gates: Arc::new(Mutex::new(HashMap::new())),
             lifecycle_gate: Mutex::new(()),
@@ -372,7 +391,7 @@ impl Default for PeerSignalingCommitState {
             peer_lifecycle_epoch: AtomicU64::new(0),
             restart_cancellation_epoch: AtomicU64::new(0),
             close_all_generation: AtomicU64::new(0),
-            close_all_status,
+            close_all_flight: Mutex::new(None),
         }
     }
 }
@@ -454,24 +473,6 @@ impl PeerSignalingCommitContext {
         }
 
         Some(PeerSignalingCommitGuard { _guard: guard })
-    }
-
-    async fn wait_for_close_all(&self, generation: u64) -> ActorResult<()> {
-        let mut status_rx = self.state.close_all_status.subscribe();
-        loop {
-            let status = status_rx.borrow().clone();
-            if status.generation >= generation && !status.active {
-                return status.result.unwrap_or_else(|| {
-                    Err(ActrError::Internal(
-                        "WebRTC close-all completed without a result".to_string(),
-                    ))
-                });
-            }
-
-            status_rx.changed().await.map_err(|_| {
-                ActrError::Internal("WebRTC close-all completion channel closed".to_string())
-            })?;
-        }
     }
 }
 
@@ -732,43 +733,58 @@ impl Drop for CleanupGuard {
 
 struct CloseAllStateGuard {
     state: Arc<PeerSignalingCommitState>,
-    generation: u64,
+    flight: Arc<CloseAllFlight>,
     completed: bool,
 }
 
+enum CloseAllEntry {
+    Leader(CloseAllStateGuard),
+    Follower(Arc<CloseAllFlight>),
+}
+
 impl CloseAllStateGuard {
-    fn try_enter(state: Arc<PeerSignalingCommitState>) -> Option<Self> {
-        state
+    async fn enter(state: Arc<PeerSignalingCommitState>) -> CloseAllEntry {
+        // `lifecycle_gate` serializes callers of this method. Lock the flight
+        // slot before flipping `closing_all` so cancellation cannot expose an
+        // active state without a joinable per-generation result channel.
+        let mut active_flight = state.close_all_flight.lock().await;
+        if state
             .closing_all
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()?;
+            .is_err()
+        {
+            return CloseAllEntry::Follower(
+                active_flight
+                    .as_ref()
+                    .expect("active close-all must publish its flight before releasing lifecycle")
+                    .clone(),
+            );
+        }
         state.peer_lifecycle_epoch.fetch_add(1, Ordering::AcqRel);
         state
             .restart_cancellation_epoch
             .fetch_add(1, Ordering::AcqRel);
         let generation = state.close_all_generation.fetch_add(1, Ordering::AcqRel) + 1;
-        state.close_all_status.send_replace(CloseAllStatus {
-            generation,
-            active: true,
-            result: None,
-        });
-        Some(Self {
+        let flight = Arc::new(CloseAllFlight::new(generation));
+        *active_flight = Some(Arc::clone(&flight));
+        drop(active_flight);
+        CloseAllEntry::Leader(Self {
             state,
-            generation,
+            flight,
             completed: false,
         })
     }
 
     fn publish(&self, result: ActorResult<()>) {
-        // Publish completion before reopening the lifecycle. A new leader can
-        // only enter after `closing_all` becomes false, so it cannot have its
-        // newer active status overwritten by this generation's result.
-        self.state.close_all_status.send_replace(CloseAllStatus {
-            generation: self.generation,
-            active: false,
-            result: Some(result),
-        });
+        // Each generation owns a dedicated channel, so reopening first cannot
+        // let a newer flight overwrite this result. Followers of this flight
+        // only return after the shutdown admission flag has been released.
         self.state.closing_all.store(false, Ordering::Release);
+        self.flight.result_tx.send_replace(Some(result));
+    }
+
+    fn flight(&self) -> Arc<CloseAllFlight> {
+        Arc::clone(&self.flight)
     }
 
     fn complete(mut self, result: ActorResult<()>) {
@@ -1585,16 +1601,29 @@ impl WebRtcCoordinator {
         abort_restart_task: bool,
         reason: &str,
     ) {
-        Self::teardown_removed_peer_state_with(
-            &self.network_recovering_peers,
-            self.hook_callback.get(),
-            target,
-            state,
-            abort_restart_task,
-            PeerCloseMode::Immediate,
-            reason,
-        )
-        .await;
+        // Transfer ownership before the first suspension point. If the caller
+        // is timed out or aborted while waiting, dropping the JoinHandle only
+        // detaches this task; the removed connection and its receive/restart
+        // tasks are still closed to completion.
+        let network_recovering_peers = Arc::clone(&self.network_recovering_peers);
+        let hook_callback = self.hook_callback.get().cloned();
+        let target = target.clone();
+        let reason = reason.to_owned();
+        let teardown_task = tokio::spawn(async move {
+            Self::teardown_removed_peer_state_with(
+                &network_recovering_peers,
+                hook_callback.as_ref(),
+                &target,
+                state,
+                abort_restart_task,
+                PeerCloseMode::Immediate,
+                &reason,
+            )
+            .await;
+        });
+        if let Err(err) = teardown_task.await {
+            tracing::error!(error = %err, "WebRTC peer teardown task failed");
+        }
     }
 
     /// Inject a virtual network for integration testing.
@@ -2891,7 +2920,7 @@ impl WebRtcCoordinator {
     /// RTCPeerConnection and the per-interface ICE UDP sockets it holds,
     /// leaking fds for the process lifetime.
     async fn check_and_cleanup_stale_connections(&self) {
-        let peers_to_cleanup: Vec<(ActrId, String)> = {
+        let peers_to_cleanup: Vec<(ActrId, u64, String)> = {
             let peers = self.peers.read().await;
             let now = std::time::Instant::now();
 
@@ -2904,7 +2933,7 @@ impl WebRtcCoordinator {
 
                     let reason = stale_peer_reap_reason(current_state, duration_since_change)?;
                     tracing::warn!("🧹 Marking peer {} for cleanup: {}", peer_id, reason);
-                    Some((peer_id.clone(), reason))
+                    Some((peer_id.clone(), state.session_id, reason))
                 })
                 .collect()
         };
@@ -2916,13 +2945,14 @@ impl WebRtcCoordinator {
                 peers_to_cleanup.len()
             );
 
-            for (peer_id, reason) in peers_to_cleanup {
+            for (peer_id, session_id, reason) in peers_to_cleanup {
                 tracing::info!(
                     "🧹 Cleaning up stale connection for peer {}: {}",
                     peer_id,
                     reason
                 );
-                self.cleanup_cancelled_connection(&peer_id, &reason).await;
+                self.cleanup_connection_if_session(&peer_id, session_id, true, &reason)
+                    .await;
             }
         }
     }
@@ -3143,30 +3173,34 @@ impl WebRtcCoordinator {
 
     async fn close_all_peers_with_mode(&self, close_mode: PeerCloseMode) -> ActorResult<()> {
         let lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
-        let Some(close_state_guard) =
-            CloseAllStateGuard::try_enter(Arc::clone(&self.peer_signaling))
-        else {
-            let generation = self
-                .peer_signaling
-                .close_all_generation
-                .load(Ordering::Acquire);
-            drop(lifecycle_guard);
-            if CLOSE_ALL_HOOK_REENTRY.try_with(|_| ()).is_ok() {
-                tracing::debug!("Returning from close-all re-entry made by its own lifecycle hook");
-                return Ok(());
-            }
+        let close_state_guard =
+            match CloseAllStateGuard::enter(Arc::clone(&self.peer_signaling)).await {
+                CloseAllEntry::Leader(guard) => guard,
+                CloseAllEntry::Follower(flight) => {
+                    drop(lifecycle_guard);
+                    let is_same_hook_flight = CLOSE_ALL_HOOK_REENTRY
+                        .try_with(|hook_flight| Arc::ptr_eq(hook_flight, &flight))
+                        .unwrap_or(false);
+                    if is_same_hook_flight {
+                        tracing::debug!(
+                            generation = flight.generation,
+                            "Returning from close-all re-entry made by its own lifecycle hook"
+                        );
+                        return Ok(());
+                    }
 
-            tracing::debug!(
-                generation,
-                "WebRTC peer shutdown is already in progress; joining its result"
-            );
-            return self
-                .peer_signaling_commit_context()
-                .wait_for_close_all(generation)
-                .await;
-        };
+                    tracing::debug!(
+                        generation = flight.generation,
+                        "WebRTC peer shutdown is already in progress; joining its exact flight"
+                    );
+                    return flight.wait().await;
+                }
+            };
 
-        let result = self.run_close_all_peers(close_mode, lifecycle_guard).await;
+        let close_flight = close_state_guard.flight();
+        let result = self
+            .run_close_all_peers(close_mode, lifecycle_guard, close_flight)
+            .await;
         close_state_guard.complete(result.clone());
         result
     }
@@ -3175,6 +3209,7 @@ impl WebRtcCoordinator {
         &self,
         close_mode: PeerCloseMode,
         lifecycle_guard: tokio::sync::MutexGuard<'_, ()>,
+        close_flight: Arc<CloseAllFlight>,
     ) -> ActorResult<()> {
         tracing::info!("🔻 Closing all WebRTC peer connections");
 
@@ -3364,7 +3399,7 @@ impl WebRtcCoordinator {
             )
             .await;
             let hook = CLOSE_ALL_HOOK_REENTRY.scope(
-                (),
+                Arc::clone(&close_flight),
                 Self::notify_removed_peer_idle_if_needed(
                     hook_callback.as_ref(),
                     peer_id,
@@ -3640,13 +3675,52 @@ impl WebRtcCoordinator {
         result
     }
 
-    async fn clear_pending_role_if_epoch(&self, target: &ActrId, lifecycle_epoch: u64) {
+    fn role_flight_matches(
+        receiver: &watch::Receiver<Option<ActorResult<bool>>>,
+        flight: &RoleNegotiationFlight,
+    ) -> bool {
+        receiver.same_channel(&flight.result_tx.subscribe())
+    }
+
+    async fn finish_role_flight_if_current(
+        &self,
+        target: &ActrId,
+        lifecycle_epoch: u64,
+        receiver: &watch::Receiver<Option<ActorResult<bool>>>,
+        result: ActorResult<bool>,
+    ) -> bool {
+        let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
         let mut negotiations = self.peer_negotiation.lock().await;
-        if let Some(state) = negotiations.get_mut(target)
-            && state.role_lifecycle_epoch == Some(lifecycle_epoch)
-        {
-            state.role_tx = None;
-            state.role_lifecycle_epoch = None;
+        let Some(state) = negotiations.get_mut(target) else {
+            return false;
+        };
+        let matches = state.role_flight.as_ref().is_some_and(|flight| {
+            flight.lifecycle_epoch == lifecycle_epoch && Self::role_flight_matches(receiver, flight)
+        });
+        if !matches {
+            return false;
+        }
+
+        let flight = state
+            .role_flight
+            .take()
+            .expect("matching role flight must still be present");
+        flight.result_tx.send_replace(Some(result));
+        true
+    }
+
+    async fn wait_for_role_result(
+        receiver: &mut watch::Receiver<Option<ActorResult<bool>>>,
+    ) -> ActorResult<bool> {
+        loop {
+            if let Some(result) = receiver.borrow().clone() {
+                return result;
+            }
+            receiver.changed().await.map_err(|_| {
+                ActrError::Unavailable(
+                    "Role negotiation was cancelled before assignment".to_string(),
+                )
+            })?;
         }
     }
 
@@ -3748,26 +3822,9 @@ impl WebRtcCoordinator {
             )));
         };
 
-        // Role negotiation: determine if we should be offerer or answerer
-        let role_result = tokio::time::timeout(
-            ROLE_NEGOTIATION_TIMEOUT,
-            self.negotiate_role(target, peer_lifecycle_epoch),
-        )
-        .await;
-
-        let is_offerer = match role_result {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
-                self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
-                    .await;
-                return Err(e);
-            }
-            Err(_) => {
-                self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
-                    .await;
-                return Err(ActrError::TimedOut);
-            }
-        };
+        // Role negotiation is per-peer singleflight: concurrent callers share
+        // one signaling request and one assignment result.
+        let is_offerer = self.negotiate_role(target, peer_lifecycle_epoch).await?;
         tracing::debug!(
             "Role negotiation decided we are {:?} for {}",
             if is_offerer { "offerer" } else { "answerer" },
@@ -3796,25 +3853,7 @@ impl WebRtcCoordinator {
         peer_lifecycle_epoch: u64,
     ) -> ActorResult<oneshot::Receiver<()>> {
         if !skip_negotiation {
-            let role_result = tokio::time::timeout(
-                ROLE_NEGOTIATION_TIMEOUT,
-                self.negotiate_role(target, peer_lifecycle_epoch),
-            )
-            .await;
-
-            let role_result = match role_result {
-                Ok(Ok(v)) => v,
-                Ok(Err(e)) => {
-                    self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
-                        .await;
-                    return Err(e);
-                }
-                Err(_) => {
-                    self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
-                        .await;
-                    return Err(ActrError::TimedOut);
-                }
-            };
+            let role_result = self.negotiate_role(target, peer_lifecycle_epoch).await?;
 
             if !role_result {
                 tracing::info!(
@@ -3908,26 +3947,144 @@ impl WebRtcCoordinator {
     /// IMPORTANT: This method must release all locks before calling close() methods
     /// to avoid deadlock, since close() may trigger events that call this method again.
     async fn cleanup_cancelled_connection(&self, target: &ActrId, reason: &str) {
-        self.cleanup_cancelled_connection_inner(target, reason, None)
+        self.cleanup_cancelled_connection_inner(target, reason)
             .await;
     }
 
     async fn cleanup_cancelled_connection_for_offer(
         &self,
         target: &ActrId,
+        expected_session_id: u64,
         reason: &str,
         incoming_offer: &RTCSessionDescription,
-    ) {
-        self.cleanup_cancelled_connection_inner(target, reason, Some(incoming_offer))
+    ) -> bool {
+        // Abort only the session observed by this Offer. If close-all or a
+        // newer Offer already replaced it, leave that newer session untouched.
+        {
+            let mut peers = self.peers.write().await;
+            if let Some(state) = peers
+                .get_mut(target)
+                .filter(|state| state.session_id == expected_session_id)
+                && let Some(handle) = state.restart_task_handle.take()
+            {
+                handle.abort();
+            }
+        }
+
+        let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
+        let state_to_close = {
+            let _signaling_guard = restart_signaling_gate.lock().await;
+            // Match close-all's auxiliary-state lock order. Mutate candidates
+            // and negotiation state only in the same commit that removes the
+            // exact observed session.
+            let mut pending_candidates = self.pending_candidates.write().await;
+            let mut peer_negotiation = self.peer_negotiation.lock().await;
+            let mut peers = self.peers.write().await;
+            let state = match peers.get(target) {
+                Some(state) if state.session_id == expected_session_id => peers.remove(target),
+                _ => None,
+            };
+            if state.is_some() {
+                let remove_entry = if let Some(candidates) = pending_candidates.get_mut(target) {
+                    candidates.retain(|candidate| {
+                        candidate_matches_description(candidate, incoming_offer)
+                    });
+                    candidates.is_empty()
+                } else {
+                    false
+                };
+                if remove_entry {
+                    pending_candidates.remove(target);
+                }
+                // The negotiation entry may already contain the answerer
+                // waiter and remote capabilities for this incoming Offer.
+                // Only an offerer-side ready receiver belongs to the session
+                // being replaced.
+                if let Some(negotiation) = peer_negotiation.get_mut(target) {
+                    negotiation.ready_rx = None;
+                }
+            }
+            state
+        };
+        drop(restart_signaling_gate);
+
+        let Some(state) = state_to_close else {
+            Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
+            tracing::debug!(
+                peer_id = %target,
+                expected_session_id,
+                "Skipping replacement-Offer cleanup after the observed peer session changed"
+            );
+            return false;
+        };
+
+        self.teardown_removed_peer_state(target, state, true, reason)
             .await;
+        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
+        tracing::debug!(
+            peer_id = %target,
+            expected_session_id,
+            "Retained only pending candidates matching the replacement Offer"
+        );
+        true
     }
 
-    async fn cleanup_cancelled_connection_inner(
+    async fn cleanup_connection_for_role_assignment_if_session(
         &self,
         target: &ActrId,
+        expected_session_id: u64,
         reason: &str,
-        incoming_offer: Option<&RTCSessionDescription>,
-    ) {
+    ) -> bool {
+        // A restart task may hold the peer signaling gate. Cancel only the
+        // observed session's task before waiting for that gate to quiesce.
+        {
+            let mut peers = self.peers.write().await;
+            if let Some(state) = peers
+                .get_mut(target)
+                .filter(|state| state.session_id == expected_session_id)
+                && let Some(handle) = state.restart_task_handle.take()
+            {
+                handle.abort();
+            }
+        }
+
+        let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
+        let state_to_close = {
+            let _signaling_guard = restart_signaling_gate.lock().await;
+            let mut pending_candidates = self.pending_candidates.write().await;
+            let mut peer_negotiation = self.peer_negotiation.lock().await;
+            let mut peers = self.peers.write().await;
+            let state = match peers.get(target) {
+                Some(state) if state.session_id == expected_session_id => peers.remove(target),
+                _ => None,
+            };
+            if state.is_some() {
+                pending_candidates.remove(target);
+                // Preserve the exact role flight and remote capability that
+                // caused this switch, while cancelling readiness owned by the
+                // removed connection.
+                if let Some(negotiation) = peer_negotiation.get_mut(target) {
+                    negotiation.ready_tx = None;
+                    negotiation.ready_rx = None;
+                }
+            }
+            state
+        };
+        drop(restart_signaling_gate);
+
+        let Some(state) = state_to_close else {
+            Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
+            return false;
+        };
+        // Keep the current role flight intact so this exact RoleAssignment can
+        // complete after teardown commits.
+        self.teardown_removed_peer_state(target, state, true, reason)
+            .await;
+        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
+        true
+    }
+
+    async fn cleanup_cancelled_connection_inner(&self, target: &ActrId, reason: &str) {
         tracing::debug!(
             "🧹 Starting cleanup for cancelled connection serial={}, reason={}",
             target,
@@ -3939,11 +4096,15 @@ impl WebRtcCoordinator {
         let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
         let state_to_close = {
             let _signaling_guard = restart_signaling_gate.lock().await;
+            let mut pending_candidates = self.pending_candidates.write().await;
+            let mut peer_negotiation = self.peer_negotiation.lock().await;
             let mut peers = self.peers.write().await;
-            peers.remove(target)
+            let state = peers.remove(target);
+            pending_candidates.remove(target);
+            peer_negotiation.remove(target);
+            state
         }; // Lock released here
         drop(restart_signaling_gate);
-        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
 
         // 2. Close via webrtc_conn.close() which internally handles:
         //    - Idempotent close (try_close guard)
@@ -3959,35 +4120,7 @@ impl WebRtcCoordinator {
             self.teardown_removed_peer_state(target, state, true, reason)
                 .await;
         }
-
-        // 4. Clear pending candidates, except candidates already received for
-        //    the replacement Offer's ICE generation.
-        let mut pending_candidates = self.pending_candidates.write().await;
-        if let Some(incoming_offer) = incoming_offer {
-            let remove_entry = if let Some(candidates) = pending_candidates.get_mut(target) {
-                candidates
-                    .retain(|candidate| candidate_matches_description(candidate, incoming_offer));
-                candidates.is_empty()
-            } else {
-                false
-            };
-            if remove_entry {
-                pending_candidates.remove(target);
-            }
-            tracing::debug!(
-                "🧹 Retained pending candidates matching replacement Offer for serial={}",
-                target
-            );
-        } else {
-            pending_candidates.remove(target);
-            tracing::debug!("🧹 Clearing pending candidates for serial={}", target);
-        }
-        drop(pending_candidates);
-
-        // 5. Clear negotiation state
-        if self.peer_negotiation.lock().await.remove(target).is_some() {
-            tracing::debug!("🧹 Clearing negotiation state for serial={}", target);
-        }
+        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
 
         tracing::debug!(
             "🧹 Cleaned up cancelled connection for serial={}, reason={}",
@@ -4003,11 +4136,27 @@ impl WebRtcCoordinator {
         abort_restart_task: bool,
         reason: &str,
     ) -> bool {
+        if abort_restart_task {
+            // A restart task may itself be holding the peer signaling gate.
+            // Abort only the observed session's task before waiting for that
+            // gate, then let the gate acquisition quiesce it.
+            let mut peers = self.peers.write().await;
+            if let Some(state) = peers
+                .get_mut(target)
+                .filter(|state| state.session_id == expected_session_id)
+                && let Some(handle) = state.restart_task_handle.take()
+            {
+                handle.abort();
+            }
+        }
+
         let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
         let state_to_close = {
             let _signaling_guard = restart_signaling_gate.lock().await;
+            let mut pending_candidates = self.pending_candidates.write().await;
+            let mut peer_negotiation = self.peer_negotiation.lock().await;
             let mut peers = self.peers.write().await;
-            match peers.get(target) {
+            let state = match peers.get(target) {
                 Some(state) if state.session_id == expected_session_id => peers.remove(target),
                 Some(state) => {
                     tracing::debug!(
@@ -4028,12 +4177,17 @@ impl WebRtcCoordinator {
                     );
                     None
                 }
+            };
+            if state.is_some() {
+                pending_candidates.remove(target);
+                peer_negotiation.remove(target);
             }
+            state
         };
         drop(restart_signaling_gate);
-        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
 
         let Some(state) = state_to_close else {
+            Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
             return false;
         };
 
@@ -4047,11 +4201,7 @@ impl WebRtcCoordinator {
 
         self.teardown_removed_peer_state(target, state, abort_restart_task, reason)
             .await;
-
-        self.pending_candidates.write().await.remove(target);
-        if self.peer_negotiation.lock().await.remove(target).is_some() {
-            tracing::debug!("🧹 Clearing negotiation state for serial={}", target);
-        }
+        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
 
         tracing::debug!(
             "🧹 Cleaned WebRTC peer connection serial={}, session_id={}, reason={}",
@@ -4096,8 +4246,51 @@ impl WebRtcCoordinator {
             return Err(state);
         }
 
-        self.peers.write().await.insert(peer_id, state);
+        let restart_signaling_gate = self.restart_signaling_gate_for(&peer_id).await;
+        let _signaling_guard = restart_signaling_gate.lock().await;
+        // Do not overwrite a session that won a concurrent inbound/outbound
+        // setup race. Replacement paths must first remove the exact observed
+        // session under this same peer gate.
+        let mut peers = self.peers.write().await;
+        if peers.contains_key(&peer_id) {
+            return Err(state);
+        }
+        peers.insert(peer_id, state);
         Ok(())
+    }
+
+    async fn store_receive_handles_if_session_current(
+        &self,
+        peer_id: &ActrId,
+        session_id: u64,
+        receive_handles: Vec<JoinHandle<()>>,
+    ) {
+        let restart_signaling_gate = self.restart_signaling_gate_for(peer_id).await;
+        let stored = {
+            let _signaling_guard = restart_signaling_gate.lock().await;
+            let mut peers = self.peers.write().await;
+            match peers.get_mut(peer_id) {
+                Some(state) if state.session_id == session_id => {
+                    state.receive_handles = receive_handles;
+                    true
+                }
+                _ => {
+                    for handle in &receive_handles {
+                        handle.abort();
+                    }
+                    false
+                }
+            }
+        };
+        drop(restart_signaling_gate);
+        Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
+        if !stored {
+            tracing::debug!(
+                peer_id = %peer_id,
+                session_id,
+                "Discarded receive tasks created for a replaced peer session"
+            );
+        }
     }
 
     /// Perform a single offer connection attempt (without retry logic)
@@ -4420,13 +4613,14 @@ impl WebRtcCoordinator {
             .start_peer_receive_loop(target.clone(), webrtc_conn.clone())
             .await;
 
-        // Store receive handles in PeerState for cleanup
-        {
-            let mut peers = self.peers.write().await;
-            if let Some(state) = peers.get_mut(target) {
-                state.receive_handles = receive_handles;
-            }
-        }
+        // Store receive handles only on the session that created them. A
+        // replacement Offer may have committed while the loops were starting.
+        self.store_receive_handles_if_session_current(
+            target,
+            webrtc_conn.session_id(),
+            receive_handles,
+        )
+        .await;
 
         Ok((ready_rx, webrtc_conn))
     }
@@ -4461,12 +4655,12 @@ impl WebRtcCoordinator {
         };
 
         // ========== PrepareForIncomingOffer: Clean up existing connection if any ==========
-        let existing_peer = {
+        let existing_session_id = {
             let peers = self.peers.read().await;
-            peers.contains_key(from)
+            peers.get(from).map(|state| state.session_id)
         };
 
-        if existing_peer {
+        if let Some(existing_session_id) = existing_session_id {
             tracing::info!(
                 "🔄 Existing connection found for serial={}, preparing for new Offer",
                 from
@@ -4477,12 +4671,22 @@ impl WebRtcCoordinator {
             })?;
 
             // Clean up old connection using unified cleanup method
-            self.cleanup_cancelled_connection_for_offer(
-                from,
-                "replaced by incoming offer",
-                &incoming_offer,
-            )
-            .await;
+            if !self
+                .cleanup_cancelled_connection_for_offer(
+                    from,
+                    existing_session_id,
+                    "replaced by incoming offer",
+                    &incoming_offer,
+                )
+                .await
+            {
+                tracing::debug!(
+                    peer_id = %from,
+                    existing_session_id,
+                    "Ignoring Offer after the peer session changed during replacement cleanup"
+                );
+                return Ok(());
+            }
         }
         // ========== PrepareForIncomingOffer END ==========
 
@@ -5203,9 +5407,25 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
-    async fn buffer_pending_remote_candidate(&self, peer_id: &ActrId, candidate: IceCandidate) {
+    async fn buffer_pending_remote_candidate_if_lifecycle_current(
+        &self,
+        peer_id: &ActrId,
+        candidate: IceCandidate,
+        expected_lifecycle_epoch: u64,
+    ) -> bool {
+        let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+        if self.peer_signaling.closing_all.load(Ordering::Acquire)
+            || self
+                .peer_signaling
+                .peer_lifecycle_epoch
+                .load(Ordering::Acquire)
+                != expected_lifecycle_epoch
+        {
+            return false;
+        }
         let mut pending = self.pending_candidates.write().await;
         Self::push_pending_remote_candidate(&mut pending, peer_id, candidate);
+        true
     }
 
     async fn buffer_pending_remote_candidate_if_session_current(
@@ -5267,6 +5487,14 @@ impl WebRtcCoordinator {
         candidate: IceCandidate,
     ) -> ActorResult<()> {
         tracing::trace!("📥 Received ICE Candidate from {}", from);
+
+        let Some(peer_lifecycle_epoch) = self.capture_peer_lifecycle_epoch().await else {
+            tracing::debug!(
+                peer_id = %from,
+                "Ignoring ICE candidate while WebRTC peer shutdown is active"
+            );
+            return Ok(());
+        };
 
         let Some(candidate_ufrag) = nonempty_candidate_ufrag(&candidate).map(str::to_owned) else {
             tracing::warn!(
@@ -5380,11 +5608,24 @@ impl WebRtcCoordinator {
             }
             None => {
                 // Buffer for when peer is created
-                self.buffer_pending_remote_candidate(from, candidate).await;
-                tracing::debug!(
-                    "🔖 Buffered ICE candidate from {:?} (peer not yet created)",
-                    from
-                );
+                if self
+                    .buffer_pending_remote_candidate_if_lifecycle_current(
+                        from,
+                        candidate,
+                        peer_lifecycle_epoch,
+                    )
+                    .await
+                {
+                    tracing::debug!(
+                        "🔖 Buffered ICE candidate from {:?} (peer not yet created)",
+                        from
+                    );
+                } else {
+                    tracing::debug!(
+                        peer_id = %from,
+                        "Discarding ICE candidate after peer lifecycle changed"
+                    );
+                }
             }
         }
 
@@ -7565,10 +7806,10 @@ impl WebRtcCoordinator {
     async fn handle_role_assignment(self: &Arc<Self>, assign: RoleAssignment, peer: ActrId) {
         tracing::debug!(?assign, ?peer, "handle_role_assignment");
 
-        // Bind both pending and unsolicited assignments to the lifecycle that
-        // observed them. Close-all holds this same gate while advancing the
-        // epoch and clearing negotiation waiters.
-        let (peer_lifecycle_epoch, role_sender) = {
+        // Snapshot the exact role flight and peer session that existed when
+        // this assignment arrived. Later cleanup and completion are accepted
+        // only if those identities still match.
+        let (peer_lifecycle_epoch, assignment_flight_rx, existing_session_id) = {
             let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
             if self.peer_signaling.closing_all.load(Ordering::Acquire) {
                 tracing::debug!(
@@ -7584,94 +7825,113 @@ impl WebRtcCoordinator {
             let mut neg = self.peer_negotiation.lock().await;
             let state = neg.entry(peer.clone()).or_default();
             state.remote_fixed = assign.remote_fixed.unwrap_or(false);
-            let role_sender = if state.role_lifecycle_epoch == Some(peer_lifecycle_epoch) {
-                state.role_lifecycle_epoch = None;
-                state.role_tx.take()
-            } else {
-                // A waiter from an older lifecycle must not be completed by a
-                // delayed assignment observed in the current lifecycle.
-                state.role_tx = None;
-                state.role_lifecycle_epoch = None;
-                None
-            };
+            let assignment_flight_rx = state
+                .role_flight
+                .as_ref()
+                .filter(|flight| flight.lifecycle_epoch == peer_lifecycle_epoch)
+                .map(|flight| flight.result_tx.subscribe());
             tracing::info!(
                 "🔧 Stored remote_fixed={} for peer {}",
                 state.remote_fixed,
                 peer
             );
-            (peer_lifecycle_epoch, role_sender)
+            drop(neg);
+            let existing_session_id = if assign.is_offerer {
+                self.peers
+                    .read()
+                    .await
+                    .get(&peer)
+                    .map(|state| state.session_id)
+            } else {
+                None
+            };
+            (
+                peer_lifecycle_epoch,
+                assignment_flight_rx,
+                existing_session_id,
+            )
         };
 
-        // ========== Check for role change to offerer and clean up if needed ==========
-        // Only clean up when becoming offerer (we need to initiate a new connection)
-        // If becoming answerer, we just wait for the peer's offer
-        if assign.is_offerer {
-            let has_connection = self.peers.read().await.contains_key(&peer);
+        if let Some(existing_session_id) = existing_session_id {
+            tracing::info!(
+                peer_id = %peer,
+                existing_session_id,
+                "Assigned as offerer; cleaning the exact previously observed session"
+            );
+            self.cleanup_connection_for_role_assignment_if_session(
+                &peer,
+                existing_session_id,
+                "role changed to offerer",
+            )
+            .await;
+        }
 
-            // Clean up if we have an existing connection (reconnection scenario)
-            if has_connection {
-                tracing::info!(
-                    "🔄 Assigned as offerer for {} (has_connection={}), cleaning up old connection synchronously",
-                    peer,
-                    has_connection
+        // Revalidate after cleanup. A close-all that crossed this handler has
+        // advanced the epoch and removed the snapshotted flight, so this old
+        // assignment cannot wake or mutate a new lifecycle.
+        {
+            let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
+            if self.peer_signaling.closing_all.load(Ordering::Acquire)
+                || self
+                    .peer_signaling
+                    .peer_lifecycle_epoch
+                    .load(Ordering::Acquire)
+                    != peer_lifecycle_epoch
+            {
+                tracing::debug!(
+                    peer_id = %peer,
+                    "Ignoring RoleAssignment after peer lifecycle changed"
                 );
+                return;
+            }
 
-                // Wait for cleanup to complete synchronously to avoid race condition.
-                //
-                // Previously this was spawned in background to avoid blocking the signaling loop,
-                // but that created a race condition: the subsequent has_connection check would
-                // still see the old connection, causing handle_role_assignment to return early
-                // without creating a new connection.
-                //
-                // The cleanup typically takes 20-110ms (much faster than establishing a new
-                // connection which takes 500-3000ms), so the brief delay in the signaling loop
-                // is acceptable and necessary for correctness.
-
-                // 🔧 FIX: Abort any inflight ICE restart task to prevent deadlock
-                // The restart task holds locks that cleanup needs. By aborting it, we release those locks.
-                // Since we are establishing a new connection anyway, the restart is no longer needed.
-                {
-                    let mut peers_guard = self.peers.write().await;
-                    if let Some(state) = peers_guard.get_mut(&peer) {
-                        if let Some(handle) = state.restart_task_handle.take() {
-                            tracing::info!(
-                                "🛑 Aborting inflight ICE restart task for {} to allow new connection",
-                                peer
-                            );
-                            handle.abort();
-                        }
-                    }
+            let mut negotiations = self.peer_negotiation.lock().await;
+            let state = negotiations.entry(peer.clone()).or_default();
+            if let Some(assignment_flight_rx) = assignment_flight_rx.as_ref() {
+                let flight_matches = state.role_flight.as_ref().is_some_and(|flight| {
+                    flight.lifecycle_epoch == peer_lifecycle_epoch
+                        && Self::role_flight_matches(assignment_flight_rx, flight)
+                });
+                if !flight_matches {
+                    tracing::debug!(
+                        peer_id = %peer,
+                        "Ignoring RoleAssignment after its role flight was replaced"
+                    );
+                    return;
                 }
 
-                let this = Arc::clone(self);
-                this.cleanup_cancelled_connection(&peer, "role changed to offerer")
-                    .await;
+                let flight = state
+                    .role_flight
+                    .take()
+                    .expect("matching role flight must still be present");
+                flight.result_tx.send_replace(Some(Ok(assign.is_offerer)));
+                return;
             }
-        }
-        tracing::debug!("End role change check ");
-        // ========== End role change check ==========
 
-        // First try to wake up pending negotiation
-        if let Some(sender) = role_sender {
-            if sender.send(assign.is_offerer).is_ok() {
+            // No waiter at receipt is the normal passive-side path. If a new
+            // local negotiation appeared after receipt, do not let this older
+            // unsolicited assignment satisfy or race that newer flight.
+            if state.role_flight.is_some() {
+                tracing::debug!(
+                    peer_id = %peer,
+                    "Ignoring unsolicited RoleAssignment after a newer local role flight started"
+                );
+                return;
+            }
+            drop(negotiations);
+
+            if self.peers.read().await.contains_key(&peer) {
+                tracing::debug!(
+                    peer_id = %peer,
+                    "Peer already has a connection; unsolicited RoleAssignment needs no action"
+                );
                 return;
             }
         }
 
-        tracing::debug!(
-            ?assign,
-            ?peer,
-            "handle_role_assignment: no pending negotiation"
-        );
-        // If no connection exists yet, act immediately based on role to avoid waiting for send_message to trigger
-        let has_connection = self.peers.read().await.contains_key(&peer);
-        if has_connection {
-            tracing::warn!(
-                "⚠️ Peer {} already has connection, skipping role assignment",
-                peer
-            );
-            return;
-        }
+        // Passive peers trust the assignment received in the current signaling
+        // lifecycle. Starting a second RoleNegotiation here would add a round
+        // trip and could compete with a concurrent local connection attempt.
         if assign.is_offerer {
             tracing::info!(
                 "🎭 Acting as offerer to {} per assignment (no pending negotiation)",
@@ -7683,11 +7943,8 @@ impl WebRtcCoordinator {
             #[cfg(feature = "opentelemetry")]
             let current_span = tracing::Span::current();
             tokio::spawn(async move {
-                // No current waiter means this assignment may be delayed from
-                // an older lifecycle. Start a fresh guarded role transaction
-                // before creating a peer rather than trusting it directly.
                 let start_offer_fut =
-                    this.start_offer_connection(&peer_clone, false, peer_lifecycle_epoch);
+                    this.start_offer_connection(&peer_clone, true, peer_lifecycle_epoch);
                 #[cfg(feature = "opentelemetry")]
                 let start_offer_fut = start_offer_fut.instrument(current_span);
                 match start_offer_fut.await {
@@ -7764,10 +8021,10 @@ impl WebRtcCoordinator {
         target: &ActrId,
         peer_lifecycle_epoch: u64,
     ) -> ActorResult<bool> {
-        let (tx, rx) = oneshot::channel();
-        // Install the waiter under the lifecycle gate so close-all either sees
-        // and cancels it, or advances the epoch before this transaction starts.
-        {
+        // Install or join a per-peer flight under the lifecycle gate. Only the
+        // leader sends RoleNegotiation; every concurrent caller observes the
+        // same retained result without replacing another caller's waiter.
+        let (mut result_rx, is_leader) = {
             let _lifecycle_guard = self.peer_signaling.lifecycle_gate.lock().await;
             if self.peer_signaling.closing_all.load(Ordering::Acquire)
                 || self
@@ -7782,40 +8039,83 @@ impl WebRtcCoordinator {
             }
             let mut negotiations = self.peer_negotiation.lock().await;
             let state = negotiations.entry(target.clone()).or_default();
-            state.role_tx = Some(tx);
-            state.role_lifecycle_epoch = Some(peer_lifecycle_epoch);
-        }
-
-        let local_id = self.local_id_snapshot();
-        let role_negotiation = RoleNegotiation {
-            from: local_id.clone(),
-            to: target.clone(),
-            realm_id: local_id.realm.realm_id,
+            if let Some(flight) = state
+                .role_flight
+                .as_ref()
+                .filter(|flight| flight.lifecycle_epoch == peer_lifecycle_epoch)
+            {
+                (flight.result_tx.subscribe(), false)
+            } else {
+                if let Some(stale_flight) = state.role_flight.take() {
+                    stale_flight
+                        .result_tx
+                        .send_replace(Some(Err(ActrError::Unavailable(
+                            "Role negotiation was superseded by a new lifecycle".to_string(),
+                        ))));
+                }
+                let (result_tx, result_rx) = watch::channel(None);
+                state.role_flight = Some(RoleNegotiationFlight {
+                    lifecycle_epoch: peer_lifecycle_epoch,
+                    result_tx,
+                });
+                (result_rx, true)
+            }
         };
 
-        tracing::debug!("🔄 Sending role negotiation to serial={}", target);
-        match self
-            .send_role_negotiation(target, role_negotiation, peer_lifecycle_epoch)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
-                    .await;
-                return Err(ActrError::Unavailable(format!(
+        if is_leader {
+            let local_id = self.local_id_snapshot();
+            let role_negotiation = RoleNegotiation {
+                from: local_id.clone(),
+                to: target.clone(),
+                realm_id: local_id.realm.realm_id,
+            };
+
+            tracing::debug!("🔄 Sending role negotiation to serial={}", target);
+            let send_result = match self
+                .send_role_negotiation(target, role_negotiation, peer_lifecycle_epoch)
+                .await
+            {
+                Ok(true) => Ok(()),
+                Ok(false) => Err(ActrError::Unavailable(format!(
                     "WebRTC peer lifecycle changed before RoleNegotiation commit: {target}"
-                )));
-            }
-            Err(err) => {
-                self.clear_pending_role_if_epoch(target, peer_lifecycle_epoch)
-                    .await;
+                ))),
+                Err(err) => Err(err),
+            };
+            if let Err(err) = send_result {
+                self.finish_role_flight_if_current(
+                    target,
+                    peer_lifecycle_epoch,
+                    &result_rx,
+                    Err(err.clone()),
+                )
+                .await;
                 return Err(err);
             }
+        } else {
+            tracing::debug!(
+                "🔗 Joining in-flight role negotiation for serial={}",
+                target
+            );
         }
 
-        rx.await.map_err(|_| {
-            ActrError::Unavailable("Role negotiation was cancelled before assignment".to_string())
-        })
+        match tokio::time::timeout(
+            ROLE_NEGOTIATION_TIMEOUT,
+            Self::wait_for_role_result(&mut result_rx),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                self.finish_role_flight_if_current(
+                    target,
+                    peer_lifecycle_epoch,
+                    &result_rx,
+                    Err(ActrError::TimedOut),
+                )
+                .await;
+                Err(ActrError::TimedOut)
+            }
+        }
     }
 
     async fn handle_peer_state_change(
