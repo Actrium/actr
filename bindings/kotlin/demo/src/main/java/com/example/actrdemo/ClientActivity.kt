@@ -22,6 +22,7 @@ import com.example.UnifiedLifecycleAdapter
 import com.example.UnifiedWorkload
 import echo.Echo.EchoRequest
 import echo.Echo.EchoResponse
+import io.actrium.actr.ActrException
 import io.actrium.actr.ActrType
 import io.actrium.actr.CleanupReason
 import io.actrium.actr.PayloadType
@@ -73,6 +74,10 @@ class ClientActivity : AppCompatActivity() {
 
     private var clientRef: ActrRef? = null
     private var clientSystem: ActrNode? = null
+
+    // Tracks signaling + per-peer WebRTC state from host-side hooks and owns the
+    // send-retry slot for ConnectionNotReady. See ConnectionTracker for the pattern.
+    private var tracker: ConnectionTracker? = null
 
     // Logcat reader - streams native actr library logs to the UI
     private lateinit var logcatReader: LogcatReader
@@ -258,13 +263,31 @@ class ClientActivity : AppCompatActivity() {
 
                 val actorType = resolveActorType(manifestPath)
                 Log.i(TAG, "Actor type from manifest: ${actorType.manufacturer}:${actorType.name}:${actorType.version}")
+
+                // Host-side transport hooks: signaling + per-peer WebRTC state drive the
+                // status text and the Send button, and own the ConnectionNotReady retry.
+                val t =
+                    ConnectionTracker().apply {
+                        onEvent = { msg ->
+                            lifecycleScope.launch(Dispatchers.Main) {
+                                logMessage("🔌 $msg")
+                                refreshUi()
+                            }
+                        }
+                    }
+                tracker = t
+
                 val workload = UnifiedWorkload(MyUnifiedHandler())
                 val lifecycle = UnifiedLifecycleAdapter(workload)
                 val system =
                     linkedWithMonitoring(
                         configPath = configPath,
                         actorType = actorType,
-                        workload = lifecycle.toDynamicWorkload(),
+                        workload =
+                            lifecycle.toDynamicWorkload(
+                                signaling = t.signalingObserver,
+                                webrtc = t.webRtcObserver,
+                            ),
                         context = this@ClientActivity,
                         scope = lifecycleScope,
                         onNetworkStatusLog = { message ->
@@ -281,13 +304,12 @@ class ClientActivity : AppCompatActivity() {
                 delay(2000)
 
                 withContext(Dispatchers.Main) {
-                    updateStatus("Connected")
                     disconnectButton.isEnabled = true
                     messageInput.isEnabled = true
-                    sendButton.isEnabled = true
                     sendFileButton.isEnabled = true
                     logMessage("✅ Connected (linked multi-service mode)")
                     logMessage("🆔 Client ID: ${clientRef?.actorId()?.serialNumber}")
+                    refreshUi()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Connection failed", e)
@@ -313,6 +335,8 @@ class ClientActivity : AppCompatActivity() {
                 clientRef = null
                 clientSystem?.close()
                 clientSystem = null
+                tracker?.reset()
+                tracker = null
 
                 withContext(Dispatchers.Main) {
                     updateStatus("Disconnected")
@@ -347,23 +371,52 @@ class ClientActivity : AppCompatActivity() {
         logMessage("📤 Sent: $message")
 
         lifecycleScope.launch {
-            try {
-                val request = EchoRequest.newBuilder().setMessage(message).build()
-                val responsePayload =
-                    ref.call(
-                        "echo.EchoService.Echo",
-                        PayloadType.RPC_RELIABLE,
-                        request.toByteArray(),
-                        30000L,
-                    )
-                val response = EchoResponse.parseFrom(responsePayload)
-                Log.i(TAG, "📬 Echo Response: ${response.reply}")
+            attemptEcho(ref, message)
+        }
+    }
 
-                withContext(Dispatchers.Main) { logMessage("📥 Received: ${response.reply}") }
-            } catch (e: Exception) {
-                Log.e(TAG, "Echo send error", e)
-                withContext(Dispatchers.Main) { logMessage("❌ Echo error: ${e.message}") }
+    /**
+     * Send an echo, retrying once on ConnectionNotReady. The runtime rejects the
+     * send before it goes out when the target isn't ready; we stash a retry and
+     * let on_webrtc_connected (or a retryAfterMs fallback timer) re-send. The
+     * retry re-enters [attemptEcho] so a still-not-ready target re-schedules.
+     */
+    private suspend fun attemptEcho(
+        ref: ActrRef,
+        message: String,
+    ) {
+        val t = tracker ?: return
+        val doSend: suspend () -> Unit = {
+            val request = EchoRequest.newBuilder().setMessage(message).build()
+            val responsePayload =
+                ref.call(
+                    "echo.EchoService.Echo",
+                    PayloadType.RPC_RELIABLE,
+                    request.toByteArray(),
+                    30000L,
+                )
+            val response = EchoResponse.parseFrom(responsePayload)
+            Log.i(TAG, "📬 Echo Response: ${response.reply}")
+            withContext(Dispatchers.Main) {
+                logMessage("📥 Received: ${response.reply}")
+                refreshUi()
             }
+        }
+        try {
+            doSend()
+        } catch (e: ActrException.ConnectionNotReady) {
+            val retryAfter = e.info.retryAfterMs
+            withContext(Dispatchers.Main) {
+                logMessage(
+                    "⏳ 连接恢复中，等待 on_webrtc_connected" +
+                        (retryAfter?.let { " 或 ${it}ms 兜底重试" } ?: "（无兜底重试）"),
+                )
+                refreshUi()
+            }
+            t.scheduleRetry({ attemptEcho(ref, message) }, retryAfter, lifecycleScope)
+        } catch (e: Exception) {
+            Log.e(TAG, "Echo send error", e)
+            withContext(Dispatchers.Main) { logMessage("❌ Echo error: ${e.message}") }
         }
     }
 
@@ -445,6 +498,23 @@ class ClientActivity : AppCompatActivity() {
 
     private fun updateStatus(status: String) {
         statusText.text = "Status: $status"
+    }
+
+    /** Reflect signaling + per-peer WebRTC state in the status bar and gate the Send button. */
+    private fun refreshUi() {
+        val t = tracker
+        if (t == null) {
+            sendButton.isEnabled = false
+            return
+        }
+        val sig = if (t.signalingReady.get()) "✓" else "✗"
+        val webrtc =
+            t.webRtcStatus.entries
+                .firstOrNull()
+                ?.let { "${it.key.serialNumber}:${it.value.name.lowercase()}" }
+                ?: "idle"
+        statusText.text = "Status: signaling=$sig webrtc=$webrtc"
+        sendButton.isEnabled = messageInput.isEnabled && t.canSend()
     }
 
     private fun log(message: String) {

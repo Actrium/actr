@@ -34,7 +34,7 @@ Consumers add the Maven dependency:
 ```kotlin
 repositories {
     maven {
-        url = uri("https://maven.pkg.github.com/Actrium/actr-kotlin-package-sync")
+        url = uri("https://maven.pkg.github.com/actrium/actr-kotlin-package-sync")
         credentials {
             username = "<github-username>"
             password = "<github-token>"
@@ -95,7 +95,7 @@ actr-kotlin/
 
 - **Android Studio**: Arctic Fox or later
 - **Android SDK**: API level 26+ (Android 8.0)
-- **Rust**: 1.88+ with Android targets
+- **Rust**: 1.95+ with Android targets
 - **protoc**: Protocol buffer compiler
 
 ### Build

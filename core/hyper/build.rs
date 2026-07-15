@@ -38,7 +38,10 @@ fn main() {
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo"));
     let guest_dir = manifest_dir.join("tests/wasm_actor_fixture");
-    let wit = manifest_dir.join("../framework/wit/actr-workload.wit");
+    // The fixture guest SDK now targets the 0.2.0 async world (wit-v2); the
+    // built artifact is an actr:workload@0.2.0 component. Track the v2 WIT so
+    // an edit there re-runs the fixture build.
+    let wit = manifest_dir.join("../framework/wit-v2/actr-workload.wit");
 
     // Publish builds (`cargo package`) strip `tests/`, so the guest source is
     // absent — skip silently rather than fail. This is expected, not an error.
@@ -104,13 +107,19 @@ fn main() {
 
     // Pin the Component Model linker via the target-specific env (highest
     // precedence) and strip any inherited RUSTFLAGS so they can't override it
-    // (see Cargo's build.rustflags precedence).
+    // (see Cargo's build.rustflags precedence). Also drop the coverage
+    // instrumentation wrappers (RUSTC_WRAPPER / RUSTC_WORKSPACE_WRAPPER, set by
+    // the Coverage CI job via cargo-llvm-cov): the wasm fixture is a test-time
+    // build artifact, not a host coverage instrumentation target, and the
+    // wrapper is invalid for the wasm32-wasip2 target.
     let status = Command::new(&cargo)
         .args(["build", "--release", "--target", "wasm32-wasip2"])
         .current_dir(&guest_dir)
         .env("CARGO_TARGET_WASM32_WASIP2_LINKER", &ld)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env("CARGO_TARGET_DIR", &guest_target_dir)
         .status()
         .expect("failed to spawn `cargo build` for wasm_actor_fixture");

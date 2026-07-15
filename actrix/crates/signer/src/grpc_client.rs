@@ -89,7 +89,7 @@ impl GrpcClient {
 
         crate::recording::debug!("Configuring TLS with domain: {}", tls_domain);
 
-        // 加载 CA 证书
+        // 加载信任根：显式 ca_cert 作为证书 pin，否则回退到 OS 原生根库
         if let Some(ca_cert_path) = &config.ca_cert {
             crate::recording::debug!("Loading CA certificate from: {}", ca_cert_path);
             let ca_cert_pem = std::fs::read(ca_cert_path).map_err(|e| {
@@ -101,6 +101,11 @@ impl GrpcClient {
             let ca_cert = Certificate::from_pem(ca_cert_pem);
             tls_config = tls_config.ca_certificate(ca_cert);
             crate::recording::info!("CA certificate loaded for server verification");
+        } else {
+            // 无显式 pin：信任平台原生根库（依赖 tonic 的 tls-native-roots feature）。
+            // 若未启用该 feature，with_native_roots() 不存在且根库为空，TLS 验证会失败。
+            tls_config = tls_config.with_native_roots();
+            crate::recording::info!("Using platform native root store for server verification");
         }
 
         // 加载客户端证书和私钥（mTLS）

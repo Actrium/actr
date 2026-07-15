@@ -1,6 +1,6 @@
 # Actor-RTC Framework Demo
 
-![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)
+![Rust](https://img.shields.io/badge/rust-1.95+-orange.svg)
 ![Node.js](https://img.shields.io/badge/node.js-16+-green.svg)
 ![WebRTC](https://img.shields.io/badge/webrtc-enabled-blue.svg)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Factrium.github.io%2Factr%2Fcoverage%2Fcoverage-badge.json)](https://actrium.github.io/actr/coverage/)
@@ -63,7 +63,7 @@ The repository includes a complete set of design and development documents. A pr
 
 ### Prerequisites
 
-- **Rust**: 1.88+ ([install guide](https://rustup.rs/))
+- **Rust**: 1.95+ ([install guide](https://rustup.rs/))
 - **Node.js**: 16+ ([download](https://nodejs.org/))
 - **protoc**: Protocol Buffer compiler
   ```bash
@@ -108,7 +108,7 @@ Contributions of all kinds are welcome.
 
 ## Release Train (Maintainers)
 
-Use the manual workflow `Release Train (Basic)` for the monorepo-managed
+Use the `Release Train (Staged)` workflow for the monorepo-managed
 foundation crates, protoc tools, supported SDK crates, and `actr-cli` with one
 shared stable version.
 
@@ -117,7 +117,11 @@ shared stable version.
 - Required secrets:
   - `CARGO_REGISTRY_TOKEN` — crates.io publishing
   - `PYPI_API_TOKEN` — PyPI publishing (optional; omit to skip Python)
-  - `PACKAGE_SYNC_GITHUB_TOKEN` — dispatch Swift/Kotlin/TS package-sync workflows
+  - `PACKAGE_SYNC_GITHUB_TOKEN` — classic PAT with `repo` scope (or
+    `public_repo` when every involved repository is public) for the
+    Swift/Kotlin package-sync repositories plus `read:packages` and
+    `write:packages`; used to publish synchronized tags, release assets, and
+    Kotlin Maven packages
 - npm publishing uses Trusted Publishing (OIDC) via `id-token: write`;
   no `NPM_TOKEN` secret is needed.
 - Reports are generated under `release/reports/` and uploaded as workflow
@@ -135,6 +139,43 @@ The release train publishes all components in a single run:
 Pre-release support is available via the `pre_release` workflow input,
 which accepts semver `X.Y.Z-<id>` and publishes npm packages with
 `--tag pre` (does not affect the `latest` dist-tag).
+
+### Maintenance release lines
+
+Keep each supported older minor line on a branch named `release-X.Y`. For
+example, while `main` develops 0.5.x, fixes for 0.4.x are backported by PR to
+`release-0.4`. When 0.6.x development starts, create `release-0.5` from the
+last 0.5.x release and use the same process without changing the workflows.
+
+Maintenance releases use this flow:
+
+1. Merge the fix PR into `main` so the current release PR is created or
+   updated normally.
+2. Decide whether the fix applies to every maintained line, then open a
+   separate backport PR containing the fix commit for each applicable
+   `release-X.Y` branch.
+3. Manually create or update that line's release PR (for example, bump
+   `release-0.4` from 0.4.17 to 0.4.18). The automated release-prepare workflow
+   remains `main`-only.
+4. Merge the maintenance release PR into `release-X.Y`. A release commit named
+   `chore(release): basic train vX.Y.Z` starts the release train on that branch.
+
+Prepare the version commit on the maintenance release PR branch with, for
+example:
+
+```bash
+scripts/release-train.sh --branch release-0.4 --version 0.4.18 --prepare-only
+```
+
+Pushing the branch and opening or updating its PR remain manual steps.
+
+Only stable patch releases are accepted on maintenance branches. The train
+rejects mismatched minor versions, skipped patch versions, feature commits,
+and breaking changes. npm packages use the `legacy-X.Y` dist-tag, and the
+GitHub Release is not marked as Latest. Swift and Kotlin package-sync
+repositories must expose the matching `release-X.Y` branch and accept the
+`target_branch` workflow input before the first maintenance release on that
+line.
 
 ## 📄 License
 
