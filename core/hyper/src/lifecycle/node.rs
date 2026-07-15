@@ -440,6 +440,14 @@ pub(crate) struct Inner {
     /// Shutdown token for graceful shutdown
     pub(crate) shutdown_token: CancellationToken,
 
+    /// Admission barrier spanning one complete durable-mailbox dequeue batch.
+    ///
+    /// `dequeue()` marks the whole batch Inflight before the node processes its
+    /// records. Holding this gate's read side until every record has either
+    /// been admitted or handled inline prevents shutdown from closing the
+    /// scheduler / runner between records and ACKing the unexecuted tail.
+    mailbox_batch_admission: MailboxBatchAdmission,
+
     /// Packaged manifest.lock.toml content loaded at startup for fingerprint lookups.
     ///
     /// Wrapped in `Arc` so per-request `RuntimeContext` clones only bump a refcount
@@ -992,6 +1000,35 @@ fn scheduler_engaged(gate_on: bool, has_conflict_keys: bool) -> bool {
     gate_on && has_conflict_keys
 }
 
+/// Writer-preferring admission gate for durable mailbox batches.
+///
+/// The mailbox loop enters before `dequeue()` and retains the returned guard
+/// through the entire batch. Shutdown closes the gate before scheduler / runner
+/// intake, so Tokio's fair `RwLock` first blocks any later batch and then waits
+/// for the already-dequeued batch to finish admission.
+#[derive(Clone, Debug)]
+struct MailboxBatchAdmission {
+    open: Arc<RwLock<bool>>,
+}
+
+impl MailboxBatchAdmission {
+    fn new() -> Self {
+        Self {
+            open: Arc::new(RwLock::new(true)),
+        }
+    }
+
+    async fn enter(&self) -> Option<tokio::sync::OwnedRwLockReadGuard<bool>> {
+        let guard = self.open.clone().read_owned().await;
+        if *guard { Some(guard) } else { None }
+    }
+
+    async fn close(&self) {
+        let mut open = self.open.write().await;
+        *open = false;
+    }
+}
+
 /// Abort fallback armed for the complete shutdown sequence. `ActrRef` bounds
 /// background-task shutdown; if that outer task is aborted while a guest is
 /// stuck, dropping this guard aborts the detached owning runner as well.
@@ -1025,7 +1062,8 @@ type ShutdownStep = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 /// Ordered actor teardown:
 ///
-/// 1. run the cancellation-sensitive prelude (for example, stop stream workers);
+/// 1. run the cancellation-sensitive prelude (quiesce durable mailbox batches,
+///    then stop stream workers);
 /// 2. stop scheduler intake and drain all admitted queued + in-flight work;
 /// 3. close direct dispatch admission and wait for earlier sends to enqueue;
 /// 4. invoke `on_stop` as a runner barrier;
@@ -1063,10 +1101,16 @@ fn spawn_workload_stop_task(
     let task: ShutdownStep = Box::pin(async move {
         shutdown.cancelled().await;
         let data_chunk_registry = node.data_chunk_registry.clone();
+        let mailbox_batch_admission = node.mailbox_batch_admission.clone();
         let scheduler = node.dispatch_scheduler.clone();
         let runner = node.workload_dispatch.clone();
         let runner_for_stop = runner.clone();
-        let stop_stream_workers = async move {
+        let quiesce_ingress = async move {
+            // `dequeue()` marks a complete batch Inflight. Wait until every
+            // record in an active batch has reached scheduler / runner
+            // admission before either intake is closed; otherwise the tail
+            // would resolve as terminated and be permanently ACKed unhandled.
+            mailbox_batch_admission.close().await;
             // Once this returns, no stream callback can still enqueue actor
             // work or retain its RuntimeContext ownership chain.
             data_chunk_registry.shutdown().await;
@@ -1086,13 +1130,7 @@ fn spawn_workload_stop_task(
                 tracing::warn!(error = %e, "workload on_stop returned Err");
             }
         };
-        shutdown_actor_runner(
-            scheduler,
-            runner,
-            Box::pin(stop_stream_workers),
-            Box::pin(stop),
-        )
-        .await;
+        shutdown_actor_runner(scheduler, runner, Box::pin(quiesce_ingress), Box::pin(stop)).await;
     });
     tokio::spawn(task)
 }
@@ -1655,6 +1693,7 @@ impl Inner {
             shell_to_workload: Some(shell_to_workload),
             workload_to_shell: Some(workload_to_shell),
             shutdown_token,
+            mailbox_batch_admission: MailboxBatchAdmission::new(),
             actr_lock,
             network_event_rx: None,
             network_event_debounce_config: None,
@@ -2941,12 +2980,23 @@ impl Inner {
                         // Drain finished reply+ack continuations (gate-on only;
                         // inert when `inflight` is empty).
                         Some(()) = inflight.next(), if !inflight.is_empty() => {}
-                        // Dequeue messages (by priority); pause while the in-flight
-                        // set is full so back-pressure reaches the durable mailbox.
-                        result = mailbox.dequeue(), if inflight.len() < MAILBOX_INFLIGHT_CAP => {
+                        // Enter admission before dequeue marks a complete batch
+                        // Inflight, then retain the guard until every record in
+                        // that batch has reached scheduler / runner admission.
+                        // Pause while the continuation set is full so
+                        // back-pressure reaches the durable mailbox.
+                        batch = async {
+                            let admission = node.mailbox_batch_admission.enter().await?;
+                            Some((admission, mailbox.dequeue().await))
+                        }, if inflight.len() < MAILBOX_INFLIGHT_CAP => {
+                            let Some((batch_admission, result)) = batch else {
+                                tracing::info!("📭 Mailbox batch admission closed");
+                                break;
+                            };
                             match result {
                                 Ok(messages) => {
                                     if messages.is_empty() {
+                                        drop(batch_admission);
                                         // Queue empty, sleep briefly
                                         tokio::time::sleep(Duration::from_millis(10)).await;
                                         continue;
@@ -3125,8 +3175,17 @@ impl Inner {
                                             }
                                         }
                                     }
+                                    // Keep the read guard through the complete
+                                    // batch, including inline serial handling.
+                                    // Shutdown can close scheduler / runner
+                                    // intake only after this point.
+                                    drop(batch_admission);
                                 }
                                 Err(e) => {
+                                    // A failed dequeue marked no batch Inflight,
+                                    // so it need not delay graceful shutdown
+                                    // during the retry backoff.
+                                    drop(batch_admission);
                                     tracing::error!(
                                         severity = 9,
                                         error_category = "mailbox_error",

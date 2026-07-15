@@ -59,8 +59,8 @@ async fn next_shutdown_event(
         .expect("shutdown-order event channel open")
 }
 
-/// Linked actor used to prove that graceful teardown drains the scheduler's
-/// same-key tail before the lifecycle barrier is allowed to run.
+/// Linked actor used to prove that graceful teardown drains a durable mailbox
+/// batch's same-key tail before the lifecycle barrier is allowed to run.
 struct ShutdownOrderHandle {
     events: tokio::sync::mpsc::UnboundedSender<ShutdownOrderEvent>,
     release_first: Arc<tokio::sync::Semaphore>,
@@ -123,7 +123,7 @@ fn shutdown_order_dispatch(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn graceful_shutdown_drains_admitted_scheduler_work_before_on_stop() {
+async fn graceful_shutdown_admits_active_mailbox_batch_before_on_stop() {
     let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
     let release_first = Arc::new(tokio::sync::Semaphore::new(0));
     let workload = Workload::Linked(Arc::new(ShutdownOrderHandle {
@@ -142,17 +142,18 @@ async fn graceful_shutdown_drains_admitted_scheduler_work_before_on_stop() {
         domain: Arc::from("shutdown-order"),
         value: bytes::Bytes::from_static(b"same"),
     };
+    let mailbox_batch_admission = MailboxBatchAdmission::new();
+    // Models one successful dequeue: every record in the returned batch is
+    // already Inflight even though only the first has reached the scheduler.
+    let active_batch = mailbox_batch_admission
+        .enter()
+        .await
+        .expect("mailbox admission starts open");
 
     let first = scheduler
         .submit(
             key.clone(),
             shutdown_order_dispatch(runner.clone(), ctx.clone(), "first"),
-        )
-        .await;
-    let second = scheduler
-        .submit(
-            key,
-            shutdown_order_dispatch(runner.clone(), ctx.clone(), "second"),
         )
         .await;
     assert_eq!(
@@ -177,15 +178,38 @@ async fn graceful_shutdown_drains_admitted_scheduler_work_before_on_stop() {
     };
     let shutdown_runner = runner.clone();
     let shutdown_scheduler = scheduler.clone();
+    let shutdown_mailbox_admission = mailbox_batch_admission.clone();
+    let (prelude_started_tx, prelude_started_rx) = tokio::sync::oneshot::channel();
     let shutdown = tokio::spawn(async move {
         shutdown_actor_runner(
             Some(shutdown_scheduler),
             shutdown_runner,
-            Box::pin(async {}),
+            Box::pin(async move {
+                let _ = prelude_started_tx.send(());
+                shutdown_mailbox_admission.close().await;
+            }),
             Box::pin(stop),
         )
         .await;
     });
+
+    prelude_started_rx
+        .await
+        .expect("shutdown prelude started while the batch is active");
+    // This is the tail record from the same dequeue batch. Shutdown is already
+    // waiting to close mailbox admission, but scheduler intake must remain open
+    // until the complete batch has been submitted.
+    let second = scheduler
+        .submit(
+            key,
+            shutdown_order_dispatch(runner.clone(), ctx.clone(), "second"),
+        )
+        .await;
+    drop(active_batch);
+    assert!(
+        mailbox_batch_admission.enter().await.is_none(),
+        "a batch starting after shutdown must not dequeue more durable messages"
+    );
 
     release_first.add_permits(1);
     assert_eq!(
