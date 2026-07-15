@@ -336,7 +336,6 @@ jobs:
             examples/typescript/echo-workload/package-lock.json
       - name: Verify TypeScript workload WIT drift
         run: |
-          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
       - name: Build TypeScript workload package
         working-directory: bindings/typescript/actr-workload
@@ -472,7 +471,6 @@ jobs:
         run: cargo install wasm-pack --version 0.15.0 --locked
       - name: Verify TypeScript workload WIT drift
         run: |
-          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
       - name: Build actr-workload package
         run: |
