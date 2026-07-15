@@ -3769,7 +3769,7 @@ impl WebRtcCoordinator {
             Arc::clone(&peer_connection_arc),
             self.event_broadcaster.sender(),
         );
-        self.install_restart_handler(
+        self.install_peer_state_handler(
             webrtc_conn.clone(),
             Arc::clone(&peer_connection_arc),
             target.clone(),
@@ -4182,42 +4182,14 @@ impl WebRtcCoordinator {
         }
         tracing::debug!("🔒 Inserted placeholder peer state for {} (answerer)", from);
 
-        // 3. Register state change handler (combines cleanup + ready notification)
-        // NOTE: on_peer_connection_state_change can only have ONE callback, so we combine:
-        //   - WebRtcConnection.handle_state_change() for cleanup on terminal states
-        //   - Ready notification when Connected (answerer side)
-        let webrtc_conn_for_state = webrtc_conn.clone();
-        let coord_weak_for_state = Arc::downgrade(self);
-        let from_id_for_state = from.clone();
-        let state_session_id = webrtc_conn.session_id();
-        peer_connection_arc.on_peer_connection_state_change(Box::new(
-            move |state: RTCPeerConnectionState| {
-                let webrtc_conn = webrtc_conn_for_state.clone();
-                let coord_weak = coord_weak_for_state.clone();
-                let peer_id = from_id_for_state.clone();
-                Box::pin(async move {
-                    // First: run WebRtcConnection's state change handler (cleanup logic)
-                    webrtc_conn.handle_state_change(state).await;
-
-                    // Update state tracking for health check
-                    if let Some(coord) = coord_weak.upgrade() {
-                        let mut peers = coord.peers.write().await;
-                        if let Some(peer_state) = peers.get_mut(&peer_id) {
-                            if peer_state.session_id == state_session_id {
-                                peer_state.update_connection_state(state);
-                            } else {
-                                tracing::debug!(
-                                    "⏭️ Ignoring stale answerer PeerConnection state for peer {}, session_id={}",
-                                    peer_id,
-                                    state_session_id
-                                );
-                            }
-                        }
-                        drop(peers); // Release lock
-                    }
-                })
-            },
-        ));
+        // 3. Install the shared state handler. On Disconnected/Failed the
+        // Offerer creates an ICE restart offer, while the Answerer only sends
+        // IceRestartRequest so the Offerer remains the negotiation initiator.
+        self.install_peer_state_handler(
+            webrtc_conn.clone(),
+            Arc::clone(&peer_connection_arc),
+            from.clone(),
+        );
 
         // 4. Register on_data_channel handler to reuse negotiated channels created by the offerer
         let conn_for_data_channel = webrtc_conn.clone();
@@ -5949,9 +5921,15 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
-    /// Initiate ICE restart on an existing connection (offerer side).
+    /// Trigger ICE recovery for an existing connection.
+    ///
+    /// The Offerer creates the ICE restart offer. The Answerer never creates an
+    /// offer here; it only sends `IceRestartRequest` so the Offerer can start or
+    /// wake its restart loop.
+    ///
     /// Uses atomic state management within peers lock for complete de-duplication.
-    /// If ICE restart fails after all retries, attempts to establish a new connection.
+    /// If an Offerer restart fails after all retries, it attempts to establish a
+    /// new connection.
     pub async fn restart_ice(self: &Arc<Self>, target: &actr_protocol::ActrId) -> ActorResult<()> {
         if self.peer_signaling.closing_all.load(Ordering::Acquire) {
             tracing::debug!(
@@ -7378,8 +7356,84 @@ impl WebRtcCoordinator {
         })
     }
 
-    /// Install a state change handler to auto-trigger ICE restart on disconnection (offerer only).
-    fn install_restart_handler(
+    async fn handle_peer_state_change(
+        self: &Arc<Self>,
+        webrtc_conn: &WebRtcConnection,
+        target: &ActrId,
+        session_id: u64,
+        state: RTCPeerConnectionState,
+    ) {
+        tracing::info!("📡 PeerConnection state for {} -> {:?}", target, state);
+
+        // Only the active session may update state or trigger recovery. The
+        // PeerConnection callback can outlive a replaced connection.
+        let is_active_session = {
+            let mut peers = self.peers.write().await;
+            match peers.get_mut(target) {
+                Some(peer_state) if peer_state.session_id == session_id => {
+                    peer_state.update_connection_state(state);
+                    true
+                }
+                Some(peer_state) => {
+                    tracing::debug!(
+                        "⏭️ Ignoring stale PeerConnection state for peer {}, event_session_id={}, active_session_id={}",
+                        target,
+                        session_id,
+                        peer_state.session_id
+                    );
+                    false
+                }
+                None => false,
+            }
+        };
+
+        if !is_active_session
+            || !matches!(
+                state,
+                RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+            )
+        {
+            return;
+        }
+
+        // Log buffered_amount for all open DataChannels so callers can assess
+        // how much data may not have been delivered due to the abrupt disconnect.
+        {
+            use webrtc::data_channel::data_channel_state::RTCDataChannelState;
+            let channels = webrtc_conn.data_channels().await;
+            for (idx, channel_opt) in channels.iter().enumerate() {
+                if let Some(channel) = channel_opt {
+                    if channel.ready_state() == RTCDataChannelState::Open {
+                        let buffered = channel.buffered_amount().await;
+                        tracing::warn!(
+                            peer_id = %target,
+                            channel = %channel.label(),
+                            channel_idx = idx,
+                            connection_state = ?state,
+                            buffered_bytes = buffered,
+                            "Abnormal disconnect detected; \
+                             buffered data may not have been delivered to peer",
+                        );
+                    }
+                }
+            }
+        }
+
+        if let Err(e) = self.restart_ice(target).await {
+            tracing::warn!(
+                "⚠️ Failed to trigger ICE recovery for {} after {:?}: {}",
+                target,
+                state,
+                e
+            );
+        }
+    }
+
+    /// Install the shared PeerConnection state handler for both roles.
+    ///
+    /// On Disconnected/Failed, the Offerer starts ICE restart negotiation. The
+    /// Answerer only sends `IceRestartRequest`; it never creates a restart offer.
+    fn install_peer_state_handler(
         self: &Arc<Self>,
         webrtc_conn: WebRtcConnection,
         peer_connection: Arc<RTCPeerConnection>,
@@ -7396,64 +7450,9 @@ impl WebRtcCoordinator {
                     // First run the base WebRtcConnection cleanup.
                     webrtc_conn.handle_state_change(state).await;
 
-                    tracing::info!("📡 PeerConnection state for {} -> {:?}", target, state);
-
-                    // Update state tracking for health check
-                    let mut is_active_session = false;
                     if let Some(c) = coord.upgrade() {
-                        let mut peers = c.peers.write().await;
-                        if let Some(peer_state) = peers.get_mut(&target) {
-                            if peer_state.session_id == session_id {
-                                peer_state.update_connection_state(state);
-                                is_active_session = true;
-                            } else {
-                                tracing::debug!(
-                                    "⏭️ Ignoring stale offerer PeerConnection state for peer {}, session_id={}",
-                                    target,
-                                    session_id
-                                );
-                            }
-                        }
-                        drop(peers); // Release lock before potentially long-running operations
-                    }
-
-                    if is_active_session
-                        && matches!(
-                        state,
-                        RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
-                    ) {
-                        // Log buffered_amount for all open DataChannels so callers can assess
-                        // how much data may not have been delivered due to the abrupt disconnect.
-                        {
-                            use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-                            let channels = webrtc_conn.data_channels().await;
-                            for (idx, channel_opt) in channels.iter().enumerate() {
-                                if let Some(channel) = channel_opt {
-                                    if channel.ready_state() == RTCDataChannelState::Open {
-                                        let buffered = channel.buffered_amount().await;
-                                        tracing::warn!(
-                                            peer_id = %target,
-                                            channel = %channel.label(),
-                                            channel_idx = idx,
-                                            connection_state = ?state,
-                                            buffered_bytes = buffered,
-                                            "Abnormal disconnect detected; \
-                                             buffered data may not have been delivered to peer",
-                                        );
-                                    }
-                                }
-                            }
-                        }
-
-                        if let Some(c) = coord.upgrade() {
-                            if let Err(e) = c.restart_ice(&target).await {
-                                tracing::warn!(
-                                    "⚠️ Failed to auto restart ICE to {}: {}",
-                                    target,
-                                    e
-                                );
-                            }
-                        }
+                        c.handle_peer_state_change(&webrtc_conn, &target, session_id, state)
+                            .await;
                     }
                 })
             },
