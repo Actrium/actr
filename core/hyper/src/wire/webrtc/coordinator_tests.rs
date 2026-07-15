@@ -1647,6 +1647,78 @@ async fn candidate_gathered_before_restart_local_sdp_uses_new_generation_ufrag()
 }
 
 #[tokio::test]
+async fn ambiguous_buffered_candidate_does_not_abort_local_ice_generation() {
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        test_actor_id(1),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(CapturingSignalingClient::new()),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+    let target_id = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
+
+    assert!(
+        WebRtcCoordinator::begin_local_ice_generation(&coordinator.peers, &target_id, session_id)
+            .await
+    );
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&target_id).expect("peer should exist");
+        let LocalIceGenerationState::Buffering(candidates) =
+            &mut state.ice_signaling.local_generation
+        else {
+            panic!("local generation should be buffering");
+        };
+        candidates.push(RTCIceCandidateInit {
+            candidate: "candidate:1 1 UDP 1 127.0.0.1 5000 typ host".to_string(),
+            sdp_mid: None,
+            sdp_mline_index: None,
+            username_fragment: None,
+        });
+        candidates.push(RTCIceCandidateInit {
+            candidate: "candidate:2 1 UDP 1 127.0.0.1 5001 typ host".to_string(),
+            sdp_mid: Some("1".to_string()),
+            sdp_mline_index: Some(1),
+            username_fragment: None,
+        });
+    }
+
+    let new_description = RTCSessionDescription::offer(
+        "v=0\r\n\
+         o=- 0 0 IN IP4 127.0.0.1\r\n\
+         s=-\r\n\
+         t=0 0\r\n\
+         m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         a=mid:0\r\n\
+         a=ice-ufrag:generation-zero\r\n\
+         a=ice-pwd:test-password-zero\r\n\
+         m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+         a=mid:1\r\n\
+         a=ice-ufrag:generation-one\r\n\
+         a=ice-pwd:test-password-one\r\n"
+            .to_string(),
+    )
+    .expect("test SDP should parse");
+    let candidates = WebRtcCoordinator::finish_local_ice_generation(
+        &coordinator.peers,
+        &target_id,
+        session_id,
+        &new_description,
+    )
+    .await
+    .expect("one ambiguous candidate must not abort the generation");
+
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].username_fragment.as_deref(),
+        Some("generation-one")
+    );
+    assert_eq!(candidates[0].sdp_mid.as_deref(), Some("1"));
+}
+
+#[tokio::test]
 async fn ice_restart_answer_create_error_resets_local_generation() {
     let coordinator = Arc::new(WebRtcCoordinator::new(
         test_actor_id(1),
@@ -2234,7 +2306,8 @@ async fn pending_candidate_flush_obeys_its_total_deadline() {
 async fn replacement_cleanup_preserves_candidates_for_incoming_offer() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let target_id = test_actor_id(99);
-    insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
+    let session_id =
+        insert_pending_offer_peer(&coordinator, target_id.clone(), "current-exchange").await;
 
     let incoming_offer = RTCSessionDescription::offer(
         "v=0\r\n\
@@ -2265,13 +2338,16 @@ async fn replacement_cleanup_preserves_candidates_for_incoming_offer() {
         vec![stale_candidate, incoming_candidate.clone()],
     );
 
-    coordinator
-        .cleanup_cancelled_connection_for_offer(
-            &target_id,
-            "replaced by incoming Offer",
-            &incoming_offer,
-        )
-        .await;
+    assert!(
+        coordinator
+            .cleanup_cancelled_connection_for_offer(
+                &target_id,
+                session_id,
+                "replaced by incoming Offer",
+                &incoming_offer,
+            )
+            .await
+    );
 
     assert!(coordinator.peers.read().await.get(&target_id).is_none());
     assert_eq!(

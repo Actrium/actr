@@ -1144,12 +1144,20 @@ impl WebRtcCoordinator {
         };
         let mut prepared = Vec::with_capacity(candidates.len());
         for candidate_json in candidates {
-            let username_fragment = ice_ufrag_from_description(
+            let Some(username_fragment) = ice_ufrag_from_description(
                 description,
                 candidate_json.sdp_mid.as_deref(),
                 candidate_json.sdp_mline_index.map(u32::from),
-            )
-            .ok_or_else(|| "new local SDP does not contain an unambiguous ICE ufrag".to_string())?;
+            ) else {
+                tracing::warn!(
+                    peer_id = %peer_id,
+                    session_id,
+                    sdp_mid = ?candidate_json.sdp_mid,
+                    sdp_mline_index = ?candidate_json.sdp_mline_index,
+                    "Skipping buffered local ICE candidate because the restart SDP has no unambiguous ICE ufrag"
+                );
+                continue;
+            };
             prepared.push(Self::ice_candidate_from_json(
                 candidate_json,
                 username_fragment,
