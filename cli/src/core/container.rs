@@ -22,6 +22,27 @@ pub enum ComponentType {
     UserInterface,
 }
 
+/// Project configuration a command needs before the DI container is built.
+///
+/// Orthogonal to [`Command::required_components`]: a command may need no DI
+/// components yet still require a manifest (e.g. `build` reads it directly),
+/// or need components that work without any local project file (e.g. standalone
+/// `registry discover`). Modeling this separately lets the CLI entry point
+/// surface actionable configuration errors *before* constructing the container,
+/// instead of leaking internal "X not registered" DI invariant failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigRequirement {
+    /// No project config needed (e.g. `version`, `completion`, `init`,
+    /// standalone `registry discover`).
+    None,
+    /// Needs `manifest.toml` OR `actr.toml` in cwd (manifest-first priority),
+    /// e.g. non-standalone `registry discover`.
+    RuntimeConfig,
+    /// Needs `manifest.toml` specifically — dependencies live there, so
+    /// `actr.toml` alone is insufficient (e.g. `deps install`).
+    WorkloadManifest,
+}
+
 /// Service container
 pub struct ServiceContainer {
     config_manager: Option<Arc<dyn ConfigManager>>,
@@ -338,6 +359,15 @@ pub trait Command: Send + Sync {
 
     /// Get required component types
     fn required_components(&self) -> Vec<ComponentType>;
+
+    /// Project configuration required before the container is built.
+    ///
+    /// Defaults to [`ConfigRequirement::None`]; commands override to surface
+    /// actionable config errors (identifying the missing file and current
+    /// directory) instead of internal DI registration failures.
+    fn config_requirement(&self) -> ConfigRequirement {
+        ConfigRequirement::None
+    }
 
     /// Command name
     fn name(&self) -> &str;

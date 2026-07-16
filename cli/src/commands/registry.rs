@@ -15,7 +15,9 @@ use serde::Serialize;
 
 use super::discovery::DiscoveryCommand;
 use super::fingerprint::FingerprintCommand;
-use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use crate::core::{
+    Command, CommandContext, CommandResult, ComponentType, ConfigRequirement,
+};
 
 #[derive(Args, Debug)]
 pub struct RegistryArgs {
@@ -59,6 +61,22 @@ impl Command for RegistryArgs {
                 DiscoveryCommand::from_args(cmd).required_components()
             }
             RegistryCommand::Fingerprint(_) | RegistryCommand::Publish(_) => vec![],
+        }
+    }
+
+    fn config_requirement(&self) -> ConfigRequirement {
+        match &self.command {
+            // Standalone discover (--endpoint --realm-id --realm-secret) needs
+            // no local project files; otherwise discover needs manifest.toml or
+            // actr.toml to resolve network endpoints.
+            RegistryCommand::Discover(cmd) => {
+                if cmd.standalone_config().is_some() {
+                    ConfigRequirement::None
+                } else {
+                    ConfigRequirement::RuntimeConfig
+                }
+            }
+            RegistryCommand::Fingerprint(_) | RegistryCommand::Publish(_) => ConfigRequirement::None,
         }
     }
 

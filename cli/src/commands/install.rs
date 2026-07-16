@@ -3,8 +3,8 @@
 //! Implement install flow based on reuse architecture with check-first principle
 
 use crate::core::{
-    ActrCliError, Command, CommandContext, CommandResult, ComponentType, DependencySpec,
-    ErrorReporter, InstallResult,
+    ActrCliError, Command, CommandContext, CommandResult, ComponentType, ConfigRequirement,
+    DependencySpec, ErrorReporter, InstallResult,
 };
 use crate::utils::command_exists;
 use actr_config::LockFile;
@@ -174,6 +174,11 @@ Use: actr deps install <ALIAS> --actr-type <TYPE> --fingerprint <FINGERPRINT>"
             ComponentType::ProtoProcessor,
             ComponentType::CacheManager,
         ]
+    }
+
+    fn config_requirement(&self) -> ConfigRequirement {
+        // Dependencies live in manifest.toml; actr.toml alone is insufficient.
+        ConfigRequirement::WorkloadManifest
     }
 
     fn name(&self) -> &str {

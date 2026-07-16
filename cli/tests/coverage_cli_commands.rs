@@ -1369,11 +1369,88 @@ fn deps_install_in_empty_dir_fails_without_writing_project_config() {
     let home = isolated_home(tmp.path());
 
     // Empty directory → no manifest, so the command must fail without mutating
-    // project-local config. Avoid asserting the internal DI error text.
+    // project-local config. The error must identify the missing manifest.toml
+    // and the current directory, not the internal DI registration failure.
     let output = run_actr(&["deps", "install"], tmp.path(), &home);
     assert_failure(&output, "deps install non-project");
+    let err = strip_ansi(&stderr(&output));
+    assert!(
+        err.contains("manifest.toml not found"),
+        "expected manifest.toml-not-found error, got stderr:\n{err}"
+    );
+    let cwd = std::fs::canonicalize(tmp.path()).expect("canonicalize tmp");
+    let cwd_str = cwd.to_string_lossy();
+    assert!(
+        err.contains(&*cwd_str),
+        "expected current directory {cwd:?} in error, got stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("ConfigManager"),
+        "must not leak internal DI error, got stderr:\n{err}"
+    );
     assert!(
         !tmp.path().join(".actr/config.toml").exists(),
         "deps install in an empty directory must not write project config"
+    );
+}
+
+#[test]
+fn deps_install_with_only_actr_toml_explains_manifest_required() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // Only actr.toml present — insufficient because dependencies live in
+    // manifest.toml. The error must explain that manifest.toml is required.
+    fs::write(
+        tmp.path().join("actr.toml"),
+        "[network]\nsignaling_url = \"wss://example/signaling\"\nais_endpoint = \"http://example/ais\"\n",
+    )
+    .expect("write actr.toml");
+
+    let output = run_actr(&["deps", "install"], tmp.path(), &home);
+    assert_failure(&output, "deps install with only actr.toml");
+    let err = strip_ansi(&stderr(&output));
+    assert!(
+        err.contains("manifest.toml is required"),
+        "expected manifest.toml-required error, got stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("ConfigManager"),
+        "must not leak internal DI error, got stderr:\n{err}"
+    );
+    assert!(
+        !tmp.path().join("manifest.toml").exists(),
+        "must not create manifest.toml"
+    );
+}
+
+#[test]
+fn standalone_discover_skips_project_config_requirement() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // Standalone discover (--endpoint --realm-id --realm-secret) must bypass
+    // the project-config requirement even in an empty directory. It fails on
+    // network unreachability (localhost:1), not on missing configuration.
+    let output = run_actr(
+        &[
+            "registry",
+            "discover",
+            "--list-only",
+            "--endpoint",
+            "http://localhost:1",
+            "--realm-id",
+            "1",
+            "--realm-secret",
+            "secret",
+        ],
+        tmp.path(),
+        &home,
+    );
+    assert_failure(&output, "standalone discover (unreachable)");
+    let err = strip_ansi(&stderr(&output));
+    assert!(
+        !err.contains("No project configuration") && !err.contains("manifest.toml not found"),
+        "standalone discover must skip project-config check, got stderr:\n{err}"
     );
 }
