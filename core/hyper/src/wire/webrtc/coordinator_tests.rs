@@ -616,6 +616,109 @@ async fn expect_disconnected_hook(
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_recovering_and_idle_hooks_follow_state_commit_order() {
+    let local_id = test_actor_id(1);
+    let peer_id = test_actor_id(99);
+    let coordinator = new_test_coordinator(local_id);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&peer_id).expect("peer should exist");
+        state.update_connection_state(RTCPeerConnectionState::Connected);
+        state.mark_data_channel_opened();
+        state.mark_sendable_hook_reported();
+    }
+
+    let recovering_entered = Arc::new(tokio::sync::Notify::new());
+    let release_recovering = Arc::new(tokio::sync::Notify::new());
+    let (hook_tx, mut hook_rx) = mpsc::unbounded_channel();
+    let hook: crate::wire::webrtc::HookCallback = Arc::new({
+        let recovering_entered = Arc::clone(&recovering_entered);
+        let release_recovering = Arc::clone(&release_recovering);
+        move |event| {
+            let hook_tx = hook_tx.clone();
+            let recovering_entered = Arc::clone(&recovering_entered);
+            let release_recovering = Arc::clone(&release_recovering);
+            Box::pin(async move {
+                if matches!(
+                    &event,
+                    crate::wire::webrtc::HookEvent::WebRtcDisconnected {
+                        status: WebRtcPeerStatus::Recovering,
+                        ..
+                    }
+                ) {
+                    recovering_entered.notify_one();
+                    release_recovering.notified().await;
+                }
+                let _ = hook_tx.send(event);
+            })
+        }
+    });
+    coordinator.set_hook_callback(hook);
+
+    let recovering_task = {
+        let coordinator = Arc::clone(&coordinator);
+        let peer_id = peer_id.clone();
+        tokio::spawn(async move {
+            coordinator
+                .notify_webrtc_recovering_once(&peer_id, session_id, "disconnect detected")
+                .await;
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), recovering_entered.notified())
+        .await
+        .expect("Recovering hook should enter its callback");
+
+    let idle_started = Arc::new(tokio::sync::Notify::new());
+    let idle_task = {
+        let coordinator = Arc::clone(&coordinator);
+        let peer_id = peer_id.clone();
+        let idle_started = Arc::clone(&idle_started);
+        tokio::spawn(async move {
+            idle_started.notify_one();
+            coordinator
+                .notify_webrtc_idle_if_changed(&peer_id, session_id, "cleanup completed")
+                .await;
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), idle_started.notified())
+        .await
+        .expect("Idle task should start while Recovering callback is blocked");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), hook_rx.recv())
+            .await
+            .is_err(),
+        "Idle must not overtake the earlier Recovering state commit"
+    );
+
+    release_recovering.notify_one();
+    expect_disconnected_hook(
+        &mut hook_rx,
+        &peer_id,
+        WebRtcPeerStatus::Recovering,
+        "Recovering should be delivered first",
+    )
+    .await;
+    expect_disconnected_hook(
+        &mut hook_rx,
+        &peer_id,
+        WebRtcPeerStatus::Idle,
+        "Idle should follow Recovering",
+    )
+    .await;
+
+    recovering_task
+        .await
+        .expect("Recovering task should finish");
+    idle_task.await.expect("Idle task should finish");
+}
+
 #[tokio::test]
 async fn webrtc_connected_hook_waits_for_open_data_channel() {
     let local_id = test_actor_id(1);
