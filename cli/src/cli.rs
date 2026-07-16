@@ -25,10 +25,10 @@ use crate::commands::{
     RestartCommand, RmCommand, RunCommand, StartCommand, StopCommand, VersionCommand,
 };
 use crate::core::{
-    ActrCliError, Command, CommandContext, CommandResult, ConfigManager, ConsoleUI,
-    ContainerBuilder, DefaultCacheManager, DefaultDependencyResolver, DefaultFingerprintValidator,
-    DefaultNetworkValidator, DefaultProtoProcessor, DiscoveryContext, ErrorReporter,
-    NetworkServiceDiscovery, ServiceContainer, TomlConfigManager,
+    ActrCliError, Command, CommandContext, CommandResult, ConfigManager, ConfigRequirement,
+    ConsoleUI, ContainerBuilder, DefaultCacheManager, DefaultDependencyResolver,
+    DefaultFingerprintValidator, DefaultNetworkValidator, DefaultProtoProcessor, DiscoveryContext,
+    ErrorReporter, NetworkServiceDiscovery, ServiceContainer, TomlConfigManager,
 };
 
 /// Top-level `actr` CLI.
@@ -148,6 +148,18 @@ pub async fn run() -> Result<()> {
     let standalone_discover = extract_standalone_discover(cmd_variant);
 
     let command = cmd_variant.as_command();
+
+    // Validate project-config requirements before touching the DI container,
+    // so missing-configuration failures surface as actionable command errors
+    // (identifying the missing file and current directory) rather than
+    // internal "X not registered" DI invariant violations. Standalone
+    // `registry discover` bypasses project config entirely.
+    if standalone_discover.is_none() {
+        if let Err(e) = validate_config_requirement(command.config_requirement()) {
+            report_error(&e);
+        }
+    }
+
     let needs_container = !command.required_components().is_empty();
     let container = if needs_container {
         build_container(standalone_discover).await?
@@ -172,15 +184,7 @@ pub async fn run() -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            if let Some(cli_error) = e.downcast_ref::<ActrCliError>() {
-                if matches!(cli_error, ActrCliError::OperationCancelled) {
-                    std::process::exit(0);
-                }
-                eprintln!("{}", ErrorReporter::format_error(cli_error));
-            } else {
-                eprintln!("{} {e:?}", "Error:".red());
-            }
-            std::process::exit(1);
+            report_error(&e);
         }
     }
 }
@@ -317,6 +321,81 @@ async fn build_minimal_container() -> Result<ServiceContainer> {
     let mut container = ContainerBuilder::new().build()?;
     container = container.register_user_interface(Arc::new(ConsoleUI::new()));
     Ok(container)
+}
+
+/// Report an error to stderr and exit.
+///
+/// [`ActrCliError`] variants are formatted via [`ErrorReporter`]; other errors
+/// fall back to a debug dump. `OperationCancelled` exits 0. Shared by the
+/// pre-container config check and the command execution error path so both
+/// produce the same user-facing rendering.
+fn report_error(e: &anyhow::Error) -> ! {
+    if let Some(cli_error) = e.downcast_ref::<ActrCliError>() {
+        if matches!(cli_error, ActrCliError::OperationCancelled) {
+            std::process::exit(0);
+        }
+        eprintln!("{}", ErrorReporter::format_error(cli_error));
+    } else {
+        eprintln!("{} {e:?}", "Error:".red());
+    }
+    std::process::exit(1)
+}
+
+/// Validate that the current directory satisfies the command's project-config
+/// requirement before the DI container is built.
+///
+/// On failure, returns a user-facing [`ActrCliError::InvalidProject`] that
+/// identifies the missing file and the current directory, rather than letting
+/// the container surface an internal "X not registered" invariant violation.
+fn validate_config_requirement(req: ConfigRequirement) -> Result<()> {
+    use std::path::Path;
+    let cwd = std::env::current_dir()?;
+    let manifest = Path::new("manifest.toml");
+    let actr = Path::new("actr.toml");
+    match req {
+        ConfigRequirement::None => Ok(()),
+        ConfigRequirement::RuntimeConfig => {
+            if manifest.exists() || actr.exists() {
+                Ok(())
+            } else {
+                Err(ActrCliError::InvalidProject {
+                    message: format!(
+                        "No project configuration found (manifest.toml or actr.toml) in {}.\n\
+                         Run this command from a project directory, or use \
+                         'actr registry discover --endpoint ... --realm-id ... \
+                         --realm-secret ...' for standalone discovery.",
+                        cwd.display()
+                    ),
+                }
+                .into())
+            }
+        }
+        ConfigRequirement::WorkloadManifest => {
+            if manifest.exists() {
+                Ok(())
+            } else if actr.exists() {
+                Err(ActrCliError::InvalidProject {
+                    message: format!(
+                        "manifest.toml is required for this command, but only actr.toml was \
+                         found in {}. Dependencies live in manifest.toml — run this command \
+                         from a workload directory containing manifest.toml.",
+                        cwd.display()
+                    ),
+                }
+                .into())
+            } else {
+                Err(ActrCliError::InvalidProject {
+                    message: format!(
+                        "manifest.toml not found in {}. Run this command from a workload \
+                         directory (one containing manifest.toml), or run 'actr init' to \
+                         create one.",
+                        cwd.display()
+                    ),
+                }
+                .into())
+            }
+        }
+    }
 }
 
 #[cfg(test)]

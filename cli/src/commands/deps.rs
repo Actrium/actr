@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use clap::{Args, Subcommand};
 
 use super::install::InstallCommand;
-use crate::core::{Command, CommandContext, CommandResult, ComponentType};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType, ConfigRequirement};
 
 #[derive(Args, Debug)]
 pub struct DepsArgs {
@@ -29,10 +29,6 @@ impl Command for DepsArgs {
         match &self.command {
             DepsCommand::Install(cmd) => {
                 let command = InstallCommand::from_args(cmd);
-                {
-                    let container = ctx.container.lock().unwrap();
-                    container.validate(&command.required_components())?;
-                }
                 command.execute(ctx).await
             }
         }
@@ -41,6 +37,12 @@ impl Command for DepsArgs {
     fn required_components(&self) -> Vec<ComponentType> {
         match &self.command {
             DepsCommand::Install(cmd) => cmd.required_components(),
+        }
+    }
+
+    fn config_requirement(&self) -> ConfigRequirement {
+        match &self.command {
+            DepsCommand::Install(cmd) => cmd.config_requirement(),
         }
     }
 
