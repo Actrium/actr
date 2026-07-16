@@ -180,6 +180,7 @@ async fn graceful_shutdown_admits_active_mailbox_batch_before_on_stop() {
     let shutdown_scheduler = scheduler.clone();
     let shutdown_mailbox_admission = mailbox_batch_admission.clone();
     let (prelude_started_tx, prelude_started_rx) = tokio::sync::oneshot::channel();
+    let (admission_closed_tx, admission_closed_rx) = tokio::sync::oneshot::channel();
     let shutdown = tokio::spawn(async move {
         shutdown_actor_runner(
             Some(shutdown_scheduler),
@@ -187,6 +188,7 @@ async fn graceful_shutdown_admits_active_mailbox_batch_before_on_stop() {
             Box::pin(async move {
                 let _ = prelude_started_tx.send(());
                 shutdown_mailbox_admission.close().await;
+                let _ = admission_closed_tx.send(());
             }),
             Box::pin(stop),
         )
@@ -197,8 +199,8 @@ async fn graceful_shutdown_admits_active_mailbox_batch_before_on_stop() {
         .await
         .expect("shutdown prelude started while the batch is active");
     // This is the tail record from the same dequeue batch. Shutdown is already
-    // waiting to close mailbox admission, but scheduler intake must remain open
-    // until the complete batch has been submitted.
+    // running its admission-closing prelude, but scheduler intake must remain
+    // open until the complete batch has been submitted.
     let second = scheduler
         .submit(
             key,
@@ -206,6 +208,10 @@ async fn graceful_shutdown_admits_active_mailbox_batch_before_on_stop() {
         )
         .await;
     drop(active_batch);
+    tokio::time::timeout(std::time::Duration::from_secs(5), admission_closed_rx)
+        .await
+        .expect("mailbox admission close watchdog")
+        .expect("mailbox admission closed after the active batch completed");
     assert!(
         mailbox_batch_admission.enter().await.is_none(),
         "a batch starting after shutdown must not dequeue more durable messages"
