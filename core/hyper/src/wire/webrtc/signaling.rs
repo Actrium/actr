@@ -164,6 +164,13 @@ pub trait SignalingClient: Send + Sync {
         self.connect().await
     }
 
+    /// Invalidate in-flight automatic reconnect attempts and keep new attempts
+    /// paused until a recovery path explicitly schedules them again.
+    ///
+    /// This method must remain synchronous and non-blocking because lifecycle
+    /// reconciliation calls it before its event-settle window.
+    fn suppress_auto_reconnect(&self) {}
+
     /// Re-enable and wake the automatic reconnect manager after an explicit
     /// lifecycle recovery attempt failed.
     fn schedule_auto_reconnect(&self) {}
@@ -936,6 +943,13 @@ impl WebSocketSignalingClient {
             || self.reconnect_generation.load(Ordering::Acquire) != generation
     }
 
+    fn suppress_auto_reconnect_internal(&self) {
+        self.reconnect_generation.fetch_add(1, Ordering::AcqRel);
+        self.auto_reconnect_suppressed
+            .store(true, Ordering::Release);
+        self.reconnect_notify.notify_waiters();
+    }
+
     /// Establish a single signaling WebSocket connection attempt, honoring connection_timeout.
     ///
     /// This does not perform any retry logic; callers that want retries should wrap this.
@@ -1015,8 +1029,10 @@ impl WebSocketSignalingClient {
         *self.ws_sink.lock().await = Some(sink);
         *self.ws_stream.lock().await = Some(stream);
         self.connected.store(true, Ordering::Release);
-        self.auto_reconnect_suppressed
-            .store(false, Ordering::Release);
+        if matches!(intent, ConnectIntent::Explicit) {
+            self.auto_reconnect_suppressed
+                .store(false, Ordering::Release);
+        }
         self.last_pong.store(current_unix_secs(), Ordering::Release);
         // Enqueue the hook before broadcasting to other subscribers.
         self.invoke_hook(HookEvent::SignalingConnected).await;
@@ -1363,10 +1379,7 @@ impl WebSocketSignalingClient {
 
     async fn disconnect_internal(&self, suppress_auto_reconnect: bool) -> NetworkResult<()> {
         if suppress_auto_reconnect {
-            self.reconnect_generation.fetch_add(1, Ordering::AcqRel);
-            self.auto_reconnect_suppressed
-                .store(true, Ordering::Release);
-            self.reconnect_notify.notify_waiters();
+            self.suppress_auto_reconnect_internal();
         }
 
         self.drop_pending_replies("signaling disconnect").await;
@@ -1691,6 +1704,10 @@ impl SignalingClient for WebSocketSignalingClient {
                 Err(e)
             }
         }
+    }
+
+    fn suppress_auto_reconnect(&self) {
+        self.suppress_auto_reconnect_internal();
     }
 
     fn schedule_auto_reconnect(&self) {
