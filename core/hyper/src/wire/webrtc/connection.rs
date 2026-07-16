@@ -1108,6 +1108,10 @@ impl WireHandle for WebRtcConnection {
         Self::close(self).await
     }
 
+    async fn close_immediately(&self) -> NetworkResult<()> {
+        Self::close_immediately(self).await
+    }
+
     async fn get_lane(&self, payload_type: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
         self.get_lane_internal(payload_type).await
     }
