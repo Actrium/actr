@@ -1449,8 +1449,38 @@ fn standalone_discover_skips_project_config_requirement() {
     );
     assert_failure(&output, "standalone discover (unreachable)");
     let err = strip_ansi(&stderr(&output));
+    // Must bypass the project-config check and reach the network layer — not
+    // leak the internal "X not registered" DI invariant if the standalone
+    // container build ever regresses.
     assert!(
-        !err.contains("No project configuration") && !err.contains("manifest.toml not found"),
-        "standalone discover must skip project-config check, got stderr:\n{err}"
+        !err.contains("No project configuration")
+            && !err.contains("manifest.toml not found")
+            && !err.contains("not registered"),
+        "standalone discover must skip project-config check and not leak DI errors, got stderr:\n{err}"
+    );
+    assert!(
+        err.contains("HTTP") || err.contains("request") || err.contains("localhost"),
+        "standalone discover should fail on network unreachability, got stderr:\n{err}"
+    );
+}
+
+#[test]
+fn check_in_empty_dir_reports_missing_manifest_not_di_error() {
+    let tmp = TempDir::new().expect("tempdir");
+    let home = isolated_home(tmp.path());
+
+    // `actr check` in a non-project directory must surface the missing
+    // manifest.toml, not the internal "ConfigManager not registered" DI
+    // error (#388).
+    let output = run_actr(&["check"], tmp.path(), &home);
+    assert_failure(&output, "check non-project");
+    let err = strip_ansi(&stderr(&output));
+    assert!(
+        err.contains("manifest.toml not found"),
+        "expected manifest.toml-not-found error, got stderr:\n{err}"
+    );
+    assert!(
+        !err.contains("ConfigManager") && !err.contains("not registered"),
+        "must not leak internal DI error, got stderr:\n{err}"
     );
 }

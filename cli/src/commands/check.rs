@@ -3,7 +3,10 @@
 //! The check command validates that services are available in the registry
 //! and optionally verifies they match the configured dependencies.
 
-use crate::core::{Command, CommandContext, CommandResult, ComponentType, NetworkCheckOptions};
+use crate::core::{
+    Command, CommandContext, CommandResult, ComponentType, ConfigRequirement,
+    NetworkCheckOptions,
+};
 use actr_config::ConfigParser;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -333,6 +336,18 @@ impl Command for CheckCommand {
             ComponentType::NetworkValidator,
             ComponentType::FingerprintValidator,
         ]
+    }
+
+    fn config_requirement(&self) -> ConfigRequirement {
+        // If the user pointed at an explicit manifest path that exists, defer
+        // to that file (checked during execution). Otherwise we need
+        // manifest.toml in cwd so the container builds with ConfigManager
+        // registered — otherwise get_validation_pipeline surfaces the
+        // internal "ConfigManager not registered" DI invariant (#388).
+        match &self.manifest_path {
+            Some(p) if std::path::Path::new(p).exists() => ConfigRequirement::None,
+            _ => ConfigRequirement::WorkloadManifest,
+        }
     }
 
     fn name(&self) -> &str {

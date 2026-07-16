@@ -82,13 +82,9 @@ pub enum InstallMode {
 #[async_trait]
 impl Command for InstallCommand {
     async fn execute(&self, context: &CommandContext) -> Result<CommandResult> {
-        // Check-First principle: validate project state first
-        if !self.is_actr_project() {
-            return Err(ActrCliError::InvalidProject {
-                message: "Not an Actor-RTC project. Run 'actr init' to initialize.".to_string(),
-            }
-            .into());
-        }
+        // Project state is validated at the CLI entry point via
+        // ConfigRequirement::WorkloadManifest, so manifest.toml is guaranteed
+        // to exist here — no need to re-check.
 
         // Determine installation mode
         let mode = if let Some(actr_type_str) = &self.actr_type {
@@ -219,11 +215,6 @@ impl InstallCommand {
             force_update: args.force_update,
             skip_verification: args.skip_verification,
         }
-    }
-
-    /// Check if in Actor-RTC project
-    fn is_actr_project(&self) -> bool {
-        std::path::Path::new("manifest.toml").exists()
     }
 
     fn dependency_lookup_key(spec: &DependencySpec) -> String {
