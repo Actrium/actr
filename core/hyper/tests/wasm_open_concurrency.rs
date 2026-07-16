@@ -39,7 +39,7 @@ use actr_hyper::test_support::{
     TestConcurrentDispatcher, TestDedupOutcome, TestDedupState, instantiate_wasm_workload,
 };
 use actr_hyper::wasm::WasmHost;
-use actr_hyper::workload::{HostAbiFn, HostOperationResult};
+use actr_hyper::workload::HostAbiFn;
 use actr_protocol::ActrId;
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc};
