@@ -115,9 +115,7 @@ type WitActrId = Omit<ActrId, 'serialNumber'> & {
 };
 
 type WitDest =
-  | { tag: 'host' }
-  | { tag: 'workload' }
-  | { tag: 'peer'; val: WitActrId };
+  { tag: 'host' } | { tag: 'workload' } | { tag: 'peer'; val: WitActrId };
 
 type WitPayloadType = { tag: PayloadType };
 
@@ -179,8 +177,7 @@ const streamCallbacks = new Map<string, StreamCallback>();
 // then thread `ctx` explicitly. Top-level `await` keeps this lazy and avoids a
 // static `node:` import that would break componentization.
 let invocationStorage:
-  | import('node:async_hooks').AsyncLocalStorage<InvocationCtx>
-  | undefined;
+  import('node:async_hooks').AsyncLocalStorage<InvocationCtx> | undefined;
 try {
   const { AsyncLocalStorage } = await import('node:async_hooks');
   invocationStorage = new AsyncLocalStorage<InvocationCtx>();
