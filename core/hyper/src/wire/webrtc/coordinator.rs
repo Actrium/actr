@@ -811,6 +811,12 @@ impl Drop for CloseAllStateGuard {
     }
 }
 
+#[derive(Clone, Copy)]
+struct HookEmissionContext<'a> {
+    callback: Option<&'a crate::wire::webrtc::HookCallback>,
+    lock: &'a Mutex<()>,
+}
+
 /// Owns peer states after the close-all state commit.
 ///
 /// If the caller is cancelled while running a lifecycle hook, `Drop` moves all
@@ -870,8 +876,10 @@ impl Drop for DrainedPeerCleanupGuard {
             runtime.spawn(async move {
                 WebRtcCoordinator::teardown_removed_peer_state_with(
                     &network_recovering_peers,
-                    None,
-                    &hook_emission_lock,
+                    HookEmissionContext {
+                        callback: None,
+                        lock: &hook_emission_lock,
+                    },
                     &peer_id,
                     state,
                     false,
@@ -1510,14 +1518,13 @@ impl WebRtcCoordinator {
     }
 
     async fn notify_removed_peer_idle_if_needed(
-        hook_callback: Option<&crate::wire::webrtc::HookCallback>,
-        hook_emission_lock: &Mutex<()>,
+        hook_emission: HookEmissionContext<'_>,
         peer_id: &ActrId,
         session_id: u64,
         state: &PeerState,
         reason: &str,
     ) {
-        if hook_callback.is_none()
+        if hook_emission.callback.is_none()
             || matches!(
                 state.public_hook_state,
                 PublicRtcHookState::Unknown | PublicRtcHookState::Idle
@@ -1525,7 +1532,7 @@ impl WebRtcCoordinator {
         {
             return;
         }
-        let _hook_emission_guard = hook_emission_lock.lock().await;
+        let _hook_emission_guard = hook_emission.lock.lock().await;
 
         tracing::info!(
             peer_id = ?peer_id,
@@ -1535,7 +1542,7 @@ impl WebRtcCoordinator {
             "WebRTC peer cleanup reached terminal idle; emitting hook"
         );
         Self::invoke_hook_callback(
-            hook_callback,
+            hook_emission.callback,
             crate::wire::webrtc::HookEvent::WebRtcDisconnected {
                 peer_id: peer_id.clone(),
                 status: WebRtcPeerStatus::Idle,
@@ -1546,8 +1553,7 @@ impl WebRtcCoordinator {
 
     async fn teardown_removed_peer_state_with(
         network_recovering_peers: &Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
-        hook_callback: Option<&crate::wire::webrtc::HookCallback>,
-        hook_emission_lock: &Mutex<()>,
+        hook_emission: HookEmissionContext<'_>,
         target: &ActrId,
         mut state: PeerState,
         abort_restart_task: bool,
@@ -1593,15 +1599,8 @@ impl WebRtcCoordinator {
         }
 
         Self::clear_peer_recovering_in(network_recovering_peers, target, session_id, reason).await;
-        Self::notify_removed_peer_idle_if_needed(
-            hook_callback,
-            hook_emission_lock,
-            target,
-            session_id,
-            &state,
-            reason,
-        )
-        .await;
+        Self::notify_removed_peer_idle_if_needed(hook_emission, target, session_id, &state, reason)
+            .await;
 
         let close_result = match close_mode {
             PeerCloseMode::Graceful => state.webrtc_conn.close().await,
@@ -1662,8 +1661,10 @@ impl WebRtcCoordinator {
         let teardown_task = tokio::spawn(async move {
             Self::teardown_removed_peer_state_with(
                 &network_recovering_peers,
-                hook_callback.as_ref(),
-                &hook_emission_lock,
+                HookEmissionContext {
+                    callback: hook_callback.as_ref(),
+                    lock: &hook_emission_lock,
+                },
                 &target,
                 state,
                 abort_restart_task,
@@ -3456,8 +3457,10 @@ impl WebRtcCoordinator {
             let hook = CLOSE_ALL_HOOK_REENTRY.scope(
                 Arc::clone(&close_flight),
                 Self::notify_removed_peer_idle_if_needed(
-                    hook_callback.as_ref(),
-                    &hook_emission_lock,
+                    HookEmissionContext {
+                        callback: hook_callback.as_ref(),
+                        lock: &hook_emission_lock,
+                    },
                     peer_id,
                     state.session_id,
                     state,
@@ -3483,8 +3486,10 @@ impl WebRtcCoordinator {
                 tracing::info!("🔻 Closing PeerConnection for {}", task_peer_id);
                 Self::teardown_removed_peer_state_with(
                     &recovery_state,
-                    None,
-                    &task_hook_emission_lock,
+                    HookEmissionContext {
+                        callback: None,
+                        lock: &task_hook_emission_lock,
+                    },
                     &task_peer_id,
                     state,
                     false,
