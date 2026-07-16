@@ -99,6 +99,7 @@ async fn mark_peer_as_answerer(
 struct CapturingSignalingClient {
     sent: Mutex<Vec<SignalingEnvelope>>,
     event_tx: broadcast::Sender<super::super::SignalingEvent>,
+    connected: AtomicBool,
     send_control: Option<Arc<SendControl>>,
 }
 
@@ -142,10 +143,15 @@ impl SendControl {
 
 impl CapturingSignalingClient {
     fn new() -> Self {
+        Self::with_connected(true)
+    }
+
+    fn with_connected(connected: bool) -> Self {
         let (event_tx, _rx) = broadcast::channel(16);
         Self {
             sent: Mutex::new(Vec::new()),
             event_tx,
+            connected: AtomicBool::new(connected),
             send_control: None,
         }
     }
@@ -155,8 +161,14 @@ impl CapturingSignalingClient {
         Self {
             sent: Mutex::new(Vec::new()),
             event_tx,
+            connected: AtomicBool::new(true),
             send_control: Some(send_control),
         }
+    }
+
+    fn reconnect(&self) {
+        self.connected.store(true, Ordering::Release);
+        let _ = self.event_tx.send(super::super::SignalingEvent::Connected);
     }
 
     async fn last_relay_source(&self) -> ActrId {
@@ -250,6 +262,11 @@ impl SignalingClient for CapturingSignalingClient {
         &self,
         envelope: SignalingEnvelope,
     ) -> crate::transport::NetworkResult<()> {
+        if !self.is_connected() {
+            return Err(crate::transport::NetworkError::ConnectionError(
+                "injected disconnected signaling client".to_string(),
+            ));
+        }
         if let Some(control) = &self.send_control {
             let _drop_flag = TaskDropFlag(Arc::clone(&control.dropped));
             control.started.add_permits(1);
@@ -276,7 +293,7 @@ impl SignalingClient for CapturingSignalingClient {
     }
 
     fn is_connected(&self) -> bool {
-        true
+        self.connected.load(Ordering::Acquire)
     }
 
     fn get_stats(&self) -> super::super::SignalingStats {
@@ -474,6 +491,100 @@ async fn stale_answerer_state_does_not_request_ice_restart() {
             .current_state,
         RTCPeerConnectionState::Connected,
         "stale callbacks must not update the active session"
+    );
+}
+
+#[tokio::test]
+async fn answerer_waits_for_signaling_reconnect_before_request() {
+    let local_id = test_actor_id(1);
+    let peer_id = test_actor_id(99);
+    let credential_state = CredentialState::new(test_credential(), None, None);
+    let signaling_client = Arc::new(CapturingSignalingClient::with_connected(false));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        local_id,
+        credential_state,
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+    let (session_id, webrtc_conn) = mark_peer_as_answerer(&coordinator, &peer_id).await;
+
+    coordinator
+        .handle_peer_state_change(
+            &webrtc_conn,
+            &peer_id,
+            session_id,
+            RTCPeerConnectionState::Disconnected,
+        )
+        .await;
+
+    assert!(signaling_client.sent_envelopes().await.is_empty());
+    signaling_client.reconnect();
+
+    let sent = signaling_client.wait_for_sent_envelopes(1).await;
+    assert_eq!(
+        sent.len(),
+        1,
+        "Answerer should send exactly once after reconnect"
+    );
+}
+
+#[tokio::test]
+async fn recovered_answerer_skips_deferred_restart_request() {
+    let local_id = test_actor_id(1);
+    let peer_id = test_actor_id(99);
+    let credential_state = CredentialState::new(test_credential(), None, None);
+    let signaling_client = Arc::new(CapturingSignalingClient::with_connected(false));
+    let coordinator = Arc::new(WebRtcCoordinator::new(
+        local_id,
+        credential_state,
+        signaling_client.clone(),
+        WebRtcConfig::default(),
+        Arc::new(MediaFrameRegistry::new()),
+    ));
+
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+    let (session_id, webrtc_conn) = mark_peer_as_answerer(&coordinator, &peer_id).await;
+
+    coordinator
+        .handle_peer_state_change(
+            &webrtc_conn,
+            &peer_id,
+            session_id,
+            RTCPeerConnectionState::Disconnected,
+        )
+        .await;
+    coordinator
+        .peers
+        .write()
+        .await
+        .get_mut(&peer_id)
+        .expect("peer should remain current")
+        .update_connection_state(RTCPeerConnectionState::Connected);
+
+    signaling_client.reconnect();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let task_cleared = coordinator
+                .peers
+                .read()
+                .await
+                .get(&peer_id)
+                .is_some_and(|state| state.restart_task_handle.is_none());
+            if task_cleared {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("deferred Answerer request task should finish after reconnect");
+
+    assert!(
+        signaling_client.sent_envelopes().await.is_empty(),
+        "recovered Answerer must not send a late IceRestartRequest"
     );
 }
 
@@ -2462,13 +2573,12 @@ async fn clear_pending_restarts_cancels_blocked_answerer_restart_request() {
     ));
     let target_id = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
-    coordinator
-        .peers
-        .write()
-        .await
-        .get_mut(&target_id)
-        .expect("peer should exist")
-        .is_offerer = false;
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&target_id).expect("peer should exist");
+        state.is_offerer = false;
+        state.update_connection_state(RTCPeerConnectionState::Disconnected);
+    }
 
     coordinator
         .restart_ice(&target_id)
@@ -2896,13 +3006,12 @@ async fn close_all_peers_cancels_blocked_answerer_restart_request() {
     ));
     let target_id = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target_id.clone(), "restart-exchange").await;
-    coordinator
-        .peers
-        .write()
-        .await
-        .get_mut(&target_id)
-        .expect("peer should exist")
-        .is_offerer = false;
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&target_id).expect("peer should exist");
+        state.is_offerer = false;
+        state.update_connection_state(RTCPeerConnectionState::Disconnected);
+    }
 
     coordinator
         .restart_ice(&target_id)

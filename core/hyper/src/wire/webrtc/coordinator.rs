@@ -24,7 +24,7 @@ use super::connection::WebRtcConnection;
 use super::negotiator::WebRtcNegotiator;
 #[cfg(feature = "opentelemetry")]
 use super::trace;
-use super::{SignalingClient, WebRtcConfig, WebRtcInboundMessage};
+use super::{SignalingClient, SignalingEvent, WebRtcConfig, WebRtcInboundMessage};
 use crate::INITIAL_CONNECTION_TIMEOUT;
 use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::CredentialState;
@@ -70,6 +70,7 @@ const ICE_CONNECTED_TIMEOUT: Duration = Duration::from_secs(10);
 const DATA_CHANNEL_AFTER_ICE_TIMEOUT: Duration = Duration::from_secs(2);
 const ROLE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
 const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(6);
 const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const PEER_CONNECTION_CLOSE_FALLBACK_TIMEOUT: Duration = Duration::from_millis(500);
@@ -105,9 +106,10 @@ const MAX_FAILED_DURATION: Duration = Duration::from_secs(60); // 1 minute
 /// recovery either succeeds — leaving Disconnected and resetting
 /// `last_state_change` — or exhausts its budget and self-cleans within 60s of
 /// the transition. Anything still Disconnected past 90s (budget + margin) is
-/// unrecoverable (answerer-side peers never run a restart task; offerer-side
-/// tasks can be aborted by `clear_pending_restarts`) and would otherwise pin
-/// its RTCPeerConnection — and the ICE UDP sockets it holds — forever.
+/// unrecoverable (answerer-side signaling wait tasks are bounded to 5s;
+/// offerer-side tasks can be aborted by `clear_pending_restarts`) and would
+/// otherwise pin its RTCPeerConnection — and the ICE UDP sockets it holds —
+/// forever.
 const MAX_DISCONNECTED_DURATION: Duration = Duration::from_secs(90);
 
 /// Decide whether the health check should reap a peer, given its real-time
@@ -6683,26 +6685,37 @@ impl WebRtcCoordinator {
 
             // 3. Check if we are the offerer
             if !state.is_offerer {
-                // Track the Answerer's notification task in the same lifecycle
-                // slot as the Offerer's restart task. Cleanup can then abort and
-                // await it before declaring signaling quiescent.
+                // Track the Answerer's reconnect wait and notification task in
+                // the same lifecycle slot as the Offerer's restart task. Cleanup
+                // can then abort and await it before declaring signaling quiescent.
                 let restart_session_id = state.session_id;
                 tracing::info!(
                     "📤 Not offerer for serial={}, sending IceRestartRequest to notify offerer",
                     target
                 );
+                let network_recovering_peers = Arc::clone(&self.network_recovering_peers);
                 let handle = tokio::spawn(async move {
-                    let send_result = Self::send_ice_restart_request_if_current(
-                        &target_clone,
-                        restart_session_id,
-                        &commit_context,
-                        &local_id,
-                        &credential_state,
-                        cancellation_epoch,
+                    let send_result = if Self::wait_for_signaling_reconnect_for_answerer(
                         &signaling_client,
-                        "network_recovered",
+                        &target_clone,
                     )
-                    .await;
+                    .await
+                    {
+                        Self::send_ice_restart_request_if_current(
+                            &target_clone,
+                            restart_session_id,
+                            &commit_context,
+                            &network_recovering_peers,
+                            &local_id,
+                            &credential_state,
+                            cancellation_epoch,
+                            &signaling_client,
+                            "network_recovered",
+                        )
+                        .await
+                    } else {
+                        None
+                    };
 
                     match send_result {
                         Some(Ok(())) => tracing::info!(
@@ -6717,7 +6730,7 @@ impl WebRtcCoordinator {
                             err
                         ),
                         None => tracing::debug!(
-                            "⏭️ Cancelled stale IceRestartRequest to serial={}, session_id={}",
+                            "⏭️ Skipped deferred or stale IceRestartRequest to serial={}, session_id={}",
                             target_clone,
                             restart_session_id
                         ),
@@ -6875,11 +6888,99 @@ impl WebRtcCoordinator {
         Ok(())
     }
 
+    async fn wait_for_signaling_reconnect_for_answerer(
+        signaling_client: &Arc<dyn SignalingClient>,
+        target: &ActrId,
+    ) -> bool {
+        let mut events = signaling_client.subscribe_events();
+        if signaling_client.is_connected() {
+            return true;
+        }
+
+        tracing::info!(
+            "⏳ Signaling unavailable for Answerer IceRestartRequest to serial={}; waiting for reconnect",
+            target
+        );
+
+        let connected = tokio::time::timeout(ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT, async {
+            loop {
+                match events.recv().await {
+                    Ok(SignalingEvent::Connected) if signaling_client.is_connected() => {
+                        return true;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            "Answerer signaling reconnect wait lagged by {} events for serial={}",
+                            skipped,
+                            target
+                        );
+                        if signaling_client.is_connected() {
+                            return true;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        return signaling_client.is_connected();
+                    }
+                }
+            }
+        })
+        .await;
+
+        match connected {
+            Ok(true) => true,
+            _ if signaling_client.is_connected() => true,
+            _ => {
+                tracing::warn!(
+                    "⚠️ Signaling did not reconnect within {:?}; skipping Answerer IceRestartRequest to serial={}",
+                    ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT,
+                    target
+                );
+                false
+            }
+        }
+    }
+
+    /// Check whether a deferred Answerer request still targets the active session
+    /// and remains needed: the peer is unavailable, or a matching network-recovery
+    /// guard is proactively recovering a session that may still report `Connected`.
+    async fn answerer_restart_request_is_current(
+        peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
+        network_recovering_peers: &Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
+        target: &ActrId,
+        expected_session_id: u64,
+    ) -> bool {
+        let unavailable = {
+            let peers = peers.read().await;
+            let Some(state) = peers.get(target) else {
+                return false;
+            };
+            if state.session_id != expected_session_id || state.is_offerer {
+                return false;
+            }
+            matches!(
+                state.current_state,
+                RTCPeerConnectionState::Disconnected | RTCPeerConnectionState::Failed
+            )
+        };
+
+        if unavailable {
+            return true;
+        }
+
+        network_recovering_peers
+            .read()
+            .await
+            .get(target)
+            .is_some_and(|status| status.session_id == expected_session_id)
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn send_ice_restart_request_if_current(
         target: &ActrId,
         restart_session_id: u64,
         commit_context: &PeerSignalingCommitContext,
+        network_recovering_peers: &Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
         local_id: &ActrId,
         credential_state: &CredentialState,
         cancellation_epoch: u64,
@@ -6904,6 +7005,16 @@ impl WebRtcCoordinator {
         let commit_guard = commit_context
             .acquire_commit(target, restart_session_id, Some(cancellation_epoch))
             .await?;
+        if !Self::answerer_restart_request_is_current(
+            &commit_context.peers,
+            network_recovering_peers,
+            target,
+            restart_session_id,
+        )
+        .await
+        {
+            return None;
+        }
         Some(
             Self::send_peer_signaling_envelope_while_guarded(
                 &commit_guard,
