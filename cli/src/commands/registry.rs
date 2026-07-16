@@ -15,9 +15,7 @@ use serde::Serialize;
 
 use super::discovery::DiscoveryCommand;
 use super::fingerprint::FingerprintCommand;
-use crate::core::{
-    Command, CommandContext, CommandResult, ComponentType, ConfigRequirement,
-};
+use crate::core::{Command, CommandContext, CommandResult, ComponentType, ConfigRequirement};
 
 #[derive(Args, Debug)]
 pub struct RegistryArgs {
@@ -76,7 +74,9 @@ impl Command for RegistryArgs {
                     ConfigRequirement::RuntimeConfig
                 }
             }
-            RegistryCommand::Fingerprint(_) | RegistryCommand::Publish(_) => ConfigRequirement::None,
+            RegistryCommand::Fingerprint(_) | RegistryCommand::Publish(_) => {
+                ConfigRequirement::None
+            }
         }
     }
 

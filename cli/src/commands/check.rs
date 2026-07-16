@@ -4,8 +4,7 @@
 //! and optionally verifies they match the configured dependencies.
 
 use crate::core::{
-    Command, CommandContext, CommandResult, ComponentType, ConfigRequirement,
-    NetworkCheckOptions,
+    Command, CommandContext, CommandResult, ComponentType, ConfigRequirement, NetworkCheckOptions,
 };
 use actr_config::ConfigParser;
 use anyhow::{Context, Result};
