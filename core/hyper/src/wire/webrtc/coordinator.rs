@@ -6941,6 +6941,9 @@ impl WebRtcCoordinator {
         }
     }
 
+    /// Check whether a deferred Answerer request still targets the active session
+    /// and remains needed: the peer is unavailable, or a matching network-recovery
+    /// guard is proactively recovering a session that may still report `Connected`.
     async fn answerer_restart_request_is_current(
         peers: &Arc<RwLock<HashMap<ActrId, PeerState>>>,
         network_recovering_peers: &Arc<RwLock<HashMap<ActrId, NetworkRecoveryStatus>>>,
