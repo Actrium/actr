@@ -133,28 +133,6 @@ impl ServiceRegistryStorage {
         .await
         .with_context(|| "Failed to create service_registry table")?;
 
-        // 迁移：旧版缓存没有持久化 ActrType.version。已有行无法可靠推导版本，
-        // 因此使用空字符串标记为 legacy，并在反序列化时跳过；服务重新注册后会原地回填。
-        let has_actor_version: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pragma_table_info('service_registry') \
-             WHERE name = 'actor_version'",
-        )
-        .fetch_one(&self.pool)
-        .await
-        .with_context(|| "Failed to inspect service_registry schema")?;
-        if has_actor_version == 0 {
-            sqlx::query(
-                "ALTER TABLE service_registry \
-                 ADD COLUMN actor_version TEXT NOT NULL DEFAULT ''",
-            )
-            .execute(&self.pool)
-            .await
-            .with_context(|| "Failed to add actor_version to service_registry")?;
-            platform::recording::info!(
-                "Migrated service_registry schema with actor_version column"
-            );
-        }
-
         // 迁移：为旧版 service_registry 表添加 ws_address 列
         let _ = sqlx::query("ALTER TABLE service_registry ADD COLUMN ws_address TEXT")
             .execute(&self.pool)
@@ -362,15 +340,6 @@ impl ServiceRegistryStorage {
         let mut services = Vec::new();
 
         for row in rows {
-            let actor_version: String = row.get("actor_version");
-            if actor_version.is_empty() {
-                platform::recording::warn!(
-                    "Skipping legacy service cache row without actor_version: service={}",
-                    row.get::<String, _>("service_name")
-                );
-                continue;
-            }
-
             match self.row_to_service_info(row) {
                 Ok(service) => services.push(service),
                 Err(e) => {
@@ -482,12 +451,6 @@ impl ServiceRegistryStorage {
     /// 将数据库行转换为 ServiceInfo
     fn row_to_service_info(&self, row: sqlx::sqlite::SqliteRow) -> Result<ServiceInfo> {
         let actor_version: String = row.get("actor_version");
-        if actor_version.is_empty() {
-            anyhow::bail!(
-                "legacy service cache row is missing actor_version: service={}",
-                row.get::<String, _>("service_name")
-            );
-        }
 
         // ActorId
         let actor_id = ActrId {
@@ -705,102 +668,6 @@ mod tests {
             .await
             .unwrap();
         assert!(loaded.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_migrates_legacy_schema_and_backfills_actor_version() -> Result<()> {
-        let db_path = std::env::temp_dir().join(format!(
-            "actrix-signaling-legacy-cache-{}.db",
-            uuid::Uuid::new_v4()
-        ));
-        let database_url = format!("sqlite:{}?mode=rwc", db_path.display());
-        let legacy_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&database_url)
-            .await?;
-
-        sqlx::query(
-            r#"
-            CREATE TABLE service_registry (
-                actor_serial_number INTEGER NOT NULL,
-                actor_realm_id INTEGER NOT NULL,
-                actor_manufacturer TEXT NOT NULL,
-                actor_device_name TEXT NOT NULL,
-                service_name TEXT NOT NULL,
-                message_types TEXT NOT NULL,
-                capabilities_json TEXT,
-                status TEXT NOT NULL,
-                service_spec_blob BLOB,
-                acl_blob BLOB,
-                service_availability_state INTEGER,
-                power_reserve REAL,
-                mailbox_backlog REAL,
-                worst_dependency_health_state INTEGER,
-                geo_region TEXT,
-                geo_longitude REAL,
-                geo_latitude REAL,
-                sticky_client_ids TEXT,
-                ws_address TEXT,
-                registered_at INTEGER NOT NULL,
-                last_heartbeat_at INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL,
-                PRIMARY KEY (actor_serial_number, actor_realm_id, service_name)
-            )
-            "#,
-        )
-        .execute(&legacy_pool)
-        .await?;
-
-        let now = current_timestamp();
-        sqlx::query(
-            r#"
-            INSERT INTO service_registry (
-                actor_serial_number, actor_realm_id, actor_manufacturer, actor_device_name,
-                service_name, message_types, status, sticky_client_ids,
-                registered_at, last_heartbeat_at, expires_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-            "#,
-        )
-        .bind(1_i64)
-        .bind(1001_i64)
-        .bind("test-mfg")
-        .bind("test-device")
-        .bind("test-service")
-        .bind(r#"["test.Message"]"#)
-        .bind("Available")
-        .bind("[]")
-        .bind(now as i64)
-        .bind(now as i64)
-        .bind((now + 3600) as i64)
-        .execute(&legacy_pool)
-        .await?;
-        legacy_pool.close().await;
-
-        let storage = ServiceRegistryStorage::new(&db_path, Some(3600)).await?;
-        let has_actor_version: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM pragma_table_info('service_registry') \
-             WHERE name = 'actor_version'",
-        )
-        .fetch_one(&storage.pool)
-        .await?;
-        assert_eq!(has_actor_version, 1);
-
-        let loaded_legacy = storage.load_all_services().await?;
-        assert!(
-            loaded_legacy.is_empty(),
-            "legacy rows without an actor version must not be restored"
-        );
-
-        let service = create_test_service(1, "test-service");
-        storage.save_service(&service).await?;
-
-        let loaded = storage.load_all_services().await?;
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].actor_id, service.actor_id);
-
-        storage.pool.close().await;
-        std::fs::remove_file(db_path)?;
-        Ok(())
     }
 
     #[tokio::test]
