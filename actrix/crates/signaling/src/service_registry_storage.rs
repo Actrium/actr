@@ -19,7 +19,10 @@ use actr_protocol::{Acl, ActrId, ServiceSpec};
 use anyhow::{Context, Result};
 use prost::Message as ProstMessage;
 use serde_json;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::{
+    Row,
+    sqlite::{SqlitePool, SqlitePoolOptions},
+};
 use std::{
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -359,6 +362,15 @@ impl ServiceRegistryStorage {
         let mut services = Vec::new();
 
         for row in rows {
+            let actor_version: String = row.get("actor_version");
+            if actor_version.is_empty() {
+                platform::recording::warn!(
+                    "Skipping legacy service cache row without actor_version: service={}",
+                    row.get::<String, _>("service_name")
+                );
+                continue;
+            }
+
             match self.row_to_service_info(row) {
                 Ok(service) => services.push(service),
                 Err(e) => {
@@ -469,14 +481,10 @@ impl ServiceRegistryStorage {
 
     /// 将数据库行转换为 ServiceInfo
     fn row_to_service_info(&self, row: sqlx::sqlite::SqliteRow) -> Result<ServiceInfo> {
-        use sqlx::Row;
-
         let actor_version: String = row.get("actor_version");
         if actor_version.is_empty() {
             anyhow::bail!(
-                "legacy service cache row is missing actor_version: serial={}, realm={}, service={}",
-                row.get::<i64, _>("actor_serial_number"),
-                row.get::<i64, _>("actor_realm_id"),
+                "legacy service cache row is missing actor_version: service={}",
                 row.get::<String, _>("service_name")
             );
         }

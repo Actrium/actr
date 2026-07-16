@@ -802,13 +802,16 @@ impl ServiceRegistry {
                 true
             };
 
-            // 只有新增服务实例时才追加消息类型索引，避免重复恢复制造重复项。
-            if inserted {
-                for message_type in &service.message_types {
-                    self.message_type_index
-                        .entry(message_type.clone())
-                        .or_default()
-                        .push(service_name.clone());
+            // 消息类型索引存储 service_name；确保每个映射只出现一次。
+            let mut message_index_updated = false;
+            for message_type in &service.message_types {
+                let service_names = self
+                    .message_type_index
+                    .entry(message_type.clone())
+                    .or_default();
+                if !service_names.contains(&service_name) {
+                    service_names.push(service_name.clone());
+                    message_index_updated = true;
                 }
             }
 
@@ -817,8 +820,20 @@ impl ServiceRegistry {
                 .actor_index
                 .entry(service.actor_id.clone())
                 .or_default();
-            if !actor_services.contains(&service_name) {
+            let actor_index_updated = if actor_services.contains(&service_name) {
+                false
+            } else {
                 actor_services.push(service_name.clone());
+                true
+            };
+
+            if !inserted && !message_index_updated && !actor_index_updated {
+                platform::recording::debug!(
+                    "Service already present in memory for Actor {}: {}",
+                    service.actor_id.to_string_repr(),
+                    service_name
+                );
+                continue;
             }
 
             restored_count += 1;
@@ -1834,10 +1849,8 @@ mod tests {
             .update_load_metrics(&actor_id, 0, 0.75, 0.1)
             .unwrap();
 
-        let candidates = registry.find_by_actr_type(&actor_id.r#type);
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].actor_id, actor_id);
-        assert_eq!(candidates[0].power_reserve, Some(0.75));
+        registry.unregister_actor_memory_only(&actor_id);
+        assert!(registry.find_by_actr_type(&actor_id.r#type).is_empty());
 
         assert!(
             registry
@@ -1845,8 +1858,31 @@ mod tests {
                 .await
                 .unwrap()
         );
+        registry
+            .update_load_metrics(&actor_id, 0, 0.75, 0.1)
+            .unwrap();
+
+        let candidates = registry.find_by_actr_type(&actor_id.r#type);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].actor_id, actor_id);
+        assert_eq!(candidates[0].power_reserve, Some(0.75));
+
+        assert!(
+            !registry
+                .restore_service_from_storage(&actor_id)
+                .await
+                .unwrap(),
+            "a repeated restore with no index changes must report false"
+        );
         let candidates_after_retry = registry.find_by_actr_type(&actor_id.r#type);
         assert_eq!(candidates_after_retry.len(), 1);
         assert_eq!(candidates_after_retry[0].power_reserve, Some(0.75));
+
+        let services_by_message = registry.discover_by_message_type("goaskaway.Ask");
+        assert_eq!(services_by_message.len(), 1);
+        assert_eq!(
+            registry.get_message_type_stats().get("goaskaway.Ask"),
+            Some(&1)
+        );
     }
 }
