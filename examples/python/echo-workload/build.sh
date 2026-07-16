@@ -5,11 +5,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTR_ROOT="$(cd "${HERE}/../../.." && pwd)"
-WORLD="actr-workload-guest"
+WORLD="actr-workload-guest-v2"
 WORLD_MODULE="actr_workload_bindings"
 BINDINGS_DIR="${HERE}/bindings"
 DIST_DIR="${HERE}/dist"
-OUT_WASM="${DIST_DIR}/generated-echo-python-0.1.0-wasm32-wasip2.wasm"
+OUT_WASM="${DIST_DIR}/generated-echo-python-0.2.0-wasm32-wasip2.wasm"
 VENV_DIR="${HERE}/.venv"
 
 ensure_cli_web_runtime_assets() {

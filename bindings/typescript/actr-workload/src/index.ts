@@ -82,11 +82,7 @@ export interface ErrorEvent {
 export interface PeerEvent {
   peer: ActrId;
   relayed?: boolean;
-  status?:
-    | 'idle'
-    | 'connecting'
-    | 'connected'
-    | 'recovering';
+  status?: 'idle' | 'connecting' | 'connected' | 'recovering';
 }
 
 export interface CredentialEvent {
@@ -119,7 +115,9 @@ type WitActrId = Omit<ActrId, 'serialNumber'> & {
 };
 
 type WitDest =
-  { tag: 'host' } | { tag: 'workload' } | { tag: 'peer'; val: WitActrId };
+  | { tag: 'host' }
+  | { tag: 'workload' }
+  | { tag: 'peer'; val: WitActrId };
 
 type WitPayloadType = { tag: PayloadType };
 
@@ -297,7 +295,12 @@ export async function call(
   payload: PayloadBytes,
   ctx?: InvocationCtx,
 ): Promise<Uint8Array> {
-  return hostCall(resolveCtxToken(ctx), toWitDest(target), routeKey, toUint8Array(payload));
+  return hostCall(
+    resolveCtxToken(ctx),
+    toWitDest(target),
+    routeKey,
+    toUint8Array(payload),
+  );
 }
 
 export async function tell(
@@ -306,7 +309,12 @@ export async function tell(
   payload: PayloadBytes,
   ctx?: InvocationCtx,
 ): Promise<void> {
-  await hostTell(resolveCtxToken(ctx), toWitDest(target), routeKey, toUint8Array(payload));
+  await hostTell(
+    resolveCtxToken(ctx),
+    toWitDest(target),
+    routeKey,
+    toUint8Array(payload),
+  );
 }
 
 export async function callRaw(

@@ -24,7 +24,7 @@ function toPublicEnvelope(): string {
   }`;
 }
 
-function shimSource(entry: string, runtimeEntry: string): string {
+export function shimSource(entry: string, runtimeEntry: string): string {
   return `
 	import { __dispatchDataChunk, withInvocationCtx } from ${JSON.stringify(runtimeEntry)};
 	import userWorkload from ${JSON.stringify(entry)};
@@ -52,23 +52,10 @@ function toUint8Array(value) {
   return new Uint8Array();
 }
 
-function errorMessage(event) {
-  if (typeof event === 'string') {
-    return event;
-  }
-  if (event?.context) {
-    return event.context;
-  }
-  if (event?.source) {
-    return JSON.stringify(event.source);
-  }
-  return 'ACTR workload error';
-}
-
 export const workload = {
   async dispatch(envelope, ctx) {
     return await withInvocationCtx(ctx, async () => {
-      const result = await activeWorkload().dispatch(${toPublicEnvelope()});
+      const result = await activeWorkload().dispatch(${toPublicEnvelope()}, ctx);
       return toUint8Array(result);
     });
   },
@@ -93,7 +80,7 @@ export const workload = {
 
   async onError(event, ctx) {
     return await withInvocationCtx(ctx, async () => {
-      await activeWorkload().onError?.(errorMessage(event), ctx);
+      await activeWorkload().onError?.(event, ctx);
     });
   },
 

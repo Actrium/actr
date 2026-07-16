@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   ActrId,
   DataChunk,
+  InvocationCtx,
   StreamCallback,
   Workload,
 } from '../src/index.js';
@@ -38,6 +39,14 @@ function testChunk(overrides: Partial<DataChunk> = {}): DataChunk {
   };
 }
 
+function testInvocationCtx(ctxToken: bigint): InvocationCtx {
+  return {
+    ctxToken,
+    selfId: testActorId(),
+    requestId: 'request-1',
+  };
+}
+
 describe('@actrium/actr-workload', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -67,6 +76,18 @@ describe('@actrium/actr-workload', () => {
 
     expect(host.hostCalls.registerStream).toEqual(['stream-1']);
     expect(received).toEqual([{ chunk, sender }]);
+  });
+
+  it('forwards an explicit invocation context token to host imports', async () => {
+    const { host, runtime } = await loadRuntime();
+
+    await runtime.registerStream(
+      'stream-with-context',
+      () => undefined,
+      testInvocationCtx(37n),
+    );
+
+    expect(host.hostCalls.ctxTokens).toEqual([37n]);
   });
 
   it('unregisters streams and rejects later dispatches', async () => {

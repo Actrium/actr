@@ -163,7 +163,9 @@ fn generates_scaffold_with_local_and_remote_sections() {
         scaffold.contains("import { EchoServiceDispatcher } from './generated/echo_workload.js';")
     );
     assert!(scaffold.contains("class EchoServiceHandlerImpl implements EchoServiceHandler"));
-    assert!(scaffold.contains("return dispatcher.dispatch(envelope);"));
+    assert!(scaffold.contains("import type { InvocationCtx }"));
+    assert!(scaffold.contains("_ctx?: InvocationCtx"));
+    assert!(scaffold.contains("return dispatcher.dispatch(envelope, ctx);"));
     assert!(!scaffold.contains("Implement this workload with @actrium/actr-workload"));
     assert!(!scaffold.contains("// - EchoService.Echo (EchoRequest -> EchoResponse)"));
     assert!(scaffold.contains("Remote RPC quick-start examples"));
@@ -210,6 +212,9 @@ fn local_workload_imports_imported_types_from_their_owner_module() {
     );
     assert!(content.contains("ContinuePromptResultStreamsRequest"));
     assert!(content.contains("ContinuePromptResultStreamsResponseSchema"));
+    assert!(content.contains("InvocationCtx, RpcEnvelope"));
+    assert!(content.contains("ctx?: InvocationCtx"));
+    assert!(content.contains("continuePromptResultStreams(request, ctx)"));
 }
 
 #[test]

@@ -42,8 +42,8 @@ use crate::workload::{HostAbiFn, InvocationContext};
 
 use super::host_v2::WasmWorkloadV2;
 use super::runtime_limits::{
-    EpochTicker, StorePermit, StoreResourceLimiter, acquire_compile, acquire_store,
-    record_compile_failure, record_resource_denial,
+    EpochTicker, StoreResourceLimiter, acquire_compile, acquire_store, record_compile_failure,
+    record_resource_denial,
 };
 use crate::wasm::error::{WasmError, WasmResult};
 
