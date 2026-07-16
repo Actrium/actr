@@ -842,8 +842,8 @@ impl DrainedPeerCleanupGuard {
         }
     }
 
-    fn last(&self) -> Option<&(ActrId, PeerState)> {
-        self.peers.last()
+    fn last_mut(&mut self) -> Option<&mut (ActrId, PeerState)> {
+        self.peers.last_mut()
     }
 
     fn pop(&mut self) -> Option<(ActrId, PeerState)> {
@@ -1521,8 +1521,9 @@ impl WebRtcCoordinator {
         hook_emission: HookEmissionContext<'_>,
         peer_id: &ActrId,
         session_id: u64,
-        state: &PeerState,
+        state: &mut PeerState,
         reason: &str,
+        replacement_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
     ) {
         if hook_emission.callback.is_none()
             || matches!(
@@ -1530,25 +1531,37 @@ impl WebRtcCoordinator {
                 PublicRtcHookState::Unknown | PublicRtcHookState::Idle
             )
         {
+            drop(replacement_guard);
             return;
         }
         let _hook_emission_guard = hook_emission.lock.lock().await;
+        let previous_status = state.public_hook_state;
+        state.mark_public_idle_hook_reported();
 
         tracing::info!(
             peer_id = ?peer_id,
             session_id = session_id,
-            previous_status = ?state.public_hook_state,
+            previous_status = ?previous_status,
             reason = reason,
             "WebRTC peer cleanup reached terminal idle; emitting hook"
         );
-        Self::invoke_hook_callback(
-            hook_emission.callback,
-            crate::wire::webrtc::HookEvent::WebRtcDisconnected {
+        let callback_future = hook_emission.callback.map(|callback| {
+            callback(crate::wire::webrtc::HookEvent::WebRtcDisconnected {
                 peer_id: peer_id.clone(),
                 status: WebRtcPeerStatus::Idle,
-            },
-        )
-        .await;
+            })
+        });
+
+        // Production hook callbacks enqueue synchronously when invoked. Keep
+        // the peer replacement gate until that enqueue has happened, then
+        // release it before awaiting a custom callback future so re-entry
+        // cannot deadlock on the same peer gate. The emission lock remains
+        // held until completion, so a replacement session still cannot emit a
+        // newer public hook first.
+        drop(replacement_guard);
+        if let Some(callback_future) = callback_future {
+            callback_future.await;
+        }
     }
 
     async fn teardown_removed_peer_state_with(
@@ -1599,8 +1612,15 @@ impl WebRtcCoordinator {
         }
 
         Self::clear_peer_recovering_in(network_recovering_peers, target, session_id, reason).await;
-        Self::notify_removed_peer_idle_if_needed(hook_emission, target, session_id, &state, reason)
-            .await;
+        Self::notify_removed_peer_idle_if_needed(
+            hook_emission,
+            target,
+            session_id,
+            &mut state,
+            reason,
+            None,
+        )
+        .await;
 
         let close_result = match close_mode {
             PeerCloseMode::Graceful => state.webrtc_conn.close().await,
@@ -1645,8 +1665,9 @@ impl WebRtcCoordinator {
     async fn teardown_removed_peer_state(
         &self,
         target: &ActrId,
-        state: PeerState,
+        mut state: PeerState,
         abort_restart_task: bool,
+        replacement_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
         reason: &str,
     ) {
         // Transfer ownership before the first suspension point. If the caller
@@ -1659,12 +1680,24 @@ impl WebRtcCoordinator {
         let target = target.clone();
         let reason = reason.to_owned();
         let teardown_task = tokio::spawn(async move {
+            let hook_emission = HookEmissionContext {
+                callback: hook_callback.as_ref(),
+                lock: &hook_emission_lock,
+            };
+            if let Some(replacement_guard) = replacement_guard {
+                Self::notify_removed_peer_idle_if_needed(
+                    hook_emission,
+                    &target,
+                    state.session_id,
+                    &mut state,
+                    &reason,
+                    Some(replacement_guard),
+                )
+                .await;
+            }
             Self::teardown_removed_peer_state_with(
                 &network_recovering_peers,
-                HookEmissionContext {
-                    callback: hook_callback.as_ref(),
-                    lock: &hook_emission_lock,
-                },
+                hook_emission,
                 &target,
                 state,
                 abort_restart_task,
@@ -3443,7 +3476,7 @@ impl WebRtcCoordinator {
         // (or is cancelled at the deadline), physical teardown owns the peer.
         let mut close_tasks = Vec::new();
         let hook_deadline = tokio::time::Instant::now() + CLOSE_ALL_HOOK_TIMEOUT;
-        while let Some((peer_id, state)) = drained_peers.last() {
+        while let Some((peer_id, state)) = drained_peers.last_mut() {
             for handle in &state.receive_handles {
                 handle.abort();
             }
@@ -3465,6 +3498,7 @@ impl WebRtcCoordinator {
                     state.session_id,
                     state,
                     "close all peers",
+                    None,
                 ),
             );
             if tokio::time::timeout_at(hook_deadline, hook).await.is_err() {
@@ -4035,8 +4069,8 @@ impl WebRtcCoordinator {
         }
 
         let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
+        let signaling_guard = Arc::clone(&restart_signaling_gate).lock_owned().await;
         let state_to_close = {
-            let _signaling_guard = restart_signaling_gate.lock().await;
             // Match close-all's auxiliary-state lock order. Mutate candidates
             // and negotiation state only in the same commit that removes the
             // exact observed session.
@@ -4072,6 +4106,7 @@ impl WebRtcCoordinator {
         drop(restart_signaling_gate);
 
         let Some(state) = state_to_close else {
+            drop(signaling_guard);
             Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
             tracing::debug!(
                 peer_id = %target,
@@ -4081,7 +4116,7 @@ impl WebRtcCoordinator {
             return false;
         };
 
-        self.teardown_removed_peer_state(target, state, true, reason)
+        self.teardown_removed_peer_state(target, state, true, Some(signaling_guard), reason)
             .await;
         Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
         tracing::debug!(
@@ -4112,8 +4147,8 @@ impl WebRtcCoordinator {
         }
 
         let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
+        let signaling_guard = Arc::clone(&restart_signaling_gate).lock_owned().await;
         let state_to_close = {
-            let _signaling_guard = restart_signaling_gate.lock().await;
             let mut pending_candidates = self.pending_candidates.write().await;
             let mut peer_negotiation = self.peer_negotiation.lock().await;
             let mut peers = self.peers.write().await;
@@ -4136,12 +4171,13 @@ impl WebRtcCoordinator {
         drop(restart_signaling_gate);
 
         let Some(state) = state_to_close else {
+            drop(signaling_guard);
             Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
             return false;
         };
         // Keep the current role flight intact so this exact RoleAssignment can
         // complete after teardown commits.
-        self.teardown_removed_peer_state(target, state, true, reason)
+        self.teardown_removed_peer_state(target, state, true, Some(signaling_guard), reason)
             .await;
         Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
         true
@@ -4157,8 +4193,8 @@ impl WebRtcCoordinator {
         // 1. Remove from peers map FIRST, release lock, THEN close
         //    This avoids deadlock: close() sends events that may trigger this method again
         let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
+        let signaling_guard = Arc::clone(&restart_signaling_gate).lock_owned().await;
         let state_to_close = {
-            let _signaling_guard = restart_signaling_gate.lock().await;
             let mut pending_candidates = self.pending_candidates.write().await;
             let mut peer_negotiation = self.peer_negotiation.lock().await;
             let mut peers = self.peers.write().await;
@@ -4180,8 +4216,10 @@ impl WebRtcCoordinator {
         // NOTE: Previously this method manually sent ConnectionClosed (with session_id=0)
         //       AND separately called peer_connection.close(), causing double close + double events.
         if let Some(state) = state_to_close {
-            self.teardown_removed_peer_state(target, state, true, reason)
+            self.teardown_removed_peer_state(target, state, true, Some(signaling_guard), reason)
                 .await;
+        } else {
+            drop(signaling_guard);
         }
         Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
 
@@ -4214,8 +4252,8 @@ impl WebRtcCoordinator {
         }
 
         let restart_signaling_gate = self.restart_signaling_gate_for(target).await;
+        let signaling_guard = Arc::clone(&restart_signaling_gate).lock_owned().await;
         let state_to_close = {
-            let _signaling_guard = restart_signaling_gate.lock().await;
             let mut pending_candidates = self.pending_candidates.write().await;
             let mut peer_negotiation = self.peer_negotiation.lock().await;
             let mut peers = self.peers.write().await;
@@ -4250,6 +4288,7 @@ impl WebRtcCoordinator {
         drop(restart_signaling_gate);
 
         let Some(state) = state_to_close else {
+            drop(signaling_guard);
             Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
             return false;
         };
@@ -4262,8 +4301,14 @@ impl WebRtcCoordinator {
             reason
         );
 
-        self.teardown_removed_peer_state(target, state, abort_restart_task, reason)
-            .await;
+        self.teardown_removed_peer_state(
+            target,
+            state,
+            abort_restart_task,
+            Some(signaling_guard),
+            reason,
+        )
+        .await;
         Self::prune_restart_signaling_gates(&self.peer_signaling.gates).await;
 
         tracing::debug!(
@@ -4421,6 +4466,7 @@ impl WebRtcCoordinator {
                 target,
                 peer_state,
                 false,
+                None,
                 "peer lifecycle changed during offerer setup",
             )
             .await;
@@ -4809,6 +4855,7 @@ impl WebRtcCoordinator {
                 from,
                 peer_state,
                 false,
+                None,
                 "peer lifecycle changed during answerer setup",
             )
             .await;

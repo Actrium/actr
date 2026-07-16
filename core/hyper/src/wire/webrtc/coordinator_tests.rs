@@ -719,6 +719,108 @@ async fn concurrent_recovering_and_idle_hooks_follow_state_commit_order() {
     idle_task.await.expect("Idle task should finish");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn removed_peer_idle_is_enqueued_before_replacement_gate_reopens() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(99);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "current-exchange").await;
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&peer_id).expect("peer should exist");
+        state.update_connection_state(RTCPeerConnectionState::Connected);
+        state.mark_data_channel_opened();
+        state.mark_sendable_hook_reported();
+    }
+
+    let mut hook_rx = install_hook_recorder(&coordinator);
+    let replacement_gate = coordinator.restart_signaling_gate_for(&peer_id).await;
+    let hook_emission_guard = coordinator.hook_emission_lock.lock().await;
+    let recovery_guard = coordinator.network_recovering_peers.write().await;
+
+    let cleanup_task = {
+        let coordinator = Arc::clone(&coordinator);
+        let peer_id = peer_id.clone();
+        tokio::spawn(async move {
+            coordinator
+                .cleanup_connection_if_session(&peer_id, session_id, true, "replace old session")
+                .await
+        })
+    };
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while coordinator.peers.read().await.contains_key(&peer_id) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("old peer should be removed before teardown completes");
+
+    let replacement_gate_entered = Arc::new(tokio::sync::Notify::new());
+    let replacement_task = {
+        let coordinator = Arc::clone(&coordinator);
+        let peer_id = peer_id.clone();
+        let replacement_gate_entered = Arc::clone(&replacement_gate_entered);
+        tokio::spawn(async move {
+            {
+                let _replacement_guard = replacement_gate.lock().await;
+                replacement_gate_entered.notify_one();
+            }
+            coordinator
+                .invoke_hook(crate::wire::webrtc::HookEvent::WebRtcConnected {
+                    peer_id,
+                    relayed: false,
+                })
+                .await;
+        })
+    };
+
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            replacement_gate_entered.notified(),
+        )
+        .await
+        .is_err(),
+        "replacement gate must remain closed until the removed peer's Idle hook is enqueued"
+    );
+
+    drop(hook_emission_guard);
+    expect_disconnected_hook(
+        &mut hook_rx,
+        &peer_id,
+        WebRtcPeerStatus::Idle,
+        "removed peer Idle should be delivered before replacement hooks",
+    )
+    .await;
+
+    let replacement_event = tokio::time::timeout(Duration::from_secs(1), hook_rx.recv())
+        .await
+        .expect("replacement hook should follow removed peer Idle")
+        .expect("hook channel should remain open");
+    match replacement_event {
+        crate::wire::webrtc::HookEvent::WebRtcConnected {
+            peer_id: got,
+            relayed,
+        } => {
+            assert_eq!(got, peer_id);
+            assert!(!relayed);
+        }
+        other => panic!("unexpected replacement hook event: {other:?}"),
+    }
+
+    replacement_task
+        .await
+        .expect("replacement hook task should finish");
+    drop(recovery_guard);
+    assert!(
+        cleanup_task
+            .await
+            .expect("old peer cleanup task should finish"),
+        "old peer cleanup should remove the expected session"
+    );
+}
+
 #[tokio::test]
 async fn webrtc_connected_hook_waits_for_open_data_channel() {
     let local_id = test_actor_id(1);
@@ -2872,7 +2974,7 @@ async fn stale_peer_creation_epoch_cannot_insert_after_close_all() {
     };
     assert!(coordinator.peers.read().await.is_empty());
     coordinator
-        .teardown_removed_peer_state(&target, peer, false, "stale test insertion")
+        .teardown_removed_peer_state(&target, peer, false, None, "stale test insertion")
         .await;
 }
 
