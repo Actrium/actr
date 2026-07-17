@@ -210,14 +210,18 @@ fn network_event_needs_lifecycle_barrier(event: &NetworkEvent) -> bool {
 }
 
 fn network_event_suppresses_auto_reconnect(event: &NetworkEvent) -> bool {
-    matches!(
-        event,
+    match event {
         NetworkEvent::AppLifecycleChanged {
-            state: AppLifecycleState::Foreground {
-                background_duration_ms,
-            },
-        } if *background_duration_ms >= LONG_BACKGROUND_RECONNECT_THRESHOLD_MS
-    )
+            state: AppLifecycleState::Background,
+        } => true,
+        NetworkEvent::AppLifecycleChanged {
+            state:
+                AppLifecycleState::Foreground {
+                    background_duration_ms,
+                },
+        } => *background_duration_ms >= LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
+        _ => false,
+    }
 }
 
 fn network_event_requires_immediate_action(event: &NetworkEvent) -> bool {
@@ -708,7 +712,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         if network_event_suppresses_auto_reconnect(event) {
             tracing::info!(
                 event = ?event,
-                "Long-background recovery suppressing stale signaling auto-reconnect before action selection"
+                "App lifecycle suppressing stale signaling auto-reconnect before action selection"
             );
             self.signaling_client.suppress_auto_reconnect();
         }
@@ -1016,66 +1020,86 @@ pub async fn run_network_event_reconciler(
                 processor.prepare_network_event(&first_request.event);
                 let mut event_barrier = processor.begin_network_event_barrier(&first_request.event);
                 supervisor.submit_event(&first_request.event);
-                let uses_offline_grace = supervisor.offline_grace_pending();
+                let mut immediate_action_requested =
+                    network_event_requires_immediate_action(&first_request.event);
+                let mut offline_grace_applied = false;
                 let mut requests = vec![first_request];
 
-                if uses_offline_grace {
-                    let grace = tokio::time::sleep(NETWORK_OFFLINE_GRACE_WINDOW);
-                    tokio::pin!(grace);
-
-                    loop {
-                        tokio::select! {
-                            Some(next_request) = event_rx.recv() => {
-                                let requires_immediate_action =
-                                    network_event_requires_immediate_action(&next_request.event);
-                                tracing::debug!(
-                                    event = ?next_request.event,
-                                    "network_event.reconciler.coalesced"
-                                );
-                                processor.prepare_network_event(&next_request.event);
-                                if event_barrier.is_none() {
-                                    event_barrier =
-                                        processor.begin_network_event_barrier(&next_request.event);
-                                }
-                                supervisor.submit_event(&next_request.event);
-                                requests.push(next_request);
-                                if requires_immediate_action
-                                    || !supervisor.offline_grace_pending()
-                                {
-                                    break;
-                                }
-                            }
-                            _ = &mut grace => {
-                                break;
-                            }
-                            _ = shutdown_token.cancelled() => {
-                                tracing::info!("🛑 Network event reconciler shutting down");
-                                return;
-                            }
-                            else => {
-                                break;
-                            }
-                        }
-                    }
-
-                    // A still-pending candidate means either the grace expired
-                    // or a stronger cleanup command interrupted it. Commit the
-                    // unavailable fact once; cleanup will supersede the
-                    // resulting disconnect work.
-                    supervisor.expire_offline_grace();
-                }
-
-                while let Ok(next_request) = event_rx.try_recv() {
+                // Drain already-queued non-offline facts. Stop as soon as the
+                // supervisor enters `OfflineCandidate`: the state, rather than
+                // the first request in this batch, owns the grace timer.
+                while !supervisor.offline_grace_pending() {
+                    let Ok(next_request) = event_rx.try_recv() else {
+                        break;
+                    };
+                    immediate_action_requested |=
+                        network_event_requires_immediate_action(&next_request.event);
                     tracing::debug!(
                         event = ?next_request.event,
                         "network_event.reconciler.coalesced"
                     );
                     processor.prepare_network_event(&next_request.event);
                     if event_barrier.is_none() {
-                        event_barrier = processor.begin_network_event_barrier(&next_request.event);
+                        event_barrier =
+                            processor.begin_network_event_barrier(&next_request.event);
                     }
                     supervisor.submit_event(&next_request.event);
                     requests.push(next_request);
+                }
+
+                if supervisor.offline_grace_pending() {
+                    if immediate_action_requested {
+                        // Cleanup is stronger than an offline disconnect and
+                        // must not inherit the path-settling delay.
+                        supervisor.expire_offline_grace();
+                    } else {
+                        offline_grace_applied = true;
+                        let grace = tokio::time::sleep(NETWORK_OFFLINE_GRACE_WINDOW);
+                        tokio::pin!(grace);
+
+                        loop {
+                            tokio::select! {
+                                Some(next_request) = event_rx.recv() => {
+                                    immediate_action_requested |=
+                                        network_event_requires_immediate_action(
+                                            &next_request.event,
+                                        );
+                                    tracing::debug!(
+                                        event = ?next_request.event,
+                                        "network_event.reconciler.coalesced"
+                                    );
+                                    processor.prepare_network_event(&next_request.event);
+                                    if event_barrier.is_none() {
+                                        event_barrier = processor
+                                            .begin_network_event_barrier(&next_request.event);
+                                    }
+                                    supervisor.submit_event(&next_request.event);
+                                    requests.push(next_request);
+                                    if immediate_action_requested
+                                        || !supervisor.offline_grace_pending()
+                                    {
+                                        break;
+                                    }
+                                }
+                                _ = &mut grace => {
+                                    break;
+                                }
+                                _ = shutdown_token.cancelled() => {
+                                    tracing::info!("🛑 Network event reconciler shutting down");
+                                    return;
+                                }
+                                else => {
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Commit only if this candidate survived the grace. If
+                        // an online observation rolled it back, finish this
+                        // batch now; later queued events get their own decision
+                        // cycle and cannot grow this batch without bound.
+                        supervisor.expire_offline_grace();
+                    }
                 }
 
                 let events = requests
@@ -1090,9 +1114,10 @@ pub async fn run_network_event_reconciler(
                 tracing::info!(
                     event_count = events.len(),
                     action = ?action,
+                    supervisor = ?supervisor,
                     events = ?events,
                     facts = ?facts,
-                    offline_grace_applied = uses_offline_grace,
+                    offline_grace_applied,
                     offline_grace_limit_ms = NETWORK_OFFLINE_GRACE_WINDOW.as_millis() as u64,
                     decision_elapsed_ms = batch_started.elapsed().as_millis() as u64,
                     "network_event.reconciler.fsm_selected"
@@ -1102,6 +1127,12 @@ pub async fn run_network_event_reconciler(
                     process_network_event_batch_with_action(events, action, processor.clone()).await;
                 let action_succeeded = results.iter().all(|result| result.success);
                 supervisor.complete_action(action, action_succeeded);
+                tracing::debug!(
+                    action = ?action,
+                    success = action_succeeded,
+                    supervisor = ?supervisor,
+                    "network_event.supervisor.action_completed"
+                );
                 drop(event_barrier);
 
                 for (request, result) in requests.into_iter().zip(results) {

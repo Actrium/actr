@@ -725,6 +725,7 @@ async fn test_disconnect_event_on_connect_failure() {
 #[tokio::test]
 async fn test_disconnect_clears_connected_flag() {
     let client = make_ws_client(make_config());
+    let generation = client.connection_generation.load(Ordering::Acquire);
     // Simulate connected state
     client.connected.store(true, Ordering::Release);
     assert!(client.is_connected());
@@ -734,6 +735,11 @@ async fn test_disconnect_clears_connected_flag() {
     assert!(
         !client.is_connected(),
         "should be Disconnected after disconnect()"
+    );
+    assert_eq!(
+        client.connection_generation.load(Ordering::Acquire),
+        generation + 1,
+        "disconnect must invalidate every in-flight connection attempt"
     );
 }
 
@@ -820,7 +826,7 @@ async fn test_schedule_auto_reconnect_reenables_after_explicit_disconnect() {
 }
 
 #[test]
-fn test_suppress_auto_reconnect_invalidates_connection_generation_until_rescheduled() {
+fn test_suppress_auto_reconnect_preserves_explicit_connection_generation() {
     let client = make_ws_client(make_config());
     let generation = client.connection_generation.load(Ordering::Acquire);
 
@@ -832,8 +838,8 @@ fn test_suppress_auto_reconnect_invalidates_connection_generation_until_reschedu
     );
     assert_eq!(
         client.connection_generation.load(Ordering::Acquire),
-        generation + 1,
-        "lifecycle preparation should invalidate the current connection generation"
+        generation,
+        "pausing automatic reconnect must not cancel an explicit connection attempt"
     );
 
     client.schedule_auto_reconnect_reset_backoff();
@@ -1015,6 +1021,85 @@ async fn test_explicit_disconnect_suppresses_in_flight_auto_reconnect_connected_
         "cancelled auto-reconnect must not clear lifecycle suppression"
     );
 
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("test server task should finish")
+        .expect("test server task should not panic");
+}
+
+#[tokio::test]
+async fn test_suppress_auto_reconnect_does_not_cancel_in_flight_explicit_connect() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind");
+    let server_url = format!(
+        "ws://{}/signaling/ws",
+        listener
+            .local_addr()
+            .expect("test listener should have local addr")
+    );
+    let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel::<()>();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let server_task = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("test server should accept tcp connection");
+        accepted_tx
+            .send(())
+            .expect("test should still wait for accepted connection");
+        let _ = release_rx.await;
+        let ws_stream = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("test server should complete websocket handshake");
+        let _ = finish_rx.await;
+        drop(ws_stream);
+    });
+
+    let mut config = make_config();
+    config.server_url = Url::parse(&server_url).expect("test websocket URL should parse");
+    config.connection_timeout = 5;
+    config.reconnect_config.enabled = false;
+    let client = make_ws_client(config);
+    let generation = client.connection_generation.load(Ordering::Acquire);
+
+    let connecting_client = client.clone();
+    let connect_task = tokio::spawn(async move { connecting_client.connect_once().await });
+    tokio::time::timeout(Duration::from_secs(1), accepted_rx)
+        .await
+        .expect("explicit connection should reach the server")
+        .expect("server accept notifier should remain open");
+
+    client.suppress_auto_reconnect();
+    assert_eq!(
+        client.connection_generation.load(Ordering::Acquire),
+        generation,
+        "auto-reconnect suppression must not invalidate explicit work"
+    );
+    release_tx
+        .send(())
+        .expect("test server handshake should still be waiting");
+
+    tokio::time::timeout(Duration::from_secs(2), connect_task)
+        .await
+        .expect("explicit connect should not be cancelled")
+        .expect("explicit connect task should not panic")
+        .expect("explicit connect should complete");
+    assert!(client.is_connected());
+    assert!(
+        !client.auto_reconnect_suppressed.load(Ordering::Acquire),
+        "a successful explicit connection should re-arm automatic reconnect"
+    );
+
+    client
+        .disconnect()
+        .await
+        .expect("explicit connection should disconnect cleanly");
+    finish_tx
+        .send(())
+        .expect("test server should still be waiting");
     tokio::time::timeout(Duration::from_secs(1), server_task)
         .await
         .expect("test server task should finish")

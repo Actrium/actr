@@ -1361,6 +1361,109 @@ async fn test_network_event_handle_rolls_back_offline_before_grace_expires() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn test_offline_candidate_drained_after_non_offline_head_owns_grace() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+
+    let (online_tx, online_rx) = tokio::sync::oneshot::channel();
+    event_tx
+        .send(NetworkEventRequest {
+            event: online_event(1),
+            result_tx: online_tx,
+        })
+        .await
+        .expect("online event should queue");
+    let (offline_tx, offline_rx) = tokio::sync::oneshot::channel();
+    event_tx
+        .send(NetworkEventRequest {
+            event: offline_event(2),
+            result_tx: offline_tx,
+        })
+        .await
+        .expect("offline event should queue behind the online head");
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let started = tokio::time::Instant::now();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    assert!(
+        online_rx
+            .await
+            .expect("online result sender should remain open")
+            .success
+    );
+    assert!(
+        offline_rx
+            .await
+            .expect("offline result sender should remain open")
+            .success
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "an offline candidate discovered while draining queued requests must own a grace timer"
+    );
+    assert!(!client.is_connected());
+    assert_eq!(client.get_stats().disconnections, 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_new_offline_candidate_after_fast_rollback_restarts_grace() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+
+    let mut results = Vec::new();
+    for event in [offline_event(1), online_event(2), offline_event(3)] {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        event_tx
+            .send(NetworkEventRequest { event, result_tx })
+            .await
+            .expect("path event should queue");
+        results.push(result_rx);
+    }
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let started = tokio::time::Instant::now();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    for result in results {
+        assert!(
+            result
+                .await
+                .expect("path result sender should remain open")
+                .success
+        );
+    }
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "a new offline candidate after rollback must start its own grace period"
+    );
+    assert!(!client.is_connected());
+    assert_eq!(
+        client.get_stats().disconnections,
+        1,
+        "only the final committed offline candidate should disconnect"
+    );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
 async fn test_reconnect_intent_survives_across_reconciler_receive_cycles() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
@@ -1437,6 +1540,75 @@ async fn test_reconnect_intent_survives_across_reconciler_receive_cycles() {
         1,
         "the reconnect intent must survive into a later receive cycle"
     );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
+async fn test_background_defers_active_recovery_until_foreground() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    assert!(
+        handle
+            .handle_app_lifecycle_changed(AppLifecycleState::Background)
+            .await
+            .expect("background fact should complete")
+            .success
+    );
+    assert!(
+        handle
+            .handle_network_path_changed(match online_event(1) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+            .expect("available path should be remembered in background")
+            .success
+    );
+    assert!(
+        handle
+            .force_reconnect(ReconnectReason::ManualReconnect)
+            .await
+            .expect("background reconnect intent should be accepted")
+            .success
+    );
+
+    assert!(client.is_connected());
+    assert_eq!(
+        client.connect_once_calls(),
+        0,
+        "background must defer active reconnect work"
+    );
+    assert_eq!(
+        client.get_stats().disconnections,
+        0,
+        "entering background must not tear down a healthy connection"
+    );
+
+    assert!(
+        handle
+            .handle_app_lifecycle_changed(AppLifecycleState::Foreground {
+                background_duration_ms: 1_000,
+            })
+            .await
+            .expect("foreground should execute deferred recovery")
+            .success
+    );
+    assert!(client.is_connected());
+    assert_eq!(client.connect_once_calls(), 1);
+    assert_eq!(client.get_stats().disconnections, 1);
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
@@ -1722,7 +1894,7 @@ async fn test_l1_command_apis_complete_through_network_event_handle() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_l1_explicit_commands_bypass_offline_grace() {
+async fn test_l1_explicit_cleanup_bypasses_offline_grace() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
     let processor = Arc::new(DefaultNetworkEventProcessor::new(client, None));

@@ -4,6 +4,7 @@
 //! flattening their Cartesian product into states such as
 //! `OfflineForceReconnect`:
 //!
+//! - `app_phase` owns whether active recovery work is currently allowed;
 //! - `path` owns the latest platform reachability fact and the offline grace;
 //! - `recovery` owns the highest-priority recovery intent still to execute;
 //! - `offline_work` owns the transport-disconnect work created when an offline
@@ -20,6 +21,34 @@ use super::network_event::{
     AppLifecycleState, CleanupReason, LONG_BACKGROUND_RECONNECT_THRESHOLD_MS, NetworkEvent,
     NetworkRecoveryAction, NetworkSnapshot, ReconnectReason,
 };
+
+mod app_phase {
+    use yasm::define_state_machine;
+
+    define_state_machine! {
+        name: AppPhaseMachine,
+        states: {
+            Unknown,
+            Foreground,
+            Background
+        },
+        inputs: {
+            EnterForeground,
+            EnterBackground
+        },
+        initial: Unknown,
+        transitions: {
+            Unknown + EnterForeground => Foreground,
+            Unknown + EnterBackground => Background,
+
+            Foreground + EnterForeground => Foreground,
+            Foreground + EnterBackground => Background,
+
+            Background + EnterForeground => Foreground,
+            Background + EnterBackground => Background
+        }
+    }
+}
 
 mod path {
     use yasm::define_state_machine;
@@ -183,9 +212,10 @@ impl ConnectionFact {
 ///
 /// The latest snapshot sequence is extended state rather than an FSM state
 /// because it is an unbounded monotonic value. All finite lifecycle state is
-/// owned by one of the three child machines.
+/// owned by one of the four child machines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionSupervisor {
+    app_phase_state: app_phase::State,
     path_state: path::State,
     recovery_state: recovery::State,
     offline_work_state: offline_work::State,
@@ -195,6 +225,7 @@ pub struct ConnectionSupervisor {
 impl Default for ConnectionSupervisor {
     fn default() -> Self {
         Self {
+            app_phase_state: app_phase::State::Unknown,
             path_state: path::State::Unknown,
             recovery_state: recovery::State::Idle,
             offline_work_state: offline_work::State::Idle,
@@ -274,6 +305,7 @@ impl ConnectionSupervisor {
             ConnectionFact::AppEnteredForeground {
                 background_duration_ms,
             } => {
+                self.transition_app_phase(app_phase::Input::EnterForeground);
                 let input = if background_duration_ms >= LONG_BACKGROUND_RECONNECT_THRESHOLD_MS {
                     recovery::Input::RequestReconnect
                 } else {
@@ -281,7 +313,9 @@ impl ConnectionSupervisor {
                 };
                 self.transition_recovery(input);
             }
-            ConnectionFact::AppEnteredBackground => {}
+            ConnectionFact::AppEnteredBackground => {
+                self.transition_app_phase(app_phase::Input::EnterBackground);
+            }
         }
     }
 
@@ -316,6 +350,10 @@ impl ConnectionSupervisor {
             self.path_state,
             path::State::OfflineCandidate | path::State::Offline
         ) {
+            return NetworkRecoveryAction::Noop;
+        }
+
+        if self.app_phase_state == app_phase::State::Background {
             return NetworkRecoveryAction::Noop;
         }
 
@@ -363,6 +401,12 @@ impl ConnectionSupervisor {
         self.path_state =
             <path::NetworkPathMachine as StateMachine>::next_state(&self.path_state, &input)
                 .expect("network path transition table must accept every normalized observation");
+    }
+
+    fn transition_app_phase(&mut self, input: app_phase::Input) {
+        self.app_phase_state =
+            <app_phase::AppPhaseMachine as StateMachine>::next_state(&self.app_phase_state, &input)
+                .expect("app phase transition table must accept every lifecycle observation");
     }
 
     fn transition_recovery(&mut self, input: recovery::Input) {
@@ -467,11 +511,37 @@ mod tests {
     }
 
     #[test]
+    fn background_defers_recovery_intent_until_foreground() {
+        let mut supervisor = ConnectionSupervisor::new();
+        supervisor.submit_fact(ConnectionFact::AppEnteredBackground);
+        supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
+            1,
+            NetworkAvailability::Available,
+        )));
+        supervisor.submit_fact(ConnectionFact::ForceReconnectRequested(
+            ReconnectReason::ManualReconnect,
+        ));
+
+        assert_eq!(supervisor.reconcile(), NetworkRecoveryAction::Noop);
+
+        supervisor.submit_fact(ConnectionFact::AppEnteredForeground {
+            background_duration_ms: 1_000,
+        });
+        assert_eq!(
+            supervisor.reconcile(),
+            NetworkRecoveryAction::ForceReconnect
+        );
+    }
+
+    #[test]
     fn state_machine_docs_keep_orthogonal_layers_separate() {
+        let app_doc = StateMachineDoc::<app_phase::AppPhaseMachine>::generate_mermaid();
         let path_doc = StateMachineDoc::<path::NetworkPathMachine>::generate_mermaid();
         let recovery_doc = StateMachineDoc::<recovery::RecoveryIntentMachine>::generate_mermaid();
         let work_doc = StateMachineDoc::<offline_work::OfflineWorkMachine>::generate_mermaid();
 
+        assert!(app_doc.contains("Background"));
+        assert!(!app_doc.contains("Reconnect"));
         assert!(path_doc.contains("OfflineCandidate"));
         assert!(!path_doc.contains("Reconnect"));
         assert!(recovery_doc.contains("ReconnectPending"));

@@ -232,9 +232,20 @@ fn lifecycle_barrier_is_scoped_to_events_that_change_connections() {
 }
 
 #[test]
-fn long_foreground_suppresses_auto_reconnect_before_settle() {
+fn background_and_long_foreground_suppress_auto_reconnect_before_settle() {
     let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(false));
     let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
+
+    processor.prepare_network_event(&NetworkEvent::AppLifecycleChanged {
+        state: AppLifecycleState::Background,
+    });
+    assert_eq!(
+        signaling
+            .suppress_auto_reconnect_calls
+            .load(AtomicOrdering::SeqCst),
+        1,
+        "background should pause reconnect attempts without disconnecting a healthy socket"
+    );
 
     processor.prepare_network_event(&NetworkEvent::AppLifecycleChanged {
         state: AppLifecycleState::Foreground {
@@ -245,7 +256,7 @@ fn long_foreground_suppresses_auto_reconnect_before_settle() {
         signaling
             .suppress_auto_reconnect_calls
             .load(AtomicOrdering::SeqCst),
-        0,
+        1,
         "short foreground recovery must keep the Probe path unchanged"
     );
 
@@ -258,7 +269,7 @@ fn long_foreground_suppresses_auto_reconnect_before_settle() {
         signaling
             .suppress_auto_reconnect_calls
             .load(AtomicOrdering::SeqCst),
-        1,
+        2,
         "long foreground recovery must suppress stale auto-reconnect before settling"
     );
 }

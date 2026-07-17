@@ -975,6 +975,12 @@ impl WebSocketSignalingClient {
     }
 
     fn suppress_auto_reconnect_internal(&self) {
+        self.auto_reconnect_suppressed
+            .store(true, Ordering::Release);
+        self.reconnect_notify.notify_waiters();
+    }
+
+    fn invalidate_connection_attempts_and_suppress_auto_reconnect(&self) {
         self.connection_generation.fetch_add(1, Ordering::AcqRel);
         self.auto_reconnect_suppressed
             .store(true, Ordering::Release);
@@ -1416,7 +1422,7 @@ impl WebSocketSignalingClient {
 
     async fn disconnect_internal(&self, suppress_auto_reconnect: bool) -> NetworkResult<()> {
         if suppress_auto_reconnect {
-            self.suppress_auto_reconnect_internal();
+            self.invalidate_connection_attempts_and_suppress_auto_reconnect();
         }
 
         self.drop_pending_replies("signaling disconnect").await;
