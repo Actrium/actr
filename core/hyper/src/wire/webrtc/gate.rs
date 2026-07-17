@@ -297,11 +297,12 @@ impl WebRtcGate {
                         }
                     }
                     Ok(None) => {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        tracing::debug!("WebRTC RPC receive channel closed");
+                        break;
                     }
                     Err(e) => {
                         tracing::error!("❌ RPC message receive failed: {:?}", e);
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        break;
                     }
                 }
             }
@@ -339,11 +340,12 @@ impl WebRtcGate {
                         }
                     }
                     Ok(None) => {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        tracing::debug!("WebRTC reliable-stream receive channel closed");
+                        break;
                     }
                     Err(e) => {
                         tracing::error!("❌ Reliable stream message receive failed: {:?}", e);
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        break;
                     }
                 }
             }
@@ -388,11 +390,12 @@ impl WebRtcGate {
                         }
                     }
                     Ok(None) => {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        tracing::debug!("WebRTC latency-first receive channel closed");
+                        break;
                     }
                     Err(e) => {
                         tracing::error!("❌ Latency-first stream message receive failed: {:?}", e);
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        break;
                     }
                 }
             }

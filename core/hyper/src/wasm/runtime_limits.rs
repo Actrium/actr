@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -168,6 +168,15 @@ static INVOCATION_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 static RESOURCE_DENIALS: AtomicU64 = AtomicU64::new(0);
 static COMPILE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static INSTANTIATE_FAILURES: AtomicU64 = AtomicU64::new(0);
+static QUOTA_RELEASED: OnceLock<tokio::sync::Notify> = OnceLock::new();
+
+fn quota_released() -> &'static tokio::sync::Notify {
+    QUOTA_RELEASED.get_or_init(tokio::sync::Notify::new)
+}
+
+pub(crate) async fn wait_for_quota_release() {
+    quota_released().notified().await;
+}
 
 /// Process-wide WASM resource counters suitable for metrics exporters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,6 +236,7 @@ pub(crate) struct QuotaPermit {
 impl Drop for QuotaPermit {
     fn drop(&mut self) {
         counter(self.kind).fetch_sub(self.amount, Ordering::AcqRel);
+        quota_released().notify_one();
     }
 }
 

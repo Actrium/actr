@@ -63,13 +63,11 @@ const ICE_RESTART_TIMEOUT: Duration = Duration::from_secs(6);
 const ICE_RESTART_INITIAL_BACKOFF_MS: u64 = 1000; // 1s initial
 const ICE_RESTART_MAX_BACKOFF_MS: u64 = 5000; // 5s max (1s -> 2s -> 4s -> 5s -> ...)
 const ICE_RESTART_MIN_OFFER_INTERVAL: Duration = Duration::from_secs(2);
-const ICE_GATHERING_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 const ICE_RESTART_MAX_TOTAL_DURATION: Duration = Duration::from_secs(60);
 const ICE_GATHERING_TIMEOUT: Duration = Duration::from_secs(10);
 const ICE_CONNECTED_TIMEOUT: Duration = Duration::from_secs(10);
 const DATA_CHANNEL_AFTER_ICE_TIMEOUT: Duration = Duration::from_secs(2);
 const ROLE_NEGOTIATION_TIMEOUT: Duration = Duration::from_secs(5);
-const ROLE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const NETWORK_RECOVERY_TIMEOUT: Duration = Duration::from_secs(6);
 const CLEANUP_BARRIER_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -95,8 +93,6 @@ tokio::task_local! {
     static CLOSE_ALL_HOOK_REENTRY: Arc<CloseAllFlight>;
 }
 
-// Health check constants
-const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 const MAX_FAILED_DURATION: Duration = Duration::from_secs(60); // 1 minute
 /// How long a peer may sit in `Disconnected` before the health check reaps it.
 ///
@@ -130,17 +126,21 @@ fn stale_peer_reap_reason(
     current_state: RTCPeerConnectionState,
     duration_since_change: Duration,
 ) -> Option<String> {
-    let threshold = match current_state {
-        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => MAX_FAILED_DURATION,
-        RTCPeerConnectionState::Disconnected => MAX_DISCONNECTED_DURATION,
-        _ => return None,
-    };
-    (duration_since_change > threshold).then(|| {
+    let threshold = stale_peer_reap_threshold(current_state)?;
+    (duration_since_change >= threshold).then(|| {
         format!(
             "{:?} for {}s",
             current_state,
             duration_since_change.as_secs()
         )
+    })
+}
+
+fn stale_peer_reap_threshold(current_state: RTCPeerConnectionState) -> Option<Duration> {
+    Some(match current_state {
+        RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed => MAX_FAILED_DURATION,
+        RTCPeerConnectionState::Disconnected => MAX_DISCONNECTED_DURATION,
+        _ => return None,
     })
 }
 
@@ -525,6 +525,12 @@ struct PeerState {
     /// completion.
     restart_retry_wake: Arc<tokio::sync::Notify>,
 
+    /// Event-driven notification for ICE gathering-state transitions.
+    ice_gathering_changed: Arc<tokio::sync::Notify>,
+
+    /// Wakes the exact-deadline stale-peer reaper after a lifecycle transition.
+    health_check_wake: Arc<tokio::sync::Notify>,
+
     /// Last time we sent an ICE restart offer for this peer.
     last_ice_restart_offer_at: Option<Instant>,
 
@@ -560,11 +566,15 @@ struct PeerState {
 
 impl PeerState {
     fn update_connection_state(&mut self, state: RTCPeerConnectionState) {
+        if self.current_state == state {
+            return;
+        }
         self.current_state = state;
         self.last_state_change = std::time::Instant::now();
         if matches!(state, RTCPeerConnectionState::Connected) {
             self.ever_ice_connected = true;
         }
+        self.health_check_wake.notify_one();
     }
 
     fn mark_data_channel_opened(&mut self) {
@@ -695,6 +705,9 @@ pub struct WebRtcCoordinator {
 
     /// Connection event broadcaster for notifying all layers
     event_broadcaster: ConnectionEventBroadcaster,
+
+    /// Recomputes the nearest stale-peer deadline after state changes.
+    health_check_wake: Arc<tokio::sync::Notify>,
 
     /// Peers that have entered network recovery before WebRTC reports a final state.
     ///
@@ -926,6 +939,7 @@ impl WebRtcCoordinator {
             media_frame_registry,
             peer_negotiation: Arc::new(Mutex::new(HashMap::new())),
             event_broadcaster: ConnectionEventBroadcaster::new(),
+            health_check_wake: Arc::new(tokio::sync::Notify::new()),
             network_recovering_peers: Arc::new(RwLock::new(HashMap::new())),
             hook_callback: std::sync::OnceLock::new(),
             hook_emission_lock: Arc::new(Mutex::new(())),
@@ -2965,28 +2979,40 @@ impl WebRtcCoordinator {
             .is_some_and(|state| state.session_id == session_id)
     }
 
-    /// Start health check task to clean up stale connections
+    /// Start the exact-deadline stale-connection reaper.
     ///
-    /// Periodically checks real-time peer connection states and cleans up:
+    /// State transitions wake the task to recompute its nearest deadline:
     /// - connections in Failed/Closed state for longer than `MAX_FAILED_DURATION`
     /// - connections stuck in Disconnected for longer than
     ///   `MAX_DISCONNECTED_DURATION` (past the ICE restart budget, so the
     ///   restart mechanism can no longer bring them back)
     fn spawn_health_check_task(self: &Arc<Self>) -> JoinHandle<()> {
         let coordinator = Arc::downgrade(self);
+        let health_check_wake = Arc::clone(&self.health_check_wake);
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(HEALTH_CHECK_INTERVAL);
-            interval.tick().await; // Skip first immediate tick
-
             loop {
-                interval.tick().await;
+                // Register before inspecting state so a concurrent transition
+                // cannot be lost between the snapshot and the wait.
+                let changed = health_check_wake.clone().notified_owned();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
 
-                if let Some(coord) = coordinator.upgrade() {
-                    coord.check_and_cleanup_stale_connections().await;
-                } else {
+                let Some(coord) = coordinator.upgrade() else {
                     tracing::debug!("🔌 Health check task stopping (coordinator dropped)");
                     break;
+                };
+                let next_deadline = coord.check_and_cleanup_stale_connections().await;
+                drop(coord);
+
+                match next_deadline {
+                    Some(deadline) => {
+                        tokio::select! {
+                            _ = &mut changed => {}
+                            _ = tokio::time::sleep_until(deadline.into()) => {}
+                        }
+                    }
+                    None => changed.await,
                 }
             }
 
@@ -3006,23 +3032,29 @@ impl WebRtcCoordinator {
     /// runs, on the answerer side) the peer lingers forever — and with it the
     /// RTCPeerConnection and the per-interface ICE UDP sockets it holds,
     /// leaking fds for the process lifetime.
-    async fn check_and_cleanup_stale_connections(&self) {
-        let peers_to_cleanup: Vec<(ActrId, u64, String)> = {
+    async fn check_and_cleanup_stale_connections(&self) -> Option<std::time::Instant> {
+        let (peers_to_cleanup, next_deadline) = {
             let peers = self.peers.read().await;
             let now = std::time::Instant::now();
+            let mut peers_to_cleanup = Vec::new();
+            let mut next_deadline: Option<std::time::Instant> = None;
 
-            peers
-                .iter()
-                .filter_map(|(peer_id, state)| {
-                    // Get current real-time state from RTCPeerConnection
-                    let current_state = state.peer_connection.connection_state();
-                    let duration_since_change = now.duration_since(state.last_state_change);
+            for (peer_id, state) in peers.iter() {
+                // Get current real-time state from RTCPeerConnection.
+                let current_state = state.peer_connection.connection_state();
+                let duration_since_change = now.duration_since(state.last_state_change);
 
-                    let reason = stale_peer_reap_reason(current_state, duration_since_change)?;
+                if let Some(reason) = stale_peer_reap_reason(current_state, duration_since_change) {
                     tracing::warn!("🧹 Marking peer {} for cleanup: {}", peer_id, reason);
-                    Some((peer_id.clone(), state.session_id, reason))
-                })
-                .collect()
+                    peers_to_cleanup.push((peer_id.clone(), state.session_id, reason));
+                } else if let Some(threshold) = stale_peer_reap_threshold(current_state) {
+                    let deadline = state.last_state_change + threshold;
+                    next_deadline =
+                        Some(next_deadline.map_or(deadline, |current| current.min(deadline)));
+                }
+            }
+
+            (peers_to_cleanup, next_deadline)
         };
 
         // Cleanup marked peers
@@ -3042,6 +3074,8 @@ impl WebRtcCoordinator {
                     .await;
             }
         }
+
+        next_deadline
     }
 
     /// Start signaling coordinator (listen for ActrRelay messages)
@@ -4366,6 +4400,8 @@ impl WebRtcCoordinator {
             return Err(state);
         }
         peers.insert(peer_id, state);
+        drop(peers);
+        self.health_check_wake.notify_one();
         Ok(())
     }
 
@@ -4421,6 +4457,15 @@ impl WebRtcCoordinator {
             .create_peer_connection(false, remote_fixed)
             .await?;
         let peer_connection_arc = Arc::new(peer_connection);
+        let ice_gathering_changed = Arc::new(tokio::sync::Notify::new());
+        let gathering_notify = ice_gathering_changed.clone();
+        peer_connection_arc.on_ice_gathering_state_change(Box::new(move |state| {
+            let gathering_notify = gathering_notify.clone();
+            Box::pin(async move {
+                tracing::info!("🔄 ICE Gathering State Changed: {:?}", state);
+                gathering_notify.notify_waiters();
+            })
+        }));
 
         // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>) and
         //    install state-change handler with ICE-restart wiring.
@@ -4438,6 +4483,9 @@ impl WebRtcCoordinator {
         // 2.5. CRITICAL: Insert peer state early as placeholder to prevent race conditions
         // Create ready channel now, will be populated in step 8
         let (ready_tx, ready_rx) = oneshot::channel();
+        let initial_connection_state = peer_connection_arc.connection_state();
+        let initially_connected =
+            matches!(initial_connection_state, RTCPeerConnectionState::Connected);
         let peer_state = PeerState {
             peer_connection: peer_connection_arc.clone(),
             webrtc_conn: webrtc_conn.clone(),
@@ -4449,10 +4497,12 @@ impl WebRtcCoordinator {
             restart_task_handle: None,
             restart_wake: Arc::new(tokio::sync::Notify::new()),
             restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
+            ice_gathering_changed,
+            health_check_wake: Arc::clone(&self.health_check_wake),
             last_ice_restart_offer_at: None,
             last_state_change: std::time::Instant::now(),
-            current_state: RTCPeerConnectionState::New,
-            ever_ice_connected: false,
+            current_state: initial_connection_state,
+            ever_ice_connected: initially_connected,
             ever_data_channel_opened: false,
             sendable_hook_reported: false,
             unavailable_hook_reported: false,
@@ -4815,6 +4865,15 @@ impl WebRtcCoordinator {
             .create_peer_connection(true, remote_fixed)
             .await?;
         let peer_connection_arc = Arc::new(peer_connection);
+        let ice_gathering_changed = Arc::new(tokio::sync::Notify::new());
+        let gathering_notify = ice_gathering_changed.clone();
+        peer_connection_arc.on_ice_gathering_state_change(Box::new(move |state| {
+            let gathering_notify = gathering_notify.clone();
+            Box::pin(async move {
+                tracing::info!("🔄 ICE Gathering State Changed: {:?}", state);
+                gathering_notify.notify_waiters();
+            })
+        }));
 
         // 2. Create WebRtcConnection (shares Arc<RTCPeerConnection>)
         let webrtc_conn = WebRtcConnection::new(
@@ -4827,6 +4886,9 @@ impl WebRtcCoordinator {
         // This prevents ensure_connection from creating a duplicate connection while we're
         // still setting up callbacks and negotiating the connection.
         // The state will be updated later after Answer is sent (step 6).
+        let initial_connection_state = peer_connection_arc.connection_state();
+        let initially_connected =
+            matches!(initial_connection_state, RTCPeerConnectionState::Connected);
         let peer_state = PeerState {
             peer_connection: peer_connection_arc.clone(),
             webrtc_conn: webrtc_conn.clone(),
@@ -4838,10 +4900,12 @@ impl WebRtcCoordinator {
             restart_task_handle: None,
             restart_wake: Arc::new(tokio::sync::Notify::new()),
             restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
+            ice_gathering_changed,
+            health_check_wake: Arc::clone(&self.health_check_wake),
             last_ice_restart_offer_at: None,
             last_state_change: std::time::Instant::now(),
-            current_state: RTCPeerConnectionState::New,
-            ever_ice_connected: false,
+            current_state: initial_connection_state,
+            ever_ice_connected: initially_connected,
             ever_data_channel_opened: false,
             sendable_hook_reported: false,
             unavailable_hook_reported: false,
@@ -5984,49 +6048,60 @@ impl WebRtcCoordinator {
     }
 
     async fn ensure_connected(self: &Arc<Self>, target: &ActrId) -> ActorResult<()> {
-        // Check if connection exists or is being established
-        let has_connection = loop {
-            let state = {
-                let peers = self.peers.read().await;
-                peers
-                    .get(target)
-                    .map(|s| (s.current_state, s.last_state_change))
-            };
-
-            match state {
-                Some((
-                    RTCPeerConnectionState::New | RTCPeerConnectionState::Connecting,
-                    started,
-                )) => {
-                    // Connection is being established, check if it's still fresh
-                    if started.elapsed() < INITIAL_CONNECTION_TIMEOUT {
-                        // Wait a bit and check again
-                        tracing::debug!(
-                            "⏳ Connection to {} is being established, waiting...",
-                            target
-                        );
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        continue;
-                    } else {
-                        // Connecting timeout, treat as not connected
-                        tracing::warn!("⏰ Connection to {} timed out while connecting", target);
-                        break false;
-                    }
-                }
-                Some((RTCPeerConnectionState::Connected, _)) => {
-                    // Connection exists and is ready
-                    break true;
-                }
-                Some(_) => {
-                    // Connection exists but in other state (Disconnected/Failed/Closed)
-                    // Let initiate_connection handle it
-                    break false;
-                }
-                None => {
-                    // No connection exists
-                    break false;
-                }
+        // Check if a connection exists or is being established. A fresh
+        // in-flight session is observed through the connection event stream;
+        // polling every 100ms both adds latency and can miss short transitions.
+        let existing = {
+            let peers = self.peers.read().await;
+            peers.get(target).map(|state| {
+                (
+                    state.current_state,
+                    state.last_state_change,
+                    state.session_id,
+                    state.webrtc_conn.clone(),
+                )
+            })
+        };
+        let has_connection = match existing {
+            Some((RTCPeerConnectionState::Connected, _, session_id, webrtc_conn)) => {
+                Self::wait_for_connection_ready_event(
+                    target,
+                    session_id,
+                    &self.peers,
+                    &self.event_broadcaster,
+                    &webrtc_conn,
+                    Duration::ZERO,
+                    DATA_CHANNEL_AFTER_ICE_TIMEOUT,
+                )
+                .await
             }
+            Some((
+                RTCPeerConnectionState::New | RTCPeerConnectionState::Connecting,
+                started,
+                session_id,
+                webrtc_conn,
+            )) if started.elapsed() < INITIAL_CONNECTION_TIMEOUT => {
+                let remaining = INITIAL_CONNECTION_TIMEOUT.saturating_sub(started.elapsed());
+                tracing::debug!(
+                    "⏳ Connection to {} is being established; waiting for its state event",
+                    target
+                );
+                Self::wait_for_connection_ready_event(
+                    target,
+                    session_id,
+                    &self.peers,
+                    &self.event_broadcaster,
+                    &webrtc_conn,
+                    remaining,
+                    DATA_CHANNEL_AFTER_ICE_TIMEOUT,
+                )
+                .await
+            }
+            Some((RTCPeerConnectionState::New | RTCPeerConnectionState::Connecting, ..)) => {
+                tracing::warn!("⏰ Connection to {} timed out while connecting", target);
+                false
+            }
+            Some(_) | None => false,
         };
 
         #[cfg(feature = "opentelemetry")]
@@ -6859,6 +6934,8 @@ impl WebRtcCoordinator {
             let restart_session_id = state.session_id;
             let restart_wake = state.restart_wake.clone();
             let restart_retry_wake = state.restart_retry_wake.clone();
+            let ice_gathering_changed = state.ice_gathering_changed.clone();
+            let event_broadcaster = self.event_broadcaster.clone();
 
             tracing::info!(
                 "♻️ Initiating ICE restart to serial={}, session_id={}",
@@ -6882,6 +6959,8 @@ impl WebRtcCoordinator {
                     &signaling_client,
                     restart_wake,
                     restart_retry_wake,
+                    ice_gathering_changed,
+                    event_broadcaster,
                     commit_context,
                     cancellation_epoch,
                 )
@@ -7206,6 +7285,8 @@ impl WebRtcCoordinator {
         signaling_client: &Arc<dyn SignalingClient>,
         restart_wake: Arc<tokio::sync::Notify>,
         restart_retry_wake: Arc<tokio::sync::Notify>,
+        ice_gathering_changed: Arc<tokio::sync::Notify>,
+        event_broadcaster: ConnectionEventBroadcaster,
         commit_context: PeerSignalingCommitContext,
         cancellation_epoch: u64,
     ) -> ActorResult<bool> {
@@ -7273,13 +7354,13 @@ impl WebRtcCoordinator {
                     return Ok(false);
                 }
 
+                let remaining = ICE_GATHERING_TIMEOUT.saturating_sub(gathering_duration);
                 tracing::debug!(
-                    "⏳ ICE gathering in progress ({:?} elapsed), will retry after {:?}",
-                    gathering_duration,
-                    ICE_GATHERING_RETRY_INTERVAL
+                    "⏳ ICE gathering in progress ({:?} elapsed), waiting for state transition",
+                    gathering_duration
                 );
                 tokio::select! {
-                    _ = tokio::time::sleep(ICE_GATHERING_RETRY_INTERVAL) => {}
+                    _ = ice_gathering_changed.notified() => {}
                     _ = restart_wake.notified() => {
                         tracing::info!(
                             "⚡ Backoff interrupted by wake notification (gathering guard), serial={}",
@@ -7291,6 +7372,14 @@ impl WebRtcCoordinator {
                             "🔔 ICE restart retry wait resumed after signaling recovery for serial={}, reason=ice_gathering",
                             target
                         );
+                    }
+                    _ = tokio::time::sleep(remaining) => {
+                        tracing::error!(
+                            "❌ ICE gathering timed out, aborting ICE restart for serial={}",
+                            target
+                        );
+                        let _ = peer_connection.close().await;
+                        return Ok(false);
                     }
                 }
                 continue; // Skip this iteration, wait for gathering to complete
@@ -7595,6 +7684,7 @@ impl WebRtcCoordinator {
                 restart_session_id,
                 ICE_RESTART_TIMEOUT,
                 &restart_wake,
+                &event_broadcaster,
             )
             .await;
 
@@ -7718,12 +7808,42 @@ impl WebRtcCoordinator {
         restart_session_id: u64,
         timeout: Duration,
         restart_wake: &tokio::sync::Notify,
+        event_broadcaster: &ConnectionEventBroadcaster,
     ) -> IceRestartWaitOutcome {
-        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        let mut event_rx = event_broadcaster.subscribe();
         let timeout_sleep = tokio::time::sleep(timeout);
         tokio::pin!(timeout_sleep);
 
         loop {
+            let is_done = {
+                let peers_guard = peers.read().await;
+                match peers_guard.get(target) {
+                    Some(state) if state.session_id != restart_session_id => {
+                        tracing::debug!(
+                            "⏭️ Treating ICE restart as complete because session changed: serial={}, task_session_id={}, active_session_id={}",
+                            target,
+                            restart_session_id,
+                            state.session_id
+                        );
+                        return IceRestartWaitOutcome::Completed;
+                    }
+                    Some(state) => {
+                        !state.ice_restart_inflight
+                            && matches!(state.current_state, RTCPeerConnectionState::Connected)
+                    }
+                    None => return IceRestartWaitOutcome::Completed,
+                }
+            };
+            if is_done {
+                let mut peers_guard = peers.write().await;
+                if let Some(state) = peers_guard.get_mut(target) {
+                    if state.session_id == restart_session_id {
+                        state.ice_restart_attempts = 0;
+                    }
+                }
+                return IceRestartWaitOutcome::Completed;
+            }
+
             tokio::select! {
                 _ = &mut timeout_sleep => {
                     return IceRestartWaitOutcome::TimedOut;
@@ -7731,42 +7851,32 @@ impl WebRtcCoordinator {
                 _ = restart_wake.notified() => {
                     return IceRestartWaitOutcome::Woken;
                 }
-                _ = interval.tick() => {
-                    // Use read lock to check status (allows concurrent access)
-                    let is_done = {
-                        let peers_guard = peers.read().await;
-                        match peers_guard.get(target) {
-                            Some(state) if state.session_id != restart_session_id => {
-                                tracing::debug!(
-                                    "⏭️ Treating ICE restart as complete because session changed: serial={}, task_session_id={}, active_session_id={}",
-                                    target,
-                                    restart_session_id,
-                                    state.session_id
-                                );
-                                return IceRestartWaitOutcome::Completed;
-                            }
-                            // SUCCESS = answer has cleared the in-flight marker and
-                            // the peer connection is still Connected.
-                            Some(state) => {
-                                !state.ice_restart_inflight
-                                    && matches!(
-                                        state.current_state,
-                                        RTCPeerConnectionState::Connected
-                                    )
-                            }
-                            None => return IceRestartWaitOutcome::Completed,
+                event = event_rx.recv() => {
+                    match event {
+                        Ok(ConnectionEvent::StateChanged {
+                            peer_id,
+                            session_id,
+                            ..
+                        })
+                        | Ok(ConnectionEvent::DataChannelOpened {
+                            peer_id,
+                            session_id,
+                            ..
+                        })
+                        | Ok(ConnectionEvent::IceRestartCompleted {
+                            peer_id,
+                            session_id,
+                            ..
+                        })
+                        | Ok(ConnectionEvent::ConnectionClosed {
+                            peer_id,
+                            session_id,
+                        }) if peer_id == *target && session_id == restart_session_id => {}
+                        Ok(_) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            return IceRestartWaitOutcome::Completed;
                         }
-                    };
-
-                    if is_done {
-                        // Only acquire write lock when actually need to reset counter
-                        let mut peers_guard = peers.write().await;
-                        if let Some(state) = peers_guard.get_mut(target) {
-                            if state.session_id == restart_session_id {
-                                state.ice_restart_attempts = 0;
-                            }
-                        }
-                        return IceRestartWaitOutcome::Completed;
                     }
                 }
             }
@@ -8200,35 +8310,12 @@ impl WebRtcCoordinator {
                     error = %err,
                     "RoleAssignment became stale before answerer wait was installed"
                 );
-                return;
             }
 
-            // If the offer is lost, keep waiting as answerer. RoleNegotiation broadcasts
-            // RoleAssignment to both peers, so retrying it here can make the original
-            // offerer start a duplicate connection attempt.
-            let weak = Arc::downgrade(self);
-            let peer_clone = peer.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(ROLE_WAIT_TIMEOUT).await;
-                if let Some(coord) = weak.upgrade() {
-                    // Exit if connection already exists or ready has been consumed
-                    if coord.peers.read().await.contains_key(&peer_clone) {
-                        return;
-                    }
-                    let still_waiting = {
-                        let neg = coord.peer_negotiation.lock().await;
-                        neg.get(&peer_clone)
-                            .and_then(|s| s.ready_tx.as_ref())
-                            .is_some()
-                    };
-                    if still_waiting {
-                        tracing::warn!(
-                            "⏳ Waiting for offer from {} timed out; continuing to wait as answerer without role renegotiation",
-                            peer_clone
-                        );
-                    }
-                }
-            });
+            // Keep waiting as answerer until an offer or a lifecycle event
+            // resolves the retained negotiation flight. A diagnostic timer here
+            // previously woke after ten seconds without changing state; removing
+            // it keeps the successful path purely event-driven.
         }
     }
 

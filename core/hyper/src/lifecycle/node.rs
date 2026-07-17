@@ -2845,6 +2845,8 @@ impl Inner {
         // Fallback path: mailbox backends without depth support (or
         // which can't cheaply compute depth on every enqueue) keep
         // using a 1 Hz poll of [`Mailbox::status`].
+        let mailbox_enqueue_wake = Arc::new(tokio::sync::Notify::new());
+        let mailbox_has_push_observer;
         let backpressure_threshold = node_ref.mailbox_backpressure_threshold;
         {
             use std::sync::atomic::{AtomicBool, Ordering};
@@ -2893,9 +2895,11 @@ impl Inner {
             // and we fall through to polling.
             struct EnqueueObserver {
                 fire: Arc<dyn Fn(usize) + Send + Sync + 'static>,
+                wake: Arc<tokio::sync::Notify>,
             }
             impl actr_runtime_mailbox::MailboxDepthObserver for EnqueueObserver {
                 fn on_depth_change(&self, queued_messages: usize) {
+                    self.wake.notify_one();
                     (self.fire)(queued_messages);
                 }
             }
@@ -2904,9 +2908,11 @@ impl Inner {
                 let observer: Arc<dyn actr_runtime_mailbox::MailboxDepthObserver> =
                     Arc::new(EnqueueObserver {
                         fire: fire_if_rising.clone(),
+                        wake: mailbox_enqueue_wake.clone(),
                     });
                 mailbox.set_depth_observer(observer)
             };
+            mailbox_has_push_observer = installed;
 
             if installed {
                 tracing::debug!("mailbox backpressure watchdog: push notifications enabled");
@@ -2955,6 +2961,7 @@ impl Inner {
             let webrtc_gate = node_ref.webrtc_gate.clone();
             let ws_gate = node_ref.websocket_gate.clone();
             let shutdown = shutdown_token.clone();
+            let mailbox_enqueue_wake = mailbox_enqueue_wake.clone();
 
             let mailbox_handle = tokio::spawn(async move {
                 use futures_util::StreamExt as _;
@@ -2986,10 +2993,13 @@ impl Inner {
                         // Pause while the continuation set is full so
                         // back-pressure reaches the durable mailbox.
                         batch = async {
+                            let mut enqueued =
+                                Box::pin(mailbox_enqueue_wake.clone().notified_owned());
+                            enqueued.as_mut().enable();
                             let admission = node.mailbox_batch_admission.enter().await?;
-                            Some((admission, mailbox.dequeue().await))
+                            Some((admission, mailbox.dequeue().await, enqueued))
                         }, if inflight.len() < MAILBOX_INFLIGHT_CAP => {
-                            let Some((batch_admission, result)) = batch else {
+                            let Some((batch_admission, result, enqueued)) = batch else {
                                 tracing::info!("📭 Mailbox batch admission closed");
                                 break;
                             };
@@ -2997,8 +3007,31 @@ impl Inner {
                                 Ok(messages) => {
                                     if messages.is_empty() {
                                         drop(batch_admission);
-                                        // Queue empty, sleep briefly
-                                        tokio::time::sleep(Duration::from_millis(10)).await;
+                                        let idle_wake = async {
+                                            if mailbox_has_push_observer {
+                                                // The enqueue observer closes
+                                                // the dequeue/await race and
+                                                // wakes immediately on new work.
+                                                enqueued.await;
+                                            } else {
+                                                // Compatibility fallback for
+                                                // custom mailbox backends that
+                                                // do not implement push
+                                                // notifications.
+                                                tokio::time::sleep(Duration::from_millis(10)).await;
+                                            }
+                                        };
+                                        tokio::pin!(idle_wake);
+                                        tokio::select! {
+                                            biased;
+                                            _ = shutdown.cancelled() => break,
+                                            // Empty durable storage does not
+                                            // imply that reply/ack tails are
+                                            // finished. Keep driving them while
+                                            // waiting for the next enqueue.
+                                            Some(()) = inflight.next(), if !inflight.is_empty() => {}
+                                            _ = &mut idle_wake => {}
+                                        }
                                         continue;
                                     }
                                     tracing::debug!("📬 Mailbox dequeue: {} messages", messages.len());
@@ -3191,7 +3224,11 @@ impl Inner {
                                         error_category = "mailbox_error",
                                         "❌ Mailbox dequeue failed: {:?}", e
                                     );
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    tokio::select! {
+                                        biased;
+                                        _ = shutdown.cancelled() => break,
+                                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                                    }
                                 }
                             }
                         }

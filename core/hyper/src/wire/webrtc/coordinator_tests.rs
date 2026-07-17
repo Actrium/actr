@@ -69,6 +69,8 @@ async fn insert_pending_offer_peer(
             restart_task_handle: None,
             restart_wake: Arc::new(tokio::sync::Notify::new()),
             restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
+            ice_gathering_changed: Arc::new(tokio::sync::Notify::new()),
+            health_check_wake: Arc::clone(&coordinator.health_check_wake),
             last_ice_restart_offer_at: None,
             last_state_change: std::time::Instant::now(),
             current_state: RTCPeerConnectionState::New,
@@ -3566,20 +3568,21 @@ fn codec_to_payload_type_maps_known_and_unknown() {
 fn stale_peer_reap_uses_dedicated_disconnected_threshold() {
     use RTCPeerConnectionState::*;
 
-    // Terminal states (Failed/Closed) are reaped after MAX_FAILED_DURATION (60s).
+    // Terminal states (Failed/Closed) are reaped at MAX_FAILED_DURATION (60s).
+    assert!(stale_peer_reap_reason(Failed, Duration::from_secs(60)).is_some());
     assert!(stale_peer_reap_reason(Failed, Duration::from_secs(61)).is_some());
     assert!(stale_peer_reap_reason(Closed, Duration::from_secs(61)).is_some());
     assert!(stale_peer_reap_reason(Failed, Duration::from_secs(59)).is_none());
     assert!(stale_peer_reap_reason(Closed, Duration::from_secs(59)).is_none());
 
     // Disconnected gets the dedicated 90s threshold (restart budget + margin):
-    // reaped past 90s ...
+    // reaped at 90s without a periodic-check delay ...
+    assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(90)).is_some());
     assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(91)).is_some());
     // ... but NOT at the terminal-state threshold, where an ICE restart
     // (60s budget, measured from its trigger, not from the state change)
     // may still legitimately be recovering the peer ...
     assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(61)).is_none());
-    assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(90)).is_none());
     // ... and a fresh Disconnected peer is never touched.
     assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(5)).is_none());
 
@@ -3590,6 +3593,24 @@ fn stale_peer_reap_uses_dedicated_disconnected_threshold() {
             "{state:?} must never be reaped"
         );
     }
+}
+
+#[tokio::test]
+async fn duplicate_peer_state_does_not_extend_stale_reap_deadline() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "sdp-1").await;
+
+    let mut peers = coordinator.peers.write().await;
+    let state = peers.get_mut(&peer_id).expect("peer state should exist");
+    state.update_connection_state(RTCPeerConnectionState::Disconnected);
+    let first_transition_at = state.last_state_change;
+    state.update_connection_state(RTCPeerConnectionState::Disconnected);
+
+    assert_eq!(
+        state.last_state_change, first_transition_at,
+        "duplicate state notifications must not keep a stale peer alive"
+    );
 }
 
 /// The health check reads the REAL-TIME connection state from the
