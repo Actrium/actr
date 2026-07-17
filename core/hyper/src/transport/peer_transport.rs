@@ -14,12 +14,11 @@ use super::error::{NetworkError, NetworkResult};
 use super::wire_handle::{WireHandle, WireIdentity};
 use actr_protocol::{ActrId, PayloadType};
 use async_trait::async_trait;
-use either::Either;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
-use tokio::sync::{Mutex, Notify, RwLock};
+use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 
 /// Wire builder trait: asynchronously creates Wire components based on Dest
@@ -66,12 +65,84 @@ pub trait WireBuilder: Send + Sync {
     }
 }
 
-/// Destination transport state
+struct ConnectionFlight {
+    completion: Notify,
+    cancel: CancellationToken,
+}
+
+impl ConnectionFlight {
+    fn new() -> Self {
+        Self {
+            completion: Notify::new(),
+            cancel: CancellationToken::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum DestState {
+    Connecting(Arc<ConnectionFlight>),
+    Connected(Arc<DestTransport>),
+}
+
+/// Cancellation guard for the task that owns a connection flight.
 ///
-/// Uses Either to manage connection lifecycle:
-/// - Left: Connecting state with shared Notify (multiple waiters)
-/// - Right: Connected state with DestTransport
-type DestState = Either<Arc<Notify>, Arc<DestTransport>>;
+/// `get_or_create_transport` is commonly wrapped in a caller deadline. If that
+/// caller future is dropped while it owns the flight, ordinary async cleanup
+/// cannot run and the destination would otherwise remain stuck in
+/// `Connecting` until every waiter times out. The guard removes only its exact
+/// generation, then wakes waiters so a replacement flight can start
+/// immediately.
+struct ConnectionCreatorGuard {
+    transports: Arc<RwLock<HashMap<Dest, DestState>>>,
+    dest: Dest,
+    flight: Arc<ConnectionFlight>,
+    armed: bool,
+}
+
+impl ConnectionCreatorGuard {
+    fn new(
+        transports: Arc<RwLock<HashMap<Dest, DestState>>>,
+        dest: Dest,
+        flight: Arc<ConnectionFlight>,
+    ) -> Self {
+        Self {
+            transports,
+            dest,
+            flight,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ConnectionCreatorGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        self.flight.cancel.cancel();
+        let transports = Arc::clone(&self.transports);
+        let dest = self.dest.clone();
+        let flight = Arc::clone(&self.flight);
+        tokio::spawn(async move {
+            let mut transports = transports.write().await;
+            let owns_flight = matches!(
+                transports.get(&dest),
+                Some(DestState::Connecting(current)) if Arc::ptr_eq(current, &flight)
+            );
+            if owns_flight {
+                transports.remove(&dest);
+            }
+            drop(transports);
+            flight.completion.notify_waiters();
+        });
+    }
+}
 
 /// Reference to the DestTransport that accepted a send.
 ///
@@ -100,7 +171,7 @@ impl DestTransportRef {
 /// - Create DestTransport on-demand (lazy initialization)
 /// - Provide unified send/recv interface
 /// - Support custom connection factories
-/// - Prevent duplicate connection creation using Either state machine
+/// - Prevent duplicate connection creation using an explicit per-destination flight
 ///
 /// # Comparison with HostTransport
 /// - **PeerTransport**: Cross-process, uses WebRTC/WebSocket
@@ -108,7 +179,7 @@ impl DestTransportRef {
 ///
 /// # State Machine
 /// ```text
-/// None -> Connecting(Notify) -> Connected(Transport)
+/// None -> Connecting(Flight) -> Connected(Transport)
 ///         |                      |
 ///      (multiple waiters)     (ready)
 /// ```
@@ -117,15 +188,11 @@ pub struct PeerTransport {
     #[allow(dead_code)]
     local_id: ActrId,
 
-    /// Dest -> DestState mapping (Either state machine)
+    /// Dest -> lifecycle state
     transports: Arc<RwLock<HashMap<Dest, DestState>>>,
 
     /// Wire builder (used to create Wire handles for new DestTransport)
     conn_factory: Arc<dyn WireBuilder>,
-
-    /// Cancellation tokens for in-progress connection creation
-    /// Dest -> CancellationToken (for cancelling ongoing connection attempts)
-    pending_tokens: Arc<Mutex<HashMap<Dest, CancellationToken>>>,
 
     #[allow(unused)]
     /// todo: Set of peers currently being closed (to reject new connection attempts) ,closed requests will be cleaned up in event listener
@@ -143,7 +210,6 @@ impl PeerTransport {
             local_id,
             transports: Arc::new(RwLock::new(HashMap::new())),
             conn_factory,
-            pending_tokens: Arc::new(Mutex::new(HashMap::new())),
             closing_peers: Arc::new(RwLock::new(HashSet::new())),
         }
     }
@@ -157,7 +223,7 @@ impl PeerTransport {
     /// Check whether a destination is currently in the Connecting state.
     pub async fn is_connecting(&self, dest: &Dest) -> bool {
         let transports = self.transports.read().await;
-        matches!(transports.get(dest), Some(Either::Left(_)))
+        matches!(transports.get(dest), Some(DestState::Connecting(_)))
     }
 
     /// Get or create DestTransport for specified Dest
@@ -169,7 +235,7 @@ impl PeerTransport {
     /// - DestTransport for this Dest (Arc-shared)
     ///
     /// # State Machine
-    /// Uses Either to prevent duplicate connections:
+    /// Uses a destination-scoped flight to prevent duplicate connections:
     /// 1. If Connected -> return transport
     /// 2. If Connecting -> wait for notify, then retry
     /// 3. If None -> insert Connecting(notify), create connection outside lock
@@ -182,101 +248,73 @@ impl PeerTransport {
         &self,
         dest: &Dest,
     ) -> NetworkResult<Arc<DestTransport>> {
-        // 0. Check if dest is being closed - fast fail
-        if self.closing_peers.read().await.contains(dest) {
-            return Err(NetworkError::ConnectionClosed(format!(
-                "Destination {:?} is being closed.",
-                dest
-            )));
-        }
-
         loop {
-            // 1. Fast path: check current state
-            let state_opt = {
-                let transports = self.transports.read().await;
-                transports.get(dest).cloned()
-            };
-
-            match state_opt {
-                // Already connected - fast path
-                Some(Either::Right(transport)) => {
-                    tracing::debug!("Reusing existing DestTransport: {:?}", dest);
-                    return Ok(transport);
-                }
-                // Currently connecting - wait for completion
-                Some(Either::Left(notify)) => {
-                    tracing::debug!("Waiting for ongoing connection: {:?}", dest);
-                    notify.notified().await;
-                    // Check if cancelled during wait
-                    if self.closing_peers.read().await.contains(dest) {
-                        return Err(NetworkError::ConnectionClosed(format!(
-                            "Destination {:?} was closed while waiting",
-                            dest
-                        )));
-                    }
-                    // Retry after notification
-                    continue;
-                }
-                // Not exists - need to create
-                None => {
-                    // Enter slow path
-                }
+            if self.closing_peers.read().await.contains(dest) {
+                return Err(NetworkError::ConnectionClosed(format!(
+                    "Destination {:?} is being closed.",
+                    dest
+                )));
             }
 
-            // 2. Slow path: try to become the creator
-            let (notify, is_creator) = {
+            let (flight, is_creator) = {
                 let mut transports = self.transports.write().await;
-
-                // Double-check: may have been created while waiting for write lock
                 match transports.get(dest) {
-                    Some(Either::Right(transport)) => {
+                    Some(DestState::Connected(transport)) => {
+                        tracing::debug!("Reusing existing DestTransport: {:?}", dest);
                         return Ok(Arc::clone(transport));
                     }
-                    Some(Either::Left(notify)) => {
-                        // Another thread is creating, wait for it
-                        (Arc::clone(notify), false)
-                    }
+                    Some(DestState::Connecting(flight)) => (Arc::clone(flight), false),
                     None => {
-                        // Check closing again before creating
                         if self.closing_peers.read().await.contains(dest) {
                             return Err(NetworkError::ConnectionClosed(format!(
                                 "Destination {:?} is being closed",
                                 dest
                             )));
                         }
-                        // We are the creator, insert Connecting state
-                        let notify = Arc::new(Notify::new());
-                        transports.insert(dest.clone(), Either::Left(Arc::clone(&notify)));
-                        tracing::debug!("Inserted Connecting state for: {:?}", dest);
-                        (notify, true)
+                        let flight = Arc::new(ConnectionFlight::new());
+                        transports.insert(dest.clone(), DestState::Connecting(Arc::clone(&flight)));
+                        tracing::debug!("Started connection flight for: {:?}", dest);
+                        (flight, true)
                     }
                 }
             };
 
             if !is_creator {
-                // Wait for the actual creator
                 tracing::debug!("Another thread is creating connection: {:?}", dest);
-                // Add a 10-second timeout while waiting on notify.
-                match tokio::time::timeout(Duration::from_secs(10), notify.notified()).await {
-                    Ok(_) => continue,
-                    Err(e) => {
-                        return Err(NetworkError::TimeoutError(format!(
-                            "Timeout waiting for notification: {:?} {}",
-                            dest, e
-                        )));
-                    }
+                let completed = flight.completion.notified();
+                tokio::pin!(completed);
+                completed.as_mut().enable();
+
+                let still_current = {
+                    let transports = self.transports.read().await;
+                    matches!(
+                        transports.get(dest),
+                        Some(DestState::Connecting(current))
+                            if Arc::ptr_eq(current, &flight)
+                    )
+                };
+                if !still_current {
+                    continue;
                 }
+
+                tokio::time::timeout(Duration::from_secs(10), &mut completed)
+                    .await
+                    .map_err(|error| {
+                        NetworkError::TimeoutError(format!(
+                            "Timeout waiting for connection flight: {:?} {}",
+                            dest, error
+                        ))
+                    })?;
+                continue;
             }
 
-            // 3. We are the creator - create connections OUTSIDE lock
             tracing::info!("Creating new connection for: {:?}", dest);
-
-            // Create cancellation token for this connection attempt
-            let cancel_token = CancellationToken::new();
-            {
-                let mut tokens = self.pending_tokens.lock().await;
-                tokens.insert(dest.clone(), cancel_token.clone());
-            }
+            let mut creator_guard = ConnectionCreatorGuard::new(
+                Arc::clone(&self.transports),
+                dest.clone(),
+                Arc::clone(&flight),
+            );
+            let cancel_token = flight.cancel.clone();
 
             let result = async {
                 let connections = self
@@ -329,29 +367,46 @@ impl PeerTransport {
             }
             .await;
 
-            // 4. Clean up pending token (connection attempt finished)
-            {
-                let mut tokens = self.pending_tokens.lock().await;
-                tokens.remove(dest);
-            }
-
-            // 5. Update state and notify waiters
             let mut transports = self.transports.write().await;
+            let owns_flight = matches!(
+                transports.get(dest),
+                Some(DestState::Connecting(current)) if Arc::ptr_eq(current, &flight)
+            );
+            if !owns_flight {
+                drop(transports);
+                if let Ok(transport) = result {
+                    if let Err(error) = transport.close().await {
+                        tracing::warn!(
+                            "Failed to close stale DestTransport for {:?}: {}",
+                            dest,
+                            error
+                        );
+                    }
+                }
+                creator_guard.disarm();
+                flight.completion.notify_waiters();
+                return Err(NetworkError::ConnectionClosed(format!(
+                    "Connection flight for {:?} was superseded",
+                    dest
+                )));
+            }
 
             match result {
                 Ok(transport) => {
                     tracing::info!("Connection established: {:?}", dest);
-                    transports.insert(dest.clone(), Either::Right(Arc::clone(&transport)));
+                    transports.insert(dest.clone(), DestState::Connected(Arc::clone(&transport)));
                     drop(transports);
                     self.spawn_ready_monitor(dest.clone(), Arc::clone(&transport));
-                    notify.notify_waiters();
+                    creator_guard.disarm();
+                    flight.completion.notify_waiters();
                     return Ok(transport);
                 }
                 Err(e) => {
                     tracing::error!("Connection failed: {:?}: {}", dest, e);
                     transports.remove(dest);
                     drop(transports);
-                    notify.notify_waiters();
+                    creator_guard.disarm();
+                    flight.completion.notify_waiters();
                     return Err(e);
                 }
             }
@@ -429,7 +484,7 @@ impl PeerTransport {
         let transport = {
             let transports = self.transports.read().await;
             match transports.get(dest) {
-                Some(Either::Right(transport)) => Some(Arc::clone(transport)),
+                Some(DestState::Connected(transport)) => Some(Arc::clone(transport)),
                 _ => None, // Connecting or absent → stale
             }
         };
@@ -471,67 +526,38 @@ impl PeerTransport {
         // 1. Mark as closing
         self.closing_peers.write().await.insert(dest.clone());
 
-        // 2. Inspect current state first.
-        //    If the destination is still in Connecting state, let the current creator
-        //    finish its internal retry/cleanup path instead of converting a failed
-        //    single attempt into a whole-operation cancellation.
+        // 2. Atomically detach the current generation. A creator that completes
+        // after this point fails its compare-and-commit check and closes the
+        // stale transport it produced.
         let current_state = {
-            let transports = self.transports.read().await;
-            transports.get(dest).cloned()
+            let mut transports = self.transports.write().await;
+            transports.remove(dest)
         };
 
-        match current_state {
-            Some(Either::Left(notify)) => {
-                {
-                    let mut tokens = self.pending_tokens.lock().await;
-                    if let Some(token) = tokens.remove(dest) {
-                        tracing::info!("Cancelling in-progress connection for {:?}", dest);
-                        token.cancel();
-                    }
-                }
-
-                {
-                    let mut transports = self.transports.write().await;
-                    if matches!(transports.get(dest), Some(Either::Left(_))) {
-                        transports.remove(dest);
-                    }
-                }
-
-                notify.notify_waiters();
+        let close_result = match current_state {
+            Some(DestState::Connecting(flight)) => {
+                tracing::info!("Cancelling in-progress connection for {:?}", dest);
+                flight.cancel.cancel();
+                flight.completion.notify_waiters();
+                Ok(())
             }
-            Some(Either::Right(_)) => {
-                // 3. Cancel any auxiliary pending connection creation state.
-                {
-                    let mut tokens = self.pending_tokens.lock().await;
-                    if let Some(token) = tokens.remove(dest) {
-                        tracing::info!("Cancelling in-progress connection for {:?}", dest);
-                        token.cancel();
-                    }
-                }
-
-                // 4. Remove and close the established transport.
-                let state = {
-                    let mut transports = self.transports.write().await;
-                    transports.remove(dest)
-                };
-
-                if let Some(Either::Right(transport)) = state {
-                    tracing::info!("Closing DestTransport: {:?}", dest);
-                    transport.close().await?;
-                }
+            Some(DestState::Connected(transport)) => {
+                tracing::info!("Closing DestTransport: {:?}", dest);
+                transport.close().await
             }
             None => {
                 tracing::debug!(
                     "Ignoring close request for {:?}; no transport state exists",
                     dest
                 );
+                Ok(())
             }
-        }
+        };
 
         // 5. Remove from closing set after cleanup completes
         self.closing_peers.write().await.remove(dest);
 
-        Ok(())
+        close_result
     }
 
     /// Session-guarded close: only tear down the transport if the active
@@ -552,7 +578,7 @@ impl PeerTransport {
         let transport = {
             let transports = self.transports.read().await;
             match transports.get(dest) {
-                Some(Either::Right(transport)) => Some(Arc::clone(transport)),
+                Some(DestState::Connected(transport)) => Some(Arc::clone(transport)),
                 _ => None, // Connecting or absent → stale
             }
         };
@@ -600,7 +626,7 @@ impl PeerTransport {
             let transports = self.transports.read().await;
             matches!(
                 transports.get(dest),
-                Some(Either::Right(transport)) if Arc::ptr_eq(transport, &sent_transport)
+                Some(DestState::Connected(transport)) if Arc::ptr_eq(transport, &sent_transport)
             )
         };
 
@@ -617,9 +643,11 @@ impl PeerTransport {
         let transport = {
             let mut transports = self.transports.write().await;
             match transports.get(dest) {
-                Some(Either::Right(transport)) if Arc::ptr_eq(transport, &sent_transport) => {
+                Some(DestState::Connected(transport))
+                    if Arc::ptr_eq(transport, &sent_transport) =>
+                {
                     match transports.remove(dest) {
-                        Some(Either::Right(transport)) => Some(transport),
+                        Some(DestState::Connected(transport)) => Some(transport),
                         _ => None,
                     }
                 }
@@ -646,14 +674,6 @@ impl PeerTransport {
     /// Close all DestTransports
     #[allow(dead_code)]
     pub async fn close_all(&self) -> NetworkResult<()> {
-        {
-            let mut tokens = self.pending_tokens.lock().await;
-            for (dest, token) in tokens.drain() {
-                tracing::info!("Cancelling in-progress connection for {:?}", dest);
-                token.cancel();
-            }
-        }
-
         let states = {
             let mut transports = self.transports.write().await;
             tracing::info!("Closing all DestTransports (count: {})", transports.len());
@@ -662,17 +682,18 @@ impl PeerTransport {
 
         for (dest, state) in states {
             match state {
-                Either::Right(transport) => {
+                DestState::Connected(transport) => {
                     self.closing_peers.write().await.insert(dest.clone());
                     if let Err(e) = transport.close().await {
                         tracing::warn!("Failed to close DestTransport {:?}: {}", dest, e);
                     }
                     self.closing_peers.write().await.remove(&dest);
                 }
-                Either::Left(notify) => {
+                DestState::Connecting(flight) => {
                     self.closing_peers.write().await.insert(dest.clone());
                     tracing::debug!("Cancelled Connecting state for: {:?}", dest);
-                    notify.notify_waiters();
+                    flight.cancel.cancel();
+                    flight.completion.notify_waiters();
                     self.closing_peers.write().await.remove(&dest);
                 }
             }
@@ -724,7 +745,7 @@ impl PeerTransport {
                     let mut map = transports.write().await;
                     let matched = matches!(
                         map.get(&dest),
-                        Some(Either::Right(existing)) if Arc::ptr_eq(existing, &transport)
+                        Some(DestState::Connected(existing)) if Arc::ptr_eq(existing, &transport)
                     );
                     if matched {
                         map.remove(&dest);
@@ -785,7 +806,7 @@ impl PeerTransport {
                         .iter()
                         .filter_map(|(dest, state)| {
                             // Only check Connected transports, skip Connecting
-                            if let Either::Right(transport) = state {
+                            if let DestState::Connected(transport) = state {
                                 Some((dest.clone(), Arc::clone(transport)))
                             } else {
                                 None
@@ -804,7 +825,8 @@ impl PeerTransport {
 
                         // Remove entire DestTransport
                         let mut transports_write = transports.write().await;
-                        if let Some(Either::Right(transport)) = transports_write.remove(&dest_clone)
+                        if let Some(DestState::Connected(transport)) =
+                            transports_write.remove(&dest_clone)
                         {
                             tracing::info!(
                                 "Removing completely failed DestTransport: {:?}",

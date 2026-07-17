@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 use tokio::sync::{RwLock, watch};
+use tokio_util::sync::CancellationToken;
 
 /// Connection type identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -94,6 +95,9 @@ pub(crate) struct WirePool {
 
     /// Closed flag (used to terminate background tasks)
     closed: Arc<AtomicBool>,
+
+    /// Event-driven shutdown for connection attempts and retry backoff.
+    shutdown: CancellationToken,
 }
 
 impl WirePool {
@@ -108,6 +112,7 @@ impl WirePool {
             pending: Arc::new(AtomicU8::new(0)),
             retry_config,
             closed: Arc::new(AtomicBool::new(false)),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -130,6 +135,7 @@ impl WirePool {
         let pending = Arc::clone(&self.pending);
         let retry_config = self.retry_config;
         let closed = Arc::clone(&self.closed);
+        let shutdown = self.shutdown.clone();
 
         tokio::spawn(async move {
             // Create exponential backoff iterator
@@ -154,7 +160,16 @@ impl WirePool {
                         delay,
                         attempt + 1
                     );
-                    tokio::time::sleep(delay).await;
+                    tokio::select! {
+                        _ = shutdown.cancelled() => {
+                            tracing::debug!(
+                                "🛑 [{:?}] Retry backoff interrupted by pool close",
+                                conn_type
+                            );
+                            return;
+                        }
+                        _ = tokio::time::sleep(delay) => {}
+                    }
 
                     // Check again after sleep
                     if closed.load(Ordering::Relaxed) {
@@ -175,7 +190,25 @@ impl WirePool {
                     retry_config.max_attempts
                 );
 
-                let result = connection.connect().await;
+                let result = tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => {
+                        tracing::debug!(
+                            "🛑 [{:?}] Connection attempt interrupted by pool close",
+                            conn_type
+                        );
+                        pending.fetch_sub(1, Ordering::Relaxed);
+                        if let Err(error) = connection.close().await {
+                            tracing::warn!(
+                                "Failed to close {:?} connection after pool cancellation: {}",
+                                conn_type,
+                                error
+                            );
+                        }
+                        return;
+                    }
+                    result = connection.connect() => result,
+                };
                 pending.fetch_sub(1, Ordering::Relaxed);
 
                 match result {
@@ -186,11 +219,28 @@ impl WirePool {
                             attempt + 1
                         );
 
-                        // Update status to Ready
-                        {
+                        // Compare-and-commit under the same lock used by
+                        // `close_all`: a connection completing concurrently
+                        // with close must never resurrect the cleared slot.
+                        let committed = {
                             let mut conns = connections.write().await;
-                            conns[conn_type.as_index()] =
-                                Some(WireStatus::Ready(Arc::clone(&connection)));
+                            if closed.load(Ordering::Acquire) {
+                                false
+                            } else {
+                                conns[conn_type.as_index()] =
+                                    Some(WireStatus::Ready(Arc::clone(&connection)));
+                                true
+                            }
+                        };
+                        if !committed {
+                            if let Err(error) = connection.close().await {
+                                tracing::warn!(
+                                    "Failed to close {:?} connection completed after pool close: {}",
+                                    conn_type,
+                                    error
+                                );
+                            }
+                            return;
                         }
 
                         // Broadcast new ready connection set (keep all connections, no replacement)
@@ -410,6 +460,7 @@ impl WirePool {
     pub(crate) async fn close_all(&self) {
         // 1. Set closed flag to terminate background tasks
         self.closed.store(true, Ordering::Relaxed);
+        self.shutdown.cancel();
 
         // 2. Clear all connection status
         let mut conns = self.connections.write().await;
