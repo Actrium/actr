@@ -53,6 +53,7 @@ toml.workspace = true
 uuid = { version = "1.18", features = ["v4", "serde"] }
 thiserror.workspace = true
 anyhow.workspace = true
+yasm.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 base64.workspace = true

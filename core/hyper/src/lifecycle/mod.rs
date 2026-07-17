@@ -11,6 +11,7 @@ mod heartbeat;
 pub(crate) mod hooks;
 mod network_event;
 pub(crate) mod node;
+mod recovery_execution;
 pub(crate) mod session_state;
 
 pub use connection_supervisor::{ConnectionFact, ConnectionSupervisor};

@@ -1250,8 +1250,8 @@ async fn test_cleanup_batches_disconnect_without_reconnect() {
     }
 }
 
-#[tokio::test]
-async fn test_network_event_handle_settle_window_merges_events_once() {
+#[tokio::test(start_paused = true)]
+async fn test_network_event_handle_rolls_back_offline_before_grace_expires() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
 
@@ -1272,6 +1272,7 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
     let reconciler = tokio::spawn(async move {
         run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
     });
+    let started = tokio::time::Instant::now();
 
     let lost = {
         let handle = handle.clone();
@@ -1332,24 +1333,32 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
         NetworkEvent::NetworkPathChanged { .. }
     ));
     assert!(client.is_connected());
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "an available path should roll back pending offline before the grace period expires"
+    );
 
     let stats = client.get_stats();
     assert_eq!(
         stats.connections, 1,
-        "Lost + Available + TypeChanged in one settle window should keep healthy signaling"
+        "Fast offline rollback should keep healthy signaling"
     );
     assert_eq!(
         stats.disconnections, 0,
-        "Batched restore should not disconnect when signaling probe succeeds"
+        "Rolled-back offline state should not disconnect when signaling probe succeeds"
     );
-    assert_eq!(client.probe_calls(), 1, "Batched restore should probe once");
+    assert_eq!(
+        client.probe_calls(),
+        1,
+        "Available path updates inside the debounce window should probe once"
+    );
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
 }
 
 #[tokio::test]
-async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
+async fn test_repeated_available_path_updates_probe_once_inside_debounce_window() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
 
@@ -1444,8 +1453,8 @@ async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
         );
         assert_eq!(
             client.probe_calls(),
-            cycle,
-            "foreground cycle {} should probe once for the settled restore batch",
+            1,
+            "rapid available updates should stay inside one debounce window in cycle {}",
             cycle
         );
     }
@@ -1538,7 +1547,7 @@ async fn test_l1_old_handle_after_reconciler_shutdown_fails_fast() {
 }
 
 #[tokio::test]
-async fn test_l1_reconciler_shutdown_during_settle_window_is_bounded() {
+async fn test_l1_reconciler_shutdown_during_offline_grace_is_bounded() {
     let client = Arc::new(FakeSignalingClient::new());
     let processor = Arc::new(DefaultNetworkEventProcessor::new(client, None));
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
@@ -1553,7 +1562,7 @@ async fn test_l1_reconciler_shutdown_during_settle_window_is_bounded() {
 
     let event_call = tokio::spawn(async move {
         handle
-            .handle_network_path_changed(match online_event(1) {
+            .handle_network_path_changed(match offline_event(1) {
                 NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
                 _ => unreachable!(),
             })
@@ -1567,7 +1576,7 @@ async fn test_l1_reconciler_shutdown_during_settle_window_is_bounded() {
     let err = event_call
         .await
         .expect("event call should not panic")
-        .expect_err("shutdown during settle should not leave caller waiting forever");
+        .expect_err("shutdown during offline grace should not leave caller waiting forever");
     assert!(
         err.contains("Timed out waiting for network event result")
             || err.contains("Failed to receive network event result"),
@@ -1622,6 +1631,37 @@ async fn test_l1_command_apis_complete_through_network_event_handle() {
     ));
     assert!(client.is_connected());
     assert_eq!(client.connect_once_calls(), 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_l1_explicit_commands_bypass_offline_grace() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client, None));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let started = tokio::time::Instant::now();
+    let cleanup = handle
+        .cleanup_connections(CleanupReason::ManualReset)
+        .await
+        .expect("cleanup command should complete without path settling");
+
+    assert!(cleanup.success);
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "explicit cleanup must not wait for the offline grace period"
+    );
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");

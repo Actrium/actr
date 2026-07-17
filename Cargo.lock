@@ -222,6 +222,7 @@ dependencies = [
  "webrtc",
  "webrtc-ice",
  "webrtc-util 0.12.0",
+ "yasm",
  "zip",
 ]
 
@@ -8572,6 +8573,12 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
 ]
+
+[[package]]
+name = "yasm"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f31fc381b9e09d3638f0890d89eca9e2c014b2d59ea96d5f15a82ba86999a2b"
 
 [[package]]
 name = "yasna"

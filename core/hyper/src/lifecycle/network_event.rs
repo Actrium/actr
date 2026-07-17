@@ -31,7 +31,7 @@
 //! │  NetworkEventProcessor (Trait)                          │
 //! │                                                          │
 //! │  DefaultNetworkEventProcessor:                          │
-//! │  • reconcile settled network/app events                 │
+//! │  • feed normalized network/app inputs into policy FSM   │
 //! │  • execute one recovery action                          │
 //! │    └─► Offline / Probe / Restore / Cleanup / Reconnect  │
 //! └─────────────────────────────────────────────────────────┘
@@ -78,15 +78,22 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::connection_supervisor::{ConnectionFact, ConnectionSupervisor};
+use super::recovery_execution::RecoveryExecutionTracker;
 
-const NETWORK_EVENT_SETTLE_WINDOW: Duration = Duration::from_millis(400);
+/// Grace period before committing an observed offline path to transport teardown.
+///
+/// Correctness does not depend on this delay: every event enters the policy FSM
+/// immediately. An available snapshot ends the grace period early, allowing
+/// the FSM to roll back before an irreversible disconnect side effect starts.
+const NETWORK_OFFLINE_GRACE_WINDOW: Duration = Duration::from_millis(400);
 const NETWORK_EVENT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNALING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(super) const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
 static NEXT_NETWORK_EVENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_NETWORK_RECOVERY_ACTION_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Keeps outbound sends behind a network-event lifecycle barrier while the
-/// reconciler settles and processes a queued batch.
+/// reconciler evaluates and processes a queued decision cycle.
 pub struct NetworkEventBarrier {
     _cleanup_guard: CleanupGuard,
 }
@@ -176,7 +183,7 @@ pub enum NetworkEvent {
     ForceReconnect { reason: ReconnectReason },
 }
 
-/// Final action selected from a settled batch of network events.
+/// Final action selected from one network-event decision cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetworkRecoveryAction {
     Noop,
@@ -210,6 +217,27 @@ fn network_event_suppresses_auto_reconnect(event: &NetworkEvent) -> bool {
                 background_duration_ms,
             },
         } if *background_duration_ms >= LONG_BACKGROUND_RECONNECT_THRESHOLD_MS
+    )
+}
+
+fn network_event_starts_offline_grace(event: &NetworkEvent) -> bool {
+    matches!(
+        event,
+        NetworkEvent::NetworkPathChanged { snapshot } if snapshot.is_offline()
+    )
+}
+
+fn network_event_rolls_back_offline_grace(event: &NetworkEvent) -> bool {
+    matches!(
+        event,
+        NetworkEvent::NetworkPathChanged { snapshot } if !snapshot.is_offline()
+    )
+}
+
+fn network_event_requires_immediate_action(event: &NetworkEvent) -> bool {
+    matches!(
+        event,
+        NetworkEvent::CleanupConnections { .. } | NetworkEvent::ForceReconnect { .. }
     )
 }
 
@@ -255,7 +283,7 @@ impl NetworkEventResult {
 #[async_trait::async_trait]
 pub trait NetworkEventProcessor: Send + Sync {
     /// Perform synchronous, non-blocking preparation as soon as an event is
-    /// dequeued, before the reconciler waits for more events to settle.
+    /// dequeued, before the reconciler optionally waits through offline grace.
     fn prepare_network_event(&self, _event: &NetworkEvent) {}
 
     /// Enter a lifecycle barrier as soon as a queued event is observed by the
@@ -324,10 +352,10 @@ pub trait NetworkEventProcessor: Send + Sync {
         self.process_network_available().await
     }
 
-    /// Process the final action selected from a settled event batch.
+    /// Process the final action selected by the connection policy FSM.
     ///
     /// Custom processors can rely on the default mapping. The default runtime
-    /// processor overrides this to bypass per-event debounce after reconciliation.
+    /// processor overrides this to coordinate signaling and WebRTC recovery.
     async fn process_network_recovery_action(
         &self,
         action: NetworkRecoveryAction,
@@ -407,6 +435,7 @@ pub struct DefaultNetworkEventProcessor {
     debounce_config: DebounceConfig,
     debounce_state: Arc<DebounceState>,
     recovery_state: Arc<SignalingRecoveryState>,
+    recovery_execution: Arc<tokio::sync::Mutex<RecoveryExecutionTracker>>,
 }
 
 impl DefaultNetworkEventProcessor {
@@ -461,6 +490,9 @@ impl DefaultNetworkEventProcessor {
             debounce_config,
             debounce_state: Arc::new(DebounceState::new()),
             recovery_state: Arc::new(SignalingRecoveryState::new()),
+            recovery_execution: Arc::new(tokio::sync::Mutex::new(
+                RecoveryExecutionTracker::default(),
+            )),
         }
     }
 
@@ -693,7 +725,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         if network_event_suppresses_auto_reconnect(event) {
             tracing::info!(
                 event = ?event,
-                "Long-background recovery suppressing stale signaling auto-reconnect before settle"
+                "Long-background recovery suppressing stale signaling auto-reconnect before action selection"
             );
             self.signaling_client.suppress_auto_reconnect();
         }
@@ -858,16 +890,60 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         &self,
         action: NetworkRecoveryAction,
     ) -> Result<(), String> {
-        match action {
+        if action == NetworkRecoveryAction::Noop {
+            return Ok(());
+        }
+
+        // Keep the YASM tracker locked for the whole asynchronous action. The
+        // reconciler is normally single-consumer already, while this guard also
+        // makes direct/custom invocations single-flight and prevents two
+        // recovery side effects from overlapping.
+        let mut execution = self.recovery_execution.lock().await;
+        let action_id = NEXT_NETWORK_RECOVERY_ACTION_ID.fetch_add(1, Ordering::Relaxed);
+        let (previous, executing) = execution.begin(action)?;
+        tracing::info!(
+            action_id,
+            action = ?action,
+            from = ?previous,
+            to = ?executing,
+            "network_event.execution.transition"
+        );
+
+        let result = match action {
             NetworkRecoveryAction::Noop => Ok(()),
             NetworkRecoveryAction::Offline => self.process_offline().await,
             NetworkRecoveryAction::Probe => self.probe_or_restore("Probe").await,
-            NetworkRecoveryAction::Restore => {
-                self.restore_signaling_and_webrtc_from_network_event("NetworkEventBatch")
-                    .await
-            }
+            NetworkRecoveryAction::Restore => self.process_network_available().await,
             NetworkRecoveryAction::CleanupOnly => self.cleanup_connections().await,
             NetworkRecoveryAction::ForceReconnect => self.force_reconnect().await,
+        };
+
+        match execution.complete(result.is_ok()) {
+            Ok((previous, current)) => {
+                tracing::info!(
+                    action_id,
+                    action = ?action,
+                    from = ?previous,
+                    to = ?current,
+                    success = result.is_ok(),
+                    "network_event.execution.transition"
+                );
+                result
+            }
+            Err(state_error) => {
+                tracing::error!(
+                    action_id,
+                    action = ?action,
+                    error = %state_error,
+                    "network_event.execution.invalid_transition"
+                );
+                match result {
+                    Ok(()) => Err(state_error),
+                    Err(action_error) => Err(format!(
+                        "{action_error}; recovery state error: {state_error}"
+                    )),
+                }
+            }
         }
     }
 }
@@ -885,6 +961,14 @@ pub async fn process_network_event_batch(
     }
 
     let action = select_network_recovery_action(&events);
+    process_network_event_batch_with_action(events, action, processor).await
+}
+
+async fn process_network_event_batch_with_action(
+    events: Vec<NetworkEvent>,
+    action: NetworkRecoveryAction,
+    processor: Arc<dyn NetworkEventProcessor>,
+) -> Vec<NetworkEventResult> {
     let start = Instant::now();
 
     tracing::info!(
@@ -936,38 +1020,55 @@ pub async fn run_network_event_reconciler(
     loop {
         tokio::select! {
             Some(first_request) = event_rx.recv() => {
+                let batch_started = Instant::now();
                 tracing::debug!(
                     event = ?first_request.event,
                     "network_event.reconciler.received"
                 );
                 processor.prepare_network_event(&first_request.event);
                 let mut event_barrier = processor.begin_network_event_barrier(&first_request.event);
+                let mut supervisor = ConnectionSupervisor::new();
+                supervisor.submit_event(&first_request.event);
+                let uses_offline_grace =
+                    network_event_starts_offline_grace(&first_request.event);
                 let mut requests = vec![first_request];
-                let settle = tokio::time::sleep(NETWORK_EVENT_SETTLE_WINDOW);
-                tokio::pin!(settle);
 
-                loop {
-                    tokio::select! {
-                        Some(next_request) = event_rx.recv() => {
-                            tracing::debug!(
-                                event = ?next_request.event,
-                                "network_event.reconciler.coalesced"
-                            );
-                            processor.prepare_network_event(&next_request.event);
-                            if event_barrier.is_none() {
-                                event_barrier = processor.begin_network_event_barrier(&next_request.event);
+                if uses_offline_grace {
+                    let grace = tokio::time::sleep(NETWORK_OFFLINE_GRACE_WINDOW);
+                    tokio::pin!(grace);
+
+                    loop {
+                        tokio::select! {
+                            Some(next_request) = event_rx.recv() => {
+                                let requires_immediate_action =
+                                    network_event_requires_immediate_action(&next_request.event);
+                                let rolls_back_offline =
+                                    network_event_rolls_back_offline_grace(&next_request.event);
+                                tracing::debug!(
+                                    event = ?next_request.event,
+                                    "network_event.reconciler.coalesced"
+                                );
+                                processor.prepare_network_event(&next_request.event);
+                                if event_barrier.is_none() {
+                                    event_barrier =
+                                        processor.begin_network_event_barrier(&next_request.event);
+                                }
+                                supervisor.submit_event(&next_request.event);
+                                requests.push(next_request);
+                                if requires_immediate_action || rolls_back_offline {
+                                    break;
+                                }
                             }
-                            requests.push(next_request);
-                        }
-                        _ = &mut settle => {
-                            break;
-                        }
-                        _ = shutdown_token.cancelled() => {
-                            tracing::info!("🛑 Network event reconciler shutting down");
-                            return;
-                        }
-                        else => {
-                            break;
+                            _ = &mut grace => {
+                                break;
+                            }
+                            _ = shutdown_token.cancelled() => {
+                                tracing::info!("🛑 Network event reconciler shutting down");
+                                return;
+                            }
+                            else => {
+                                break;
+                            }
                         }
                     }
                 }
@@ -981,6 +1082,7 @@ pub async fn run_network_event_reconciler(
                     if event_barrier.is_none() {
                         event_barrier = processor.begin_network_event_barrier(&next_request.event);
                     }
+                    supervisor.submit_event(&next_request.event);
                     requests.push(next_request);
                 }
 
@@ -988,7 +1090,7 @@ pub async fn run_network_event_reconciler(
                     .iter()
                     .map(|request| request.event.clone())
                     .collect::<Vec<_>>();
-                let action = select_network_recovery_action(&events);
+                let action = supervisor.reconcile();
                 let facts = events
                     .iter()
                     .map(ConnectionFact::from_network_event)
@@ -998,11 +1100,14 @@ pub async fn run_network_event_reconciler(
                     action = ?action,
                     events = ?events,
                     facts = ?facts,
-                    settle_window_ms = NETWORK_EVENT_SETTLE_WINDOW.as_millis() as u64,
-                    "network_event.reconciler.batch_reconciled"
+                    offline_grace_applied = uses_offline_grace,
+                    offline_grace_limit_ms = NETWORK_OFFLINE_GRACE_WINDOW.as_millis() as u64,
+                    decision_elapsed_ms = batch_started.elapsed().as_millis() as u64,
+                    "network_event.reconciler.fsm_selected"
                 );
 
-                let results = process_network_event_batch(events, processor.clone()).await;
+                let results =
+                    process_network_event_batch_with_action(events, action, processor.clone()).await;
                 drop(event_barrier);
 
                 for (request, result) in requests.into_iter().zip(results) {
