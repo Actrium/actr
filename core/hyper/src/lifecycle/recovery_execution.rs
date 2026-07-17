@@ -1,10 +1,8 @@
 //! Deterministic execution lifecycle for selected network recovery actions.
 //!
-//! [`ConnectionSupervisor`](super::ConnectionSupervisor) is the policy FSM: it
-//! consumes normalized facts and selects one action. This second FSM starts
-//! after that selection. It rejects overlapping recovery actions and makes
-//! every executing phase explicit without putting asynchronous side effects
-//! inside either state machine.
+//! This FSM owns only the phase of one serialized async operation. Long-lived
+//! facts such as online/offline reachability, desired recovery, and the last
+//! error belong to other layers and intentionally do not appear here.
 
 use yasm::{StateMachineInstance, define_state_machine};
 
@@ -13,15 +11,12 @@ use super::NetworkRecoveryAction;
 define_state_machine! {
     name: RecoveryExecutionMachine,
     states: {
-        Ready,
-        GoingOffline,
-        Offline,
+        Idle,
+        Disconnecting,
         Probing,
         Restoring,
         Reconnecting,
-        Cleaning,
-        Quiescent,
-        Failed
+        Cleaning
     },
     inputs: {
         BeginOffline,
@@ -32,43 +27,25 @@ define_state_machine! {
         Succeeded,
         Failed
     },
-    initial: Ready,
+    initial: Idle,
     transitions: {
-        Ready + BeginOffline => GoingOffline,
-        Ready + BeginProbe => Probing,
-        Ready + BeginRestore => Restoring,
-        Ready + BeginReconnect => Reconnecting,
-        Ready + BeginCleanup => Cleaning,
+        Idle + BeginOffline => Disconnecting,
+        Idle + BeginProbe => Probing,
+        Idle + BeginRestore => Restoring,
+        Idle + BeginReconnect => Reconnecting,
+        Idle + BeginCleanup => Cleaning,
 
-        Offline + BeginOffline => GoingOffline,
-        Offline + BeginProbe => Probing,
-        Offline + BeginRestore => Restoring,
-        Offline + BeginReconnect => Reconnecting,
-        Offline + BeginCleanup => Cleaning,
+        Disconnecting + Succeeded => Idle,
+        Probing + Succeeded => Idle,
+        Restoring + Succeeded => Idle,
+        Reconnecting + Succeeded => Idle,
+        Cleaning + Succeeded => Idle,
 
-        Quiescent + BeginOffline => GoingOffline,
-        Quiescent + BeginProbe => Probing,
-        Quiescent + BeginRestore => Restoring,
-        Quiescent + BeginReconnect => Reconnecting,
-        Quiescent + BeginCleanup => Cleaning,
-
-        Failed + BeginOffline => GoingOffline,
-        Failed + BeginProbe => Probing,
-        Failed + BeginRestore => Restoring,
-        Failed + BeginReconnect => Reconnecting,
-        Failed + BeginCleanup => Cleaning,
-
-        GoingOffline + Succeeded => Offline,
-        Probing + Succeeded => Ready,
-        Restoring + Succeeded => Ready,
-        Reconnecting + Succeeded => Ready,
-        Cleaning + Succeeded => Quiescent,
-
-        GoingOffline + Failed => Failed,
-        Probing + Failed => Failed,
-        Restoring + Failed => Failed,
-        Reconnecting + Failed => Failed,
-        Cleaning + Failed => Failed
+        Disconnecting + Failed => Idle,
+        Probing + Failed => Idle,
+        Restoring + Failed => Idle,
+        Reconnecting + Failed => Idle,
+        Cleaning + Failed => Idle
     }
 }
 
@@ -138,50 +115,50 @@ mod tests {
 
         assert_eq!(
             tracker.begin(NetworkRecoveryAction::Offline).unwrap(),
-            (State::Ready, State::GoingOffline)
+            (State::Idle, State::Disconnecting)
         );
         assert_eq!(
             tracker.complete(true).unwrap(),
-            (State::GoingOffline, State::Offline)
+            (State::Disconnecting, State::Idle)
         );
 
         assert_eq!(
             tracker.begin(NetworkRecoveryAction::Restore).unwrap(),
-            (State::Offline, State::Restoring)
+            (State::Idle, State::Restoring)
         );
         assert_eq!(
             tracker.complete(true).unwrap(),
-            (State::Restoring, State::Ready)
+            (State::Restoring, State::Idle)
         );
 
         assert_eq!(
             tracker.begin(NetworkRecoveryAction::CleanupOnly).unwrap(),
-            (State::Ready, State::Cleaning)
+            (State::Idle, State::Cleaning)
         );
         assert_eq!(
             tracker.complete(true).unwrap(),
-            (State::Cleaning, State::Quiescent)
+            (State::Cleaning, State::Idle)
         );
     }
 
     #[test]
-    fn failed_action_can_be_recovered_by_a_later_action() {
+    fn failed_action_returns_execution_layer_to_idle() {
         let mut tracker = RecoveryExecutionTracker::default();
 
         tracker.begin(NetworkRecoveryAction::Probe).unwrap();
         assert_eq!(
             tracker.complete(false).unwrap(),
-            (State::Probing, State::Failed)
+            (State::Probing, State::Idle)
         );
         assert_eq!(
             tracker
                 .begin(NetworkRecoveryAction::ForceReconnect)
                 .unwrap(),
-            (State::Failed, State::Reconnecting)
+            (State::Idle, State::Reconnecting)
         );
         assert_eq!(
             tracker.complete(true).unwrap(),
-            (State::Reconnecting, State::Ready)
+            (State::Reconnecting, State::Idle)
         );
     }
 
@@ -206,5 +183,11 @@ mod tests {
         assert!(mermaid.contains("Restoring"));
         assert!(mermaid.contains("Reconnecting"));
         assert!(mermaid.contains("Cleaning"));
+        assert!(!mermaid.lines().any(|line| {
+            line.trim_start().starts_with("Offline -->") || line.contains("--> Offline :")
+        }));
+        assert!(!mermaid.lines().any(|line| {
+            line.trim_start().starts_with("Failed -->") || line.contains("--> Failed :")
+        }));
     }
 }

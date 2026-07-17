@@ -395,7 +395,7 @@ pub type HookCallback =
 
 #[derive(Debug, Clone, Copy)]
 enum ConnectIntent {
-    Explicit,
+    Explicit { generation: u64 },
     AutoReconnect { generation: u64 },
 }
 
@@ -441,8 +441,17 @@ pub struct WebSocketSignalingClient {
     reconnect_notify: Arc<tokio::sync::Notify>,
     /// Explicit disconnects from lifecycle/cleanup suppress stale auto-reconnect cycles.
     auto_reconnect_suppressed: AtomicBool,
-    /// Incremented by explicit disconnects to invalidate in-flight auto-reconnect attempts.
-    reconnect_generation: AtomicU64,
+    /// Incremented by lifecycle disconnects to invalidate every in-flight
+    /// connection attempt, whether explicit or automatic.
+    connection_generation: AtomicU64,
+    /// Wakes connection waiters when lifecycle invalidates their generation.
+    ///
+    /// This is deliberately separate from `reconnect_notify`: connection
+    /// cancellation must not consume a permit intended for the reconnect
+    /// manager.
+    connection_generation_notify: tokio::sync::Notify,
+    /// Wakes tasks waiting for the current single-flight connection attempt.
+    connection_attempt_notify: tokio::sync::Notify,
     /// Incremented by external recovery events that should restart reconnect backoff.
     reconnect_backoff_reset_generation: AtomicU64,
     /// Hook callback for ordered lifecycle notification (set once, lock-free read)
@@ -476,7 +485,9 @@ impl WebSocketSignalingClient {
             reconnector_started: Arc::new(AtomicBool::new(false)),
             reconnect_notify: Arc::new(tokio::sync::Notify::new()),
             auto_reconnect_suppressed: AtomicBool::new(false),
-            reconnect_generation: AtomicU64::new(0),
+            connection_generation: AtomicU64::new(0),
+            connection_generation_notify: tokio::sync::Notify::new(),
+            connection_attempt_notify: tokio::sync::Notify::new(),
             reconnect_backoff_reset_generation: AtomicU64::new(0),
             hook_callback: OnceLock::new(),
         }
@@ -626,7 +637,7 @@ impl WebSocketSignalingClient {
         use actr_framework::ExponentialBackoff;
 
         let cfg = &self.config.reconnect_config;
-        let generation = self.reconnect_generation.load(Ordering::Acquire);
+        let generation = self.connection_generation.load(Ordering::Acquire);
 
         if Arc::strong_count(self) <= 1 {
             tracing::debug!("Stopping signaling auto-reconnect cycle after owner drop");
@@ -940,21 +951,42 @@ impl WebSocketSignalingClient {
 
     fn auto_reconnect_cancelled(&self, generation: u64) -> bool {
         self.auto_reconnect_suppressed.load(Ordering::Acquire)
-            || self.reconnect_generation.load(Ordering::Acquire) != generation
+            || self.connection_generation.load(Ordering::Acquire) != generation
+    }
+
+    fn connection_generation_changed(&self, generation: u64) -> bool {
+        self.connection_generation.load(Ordering::Acquire) != generation
+    }
+
+    fn finish_connection_attempt(&self) {
+        self.connecting.store(false, Ordering::Release);
+        self.connection_attempt_notify.notify_waiters();
+    }
+
+    fn connect_intent_cancelled(&self, intent: ConnectIntent) -> bool {
+        match intent {
+            ConnectIntent::Explicit { generation } => {
+                self.connection_generation_changed(generation)
+            }
+            ConnectIntent::AutoReconnect { generation } => {
+                self.auto_reconnect_cancelled(generation)
+            }
+        }
     }
 
     fn suppress_auto_reconnect_internal(&self) {
-        self.reconnect_generation.fetch_add(1, Ordering::AcqRel);
+        self.connection_generation.fetch_add(1, Ordering::AcqRel);
         self.auto_reconnect_suppressed
             .store(true, Ordering::Release);
+        self.connection_generation_notify.notify_waiters();
         self.reconnect_notify.notify_waiters();
     }
 
     /// Establish a single signaling WebSocket connection attempt, honoring connection_timeout.
     ///
     /// This does not perform any retry logic; callers that want retries should wrap this.
-    async fn establish_connection_once(&self) -> NetworkResult<()> {
-        self.establish_connection_once_with_intent(ConnectIntent::Explicit)
+    async fn establish_connection_once(&self, generation: u64) -> NetworkResult<()> {
+        self.establish_connection_once_with_intent(ConnectIntent::Explicit { generation })
             .await
     }
 
@@ -1007,29 +1039,27 @@ impl WebSocketSignalingClient {
         // Split read/write halves and initialize client state
         let (sink, stream) = ws_stream.split();
 
-        if let ConnectIntent::AutoReconnect { generation } = intent
-            && self.auto_reconnect_cancelled(generation)
-        {
+        if self.connect_intent_cancelled(intent) {
             tracing::debug!(
-                generation,
-                "Discarding completed signaling auto-reconnect after explicit disconnect"
+                intent = ?intent,
+                "Discarding completed signaling connection after lifecycle generation changed"
             );
             let mut sink = sink;
             if let Err(e) = sink.close().await {
                 tracing::warn!(
-                    "Signaling auto-reconnect socket close failed after cancellation: {}",
+                    "Signaling socket close failed after lifecycle cancellation: {}",
                     e
                 );
             }
             return Err(NetworkError::ConnectionError(
-                "Signaling auto-reconnect was cancelled by explicit disconnect".to_string(),
+                "Signaling connection was cancelled by explicit disconnect".to_string(),
             ));
         }
 
         *self.ws_sink.lock().await = Some(sink);
         *self.ws_stream.lock().await = Some(stream);
         self.connected.store(true, Ordering::Release);
-        if matches!(intent, ConnectIntent::Explicit) {
+        if matches!(intent, ConnectIntent::Explicit { .. }) {
             self.auto_reconnect_suppressed
                 .store(false, Ordering::Release);
         }
@@ -1044,14 +1074,14 @@ impl WebSocketSignalingClient {
     }
 
     /// Connect to signaling server with retry and exponential backoff based on reconnect_config.
-    async fn connect_with_retries(&self) -> NetworkResult<()> {
+    async fn connect_with_retries(&self, generation: u64) -> NetworkResult<()> {
         use actr_framework::ExponentialBackoff;
 
         let cfg = &self.config.reconnect_config;
 
         // If reconnect is disabled, just attempt once.
         if !cfg.enabled {
-            return self.connect_once().await;
+            return self.connect_once_for_explicit(generation).await;
         }
 
         let mut last_err = None;
@@ -1072,6 +1102,13 @@ impl WebSocketSignalingClient {
                 .chain(backoff)
                 .enumerate()
             {
+                if self.connection_generation_changed(generation) {
+                    return Err(NetworkError::ConnectionError(
+                        "Signaling connect retry cycle was cancelled by explicit disconnect"
+                            .to_string(),
+                    ));
+                }
+
                 let attempt = attempt as u32 + 1;
                 self.invoke_hook(HookEvent::SignalingConnectStart { attempt })
                     .await;
@@ -1095,7 +1132,7 @@ impl WebSocketSignalingClient {
                     }
                 }
 
-                match self.connect_once().await {
+                match self.connect_once_for_explicit(generation).await {
                     Ok(()) => return Ok(()),
                     Err(e) => {
                         tracing::warn!("Signaling connect attempt {attempt} failed: {e:?}");
@@ -1519,7 +1556,7 @@ impl WebSocketSignalingClient {
                 tracing::debug!(
                     "Another connection attempt in progress, waiting for state change..."
                 );
-                let result = self.wait_for_connection_result().await;
+                let result = self.wait_for_connection_result(generation).await;
                 if self.auto_reconnect_cancelled(generation) {
                     return Err(NetworkError::ConnectionError(
                         "Signaling auto-reconnect was cancelled".to_string(),
@@ -1530,7 +1567,7 @@ impl WebSocketSignalingClient {
         }
 
         if self.auto_reconnect_cancelled(generation) {
-            self.connecting.store(false, Ordering::Release);
+            self.finish_connection_attempt();
             return Err(NetworkError::ConnectionError(
                 "Signaling auto-reconnect was cancelled".to_string(),
             ));
@@ -1538,7 +1575,7 @@ impl WebSocketSignalingClient {
 
         if self.connected.load(Ordering::Acquire) {
             tracing::debug!("Connection completed by another task while acquiring lock");
-            self.connecting.store(false, Ordering::Release);
+            self.finish_connection_attempt();
             return Ok(());
         }
 
@@ -1550,21 +1587,32 @@ impl WebSocketSignalingClient {
         let result = self
             .establish_connection_once_for_auto_reconnect(generation)
             .await;
-        self.connecting.store(false, Ordering::Release);
 
         match result {
             Ok(()) => {
                 if self.auto_reconnect_cancelled(generation) {
-                    self.disconnect_internal(false).await?;
+                    let cleanup_result = self.disconnect_internal(false).await;
+                    self.finish_connection_attempt();
+                    cleanup_result?;
                     return Err(NetworkError::ConnectionError(
                         "Signaling auto-reconnect was cancelled".to_string(),
                     ));
                 }
                 self.start_receiver().await;
                 self.start_ping_task().await;
+                if self.auto_reconnect_cancelled(generation) {
+                    let cleanup_result = self.disconnect_internal(false).await;
+                    self.finish_connection_attempt();
+                    cleanup_result?;
+                    return Err(NetworkError::ConnectionError(
+                        "Signaling auto-reconnect was cancelled".to_string(),
+                    ));
+                }
+                self.finish_connection_attempt();
                 Ok(())
             }
             Err(e) => {
+                self.finish_connection_attempt();
                 if !self.auto_reconnect_cancelled(generation) {
                     let _ = self.event_tx.send(SignalingEvent::Disconnected {
                         reason: DisconnectReason::ConnectionFailed(e.to_string()),
@@ -1576,16 +1624,151 @@ impl WebSocketSignalingClient {
         }
     }
 
+    async fn connect_once_for_explicit(&self, generation: u64) -> NetworkResult<()> {
+        loop {
+            if self.connection_generation_changed(generation) {
+                return Err(NetworkError::ConnectionError(
+                    "Signaling connect was cancelled by explicit disconnect".to_string(),
+                ));
+            }
+
+            if self.connected.load(Ordering::Acquire) {
+                tracing::debug!("Already connected, skipping connect_once()");
+                return Ok(());
+            }
+
+            match self
+                .connecting
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => break,
+                Err(_) => {
+                    if self.connected.load(Ordering::Acquire) {
+                        tracing::debug!("Already connected, skipping connect_once()");
+                        return Ok(());
+                    }
+
+                    tracing::debug!(
+                        "Another connection attempt in progress, waiting for state change..."
+                    );
+                    match self.wait_for_connection_result(generation).await {
+                        Ok(()) => return Ok(()),
+                        Err(e)
+                            if !self.connection_generation_changed(generation)
+                                && !self.connected.load(Ordering::Acquire)
+                                && !self.connecting.load(Ordering::Acquire) =>
+                        {
+                            tracing::debug!(
+                                "Concurrent signaling connection failed; explicit connect_once will retry immediately: {e}"
+                            );
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+
+        if self.connection_generation_changed(generation) {
+            self.finish_connection_attempt();
+            return Err(NetworkError::ConnectionError(
+                "Signaling connect was cancelled by explicit disconnect".to_string(),
+            ));
+        }
+
+        if self.connected.load(Ordering::Acquire) {
+            tracing::debug!("Connection completed by another task while acquiring lock");
+            self.finish_connection_attempt();
+            return Ok(());
+        }
+
+        tracing::debug!(
+            generation,
+            "Acquired connection lock, establishing one explicit signaling attempt..."
+        );
+
+        let result = self.establish_connection_once(generation).await;
+
+        match result {
+            Ok(()) => {
+                if self.connection_generation_changed(generation) {
+                    let cleanup_result = self.disconnect_internal(false).await;
+                    self.finish_connection_attempt();
+                    cleanup_result?;
+                    return Err(NetworkError::ConnectionError(
+                        "Signaling connect was cancelled by explicit disconnect".to_string(),
+                    ));
+                }
+
+                self.start_receiver().await;
+                self.start_ping_task().await;
+
+                if self.connection_generation_changed(generation) {
+                    let cleanup_result = self.disconnect_internal(false).await;
+                    self.finish_connection_attempt();
+                    cleanup_result?;
+                    return Err(NetworkError::ConnectionError(
+                        "Signaling connect was cancelled by explicit disconnect".to_string(),
+                    ));
+                }
+
+                self.finish_connection_attempt();
+                Ok(())
+            }
+            Err(e) => {
+                self.finish_connection_attempt();
+                if !self.connection_generation_changed(generation) {
+                    let _ = self.event_tx.send(SignalingEvent::Disconnected {
+                        reason: DisconnectReason::ConnectionFailed(e.to_string()),
+                    });
+                    tracing::error!("Connection attempt failed: {e}");
+                } else {
+                    tracing::debug!(
+                        generation,
+                        "Explicit signaling attempt ended after lifecycle cancellation"
+                    );
+                }
+                Err(e)
+            }
+        }
+    }
+
     /// Wait for ongoing connection attempt to complete (used when another task is connecting).
     ///
     /// Uses the broadcast channel to wait for a Connected event without recursion.
-    async fn wait_for_connection_result(&self) -> NetworkResult<()> {
+    async fn wait_for_connection_result(&self, generation: u64) -> NetworkResult<()> {
         let mut event_rx = self.event_tx.subscribe();
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(CONCURRENT_CONNECT_WAIT_TIMEOUT_SECS);
 
         loop {
+            let attempt_finished = self.connection_attempt_notify.notified();
+            tokio::pin!(attempt_finished);
+            attempt_finished.as_mut().enable();
+
+            if self.connection_generation_changed(generation) {
+                return Err(NetworkError::ConnectionError(
+                    "Signaling connect wait was cancelled by explicit disconnect".to_string(),
+                ));
+            }
+            if self.connected.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if !self.connecting.load(Ordering::Acquire) {
+                return Err(NetworkError::ConnectionError(
+                    "Concurrent signaling connection attempt ended".to_string(),
+                ));
+            }
+
             tokio::select! {
+                _ = &mut attempt_finished => continue,
+                _ = self.connection_generation_notify.notified() => {
+                    if self.connection_generation_changed(generation) {
+                        return Err(NetworkError::ConnectionError(
+                            "Signaling connect wait was cancelled by explicit disconnect".to_string(),
+                        ));
+                    }
+                }
                 _ = tokio::time::sleep_until(deadline) => {
                     // Final check before giving up
                     if self.connected.load(Ordering::Acquire) {
@@ -1636,74 +1819,13 @@ impl SignalingClient for WebSocketSignalingClient {
             return Ok(());
         }
 
-        self.connect_with_retries().await
+        let generation = self.connection_generation.load(Ordering::Acquire);
+        self.connect_with_retries(generation).await
     }
 
     async fn connect_once(&self) -> NetworkResult<()> {
-        loop {
-            if self.connected.load(Ordering::Acquire) {
-                tracing::debug!("Already connected, skipping connect_once()");
-                return Ok(());
-            }
-
-            match self
-                .connecting
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => break,
-                Err(_) => {
-                    if self.connected.load(Ordering::Acquire) {
-                        tracing::debug!("Already connected, skipping connect_once()");
-                        return Ok(());
-                    }
-
-                    tracing::debug!(
-                        "Another connection attempt in progress, waiting for state change..."
-                    );
-                    match self.wait_for_connection_result().await {
-                        Ok(()) => return Ok(()),
-                        Err(e)
-                            if !self.connected.load(Ordering::Acquire)
-                                && !self.connecting.load(Ordering::Acquire) =>
-                        {
-                            tracing::debug!(
-                                "Concurrent signaling connection failed; explicit connect_once will retry immediately: {e}"
-                            );
-                            continue;
-                        }
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-        }
-
-        if self.connected.load(Ordering::Acquire) {
-            tracing::debug!("Connection completed by another task while acquiring lock");
-            self.connecting.store(false, Ordering::Release);
-            return Ok(());
-        }
-
-        tracing::debug!(
-            "Acquired connection lock, establishing one signaling connection attempt..."
-        );
-
-        let result = self.establish_connection_once().await;
-        self.connecting.store(false, Ordering::Release);
-
-        match result {
-            Ok(()) => {
-                self.start_receiver().await;
-                self.start_ping_task().await;
-                Ok(())
-            }
-            Err(e) => {
-                let _ = self.event_tx.send(SignalingEvent::Disconnected {
-                    reason: DisconnectReason::ConnectionFailed(e.to_string()),
-                });
-                tracing::error!("Connection attempt failed: {e}");
-                Err(e)
-            }
-        }
+        let generation = self.connection_generation.load(Ordering::Acquire);
+        self.connect_once_for_explicit(generation).await
     }
 
     fn suppress_auto_reconnect(&self) {

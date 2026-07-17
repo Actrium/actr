@@ -220,25 +220,8 @@ fn network_event_suppresses_auto_reconnect(event: &NetworkEvent) -> bool {
     )
 }
 
-fn network_event_starts_offline_grace(event: &NetworkEvent) -> bool {
-    matches!(
-        event,
-        NetworkEvent::NetworkPathChanged { snapshot } if snapshot.is_offline()
-    )
-}
-
-fn network_event_rolls_back_offline_grace(event: &NetworkEvent) -> bool {
-    matches!(
-        event,
-        NetworkEvent::NetworkPathChanged { snapshot } if !snapshot.is_offline()
-    )
-}
-
 fn network_event_requires_immediate_action(event: &NetworkEvent) -> bool {
-    matches!(
-        event,
-        NetworkEvent::CleanupConnections { .. } | NetworkEvent::ForceReconnect { .. }
-    )
+    matches!(event, NetworkEvent::CleanupConnections { .. })
 }
 
 /// Network event processing result
@@ -1017,6 +1000,11 @@ pub async fn run_network_event_reconciler(
 ) {
     tracing::info!("🔄 Network event reconciler started");
 
+    // Reachability and deferred recovery intent must survive across channel
+    // receive cycles. Recreating this per batch loses a reconnect requested
+    // while the committed path is offline.
+    let mut supervisor = ConnectionSupervisor::new();
+
     loop {
         tokio::select! {
             Some(first_request) = event_rx.recv() => {
@@ -1027,10 +1015,8 @@ pub async fn run_network_event_reconciler(
                 );
                 processor.prepare_network_event(&first_request.event);
                 let mut event_barrier = processor.begin_network_event_barrier(&first_request.event);
-                let mut supervisor = ConnectionSupervisor::new();
                 supervisor.submit_event(&first_request.event);
-                let uses_offline_grace =
-                    network_event_starts_offline_grace(&first_request.event);
+                let uses_offline_grace = supervisor.offline_grace_pending();
                 let mut requests = vec![first_request];
 
                 if uses_offline_grace {
@@ -1042,8 +1028,6 @@ pub async fn run_network_event_reconciler(
                             Some(next_request) = event_rx.recv() => {
                                 let requires_immediate_action =
                                     network_event_requires_immediate_action(&next_request.event);
-                                let rolls_back_offline =
-                                    network_event_rolls_back_offline_grace(&next_request.event);
                                 tracing::debug!(
                                     event = ?next_request.event,
                                     "network_event.reconciler.coalesced"
@@ -1055,7 +1039,9 @@ pub async fn run_network_event_reconciler(
                                 }
                                 supervisor.submit_event(&next_request.event);
                                 requests.push(next_request);
-                                if requires_immediate_action || rolls_back_offline {
+                                if requires_immediate_action
+                                    || !supervisor.offline_grace_pending()
+                                {
                                     break;
                                 }
                             }
@@ -1071,6 +1057,12 @@ pub async fn run_network_event_reconciler(
                             }
                         }
                     }
+
+                    // A still-pending candidate means either the grace expired
+                    // or a stronger cleanup command interrupted it. Commit the
+                    // unavailable fact once; cleanup will supersede the
+                    // resulting disconnect work.
+                    supervisor.expire_offline_grace();
                 }
 
                 while let Ok(next_request) = event_rx.try_recv() {
@@ -1108,6 +1100,8 @@ pub async fn run_network_event_reconciler(
 
                 let results =
                     process_network_event_batch_with_action(events, action, processor.clone()).await;
+                let action_succeeded = results.iter().all(|result| result.success);
+                supervisor.complete_action(action, action_succeeded);
                 drop(event_barrier);
 
                 for (request, result) in requests.into_iter().zip(results) {

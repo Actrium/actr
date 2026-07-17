@@ -1128,6 +1128,9 @@ fn test_connection_supervisor_fact_matrix() {
         for fact in case.facts {
             supervisor.submit_fact(fact);
         }
+        if supervisor.offline_grace_pending() {
+            supervisor.expire_offline_grace();
+        }
         assert_eq!(
             supervisor.reconcile(),
             case.expected,
@@ -1351,6 +1354,88 @@ async fn test_network_event_handle_rolls_back_offline_before_grace_expires() {
         client.probe_calls(),
         1,
         "Available path updates inside the debounce window should probe once"
+    );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_reconnect_intent_survives_across_reconciler_receive_cycles() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let offline = {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            handle
+                .handle_network_path_changed(match offline_event(1) {
+                    NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                    _ => unreachable!(),
+                })
+                .await
+        })
+    };
+    tokio::time::advance(Duration::from_millis(401)).await;
+    assert!(
+        offline
+            .await
+            .expect("offline task should not panic")
+            .expect("offline event should complete")
+            .success
+    );
+    assert!(!client.is_connected());
+    assert_eq!(client.get_stats().disconnections, 1);
+
+    let duplicate_offline = handle
+        .handle_network_path_changed(match offline_event(2) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
+        .await
+        .expect("a later duplicate offline fact should complete");
+    assert!(duplicate_offline.success);
+    assert_eq!(
+        client.get_stats().disconnections,
+        1,
+        "a committed offline state must not disconnect transports repeatedly"
+    );
+
+    let deferred = handle
+        .force_reconnect(ReconnectReason::ManualReconnect)
+        .await
+        .expect("offline reconnect request should be accepted and deferred");
+    assert!(deferred.success);
+    assert!(!client.is_connected());
+    assert_eq!(
+        client.connect_once_calls(),
+        0,
+        "a committed offline path must gate reconnect execution"
+    );
+
+    let restored = handle
+        .handle_network_path_changed(match online_event(3) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
+        .await
+        .expect("available path should execute the deferred reconnect");
+    assert!(restored.success);
+    assert!(client.is_connected());
+    assert_eq!(
+        client.connect_once_calls(),
+        1,
+        "the reconnect intent must survive into a later receive cycle"
     );
 
     shutdown.cancel();
