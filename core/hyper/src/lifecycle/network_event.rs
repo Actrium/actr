@@ -173,10 +173,10 @@ pub enum NetworkEvent {
 
     /// Proactively clean up all connections
     ///
-    /// Used for app lifecycle management scenarios:
-    /// - App entering background
-    /// - User actively logging out
-    /// - App about to exit
+    /// Used when the caller explicitly wants teardown without reconnection,
+    /// such as user logout, app termination, or a manual reset. Merely entering
+    /// the background is represented by `AppLifecycleChanged::Background` and
+    /// does not tear down a healthy connection.
     CleanupConnections { reason: CleanupReason },
 
     /// Proactively clean up and restore connections.
@@ -209,22 +209,7 @@ fn network_event_needs_lifecycle_barrier(event: &NetworkEvent) -> bool {
     }
 }
 
-fn network_event_suppresses_auto_reconnect(event: &NetworkEvent) -> bool {
-    match event {
-        NetworkEvent::AppLifecycleChanged {
-            state: AppLifecycleState::Background,
-        } => true,
-        NetworkEvent::AppLifecycleChanged {
-            state:
-                AppLifecycleState::Foreground {
-                    background_duration_ms,
-                },
-        } => *background_duration_ms >= LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
-        _ => false,
-    }
-}
-
-fn network_event_requires_immediate_action(event: &NetworkEvent) -> bool {
+fn network_event_is_batch_barrier(event: &NetworkEvent) -> bool {
     matches!(event, NetworkEvent::CleanupConnections { .. })
 }
 
@@ -307,7 +292,6 @@ pub trait NetworkEventProcessor: Send + Sync {
     /// Proactively clean up all connections
     ///
     /// This method proactively cleans up all network connections. Applicable scenarios:
-    /// - App entering background (iOS/Android)
     /// - User actively logging out
     /// - App about to exit
     /// - Need to reset network state
@@ -358,7 +342,13 @@ pub trait NetworkEventProcessor: Send + Sync {
     }
 }
 
-/// Debounce configuration
+/// Optional legacy time-throttling configuration for direct processor calls.
+///
+/// The persistent connection supervisor performs structural duplicate
+/// suppression from snapshot sequence and route state, so the production
+/// default is zero. A non-zero value is retained only as an explicit
+/// compatibility/performance knob for callers that invoke processor methods
+/// directly.
 #[derive(Debug, Clone)]
 pub struct DebounceConfig {
     /// Debounce time window (duplicate events within this window are ignored)
@@ -368,8 +358,9 @@ pub struct DebounceConfig {
 impl Default for DebounceConfig {
     fn default() -> Self {
         Self {
-            // Default debounce window
-            window: Duration::from_secs(2),
+            // Correctness and duplicate suppression belong to the persistent
+            // supervisor. Time-based throttling is legacy opt-in only.
+            window: Duration::ZERO,
         }
     }
 }
@@ -420,7 +411,7 @@ pub struct DefaultNetworkEventProcessor {
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     peer_transport: Option<Arc<PeerTransport>>,
     debounce_config: DebounceConfig,
-    debounce_state: Arc<DebounceState>,
+    debounce_state: Option<Arc<DebounceState>>,
     recovery_state: Arc<SignalingRecoveryState>,
     recovery_execution: Arc<tokio::sync::Mutex<RecoveryExecutionTracker>>,
 }
@@ -470,12 +461,14 @@ impl DefaultNetworkEventProcessor {
         debounce_config: DebounceConfig,
         peer_transport: Option<Arc<PeerTransport>>,
     ) -> Self {
+        let debounce_state =
+            (!debounce_config.window.is_zero()).then(|| Arc::new(DebounceState::new()));
         Self {
             signaling_client,
             webrtc_coordinator,
             peer_transport,
             debounce_config,
-            debounce_state: Arc::new(DebounceState::new()),
+            debounce_state,
             recovery_state: Arc::new(SignalingRecoveryState::new()),
             recovery_execution: Arc::new(tokio::sync::Mutex::new(
                 RecoveryExecutionTracker::default(),
@@ -497,11 +490,19 @@ impl DefaultNetworkEventProcessor {
     /// - `true`: the event should be processed
     /// - `false`: the event is within the debounce window and should be ignored
     async fn should_process_event(&self, event: DebounceEvent) -> bool {
+        if self.debounce_config.window.is_zero() {
+            return true;
+        }
+
+        let debounce_state = self
+            .debounce_state
+            .as_ref()
+            .expect("nonzero debounce window must have state");
         let now = Instant::now();
 
         match event {
             DebounceEvent::Available => {
-                let mut last = self.debounce_state.last_available.lock().await;
+                let mut last = debounce_state.last_available.lock().await;
                 if let Some(last_time) = *last {
                     if now.duration_since(last_time) < self.debounce_config.window {
                         tracing::debug!(
@@ -515,7 +516,7 @@ impl DefaultNetworkEventProcessor {
                 true
             }
             DebounceEvent::Lost => {
-                let mut last = self.debounce_state.last_lost.lock().await;
+                let mut last = debounce_state.last_lost.lock().await;
                 if let Some(last_time) = *last {
                     if now.duration_since(last_time) < self.debounce_config.window {
                         tracing::debug!(
@@ -529,7 +530,7 @@ impl DefaultNetworkEventProcessor {
                 true
             }
             DebounceEvent::TypeChanged => {
-                let mut last = self.debounce_state.last_type_changed.lock().await;
+                let mut last = debounce_state.last_type_changed.lock().await;
                 if let Some(last_time) = *last {
                     if now.duration_since(last_time) < self.debounce_config.window {
                         tracing::debug!(
@@ -709,12 +710,36 @@ impl DefaultNetworkEventProcessor {
 #[async_trait::async_trait]
 impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     fn prepare_network_event(&self, event: &NetworkEvent) {
-        if network_event_suppresses_auto_reconnect(event) {
-            tracing::info!(
-                event = ?event,
-                "App lifecycle suppressing stale signaling auto-reconnect before action selection"
-            );
-            self.signaling_client.suppress_auto_reconnect();
+        if let NetworkEvent::AppLifecycleChanged { state } = event {
+            match state {
+                AppLifecycleState::Background => {
+                    tracing::info!(
+                        event = ?event,
+                        "App lifecycle suppressing stale signaling auto-reconnect before action selection"
+                    );
+                    self.signaling_client.suppress_auto_reconnect();
+                }
+                AppLifecycleState::Foreground {
+                    background_duration_ms,
+                } if *background_duration_ms < LONG_BACKGROUND_RECONNECT_THRESHOLD_MS => {
+                    tracing::info!(
+                        event = ?event,
+                        "Short foreground transition re-enabling future signaling auto-reconnect"
+                    );
+                    self.signaling_client.resume_auto_reconnect();
+                }
+                AppLifecycleState::Foreground { .. } => {
+                    // A long foreground transition selects ForceReconnect.
+                    // Keep any stale automatic attempt suppressed until that
+                    // action has completed teardown and explicitly re-enables
+                    // recovery through the fresh signaling connect path.
+                    tracing::info!(
+                        event = ?event,
+                        "Long foreground transition keeping stale signaling auto-reconnect suppressed"
+                    );
+                    self.signaling_client.suppress_auto_reconnect();
+                }
+            }
         }
     }
 
@@ -1020,20 +1045,22 @@ pub async fn run_network_event_reconciler(
                 processor.prepare_network_event(&first_request.event);
                 let mut event_barrier = processor.begin_network_event_barrier(&first_request.event);
                 supervisor.submit_event(&first_request.event);
-                let mut immediate_action_requested =
-                    network_event_requires_immediate_action(&first_request.event);
+                let mut batch_barrier_reached =
+                    network_event_is_batch_barrier(&first_request.event);
                 let mut offline_grace_applied = false;
                 let mut requests = vec![first_request];
 
                 // Drain already-queued non-offline facts. Stop as soon as the
                 // supervisor enters `OfflineCandidate`: the state, rather than
-                // the first request in this batch, owns the grace timer.
-                while !supervisor.offline_grace_pending() {
+                // the first request in this batch, owns the grace timer. An
+                // explicit cleanup is also a batch boundary so later recovery
+                // facts cannot be acknowledged and then absorbed by cleanup.
+                while !supervisor.offline_grace_pending() && !batch_barrier_reached {
                     let Ok(next_request) = event_rx.try_recv() else {
                         break;
                     };
-                    immediate_action_requested |=
-                        network_event_requires_immediate_action(&next_request.event);
+                    batch_barrier_reached |=
+                        network_event_is_batch_barrier(&next_request.event);
                     tracing::debug!(
                         event = ?next_request.event,
                         "network_event.reconciler.coalesced"
@@ -1048,7 +1075,7 @@ pub async fn run_network_event_reconciler(
                 }
 
                 if supervisor.offline_grace_pending() {
-                    if immediate_action_requested {
+                    if batch_barrier_reached {
                         // Cleanup is stronger than an offline disconnect and
                         // must not inherit the path-settling delay.
                         supervisor.expire_offline_grace();
@@ -1060,10 +1087,8 @@ pub async fn run_network_event_reconciler(
                         loop {
                             tokio::select! {
                                 Some(next_request) = event_rx.recv() => {
-                                    immediate_action_requested |=
-                                        network_event_requires_immediate_action(
-                                            &next_request.event,
-                                        );
+                                    batch_barrier_reached |=
+                                        network_event_is_batch_barrier(&next_request.event);
                                     tracing::debug!(
                                         event = ?next_request.event,
                                         "network_event.reconciler.coalesced"
@@ -1075,7 +1100,7 @@ pub async fn run_network_event_reconciler(
                                     }
                                     supervisor.submit_event(&next_request.event);
                                     requests.push(next_request);
-                                    if immediate_action_requested
+                                    if batch_barrier_reached
                                         || !supervisor.offline_grace_pending()
                                     {
                                         break;

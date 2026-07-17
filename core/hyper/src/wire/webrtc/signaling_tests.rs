@@ -1292,6 +1292,95 @@ async fn test_new_explicit_connect_replaces_cancelled_generation_without_wait_ti
         .expect("test server task should not panic");
 }
 
+#[tokio::test]
+async fn test_cancelled_connect_future_releases_single_flight_immediately() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind");
+    let server_url = format!(
+        "ws://{}/signaling/ws",
+        listener
+            .local_addr()
+            .expect("test listener should have local addr")
+    );
+    let (first_accepted_tx, first_accepted_rx) = tokio::sync::oneshot::channel::<()>();
+    let (release_first_tx, release_first_rx) = tokio::sync::oneshot::channel::<()>();
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let server_task = tokio::spawn(async move {
+        let (first_stream, _) = listener
+            .accept()
+            .await
+            .expect("test server should accept first tcp connection");
+        first_accepted_tx
+            .send(())
+            .expect("test should still wait for first connection");
+        let _ = release_first_rx.await;
+        drop(first_stream);
+
+        let (second_stream, _) = listener
+            .accept()
+            .await
+            .expect("test server should accept replacement tcp connection");
+        let second_ws = tokio_tungstenite::accept_async(second_stream)
+            .await
+            .expect("replacement websocket handshake should complete");
+        let _ = finish_rx.await;
+        drop(second_ws);
+    });
+
+    let mut config = make_config();
+    config.server_url = Url::parse(&server_url).expect("test websocket URL should parse");
+    config.connection_timeout = 5;
+    config.reconnect_config.enabled = false;
+    let client = make_ws_client(config);
+
+    let first_client = client.clone();
+    let first_connect = tokio::spawn(async move { first_client.connect_once().await });
+    tokio::time::timeout(Duration::from_secs(1), first_accepted_rx)
+        .await
+        .expect("first connection should reach server")
+        .expect("first accept notifier should remain open");
+
+    first_connect.abort();
+    let _ = first_connect.await;
+    assert!(
+        !client.connecting.load(Ordering::Acquire),
+        "dropping the owner future must release single-flight without a timeout"
+    );
+    release_first_tx
+        .send(())
+        .expect("test server should still hold first stream");
+
+    tokio::time::timeout(Duration::from_secs(2), client.connect_once())
+        .await
+        .expect("replacement connect must not wait for the concurrent-connect timeout")
+        .expect("replacement connection should succeed");
+    assert!(client.is_connected());
+
+    client
+        .disconnect()
+        .await
+        .expect("replacement connection should disconnect");
+    finish_tx.send(()).expect("test server should still wait");
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("test server should finish")
+        .expect("test server should not panic");
+}
+
+#[tokio::test]
+async fn test_reconnect_manager_lifetime_uses_drop_signal_not_periodic_polling() {
+    let client = make_ws_client(make_config());
+    let shutdown = client.reconnect_manager_shutdown.clone();
+
+    drop(client);
+
+    tokio::time::timeout(Duration::from_millis(1), shutdown.cancelled())
+        .await
+        .expect("owner drop should signal reconnect-manager shutdown immediately");
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 8. URL construction tests
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

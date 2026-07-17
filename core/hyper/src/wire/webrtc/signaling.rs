@@ -32,6 +32,7 @@ use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async_with_config};
+use tokio_util::sync::CancellationToken;
 #[cfg(feature = "opentelemetry")]
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use url::Url;
@@ -168,8 +169,17 @@ pub trait SignalingClient: Send + Sync {
     /// paused until a recovery path explicitly schedules them again.
     ///
     /// This method must remain synchronous and non-blocking because lifecycle
-    /// reconciliation calls it before its event-settle window.
+    /// reconciliation calls it before asynchronous action selection.
     fn suppress_auto_reconnect(&self) {}
+
+    /// Allow future automatic reconnects without starting one immediately.
+    ///
+    /// Foreground lifecycle recovery uses this after a short background stay:
+    /// a healthy socket only needs automatic recovery re-enabled, not a second
+    /// concurrent probe or connection attempt.
+    fn resume_auto_reconnect(&self) {
+        self.schedule_auto_reconnect();
+    }
 
     /// Re-enable and wake the automatic reconnect manager after an explicit
     /// lifecycle recovery attempt failed.
@@ -399,6 +409,24 @@ enum ConnectIntent {
     AutoReconnect { generation: u64 },
 }
 
+/// Cancellation-safe ownership of the signaling single-flight slot.
+///
+/// Futures that own a connection attempt can be dropped by timeout, shutdown,
+/// or task abortion at any `.await`. Releasing the atomic flag from `Drop`
+/// prevents one cancelled future from permanently blocking every later
+/// connection attempt.
+struct ConnectionAttemptGuard<'a> {
+    connecting: &'a AtomicBool,
+    completion: &'a tokio::sync::Notify,
+}
+
+impl Drop for ConnectionAttemptGuard<'_> {
+    fn drop(&mut self) {
+        self.connecting.store(false, Ordering::Release);
+        self.completion.notify_waiters();
+    }
+}
+
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
     config: SignalingConfig,
@@ -439,6 +467,8 @@ pub struct WebSocketSignalingClient {
     reconnector_started: Arc<AtomicBool>,
     /// Notify channel to wake up the reconnect manager
     reconnect_notify: Arc<tokio::sync::Notify>,
+    /// Event-driven lifetime signal for the reconnect manager.
+    reconnect_manager_shutdown: CancellationToken,
     /// Explicit disconnects from lifecycle/cleanup suppress stale auto-reconnect cycles.
     auto_reconnect_suppressed: AtomicBool,
     /// Incremented by lifecycle disconnects to invalidate every in-flight
@@ -484,6 +514,7 @@ impl WebSocketSignalingClient {
             last_pong: Arc::new(AtomicU64::new(0)),
             reconnector_started: Arc::new(AtomicBool::new(false)),
             reconnect_notify: Arc::new(tokio::sync::Notify::new()),
+            reconnect_manager_shutdown: CancellationToken::new(),
             auto_reconnect_suppressed: AtomicBool::new(false),
             connection_generation: AtomicU64::new(0),
             connection_generation_notify: tokio::sync::Notify::new(),
@@ -599,20 +630,17 @@ impl WebSocketSignalingClient {
 
         let client = Arc::downgrade(self);
         let notify = self.reconnect_notify.clone();
+        let shutdown = self.reconnect_manager_shutdown.clone();
 
         tokio::spawn(async move {
             loop {
-                let reconnect_requested = tokio::select! {
-                    _ = notify.notified() => true,
-                    _ = tokio::time::sleep(Duration::from_secs(30)) => false,
+                tokio::select! {
+                    _ = notify.notified() => {}
+                    _ = shutdown.cancelled() => {
+                        tracing::debug!("Stopping signaling reconnect manager after owner drop");
+                        break;
+                    }
                 };
-
-                if !reconnect_requested && client.upgrade().is_none() {
-                    break;
-                }
-                if !reconnect_requested {
-                    continue;
-                }
 
                 let Some(client) = client.upgrade() else {
                     break;
@@ -956,11 +984,6 @@ impl WebSocketSignalingClient {
 
     fn connection_generation_changed(&self, generation: u64) -> bool {
         self.connection_generation.load(Ordering::Acquire) != generation
-    }
-
-    fn finish_connection_attempt(&self) {
-        self.connecting.store(false, Ordering::Release);
-        self.connection_attempt_notify.notify_waiters();
     }
 
     fn connect_intent_cancelled(&self, intent: ConnectIntent) -> bool {
@@ -1571,9 +1594,12 @@ impl WebSocketSignalingClient {
                 return result;
             }
         }
+        let attempt_guard = ConnectionAttemptGuard {
+            connecting: &self.connecting,
+            completion: &self.connection_attempt_notify,
+        };
 
         if self.auto_reconnect_cancelled(generation) {
-            self.finish_connection_attempt();
             return Err(NetworkError::ConnectionError(
                 "Signaling auto-reconnect was cancelled".to_string(),
             ));
@@ -1581,7 +1607,6 @@ impl WebSocketSignalingClient {
 
         if self.connected.load(Ordering::Acquire) {
             tracing::debug!("Connection completed by another task while acquiring lock");
-            self.finish_connection_attempt();
             return Ok(());
         }
 
@@ -1598,7 +1623,6 @@ impl WebSocketSignalingClient {
             Ok(()) => {
                 if self.auto_reconnect_cancelled(generation) {
                     let cleanup_result = self.disconnect_internal(false).await;
-                    self.finish_connection_attempt();
                     cleanup_result?;
                     return Err(NetworkError::ConnectionError(
                         "Signaling auto-reconnect was cancelled".to_string(),
@@ -1608,17 +1632,15 @@ impl WebSocketSignalingClient {
                 self.start_ping_task().await;
                 if self.auto_reconnect_cancelled(generation) {
                     let cleanup_result = self.disconnect_internal(false).await;
-                    self.finish_connection_attempt();
                     cleanup_result?;
                     return Err(NetworkError::ConnectionError(
                         "Signaling auto-reconnect was cancelled".to_string(),
                     ));
                 }
-                self.finish_connection_attempt();
+                drop(attempt_guard);
                 Ok(())
             }
             Err(e) => {
-                self.finish_connection_attempt();
                 if !self.auto_reconnect_cancelled(generation) {
                     let _ = self.event_tx.send(SignalingEvent::Disconnected {
                         reason: DisconnectReason::ConnectionFailed(e.to_string()),
@@ -1674,9 +1696,12 @@ impl WebSocketSignalingClient {
                 }
             }
         }
+        let attempt_guard = ConnectionAttemptGuard {
+            connecting: &self.connecting,
+            completion: &self.connection_attempt_notify,
+        };
 
         if self.connection_generation_changed(generation) {
-            self.finish_connection_attempt();
             return Err(NetworkError::ConnectionError(
                 "Signaling connect was cancelled by explicit disconnect".to_string(),
             ));
@@ -1684,7 +1709,6 @@ impl WebSocketSignalingClient {
 
         if self.connected.load(Ordering::Acquire) {
             tracing::debug!("Connection completed by another task while acquiring lock");
-            self.finish_connection_attempt();
             return Ok(());
         }
 
@@ -1699,7 +1723,6 @@ impl WebSocketSignalingClient {
             Ok(()) => {
                 if self.connection_generation_changed(generation) {
                     let cleanup_result = self.disconnect_internal(false).await;
-                    self.finish_connection_attempt();
                     cleanup_result?;
                     return Err(NetworkError::ConnectionError(
                         "Signaling connect was cancelled by explicit disconnect".to_string(),
@@ -1711,18 +1734,16 @@ impl WebSocketSignalingClient {
 
                 if self.connection_generation_changed(generation) {
                     let cleanup_result = self.disconnect_internal(false).await;
-                    self.finish_connection_attempt();
                     cleanup_result?;
                     return Err(NetworkError::ConnectionError(
                         "Signaling connect was cancelled by explicit disconnect".to_string(),
                     ));
                 }
 
-                self.finish_connection_attempt();
+                drop(attempt_guard);
                 Ok(())
             }
             Err(e) => {
-                self.finish_connection_attempt();
                 if !self.connection_generation_changed(generation) {
                     let _ = self.event_tx.send(SignalingEvent::Disconnected {
                         reason: DisconnectReason::ConnectionFailed(e.to_string()),
@@ -1817,6 +1838,12 @@ impl WebSocketSignalingClient {
     }
 }
 
+impl Drop for WebSocketSignalingClient {
+    fn drop(&mut self) {
+        self.reconnect_manager_shutdown.cancel();
+    }
+}
+
 #[async_trait]
 impl SignalingClient for WebSocketSignalingClient {
     async fn connect(&self) -> NetworkResult<()> {
@@ -1836,6 +1863,11 @@ impl SignalingClient for WebSocketSignalingClient {
 
     fn suppress_auto_reconnect(&self) {
         self.suppress_auto_reconnect_internal();
+    }
+
+    fn resume_auto_reconnect(&self) {
+        self.auto_reconnect_suppressed
+            .store(false, Ordering::Release);
     }
 
     fn schedule_auto_reconnect(&self) {

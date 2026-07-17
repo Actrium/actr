@@ -24,6 +24,9 @@ struct FakeSignalingClient {
     disconnections: AtomicU64,
     probe_calls: AtomicU64,
     probe_success: AtomicBool,
+    auto_reconnect_suppressed: AtomicBool,
+    suppress_auto_reconnect_calls: AtomicU64,
+    resume_auto_reconnect_calls: AtomicU64,
     event_tx: broadcast::Sender<SignalingEvent>,
     connect_delay: Duration,
     connect_once_delay: Duration,
@@ -43,6 +46,9 @@ impl FakeSignalingClient {
             disconnections: AtomicU64::new(0),
             probe_calls: AtomicU64::new(0),
             probe_success: AtomicBool::new(true),
+            auto_reconnect_suppressed: AtomicBool::new(false),
+            suppress_auto_reconnect_calls: AtomicU64::new(0),
+            resume_auto_reconnect_calls: AtomicU64::new(0),
             event_tx,
             connect_delay,
             connect_once_delay,
@@ -69,6 +75,18 @@ impl FakeSignalingClient {
         self.probe_success.store(success, Ordering::SeqCst);
     }
 
+    fn auto_reconnect_suppressed(&self) -> bool {
+        self.auto_reconnect_suppressed.load(Ordering::SeqCst)
+    }
+
+    fn suppress_auto_reconnect_calls(&self) -> u64 {
+        self.suppress_auto_reconnect_calls.load(Ordering::SeqCst)
+    }
+
+    fn resume_auto_reconnect_calls(&self) -> u64 {
+        self.resume_auto_reconnect_calls.load(Ordering::SeqCst)
+    }
+
     fn publish_connected(&self) {
         self.connected.store(true, Ordering::SeqCst);
         self.connections.fetch_add(1, Ordering::SeqCst);
@@ -93,6 +111,19 @@ impl SignalingClient for FakeSignalingClient {
         }
         self.publish_connected();
         Ok(())
+    }
+
+    fn suppress_auto_reconnect(&self) {
+        self.suppress_auto_reconnect_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.auto_reconnect_suppressed.store(true, Ordering::SeqCst);
+    }
+
+    fn resume_auto_reconnect(&self) {
+        self.resume_auto_reconnect_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.auto_reconnect_suppressed
+            .store(false, Ordering::SeqCst);
     }
 
     async fn disconnect(&self) -> NetworkResult<()> {
@@ -742,6 +773,84 @@ async fn test_short_foreground_failed_probe_disconnects_before_restore() {
     );
     assert_eq!(stats.connections, 2);
     assert!(client.is_connected());
+}
+
+#[tokio::test]
+async fn test_short_foreground_reenables_auto_reconnect_without_starting_an_extra_connect() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let reconciler_shutdown = shutdown.clone();
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor_for_task, reconciler_shutdown).await;
+    });
+
+    handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Background)
+        .await
+        .expect("background event should complete");
+    assert!(client.auto_reconnect_suppressed());
+    assert_eq!(client.suppress_auto_reconnect_calls(), 1);
+
+    handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Foreground {
+            background_duration_ms: 1_000,
+        })
+        .await
+        .expect("short foreground event should complete");
+
+    assert!(!client.auto_reconnect_suppressed());
+    assert_eq!(client.resume_auto_reconnect_calls(), 1);
+    assert_eq!(
+        client.connect_once_calls(),
+        0,
+        "healthy signaling must not reconnect just to clear suppression"
+    );
+    assert_eq!(client.probe_calls(), 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+}
+
+#[tokio::test]
+async fn test_default_recovery_uses_snapshot_state_instead_of_timed_debounce() {
+    assert_eq!(DebounceConfig::default().window, Duration::ZERO);
+
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let reconciler_shutdown = shutdown.clone();
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor_for_task, reconciler_shutdown).await;
+    });
+
+    for sequence in [1, 2] {
+        handle
+            .handle_network_path_changed(match online_event(sequence) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+            .expect("online snapshot should complete");
+    }
+
+    assert_eq!(
+        client.probe_calls(),
+        1,
+        "newer equivalent snapshots are suppressed by state, not elapsed time"
+    );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
 }
 
 #[tokio::test]
@@ -1891,6 +2000,59 @@ async fn test_l1_command_apis_complete_through_network_event_handle() {
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
+async fn test_l1_cleanup_is_a_batch_barrier_for_later_recovery_facts() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
+    let (online_tx, online_rx) = tokio::sync::oneshot::channel();
+
+    event_tx
+        .try_send(NetworkEventRequest {
+            event: NetworkEvent::CleanupConnections {
+                reason: CleanupReason::ManualReset,
+            },
+            result_tx: cleanup_tx,
+        })
+        .expect("cleanup should be queued");
+    event_tx
+        .try_send(NetworkEventRequest {
+            event: online_event(1),
+            result_tx: online_tx,
+        })
+        .expect("online snapshot should be queued after cleanup");
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let reconciler_shutdown = shutdown.clone();
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor_for_task, reconciler_shutdown).await;
+    });
+
+    assert!(
+        cleanup_rx
+            .await
+            .expect("cleanup result should be delivered")
+            .success
+    );
+    assert!(
+        online_rx
+            .await
+            .expect("online result should be delivered")
+            .success
+    );
+    assert!(
+        client.is_connected(),
+        "the post-cleanup online fact must execute in its own decision cycle"
+    );
+    assert_eq!(client.connect_once_calls(), 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
 }
 
 #[tokio::test(start_paused = true)]

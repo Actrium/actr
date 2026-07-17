@@ -210,16 +210,18 @@ impl ConnectionFact {
 
 /// Persistent hierarchical policy for mobile/network recovery.
 ///
-/// The latest snapshot sequence is extended state rather than an FSM state
-/// because it is an unbounded monotonic value. All finite lifecycle state is
-/// owned by one of the four child machines.
+/// The latest snapshot is extended state rather than an FSM state because its
+/// sequence is an unbounded monotonic value and its route metadata is not a
+/// lifecycle phase. Keeping the snapshot lets the supervisor reject stale
+/// observations and suppress semantically identical path updates without a
+/// time-based debounce window.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionSupervisor {
     app_phase_state: app_phase::State,
     path_state: path::State,
     recovery_state: recovery::State,
     offline_work_state: offline_work::State,
-    latest_snapshot_sequence: Option<u64>,
+    latest_snapshot: Option<NetworkSnapshot>,
 }
 
 impl Default for ConnectionSupervisor {
@@ -229,7 +231,7 @@ impl Default for ConnectionSupervisor {
             path_state: path::State::Unknown,
             recovery_state: recovery::State::Idle,
             offline_work_state: offline_work::State::Idle,
-            latest_snapshot_sequence: None,
+            latest_snapshot: None,
         }
     }
 }
@@ -274,28 +276,39 @@ impl ConnectionSupervisor {
             }
             ConnectionFact::NetworkSnapshotChanged(snapshot) => {
                 if self
-                    .latest_snapshot_sequence
-                    .is_some_and(|sequence| snapshot.sequence <= sequence)
+                    .latest_snapshot
+                    .as_ref()
+                    .is_some_and(|latest| snapshot.sequence <= latest.sequence)
                 {
                     tracing::debug!(
                         sequence = snapshot.sequence,
-                        latest_sequence = ?self.latest_snapshot_sequence,
+                        latest_sequence = ?self.latest_snapshot.as_ref().map(|latest| latest.sequence),
                         "network_event.supervisor.snapshot_ignored"
                     );
                     return;
                 }
 
-                self.latest_snapshot_sequence = Some(snapshot.sequence);
+                let materially_changed = self.latest_snapshot.as_ref().is_none_or(|latest| {
+                    latest.availability != snapshot.availability
+                        || latest.transport != snapshot.transport
+                        || latest.is_expensive != snapshot.is_expensive
+                        || latest.is_constrained != snapshot.is_constrained
+                });
+                self.latest_snapshot = Some(snapshot.clone());
                 match snapshot.availability {
                     super::NetworkAvailability::Unknown => {
                         self.transition_path(path::Input::ObserveUnknown);
                         self.transition_offline_work(offline_work::Input::SupersedeDisconnect);
-                        self.transition_recovery(recovery::Input::RequestProbe);
+                        if materially_changed {
+                            self.transition_recovery(recovery::Input::RequestProbe);
+                        }
                     }
                     super::NetworkAvailability::Available => {
                         self.transition_path(path::Input::ObserveOnline);
                         self.transition_offline_work(offline_work::Input::SupersedeDisconnect);
-                        self.transition_recovery(recovery::Input::RequestRestore);
+                        if materially_changed {
+                            self.transition_recovery(recovery::Input::RequestRestore);
+                        }
                     }
                     super::NetworkAvailability::Unavailable => {
                         self.transition_path(path::Input::ObserveOffline);
@@ -492,6 +505,40 @@ mod tests {
     }
 
     #[test]
+    fn newer_but_semantically_identical_snapshot_needs_no_timed_debounce() {
+        let mut supervisor = ConnectionSupervisor::new();
+        supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
+            1,
+            NetworkAvailability::Available,
+        )));
+        assert_eq!(supervisor.reconcile(), NetworkRecoveryAction::Restore);
+        supervisor.complete_action(NetworkRecoveryAction::Restore, true);
+
+        supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
+            2,
+            NetworkAvailability::Available,
+        )));
+
+        assert_eq!(supervisor.reconcile(), NetworkRecoveryAction::Noop);
+    }
+
+    #[test]
+    fn route_change_while_online_still_requests_restore_immediately() {
+        let mut supervisor = ConnectionSupervisor::new();
+        supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
+            1,
+            NetworkAvailability::Available,
+        )));
+        supervisor.complete_action(NetworkRecoveryAction::Restore, true);
+
+        let mut changed_route = snapshot(2, NetworkAvailability::Available);
+        changed_route.transport.wifi = true;
+        supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(changed_route));
+
+        assert_eq!(supervisor.reconcile(), NetworkRecoveryAction::Restore);
+    }
+
+    #[test]
     fn cleanup_priority_does_not_mutate_network_path_state() {
         let mut supervisor = ConnectionSupervisor::new();
         supervisor.submit_fact(ConnectionFact::CleanupRequested(
@@ -547,5 +594,87 @@ mod tests {
         assert!(recovery_doc.contains("ReconnectPending"));
         assert!(!recovery_doc.contains("Offline"));
         assert!(work_doc.contains("DisconnectPending"));
+    }
+
+    #[test]
+    fn bounded_event_sequence_sweep_preserves_layer_invariants() {
+        const OP_COUNT: u64 = 10;
+        const SEQUENCE_LENGTH: u32 = 5;
+
+        for mut encoded in 0..OP_COUNT.pow(SEQUENCE_LENGTH) {
+            let mut supervisor = ConnectionSupervisor::new();
+            let mut snapshot_sequence = 0;
+
+            for _ in 0..SEQUENCE_LENGTH {
+                let operation = encoded % OP_COUNT;
+                encoded /= OP_COUNT;
+                match operation {
+                    0..=2 => {
+                        snapshot_sequence += 1;
+                        let availability = match operation {
+                            0 => NetworkAvailability::Unknown,
+                            1 => NetworkAvailability::Available,
+                            _ => NetworkAvailability::Unavailable,
+                        };
+                        supervisor.submit_fact(ConnectionFact::NetworkSnapshotChanged(snapshot(
+                            snapshot_sequence,
+                            availability,
+                        )));
+                    }
+                    3 => supervisor.submit_fact(ConnectionFact::AppEnteredBackground),
+                    4 => supervisor.submit_fact(ConnectionFact::AppEnteredForeground {
+                        background_duration_ms: 1_000,
+                    }),
+                    5 => supervisor.submit_fact(ConnectionFact::AppEnteredForeground {
+                        background_duration_ms: 60_000,
+                    }),
+                    6 => supervisor
+                        .submit_fact(ConnectionFact::CleanupRequested(CleanupReason::ManualReset)),
+                    7 => supervisor.submit_fact(ConnectionFact::ForceReconnectRequested(
+                        ReconnectReason::ManualReconnect,
+                    )),
+                    8 => supervisor.expire_offline_grace(),
+                    9 => {
+                        let action = supervisor.reconcile();
+                        supervisor.complete_action(action, true);
+                    }
+                    _ => unreachable!(),
+                }
+
+                let action = supervisor.reconcile();
+                if supervisor.recovery_state == recovery::State::CleanupPending {
+                    assert_eq!(action, NetworkRecoveryAction::CleanupOnly);
+                } else if supervisor.offline_work_state == offline_work::State::DisconnectPending {
+                    assert_eq!(action, NetworkRecoveryAction::Offline);
+                } else if matches!(
+                    supervisor.path_state,
+                    path::State::OfflineCandidate | path::State::Offline
+                ) || supervisor.app_phase_state == app_phase::State::Background
+                {
+                    assert_eq!(action, NetworkRecoveryAction::Noop);
+                } else {
+                    match action {
+                        NetworkRecoveryAction::Probe => {
+                            assert_eq!(supervisor.recovery_state, recovery::State::ProbePending);
+                        }
+                        NetworkRecoveryAction::Restore => {
+                            assert_eq!(supervisor.recovery_state, recovery::State::RestorePending);
+                        }
+                        NetworkRecoveryAction::ForceReconnect => {
+                            assert_eq!(
+                                supervisor.recovery_state,
+                                recovery::State::ReconnectPending
+                            );
+                        }
+                        NetworkRecoveryAction::Noop => {
+                            assert_eq!(supervisor.recovery_state, recovery::State::Idle);
+                        }
+                        NetworkRecoveryAction::Offline | NetworkRecoveryAction::CleanupOnly => {
+                            panic!("work action escaped its owning layer")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
