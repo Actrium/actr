@@ -126,10 +126,16 @@ fn register_backoff_ladder_has_real_jitter() {
     // Every delay stays within [base-25%, base+25%] and >= 1s.
     for d in a.iter().chain(c.iter()) {
         assert!(*d >= Duration::from_secs(1), "delay {d:?} below floor");
-        assert!(*d <= Duration::from_secs(76), "delay {d:?} above cap+jitter");
+        assert!(
+            *d <= Duration::from_secs(76),
+            "delay {d:?} above cap+jitter"
+        );
     }
     // Extremely unlikely to be identical if the RNG is real.
-    assert_ne!(a, c, "backoff ladder is not randomized (deterministic jitter?)");
+    assert_ne!(
+        a, c,
+        "backoff ladder is not randomized (deterministic jitter?)"
+    );
 }
 
 #[test]
@@ -141,7 +147,10 @@ fn register_backoff_reset_returns_to_base() {
     b.reset();
     // After reset, the first delay is drawn from the 5s base tier (<=6.25s).
     let first = b.next_delay();
-    assert!(first <= Duration::from_millis(6250), "reset did not return to base: {first:?}");
+    assert!(
+        first <= Duration::from_millis(6250),
+        "reset did not return to base: {first:?}"
+    );
 }
 
 // ── proactive_renew_delay ────────────────────────────────────────────────
@@ -193,7 +202,10 @@ fn proactive_delay_already_expired_is_near_immediate() {
         generation: 1,
     };
     let d = proactive_renew_delay(&published).expect("expired still schedules");
-    assert!(d <= Duration::from_secs(2), "expired renew should be near-immediate: {d:?}");
+    assert!(
+        d <= Duration::from_secs(2),
+        "expired renew should be near-immediate: {d:?}"
+    );
 }
 
 // ── single-flight, generation-fenced re-acquire ──────────────────────────
@@ -226,10 +238,9 @@ async fn concurrent_same_generation_reports_do_one_register() {
 
     let wake_count = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let wake_for_closure = wake_count.clone();
-    let wake: Arc<dyn Fn() + Send + Sync> =
-        Arc::new(move || {
-            wake_for_closure.fetch_add(1, Ordering::SeqCst);
-        });
+    let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+        wake_for_closure.fetch_add(1, Ordering::SeqCst);
+    });
 
     let shutdown = CancellationToken::new();
     let (controller, handle) =

@@ -663,8 +663,8 @@ async fn run_reacquire_once(
 ) -> ReacquireOutcome {
     let snapshot = session.snapshot().await;
 
-    let token_usable =
-        !snapshot.renewal_token.is_empty() && !is_expired(snapshot.renewal_token_expires_at.seconds);
+    let token_usable = !snapshot.renewal_token.is_empty()
+        && !is_expired(snapshot.renewal_token_expires_at.seconds);
 
     if token_usable {
         match run_soft_renew(
@@ -759,18 +759,20 @@ async fn run_soft_renew(
     let claims = match IdentityClaims::decode(ok.credential.claims.as_ref()) {
         Ok(claims) => claims,
         Err(e) => {
-            return SoftRenewOutcome::Deferred(format!("renew credential claims decode failed: {e}"));
+            return SoftRenewOutcome::Deferred(format!(
+                "renew credential claims decode failed: {e}"
+            ));
         }
     };
     if claims.actor_id != snapshot.actor_id.to_string_repr() {
-        return SoftRenewOutcome::Deferred(
-            "renew credential claims actor_id mismatch".to_string(),
-        );
+        return SoftRenewOutcome::Deferred("renew credential claims actor_id mismatch".to_string());
     }
 
     let credential_expires_at = match ok.credential_expires_at {
         Some(v) => v,
-        None => return SoftRenewOutcome::Deferred("renew response missing credential expiry".into()),
+        None => {
+            return SoftRenewOutcome::Deferred("renew response missing credential expiry".into());
+        }
     };
     let renewal_token = match ok.renewal_token.clone() {
         Some(v) => v,
@@ -849,11 +851,10 @@ async fn run_credential_only_hard_rebind(
     );
 
     let ais = AisClient::new(&ais_endpoint);
-    let (ais, request) =
-        match build_reregister_request(ais, registration_ctx, realm_secret).await {
-            Ok(pair) => pair,
-            Err(reason) => return ReacquireOutcome::Deferred(reason),
-        };
+    let (ais, request) = match build_reregister_request(ais, registration_ctx, realm_secret).await {
+        Ok(pair) => pair,
+        Err(reason) => return ReacquireOutcome::Deferred(reason),
+    };
 
     let response = match ais.register_with_manifest(request).await {
         Ok(response) => response,

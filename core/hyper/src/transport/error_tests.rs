@@ -401,10 +401,7 @@ fn io_error_becomes_internal_via_kind_fallback() {
 
 /// Build a `tungstenite::Error::Http` carrying the given status + optional
 /// `Retry-After` header, mirroring what a failed WS handshake surfaces.
-fn ws_http_error(
-    status: u16,
-    retry_after: Option<&str>,
-) -> tokio_tungstenite::tungstenite::Error {
+fn ws_http_error(status: u16, retry_after: Option<&str>) -> tokio_tungstenite::tungstenite::Error {
     use tokio_tungstenite::tungstenite::http::{Response, StatusCode, header::RETRY_AFTER};
     let mut builder = Response::builder().status(StatusCode::from_u16(status).unwrap());
     if let Some(v) = retry_after {

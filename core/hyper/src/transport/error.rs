@@ -632,7 +632,9 @@ pub(crate) fn is_tungstenite_closed(err: &tokio_tungstenite::tungstenite::Error)
 ///
 /// Only the numeric (delta-seconds) form is honored; an HTTP-date form returns
 /// `None` (the caller falls back to its own backoff). Kept narrow on purpose.
-fn parse_retry_after_seconds(headers: &tokio_tungstenite::tungstenite::http::HeaderMap) -> Option<Duration> {
+fn parse_retry_after_seconds(
+    headers: &tokio_tungstenite::tungstenite::http::HeaderMap,
+) -> Option<Duration> {
     let value = headers.get(tokio_tungstenite::tungstenite::http::header::RETRY_AFTER)?;
     let secs: u64 = value.to_str().ok()?.trim().parse().ok()?;
     Some(Duration::from_secs(secs))
@@ -671,9 +673,9 @@ impl From<tokio_tungstenite::tungstenite::Error> for NetworkError {
                     reason: RejectionReason::Handshake401,
                     message: format!("signaling handshake returned 401{body_hint}"),
                 },
-                StatusCode::FORBIDDEN => {
-                    NetworkError::RealmDenied(format!("signaling handshake returned 403{body_hint}"))
-                }
+                StatusCode::FORBIDDEN => NetworkError::RealmDenied(format!(
+                    "signaling handshake returned 403{body_hint}"
+                )),
                 StatusCode::SERVICE_UNAVAILABLE => NetworkError::ServerNotReady {
                     message: format!("signaling handshake returned 503{body_hint}"),
                     retry_after: parse_retry_after_seconds(resp.headers()),

@@ -243,7 +243,10 @@ impl MembershipController {
         self.credential_tx.send_replace(Arc::new(published));
         // 2. wake (control edge) — happens-after publish by construction
         (self.wake_socket)();
-        tracing::info!(generation, "membership: published new credential and woke socket");
+        tracing::info!(
+            generation,
+            "membership: published new credential and woke socket"
+        );
     }
 
     /// Run the coordinator loop until shutdown.
@@ -378,7 +381,10 @@ impl MembershipController {
             ReacquireOutcome::Denied => self.enter_denied(backoff).await,
             ReacquireOutcome::Deferred(reason) => {
                 let delay = backoff.next_delay();
-                tracing::warn!(reason, "membership: re-acquire still deferred; will retry on next signal");
+                tracing::warn!(
+                    reason,
+                    "membership: re-acquire still deferred; will retry on next signal"
+                );
                 tokio::select! {
                     _ = self.shutdown.cancelled() => {}
                     _ = tokio::time::sleep(delay) => {}
@@ -418,7 +424,10 @@ impl MembershipController {
                     tracing::warn!("membership: realm still denied; staying in denied phase");
                 }
                 ReacquireOutcome::Deferred(reason) => {
-                    tracing::warn!(reason, "membership: realm re-probe deferred; staying in denied phase");
+                    tracing::warn!(
+                        reason,
+                        "membership: realm re-probe deferred; staying in denied phase"
+                    );
                 }
             }
         }
