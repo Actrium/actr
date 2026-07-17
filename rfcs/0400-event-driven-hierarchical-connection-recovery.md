@@ -2,7 +2,7 @@
 
 - Status: Proposed
 - Date: 2026-07-18
-- RFC PR: TBD
+- RFC PR: [#401](https://github.com/Actrium/actr/pull/401)
 - Tracking issue: [#400](https://github.com/Actrium/actr/issues/400)
 - Superseded by: None
 - Related: [Implementation draft #399](https://github.com/Actrium/actr/pull/399)
