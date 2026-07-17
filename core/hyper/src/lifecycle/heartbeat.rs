@@ -6,7 +6,8 @@
 use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
 use crate::lifecycle::credential_manager::CredentialManager;
-use crate::transport::NetworkError;
+use crate::lifecycle::membership::{MembershipHandle, MembershipReport};
+use crate::transport::{AuthVerdict, NetworkError};
 use crate::wire::webrtc::gate::WebRtcGate;
 use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
 use actr_protocol::{ActrId, RegisterRequest, ServiceAvailabilityState};
@@ -26,6 +27,36 @@ fn expiry_to_system_time(expires_at: &prost_types::Timestamp) -> SystemTime {
 async fn fire_hook(cb: Option<&HookCallback>, event: HookEvent) {
     if let Some(cb) = cb {
         cb(event).await;
+    }
+}
+
+/// Route a credential-refresh trigger to the right owner.
+///
+/// When the membership controller is wired, the heartbeat is a pure REPORTER:
+/// it sends a `Rejected` verdict for the current credential generation and lets
+/// the controller (the sole owner) drive the single-flight, generation-fenced
+/// re-acquire. When the controller is disabled, it falls back to the legacy
+/// fire-and-forget `CredentialManager::trigger_renewal`.
+async fn request_credential_refresh(
+    membership: Option<&MembershipHandle>,
+    credential_manager: Option<&CredentialManager>,
+) {
+    if let Some(handle) = membership {
+        let stale_generation = handle.credential_rx().borrow().generation;
+        handle
+            .report(MembershipReport {
+                verdict: AuthVerdict::Rejected,
+                stale_generation,
+            })
+            .await;
+        return;
+    }
+    if let Some(manager) = credential_manager {
+        manager.trigger_renewal();
+    } else {
+        tracing::warn!(
+            "Credential refresh requested but neither membership controller nor CredentialManager is installed; keeping existing identity"
+        );
     }
 }
 
@@ -130,6 +161,7 @@ async fn send_heartbeat_and_handle_response(
     hook_callback: Option<&HookCallback>,
     _webrtc_coordinator: Option<&Arc<WebRtcCoordinator>>,
     _webrtc_gate: Option<&Arc<WebRtcGate>>,
+    membership: Option<&MembershipHandle>,
 ) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -176,13 +208,7 @@ async fn send_heartbeat_and_handle_response(
                 .await;
             }
 
-            if let Some(manager) = credential_manager {
-                manager.trigger_renewal();
-            } else {
-                tracing::warn!(
-                    "Credential expired but CredentialManager is not installed; keeping existing identity"
-                );
-            }
+            request_credential_refresh(membership, credential_manager).await;
             return None;
         }
         Ok(Err(e)) => {
@@ -259,9 +285,7 @@ async fn send_heartbeat_and_handle_response(
             )
             .await;
         }
-        if let Some(manager) = credential_manager {
-            manager.trigger_renewal();
-        }
+        request_credential_refresh(membership, credential_manager).await;
     }
     None
 }
@@ -296,6 +320,7 @@ pub async fn heartbeat_task(
     hook_callback: Option<HookCallback>,
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     webrtc_gate: Option<Arc<WebRtcGate>>,
+    membership: Option<MembershipHandle>,
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
     let mut actor_id = actor_id;
@@ -352,6 +377,7 @@ pub async fn heartbeat_task(
                     hook_callback.as_ref(),
                     webrtc_coordinator.as_ref(),
                     webrtc_gate.as_ref(),
+                    membership.as_ref(),
                 )
                 .await {
                     tracing::info!(

@@ -75,6 +75,22 @@ pub struct HyperConfig {
     /// [`WasmRuntimeLimits::default`] (safe finite defaults — hardening on by
     /// default). See [`WasmRuntimeLimits`].
     pub wasm_limits: Option<WasmRuntimeLimits>,
+
+    /// Enable the structural self-healing credential lifecycle (membership
+    /// authority).
+    ///
+    /// Default `false` — exactly today's behavior: registration is a one-shot,
+    /// the signaling reconnect loop retries the stored credential, and the
+    /// heartbeat path drives renewal. When `true`, `ActrNode::start()` spawns a
+    /// `MembershipController` that owns the credential, is the sole caller of
+    /// `/renew` and `/register`, publishes credentials to the signaling client
+    /// over a `watch`, and receives auth verdicts (including handshake 401s that
+    /// today never reach the recovery engine) over an `mpsc`. This lets a
+    /// long-running node self-recover after an AIS restart / key rotation
+    /// without a process restart.
+    ///
+    /// Gated so the change is revertible and can land safely.
+    pub membership_controller_enabled: bool,
 }
 
 /// Conflict-key dispatch concurrency knobs (design doc §4.2, §7).
@@ -326,6 +342,10 @@ impl std::fmt::Debug for HyperConfig {
             )
             .field("dispatch_concurrency", &self.dispatch_concurrency)
             .field("wasm_limits", &self.wasm_limits)
+            .field(
+                "membership_controller_enabled",
+                &self.membership_controller_enabled,
+            )
             .finish()
     }
 }
@@ -638,7 +658,16 @@ impl HyperConfig {
             mailbox_backpressure_threshold: None,
             dispatch_concurrency: None,
             wasm_limits: None,
+            membership_controller_enabled: false,
         }
+    }
+
+    /// Enable / disable the membership controller (self-healing credential
+    /// lifecycle). Off by default. See
+    /// [`HyperConfig::membership_controller_enabled`].
+    pub fn with_membership_controller_enabled(mut self, enabled: bool) -> Self {
+        self.membership_controller_enabled = enabled;
+        self
     }
 
     pub fn with_storage_template(mut self, template: impl Into<String>) -> Self {

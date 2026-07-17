@@ -532,6 +532,12 @@ pub(crate) struct Inner {
     /// at node construction time.
     #[allow(dead_code)]
     pub(crate) credential_expiry_warning: Duration,
+
+    /// Whether `start()` spawns the membership controller (self-healing
+    /// credential lifecycle). Resolved from [`HyperConfig`] at construction.
+    /// Default `false` keeps exactly today's one-shot registration + heartbeat-
+    /// driven renewal behavior.
+    pub(crate) membership_controller_enabled: bool,
 }
 
 /// Credential state for shared access between tasks
@@ -1529,6 +1535,7 @@ impl Inner {
         credential_expiry_warning: Duration,
         dispatch_concurrency: crate::config::DispatchConcurrency,
         conflict_keys: Option<crate::dispatch::ConflictKeySpec>,
+        membership_controller_enabled: bool,
     ) -> ActorResult<Self> {
         use crate::outbound::{Gate, HostGate};
         use crate::wire::webrtc::{ReconnectConfig, SignalingConfig, WebSocketSignalingClient};
@@ -1710,6 +1717,7 @@ impl Inner {
             hook_observer: None,
             mailbox_backpressure_threshold,
             credential_expiry_warning,
+            membership_controller_enabled,
         })
     }
 
@@ -1989,6 +1997,10 @@ impl Inner {
         let node_hook_callback: Option<crate::wire::webrtc::HookCallback>;
         let session_state: SessionState;
         let credential_manager: CredentialManager;
+        // Set when the membership controller is enabled; handed to the heartbeat
+        // task so credential events report to the owner instead of triggering
+        // the legacy fire-and-forget renewal directly.
+        let mut membership_handle: Option<crate::lifecycle::membership::MembershipHandle> = None;
 
         {
             let actor_id = register_ok.actr_id;
@@ -2241,6 +2253,56 @@ impl Inner {
                 .await;
             tracing::info!("✅ WebRTC infrastructure initialized");
 
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // 1.7.5. Membership controller (self-healing credential lifecycle)
+            // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+            // When enabled, the controller becomes the SOLE owner of the
+            // credential: it seeds the `watch` with the just-registered gen-1
+            // credential, installs the two typed channels on the signaling
+            // client, and spawns its coordinator loop + proactive expiry timer.
+            // The signaling client stops reading the stored credential and
+            // instead builds handshake URLs from the watch and reports auth
+            // verdicts (including handshake 401s) over the mpsc — closing the
+            // gap where a handshake 401 never reached the recovery engine.
+            if self.membership_controller_enabled {
+                use crate::lifecycle::membership::{
+                    MembershipController, spawn_membership_controller,
+                };
+
+                let seed = credential_manager.published_credential().await;
+                tracing::info!(
+                    generation = seed.generation,
+                    "🪪 Membership controller enabled; seeding credential watch"
+                );
+
+                // The wake edge: after the controller publishes a fresh
+                // credential it calls this to reset the socket's backoff
+                // generation and wake the reconnect loop. Publish
+                // happens-before this wake by construction.
+                let signaling_for_wake = self.signaling_client.clone();
+                let wake_socket: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                    signaling_for_wake.schedule_auto_reconnect_reset_backoff();
+                });
+
+                let (controller, handle) = MembershipController::new(
+                    credential_manager.clone(),
+                    seed,
+                    wake_socket,
+                    self.shutdown_token.clone(),
+                );
+
+                // Install the two typed channels on the signaling client.
+                self.signaling_client
+                    .install_membership(handle.credential_rx(), handle.report_tx())
+                    .await;
+
+                for h in spawn_membership_controller(controller, &handle) {
+                    task_handles.push(h);
+                }
+                membership_handle = Some(handle);
+                tracing::info!("✅ Membership controller spawned (credential owner online)");
+            }
+
             // Fire `on_start` once the runtime context can see the initialized
             // gates, before starting request-accepting/background loops. Its
             // Err/panic aborts Node::start.
@@ -2369,6 +2431,7 @@ impl Inner {
                 let mailbox_for_heartbeat = self.mailbox.clone();
                 let register_request_for_heartbeat = register_request.clone();
                 let credential_manager_for_heartbeat = credential_manager.clone();
+                let membership_handle_for_heartbeat = membership_handle.clone();
                 let webrtc_coordinator_for_heartbeat = self.webrtc_coordinator.clone();
                 let webrtc_gate_for_heartbeat = self.webrtc_gate.clone();
 
@@ -2395,6 +2458,7 @@ impl Inner {
                     node_hook_callback.clone(),
                     webrtc_coordinator_for_heartbeat,
                     webrtc_gate_for_heartbeat,
+                    membership_handle_for_heartbeat,
                 ));
                 task_handles.push(heartbeat_handle);
             }

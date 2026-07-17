@@ -909,6 +909,7 @@ impl Node<Init> {
             hyper_inner.config.resolved_mailbox_backpressure_threshold();
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
         let dispatch_concurrency = hyper_inner.config.resolved_dispatch_concurrency();
+        let membership_controller_enabled = hyper_inner.config.membership_controller_enabled;
         let mut node_inner = crate::lifecycle::node::Inner::build(
             runtime_config,
             loaded.workload,
@@ -918,6 +919,7 @@ impl Node<Init> {
             credential_expiry_warning,
             dispatch_concurrency,
             conflict_keys,
+            membership_controller_enabled,
         )
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;
@@ -961,6 +963,7 @@ impl Node<Init> {
             hyper_inner.config.resolved_mailbox_backpressure_threshold();
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
         let dispatch_concurrency = hyper_inner.config.resolved_dispatch_concurrency();
+        let membership_controller_enabled = hyper_inner.config.membership_controller_enabled;
         let mut node_inner = crate::lifecycle::node::Inner::build(
             runtime_config,
             crate::workload::Workload::Linked(handle.clone()),
@@ -970,6 +973,7 @@ impl Node<Init> {
             credential_expiry_warning,
             dispatch_concurrency,
             conflict_keys,
+            membership_controller_enabled,
         )
         .await
         .map_err(|e| HyperError::Runtime(e.to_string()))?;

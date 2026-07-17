@@ -30,8 +30,30 @@ use crate::transport::PeerTransport;
 use crate::wire::webrtc::gate::WebRtcGate;
 use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
 
+use super::membership::PublishedCredential;
 use super::node::CredentialState;
-use super::session_state::{SessionSnapshot, SessionState};
+use super::session_state::{SessionPhase, SessionSnapshot, SessionState};
+
+// ---- Re-acquire outcome (membership controller path) -----------------------
+
+/// Terminal outcome of a single-flight re-acquire driven by the membership
+/// controller. Unlike the legacy fire-and-forget `trigger_renewal`, the
+/// controller path is awaitable and returns exactly what happened so the
+/// coordinator can publish, back off, or enter the terminal denied phase.
+// Transient outcome: constructed once per re-acquire and matched immediately,
+// never stored in bulk, so the large `Renewed` variant is not worth boxing.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub(crate) enum ReacquireOutcome {
+    /// A fresh credential was minted (soft renew or credential-only hard
+    /// rebind). Carries the generation-stamped credential to publish.
+    Renewed(PublishedCredential),
+    /// The realm denied membership (403 / `RealmUnavailable`). Terminal for
+    /// automatic recovery.
+    Denied,
+    /// A transient failure — retry later on the backoff ladder.
+    Deferred(String),
+}
 
 // ---- Registration Context --------------------------------------------------
 
@@ -120,6 +142,61 @@ impl CredentialManager {
 
     pub(crate) async fn install_hook_callback(&self, callback: Option<HookCallback>) {
         *self.hook_callback.lock().await = callback;
+    }
+
+    // ---- Membership-controller path (credential-only) ----------------------
+
+    /// Current session phase.
+    pub(crate) async fn phase(&self) -> SessionPhase {
+        self.session.phase().await
+    }
+
+    /// Transition the session to `RealmUnavailable` (terminal denied).
+    pub(crate) async fn mark_realm_unavailable(&self) {
+        self.session.set_realm_unavailable().await;
+    }
+
+    /// Transition the session back to `Active` after recovery.
+    pub(crate) async fn mark_active(&self) {
+        self.session.set_active().await;
+    }
+
+    /// Snapshot the current credential as a generation-stamped
+    /// [`PublishedCredential`] for the membership `watch` channel.
+    pub(crate) async fn published_credential(&self) -> PublishedCredential {
+        let snapshot = self.session.snapshot().await;
+        PublishedCredential {
+            credential: snapshot.credential,
+            credential_expires_at: Some(snapshot.credential_expires_at),
+            turn_credential: Some(snapshot.turn_credential),
+            actor_id: snapshot.actor_id,
+            generation: snapshot.generation,
+        }
+    }
+
+    /// Single-flight, credential-only re-acquire driven by the membership
+    /// controller.
+    ///
+    /// Mints a fresh credential (soft renew, then hard `/register` fallback) and
+    /// updates identity/handles, but NEVER drives the socket — the signaling
+    /// client is the sole reconnect driver. The coordinator publishes the
+    /// returned credential and wakes the socket itself.
+    ///
+    /// Runtime hard rebind is credential-only against the stable on-disk node
+    /// AID: it asserts the re-registered `actr_id` is unchanged and does not
+    /// rotate the node identity.
+    pub(crate) async fn reacquire(&self) -> ReacquireOutcome {
+        let handles = self.hard_rebind_handles.lock().await.clone();
+        let hook_callback = self.hook_callback.lock().await.clone();
+        run_reacquire_once(
+            self.session.clone(),
+            self.ais_endpoint.clone(),
+            self.realm_secret.clone(),
+            self.registration_ctx.clone(),
+            handles,
+            hook_callback,
+        )
+        .await
     }
 
     /// Entry point for all renewal triggers. Returns immediately if a
@@ -503,6 +580,399 @@ async fn run_hard_rebind(
     );
 
     Ok(())
+}
+
+// ---- Membership-controller re-acquire (credential-only) --------------------
+
+/// Build the `/register` request for a re-acquire, applying the manufacturer
+/// re-sign for package registrations and installing the realm secret on `ais`.
+///
+/// Shared by the legacy `run_hard_rebind` semantics and the credential-only
+/// controller path so the re-sign / replay-avoidance logic lives once.
+async fn build_reregister_request(
+    mut ais: AisClient,
+    registration_ctx: RegistrationContext,
+    realm_secret: Option<String>,
+) -> Result<(AisClient, actr_protocol::RegisterRequest), String> {
+    let request = match registration_ctx {
+        RegistrationContext::Package { request, resign } => {
+            let mut request = request;
+            if let Some(provider) = resign.as_ref() {
+                let realm_id = request.realm.realm_id;
+                let actr_type = request.actr_type.clone();
+                let target = request
+                    .target
+                    .clone()
+                    .filter(|target| !target.is_empty())
+                    .ok_or_else(|| {
+                        "hard rebind manufacturer re-sign failed: package target is missing"
+                            .to_string()
+                    })?;
+                let manifest_raw = request
+                    .manifest_raw
+                    .as_ref()
+                    .filter(|manifest| !manifest.is_empty())
+                    .map(|manifest| manifest.to_vec())
+                    .ok_or_else(|| {
+                        "hard rebind manufacturer re-sign failed: package manifest is missing"
+                            .to_string()
+                    })?;
+                let fresh = crate::sign_manufacturer_proof(
+                    Arc::clone(provider),
+                    realm_id,
+                    actr_type,
+                    target,
+                    manifest_raw,
+                )
+                .await
+                .map_err(|e| format!("hard rebind manufacturer re-sign failed: {e}"))?;
+                request.manufacturer_auth_signature = Some(bytes::Bytes::from(fresh.signature));
+                request.manufacturer_auth_signed_at = Some(fresh.signed_at);
+                request.manufacturer_auth_nonce = Some(bytes::Bytes::from(fresh.nonce));
+            }
+            request
+        }
+        RegistrationContext::Linked {
+            request,
+            realm_secret,
+        } => {
+            if let Some(secret) = realm_secret {
+                ais = ais.with_realm_secret(secret);
+            }
+            request
+        }
+    };
+    if let Some(secret) = realm_secret {
+        ais = ais.with_realm_secret(secret);
+    }
+    Ok((ais, request))
+}
+
+/// Credential-only single-flight re-acquire for the membership controller.
+///
+/// Tries a soft renew first (if the renewal token is usable), then falls back to
+/// a credential-only hard rebind. NEVER drives the socket. Returns the
+/// generation-stamped credential to publish, or a terminal / deferred outcome.
+async fn run_reacquire_once(
+    session: SessionState,
+    ais_endpoint: String,
+    realm_secret: Option<String>,
+    registration_ctx: RegistrationContext,
+    hard_rebind_handles: Option<HardRebindHandles>,
+    hook_callback: Option<HookCallback>,
+) -> ReacquireOutcome {
+    let snapshot = session.snapshot().await;
+
+    let token_usable =
+        !snapshot.renewal_token.is_empty() && !is_expired(snapshot.renewal_token_expires_at.seconds);
+
+    if token_usable {
+        match run_soft_renew(
+            &session,
+            &ais_endpoint,
+            realm_secret.as_deref(),
+            hard_rebind_handles.as_ref(),
+            hook_callback.as_ref(),
+            &snapshot,
+        )
+        .await
+        {
+            SoftRenewOutcome::Renewed(published) => return ReacquireOutcome::Renewed(published),
+            SoftRenewOutcome::Denied => return ReacquireOutcome::Denied,
+            SoftRenewOutcome::Deferred(reason) => return ReacquireOutcome::Deferred(reason),
+            // Token was rejected by AIS — fall through to hard rebind.
+            SoftRenewOutcome::FallThroughToHardRebind => {}
+        }
+    }
+
+    run_credential_only_hard_rebind(
+        session,
+        ais_endpoint,
+        realm_secret,
+        registration_ctx,
+        hard_rebind_handles,
+    )
+    .await
+}
+
+// Transient outcome (see `ReacquireOutcome`): local, immediately matched.
+#[allow(clippy::large_enum_variant)]
+enum SoftRenewOutcome {
+    Renewed(PublishedCredential),
+    Denied,
+    Deferred(String),
+    FallThroughToHardRebind,
+}
+
+/// One soft-renew round-trip (`POST /renew`). Credential-only: updates session +
+/// credential_state, fires the renewed hook, and returns the published
+/// credential. Never touches the socket.
+async fn run_soft_renew(
+    session: &SessionState,
+    ais_endpoint: &str,
+    realm_secret: Option<&str>,
+    hard_rebind_handles: Option<&HardRebindHandles>,
+    hook_callback: Option<&HookCallback>,
+    snapshot: &SessionSnapshot,
+) -> SoftRenewOutcome {
+    let mut ais = AisClient::new(ais_endpoint);
+    if let Some(secret) = realm_secret {
+        ais = ais.with_realm_secret(secret);
+    }
+
+    let request = RenewCredentialRequest {
+        actr_id: snapshot.actor_id.clone(),
+        renewal_token: snapshot.renewal_token.clone(),
+    };
+
+    let response = match ais.renew_credential(request).await {
+        Ok(response) => response,
+        Err(RenewError::RealmUnavailable) => {
+            session.set_realm_unavailable().await;
+            return SoftRenewOutcome::Denied;
+        }
+        Err(RenewError::TokenRejected) => return SoftRenewOutcome::FallThroughToHardRebind,
+        Err(RenewError::RateLimited { .. }) => {
+            return SoftRenewOutcome::Deferred("renewal rate limited".to_string());
+        }
+        Err(RenewError::Retryable(err)) => {
+            return SoftRenewOutcome::Deferred(format!("retryable renew error: {err}"));
+        }
+        Err(err) => return SoftRenewOutcome::Deferred(err.to_string()),
+    };
+
+    let ok = match response.result {
+        Some(renew_credential_response::Result::Success(ok)) => ok,
+        Some(renew_credential_response::Result::Error(err)) => {
+            return SoftRenewOutcome::Deferred(format!(
+                "renew response contained error {}: {}",
+                err.code, err.message
+            ));
+        }
+        None => return SoftRenewOutcome::Deferred("renew response missing result".to_string()),
+    };
+
+    if ok.actr_id != snapshot.actor_id {
+        return SoftRenewOutcome::Deferred("renew response changed ActrId".to_string());
+    }
+
+    let claims = match IdentityClaims::decode(ok.credential.claims.as_ref()) {
+        Ok(claims) => claims,
+        Err(e) => {
+            return SoftRenewOutcome::Deferred(format!("renew credential claims decode failed: {e}"));
+        }
+    };
+    if claims.actor_id != snapshot.actor_id.to_string_repr() {
+        return SoftRenewOutcome::Deferred(
+            "renew credential claims actor_id mismatch".to_string(),
+        );
+    }
+
+    let credential_expires_at = match ok.credential_expires_at {
+        Some(v) => v,
+        None => return SoftRenewOutcome::Deferred("renew response missing credential expiry".into()),
+    };
+    let renewal_token = match ok.renewal_token.clone() {
+        Some(v) => v,
+        None => return SoftRenewOutcome::Deferred("renew response missing renewal token".into()),
+    };
+    let renewal_token_expires_at = match ok.renewal_token_expires_at {
+        Some(v) => v,
+        None => {
+            return SoftRenewOutcome::Deferred(
+                "renew response missing renewal token expiry".into(),
+            );
+        }
+    };
+
+    session
+        .update_credentials(
+            ok.credential.clone(),
+            credential_expires_at,
+            ok.turn_credential.clone(),
+            renewal_token,
+            renewal_token_expires_at,
+        )
+        .await;
+
+    if let Some(handles) = hard_rebind_handles {
+        handles
+            .credential_state
+            .update(
+                ok.credential.clone(),
+                Some(credential_expires_at),
+                Some(ok.turn_credential.clone()),
+            )
+            .await;
+    }
+
+    fire_credential_renewed(hook_callback, &credential_expires_at).await;
+
+    let generation = session.generation().await;
+    tracing::info!(
+        actor_id = %snapshot.actor_id.to_string_repr(),
+        generation,
+        credential_expires_at = credential_expires_at.seconds,
+        "membership: soft renewal completed (credential-only)"
+    );
+
+    SoftRenewOutcome::Renewed(PublishedCredential {
+        credential: ok.credential,
+        credential_expires_at: Some(credential_expires_at),
+        turn_credential: Some(ok.turn_credential),
+        actor_id: snapshot.actor_id.clone(),
+        generation,
+    })
+}
+
+/// Credential-only hard rebind: `POST /register` against the STABLE node AID.
+///
+/// Mints a fresh credential, asserts the re-registered `actr_id` is unchanged
+/// (runtime hard rebind must not rotate the node identity), commits the new
+/// snapshot, re-ids the runtime handles (gate / coordinator / transport) and
+/// updates `credential_state`. It deliberately DOES NOT drive the socket — no
+/// `disconnect()`, no `connect_once()`, no `schedule_auto_reconnect()`. The
+/// signaling client is the sole reconnect driver; the coordinator publishes the
+/// returned credential and wakes it.
+async fn run_credential_only_hard_rebind(
+    session: SessionState,
+    ais_endpoint: String,
+    realm_secret: Option<String>,
+    registration_ctx: RegistrationContext,
+    hard_rebind_handles: Option<HardRebindHandles>,
+) -> ReacquireOutcome {
+    let old_snapshot = session.snapshot().await;
+    tracing::warn!(
+        actor_id = %old_snapshot.actor_id.to_string_repr(),
+        generation = old_snapshot.generation,
+        "membership: starting credential-only hard rebind"
+    );
+
+    let ais = AisClient::new(&ais_endpoint);
+    let (ais, request) =
+        match build_reregister_request(ais, registration_ctx, realm_secret).await {
+            Ok(pair) => pair,
+            Err(reason) => return ReacquireOutcome::Deferred(reason),
+        };
+
+    let response = match ais.register_with_manifest(request).await {
+        Ok(response) => response,
+        Err(err) => {
+            return ReacquireOutcome::Deferred(format!("hard rebind register failed: {err}"));
+        }
+    };
+
+    let ok = match response.result {
+        Some(register_response::Result::Success(ok)) => ok,
+        Some(register_response::Result::Error(err)) => {
+            // 403 realm-denied surfaces here as a register error code.
+            if err.code == 403 {
+                session.set_realm_unavailable().await;
+                return ReacquireOutcome::Denied;
+            }
+            return ReacquireOutcome::Deferred(format!(
+                "hard rebind register rejected {}: {}",
+                err.code, err.message
+            ));
+        }
+        None => {
+            return ReacquireOutcome::Deferred(
+                "hard rebind register response missing result".to_string(),
+            );
+        }
+    };
+
+    // Runtime hard rebind is credential-only against the stable on-disk node
+    // AID. AIS must return the SAME identity; a changed AID means the server
+    // treated this as a brand-new node, which the runtime path must not do.
+    if ok.actr_id != old_snapshot.actor_id {
+        return ReacquireOutcome::Deferred(format!(
+            "hard rebind returned a different ActrId ({} != {}); refusing to rotate node identity",
+            ok.actr_id.to_string_repr(),
+            old_snapshot.actor_id.to_string_repr()
+        ));
+    }
+
+    let credential_expires_at = match ok.credential_expires_at {
+        Some(v) => v,
+        None => {
+            return ReacquireOutcome::Deferred(
+                "hard rebind response missing credential expiry".into(),
+            );
+        }
+    };
+    let renewal_token = match ok.renewal_token.clone() {
+        Some(v) => v,
+        None => {
+            return ReacquireOutcome::Deferred("hard rebind response missing renewal token".into());
+        }
+    };
+    let renewal_token_expires_at = match ok.renewal_token_expires_at {
+        Some(v) => v,
+        None => {
+            return ReacquireOutcome::Deferred(
+                "hard rebind response missing renewal token expiry".into(),
+            );
+        }
+    };
+
+    let new_snapshot = SessionSnapshot {
+        actor_id: old_snapshot.actor_id.clone(),
+        credential: ok.credential.clone(),
+        credential_expires_at,
+        turn_credential: ok.turn_credential.clone(),
+        renewal_token,
+        renewal_token_expires_at,
+        generation: old_snapshot.generation.saturating_add(1),
+    };
+
+    session.enter_rebinding().await;
+    let _old = session.commit_hard_rebind(new_snapshot.clone()).await;
+
+    if let Some(handles) = hard_rebind_handles {
+        handles
+            .credential_state
+            .update(
+                new_snapshot.credential.clone(),
+                Some(new_snapshot.credential_expires_at),
+                Some(new_snapshot.turn_credential.clone()),
+            )
+            .await;
+
+        // Re-id the runtime handles to the (unchanged) AID. This is a no-op for
+        // identity but keeps the code path uniform and future-proof; crucially
+        // it does NOT touch the socket.
+        handles
+            .signaling_client
+            .set_actor_id(new_snapshot.actor_id.clone())
+            .await;
+        if let Some(coordinator) = handles.webrtc_coordinator.as_ref() {
+            coordinator
+                .set_local_id(new_snapshot.actor_id.clone())
+                .await;
+        }
+        if let Some(gate) = handles.webrtc_gate.as_ref() {
+            gate.set_local_id(new_snapshot.actor_id.clone()).await;
+        }
+    }
+
+    // Back to Active — the socket driver will reconnect on the wake edge.
+    session.set_active().await;
+
+    tracing::info!(
+        actor_id = %new_snapshot.actor_id.to_string_repr(),
+        generation = new_snapshot.generation,
+        credential_expires_at = new_snapshot.credential_expires_at.seconds,
+        "membership: credential-only hard rebind committed"
+    );
+
+    ReacquireOutcome::Renewed(PublishedCredential {
+        credential: new_snapshot.credential,
+        credential_expires_at: Some(new_snapshot.credential_expires_at),
+        turn_credential: Some(new_snapshot.turn_credential),
+        actor_id: new_snapshot.actor_id,
+        generation: new_snapshot.generation,
+    })
 }
 
 fn is_expired(expires_at: i64) -> bool {

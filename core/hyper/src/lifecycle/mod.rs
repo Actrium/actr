@@ -9,6 +9,7 @@ pub(crate) mod credential_manager;
 pub(crate) mod dedup;
 mod heartbeat;
 pub(crate) mod hooks;
+pub(crate) mod membership;
 mod network_event;
 pub(crate) mod node;
 pub(crate) mod session_state;

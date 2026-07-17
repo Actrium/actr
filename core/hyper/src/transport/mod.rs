@@ -65,7 +65,7 @@ pub use wire_handle::{WireHandle, WireIdentity};
 pub(crate) use wire_handle::{WireHandle, WireIdentity};
 
 // Error types
-pub use error::{NetworkError, NetworkResult};
+pub use error::{AuthVerdict, NetworkError, NetworkResult};
 
 // Retry and backoff strategies
 pub use backoff::ExponentialBackoff;

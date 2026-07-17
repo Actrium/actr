@@ -1106,6 +1106,7 @@ async fn tell_dedup_harness(result: fn() -> ActorResult<FrameworkBytes>) -> Tell
         Duration::from_secs(60),
         crate::config::DispatchConcurrency::default(),
         None,
+        false,
     )
     .await
     .expect("Inner::build must succeed with in-memory mailbox");

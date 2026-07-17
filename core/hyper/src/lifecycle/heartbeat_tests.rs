@@ -421,6 +421,7 @@ async fn heartbeat_tick_reconnects_before_sending_when_signaling_is_disconnected
         None,
         None,
         None,
+        None,
     ));
 
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -502,6 +503,7 @@ async fn credential_expiry_does_not_re_register_or_update_webrtc_local_id() {
         None,
         None,
         Some(&coordinator),
+        None,
         None,
     )
     .await;
@@ -603,6 +605,7 @@ async fn credential_warning_triggers_credential_manager_renewal() {
         &server.url(),
         None,
         Some(&manager),
+        None,
         None,
         None,
         None,

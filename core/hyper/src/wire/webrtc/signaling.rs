@@ -5,6 +5,7 @@
 #[cfg(feature = "opentelemetry")]
 use super::trace;
 use crate::lifecycle::CredentialState;
+use crate::lifecycle::membership::{MembershipReport, PublishedCredential};
 use crate::transport::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
@@ -283,6 +284,19 @@ pub trait SignalingClient: Send + Sync {
     /// also needs.
     /// Default implementation is a no-op for clients that don't support hooks.
     fn set_hook_callback(&self, _cb: HookCallback) {}
+
+    /// Install the membership authority wiring (self-healing credential
+    /// lifecycle). Default is a no-op for clients that don't participate.
+    ///
+    /// When installed, the client builds handshake URLs from the `watch`
+    /// receiver and, on a typed auth verdict, reports over the `mpsc` sender and
+    /// parks until a newer credential generation is published.
+    async fn install_membership(
+        &self,
+        _credential_rx: tokio::sync::watch::Receiver<Arc<PublishedCredential>>,
+        _report_tx: mpsc::Sender<MembershipReport>,
+    ) {
+    }
 }
 
 /// High-level signaling connection state (kept for quick boolean checks).
@@ -399,6 +413,19 @@ enum ConnectIntent {
     AutoReconnect { generation: u64 },
 }
 
+/// Outcome of routing a reconnect error through the membership authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthVerdictAction {
+    /// A newer credential was published after the auth verdict was reported;
+    /// the caller should reconnect immediately with it.
+    Reacquired,
+    /// The credential owner shut down while we were parked; stop the cycle.
+    ShutdownWhileParked,
+    /// The error was not an auth verdict (or no controller is wired); the caller
+    /// should apply the normal backoff path.
+    NotAVerdict,
+}
+
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
     config: SignalingConfig,
@@ -447,6 +474,23 @@ pub struct WebSocketSignalingClient {
     reconnect_backoff_reset_generation: AtomicU64,
     /// Hook callback for ordered lifecycle notification (set once, lock-free read)
     hook_callback: OnceLock<HookCallback>,
+    /// Membership authority wiring (set once when the membership controller is
+    /// enabled). When present:
+    /// - `build_url_with_identity` reads the credential from the `watch`
+    ///   receiver instead of the stored `credential_state`, so the handshake URL
+    ///   always carries the latest published credential.
+    /// - The reconnect loop, on a typed auth verdict, sends a
+    ///   [`MembershipReport`] and PARKS on the watch until a newer generation is
+    ///   published — it never drives a reconnect for an auth failure.
+    membership: OnceLock<MembershipWiring>,
+}
+
+/// The two typed channels the signaling client uses to talk to the credential
+/// owner: a `watch` receiver for the current credential (data) and an `mpsc`
+/// sender for auth verdicts (control).
+struct MembershipWiring {
+    credential_rx: tokio::sync::watch::Receiver<Arc<PublishedCredential>>,
+    report_tx: mpsc::Sender<MembershipReport>,
 }
 
 impl WebSocketSignalingClient {
@@ -479,7 +523,24 @@ impl WebSocketSignalingClient {
             reconnect_generation: AtomicU64::new(0),
             reconnect_backoff_reset_generation: AtomicU64::new(0),
             hook_callback: OnceLock::new(),
+            membership: OnceLock::new(),
         }
+    }
+
+    /// Install the membership wiring. Idempotent; only the first call binds.
+    ///
+    /// After this the client reads its credential from the `watch` receiver and
+    /// reports auth verdicts through the `mpsc` sender instead of retrying a dead
+    /// credential.
+    pub(crate) fn install_membership(
+        &self,
+        credential_rx: tokio::sync::watch::Receiver<Arc<PublishedCredential>>,
+        report_tx: mpsc::Sender<MembershipReport>,
+    ) {
+        let _ = self.membership.set(MembershipWiring {
+            credential_rx,
+            report_tx,
+        });
     }
 
     /// Start the reconnect manager if enabled in config and not already started.
@@ -621,6 +682,60 @@ impl WebSocketSignalingClient {
         });
     }
 
+    /// Handle a reconnect error against the membership authority.
+    ///
+    /// If the error carries a typed [`crate::transport::AuthVerdict`] and the
+    /// membership controller is wired, report it to the credential owner and
+    /// PARK on the watch until a newer credential generation is published, then
+    /// return [`AuthVerdictAction::Reacquired`] so the caller reconnects with
+    /// the fresh credential. Otherwise return [`AuthVerdictAction::NotAVerdict`]
+    /// and let the caller fall through to the normal backoff path.
+    async fn handle_auth_verdict(&self, err: &NetworkError) -> AuthVerdictAction {
+        let Some(verdict) = err.auth_verdict() else {
+            return AuthVerdictAction::NotAVerdict;
+        };
+        let Some(wiring) = self.membership.get() else {
+            // No controller wired (flag off): treat as a normal failure so the
+            // legacy backoff path applies.
+            return AuthVerdictAction::NotAVerdict;
+        };
+
+        let mut rx = wiring.credential_rx.clone();
+        let stale_generation = rx.borrow().generation;
+
+        tracing::warn!(
+            ?verdict,
+            stale_generation,
+            "🔒 Signaling auth verdict; reporting to credential owner and parking"
+        );
+
+        // Report (control channel). Best-effort — if the owner is gone the park
+        // below will simply wait for shutdown / channel close.
+        if let Err(e) = wiring
+            .report_tx
+            .send(MembershipReport {
+                verdict,
+                stale_generation,
+            })
+            .await
+        {
+            tracing::debug!(error = %e, "membership report send failed: owner gone");
+        }
+
+        // Park (data channel): edge-triggered wait for a newer generation. Zero
+        // CPU/IO, no sleep. `wait_for` returns as soon as a credential with a
+        // higher generation is published (publish happens-before the socket
+        // wake, so by the time we return the fresh credential is visible).
+        match rx
+            .wait_for(|published| published.generation > stale_generation)
+            .await
+        {
+            Ok(_) => AuthVerdictAction::Reacquired,
+            // Sender dropped — the controller shut down. Stop the cycle.
+            Err(_) => AuthVerdictAction::ShutdownWhileParked,
+        }
+    }
+
     /// Execute one full reconnect cycle with exponential backoff + jitter.
     async fn run_reconnect_cycle(self: &Arc<Self>) {
         use actr_framework::ExponentialBackoff;
@@ -706,11 +821,41 @@ impl WebSocketSignalingClient {
                             return;
                         }
 
+                        // Membership authority: an auth VERDICT (401/403) means
+                        // the credential itself is dead — retrying the same
+                        // credential is pointless. Report it to the credential
+                        // owner and PARK on the watch until a newer generation
+                        // is published, then continue the cycle to reconnect
+                        // with the fresh credential. No backoff sleep, no
+                        // connect_once here — this is an edge-triggered event
+                        // wait; the controller is the sole reconnect driver.
+                        //
+                        // A transient error (None) and `ServerNotReady` (503)
+                        // fall through to the existing backoff path and retry
+                        // the SAME credential (honoring Retry-After for 503).
+                        match self.handle_auth_verdict(&e).await {
+                            AuthVerdictAction::Reacquired => {
+                                tracing::info!(
+                                    "🔑 Reconnecting with re-acquired credential after auth verdict"
+                                );
+                                continue 'cycle;
+                            }
+                            AuthVerdictAction::ShutdownWhileParked => {
+                                tracing::debug!(
+                                    "Stopping signaling auto-reconnect cycle: shutdown while parked on credential"
+                                );
+                                return;
+                            }
+                            AuthVerdictAction::NotAVerdict => { /* fall through */ }
+                        }
+
+                        let retry_after = e.retry_after();
+                        let effective_delay = retry_after.unwrap_or(delay);
                         tracing::warn!(
-                            "❌ Reconnect attempt {attempt} failed: {e}, retrying in {delay:?}"
+                            "❌ Reconnect attempt {attempt} failed: {e}, retrying in {effective_delay:?}"
                         );
                         tokio::select! {
-                            _ = tokio::time::sleep(delay) => {}
+                            _ = tokio::time::sleep(effective_delay) => {}
                             _ = self.reconnect_notify.notified() => {
                                 tracing::debug!("Explicit reconnect request interrupted reconnect backoff");
                             }
@@ -887,6 +1032,33 @@ impl WebSocketSignalingClient {
     /// so the signaling server can validate the credential before upgrading the WebSocket.
     async fn build_url_with_identity(&self) -> Url {
         let mut url = self.config.server_url.clone();
+
+        // When the membership controller is wired, the credential owner is the
+        // single source of truth: read the latest published credential + actor
+        // id straight from the `watch`. This is what makes the reconnect
+        // self-heal — after the owner mints a fresh credential and wakes us, the
+        // very next handshake URL carries it, never the stale one.
+        if let Some(wiring) = self.membership.get() {
+            let published = wiring.credential_rx.borrow().clone();
+            let actor_str = actr_protocol::ActrId::to_string_repr(&published.actor_id);
+            url.query_pairs_mut().append_pair("actor_id", &actor_str);
+
+            let cred = &published.credential;
+            let claims_b64 = base64::engine::general_purpose::STANDARD.encode(&cred.claims);
+            let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&cred.signature);
+            url.query_pairs_mut()
+                .append_pair("key_id", &cred.key_id.to_string())
+                .append_pair("claims", &claims_b64)
+                .append_pair("signature", &sig_b64);
+
+            if let Some(role) = &self.config.webrtc_role {
+                url.query_pairs_mut().append_pair("webrtc_role", role);
+            }
+            return url;
+        }
+
+        // Legacy path (membership controller disabled): stored actor id +
+        // credential_state.
         let actor_id_opt = self.actor_id.lock().await.clone();
         if let Some(actor_id) = actor_id_opt {
             let actor_str = actr_protocol::ActrId::to_string_repr(&actor_id);
@@ -2145,6 +2317,14 @@ impl SignalingClient for WebSocketSignalingClient {
 
     fn set_hook_callback(&self, cb: HookCallback) {
         let _ = self.hook_callback.set(cb);
+    }
+
+    async fn install_membership(
+        &self,
+        credential_rx: tokio::sync::watch::Receiver<Arc<PublishedCredential>>,
+        report_tx: mpsc::Sender<MembershipReport>,
+    ) {
+        WebSocketSignalingClient::install_membership(self, credential_rx, report_tx);
     }
 }
 
