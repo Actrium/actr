@@ -396,3 +396,107 @@ fn io_error_becomes_internal_via_kind_fallback() {
         NetworkError::IoError(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "io")).into();
     assert!(matches!(e, ActrError::Internal(_)));
 }
+
+// ── Typed tungstenite HTTP handshake errors → auth verdicts ─────────────
+
+/// Build a `tungstenite::Error::Http` carrying the given status + optional
+/// `Retry-After` header, mirroring what a failed WS handshake surfaces.
+fn ws_http_error(
+    status: u16,
+    retry_after: Option<&str>,
+) -> tokio_tungstenite::tungstenite::Error {
+    use tokio_tungstenite::tungstenite::http::{Response, StatusCode, header::RETRY_AFTER};
+    let mut builder = Response::builder().status(StatusCode::from_u16(status).unwrap());
+    if let Some(v) = retry_after {
+        builder = builder.header(RETRY_AFTER, v);
+    }
+    let resp = builder.body(None).unwrap();
+    tokio_tungstenite::tungstenite::Error::Http(Box::new(resp))
+}
+
+#[test]
+fn tungstenite_401_becomes_credential_rejected_with_verdict() {
+    let e: NetworkError = ws_http_error(401, None).into();
+    assert!(matches!(
+        e,
+        NetworkError::CredentialRejected {
+            reason: RejectionReason::Handshake401,
+            ..
+        }
+    ));
+    assert_eq!(e.auth_verdict(), Some(AuthVerdict::Rejected));
+    assert_eq!(e.category(), "credential_rejected");
+    // Client-kind, but the boundary conversion must give PermissionDenied, not NotFound.
+    assert_eq!(e.kind(), ErrorKind::Client);
+    let ae: ActrError = e.into();
+    assert!(matches!(ae, ActrError::PermissionDenied(_)));
+}
+
+#[test]
+fn tungstenite_403_becomes_realm_denied_with_terminal_verdict() {
+    let e: NetworkError = ws_http_error(403, None).into();
+    assert!(matches!(e, NetworkError::RealmDenied(_)));
+    assert_eq!(e.auth_verdict(), Some(AuthVerdict::RealmDenied));
+    let ae: ActrError = e.into();
+    assert!(matches!(ae, ActrError::PermissionDenied(_)));
+}
+
+#[test]
+fn tungstenite_503_becomes_server_not_ready_no_verdict() {
+    // 503 without Retry-After: transient, no verdict, no hint.
+    let e: NetworkError = ws_http_error(503, None).into();
+    assert!(matches!(e, NetworkError::ServerNotReady { .. }));
+    assert_eq!(e.auth_verdict(), None);
+    assert_eq!(e.retry_after(), None);
+    assert_eq!(e.kind(), ErrorKind::Transient);
+    assert!(e.is_retryable());
+}
+
+#[test]
+fn tungstenite_503_honors_retry_after_seconds() {
+    let e: NetworkError = ws_http_error(503, Some("7")).into();
+    assert_eq!(e.retry_after(), Some(std::time::Duration::from_secs(7)));
+    assert_eq!(e.auth_verdict(), None);
+}
+
+#[test]
+fn tungstenite_503_ignores_http_date_retry_after() {
+    // HTTP-date form is not parsed (delta-seconds only); fall back to None.
+    let e: NetworkError = ws_http_error(503, Some("Wed, 21 Oct 2099 07:28:00 GMT")).into();
+    assert!(matches!(e, NetworkError::ServerNotReady { .. }));
+    assert_eq!(e.retry_after(), None);
+}
+
+#[test]
+fn tungstenite_500_stays_transient_websocket_error() {
+    // Any other HTTP status (e.g. 500) is transient and carries no verdict.
+    let e: NetworkError = ws_http_error(500, None).into();
+    assert!(matches!(e, NetworkError::WebSocketError(_)));
+    assert_eq!(e.auth_verdict(), None);
+    assert_eq!(e.kind(), ErrorKind::Transient);
+}
+
+#[test]
+fn tungstenite_closed_stays_websocket_closed_no_verdict() {
+    let e: NetworkError = tokio_tungstenite::tungstenite::Error::ConnectionClosed.into();
+    assert!(matches!(e, NetworkError::WebSocketClosed(_)));
+    assert_eq!(e.auth_verdict(), None);
+}
+
+#[test]
+fn transport_blips_never_carry_an_auth_verdict() {
+    // The whole point of the type distinction: transient transport failures
+    // must never look like an auth decision to the controller.
+    let blips = [
+        NetworkError::ConnectionError("x".into()),
+        NetworkError::WebSocketError("x".into()),
+        NetworkError::WebSocketClosed("x".into()),
+        NetworkError::TimeoutError("x".into()),
+        NetworkError::SignalingError("x".into()),
+        NetworkError::IceError("x".into()),
+        NetworkError::CredentialExpired("x".into()),
+    ];
+    for e in &blips {
+        assert_eq!(e.auth_verdict(), None, "{e} must not carry a verdict");
+    }
+}

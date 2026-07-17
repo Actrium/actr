@@ -1,7 +1,49 @@
 //! Network layer error definitions
 
 use actr_protocol::{ActrError, Classify, ErrorKind};
+use std::time::Duration;
 use thiserror::Error;
+
+/// Typed authentication verdict extracted from a transport failure.
+///
+/// This is the correctness-critical distinction the membership authority relies
+/// on: a verdict means the *credential itself* was rejected (or the realm is
+/// gone), so retrying the SAME credential is pointless — the recovery engine
+/// must mint a fresh one. Transport blips (timeouts, closed sockets, transient
+/// connection errors) never produce a verdict; they stay on the plain backoff
+/// path and retry the existing credential.
+///
+/// Kept deliberately small: only the outcomes that a signaling handshake or
+/// heartbeat can surface as an *authentication* decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthVerdict {
+    /// The credential was presented and rejected (handshake / heartbeat 401).
+    ///
+    /// Refresh-eligible: the recovery engine should re-acquire (soft renew,
+    /// then hard `/register` fallback) against the stable node identity.
+    Rejected,
+    /// The realm returned 403 — membership in this realm is denied.
+    ///
+    /// Terminal for automatic recovery: no amount of re-acquiring a credential
+    /// helps because the realm itself refuses this node. The controller enters
+    /// a loud, slow-cadence `Denied` phase rather than a tight retry loop.
+    RealmDenied,
+}
+
+/// Reason a credential was rejected, for diagnostics / metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionReason {
+    /// The signaling WebSocket handshake returned HTTP 401.
+    Handshake401,
+}
+
+impl std::fmt::Display for RejectionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RejectionReason::Handshake401 => f.write_str("handshake_401"),
+        }
+    }
+}
 
 /// Network layer error types
 #[derive(Error, Debug)]
@@ -41,6 +83,35 @@ pub enum NetworkError {
     /// Credential expired error (requires re-registration)
     #[error("Credential expired: {0}")]
     CredentialExpired(String),
+
+    /// The credential was presented and rejected (handshake / heartbeat 401).
+    ///
+    /// Distinct from `CredentialExpired`/`AuthenticationError`: this variant is
+    /// the typed hook the membership authority branches on via
+    /// [`NetworkError::auth_verdict`]. Carries the reason so metrics can tell a
+    /// handshake 401 from a heartbeat 401.
+    #[error("Credential rejected ({reason}): {message}")]
+    CredentialRejected {
+        reason: RejectionReason,
+        message: String,
+    },
+
+    /// The realm returned HTTP 403 — membership denied. Terminal for automatic
+    /// recovery (see [`AuthVerdict::RealmDenied`]).
+    #[error("Realm denied: {0}")]
+    RealmDenied(String),
+
+    /// The signaling server is up but not ready to authenticate yet (HTTP 503).
+    ///
+    /// Explicitly NOT an auth verdict: the credential is fine, the server just
+    /// asked us to come back later. Carries an optional `Retry-After` so the
+    /// reconnect loop can honor the server's backoff hint and retry the SAME
+    /// credential.
+    #[error("Server not ready: {message}")]
+    ServerNotReady {
+        message: String,
+        retry_after: Option<Duration>,
+    },
 
     /// Permission error
     #[error("Permission error: {0}")]
@@ -182,6 +253,9 @@ impl Classify for NetworkError {
             // Transient: timeout (framework-internal; caller-set deadlines should be Client)
             NetworkError::TimeoutError(_) => ErrorKind::Transient,
 
+            // Transient: server up but not ready to authenticate; retry same credential.
+            NetworkError::ServerNotReady { .. } => ErrorKind::Transient,
+
             // Client: caller or config errors that won't fix themselves
             NetworkError::ConnectionNotFound(_)
             | NetworkError::ChannelNotFound(_)
@@ -191,10 +265,15 @@ impl Classify for NetworkError {
             | NetworkError::ConfigurationError(_)
             | NetworkError::ServiceDiscoveryError(_) => ErrorKind::Client,
 
-            // Client: auth/permission
+            // Client: auth/permission. `CredentialRejected` / `RealmDenied` are
+            // Client-kind (retrying the SAME credential never succeeds) but the
+            // `From<NetworkError> for ActrError` boundary gives them a dedicated
+            // arm so they surface as `PermissionDenied`, not `NotFound`.
             NetworkError::AuthenticationError(_)
             | NetworkError::PermissionError(_)
-            | NetworkError::CredentialExpired(_) => ErrorKind::Client,
+            | NetworkError::CredentialExpired(_)
+            | NetworkError::CredentialRejected { .. }
+            | NetworkError::RealmDenied(_) => ErrorKind::Client,
 
             // Corrupt: data cannot be decoded
             NetworkError::DeserializationError(_) => ErrorKind::Corrupt,
@@ -257,6 +336,9 @@ impl NetworkError {
             NetworkError::JsonError(_) => "json",
             NetworkError::BroadcastError(_) => "broadcast",
             NetworkError::CredentialExpired(_) => "credential_expired",
+            NetworkError::CredentialRejected { .. } => "credential_rejected",
+            NetworkError::RealmDenied(_) => "realm_denied",
+            NetworkError::ServerNotReady { .. } => "server_not_ready",
             NetworkError::Other(_) => "other",
         }
     }
@@ -267,7 +349,11 @@ impl NetworkError {
             NetworkError::ConfigurationError(_)
             | NetworkError::AuthenticationError(_)
             | NetworkError::PermissionError(_)
-            | NetworkError::CredentialExpired(_) => 10,
+            | NetworkError::CredentialExpired(_)
+            | NetworkError::CredentialRejected { .. }
+            | NetworkError::RealmDenied(_) => 10,
+
+            NetworkError::ServerNotReady { .. } => 5,
 
             NetworkError::WebRtcError(_)
             | NetworkError::SignalingError(_)
@@ -342,6 +428,9 @@ impl NetworkError {
             | NetworkError::TimeoutError(_)
             | NetworkError::AuthenticationError(_)
             | NetworkError::CredentialExpired(_)
+            | NetworkError::CredentialRejected { .. }
+            | NetworkError::RealmDenied(_)
+            | NetworkError::ServerNotReady { .. }
             | NetworkError::PermissionError(_)
             | NetworkError::ConfigurationError(_)
             | NetworkError::ResourceExhaustedError(_)
@@ -366,6 +455,80 @@ impl NetworkError {
             | NetworkError::UrlParseError(_)
             | NetworkError::JsonError(_)
             | NetworkError::Other(_) => false,
+        }
+    }
+
+    /// Classify this error as a typed authentication verdict, if any.
+    ///
+    /// This is the single branch point the membership authority relies on:
+    ///
+    /// - `Some(AuthVerdict::Rejected)` — the credential was presented and
+    ///   rejected (handshake / heartbeat 401). Re-acquire is warranted.
+    /// - `Some(AuthVerdict::RealmDenied)` — realm 403. Terminal for automatic
+    ///   recovery.
+    /// - `None` — NOT an auth decision. Includes `ServerNotReady` (503; the
+    ///   credential is fine, the server asked us to retry later) and every
+    ///   transport-level failure. These stay on the plain backoff / retry-same-
+    ///   credential path and MUST never reach the credential owner.
+    ///
+    /// Exhaustive by design so a future auth-shaped variant forces an explicit
+    /// verdict decision here.
+    pub fn auth_verdict(&self) -> Option<AuthVerdict> {
+        match self {
+            NetworkError::CredentialRejected { .. } => Some(AuthVerdict::Rejected),
+            NetworkError::RealmDenied(_) => Some(AuthVerdict::RealmDenied),
+
+            // Not an auth verdict — must not trigger re-acquire.
+            NetworkError::ServerNotReady { .. }
+            | NetworkError::ConnectionError(_)
+            | NetworkError::SignalingError(_)
+            | NetworkError::WebRtcError(_)
+            | NetworkError::ProtocolError(_)
+            | NetworkError::SerializationError(_)
+            | NetworkError::DeserializationError(_)
+            | NetworkError::TimeoutError(_)
+            | NetworkError::AuthenticationError(_)
+            | NetworkError::CredentialExpired(_)
+            | NetworkError::PermissionError(_)
+            | NetworkError::ConfigurationError(_)
+            | NetworkError::ResourceExhaustedError(_)
+            | NetworkError::NetworkUnreachableError(_)
+            | NetworkError::ServiceDiscoveryError(_)
+            | NetworkError::NatTraversalError(_)
+            | NetworkError::DataChannelError(_)
+            | NetworkError::DataChannelClosed(_)
+            | NetworkError::DataChannelNotOpen(_)
+            | NetworkError::BroadcastError(_)
+            | NetworkError::IceError(_)
+            | NetworkError::DtlsError(_)
+            | NetworkError::StunTurnError(_)
+            | NetworkError::WebSocketError(_)
+            | NetworkError::WebSocketClosed(_)
+            | NetworkError::ConnectionNotFound(_)
+            | NetworkError::ConnectionClosed(_)
+            | NetworkError::PeerConnectionClosed(_)
+            | NetworkError::NotImplemented(_)
+            | NetworkError::ChannelClosed(_)
+            | NetworkError::SendError(_)
+            | NetworkError::NoRoute(_)
+            | NetworkError::InvalidOperation(_)
+            | NetworkError::InvalidArgument(_)
+            | NetworkError::ChannelNotFound(_)
+            | NetworkError::IoError(_)
+            | NetworkError::UrlParseError(_)
+            | NetworkError::JsonError(_)
+            | NetworkError::Other(_) => None,
+        }
+    }
+
+    /// The server-provided `Retry-After` hint, when the error carries one.
+    ///
+    /// Only `ServerNotReady` (503) currently carries a hint; all other variants
+    /// return `None`.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            NetworkError::ServerNotReady { retry_after, .. } => *retry_after,
+            _ => None,
         }
     }
 }
@@ -395,8 +558,19 @@ impl From<NetworkError> for ActrError {
             NetworkError::TimeoutError(_) => return ActrError::TimedOut,
             NetworkError::PermissionError(msg)
             | NetworkError::AuthenticationError(msg)
-            | NetworkError::CredentialExpired(msg) => {
+            | NetworkError::CredentialExpired(msg)
+            | NetworkError::RealmDenied(msg) => {
                 return ActrError::PermissionDenied(msg.clone());
+            }
+            // Dedicated arm so the Client-kind auth-rejection does not collapse
+            // into `NotFound` (which monitoring/consumers read as "route gone").
+            NetworkError::CredentialRejected { message, .. } => {
+                return ActrError::PermissionDenied(message.clone());
+            }
+            // Server asked us to come back later — surface as a transient
+            // Unavailable so RPC callers retry rather than treat it as fatal.
+            NetworkError::ServerNotReady { message, .. } => {
+                return ActrError::Unavailable(message.clone());
             }
             NetworkError::NoRoute(msg)
             | NetworkError::ConnectionNotFound(msg)
@@ -454,14 +628,63 @@ pub(crate) fn is_tungstenite_closed(err: &tokio_tungstenite::tungstenite::Error)
     )
 }
 
-/// Convert from WebSocket error
+/// Parse an HTTP `Retry-After` header value that carries a delta-seconds count.
+///
+/// Only the numeric (delta-seconds) form is honored; an HTTP-date form returns
+/// `None` (the caller falls back to its own backoff). Kept narrow on purpose.
+fn parse_retry_after_seconds(headers: &tokio_tungstenite::tungstenite::http::HeaderMap) -> Option<Duration> {
+    let value = headers.get(tokio_tungstenite::tungstenite::http::header::RETRY_AFTER)?;
+    let secs: u64 = value.to_str().ok()?.trim().parse().ok()?;
+    Some(Duration::from_secs(secs))
+}
+
+/// Convert from WebSocket error.
+///
+/// The critical case is `Error::Http(resp)`: the signaling handshake was
+/// answered with an HTTP status instead of a 101 upgrade. Previously every such
+/// failure was flattened to `WebSocketError` (a transient), so a 401 credential
+/// rejection was indistinguishable from a network blip and the reconnect loop
+/// retried the SAME dead credential forever. We now inspect the status and emit
+/// a typed variant the membership authority can branch on via `auth_verdict()`.
 impl From<tokio_tungstenite::tungstenite::Error> for NetworkError {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        use tokio_tungstenite::tungstenite::Error as WsError;
+        use tokio_tungstenite::tungstenite::http::StatusCode;
+
         if is_tungstenite_closed(&err) {
-            NetworkError::WebSocketClosed(err.to_string())
-        } else {
-            NetworkError::WebSocketError(err.to_string())
+            return NetworkError::WebSocketClosed(err.to_string());
         }
+
+        if let WsError::Http(resp) = &err {
+            let status = resp.status();
+            let body_hint = resp
+                .body()
+                .as_ref()
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(": {s}"))
+                .unwrap_or_default();
+
+            return match status {
+                StatusCode::UNAUTHORIZED => NetworkError::CredentialRejected {
+                    reason: RejectionReason::Handshake401,
+                    message: format!("signaling handshake returned 401{body_hint}"),
+                },
+                StatusCode::FORBIDDEN => {
+                    NetworkError::RealmDenied(format!("signaling handshake returned 403{body_hint}"))
+                }
+                StatusCode::SERVICE_UNAVAILABLE => NetworkError::ServerNotReady {
+                    message: format!("signaling handshake returned 503{body_hint}"),
+                    retry_after: parse_retry_after_seconds(resp.headers()),
+                },
+                other => NetworkError::WebSocketError(format!(
+                    "signaling handshake returned HTTP {other}{body_hint}"
+                )),
+            };
+        }
+
+        NetworkError::WebSocketError(err.to_string())
     }
 }
 
