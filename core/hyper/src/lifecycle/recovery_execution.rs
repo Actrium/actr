@@ -59,6 +59,14 @@ define_state_machine! {
     }
 }
 
+/// A standalone driver for [`RecoveryExecutionMachine`].
+///
+/// The production effect path no longer drives this tracker: the supervisor's
+/// `view.execution` is the sole single-flight execution writer, and a second
+/// tracker on the cancellable effect path would poison itself if `complete`
+/// never ran after `begin`. The type and its tests are retained as executable
+/// documentation of the execution machine's `begin`/`complete` phases.
+#[allow(dead_code)]
 pub(crate) struct RecoveryExecutionTracker {
     machine: StateMachineInstance<RecoveryExecutionMachine>,
 }
@@ -73,6 +81,7 @@ impl Default for RecoveryExecutionTracker {
     }
 }
 
+#[allow(dead_code)]
 impl RecoveryExecutionTracker {
     pub(crate) fn begin(
         &mut self,

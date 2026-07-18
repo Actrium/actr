@@ -250,6 +250,10 @@ pub(crate) struct AcceptOutcome {
     pub cancel_effect: bool,
     /// Structured status-stream records produced by translation.
     pub status: Vec<tp::StatusRecord>,
+    /// Signaling-layer directives the shell executes (auto-reconnect control).
+    pub signals: Vec<tp::SignalingDirective>,
+    /// The supervisor has ended unconditionally; the shell must stop its loop.
+    pub terminate: bool,
 }
 
 /// A newly started lifecycle effect the shell must spawn.
@@ -390,7 +394,9 @@ impl ConnectionSupervisor {
             advanced,
             timer_ops: std::mem::take(&mut self.pending_ops),
             cancel_effect,
+            terminate: decision.terminate,
             status: decision.status,
+            signals: decision.signals,
         }
     }
 
@@ -1102,8 +1108,18 @@ fn next_entropy_seed() -> u64 {
 // synchronous helpers with no timer owner. They preserve the pre-RFC selection
 // behavior so existing batch callers keep their contract while the responsive
 // reconciler drives the RFC engine.
+//
+// This whole path is a second policy source that would drift from `translate`.
+// It is deprecated in favor of the responsive reconciler
+// (`run_network_event_reconciler`) and retained only for the migration window;
+// no production caller uses it. `LegacySelector` below is its hand-written
+// engine and shares that deprecation.
 // ---------------------------------------------------------------------------
 
+#[deprecated(
+    note = "legacy batch selector; the responsive reconciler drives the RFC \
+            `translate` engine. Retained only for the migration window."
+)]
 pub(crate) fn legacy_select_action(events: &[NetworkEvent]) -> NetworkRecoveryAction {
     let mut sel = legacy::LegacySelector::default();
     for event in events {

@@ -79,10 +79,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::connection_supervisor::{
-    ConnectionSupervisor, StartedEffect, TimerOp, event_to_input, legacy_select_action,
-    network_action_of,
+    ConnectionSupervisor, StartedEffect, TimerOp, event_to_input, network_action_of,
 };
-use super::recovery_execution::RecoveryExecutionTracker;
 use super::recovery_policy::diagnosis::{AbortCause, EffectDiagnosis, EffectOutcome};
 use super::recovery_policy::translate as tp;
 
@@ -302,6 +300,19 @@ pub trait NetworkEventProcessor: Send + Sync {
     /// dequeued, before the reconciler optionally waits through offline grace.
     fn prepare_network_event(&self, _event: &NetworkEvent) {}
 
+    /// Invalidate in-flight automatic reconnect and keep new attempts paused.
+    ///
+    /// Executed by the shell when policy translation emits
+    /// `SignalingDirective::SuppressAutoReconnect`. The default is a no-op for
+    /// custom processors that own no signaling socket.
+    fn suppress_auto_reconnect(&self) {}
+
+    /// Re-enable future automatic reconnects without starting one immediately.
+    ///
+    /// Executed by the shell when policy translation emits
+    /// `SignalingDirective::ResumeAutoReconnect`. The default is a no-op.
+    fn resume_auto_reconnect(&self) {}
+
     /// Enter a lifecycle barrier as soon as a queued event is observed by the
     /// reconciler. The default is no barrier for custom processors.
     fn begin_network_event_barrier(&self, _event: &NetworkEvent) -> Option<NetworkEventBarrier> {
@@ -476,7 +487,6 @@ pub struct DefaultNetworkEventProcessor {
     debounce_config: DebounceConfig,
     debounce_state: Option<Arc<DebounceState>>,
     recovery_state: Arc<SignalingRecoveryState>,
-    recovery_execution: Arc<tokio::sync::Mutex<RecoveryExecutionTracker>>,
 }
 
 impl DefaultNetworkEventProcessor {
@@ -533,9 +543,6 @@ impl DefaultNetworkEventProcessor {
             debounce_config,
             debounce_state,
             recovery_state: Arc::new(SignalingRecoveryState::new()),
-            recovery_execution: Arc::new(tokio::sync::Mutex::new(
-                RecoveryExecutionTracker::default(),
-            )),
         }
     }
 
@@ -918,38 +925,16 @@ impl DefaultNetworkEventProcessor {
 
 #[async_trait::async_trait]
 impl NetworkEventProcessor for DefaultNetworkEventProcessor {
-    fn prepare_network_event(&self, event: &NetworkEvent) {
-        if let NetworkEvent::AppLifecycleChanged { state } = event {
-            match state {
-                AppLifecycleState::Background => {
-                    tracing::info!(
-                        event = ?event,
-                        "App lifecycle suppressing stale signaling auto-reconnect before action selection"
-                    );
-                    self.signaling_client.suppress_auto_reconnect();
-                }
-                AppLifecycleState::Foreground {
-                    background_duration_ms,
-                } if *background_duration_ms < LONG_BACKGROUND_RECONNECT_THRESHOLD_MS => {
-                    tracing::info!(
-                        event = ?event,
-                        "Short foreground transition re-enabling future signaling auto-reconnect"
-                    );
-                    self.signaling_client.resume_auto_reconnect();
-                }
-                AppLifecycleState::Foreground { .. } => {
-                    // A long foreground transition selects ForceReconnect.
-                    // Keep any stale automatic attempt suppressed until that
-                    // action has completed teardown and explicitly re-enables
-                    // recovery through the fresh signaling connect path.
-                    tracing::info!(
-                        event = ?event,
-                        "Long foreground transition keeping stale signaling auto-reconnect suppressed"
-                    );
-                    self.signaling_client.suppress_auto_reconnect();
-                }
-            }
-        }
+    fn suppress_auto_reconnect(&self) {
+        // Executed when policy translation emits `SuppressAutoReconnect`
+        // (entering the background, or a long-background foreground rebuild).
+        self.signaling_client.suppress_auto_reconnect();
+    }
+
+    fn resume_auto_reconnect(&self) {
+        // Executed when policy translation emits `ResumeAutoReconnect` (a short
+        // background stay that only probes the still-healthy socket).
+        self.signaling_client.resume_auto_reconnect();
     }
 
     fn begin_network_event_barrier(&self, event: &NetworkEvent) -> Option<NetworkEventBarrier> {
@@ -1062,21 +1047,20 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             return Ok(());
         }
 
-        // Keep the YASM tracker locked for the whole asynchronous action. The
-        // reconciler is normally single-consumer already, while this guard also
-        // makes direct/custom invocations single-flight and prevents two
-        // recovery side effects from overlapping.
-        let mut execution = self.recovery_execution.lock().await;
+        // The single-flight execution machine (`view.execution`) is owned by the
+        // supervisor, which is its only writer. The effect task performs I/O and
+        // reports a typed outcome; it holds no policy state of its own. Driving a
+        // second execution tracker here would poison it whenever the supervisor
+        // cancels the effect after `begin` but before `complete` — a cancelled
+        // future's `complete` never runs — permanently wedging every later
+        // recovery action (RFC-0400 "MUST NOT let a cancellation poison
+        // single-flight ownership", invariant 8).
         let action_id = NEXT_NETWORK_RECOVERY_ACTION_ID.fetch_add(1, Ordering::Relaxed);
-        let (previous, executing) = execution.begin(action)?;
         tracing::info!(
             action_id,
             action = ?action,
-            from = ?previous,
-            to = ?executing,
-            "network_event.execution.transition"
+            "network_event.execution.action.start"
         );
-
         let result = match action {
             NetworkRecoveryAction::Noop => Ok(()),
             NetworkRecoveryAction::Offline => self.process_offline().await,
@@ -1085,41 +1069,39 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             NetworkRecoveryAction::CleanupOnly => self.cleanup_connections().await,
             NetworkRecoveryAction::ForceReconnect => self.force_reconnect().await,
         };
-
-        match execution.complete(result.is_ok()) {
-            Ok((previous, current)) => {
-                tracing::info!(
-                    action_id,
-                    action = ?action,
-                    from = ?previous,
-                    to = ?current,
-                    success = result.is_ok(),
-                    "network_event.execution.transition"
-                );
-                result
-            }
-            Err(state_error) => {
-                tracing::error!(
-                    action_id,
-                    action = ?action,
-                    error = %state_error,
-                    "network_event.execution.invalid_transition"
-                );
-                match result {
-                    Ok(()) => Err(state_error),
-                    Err(action_error) => Err(format!(
-                        "{action_error}; recovery state error: {state_error}"
-                    )),
-                }
-            }
-        }
+        tracing::info!(
+            action_id,
+            action = ?action,
+            success = result.is_ok(),
+            "network_event.execution.action.completed"
+        );
+        result
     }
 }
 
+/// Select one recovery action from a batch of events with the legacy
+/// synchronous selector.
+///
+/// Deprecated: this is a second policy source that does not go through the RFC
+/// `translate` engine and has no timer owner. Prefer the responsive reconciler
+/// ([`run_network_event_reconciler`]), which routes every decision through the
+/// pure translation function. Retained only for the migration window.
+#[deprecated(note = "second policy source without a timer owner; use \
+            run_network_event_reconciler, which drives the RFC translate engine")]
+#[allow(deprecated)]
 pub fn select_network_recovery_action(events: &[NetworkEvent]) -> NetworkRecoveryAction {
-    legacy_select_action(events)
+    super::connection_supervisor::legacy_select_action(events)
 }
 
+/// Process a batch of events by selecting one action and running it once.
+///
+/// Deprecated: prefer the responsive reconciler
+/// ([`run_network_event_reconciler`]); this legacy batch path bypasses the RFC
+/// `translate` engine and its single-flight/timer ownership. Retained only for
+/// the migration window.
+#[deprecated(note = "legacy batch path bypassing the RFC translate engine; use \
+            run_network_event_reconciler")]
+#[allow(deprecated)]
 pub async fn process_network_event_batch(
     events: Vec<NetworkEvent>,
     processor: Arc<dyn NetworkEventProcessor>,
@@ -1128,7 +1110,7 @@ pub async fn process_network_event_batch(
         return Vec::new();
     }
 
-    let action = select_network_recovery_action(&events);
+    let action = super::connection_supervisor::legacy_select_action(&events);
     process_network_event_batch_with_action(events, action, processor).await
 }
 
@@ -1422,10 +1404,14 @@ async fn reconcile_loop(
             }
             Some(input) = internal_rx.recv() => {
                 let now = start.elapsed();
-                handle_supervisor_input(
+                let terminate = handle_supervisor_input(
                     &mut supervisor, input, now, start, &internal_tx, &mut timers,
                     &mut effect, &processor, &status_tx, &mut last_action_id, &mut last_outcome,
                 );
+                if terminate {
+                    tracing::info!("🛑 Supervisor ended at shutdown deadline");
+                    break;
+                }
             }
             Some(request) = event_rx.recv() => {
                 let event = request.event.clone();
@@ -1435,7 +1421,7 @@ async fn reconcile_loop(
                 processor.prepare_network_event(&event);
                 let input = event_to_input(&event, epoch);
                 let now = start.elapsed();
-                handle_supervisor_input(
+                let terminate = handle_supervisor_input(
                     &mut supervisor, input, now, start, &internal_tx, &mut timers,
                     &mut effect, &processor, &status_tx, &mut last_action_id, &mut last_outcome,
                 );
@@ -1445,6 +1431,10 @@ async fn reconcile_loop(
                 let duration_ms = wait_started.elapsed().as_millis() as u64;
                 if request.result_tx.send(NetworkEventResult::success(event, duration_ms)).is_err() {
                     tracing::debug!("Network event caller dropped before receiving acceptance");
+                }
+                if terminate {
+                    tracing::info!("🛑 Supervisor ended at shutdown deadline");
+                    break;
                 }
             }
             else => break,
@@ -1479,7 +1469,11 @@ fn arm_timer(
     }
 }
 
+/// Apply one supervisor input and drive its side effects. Returns `true` when
+/// the supervisor has ended unconditionally (shutdown overall deadline) and the
+/// reconcile loop must stop.
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 fn handle_supervisor_input(
     supervisor: &mut ConnectionSupervisor,
     input: tp::Input,
@@ -1492,12 +1486,13 @@ fn handle_supervisor_input(
     status_tx: &watch::Sender<SupervisorStatus>,
     last_action_id: &mut Option<u64>,
     last_outcome: &mut Option<ObservedOutcome>,
-) {
+) -> bool {
     if let tp::Input::EffectCompleted { outcome, .. } = &input {
         *last_outcome = Some(observed_outcome(outcome));
     }
 
     let outcome = supervisor.accept(input, now);
+    let terminate = outcome.terminate;
 
     tracing::debug!(
         advanced = outcome.advanced,
@@ -1528,6 +1523,22 @@ fn handle_supervisor_input(
         running.token.cancel();
     }
 
+    // Lower policy-derived signaling directives (auto-reconnect control) to the
+    // processor. These replace the pre-translation event sniffing that used to
+    // live in `prepare_network_event`.
+    for signal in &outcome.signals {
+        match signal {
+            tp::SignalingDirective::SuppressAutoReconnect => {
+                tracing::debug!("network_event.signaling.suppress_auto_reconnect");
+                processor.suppress_auto_reconnect();
+            }
+            tp::SignalingDirective::ResumeAutoReconnect => {
+                tracing::debug!("network_event.signaling.resume_auto_reconnect");
+                processor.resume_auto_reconnect();
+            }
+        }
+    }
+
     for record in &outcome.status {
         match record {
             tp::StatusRecord::RecoveryRejected { mode, reason } => {
@@ -1542,27 +1553,31 @@ fn handle_supervisor_input(
         }
     }
 
-    if let Some(started) = supervisor.maybe_start_effect(now) {
-        *last_action_id = Some(started.action_id);
-        let token = CancellationToken::new();
-        tracing::info!(
-            action_id = started.action_id,
-            kind = ?started.kind,
-            policy_revision = started.captured_revision,
-            "network_event.effect.started"
-        );
-        spawn_effect(
-            started,
-            token.clone(),
-            processor.clone(),
-            internal_tx.clone(),
-        );
-        *effect = Some(RunningEffect {
-            action_id: started.action_id,
-            token,
-        });
-    } else if supervisor.view().execution == tp::ExecutionState::Idle {
-        *effect = None;
+    // A terminating supervisor starts no further work; its remaining teardown
+    // obligations were detached with `Abandoned` residuals in translation.
+    if !terminate {
+        if let Some(started) = supervisor.maybe_start_effect(now) {
+            *last_action_id = Some(started.action_id);
+            let token = CancellationToken::new();
+            tracing::info!(
+                action_id = started.action_id,
+                kind = ?started.kind,
+                policy_revision = started.captured_revision,
+                "network_event.effect.started"
+            );
+            spawn_effect(
+                started,
+                token.clone(),
+                processor.clone(),
+                internal_tx.clone(),
+            );
+            *effect = Some(RunningEffect {
+                action_id: started.action_id,
+                token,
+            });
+        } else if supervisor.view().execution == tp::ExecutionState::Idle {
+            *effect = None;
+        }
     }
 
     let _ = status_tx.send(SupervisorStatus {
@@ -1570,6 +1585,8 @@ fn handle_supervisor_input(
         last_action_id: *last_action_id,
         last_outcome: *last_outcome,
     });
+
+    terminate
 }
 
 fn spawn_effect(

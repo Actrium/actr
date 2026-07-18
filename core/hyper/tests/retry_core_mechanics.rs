@@ -1,3 +1,7 @@
+// The legacy batch helpers (`select_network_recovery_action`,
+// `process_network_event_batch`) are deprecated in favor of the responsive
+// reconciler; these compatibility tests still exercise them intentionally.
+#![allow(deprecated)]
 //! Deterministic tests for the outbound retry core.
 //!
 //! The VNet retry tests exercise realistic recovery flows, but they cannot

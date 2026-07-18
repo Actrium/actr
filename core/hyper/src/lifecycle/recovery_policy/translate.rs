@@ -582,6 +582,21 @@ pub(crate) enum CancelReason {
     Shutdown,
 }
 
+/// A signaling-layer directive the shell executes after applying a decision.
+///
+/// Automatic-reconnect suppression and resumption are policy decisions, so they
+/// are derived here by the one pure translation function rather than sniffed
+/// from the raw event ahead of translation. The shell lowers each directive to
+/// the signaling client through the `NetworkEventProcessor` hooks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignalingDirective {
+    /// Invalidate in-flight automatic reconnect attempts and keep new attempts
+    /// paused until a recovery path explicitly schedules them again.
+    SuppressAutoReconnect,
+    /// Re-enable future automatic reconnects without starting one immediately.
+    ResumeAutoReconnect,
+}
+
 /// A category from the audited timer inventory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TimerCategory {
@@ -659,6 +674,11 @@ pub(crate) struct Decision {
     pub timers: Vec<TimerDirective>,
     /// Structured status-stream records.
     pub status: Vec<StatusRecord>,
+    /// Signaling-layer directives the shell executes (auto-reconnect control).
+    pub signals: Vec<SignalingDirective>,
+    /// The supervisor has ended unconditionally (its shutdown overall deadline
+    /// aborted all remaining work); the shell must stop its reconcile loop.
+    pub terminate: bool,
 }
 
 impl Decision {
@@ -671,6 +691,8 @@ impl Decision {
             cancels: Vec::new(),
             timers: Vec::new(),
             status: Vec::new(),
+            signals: Vec::new(),
+            terminate: false,
         }
     }
 
@@ -863,12 +885,21 @@ fn translate_foreground(view: &View, now: PolicyInstant, config: &PolicyConfig) 
             let mut d = Decision::advancing();
             d.machine(MachineInput::AppPhase(AppPhaseInput::EnterForeground));
             let elapsed = now.saturating_sub(view.background_entered_at.unwrap_or(now));
-            let intent = if elapsed < config.background_reconnect_after {
-                RecoveryIntentInput::RequestProbe
+            if elapsed < config.background_reconnect_after {
+                // Short background: probe the possibly-healthy socket and let
+                // automatic reconnect resume rather than force a rebuild.
+                d.machine(MachineInput::RecoveryIntent(
+                    RecoveryIntentInput::RequestProbe,
+                ));
+                d.signals.push(SignalingDirective::ResumeAutoReconnect);
             } else {
-                RecoveryIntentInput::RequestReconnect
-            };
-            d.machine(MachineInput::RecoveryIntent(intent));
+                // Long background: force a reconnect and keep any stale automatic
+                // attempt suppressed until that fresh connect path re-enables it.
+                d.machine(MachineInput::RecoveryIntent(
+                    RecoveryIntentInput::RequestReconnect,
+                ));
+                d.signals.push(SignalingDirective::SuppressAutoReconnect);
+            }
             // Wakes records backing off after a phase-ineligible failure; parks
             // remain until their masks clear (foreground is not a mask trigger).
             d.gate_triggers.push(GateTrigger::Wake {
@@ -896,6 +927,9 @@ fn translate_background(view: &View) -> Decision {
     // Row 1: enter background; the shell stamps background_entered_at = now.
     let mut d = Decision::advancing();
     d.machine(MachineInput::AppPhase(AppPhaseInput::EnterBackground));
+    // Entering the background pauses stale automatic reconnect without
+    // disconnecting a healthy socket (derived here, not sniffed pre-translation).
+    d.signals.push(SignalingDirective::SuppressAutoReconnect);
     d
 }
 
@@ -1056,6 +1090,14 @@ fn translate_recovery_requested(view: &View, minimum: RecoveryStrength) -> Decis
     if current.is_none_or(|c| c < minimum) {
         let mut d = Decision::advancing();
         d.machine(MachineInput::RecoveryIntent(minimum.request_input()));
+        // A stronger requirement preempts a weaker recovery effect already
+        // running, per the RFC effect-preemption table; the stronger action
+        // starts once the single-flight slot returns to Idle.
+        if let Some(running) = executing_recovery_strength(view.execution)
+            && running < minimum
+        {
+            d.cancels.push(CancelReason::PreemptedByStronger);
+        }
         return d;
     }
     // pending >= minimum
@@ -1281,11 +1323,24 @@ fn translate_shutdown_deadline(view: &View, deadline_id: u64) -> Decision {
         return Decision::none();
     }
     let mut d = Decision::none();
-    // Abort remaining work and record Abandoned residuals; the supervisor ends.
+    // Abort the in-flight effect and record Abandoned residuals.
     if view.execution != ExecutionState::Idle {
         d.cancels.push(CancelReason::Shutdown);
     }
+    // Detach any still-pending teardown obligation with Abandoned semantics so a
+    // lingering record cannot restart cleanup or disconnect after the deadline.
+    if view.cleanup_work == CleanupWorkState::CleanupPending {
+        d.machine(MachineInput::CleanupWork(CleanupWorkInput::CompleteCleanup));
+    }
+    if view.offline_work == OfflineWorkState::DisconnectPending {
+        d.machine(MachineInput::OfflineWork(
+            OfflineWorkInput::CompleteDisconnect,
+        ));
+    }
     d.status.push(StatusRecord::ShutdownAbandon);
+    // The supervisor ends unconditionally (RFC-0400 invariant 30); the shell
+    // stops its reconcile loop instead of re-deriving cleanup.
+    d.terminate = true;
     d
 }
 
@@ -1407,8 +1462,16 @@ fn translate_effect_completed(
         }
         EffectOutcome::Failed { diagnosis } => {
             d.machine(MachineInput::Execution(ExecutionInput::Failed));
-            apply_failure(view, kind, domain, diagnosis, now, config, entropy, &mut d);
-            apply_deferred_pause(view, domain, &mut d);
+            // Only a still-current obligation receives a classification verdict.
+            // A completion whose record was superseded or re-dispatched (its
+            // record is gone, or its work revision is newer than this effect's
+            // captured revision) releases the execution slot and nothing else.
+            // This mirrors the acknowledgement guard so a stale failure cannot
+            // back off, escalate, or resurrect newer work.
+            if still_current_work(view, domain, policy_revision) {
+                apply_failure(view, kind, domain, diagnosis, now, config, entropy, &mut d);
+                apply_deferred_pause(view, domain, &mut d);
+            }
         }
         EffectOutcome::Cancelled => {
             d.machine(MachineInput::Execution(ExecutionInput::Cancelled));
@@ -1416,8 +1479,12 @@ fn translate_effect_completed(
         }
         EffectOutcome::Aborted { cause } => {
             d.machine(MachineInput::Execution(ExecutionInput::Cancelled));
-            apply_abort(view, kind, domain, cause, &mut d);
-            apply_deferred_pause(view, domain, &mut d);
+            // Same still-current guard as the failure path: a stale abort of
+            // superseded work must not rule on the record that replaced it.
+            if still_current_work(view, domain, policy_revision) {
+                apply_abort(view, kind, domain, cause, &mut d);
+                apply_deferred_pause(view, domain, &mut d);
+            }
         }
     }
     d
@@ -1428,6 +1495,27 @@ fn retry_domain_of(kind: EffectKind) -> RetryDomain {
         EffectKind::Probe | EffectKind::Restore | EffectKind::Reconnect => RetryDomain::Recovery,
         EffectKind::Cleanup => RetryDomain::Cleanup,
         EffectKind::ConfirmedOfflineDisconnect => RetryDomain::Offline,
+    }
+}
+
+/// Whether the obligation an effect served is still the current one: its record
+/// is present and its work revision is not newer than the effect's captured
+/// `policy_revision`. This is the same predicate as success acknowledgement, so
+/// a stale failure, escalation, or abort cannot rule on newer or re-dispatched
+/// work in the domain.
+fn still_current_work(view: &View, domain: RetryDomain, policy_revision: Revision) -> bool {
+    view.record(domain)
+        .is_some_and(|r| r.work_revision <= policy_revision)
+}
+
+/// The recovery strength of the action currently occupying the execution slot,
+/// or `None` when the slot is idle or running a teardown effect.
+fn executing_recovery_strength(exec: ExecutionState) -> Option<RecoveryStrength> {
+    match exec {
+        ExecutionState::Probing => Some(RecoveryStrength::Probe),
+        ExecutionState::Restoring => Some(RecoveryStrength::Restore),
+        ExecutionState::Reconnecting => Some(RecoveryStrength::Reconnect),
+        _ => None,
     }
 }
 

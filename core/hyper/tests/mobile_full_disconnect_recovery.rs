@@ -1,3 +1,7 @@
+// The legacy batch helpers (`select_network_recovery_action`,
+// `process_network_event_batch`) are deprecated in favor of the responsive
+// reconciler; these compatibility tests still exercise them intentionally.
+#![allow(deprecated)]
 //! Mobile full-disconnect recovery tests.
 //!
 //! The mobile peer is exercised as both WebRTC offerer and answerer. A short

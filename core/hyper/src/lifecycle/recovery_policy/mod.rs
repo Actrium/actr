@@ -1,11 +1,8 @@
 //! RFC-0400 recovery policy translation layer.
 //!
 //! This module is the pure, side-effect-free policy core described by RFC-0400
-//! ("Event-driven connection lifecycle and recovery"). It is deliberately
-//! additive: it introduces the normative vocabulary and the reference reducer
-//! without touching the pre-RFC [`super::connection_supervisor`] machines, which
-//! a later phase reconciles. Nothing here performs I/O, reads an ambient clock,
-//! or draws ambient randomness.
+//! ("Event-driven connection lifecycle and recovery"). Nothing here performs
+//! I/O, reads an ambient clock, or draws ambient randomness.
 //!
 //! Layout mirrors the RFC's "Policy translation" section:
 //!
@@ -19,9 +16,12 @@
 //!   entropy) -> Decision` reducer, the composite action decision, and the
 //!   derived send projection.
 //!
-//! The layer is not yet wired into any production path; the reconciliation
-//! phase consumes it. The module-level `allow(dead_code)` records that
-//! transitional state honestly rather than inflating the crate's public API.
+//! The layer is the production policy core: [`super::connection_supervisor`]'s
+//! `ConnectionSupervisor::accept` drives every transition through
+//! [`translate`], and the responsive reconciler in [`super::network_event`]
+//! executes the resulting decisions. The module-level `allow(dead_code)` keeps
+//! the full RFC vocabulary present for diagnostics and future phases even where
+//! a variant is not yet exercised by any current path.
 #![allow(dead_code)]
 
 pub(crate) mod classification;

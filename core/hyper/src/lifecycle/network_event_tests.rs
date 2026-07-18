@@ -19,6 +19,12 @@ struct ForceReconnectFakeSignalingClient {
     schedule_auto_reconnect_calls: AtomicUsize,
     schedule_auto_reconnect_reset_backoff_calls: AtomicUsize,
     event_tx: broadcast::Sender<SignalingEvent>,
+    /// When set, `disconnect` blocks after signaling `disconnect_entered` and
+    /// until `disconnect_release` is notified, so a test can cancel an effect
+    /// deterministically while it is mid-teardown.
+    block_disconnect: AtomicBool,
+    disconnect_entered: Arc<tokio::sync::Notify>,
+    disconnect_release: Arc<tokio::sync::Notify>,
 }
 
 impl ForceReconnectFakeSignalingClient {
@@ -34,6 +40,9 @@ impl ForceReconnectFakeSignalingClient {
             schedule_auto_reconnect_calls: AtomicUsize::new(0),
             schedule_auto_reconnect_reset_backoff_calls: AtomicUsize::new(0),
             event_tx,
+            block_disconnect: AtomicBool::new(false),
+            disconnect_entered: Arc::new(tokio::sync::Notify::new()),
+            disconnect_release: Arc::new(tokio::sync::Notify::new()),
         }
     }
 }
@@ -77,6 +86,10 @@ impl SignalingClient for ForceReconnectFakeSignalingClient {
     }
 
     async fn disconnect(&self) -> NetworkResult<()> {
+        if self.block_disconnect.load(AtomicOrdering::SeqCst) {
+            self.disconnect_entered.notify_one();
+            self.disconnect_release.notified().await;
+        }
         self.disconnect_calls.fetch_add(1, AtomicOrdering::SeqCst);
         self.suppress_auto_reconnect();
         self.connected.store(false, AtomicOrdering::SeqCst);
@@ -232,45 +245,84 @@ fn lifecycle_barrier_is_scoped_to_events_that_change_connections() {
 }
 
 #[test]
-fn background_and_long_foreground_suppress_auto_reconnect_before_settle() {
+fn signaling_directive_hooks_control_auto_reconnect() {
+    // Auto-reconnect suppression/resumption is now derived by policy translation
+    // as a `SignalingDirective` and executed by the reconciler through these
+    // processor hooks (background entry and long-background rebuilds emit
+    // `SuppressAutoReconnect`; a short-background probe emits
+    // `ResumeAutoReconnect`). This test covers the processor's lowering of those
+    // directives onto the signaling client; `translate_tests` covers the
+    // derivation itself.
     let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(false));
     let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
 
-    processor.prepare_network_event(&NetworkEvent::AppLifecycleChanged {
-        state: AppLifecycleState::Background,
-    });
+    processor.suppress_auto_reconnect();
     assert_eq!(
         signaling
             .suppress_auto_reconnect_calls
             .load(AtomicOrdering::SeqCst),
         1,
-        "background should pause reconnect attempts without disconnecting a healthy socket"
+        "SuppressAutoReconnect must pause reconnect attempts without disconnecting a healthy socket"
+    );
+    assert!(
+        signaling
+            .auto_reconnect_suppressed
+            .load(AtomicOrdering::SeqCst),
+        "SuppressAutoReconnect must leave automatic reconnect paused"
     );
 
-    processor.prepare_network_event(&NetworkEvent::AppLifecycleChanged {
-        state: AppLifecycleState::Foreground {
-            background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS - 1,
-        },
-    });
-    assert_eq!(
-        signaling
-            .suppress_auto_reconnect_calls
+    processor.resume_auto_reconnect();
+    assert!(
+        !signaling
+            .auto_reconnect_suppressed
             .load(AtomicOrdering::SeqCst),
-        1,
-        "short foreground recovery must keep the Probe path unchanged"
+        "ResumeAutoReconnect must re-enable future automatic reconnects"
     );
+}
 
-    processor.prepare_network_event(&NetworkEvent::AppLifecycleChanged {
-        state: AppLifecycleState::Foreground {
-            background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
-        },
+#[tokio::test]
+async fn cancelled_recovery_action_does_not_poison_later_actions() {
+    // Regression for the processor-side execution tracker that poisoned itself
+    // when the supervisor cancelled an effect after `begin` but before
+    // `complete` (a dropped future never runs `complete`). The tracker was
+    // removed; the supervisor's `view.execution` is the sole single-flight
+    // owner, so a cancelled action can no longer wedge later ones.
+    let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(false));
+    signaling
+        .block_disconnect
+        .store(true, AtomicOrdering::SeqCst);
+    let processor: Arc<dyn NetworkEventProcessor> =
+        Arc::new(DefaultNetworkEventProcessor::new(signaling.clone(), None));
+
+    // Run a ForceReconnect effect and cancel it once it is mid-teardown (blocked
+    // in disconnect) but before it can complete — exactly what the reconciler
+    // does when a stronger policy preempts a running effect.
+    let entered = signaling.disconnect_entered.clone();
+    let token = tokio_util::sync::CancellationToken::new();
+    let task_processor = processor.clone();
+    let task_token = token.clone();
+    let task = tokio::spawn(async move {
+        tokio::select! {
+            biased;
+            _ = task_token.cancelled() => {}
+            _ = task_processor
+                .process_network_recovery_action(NetworkRecoveryAction::ForceReconnect) => {}
+        }
     });
-    assert_eq!(
-        signaling
-            .suppress_auto_reconnect_calls
-            .load(AtomicOrdering::SeqCst),
-        2,
-        "long foreground recovery must suppress stale auto-reconnect before settling"
+    entered.notified().await;
+    token.cancel();
+    task.await.expect("cancelled effect task joins");
+
+    // A later action still begins and completes normally.
+    signaling
+        .block_disconnect
+        .store(false, AtomicOrdering::SeqCst);
+    let result = processor
+        .process_network_recovery_action(NetworkRecoveryAction::Restore)
+        .await;
+    assert!(
+        result.is_ok(),
+        "a cancelled action must not poison later actions: {result:?}"
     );
 }
 
@@ -278,13 +330,10 @@ fn background_and_long_foreground_suppress_auto_reconnect_before_settle() {
 async fn force_reconnect_reenables_auto_reconnect_after_early_suppression() {
     let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(false));
     let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
-    let long_foreground = NetworkEvent::AppLifecycleChanged {
-        state: AppLifecycleState::Foreground {
-            background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
-        },
-    };
 
-    processor.prepare_network_event(&long_foreground);
+    // A long-background foreground rebuild suppresses stale auto-reconnect via
+    // the `SuppressAutoReconnect` directive the reconciler lowers here.
+    processor.suppress_auto_reconnect();
     assert!(
         signaling
             .auto_reconnect_suppressed

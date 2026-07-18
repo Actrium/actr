@@ -70,17 +70,17 @@
 //! | 21 | Available quota can't stay idle from collapsed release notifications | `inbound::data_chunk_registry_tests::unregister_drains_queued_chunks` |
 //! | 22 | Successful transitions don't wait on fixed polling | `wire::webrtc::signaling_tests::test_reconnect_manager_lifetime_uses_drop_signal_not_periodic_polling` |
 //! | 23 | Parallel shutdown bounded by one overall deadline, not per-child | `wire::webrtc::coordinator::tests::{close_all_times_out_when_peer_commit_cannot_quiesce, coordinator_background_tasks_are_joined_by_shutdown}` |
-//! | 24 | Every timer uses the audited facade with one inventory classification | `lifecycle::machine_docs`'s checked timer-inventory generator (Phase 1 deliverable), not a per-timer unit test |
+//! | 24 | Every timer uses the audited facade with one inventory classification | partial: every timer the supervisor arms carries a typed `recovery_policy::translate::{TimerId, TimerCategory}` classification (the shell lowers each to one absolute deadline). The full audited-facade timer inventory and its CI drift check are a later deliverable, so this is not yet a per-timer unit test. |
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
-    AppLifecycleState, CredentialState, DefaultNetworkEventProcessor, NetworkAvailability,
-    NetworkEvent, NetworkEventHandle, NetworkEventProcessor, NetworkEventRequest, NetworkSnapshot,
-    NetworkTransportFlags, SupervisorStatus, run_network_event_reconciler,
-    run_network_event_reconciler_with_status,
+    AppLifecycleState, CleanupReason, CredentialState, DefaultNetworkEventProcessor,
+    NetworkAvailability, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
+    NetworkEventRequest, NetworkSnapshot, NetworkTransportFlags, SupervisorStatus,
+    run_network_event_reconciler, run_network_event_reconciler_with_status,
 };
 use actr_hyper::transport::{NetworkError, NetworkResult};
 use actr_hyper::wire::webrtc::{DisconnectReason, SignalingClient, SignalingEvent, SignalingStats};
@@ -672,4 +672,57 @@ async fn inv11_acceptance_does_not_wait_for_effect_completion() {
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
+async fn inv30_shutdown_deadline_terminates_the_supervisor_loop() {
+    // RFC-0400 invariant 30 / MAJOR 3: when the shutdown overall deadline fires,
+    // the supervisor ends unconditionally. The reconcile loop must break on its
+    // own — without an external shutdown-token cancel — instead of re-deriving
+    // and restarting cleanup after the deadline.
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let (status_tx, mut status_rx) = watch::channel(SupervisorStatus::default());
+    // A shutdown token that is never cancelled: termination must come solely
+    // from the shutdown overall deadline.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler_with_status(
+            event_rx,
+            processor,
+            reconciler_shutdown,
+            status_tx,
+        )
+        .await;
+    });
+
+    // AppTerminating enters Terminating, requests cleanup, and arms the 10s
+    // shutdown overall deadline. Let the cleanup effect settle.
+    send_raw(
+        &event_tx,
+        NetworkEvent::CleanupConnections {
+            reason: CleanupReason::AppTerminating,
+        },
+        1,
+    )
+    .await;
+    status_rx
+        .wait_for(|s| s.last_outcome.is_some())
+        .await
+        .expect("cleanup effect should settle");
+
+    // Advance past the shutdown overall deadline. The supervisor terminates
+    // unconditionally, so the reconciler task ends on its own.
+    tokio::time::advance(Duration::from_secs(11)).await;
+    reconciler
+        .await
+        .expect("reconciler must terminate at the shutdown deadline without an external cancel");
+    assert!(
+        !shutdown.is_cancelled(),
+        "termination must come from the shutdown deadline, not the external token"
+    );
 }

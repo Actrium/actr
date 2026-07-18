@@ -1,3 +1,8 @@
+// The legacy batch helpers (`select_network_recovery_action`,
+// `process_network_event_batch`) are deprecated in favor of the responsive
+// reconciler; these compatibility tests still exercise them intentionally.
+#![allow(deprecated)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;

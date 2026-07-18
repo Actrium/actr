@@ -17,6 +17,10 @@ mod recovery_policy;
 pub(crate) mod session_state;
 
 pub use connection_supervisor::ConnectionFact;
+// `process_network_event_batch` and `select_network_recovery_action` are the
+// deprecated legacy batch path; they are still re-exported for the migration
+// window, so this re-export intentionally allows the deprecation lint.
+#[allow(deprecated)]
 pub use network_event::{
     AppLifecycleState, CleanupReason, DebounceConfig, DefaultNetworkEventProcessor,
     NetworkAvailability, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,

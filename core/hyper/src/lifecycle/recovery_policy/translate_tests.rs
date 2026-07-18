@@ -117,6 +117,45 @@ fn background_transitions_and_advances() {
 }
 
 #[test]
+fn background_emits_suppress_auto_reconnect_directive() {
+    // Entering the background derives SuppressAutoReconnect through translation
+    // rather than pre-translation event sniffing.
+    let mut view = View::initial();
+    view.app_phase = AppPhaseState::Foreground;
+    let d = tr(&view, Input::AppEnteredBackground);
+    assert!(
+        d.signals
+            .contains(&SignalingDirective::SuppressAutoReconnect)
+    );
+}
+
+#[test]
+fn short_foreground_emits_resume_and_long_foreground_emits_suppress() {
+    let mut view = View::initial();
+    view.app_phase = AppPhaseState::Background;
+    view.background_entered_at = Some(Duration::ZERO);
+
+    // Short background -> probe path re-enables automatic reconnect.
+    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(1));
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
+    ));
+    assert!(d.signals.contains(&SignalingDirective::ResumeAutoReconnect));
+
+    // Long background -> reconnect path keeps stale automatic reconnect suppressed.
+    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(120));
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
+    ));
+    assert!(
+        d.signals
+            .contains(&SignalingDirective::SuppressAutoReconnect)
+    );
+}
+
+#[test]
 fn background_already_background_is_a_no_op() {
     let mut view = View::initial();
     view.app_phase = AppPhaseState::Background;
@@ -525,6 +564,37 @@ fn recovery_requested_stronger_than_pending_promotes() {
 }
 
 #[test]
+fn recovery_requested_preempts_weaker_running_effect() {
+    // A probe is running when a stronger reconnect is requested: the reconnect
+    // intent is requested and the running probe is preempted so it starts once
+    // the single-flight slot returns to Idle (RFC effect-preemption table).
+    let mut view = View::initial();
+    view.recovery_intent = RecoveryIntentState::ProbePending;
+    view.recovery_record = Some(PendingRecord::recovery(1, RecoveryStrength::Probe));
+    view.execution = ExecutionState::Probing;
+    view.effect = Some(recovery_effect(1, EffectKind::Probe, 1));
+    let d = tr(&view, recovery_requested(RecoveryStrength::Reconnect));
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
+    ));
+    assert!(d.cancels.contains(&CancelReason::PreemptedByStronger));
+}
+
+#[test]
+fn recovery_requested_does_not_preempt_equal_or_stronger_running_effect() {
+    // A restore is running when a weaker probe is requested: the request is
+    // coalesced and nothing is preempted.
+    let mut view = View::initial();
+    view.recovery_intent = RecoveryIntentState::RestorePending;
+    view.recovery_record = Some(PendingRecord::recovery(1, RecoveryStrength::Restore));
+    view.execution = ExecutionState::Restoring;
+    view.effect = Some(recovery_effect(1, EffectKind::Restore, 1));
+    let d = tr(&view, recovery_requested(RecoveryStrength::Probe));
+    assert!(d.cancels.is_empty());
+}
+
+#[test]
 fn recovery_requested_coalesced_when_ready_and_at_least_as_strong() {
     let mut view = View::initial();
     view.recovery_intent = RecoveryIntentState::ReconnectPending;
@@ -855,12 +925,44 @@ fn shutdown_deadline_aborts_when_terminating_and_matching() {
     let d = tr(&view, Input::ShutdownDeadlineExpired { deadline_id: 3 });
     assert!(d.status.contains(&StatusRecord::ShutdownAbandon));
     assert!(d.cancels.contains(&CancelReason::Shutdown));
+    // The supervisor ends unconditionally: the shell stops its reconcile loop.
+    assert!(d.terminate);
 
     // Stale id -> nothing.
-    assert_eq!(
-        tr(&view, Input::ShutdownDeadlineExpired { deadline_id: 4 }),
-        Decision::none()
-    );
+    let stale = tr(&view, Input::ShutdownDeadlineExpired { deadline_id: 4 });
+    assert_eq!(stale, Decision::none());
+    assert!(!stale.terminate);
+}
+
+#[test]
+fn shutdown_deadline_detaches_pending_teardown_and_terminates() {
+    // A cleanup obligation is still pending (backing off) when the shutdown
+    // overall deadline fires: it must be detached with Abandoned semantics so it
+    // cannot restart, and the supervisor must terminate rather than reconcile
+    // cleanup again.
+    let mut view = View::initial();
+    view.recovery_mode = RecoveryModeState::Terminating;
+    view.cleanup_work = CleanupWorkState::CleanupPending;
+    let mut rec = PendingRecord::teardown(1);
+    rec.gate = RetryGateState::BackingOff;
+    view.cleanup_record = Some(rec);
+    view.offline_work = OfflineWorkState::DisconnectPending;
+    view.offline_record = Some(PendingRecord::teardown(1));
+    view.shutdown_deadline = Some(ShutdownDeadline {
+        deadline_id: 7,
+        deadline: Duration::from_secs(10),
+    });
+    let d = tr(&view, Input::ShutdownDeadlineExpired { deadline_id: 7 });
+    assert!(has(
+        &d,
+        MachineInput::CleanupWork(CleanupWorkInput::CompleteCleanup)
+    ));
+    assert!(has(
+        &d,
+        MachineInput::OfflineWork(OfflineWorkInput::CompleteDisconnect)
+    ));
+    assert!(d.status.contains(&StatusRecord::ShutdownAbandon));
+    assert!(d.terminate);
 }
 
 #[test]
@@ -1263,6 +1365,133 @@ fn effect_completed_aborted_panic_parks_as_invariant() {
         domain: RetryDomain::Recovery,
         release_mask: ReleaseMask::single(ParkCause::InvariantViolation)
     }));
+}
+
+// ---------------------------------------------------------------------------
+// EffectCompleted: stale failure of superseded / re-dispatched work
+//
+// A completion whose obligation was superseded or re-dispatched (its record is
+// gone, or its work revision is newer than the effect's captured revision) must
+// release the execution slot and do nothing else. Without the still-current
+// guard, a stale probe failure could back off, escalate, or resurrect newer
+// work.
+// ---------------------------------------------------------------------------
+
+/// A probe running under captured revision 1 whose intent was already
+/// re-dispatched to a restore obligation at the newer revision 2.
+fn stale_probe_over_new_restore() -> View {
+    let mut view = View::initial();
+    view.recovery_intent = RecoveryIntentState::RestorePending;
+    view.recovery_record = Some(PendingRecord::recovery(2, RecoveryStrength::Restore));
+    view.execution = ExecutionState::Probing;
+    view.effect = Some(recovery_effect(1, EffectKind::Probe, 1));
+    view.policy_revision = 2;
+    view
+}
+
+fn stale_probe_completed(view: &View, diagnosis: EffectDiagnosis) -> Decision {
+    tr(
+        view,
+        Input::EffectCompleted {
+            action_id: 1,
+            kind: EffectKind::Probe,
+            policy_revision: 1,
+            outcome: EffectOutcome::Failed { diagnosis },
+        },
+    )
+}
+
+#[test]
+fn stale_probe_retry_does_not_back_off_re_dispatched_restore() {
+    // Scenario 1: an availability failure would normally Retry, but here it must
+    // not push the re-dispatched restore record into BackingOff or arm a backoff.
+    let view = stale_probe_over_new_restore();
+    let d = stale_probe_completed(
+        &view,
+        EffectDiagnosis::PathUnreachable {
+            stage: "connect".into(),
+        },
+    );
+    assert!(has(&d, MachineInput::Execution(ExecutionInput::Failed)));
+    assert!(!has(
+        &d,
+        MachineInput::RetryGate {
+            domain: RetryDomain::Recovery,
+            input: RetryGateInput::RetryableFailure
+        }
+    ));
+    assert!(!d.timers.iter().any(|t| matches!(
+        t,
+        TimerDirective::Arm {
+            id: TimerId::FailureBackoff(_),
+            ..
+        }
+    )));
+}
+
+#[test]
+fn stale_probe_escalation_does_not_rewrite_re_dispatched_restore() {
+    // Scenario 2: a conclusive failure would normally Escalate to Reconnect, but
+    // here it must not overwrite the re-dispatched restore record's strength.
+    let view = stale_probe_over_new_restore();
+    let d = stale_probe_completed(&view, EffectDiagnosis::GenerationDead { generation: 5 });
+    assert!(has(&d, MachineInput::Execution(ExecutionInput::Failed)));
+    assert!(!has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
+    ));
+}
+
+#[test]
+fn stale_probe_failure_does_not_resurrect_intent_after_cleanup() {
+    // Scenario 3: cleanup superseded intent to Idle (no recovery record). A stale
+    // probe failure must not resurrect a reconnect obligation out of thin air,
+    // and must leave the cleanup obligation untouched.
+    let mut view = View::initial();
+    view.recovery_intent = RecoveryIntentState::Idle;
+    view.recovery_record = None;
+    view.cleanup_work = CleanupWorkState::CleanupPending;
+    view.cleanup_record = Some(PendingRecord::teardown(2));
+    view.execution = ExecutionState::Probing;
+    view.effect = Some(recovery_effect(1, EffectKind::Probe, 1));
+    view.policy_revision = 2;
+    let d = stale_probe_completed(&view, EffectDiagnosis::GenerationDead { generation: 5 });
+    assert!(has(&d, MachineInput::Execution(ExecutionInput::Failed)));
+    assert!(!has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
+    ));
+    assert!(!has(
+        &d,
+        MachineInput::CleanupWork(CleanupWorkInput::CompleteCleanup)
+    ));
+}
+
+#[test]
+fn stale_probe_abort_does_not_park_re_dispatched_restore() {
+    // The same still-current guard covers Aborted: a panic-classified abort of
+    // the superseded probe must not park the re-dispatched restore record.
+    let view = stale_probe_over_new_restore();
+    let d = tr(
+        &view,
+        Input::EffectCompleted {
+            action_id: 1,
+            kind: EffectKind::Probe,
+            policy_revision: 1,
+            outcome: EffectOutcome::Aborted {
+                cause: AbortCause::PanicOrContractViolation,
+            },
+        },
+    );
+    assert!(has(&d, MachineInput::Execution(ExecutionInput::Cancelled)));
+    assert!(d.parks.is_empty());
+    assert!(!has(
+        &d,
+        MachineInput::RetryGate {
+            domain: RetryDomain::Recovery,
+            input: RetryGateInput::TerminalFailure
+        }
+    ));
 }
 
 // ---------------------------------------------------------------------------

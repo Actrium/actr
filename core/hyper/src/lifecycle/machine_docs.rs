@@ -16,9 +16,10 @@
 //! policy machines, plus the five pre-RFC machines referenced directly from
 //! their existing modules.
 //!
-//! The generator is consumed by tests and the RFC's checked regeneration mode
-//! rather than by a production path yet; the module-level `allow(dead_code)`
-//! records that transitional state honestly.
+//! The generator is a documentation and CI tool by design: it is consumed by
+//! tests and the RFC's checked regeneration mode, not by any runtime path. The
+//! module-level `allow(dead_code)` keeps the per-machine entry points available
+//! for that regeneration even when a given build does not call all of them.
 #![allow(dead_code)]
 
 use yasm::StateMachine;
