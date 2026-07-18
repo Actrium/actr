@@ -22,7 +22,7 @@ use super::network_event::{
     NetworkRecoveryAction, NetworkSnapshot, ReconnectReason,
 };
 
-mod app_phase {
+pub(in crate::lifecycle) mod app_phase {
     use yasm::define_state_machine;
 
     define_state_machine! {
@@ -50,7 +50,7 @@ mod app_phase {
     }
 }
 
-mod path {
+pub(in crate::lifecycle) mod path {
     use yasm::define_state_machine;
 
     define_state_machine! {
@@ -92,7 +92,7 @@ mod path {
     }
 }
 
-mod recovery {
+pub(in crate::lifecycle) mod recovery {
     use yasm::define_state_machine;
 
     // Requests are ordered by impact:
@@ -151,7 +151,7 @@ mod recovery {
     }
 }
 
-mod offline_work {
+pub(in crate::lifecycle) mod offline_work {
     use yasm::define_state_machine;
 
     define_state_machine! {
