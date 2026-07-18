@@ -156,6 +156,29 @@ fn short_foreground_emits_resume_and_long_foreground_emits_suppress() {
 }
 
 #[test]
+fn foreground_between_legacy_and_configured_thresholds_probes_and_resumes() {
+    // Pins the single 60 s `background_reconnect_after` boundary: a stay in
+    // the 30..60 s band is a short background. The legacy pre-translate hook
+    // suppressed automatic reconnect at 30 s while intent selection already
+    // used 60 s; the translation layer resolves that contradiction in favor
+    // of the configured 60 s default, so 45 s must probe and resume.
+    let mut view = View::initial();
+    view.app_phase = AppPhaseState::Background;
+    view.background_entered_at = Some(Duration::ZERO);
+
+    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(45));
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
+    ));
+    assert!(d.signals.contains(&SignalingDirective::ResumeAutoReconnect));
+    assert!(
+        !d.signals
+            .contains(&SignalingDirective::SuppressAutoReconnect)
+    );
+}
+
+#[test]
 fn background_already_background_is_a_no_op() {
     let mut view = View::initial();
     view.app_phase = AppPhaseState::Background;
