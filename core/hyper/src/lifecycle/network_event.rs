@@ -195,6 +195,53 @@ pub enum NetworkRecoveryAction {
     ForceReconnect,
 }
 
+/// The structured result of a bounded teardown effect (cleanup or confirmed
+/// offline disconnect), per the RFC-0400 bounded-completion contract.
+///
+/// A teardown never reports a plain success/failure boolean: it reports whether
+/// the logical teardown goal was reached, whether its overall deadline aborted
+/// remaining steps, and the residual diagnostics accumulated from best-effort
+/// physical steps. Remote-notification failures are recorded as residuals and
+/// never block local completion.
+#[derive(Debug, Clone)]
+pub struct TeardownReport {
+    /// Whether the logical teardown goal (local resources released) was reached.
+    pub reached_goal: bool,
+    /// Whether the overall teardown deadline aborted or detached remaining steps.
+    pub deadline_reached: bool,
+    /// One residual per best-effort step that left an error behind.
+    pub residuals: Vec<String>,
+}
+
+impl TeardownReport {
+    /// The teardown met its full contract with no residuals.
+    pub fn succeeded() -> Self {
+        Self {
+            reached_goal: true,
+            deadline_reached: false,
+            residuals: Vec::new(),
+        }
+    }
+
+    /// The teardown reached its goal but left the given residual diagnostics.
+    pub fn completed_with_residuals(residuals: Vec<String>) -> Self {
+        Self {
+            reached_goal: true,
+            deadline_reached: false,
+            residuals,
+        }
+    }
+
+    /// The overall deadline aborted remaining steps before the goal was reached.
+    pub fn abandoned(residuals: Vec<String>) -> Self {
+        Self {
+            reached_goal: false,
+            deadline_reached: true,
+            residuals,
+        }
+    }
+}
+
 fn network_event_needs_lifecycle_barrier(event: &NetworkEvent) -> bool {
     match event {
         NetworkEvent::NetworkPathChanged { snapshot } => {
@@ -335,6 +382,25 @@ pub trait NetworkEventProcessor: Send + Sync {
             NetworkRecoveryAction::Restore => self.process_network_available().await,
             NetworkRecoveryAction::CleanupOnly => self.cleanup_connections().await,
             NetworkRecoveryAction::ForceReconnect => self.force_reconnect().await,
+        }
+    }
+
+    /// Run a bounded teardown effect (cleanup or confirmed offline disconnect).
+    ///
+    /// Implementations must synchronously invalidate the scoped generations,
+    /// commit rights, and new-work admission before any physical step, bound the
+    /// remaining physical steps by `budget`, and never let a remote-notification
+    /// failure block local completion. The default delegates to the unbounded
+    /// action so custom processors keep working; the runtime processor overrides
+    /// it with the real bounded-completion contract.
+    async fn run_bounded_teardown(
+        &self,
+        action: NetworkRecoveryAction,
+        _budget: Duration,
+    ) -> TeardownReport {
+        match self.process_network_recovery_action(action).await {
+            Ok(()) => TeardownReport::succeeded(),
+            Err(e) => TeardownReport::completed_with_residuals(vec![e]),
         }
     }
 }
@@ -702,6 +768,152 @@ impl DefaultNetworkEventProcessor {
 
         Ok(())
     }
+
+    /// The confirmed-offline disconnect steps, accumulating step residuals in
+    /// order instead of collapsing them to a single boolean.
+    async fn process_offline_collect(&self) -> Vec<String> {
+        let _cleanup_guard = self.lifecycle_barrier();
+        let mut residuals = Vec::new();
+        tracing::info!("📱 Processing: Network offline (bounded)");
+
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            coordinator.begin_network_recovery("NetworkLost").await;
+            coordinator.clear_pending_restarts().await;
+        }
+
+        if let Err(e) = self.signaling_client.disconnect().await {
+            residuals.push(format!("offline signaling disconnect failed: {e}"));
+        }
+
+        residuals
+    }
+
+    /// The full cleanup step sequence, accumulating one residual per best-effort
+    /// step that leaves an error behind. The logical teardown goal — releasing
+    /// local signaling, coordinator, and transport resources — is always
+    /// attempted to completion; residuals are diagnostics, not early returns.
+    async fn cleanup_connections_collect(&self) -> Vec<String> {
+        let _cleanup_guard = self.lifecycle_barrier();
+        let mut residuals: Vec<String> = Vec::new();
+        let mut initial_coordinator_close_failed = false;
+
+        tracing::info!("🧹 Cleaning up all connections (bounded)...");
+
+        // Step 1: Stop old signaling ingress before reopening any peer
+        // lifecycle. Disconnect resets the inbound queue, so delayed Offer,
+        // RoleAssignment, and ICE messages cannot repopulate state after drain.
+        tracing::info!("🔌 Disconnecting WebSocket before peer cleanup...");
+        match self.signaling_client.disconnect().await {
+            Ok(_) => tracing::info!("✅ WebSocket disconnected successfully"),
+            Err(e) => {
+                let err_msg = format!("Failed to disconnect WebSocket before cleanup: {e}");
+                tracing::warn!("⚠️  {}", err_msg);
+                residuals.push(err_msg);
+            }
+        }
+
+        // Step 2: Clear pending ICE restart attempts.
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("♻️  Clearing pending ICE restart attempts...");
+            coordinator.clear_pending_restarts().await;
+        }
+
+        // Step 3: Remove coordinator-owned peer sessions first and force-close
+        // them without draining DataChannels.
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("🔻 Force-closing all WebRTC peer connections...");
+            if let Err(e) = coordinator.close_all_peers_immediately().await {
+                let err_msg = format!("Failed to close all peers: {}", e);
+                tracing::warn!("⚠️  {}", err_msg);
+                initial_coordinator_close_failed = true;
+                residuals.push(err_msg);
+            } else {
+                tracing::info!("✅ All WebRTC peer connections closed");
+            }
+        }
+
+        // Step 4: Cancel PeerTransport singleflight and close any remaining
+        // established transport handles after the coordinator sessions are gone.
+        if let Some(ref peer_transport) = self.peer_transport {
+            tracing::info!("🔻 Closing all PeerTransport connections...");
+            if let Err(e) = peer_transport.close_all().await {
+                let err_msg = format!("Failed to close peer transports: {}", e);
+                tracing::warn!("⚠️  {}", err_msg);
+                residuals.push(err_msg);
+            } else {
+                tracing::info!("✅ All PeerTransport connections closed");
+            }
+        }
+
+        // Step 5: A cancelled PeerTransport creator may have crossed the first
+        // drain before observing its token. The signaling socket is already
+        // down, so this final authoritative sweep closes anything it handed to
+        // the coordinator without opening another ingress window.
+        if let Some(ref coordinator) = self.webrtc_coordinator {
+            tracing::info!("🔻 Finalizing WebRTC coordinator cleanup...");
+            if let Err(e) = coordinator.close_all_peers_immediately().await {
+                let err_msg = format!("Failed to finalize peer cleanup: {e}");
+                tracing::warn!("⚠️  {}", err_msg);
+                residuals.push(err_msg);
+            } else if initial_coordinator_close_failed {
+                tracing::info!("✅ Final WebRTC cleanup recovered the initial close failure");
+            }
+        }
+
+        residuals
+    }
+
+    /// Synchronously close signaling commit rights and new-work admission, then
+    /// run the cleanup steps under the obligation's remaining `budget`. On
+    /// budget expiry the remaining steps are detached and the teardown is
+    /// `Abandoned`; otherwise it completes (with residuals if any step failed).
+    async fn bounded_cleanup(&self, budget: Duration) -> TeardownReport {
+        // Step 0: before any physical step, invalidate the scoped signaling
+        // generation and suppress new attempts so no later commit can race the
+        // teardown across its commit boundary.
+        self.signaling_client.invalidate_generation();
+
+        match tokio::time::timeout(budget, self.cleanup_connections_collect()).await {
+            Ok(residuals) => TeardownReport {
+                reached_goal: true,
+                deadline_reached: false,
+                residuals,
+            },
+            Err(_) => {
+                tracing::warn!(
+                    budget_ms = budget.as_millis() as u64,
+                    "network_event.cleanup.deadline_abandoned"
+                );
+                TeardownReport::abandoned(vec![format!(
+                    "cleanup teardown abandoned remaining steps after {}ms budget",
+                    budget.as_millis()
+                )])
+            }
+        }
+    }
+
+    /// The confirmed-offline disconnect under the obligation's remaining budget.
+    async fn bounded_offline(&self, budget: Duration) -> TeardownReport {
+        self.signaling_client.invalidate_generation();
+
+        match tokio::time::timeout(budget, self.process_offline_collect()).await {
+            Ok(residuals) => TeardownReport {
+                reached_goal: true,
+                deadline_reached: false,
+                residuals,
+            },
+            Err(_) => {
+                tracing::warn!(
+                    budget_ms = budget.as_millis() as u64,
+                    "network_event.offline.deadline_abandoned"
+                );
+                TeardownReport::abandoned(vec![format!(
+                    "offline disconnect abandoned remaining steps after {}ms budget",
+                    budget.as_millis()
+                )])
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -800,77 +1012,8 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     /// - No debounce check (proactive calls always execute)
     /// - Intended for app lifecycle management, not network event response
     async fn cleanup_connections(&self) -> Result<(), String> {
-        let _cleanup_guard = self.lifecycle_barrier();
-        let mut cleanup_error = None;
-        let mut initial_coordinator_close_failed = false;
-
-        tracing::info!("🧹 Manually cleaning up all connections...");
-
-        // Step 1: Stop old signaling ingress before reopening any peer
-        // lifecycle. Disconnect resets the inbound queue, so delayed Offer,
-        // RoleAssignment, and ICE messages cannot repopulate state after drain.
-        tracing::info!("🔌 Disconnecting WebSocket before peer cleanup...");
-        match self.signaling_client.disconnect().await {
-            Ok(_) => {
-                tracing::info!("✅ WebSocket disconnected successfully");
-            }
-            Err(e) => {
-                let err_msg = format!("Failed to disconnect WebSocket before cleanup: {e}");
-                tracing::warn!("⚠️  {}", err_msg);
-                cleanup_error = Some(err_msg);
-            }
-        }
-
-        // Step 2: Clear pending ICE restart attempts.
-        if let Some(ref coordinator) = self.webrtc_coordinator {
-            tracing::info!("♻️  Clearing pending ICE restart attempts...");
-            coordinator.clear_pending_restarts().await;
-        }
-
-        // Step 3: Remove coordinator-owned peer sessions first and force-close
-        // them without draining DataChannels. On mobile, WebRTC may continue to
-        // report Connected after the OS route has disappeared, so a graceful
-        // drain here can only wait for data that can no longer be delivered.
-        if let Some(ref coordinator) = self.webrtc_coordinator {
-            tracing::info!("🔻 Force-closing all WebRTC peer connections...");
-            if let Err(e) = coordinator.close_all_peers_immediately().await {
-                let err_msg = format!("Failed to close all peers: {}", e);
-                tracing::warn!("⚠️  {}", err_msg);
-                initial_coordinator_close_failed = true;
-            } else {
-                tracing::info!("✅ All WebRTC peer connections closed");
-            }
-        }
-
-        // Step 4: Cancel PeerTransport singleflight and close any remaining
-        // established transport handles after the coordinator sessions are gone.
-        if let Some(ref peer_transport) = self.peer_transport {
-            tracing::info!("🔻 Closing all PeerTransport connections...");
-            if let Err(e) = peer_transport.close_all().await {
-                let err_msg = format!("Failed to close peer transports: {}", e);
-                tracing::warn!("⚠️  {}", err_msg);
-                cleanup_error.get_or_insert(err_msg);
-            } else {
-                tracing::info!("✅ All PeerTransport connections closed");
-            }
-        }
-
-        // Step 5: A cancelled PeerTransport creator may have crossed the first
-        // drain before observing its token. The signaling socket is already
-        // down, so this final authoritative sweep closes anything it handed to
-        // the coordinator without opening another ingress window.
-        if let Some(ref coordinator) = self.webrtc_coordinator {
-            tracing::info!("🔻 Finalizing WebRTC coordinator cleanup...");
-            if let Err(e) = coordinator.close_all_peers_immediately().await {
-                let err_msg = format!("Failed to finalize peer cleanup: {e}");
-                tracing::warn!("⚠️  {}", err_msg);
-                cleanup_error.get_or_insert(err_msg);
-            } else if initial_coordinator_close_failed {
-                tracing::info!("✅ Final WebRTC cleanup recovered the initial close failure");
-            }
-        }
-
-        if let Some(err) = cleanup_error {
+        let residuals = self.cleanup_connections_collect().await;
+        if let Some(err) = residuals.into_iter().next() {
             tracing::warn!(
                 error = %err,
                 "Connection cleanup released remaining resources but did not fully quiesce"
@@ -879,6 +1022,22 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         } else {
             tracing::info!("✅ Connection cleanup completed");
             Ok(())
+        }
+    }
+
+    async fn run_bounded_teardown(
+        &self,
+        action: NetworkRecoveryAction,
+        budget: Duration,
+    ) -> TeardownReport {
+        match action {
+            NetworkRecoveryAction::CleanupOnly => self.bounded_cleanup(budget).await,
+            NetworkRecoveryAction::Offline => self.bounded_offline(budget).await,
+            // Not a teardown action; keep the coarse mapping for safety.
+            other => match self.process_network_recovery_action(other).await {
+                Ok(()) => TeardownReport::succeeded(),
+                Err(e) => TeardownReport::completed_with_residuals(vec![e]),
+            },
         }
     }
 
@@ -1063,13 +1222,125 @@ struct RunningEffect {
     token: CancellationToken,
 }
 
+/// A narrow, cloneable handle for resource owners (signaling, session) to feed
+/// normalized facts into the running supervisor without going through the
+/// public [`NetworkEvent`] surface.
+///
+/// Facts share the supervisor's internal input channel, so they are processed
+/// in the same one-input-at-a-time policy order as timer expiries and effect
+/// completions. Delivery is non-blocking: a full or closed channel is logged
+/// rather than awaited, so a resource owner holding a transport lock never
+/// blocks on the supervisor. The teardown-crossing "Lost must arrive" guarantee
+/// does not rely on this best-effort path — it is enforced by the supervisor
+/// dropping a teardown-scoped generation when the teardown effect completes.
+#[derive(Clone)]
+pub struct SupervisorFactSink {
+    tx: mpsc::Sender<tp::Input>,
+}
+
+/// The origin of a normalized signaling-committed fact, as seen at the public
+/// resource-owner boundary. Mirrors the supervisor's internal origin type but
+/// keeps the recovery-policy internals out of the wire layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalingFactOrigin {
+    /// Produced by the running lifecycle effect (carries its `action_id`).
+    CurrentEffect { action_id: u64 },
+    /// External news from the signaling resource owner itself.
+    External,
+}
+
+/// Why a live signaling generation was lost. Diagnostic only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalingFactLostCause {
+    /// A lifecycle disconnect or explicit invalidation invalidated the socket.
+    Disconnected,
+    /// A newer generation superseded this one.
+    Superseded,
+    /// The remote or transport reset the connection.
+    RemoteReset,
+}
+
+impl SupervisorFactSink {
+    pub(crate) fn new(tx: mpsc::Sender<tp::Input>) -> Self {
+        Self { tx }
+    }
+
+    fn emit(&self, input: tp::Input) {
+        match self.tx.try_send(input) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(input)) => {
+                tracing::error!(?input, "network_event.fact_sink.dropped_full");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                tracing::debug!("network_event.fact_sink.closed");
+            }
+        }
+    }
+
+    /// Record that a signaling generation was authoritatively committed (its
+    /// generation validated and its socket published under the commit facade).
+    pub fn signaling_generation_committed(&self, generation: u64, origin: SignalingFactOrigin) {
+        let origin = match origin {
+            SignalingFactOrigin::CurrentEffect { action_id } => {
+                tp::SignalingOrigin::CurrentEffect { action_id }
+            }
+            SignalingFactOrigin::External => tp::SignalingOrigin::External,
+        };
+        self.emit(tp::Input::SignalingGenerationCommitted { generation, origin });
+    }
+
+    /// Record that a live signaling generation was lost at a disconnect or
+    /// invalidation point.
+    pub fn signaling_generation_lost(&self, generation: u64, cause: SignalingFactLostCause) {
+        let cause = match cause {
+            SignalingFactLostCause::Disconnected => tp::SignalingLostCause::Disconnected,
+            SignalingFactLostCause::Superseded => tp::SignalingLostCause::Superseded,
+            SignalingFactLostCause::RemoteReset => tp::SignalingLostCause::RemoteReset,
+        };
+        self.emit(tp::Input::SignalingGenerationLost { generation, cause });
+    }
+
+    /// Record that a new session generation was authoritatively committed.
+    pub fn session_activated(&self, session_generation: u64) {
+        self.emit(tp::Input::SessionActivated { session_generation });
+    }
+}
+
+/// An opaque handle on the supervisor's internal input channel, so the node can
+/// hold and hand it to [`run_network_event_reconciler_with_channel`] without
+/// naming the crate-private input type.
+pub struct SupervisorInternalChannel {
+    tx: mpsc::Sender<tp::Input>,
+    rx: mpsc::Receiver<tp::Input>,
+}
+
+/// Create the supervisor's internal input channel plus a [`SupervisorFactSink`]
+/// over its sender. The node hands the sink to resource owners and passes the
+/// channel into [`run_network_event_reconciler_with_channel`].
+pub(crate) fn supervisor_internal_channel() -> (SupervisorFactSink, SupervisorInternalChannel) {
+    let (tx, rx) = mpsc::channel::<tp::Input>(128);
+    (
+        SupervisorFactSink::new(tx.clone()),
+        SupervisorInternalChannel { tx, rx },
+    )
+}
+
 pub async fn run_network_event_reconciler(
     event_rx: mpsc::Receiver<NetworkEventRequest>,
     processor: Arc<dyn NetworkEventProcessor>,
     shutdown_token: CancellationToken,
 ) {
+    let (internal_tx, internal_rx) = mpsc::channel::<tp::Input>(64);
     let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
-    run_network_event_reconciler_with_status(event_rx, processor, shutdown_token, status_tx).await;
+    reconcile_loop(
+        event_rx,
+        internal_tx,
+        internal_rx,
+        processor,
+        shutdown_token,
+        status_tx,
+    )
+    .await;
 }
 
 /// The responsive reconciler with an observable status stream.
@@ -1079,7 +1350,49 @@ pub async fn run_network_event_reconciler(
 /// internal channel, timers are armed as absolute deadlines that deliver their
 /// own expiry inputs, and event acceptance is decoupled from effect completion.
 pub async fn run_network_event_reconciler_with_status(
+    event_rx: mpsc::Receiver<NetworkEventRequest>,
+    processor: Arc<dyn NetworkEventProcessor>,
+    shutdown_token: CancellationToken,
+    status_tx: watch::Sender<SupervisorStatus>,
+) {
+    let (internal_tx, internal_rx) = mpsc::channel::<tp::Input>(64);
+    reconcile_loop(
+        event_rx,
+        internal_tx,
+        internal_rx,
+        processor,
+        shutdown_token,
+        status_tx,
+    )
+    .await;
+}
+
+/// The reconciler entry point used by the node. The caller supplies the internal
+/// input channel (see [`supervisor_internal_channel`]) so a [`SupervisorFactSink`]
+/// over the same sender can feed normalized signaling and session facts into the
+/// supervisor's policy-ordered input queue.
+pub(crate) async fn run_network_event_reconciler_with_channel(
+    event_rx: mpsc::Receiver<NetworkEventRequest>,
+    channel: SupervisorInternalChannel,
+    processor: Arc<dyn NetworkEventProcessor>,
+    shutdown_token: CancellationToken,
+) {
+    let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
+    reconcile_loop(
+        event_rx,
+        channel.tx,
+        channel.rx,
+        processor,
+        shutdown_token,
+        status_tx,
+    )
+    .await;
+}
+
+async fn reconcile_loop(
     mut event_rx: mpsc::Receiver<NetworkEventRequest>,
+    internal_tx: mpsc::Sender<tp::Input>,
+    mut internal_rx: mpsc::Receiver<tp::Input>,
     processor: Arc<dyn NetworkEventProcessor>,
     shutdown_token: CancellationToken,
     status_tx: watch::Sender<SupervisorStatus>,
@@ -1090,10 +1403,6 @@ pub async fn run_network_event_reconciler_with_status(
     // The Rust core is `Ungated`: phase eligibility never consults `AppPhase`.
     let mut supervisor = ConnectionSupervisor::new(tp::LifecycleProfile::Ungated);
 
-    // Internal inputs: timer expiries and effect completions. Single-flight
-    // execution means at most one terminal completion is in flight; the buffer
-    // reserves ample room for that plus concurrently armed timer deliveries.
-    let (internal_tx, mut internal_rx) = mpsc::channel::<tp::Input>(64);
     let mut timers: HashMap<tp::TimerId, tokio::task::AbortHandle> = HashMap::new();
     let mut effect: Option<RunningEffect> = None;
     let mut last_action_id: Option<u64> = None;
@@ -1233,7 +1542,7 @@ fn handle_supervisor_input(
         }
     }
 
-    if let Some(started) = supervisor.maybe_start_effect() {
+    if let Some(started) = supervisor.maybe_start_effect(now) {
         *last_action_id = Some(started.action_id);
         let token = CancellationToken::new();
         tracing::info!(
@@ -1273,18 +1582,29 @@ fn spawn_effect(
     let kind = started.kind;
     let policy_revision = started.captured_revision;
     let net_action = network_action_of(started.action);
+    let teardown_budget = started.teardown_budget;
 
     // Outer join monitor: every termination path — normal return, cancellation,
     // or panic/abort — reports exactly one terminal completion.
     tokio::spawn(async move {
         let inner = tokio::spawn(async move {
-            tokio::select! {
-                biased;
-                _ = token.cancelled() => EffectOutcome::Cancelled,
-                res = processor.process_network_recovery_action(net_action) => match res {
-                    Ok(()) => EffectOutcome::Succeeded,
-                    Err(e) => EffectOutcome::Failed { diagnosis: diagnose_effect_error(&e) },
-                }
+            match teardown_budget {
+                // Teardown kinds run under the bounded-completion contract and
+                // report a structured residual outcome, not a plain success.
+                Some(budget) => tokio::select! {
+                    biased;
+                    _ = token.cancelled() => EffectOutcome::Cancelled,
+                    report = processor.run_bounded_teardown(net_action, budget) =>
+                        teardown_outcome(report),
+                },
+                None => tokio::select! {
+                    biased;
+                    _ = token.cancelled() => EffectOutcome::Cancelled,
+                    res = processor.process_network_recovery_action(net_action) => match res {
+                        Ok(()) => EffectOutcome::Succeeded,
+                        Err(e) => EffectOutcome::Failed { diagnosis: diagnose_effect_error(&e) },
+                    }
+                },
             }
         });
         let outcome = match inner.await {
@@ -1317,6 +1637,44 @@ fn diagnose_effect_error(error: &str) -> EffectDiagnosis {
     }
 }
 
+/// Map a bounded [`TeardownReport`] onto the effect completion vocabulary.
+///
+/// Reaching the logical teardown goal is success-class: no residuals →
+/// `Succeeded`, residuals → `CompletedWithResiduals`. A deadline that aborted
+/// remaining steps before the goal is `Abandoned` (still success-class, so the
+/// obligation is extinguished). Otherwise the teardown reports `Failed` so the
+/// policy retries inside the obligation deadline. Residual strings are recorded
+/// as availability-family `PathUnreachable` diagnostics, which is inside the
+/// producible set for teardown kinds.
+fn teardown_outcome(report: TeardownReport) -> EffectOutcome {
+    let residuals: Vec<EffectDiagnosis> = report
+        .residuals
+        .iter()
+        .map(|stage| EffectDiagnosis::PathUnreachable {
+            stage: stage.clone(),
+        })
+        .collect();
+
+    if report.reached_goal {
+        if residuals.is_empty() {
+            EffectOutcome::Succeeded
+        } else {
+            EffectOutcome::CompletedWithResiduals { residuals }
+        }
+    } else if report.deadline_reached {
+        EffectOutcome::Abandoned { residuals }
+    } else {
+        let stage = report
+            .residuals
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "teardown did not reach its goal".to_string());
+        EffectOutcome::Failed {
+            diagnosis: EffectDiagnosis::PathUnreachable { stage },
+        }
+    }
+}
+
 /// Network Event Handle
 ///
 /// Lightweight handle for sending network events and receiving processing results.
@@ -1333,6 +1691,10 @@ pub struct NetworkEventHandle {
     /// the previous incarnation is rejected by `(epoch, sequence)` ordering
     /// without any change to the existing sequence semantics callers rely on.
     source_epoch: u64,
+    /// Optional fact sink so the upper layer can report a `SessionActivated`
+    /// generation commit through this handle when the session/credential layer
+    /// is not itself wired to the supervisor.
+    fact_sink: Option<SupervisorFactSink>,
 }
 
 impl NetworkEventHandle {
@@ -1354,6 +1716,38 @@ impl NetworkEventHandle {
             event_tx,
             result_timeout,
             source_epoch: NEXT_NETWORK_SOURCE_EPOCH.fetch_add(1, Ordering::Relaxed),
+            fact_sink: None,
+        }
+    }
+
+    /// Create a new NetworkEventHandle carrying a supervisor fact sink so the
+    /// upper layer can report `SessionActivated` through
+    /// [`NetworkEventHandle::notify_session_activated`].
+    pub(crate) fn new_with_fact_sink(
+        event_tx: mpsc::Sender<NetworkEventRequest>,
+        fact_sink: SupervisorFactSink,
+    ) -> Self {
+        Self {
+            event_tx,
+            result_timeout: NETWORK_EVENT_RESULT_TIMEOUT,
+            source_epoch: NEXT_NETWORK_SOURCE_EPOCH.fetch_add(1, Ordering::Relaxed),
+            fact_sink: Some(fact_sink),
+        }
+    }
+
+    /// Report that a new session generation was authoritatively committed.
+    ///
+    /// This is the explicit path for an upper layer whose session/credential
+    /// owner is not itself wired to the supervisor; the runtime session state
+    /// reports the same fact directly at its hard-rebind commit point. Delivery
+    /// is non-blocking and best-effort.
+    pub fn notify_session_activated(&self, session_generation: u64) {
+        match &self.fact_sink {
+            Some(sink) => sink.session_activated(session_generation),
+            None => tracing::debug!(
+                session_generation,
+                "network_event.handle.session_activated_no_sink"
+            ),
         }
     }
 
@@ -1472,6 +1866,7 @@ impl Clone for NetworkEventHandle {
             event_tx: self.event_tx.clone(),
             result_timeout: self.result_timeout,
             source_epoch: self.source_epoch,
+            fact_sink: self.fact_sink.clone(),
         }
     }
 }

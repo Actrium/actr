@@ -4,7 +4,9 @@
 
 #[cfg(feature = "opentelemetry")]
 use super::trace;
-use crate::lifecycle::CredentialState;
+use crate::lifecycle::{
+    CredentialState, SignalingFactLostCause, SignalingFactOrigin, SupervisorFactSink,
+};
 use crate::transport::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
@@ -293,6 +295,20 @@ pub trait SignalingClient: Send + Sync {
     /// also needs.
     /// Default implementation is a no-op for clients that don't support hooks.
     fn set_hook_callback(&self, _cb: HookCallback) {}
+
+    /// Attach the supervisor fact sink so authoritative signaling generation
+    /// transitions (`SignalingGenerationCommitted` / `SignalingGenerationLost`)
+    /// are reported to the connection supervisor as normalized facts.
+    ///
+    /// Default is a no-op for clients that do not drive lifecycle recovery.
+    fn set_supervisor_fact_sink(&self, _sink: SupervisorFactSink) {}
+
+    /// Synchronously invalidate the current signaling generation: bump the
+    /// connection generation so no in-flight attempt can still commit, and
+    /// suppress new automatic attempts. A bounded teardown calls this before any
+    /// physical step so a later connect cannot race the teardown across its
+    /// commit boundary. Must not block. Default is a no-op.
+    fn invalidate_generation(&self) {}
 }
 
 /// High-level signaling connection state (kept for quick boolean checks).
@@ -486,6 +502,9 @@ pub struct WebSocketSignalingClient {
     reconnect_backoff_reset_generation: AtomicU64,
     /// Hook callback for ordered lifecycle notification (set once, lock-free read)
     hook_callback: OnceLock<HookCallback>,
+    /// Supervisor fact sink for normalized signaling generation facts (set once,
+    /// lock-free read). Absent for clients not wired to lifecycle recovery.
+    supervisor_fact_sink: OnceLock<SupervisorFactSink>,
 }
 
 impl WebSocketSignalingClient {
@@ -521,6 +540,23 @@ impl WebSocketSignalingClient {
             connection_attempt_notify: tokio::sync::Notify::new(),
             reconnect_backoff_reset_generation: AtomicU64::new(0),
             hook_callback: OnceLock::new(),
+            supervisor_fact_sink: OnceLock::new(),
+        }
+    }
+
+    /// Emit a `SignalingGenerationCommitted` fact if a supervisor fact sink is
+    /// wired. Best-effort and non-blocking.
+    fn emit_signaling_committed(&self, generation: u64, origin: SignalingFactOrigin) {
+        if let Some(sink) = self.supervisor_fact_sink.get() {
+            sink.signaling_generation_committed(generation, origin);
+        }
+    }
+
+    /// Emit a `SignalingGenerationLost` fact if a supervisor fact sink is wired.
+    /// Best-effort and non-blocking.
+    fn emit_signaling_lost(&self, generation: u64, cause: SignalingFactLostCause) {
+        if let Some(sink) = self.supervisor_fact_sink.get() {
+            sink.signaling_generation_lost(generation, cause);
         }
     }
 
@@ -572,10 +608,15 @@ impl WebSocketSignalingClient {
     async fn handle_envelope_send_failure(&self, reason: DisconnectReason) {
         self.stats.errors.fetch_add(1, Ordering::Relaxed);
 
+        let generation = self.connection_generation.load(Ordering::Acquire);
         let was_connected = self.connected.swap(false, Ordering::AcqRel);
         if !was_connected {
             return;
         }
+
+        // The envelope send failed on a previously live socket; its generation
+        // is lost. Report it before the local teardown proceeds.
+        self.emit_signaling_lost(generation, SignalingFactLostCause::RemoteReset);
 
         // Prevent tasks belonging to the failed socket from observing a later
         // reconnect and mutating the new connection's shared state.
@@ -1099,6 +1140,18 @@ impl WebSocketSignalingClient {
 
         self.stats.connections.fetch_add(1, Ordering::Relaxed);
 
+        // Authoritative commit: the generation was validated by
+        // connect_intent_cancelled above and the socket is now published under
+        // the same synchronization boundary shared with disconnect. Report the
+        // committed generation to the supervisor. Origin is External: signaling
+        // does not carry the driving effect's action_id, so translation treats
+        // it as resource-owner news rather than the effect's own covered output.
+        let generation = match intent {
+            ConnectIntent::Explicit { generation }
+            | ConnectIntent::AutoReconnect { generation } => generation,
+        };
+        self.emit_signaling_committed(generation, SignalingFactOrigin::External);
+
         Ok(())
     }
 
@@ -1252,6 +1305,10 @@ impl WebSocketSignalingClient {
         let reconnect_notify = self.reconnect_notify.clone();
         let reconnect_enabled = self.config.reconnect_config.enabled;
         let hook_callback = self.hook_callback.get().cloned();
+        // Snapshot the fact sink and the generation this socket was established
+        // under, so a spontaneous stream end can report the lost generation.
+        let fact_sink = self.supervisor_fact_sink.get().cloned();
+        let socket_generation = self.connection_generation.load(Ordering::Acquire);
         let handle = tokio::spawn(async move {
             while let Some(msg) = stream.next().await {
                 match msg {
@@ -1335,6 +1392,14 @@ impl WebSocketSignalingClient {
                 reconnect_enabled.then_some(&reconnect_notify),
             )
             .await;
+            // A spontaneous stream end lost the live generation with no lifecycle
+            // command; report it so the supervisor can derive recovery.
+            if was_connected && let Some(sink) = &fact_sink {
+                sink.signaling_generation_lost(
+                    socket_generation,
+                    SignalingFactLostCause::RemoteReset,
+                );
+            }
             pending_pongs.lock().await.clear();
         });
 
@@ -1362,6 +1427,8 @@ impl WebSocketSignalingClient {
         let reconnect_notify = self.reconnect_notify.clone();
         let reconnect_enabled = self.config.reconnect_config.enabled;
         let hook_callback = self.hook_callback.get().cloned();
+        let fact_sink = self.supervisor_fact_sink.get().cloned();
+        let socket_generation = self.connection_generation.load(Ordering::Acquire);
 
         let handle = tokio::spawn(async move {
             loop {
@@ -1411,6 +1478,12 @@ impl WebSocketSignalingClient {
                         reconnect_enabled.then_some(&reconnect_notify),
                     )
                     .await;
+                    if was_connected && let Some(sink) = &fact_sink {
+                        sink.signaling_generation_lost(
+                            socket_generation,
+                            SignalingFactLostCause::RemoteReset,
+                        );
+                    }
                     break;
                 }
 
@@ -1435,6 +1508,12 @@ impl WebSocketSignalingClient {
                         reconnect_enabled.then_some(&reconnect_notify),
                     )
                     .await;
+                    if was_connected && let Some(sink) = &fact_sink {
+                        sink.signaling_generation_lost(
+                            socket_generation,
+                            SignalingFactLostCause::RemoteReset,
+                        );
+                    }
                     break;
                 }
             }
@@ -1444,6 +1523,9 @@ impl WebSocketSignalingClient {
     }
 
     async fn disconnect_internal(&self, suppress_auto_reconnect: bool) -> NetworkResult<()> {
+        // Capture the live generation before invalidation bumps it, so the
+        // `SignalingGenerationLost` fact reports the generation that was live.
+        let generation_before = self.connection_generation.load(Ordering::Acquire);
         if suppress_auto_reconnect {
             self.invalidate_connection_attempts_and_suppress_auto_reconnect();
         }
@@ -1555,6 +1637,12 @@ impl WebSocketSignalingClient {
             None,
         )
         .await;
+
+        // A live socket went down at an explicit disconnect/invalidation point;
+        // report the lost generation to the supervisor.
+        if was_connected {
+            self.emit_signaling_lost(generation_before, SignalingFactLostCause::Disconnected);
+        }
 
         Ok(())
     }
@@ -2305,6 +2393,20 @@ impl SignalingClient for WebSocketSignalingClient {
 
     fn set_hook_callback(&self, cb: HookCallback) {
         let _ = self.hook_callback.set(cb);
+    }
+
+    fn set_supervisor_fact_sink(&self, sink: SupervisorFactSink) {
+        let _ = self.supervisor_fact_sink.set(sink);
+    }
+
+    fn invalidate_generation(&self) {
+        // Bump the connection generation and suppress new automatic attempts so
+        // no in-flight connect can still commit. The teardown-crossing
+        // `SignalingGenerationLost` is delivered by the disconnect that follows
+        // (and, decisively, by the supervisor dropping the teardown-scoped
+        // generation on teardown completion), so this synchronous close only
+        // invalidates commit rights and new-work admission.
+        self.invalidate_connection_attempts_and_suppress_auto_reconnect();
     }
 }
 

@@ -259,6 +259,9 @@ pub(crate) struct StartedEffect {
     pub kind: EffectKind,
     pub action: tp::Action,
     pub captured_revision: u64,
+    /// The remaining overall-teardown budget for a teardown effect, computed
+    /// from its armed obligation deadline. `None` for non-teardown effects.
+    pub teardown_budget: Option<Duration>,
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +397,7 @@ impl ConnectionSupervisor {
     /// If the execution slot is idle, select and begin the highest-priority
     /// action, recording its [`tp::EffectContext`]. Returns the started effect
     /// so the shell can spawn its task.
-    pub(crate) fn maybe_start_effect(&mut self) -> Option<StartedEffect> {
+    pub(crate) fn maybe_start_effect(&mut self, now: PolicyInstant) -> Option<StartedEffect> {
         if self.view.execution != tp::ExecutionState::Idle {
             return None;
         }
@@ -408,6 +411,26 @@ impl ConnectionSupervisor {
         {
             self.view.teardown_scope_generations.insert(g);
         }
+        // A teardown effect inherits the remaining budget of its overall
+        // teardown deadline (armed once when the obligation was created). The
+        // in-effect budget is the "in-effect expiry" the translation table
+        // defers to while the teardown effect runs.
+        let teardown_budget = if kind.is_teardown() {
+            let deadline = match kind {
+                EffectKind::Cleanup => self.view.cleanup_teardown.map(|t| t.deadline),
+                EffectKind::ConfirmedOfflineDisconnect => {
+                    self.view.offline_teardown.map(|t| t.deadline)
+                }
+                _ => None,
+            };
+            Some(
+                deadline
+                    .map(|d| d.saturating_sub(now))
+                    .unwrap_or(self.config.cleanup_teardown_deadline),
+            )
+        } else {
+            None
+        };
         let captured_revision = self.view.policy_revision;
         self.view.effect = Some(tp::EffectContext {
             action_id,
@@ -420,6 +443,7 @@ impl ConnectionSupervisor {
             kind,
             action,
             captured_revision,
+            teardown_budget,
         })
     }
 

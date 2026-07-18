@@ -409,3 +409,223 @@ fn snapshot_is_offline_and_should_restore() {
     assert!(!unknown.is_offline());
     assert!(!unknown.should_restore());
 }
+
+// ---------------------------------------------------------------------------
+// S3: fact sink plumbing and bounded teardown
+// ---------------------------------------------------------------------------
+
+use crate::lifecycle::recovery_policy::diagnosis::EffectOutcome as TpEffectOutcome;
+use crate::lifecycle::recovery_policy::translate as tp;
+
+#[test]
+fn fact_sink_delivers_facts_to_internal_channel_in_order() {
+    let (sink, mut channel) = super::supervisor_internal_channel();
+    sink.signaling_generation_committed(7, SignalingFactOrigin::External);
+    sink.session_activated(3);
+    sink.signaling_generation_lost(7, SignalingFactLostCause::Disconnected);
+
+    let a = channel.rx.try_recv().expect("committed fact");
+    assert!(matches!(
+        a,
+        tp::Input::SignalingGenerationCommitted { generation: 7, .. }
+    ));
+    let b = channel.rx.try_recv().expect("session fact");
+    assert!(matches!(
+        b,
+        tp::Input::SessionActivated {
+            session_generation: 3
+        }
+    ));
+    let c = channel.rx.try_recv().expect("lost fact");
+    assert!(matches!(
+        c,
+        tp::Input::SignalingGenerationLost { generation: 7, .. }
+    ));
+}
+
+#[test]
+fn teardown_outcome_maps_every_report_class() {
+    assert!(matches!(
+        super::teardown_outcome(TeardownReport::succeeded()),
+        TpEffectOutcome::Succeeded
+    ));
+    assert!(matches!(
+        super::teardown_outcome(TeardownReport::completed_with_residuals(vec!["x".into()])),
+        TpEffectOutcome::CompletedWithResiduals { .. }
+    ));
+    assert!(matches!(
+        super::teardown_outcome(TeardownReport::abandoned(vec!["x".into()])),
+        TpEffectOutcome::Abandoned { .. }
+    ));
+    let failed = TeardownReport {
+        reached_goal: false,
+        deadline_reached: false,
+        residuals: vec![],
+    };
+    assert!(matches!(
+        super::teardown_outcome(failed),
+        TpEffectOutcome::Failed { .. }
+    ));
+}
+
+#[derive(Clone, Copy)]
+enum DisconnectMode {
+    Err,
+    Hang,
+}
+
+struct TeardownFakeSignaling {
+    connected: AtomicBool,
+    disconnect_mode: DisconnectMode,
+    invalidated: AtomicBool,
+    hang: tokio::sync::Notify,
+    event_tx: broadcast::Sender<SignalingEvent>,
+}
+
+impl TeardownFakeSignaling {
+    fn new(mode: DisconnectMode) -> Self {
+        let (event_tx, _rx) = broadcast::channel(8);
+        Self {
+            connected: AtomicBool::new(true),
+            disconnect_mode: mode,
+            invalidated: AtomicBool::new(false),
+            hang: tokio::sync::Notify::new(),
+            event_tx,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SignalingClient for TeardownFakeSignaling {
+    async fn connect(&self) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&self) -> NetworkResult<()> {
+        match self.disconnect_mode {
+            DisconnectMode::Err => Err(NetworkError::ConnectionError(
+                "forced disconnect failure".to_string(),
+            )),
+            DisconnectMode::Hang => {
+                // Never notified: the caller's overall budget must abandon this.
+                self.hang.notified().await;
+                Ok(())
+            }
+        }
+    }
+
+    fn invalidate_generation(&self) {
+        self.invalidated.store(true, AtomicOrdering::SeqCst);
+    }
+
+    async fn send_register_request(
+        &self,
+        _request: RegisterRequest,
+    ) -> NetworkResult<RegisterResponse> {
+        Err(NetworkError::ConnectionError("unused".to_string()))
+    }
+
+    async fn send_unregister_request(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _reason: Option<String>,
+    ) -> NetworkResult<UnregisterResponse> {
+        Err(NetworkError::ConnectionError("unused".to_string()))
+    }
+
+    async fn send_heartbeat(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _availability: ServiceAvailabilityState,
+        _power_reserve: f32,
+        _mailbox_backlog: f32,
+    ) -> NetworkResult<Pong> {
+        Err(NetworkError::ConnectionError("unused".to_string()))
+    }
+
+    async fn send_route_candidates_request(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _request: RouteCandidatesRequest,
+    ) -> NetworkResult<RouteCandidatesResponse> {
+        Err(NetworkError::ConnectionError("unused".to_string()))
+    }
+
+    async fn get_signing_key(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _key_id: u32,
+    ) -> NetworkResult<(u32, Vec<u8>)> {
+        Err(NetworkError::ConnectionError("unused".to_string()))
+    }
+
+    async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+        Err(NetworkError::ConnectionError("unused".to_string()))
+    }
+
+    async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+        Err(NetworkError::ConnectionError("unused".to_string()))
+    }
+
+    fn is_connected(&self) -> bool {
+        self.connected.load(AtomicOrdering::SeqCst)
+    }
+
+    fn get_stats(&self) -> SignalingStats {
+        SignalingStats::default()
+    }
+
+    fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+        self.event_tx.subscribe()
+    }
+
+    async fn set_actor_id(&self, _actor_id: ActrId) {}
+
+    async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+    async fn clear_identity(&self) {}
+}
+
+#[tokio::test]
+async fn bounded_cleanup_invalidates_up_front_and_records_residuals() {
+    let signaling = Arc::new(TeardownFakeSignaling::new(DisconnectMode::Err));
+    let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
+
+    let report = processor
+        .bounded_cleanup(std::time::Duration::from_secs(10))
+        .await;
+
+    assert!(
+        signaling.invalidated.load(AtomicOrdering::SeqCst),
+        "commit rights are invalidated synchronously before any physical step"
+    );
+    assert!(report.reached_goal, "local teardown completed");
+    assert!(!report.deadline_reached);
+    assert_eq!(
+        report.residuals.len(),
+        1,
+        "the failed disconnect step is recorded as a residual, not an early return"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn bounded_cleanup_abandons_remaining_steps_at_budget() {
+    let signaling = Arc::new(TeardownFakeSignaling::new(DisconnectMode::Hang));
+    let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
+    let budget = std::time::Duration::from_millis(100);
+
+    // Drive time forward past the budget while the hanging disconnect is in
+    // flight; the overall deadline must abandon the remaining steps.
+    let (report, ()) = tokio::join!(processor.bounded_cleanup(budget), async {
+        tokio::time::advance(std::time::Duration::from_millis(150)).await;
+    });
+
+    assert!(signaling.invalidated.load(AtomicOrdering::SeqCst));
+    assert!(report.deadline_reached, "budget expired");
+    assert!(!report.reached_goal, "goal not confirmed");
+    assert_eq!(report.residuals.len(), 1);
+}

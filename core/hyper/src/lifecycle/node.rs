@@ -461,6 +461,16 @@ pub(crate) struct Inner {
     pub(crate) network_event_debounce_config:
         Option<crate::lifecycle::network_event::DebounceConfig>,
 
+    /// The supervisor's internal input channel, created alongside the network
+    /// event handle so a fact sink over the same sender can feed normalized
+    /// signaling and session facts into the reconciler. Taken at `start()`.
+    pub(crate) network_event_internal:
+        Option<crate::lifecycle::network_event::SupervisorInternalChannel>,
+
+    /// Fact sink over the supervisor's internal input channel, handed to the
+    /// signaling client and session state so resource owners can report facts.
+    pub(crate) supervisor_fact_sink: Option<crate::lifecycle::network_event::SupervisorFactSink>,
+
     /// Request deduplication state (15 s TTL response cache, prevents double-processing on retry)
     pub(crate) dedup_state: Arc<Mutex<DedupState>>,
 
@@ -1697,6 +1707,8 @@ impl Inner {
             actr_lock,
             network_event_rx: None,
             network_event_debounce_config: None,
+            network_event_internal: None,
+            supervisor_fact_sink: None,
             dedup_state: Arc::new(Mutex::new(DedupState::new())),
             package_manifest,
             preregistered_credential: None,
@@ -1793,8 +1805,18 @@ impl Inner {
             None
         };
 
+        // Create the supervisor's internal input channel and a fact sink over
+        // it, so the signaling client and session state can report normalized
+        // facts into the same policy-ordered queue as timers and completions.
+        let (fact_sink, internal_channel) =
+            crate::lifecycle::network_event::supervisor_internal_channel();
+        self.signaling_client
+            .set_supervisor_fact_sink(fact_sink.clone());
+
         self.network_event_rx = Some(event_rx);
         self.network_event_debounce_config = debounce_config;
+        self.network_event_internal = Some(internal_channel);
+        self.supervisor_fact_sink = Some(fact_sink.clone());
 
         tracing::info!(
             debounce_ms,
@@ -1802,7 +1824,7 @@ impl Inner {
             "network_event.node.handle_created"
         );
 
-        crate::lifecycle::NetworkEventHandle::new(event_tx)
+        crate::lifecycle::NetworkEventHandle::new_with_fact_sink(event_tx, fact_sink)
     }
 
     /// Attach a credential already issued by AIS so that `start()` can skip
@@ -2027,6 +2049,11 @@ impl Inner {
                 generation: 1,
             });
             self.session_state = Some(session_state.clone());
+            // Wire the supervisor fact sink so a hard-rebind generation commit
+            // reports `SessionActivated` to the connection supervisor.
+            if let Some(sink) = self.supervisor_fact_sink.clone() {
+                session_state.set_fact_sink(sink).await;
+            }
             let registration_context = self
                 .preregistered_registration_context
                 .take()
@@ -2430,8 +2457,26 @@ impl Inner {
                     };
 
                 let shutdown = self.shutdown_token.clone();
+                // The internal channel is created with the handle; a fact sink
+                // over its sender was already wired into the signaling client and
+                // session state, so signaling and session facts share the
+                // supervisor's policy-ordered input queue.
+                let internal_channel = self.network_event_internal.take();
                 let network_event_handle = tokio::spawn(async move {
-                    Self::network_event_loop(event_rx, event_processor, shutdown).await;
+                    match internal_channel {
+                        Some(channel) => {
+                            crate::lifecycle::network_event::run_network_event_reconciler_with_channel(
+                                event_rx,
+                                channel,
+                                event_processor,
+                                shutdown,
+                            )
+                            .await;
+                        }
+                        None => {
+                            Self::network_event_loop(event_rx, event_processor, shutdown).await;
+                        }
+                    }
                 });
                 task_handles.push(network_event_handle);
                 tracing::info!("network_event.node.loop_started");

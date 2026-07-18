@@ -109,7 +109,6 @@ pwrzv.workspace = true
 crossbeam.workspace = true
 dashmap.workspace = true
 dotenvy = "0.15"
-either = "1.15"
 num_cpus = "1.17"
 actr-mock-actrix = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
