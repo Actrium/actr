@@ -11,14 +11,20 @@
 ## Summary
 
 One responsive `RecoverySupervisor` owns connection-recovery policy. Small,
-orthogonal state machines describe what is true and what work is pending;
+orthogonal state machines describe what is true and what work is pending; one
+pure translation function is the only place where an accepted input becomes
+machine inputs, revisions, and retry, escalation, park, or abandon
+verdicts;
 generation-checked effect tasks perform asynchronous I/O without blocking the
-supervisor. Successful transitions advance when their event arrives, not after
+supervisor and report typed diagnoses rather than classifying their own
+failures. Successful transitions advance when their event arrives, not after
 a fixed sleep or polling tick. Time remains only when it has an explicit
 product, protocol, retention, failure, backoff, or compatibility meaning. The
-design also defines cancellation-safe single-flight ownership and
-compare-and-commit rules for signaling, WebRTC, destination transports, wire
-pools, mailboxes, and runtime quotas.
+design also defines a constructor-time lifecycle profile, escalation-based
+retry policy with sustained capped backoff, bounded cleanup completion,
+cancellation-safe single-flight ownership, and compare-and-commit rules for
+signaling, WebRTC, destination transports, wire pools, mailboxes, and runtime
+quotas.
 
 ## Motivation
 
@@ -71,8 +77,11 @@ The design MUST:
 - keep independent state dimensions independent;
 - keep the lifecycle supervisor responsive while an asynchronous effect runs;
 - make the owner of every state transition explicit;
-- retain recovery intent until a matching effect acknowledges the exact policy
-  revision that it covered;
+- route every policy decision through one pure translation function;
+- retain each pending obligation until one of its domain's enumerated
+  extinguishment paths applies; a successful effect acknowledges an obligation
+  only when the obligation's work revision and required impact are covered by
+  that effect;
 - prevent stale or cancelled work from committing;
 - make built-in production paths event-driven on successful transitions;
 - classify and justify every production timer;
@@ -84,6 +93,8 @@ The design MUST NOT:
 
 - create one global FSM containing all peers and transport layers;
 - hold a policy-state lock across signaling, transport, or peer I/O;
+- let an effect task classify its own failure or choose its own successor
+  action;
 - use elapsed time as evidence that a state change probably happened;
 - delay a successful event merely to coalesce work in the built-in policy;
 - let a timeout, cancellation, or dropped future poison single-flight
@@ -95,8 +106,14 @@ The design MUST NOT:
 | Term | Meaning in this RFC |
 |---|---|
 | Fact | An observed condition, such as app phase or network path. |
-| Intent | Work that remains required until a matching effect acknowledges it. |
+| Obligation | Pending work that may end only through its domain's enumerated extinguishment paths. |
+| Intent | The recovery obligation held by `RecoveryIntent`. |
 | Effect | Asynchronous I/O started by policy, such as probe, reconnect, or cleanup. |
+| Diagnosis | A typed, identity-validated observation reported by an effect; never a verdict. |
+| Verdict | The translation layer's ruling on one `(effect kind, diagnosis, context)`: retry, escalate, park, or abandon. |
+| Escalation threshold | The consecutive-failure count at which a weaker recovery action is promoted to a stronger one. |
+| Release mask | The non-empty set of park-cause entries recorded while a record is parked; each entry lists the trigger classes that clear it, and the record is freed only when the set empties. |
+| Lifecycle profile | The constructor-time choice of whether app phase gates recovery: `Gated` or `Ungated`. |
 | Owner | The only component allowed to mutate a state domain. |
 | Revision | A monotonic version assigned to material non-completion policy inputs. |
 | Generation / session | The identity of one resource-creation attempt or resource lifetime. |
@@ -105,6 +122,24 @@ The design MUST NOT:
 | Hysteresis | A deliberate, bounded delay before a destructive policy decision. |
 | Structural duplicate | An input whose meaningful policy fields equal the last accepted value. |
 | Linearize | Make concurrent operations appear in one order at an explicit owner boundary. |
+
+### Identity inventory
+
+Every monotonic or identity value in this RFC has one allocator, one scope,
+and one comparison target:
+
+| Identity | Allocator | Scope and comparison | Crosses public API |
+|---|---|---|---|
+| `event_id` | supervisor, on dequeue | total order of accepted inputs; diagnostics only | reported to callbacks |
+| `policy_revision` | supervisor, on material change | causality of desired policy; compared by `<=` in acknowledgement and supersession | reported on the status stream |
+| work revision | not an allocator: the `policy_revision` a pending record stored when last required | per pending record; compared against effect-captured revision and supersession cutoffs | no |
+| `retry_id` | supervisor, per armed deadline | one armed backoff deadline; expiry must match exactly | no |
+| `action_id` | supervisor, per started effect | one effect execution; completion must match exactly | added to the status stream when work starts |
+| `candidate_id` | supervisor, each time the path enters `OfflineCandidate` from a different state; an `ObserveOffline` self-loop does not refresh it | one offline candidacy; `OfflineGraceExpired` must match the current candidate | no |
+| `source_epoch` + sequence | epoch by supervisor on monitor attach/restart; sequence by the monitor within its epoch | snapshot freshness, `(epoch, sequence)` lexicographic | attached by binding adapters |
+| `session_generation` | the session-establishment (login) path's resource owner | account-session family; compared as monotonic newer-than in `SessionActivated` acceptance and the `LoggedOut -> Active` commit gate | no |
+| `connection_generation`, `session_id`, ICE generation | resource owners | resource-family commit gates | no |
+| wire-pool slot generation | pool owner | per-slot commit and close linearization | no |
 
 ### State decomposition
 
@@ -132,6 +167,33 @@ not a mirror of every platform field. `OfflineCandidate` and `Offline` mean
 that policy has respectively delayed or committed the offline decision.
 The latest raw snapshot remains extended context.
 
+The supervisor is constructed with a **lifecycle profile**:
+
+```text
+LifecycleProfile
+  Ungated | Gated
+```
+
+`Ungated` is the default for the Rust core and headless deployments:
+phase eligibility never consults `AppPhase`, and an environment that never
+receives a lifecycle callback recovers normally. Mobile bindings (Swift,
+Kotlin) MUST construct the supervisor as `Gated` and accept the injection
+duty below. Under `Gated`, only `Foreground` grants phase eligibility;
+`Unknown` and `Background` do not. `Unknown` MUST NOT be treated as
+`Foreground`: a background-launched process must not start active recovery
+before its first authoritative phase arrives.
+
+A `Gated` binding delivers lifecycle facts through one ordered fact source:
+it registers the platform observer, then performs one authoritative read and
+injects the initial phase through the same ordered source. Either the
+lifecycle source reuses the epoch/sequence discipline defined for network
+snapshots, or the binding MUST discard the initial read when any observer
+event has already been accepted; a stale initial value never overwrites a
+newer accepted fact. A bootstrap failure deadline (a `Failure deadline` timer
+in the audited inventory) reports an ERROR diagnostic and a status record if
+no authoritative phase arrives in time; expiry keeps the profile gated and
+MUST NOT silently grant eligibility.
+
 #### Pending work
 
 These machines describe desired work. Each domain can remain pending
@@ -157,32 +219,52 @@ RetryGate
 
 `RetryGate` separates "work is still required" from "work may start now".
 `Ready` is eligible, `BackingOff` owns one exact retry deadline, and `Parked`
-waits for a new material fact or explicit command after automatic retries are
-exhausted. Dropping or superseding the pending work also drops its gate.
-Duplicate facts never reset an attempt count or deadline.
+waits for a trigger matching its recorded release mask after a
+precondition-family verdict or an explicit pause. Automatic retries never
+park: an inconclusive failure backs off toward one capped, jittered deadline
+or is escalated to a stronger action. Dropping or superseding the pending
+work also drops its gate. Duplicate facts never reset an attempt count or
+deadline.
 
 The retry gate also owns extended context:
 
 ```text
-{ attempt, retry_id, deadline }
+{ attempt, retry_id, deadline, release_mask }
 ```
 
 `attempt` counts consecutive failures of the current work. `retry_id`
 identifies the one armed deadline; it changes whenever that deadline is
 replaced. It is a runtime instance identity, distinct from the timer
-inventory's stable source ID. A material fact that changes the failed attempt's
-assumptions, or an applicable explicit command, sends `NewMaterialTrigger`,
-cancels the old deadline, and makes the work `Ready`. A structural duplicate
-does none of these. Retry limits, error classification, and backoff calculation
-are centralized policy by effect kind rather than decisions made at call sites.
+inventory's stable source ID. `release_mask` is present exactly while the
+gate is `Parked` and is never empty: it holds one entry per recorded park
+cause, each listing the trigger classes that clear it. A material fact that
+changes the failed attempt's assumptions, or an applicable explicit command,
+sends `NewMaterialTrigger`, cancels the old deadline, and makes the work
+`Ready`; for a `Parked` record the trigger clears every mask entry it
+matches — satisfaction is sticky — and the record becomes `Ready` only when
+the mask empties. A structural duplicate does none of these. Error
+classification, escalation thresholds, and backoff calculation are
+centralized policy by `(effect kind, diagnosis, context)` in the policy
+translation layer rather than decisions made at call sites or inside effect
+tasks.
 
-Each effect kind defines one reviewed error-classification table, retry budget,
-backoff curve, and maximum delay. Failures likely to affect many clients at
-once use bounded jitter to avoid a reconnect herd; the random source is injected
-for deterministic tests. Authentication, configuration, and invariant errors
-that cannot improve by repeating the same operation are terminal under the
+Each effect kind defines one reviewed classification table with escalation
+thresholds, a backoff curve, and a maximum delay. There is no retry budget
+that parks work: a weaker recovery action that keeps failing is escalated to
+a stronger one, and the strongest action sustains capped backoff
+indefinitely. Backoff deadlines for failures that can affect many clients at
+once MUST use bounded jitter to avoid a reconnect herd; the random source is
+injected for deterministic tests. Authentication, configuration, and
+invariant errors — the precondition family, which cannot improve by
+repeating the same operation — are the only failures that park under the
 current facts. A backoff deadline is computed once and never extended by a
 duplicate event.
+
+A pending record's gate stays `Ready` while its effect runs; no input moves
+the gate during execution, and a supervisor-requested cancellation does not
+change it. Failure inputs are therefore dispatched only to `Ready` gates:
+`BackingOff` or `Parked` receiving `RetryableFailure` or `TerminalFailure`
+is unreachable by construction, and reaching it is an implementation defect.
 
 `RecoveryMode` answers whether automatic recovery may start at all.
 `AppPhase` answers whether active recovery is currently foreground-eligible.
@@ -273,8 +355,11 @@ a later YASM release with an equivalent stable order; checking nondeterministic
 raw bytes is invalid. Transition tuples are normative, while their current
 presentation order is not.
 
-The generated machines cover local transitions only; the composite decision,
-preemption, retry, and revision rules later in this RFC are equally normative.
+The generated machines cover local transitions. The composite decision table
+and the derived send projection are generated separately by the Phase 1 pure
+reference reducer inside their own marked regions; the translation,
+classification, preemption, retry, and revision rules later in this RFC are
+equally normative.
 
 Implementation draft #399 does not yet implement every target machine in this
 revision. Until it does, this RFC is the design authority. RFC-0400 cannot be
@@ -320,10 +405,14 @@ stateDiagram-v2
 
 <!-- END GENERATED: recovery-mode-table -->
 
-`Terminating` is terminal for one supervisor lifetime. `ManualReset` and
-`StaleConnectionSuspected` request cleanup without changing recovery mode.
-`UserLogout` enters `LoggedOut`; a later network fact cannot reactivate
-recovery. Only a successfully committed new session emits `SessionActivated`.
+`Terminating` is terminal for one supervisor lifetime. Cleanup reasons and
+recovery-mode inputs are separate namespaces with an explicit mapping:
+`CleanupRequested { reason: UserLogout }` drives the machine input
+`UserLoggedOut`, and `reason: AppTerminating` (or `ShutdownRequested`)
+drives `AppTerminating`. The `ManualReset` and `StaleConnectionSuspected`
+reasons request cleanup without changing recovery mode. A later network fact
+cannot reactivate recovery after logout. Only a successfully committed new
+session emits `SessionActivated`.
 
 #### App phase
 
@@ -419,14 +508,14 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> Idle
-    RestorePending --> Idle : CompleteRestore
-    ReconnectPending --> Idle : CompleteReconnect
+    RestorePending --> Idle : CompleteRestore / SupersedeRecovery
+    ReconnectPending --> Idle : CompleteReconnect / SupersedeRecovery
     ProbePending --> ReconnectPending : RequestReconnect
     Idle --> ReconnectPending : RequestReconnect
     ProbePending --> RestorePending : RequestRestore
     Idle --> ProbePending : RequestProbe
     Idle --> RestorePending : RequestRestore
-    ProbePending --> Idle : CompleteProbe
+    ProbePending --> Idle : CompleteProbe / SupersedeRecovery
     RestorePending --> ReconnectPending : RequestReconnect
     ProbePending --> ProbePending : RequestProbe
     ReconnectPending --> ReconnectPending : RequestProbe
@@ -451,16 +540,25 @@ stateDiagram-v2
 | ProbePending | RequestRestore | RestorePending |
 | ProbePending | RequestReconnect | ReconnectPending |
 | ProbePending | CompleteProbe | Idle |
+| ProbePending | SupersedeRecovery | Idle |
 | RestorePending | RequestProbe | RestorePending |
 | RestorePending | RequestRestore | RestorePending |
 | RestorePending | RequestReconnect | ReconnectPending |
 | RestorePending | CompleteRestore | Idle |
+| RestorePending | SupersedeRecovery | Idle |
 | ReconnectPending | RequestProbe | ReconnectPending |
 | ReconnectPending | RequestRestore | ReconnectPending |
 | ReconnectPending | RequestReconnect | ReconnectPending |
 | ReconnectPending | CompleteReconnect | Idle |
+| ReconnectPending | SupersedeRecovery | Idle |
 
 <!-- END GENERATED: recovery-intent-table -->
+
+The supervisor validates the cutoff revision of a cleanup or session command
+before dispatching `SupersedeRecovery`; the machine input itself is
+unconditional. Stale completions are handled uniformly by the
+completion-dispatch guard in the completion procedure; pending machines do
+not carry defensive completion self-loops.
 
 </details>
 
@@ -501,9 +599,11 @@ stateDiagram-v2
 stateDiagram-v2
     [*] --> Ready
     Ready --> BackingOff : RetryableFailure
-    Ready --> Parked : TerminalFailure
+    Ready --> Parked : ExplicitPause / TerminalFailure
     BackingOff --> Ready : RetryDeadlineExpired / NewMaterialTrigger
+    BackingOff --> Parked : ExplicitPause
     Parked --> Ready : NewMaterialTrigger
+    Parked --> Parked : ExplicitPause
     Ready --> Ready : NewMaterialTrigger
 ```
 
@@ -518,12 +618,24 @@ stateDiagram-v2
 |---------------|-------|------------|
 | Ready | RetryableFailure | BackingOff |
 | Ready | TerminalFailure | Parked |
+| Ready | ExplicitPause | Parked |
 | Ready | NewMaterialTrigger | Ready |
 | BackingOff | RetryDeadlineExpired | Ready |
 | BackingOff | NewMaterialTrigger | Ready |
+| BackingOff | ExplicitPause | Parked |
 | Parked | NewMaterialTrigger | Ready |
+| Parked | ExplicitPause | Parked |
 
 <!-- END GENERATED: retry-gate-table -->
+
+`Parked` is entered only through `TerminalFailure` (a precondition-family
+verdict) or `ExplicitPause` (an explicit policy pause, which cancels any
+armed deadline; its mask entry is cleared by the matching explicit resume).
+Pausing an already parked record adds a resume entry to its release mask. A
+trigger clears every entry it matches and the gate leaves `Parked` only
+when the mask empties, so a resume alone cannot free a record whose
+precondition entry remains. Failure inputs reach only `Ready` gates, as
+specified under pending work.
 
 </details>
 
@@ -537,7 +649,6 @@ stateDiagram-v2
     Idle --> DisconnectPending : RequestDisconnect
     DisconnectPending --> Idle : CompleteDisconnect / SupersedeDisconnect
     DisconnectPending --> DisconnectPending : RequestDisconnect
-    Idle --> Idle : CompleteDisconnect / SupersedeDisconnect
 ```
 
 <!-- END GENERATED: offline-work-mermaid -->
@@ -550,13 +661,16 @@ stateDiagram-v2
 | Current State | Input | Next State |
 |---------------|-------|------------|
 | Idle | RequestDisconnect | DisconnectPending |
-| Idle | CompleteDisconnect | Idle |
-| Idle | SupersedeDisconnect | Idle |
 | DisconnectPending | RequestDisconnect | DisconnectPending |
 | DisconnectPending | CompleteDisconnect | Idle |
 | DisconnectPending | SupersedeDisconnect | Idle |
 
 <!-- END GENERATED: offline-work-table -->
+
+Like the other pending machines, `OfflineWork` carries no defensive
+completion self-loops: the supervisor's completion-dispatch guard and the
+translation table's `if pending` conditions keep stale inputs away from the
+machine.
 
 </details>
 
@@ -627,27 +741,50 @@ AppEnteredBackground
 SessionActivated { session_generation }
 NetworkSnapshot { source_epoch, sequence, observed_at, semantic_path }
 RecoveryRequested { minimum: Probe | Restore | Reconnect, reason }
-CleanupRequested { reason }
+RecoveryPauseRequested { scope }
+RecoveryResumeRequested { scope }
+CleanupRequested { reason: UserLogout | AppTerminating | ManualReset
+                         | StaleConnectionSuspected }
+ConfigurationChanged { scope }
 OfflineGraceExpired { candidate_id }
 RetryDeadlineExpired { domain, work_revision, retry_id }
+BootstrapPhaseDeadlineExpired
+ShutdownDeadlineExpired { deadline_id }
+TeardownDeadlineExpired { domain, deadline_id }
+SignalingGenerationCommitted { generation, origin }
+SignalingGenerationLost { generation, cause }
 EffectCompleted {
   action_id,
   kind,
   policy_revision,
   outcome:
     Succeeded
-    | Failed { class: Retryable | Terminal }
+    | CompletedWithResiduals { residuals }
+    | Abandoned { residuals }
+    | Failed { diagnosis: EffectDiagnosis }
     | Cancelled
-    | Aborted
+    | Aborted { cause }
 }
 ShutdownRequested
 ```
 
+`CleanupRequested.reason` is a closed enumeration; its values are a separate
+namespace from machine inputs, with the mapping declared under recovery mode.
 `CleanupRequested { reason: UserLogout }` drives both `CleanupWork` and the
 `UserLoggedOut` input of `RecoveryMode` in one supervisor turn.
 `ShutdownRequested` similarly enters `Terminating` and requests cleanup.
-Probe and Restore may be derived from lifecycle or path facts;
-`RecoveryRequested` also represents explicit reconnect and diagnostic commands.
+The public forced-reconnect command (`ReconnectReason` in the current API,
+including its `StaleConnectionSuspected` value) is normalized to
+`RecoveryRequested { minimum: Reconnect }`; the Reconnect contract already
+includes old-generation teardown, so it creates no separate `CleanupWork`.
+`RecoveryPauseRequested` sends `ExplicitPause` to the recovery-domain gates
+in scope; `RecoveryResumeRequested` and `ConfigurationChanged` are release
+triggers matched against recorded release masks.
+`CompletedWithResiduals` and `Abandoned` are valid only for teardown kinds
+(cleanup and confirmed offline disconnect) and are success-class outcomes:
+both extinguish the obligation while reporting residual diagnostics. Every
+derivation from an accepted input to machine inputs is defined exclusively
+by the normative policy translation section below.
 
 Resource owners receive a separate class of identity-bearing events:
 
@@ -659,7 +796,15 @@ WireSlotChanged { slot, generation, state }
 
 These resource events do not mutate supervisor policy directly. Their owner
 first validates generation or session identity, commits its retained state, and
-then emits a normalized supervisor fact when policy must change.
+then emits a normalized supervisor fact when policy must change. The
+normalized signaling facts are `SignalingGenerationCommitted` and
+`SignalingGenerationLost`; they enter the same supervisor queue and receive
+an `event_id` like every other input. A normalized fact produced by a
+running lifecycle effect carries that effect's `action_id` and captured
+revision as `origin`, so translation recognizes it as the current effect's
+covered output rather than external news. After a disconnect or cleanup
+effect crosses its teardown commit boundary, delivery of the matching
+`SignalingGenerationLost` is mandatory.
 
 The supervisor processes one input at a time and assigns every dequeued input a
 monotonic `event_id`. This order, not receive batching or task scheduling, is
@@ -686,8 +831,10 @@ that pending domain says it can change the failed attempt's outcome. Examples
 include a new route, a committed session generation, foreground re-entry after
 background made the failed work ineligible, or an explicit retry/reconnect
 command. Acceptance
-advances the policy revision, moves the work to `Ready`, resets its consecutive
-failure count, and updates its work revision. A same-or-weaker command received
+advances the policy revision, resets the consecutive failure count, updates
+the work revision, and makes the work `Ready` — for a `Parked` record, only
+when the trigger empties its release mask; otherwise it clears the matching
+entries and the record stays `Parked`. A same-or-weaker command received
 while matching work is already ready or running is coalesced; the same command
 received while that work is backing off or parked is a deliberate retry and is
 material. Repeating the same observed fact is never a material trigger.
@@ -695,11 +842,22 @@ material. Repeating the same observed fact is never a material trigger.
 Every network snapshot carries a source epoch and a sequence that is monotonic
 within that epoch. The supervisor allocates a monotonically increasing
 `source_epoch` when a platform path monitor is attached or restarted; the
-monitor MUST NOT reset the sequence inside an existing epoch. A snapshot from
-the current epoch whose sequence is not newer than the last accepted snapshot,
-or from an older epoch, is discarded before policy transition. This prevents
-both stale replay and the "sequence reset makes every future snapshot stale"
-failure.
+monitor MUST NOT reset the sequence inside an existing epoch. Acceptance is
+decided by `(epoch, sequence)` lexicographic comparison:
+
+```text
+epoch < current  -> stale, discarded
+epoch = current  -> accepted only when sequence > the last accepted
+                    sequence for the current epoch
+epoch > current  -> accepted as the new incarnation; the last accepted
+                    sequence resets
+```
+
+This prevents both stale replay and the "sequence reset makes every future
+snapshot stale" failure. At any moment exactly one authoritative
+path-monitor incarnation holds the current epoch. A binding whose monitor
+silently restarts, keeps the old epoch, and resets its sequence violates
+this contract; that is a binding defect, not a supervisor state gap.
 
 Consecutive snapshots that are semantically equivalent are structurally
 deduplicated. A structural duplicate does not advance policy revision or reset
@@ -716,11 +874,314 @@ observation sets `deadline = observed_at + offline_grace`; an already elapsed
 deadline is immediately eligible. `observed_at` never reorders accepted inputs
 and is never treated as evidence that an asynchronous operation completed.
 
+### Policy translation
+
+Reconciliation stage 1 is normative, not illustrative. One pure translation
+function is the only place in the supervisor that decides:
+
+- machine inputs and their application order;
+- revision allocation and work-revision updates;
+- retry, escalation, park, and abandon verdicts;
+- cancellation and preemption requests;
+- deadline arm and cancel instructions;
+- pending-work derivation ahead of action selection.
+
+```text
+translate(view, input, now, config, entropy) -> Decision
+```
+
+`view` is the supervisor's complete policy snapshot: the discrete state of
+every machine in this RFC plus the extended context those machines own —
+pending records with their revisions, retry gates, and release masks, the
+current `EffectContext`, the last accepted network snapshot and its
+`(source_epoch, sequence)`, the offline-candidate identity and deadline, the
+teardown obligation deadlines, the background-entry instant, the committed
+session generation, and the live signaling generation. `now` is the
+supervisor's monotonic dequeue instant.
+`entropy` is the injected deterministic random state used only for jitter.
+`Decision` is an ordered list of machine inputs together with their
+revision, trigger, cancellation, and timer-inventory consequences.
+
+The surrounding actor shell dequeues one input at a time, stamps `now`,
+applies the returned machine inputs in order, executes the timer and
+cancellation instructions through the audited facade, and starts the action
+selected by stage 2. The shell adds no policy. Effects and resource owners
+only report identity-validated observations and diagnoses; they never choose
+`Retry`, `Restore`, `Reconnect`, or `Park`.
+
+#### Typed effect diagnosis
+
+An effect reports what it observed. `EffectCompleted.outcome` carries a
+typed diagnosis, never a verdict:
+
+```text
+EffectDiagnosis
+  PathUnreachable { stage }       no endpoint answered; nothing is known about the remote session
+  Timeout { stage }               a bounded sub-operation exceeded its failure deadline
+  Overloaded { retry_after }      the remote explicitly deferred the request
+  ResourceExhausted { resource }  local sockets, memory, or quota were unavailable
+  TransportImpaired { scopes }    the session generation is alive; the listed channels are not
+  GenerationDead { generation }   the remote authoritatively no longer knows this generation
+  AuthRejected { kind }           credentials expired, invalid, or revoked
+  ConfigRejected { detail }       protocol, version, or capability mismatch
+  InvariantViolation { detail }   an internal contract was broken
+```
+
+Diagnoses form three families:
+
+- the **availability family** (`PathUnreachable`, `Timeout`, `Overloaded`,
+  `ResourceExhausted`) is inconclusive: the same operation may succeed later
+  without any policy change;
+- the **conclusive family** (`TransportImpaired`, `GenerationDead`) is a
+  verified statement about the current generation or its channels;
+- the **precondition family** (`AuthRejected`, `ConfigRejected`,
+  `InvariantViolation`) cannot improve by repeating the same operation.
+
+A diagnosis that an effect kind cannot produce is an effect-contract
+violation: it is recorded as an ERROR with the offending kind and diagnosis
+and handled as that kind's `InvariantViolation` cell in the classification
+table. It is never silently executed under a family default.
+
+Probe reports its verdict through this vocabulary rather than a bespoke
+result type: an intact path is `Succeeded`; a live generation with dead
+channels is `Failed { TransportImpaired }`; an authoritative "generation
+unknown" answer is `Failed { GenerationDead }`; no answer at all is
+`Failed { PathUnreachable }`.
+
+#### Failure classification and escalation
+
+Classification maps `(effect kind, diagnosis, context)` to exactly one
+verdict:
+
+```text
+Verdict
+  Retry                  RetryableFailure to this record's gate; one capped, jittered deadline
+  Escalate { to }        promote the pending intent to `to` via its normative transition
+  Park { release_mask }  TerminalFailure; the mask records park-cause entries and their clearing triggers
+  Abandon                teardown kinds only: extinguish the obligation now with `Abandoned` residuals
+```
+
+`Abandon` takes the same enumerated completion path as a bounded `Abandoned`
+outcome: the teardown obligation is extinguished at once with recorded
+residual diagnostics. Under `Terminating` the supervisor then ends when no
+work remains or at the shutdown overall deadline, whichever comes first.
+
+Escalation semantics are fixed:
+
+- only the current pending record can be escalated; if the record was
+  already superseded by cleanup or newer facts, the old completion releases
+  the execution slot and nothing else;
+- `EffectCompleted` never allocates a revision, so the promoted record
+  **retains the work revision of the record it replaces**: escalation is a
+  strength increase of the same causal obligation, not a new external
+  command. An explicit cleanup issued after the original intent therefore
+  still supersedes the escalated intent under revision ordering. An external
+  `RecoveryRequested` is the only path that allocates a new revision for
+  stronger work;
+- promotion creates a fresh `Ready` gate with zero failures, and the
+  completion input of the replaced kind is not dispatched, both as already
+  specified under reconciliation.
+
+The classification table is normative default policy, keyed by kind,
+diagnosis, and context. Within each effect-kind group, rows are evaluated
+top to bottom and the first matching row applies; the final row of each
+group is its catch-all, so every reachable `(diagnosis, context)` cell is
+covered. Family membership sets the default shape, but it is not the whole
+rule: an availability-family diagnosis may escalate when context makes
+stronger work the plausible remedy. A deployment may tighten a `Retry` cell
+but MUST NOT reclassify a precondition-family diagnosis as `Retry`:
+
+<!-- BEGIN GENERATED: classification-table -->
+
+| Effect kind | Diagnosis | Context / threshold | Verdict |
+|---|---|---|---|
+| Probe | `TransportImpaired` | — | Escalate { Restore } |
+| Probe | `GenerationDead` | — | Escalate { Reconnect } |
+| Probe | `Timeout` | at or above `escalate_after(Probe)` while path stays `Online` | Escalate { Reconnect } |
+| Probe | precondition family | — | Park, per-diagnosis mask |
+| Probe | availability family | — | Retry |
+| Restore | `GenerationDead` | — | Escalate { Reconnect } |
+| Restore | `TransportImpaired` | at or above `escalate_after = 2` | Escalate { Reconnect } |
+| Restore | `Timeout` | at or above `escalate_after(Restore)` while path stays `Online` | Escalate { Reconnect } |
+| Restore | precondition family | — | Park, per-diagnosis mask |
+| Restore | `TransportImpaired` or availability family | — | Retry |
+| Reconnect | precondition family | — | Park, per-diagnosis mask |
+| Reconnect | availability and conclusive families | — | Retry, sustained capped backoff |
+| Disconnect, Cleanup | `InvariantViolation` | mode `Terminating` | Abandon |
+| Disconnect, Cleanup | `InvariantViolation` | otherwise | Park { ExplicitCommand } (deliberate fail-closed) |
+| Disconnect, Cleanup | availability family | at or after the obligation's overall teardown deadline | Abandon |
+| Disconnect, Cleanup | availability family | otherwise (inside the obligation's overall teardown deadline) | Retry, short backoff |
+
+<!-- END GENERATED: classification-table -->
+
+Each effect kind produces a declared diagnosis set; anything outside it is
+an effect-contract violation handled as that kind's `InvariantViolation`
+cell:
+
+| Effect kind | Producible diagnoses |
+|---|---|
+| Probe, Restore, Reconnect | all nine |
+| Confirmed offline disconnect, Cleanup | availability family; `InvariantViolation` |
+
+The overall teardown deadline is obligation-level: it is armed once when the
+teardown obligation is created, `Retry` never resets it, and a running
+teardown effect inherits its remaining budget. In-effect expiry completes
+the effect with a success-class residual outcome as specified under cleanup
+bounded completion; expiry while the record is backing off is delivered as
+`TeardownDeadlineExpired` and extinguishes the obligation with `Abandoned`
+residuals. A teardown failure whose completion is processed at or after the
+deadline is ruled by the at-or-after classification row, so an expiry
+logged while the effect was still running needs no redelivery. Reaching the
+deadline is therefore never a diagnosis and yields no verdict of its own.
+
+The escalation rationale is uniform. A conclusive diagnosis escalates
+immediately when it proves the current strength targets the wrong layer:
+Probe repairs nothing, so any conclusive defect exceeds it; Restore cannot
+replace a dead generation, so `GenerationDead` exceeds it. A diagnosis
+retries at the same strength, with a threshold, when the current strength
+should have worked. An availability diagnosis escalates only where context
+justifies it — repeated probe or restore timeouts on a path that stays
+`Online` suggest the generation itself is gone, and Reconnect can fix that;
+`PathUnreachable` never escalates because no stronger action reaches a path
+that answers nothing.
+
+Reconnect is the escalation chain's endpoint and has no exhaustion: for
+availability- and conclusive-family failures it MUST remain in sustained
+capped backoff, never `Parked`.
+
+Per park cause, the mask entry and its clearing triggers are:
+
+| Park-cause entry | Clearing triggers |
+|---|---|
+| `AuthRejected` | { `SessionActivated`, explicit command } |
+| `ConfigRejected` | { `ConfigurationChanged`, explicit command } |
+| `InvariantViolation` | { explicit command } |
+| `ExplicitPause` | { matching explicit resume } |
+
+A `NewMaterialTrigger` clears every mask entry it matches; the record is
+freed only when no entries remain. A new route or
+`SignalingGenerationCommitted` never clears a precondition-family entry.
+
+#### Backoff arithmetic
+
+A `Retry` verdict computes one absolute deadline:
+
+```text
+attempt  = consecutive failures of this record, starting at 1
+exponent = min(attempt - 1, exponent_cap(kind))       saturating
+delay    = min(base_delay(kind) * 2^exponent, max_delay(kind))
+jitter   = sample in [1 - jitter_fraction(kind), 1]
+deadline = now + max(delay * jitter, retry_after)     retry_after = 0 unless
+                                                      Overloaded applies
+```
+
+The `retry_after` floor is applied after jitter so that jitter can never
+move a deadline below it.
+
+`retry_after` is a floor the client MUST NOT cross early; it is honored even
+when it exceeds `max_delay(kind)`. Once `delay` reaches `max_delay`,
+sustained kinds continue retrying at `max_delay` indefinitely. The jitter
+factor MUST be sampled exactly once per newly armed deadline from the
+injected deterministic entropy, whose stream is part of supervisor state and
+is seeded per supervisor instance so that clients and sessions de-correlate.
+A duplicate or stale input consumes no entropy and MUST NOT resample,
+extend the deadline, or reset the attempt count. Backoff deadlines are
+`Failure backoff` entries in the audited timer inventory.
+
+#### Translation table
+
+The following table is normative and exhaustive for supervisor inputs. Rows
+are grouped by input; within a group they are evaluated top to bottom and
+the first matching row applies. A row marked *additive* applies in addition
+to the matched row of its group. Unlisted combinations emit nothing beyond
+an `event_id` and a log record. "Advances" means the input allocates the
+next `policy_revision` under the existing material-change rule.
+
+<!-- BEGIN GENERATED: translation-table -->
+
+| Input | Preconditions | Fact and gate inputs | Pending-work derivation | Trigger | Revision |
+|---|---|---|---|---|---|
+| `AppEnteredForeground` | mode `LoggedOut`/`Terminating` | `AppPhase: EnterForeground` | none | No | Advances |
+| `AppEnteredForeground` | phase `Background`; `d = now - background_entered_at` | `AppPhase: EnterForeground` | `RecoveryIntent: RequestProbe` when `d < background_reconnect_after`, else `RequestReconnect` | Yes: wakes records backing off after a phase-ineligible failure; parks are released only by their masks | Advances |
+| `AppEnteredForeground` | phase `Unknown` (first authoritative phase) | `AppPhase: EnterForeground` | none: no background interval exists | Yes: wakes records backing off solely by phase ineligibility | Advances |
+| `AppEnteredForeground` | phase already `Foreground` | self-loop | none | No | None |
+| `AppEnteredBackground` | phase not `Background` | `AppPhase: EnterBackground`; record `background_entered_at = now` | none; a platform capability policy may request effect cancellation with a recorded reason | No | Advances |
+| `AppEnteredBackground` | phase already `Background` | self-loop | none | No | None |
+| `SessionActivated { g }` | `g` newer than the committed generation; this input allocates revision `r` | `RecoveryMode: SessionActivated`; `SupersedeRecovery` for old-session intent with revision `< r` (recorded as session supersession) | then `RecoveryIntent: RequestRestore` at `r` when no live signaling generation exists outside a pending or running teardown scope — a generation circled by pending teardown does not count as live, so the new session's obligation is derived even while an older cleanup runs and survives it | Yes: clears `SessionActivated` mask entries; material for recovery domains | Advances |
+| `SessionActivated { g }` | `g` not newer | none | none | No | None |
+| `NetworkSnapshot` -> `Online` | accepted; prior path not `Online` | `NetworkPath: ObserveOnline`; cancel candidate deadline | `OfflineWork: SupersedeDisconnect` if pending; cancel a running disconnect; when mode `Active` and intent `Idle`: `RequestProbe` if a live signaling generation exists, else `RequestRestore` | Yes: recovery domains (new route) | Advances |
+| `NetworkSnapshot` `Online` -> `Online` | accepted; material route change | self-loop | none | Yes: recovery domains | Advances |
+| `NetworkSnapshot` -> offline | accepted; prior path `Unknown` or `Online` | `NetworkPath: ObserveOffline`; arm the candidate deadline | none | No | Advances |
+| `NetworkSnapshot` -> unknown | accepted; any prior path | `NetworkPath: ObserveUnknown`; invalidate candidate | `OfflineWork: SupersedeDisconnect` if pending; cancel a running disconnect | No | Advances |
+| `NetworkSnapshot` | stale `(epoch, sequence)` or structural duplicate | none (discarded) | none | No | None |
+| `OfflineGraceExpired { candidate_id }` | candidate current | `NetworkPath: CommitOffline` | `OfflineWork: RequestDisconnect` | No | Advances |
+| `OfflineGraceExpired` | candidate stale | none (logged) | none | No | None |
+| `RetryDeadlineExpired` | domain, work revision, `retry_id` match a `BackingOff` record | gate -> `Ready`; attempt count retained | none | n/a | Advances (existing rule) |
+| `RetryDeadlineExpired` | mismatch | none (logged) | none | No | None |
+| `RecoveryRequested { minimum: m }` | mode `LoggedOut`/`Terminating` | none | none; structured `Rejected { mode, reason }` on the status stream | No | None |
+| `RecoveryRequested { m }` | intent `Idle` or pending weaker than `m` | none | `RecoveryIntent: Request{m}`; fresh `Ready` gate | n/a | Advances |
+| `RecoveryRequested { m }` | pending `>= m`, gate `Ready` or effect running | none (coalesced) | none | No | None |
+| `RecoveryRequested { m }` | pending `>= m`, gate `BackingOff` | none | none | Yes: deliberate retry of the stronger work; gate -> `Ready`, failure count reset | Advances |
+| `RecoveryRequested { m }` | pending `>= m`, gate `Parked`, command clears at least one remaining mask entry | none | none | Yes: clears matching entries; when the mask empties, gate -> `Ready` with failure count reset | Advances |
+| `RecoveryRequested { m }` | pending `>= m`, gate `Parked`, command clears no remaining entry | none | none; typed rejection on the status stream | No | None |
+| `RecoveryPauseRequested { scope }` | a scoped record's effect is in flight | request cancellation (reason: pause); `ExplicitPause` is applied when the terminal completion is processed, so no input moves the gate while the effect runs | none | No | Advances |
+| `RecoveryPauseRequested { scope }` | scoped recovery records exist, none executing | `ExplicitPause` to each scoped gate; cancel armed deadlines | none | No | Advances |
+| `RecoveryResumeRequested { scope }` | paused records in scope | none | none | Yes: clears `ExplicitPause` mask entries; gates whose masks empty -> `Ready` | Advances |
+| `ConfigurationChanged { scope }` | any | none | none | Yes: clears `ConfigurationChanged` mask entries; material for recovery domains | Advances |
+| `CleanupRequested { UserLogout }` | any | `RecoveryMode: UserLoggedOut`; `CleanupWork: RequestCleanup` at revision `r` | `SupersedeRecovery` for intent with revision `<= r`; supersede `OfflineWork` `<= r`; preempt a running non-cleanup effect | No | Advances |
+| `CleanupRequested { AppTerminating }` and `ShutdownRequested` | any | `RecoveryMode: AppTerminating`; `RequestCleanup` at `r`; arm the shutdown overall deadline | same supersession and preemption | No | Advances |
+| `CleanupRequested { ManualReset }` | any | `RequestCleanup` at `r`; mode unchanged | same supersession and preemption; no rebuild is derived | No | Advances |
+| `CleanupRequested { StaleConnectionSuspected }` | any | `RequestCleanup` at `r`; mode unchanged | same supersession and preemption; cleanup-only, no rebuild is derived | No | Advances |
+| any `CleanupRequested` | *additive*: path `OfflineCandidate` | invalidate the candidate deadline; commit the path for policy purposes | `CleanupWork` owns teardown; no duplicate `OfflineWork` | — | — |
+| `BootstrapPhaseDeadlineExpired` | profile `Gated`, phase still `Unknown` | none | none; ERROR diagnostic and status record; eligibility stays gated | No | None |
+| `ShutdownDeadlineExpired { deadline_id }` | mode `Terminating`; `deadline_id` matches the armed shutdown deadline | abort or detach all remaining work; record `Abandoned` residuals | none: the supervisor ends unconditionally | No | None |
+| `ShutdownDeadlineExpired` | stale `deadline_id` | none (logged) | none | No | None |
+| `TeardownDeadlineExpired { domain, deadline_id }` | matching teardown obligation exists with gate `BackingOff` | none | extinguish the obligation with `Abandoned` residuals via its enumerated completion path | No | Advances |
+| `TeardownDeadlineExpired` | stale, or the teardown effect is running (in-effect expiry applies instead) | none (logged) | none | No | None |
+| `SignalingGenerationLost { g, cause }` | `g` stale | none (logged) | none | No | None |
+| `SignalingGenerationLost { g, cause }` | `g` live; mode `Active`; `CleanupWork` `Idle` and no cleanup effect running | record signaling as not live | `RecoveryIntent: RequestRestore` | Yes: material for recovery domains | Advances |
+| `SignalingGenerationLost { g, cause }` | `g` live; otherwise (cleanup pending or running, or mode not `Active`) | record signaling as not live; any teardown is absorbed by cleanup | none | No | Advances |
+| `SignalingGenerationCommitted { g, origin }` | `origin` matches the current `EffectContext` | record live generation | none: this is the current effect's covered output; it does not update any pending record's work revision | No | Advances |
+| `SignalingGenerationCommitted { g, origin }` | external; `g` newer than the recorded live generation | record live generation | none | Yes: material for recovery domains | Advances |
+| `EffectCompleted` | `action_id`, `kind`, `policy_revision` match | completion procedure; failures ruled by the classification table | per verdict | park releases by mask only | Never allocates |
+| `EffectCompleted` | stale or mismatched | none (logged, discarded) | none | No | None |
+
+<!-- END GENERATED: translation-table -->
+
+`background_reconnect_after` is configuration with a documented default of
+60 seconds; like the offline grace interval, it is product policy measured
+by telemetry, not part of the state model. Rows never bypass the composite
+decision table: derivation records obligations, and eligibility, ordering,
+and single-flight admission remain stage 2 concerns.
+
+The `RecoveryRequested` rejection row is deliberate: retaining a recovery
+command across `LoggedOut` would let a pre-logout command start I/O after an
+unrelated later login. A command that must survive a session change is
+re-issued after `SessionActivated` — and the `SessionActivated` row itself
+derives restoration at a post-cleanup revision, so replacing a session while
+an old cleanup is pending cannot lose the new session's recovery obligation:
+the cleanup merely shadows it until teardown completes.
+
+`minimum` means the caller accepts stronger work than it named; it never
+bypasses a precondition-family release policy.
+
+#### Determinism and verification
+
+`translate` is a pure function of `(view, input, now, config, entropy)`. It
+performs no I/O, reads no ambient clock, and draws no ambient randomness;
+identical arguments produce an identical, byte-comparable `Decision`. The
+reference reducer of verification level 2 MUST exercise every row of the
+translation table and every cell of the classification table, including
+threshold escalation, the sustained-backoff cap, park-release masking, and
+the order-independence of `SignalingGenerationLost` and disconnect
+completion.
+
 ### Reconciliation and action priority
 
 Handling an input has three stages:
 
-1. apply the input to the relevant policy state machine;
+1. translate the input through the normative policy translation above and
+   apply the resulting machine inputs in order;
 2. derive at most one executable action from the combined policy snapshot;
 3. if `Execution` is `Idle`, start that action in a separate task and record its
    `EffectContext`.
@@ -732,8 +1193,13 @@ Action names have these contracts:
 | Probe | Verify the current signaling and transport path without replacing a healthy generation. |
 | Restore | Establish required missing connectivity while retaining healthy current resources; success includes the Probe guarantee. |
 | Reconnect | Invalidate the relevant old generation, tear it down, and restore a new one; success includes the Restore and Probe guarantees. |
-| Confirmed offline disconnect | Stop path-dependent activity after offline policy commits; it does not erase future recovery intent. |
-| Cleanup | Tear down scoped connection resources without restoring them; its reason may change recovery mode. |
+| Confirmed offline disconnect | Stop path-dependent activity after offline policy commits, bounded by one overall teardown deadline; it does not erase future recovery intent. |
+| Cleanup | Tear down scoped connection resources without restoring them, bounded by one overall teardown deadline; its reason may change recovery mode. |
+
+Teardown actions carry the generation scope they tear down. A teardown
+scope MUST NOT include a generation committed after the teardown began: an
+old cleanup or disconnect can never destroy a newly committed signaling or
+session generation.
 
 Action selection uses this priority:
 
@@ -750,8 +1216,11 @@ Probe < Restore < Reconnect
 A stronger recovery request replaces a weaker pending request because the
 stronger effect semantically covers it. A weaker request cannot downgrade a
 stronger pending request. This does not lose intent because every stronger
-action includes the success guarantee of the weaker one. Promotion creates a
-new `Ready` retry gate with zero failures; a completion from the replaced
+action includes the success guarantee of the weaker one. Promotion happens
+on an external stronger request, which allocates a new revision, or on a
+classification `Escalate` verdict, which retains the causal work revision as
+specified under policy translation. Either way, promotion creates a new
+`Ready` retry gate with zero failures; a completion from the replaced
 attempt cannot mutate it.
 
 Cleanup is deliberately not in this order: cleanup-only does not satisfy a
@@ -760,10 +1229,11 @@ confirmed path disconnect is held in `OfflineWork`, because teardown and future
 recovery intent may coexist.
 
 Each pending-work domain stores the revision that most recently required it.
-By default, work from a revision newer than a running effect is not covered by
-that effect. A rule may declare coverage only when the newer input cannot
-change the effect's assumptions or result; such rules belong in the executable
-composite decision table rather than at individual call sites.
+There is exactly one acknowledgement predicate: a successful effect
+acknowledges an obligation only when the obligation's work revision is not
+newer than the effect's captured `policy_revision` and the obligation's
+required impact is covered by the completed effect's kind. Work from a newer
+revision is never covered.
 
 A cleanup-only command explicitly supersedes recovery intent whose revision is
 not newer than the cleanup command; it does not semantically "cover" that
@@ -772,11 +1242,32 @@ ordering replaces correctness based on receive-batch timing: batching may be
 used for throughput, but it is not a policy boundary.
 
 On `CleanupRequested { reason }`, the supervisor atomically allocates revision
-`r`, records `CleanupWork::CleanupPending(r)`, and removes recovery intent with
-revision `<= r`. `UserLogout` additionally enters `LoggedOut`;
-`AppTerminating` enters `Terminating`; other cleanup reasons leave
-`RecoveryMode` unchanged. A later fact has revision `> r` and therefore cannot
-be cleared by completion of that cleanup.
+`r`, records `CleanupWork::CleanupPending(r)`, validates the cutoff, and
+dispatches `SupersedeRecovery` to recovery intent with revision `<= r` and
+`SupersedeDisconnect` to offline work with revision `<= r`. `UserLogout`
+additionally enters `LoggedOut`; `AppTerminating` enters `Terminating`; other
+cleanup reasons leave `RecoveryMode` unchanged. A later fact has revision
+`> r` and therefore cannot be cleared by completion of that cleanup.
+
+#### Obligation extinguishment
+
+Each pending-work domain ends only through its enumerated extinguishment
+paths, and every extinguishment records the path taken and the revision:
+
+- `RecoveryIntent` (intent-bearing): success acknowledgement by a covering
+  effect; subsumption by a stronger recovery obligation (promotion or
+  escalation); explicit revision-ordered cleanup or session supersession
+  via `SupersedeRecovery`; supervisor lifetime end.
+- `OfflineWork` (fact-derived): coverage by a completed disconnect or
+  cleanup, including residual and deadline-driven `Abandoned` outcomes;
+  reversal of the defining `Offline` fact via `SupersedeDisconnect`;
+  supervisor lifetime end.
+- `CleanupWork` (intent-bearing): logical cleanup completion, including
+  `CompletedWithResiduals` and bounded `Abandoned`; supervisor lifetime end.
+
+A fact reversal extinguishes only the fact-derived domain it defines. Facts
+never directly extinguish intent-bearing obligations: an `Online`
+observation cannot prove that recovery is no longer required.
 
 `Background` gates active probe, restore, and reconnect work. It does not turn
 a healthy connection into a disconnected one, erase pending intent, or block
@@ -801,10 +1292,18 @@ authoritatively committed.
 #### Composite action decision
 
 The following table is evaluated top to bottom when `Execution` is `Idle`.
-`Eligible` means app phase is not `Background` and recovery mode is `Active`.
+`Eligible` means recovery mode is `Active` and the lifecycle profile grants
+phase eligibility: always under `Ungated`; only `Foreground` under `Gated`.
 `Ready` means the selected pending record's `RetryGate` is `Ready`. A higher
 priority pending domain shadows every lower domain even while backing off or
 parked; for example, failed cleanup cannot be bypassed by starting reconnect.
+The shadow is bounded with one deliberate exception: cleanup and disconnect
+complete within their overall teardown deadline, so an availability-class
+teardown failure cannot shadow recovery indefinitely; only the fail-closed
+`InvariantViolation` park outside `Terminating` shadows until its explicit
+command releases it.
+
+<!-- BEGIN GENERATED: composite-decision-table -->
 
 | Recovery mode / app phase | Path | Pending work | Selected action |
 |---|---|---|---|
@@ -813,13 +1312,22 @@ parked; for example, failed cleanup cannot be bypassed by starting reconnect.
 | Any | `Offline` | `DisconnectPending`, not Ready | None |
 | Any | `Offline` | `DisconnectPending`, Ready | Confirmed offline disconnect |
 | `LoggedOut` or `Terminating` | Any | Any recovery intent | None |
-| `Active` / `Background` | Any | Probe, restore, or reconnect | None |
+| `Active`, phase not eligible under the profile | Any | Probe, restore, or reconnect | None |
 | Eligible | `OfflineCandidate` or `Offline` | Probe, restore, or reconnect | None |
 | Eligible | `Unknown` or `Online` | Recovery intent, not Ready | None |
 | Eligible | `Unknown` or `Online` | `ReconnectPending`, Ready | Reconnect |
 | Eligible | `Unknown` or `Online` | `RestorePending`, Ready | Restore |
 | Eligible | `Unknown` or `Online` | `ProbePending`, Ready | Probe |
 | Any | Any | No pending work | None |
+| Any | Any | any other combination | None; logged as an invariant violation |
+
+<!-- END GENERATED: composite-decision-table -->
+
+The defensive final row exists so that a fall-through is observable instead
+of silent. One such guarded combination is normative:
+`DisconnectPending` implies `NetworkPath == Offline` at reconciliation
+entry — any input that moves the path off `Offline` dispatches
+`SupersedeDisconnect` in the same supervisor turn.
 
 Explicit cleanup does not wait for offline hysteresis. A terminating or logout
 cleanup is still eligible because it reduces resources rather than restoring
@@ -828,14 +1336,24 @@ them.
 #### Derived send policy
 
 Outbound path admission is a read-only projection of authoritative policy, not
-another independently mutable flag:
+another independently mutable flag. The projection is computed from three
+authoritative fields — `RecoveryMode`, `NetworkPath`, and the teardown
+domains (`CleanupWork`, `OfflineWork`, and a running teardown effect) — by
+evaluating these rows top to bottom; the first match applies, so the rows
+are mutually exclusive and the strictest wins:
+
+<!-- BEGIN GENERATED: send-projection-table -->
 
 | Projection | Condition | Behavior |
 |---|---|---|
-| `Normal` | Path is `Unknown` or `Online`, with no teardown gate | Existing sends and new connection creation may proceed. |
-| `ExistingOnly` | Path is `OfflineCandidate`, with no cleanup request | Existing committed sessions may send; new negotiation does not start. |
-| `Blocked` | Path is confirmed `Offline`, cleanup is pending/running, or recovery mode is `LoggedOut`/`Terminating` | New outbound work fails fast or waits through an explicit caller deadline; it never waits on the 400 ms candidate timer by accident. |
+| `Blocked` | Recovery mode is not `Active`, or cleanup or offline teardown is pending or running, or path is `Offline` | New outbound work fails fast or waits through an explicit caller deadline; it never waits on the 400 ms candidate timer by accident. |
+| `ExistingOnly` | Mode `Active`, path `OfflineCandidate`, no teardown work | Existing committed sessions may send; new negotiation does not start. |
+| `Normal` | Mode `Active`, path `Unknown` or `Online`, no teardown work | Existing sends and new connection creation may proceed. |
 
+<!-- END GENERATED: send-projection-table -->
+
+A logged-out or terminating supervisor therefore always projects `Blocked`;
+it can never fall into `Normal` or `ExistingOnly` through a path condition.
 Reconnect and peer-recovery effects may impose their own destination-scoped
 gate, but broadcasts are never the authoritative source of this projection.
 
@@ -878,19 +1396,43 @@ current action:
 
 1. return `Execution` to `Idle`;
 2. locate the pending domain and revision that the effect attempted;
-3. on success, acknowledge only work whose revision is no newer than the
-   effect's captured `policy_revision` and whose required impact is covered by
-   the completed effect;
-4. on a retryable failure of still-current work, increment its attempt and
-   enter `BackingOff` with one policy-computed absolute deadline, or enter
-   `Parked` if its retry budget is exhausted;
-5. on a terminal failure of still-current work, enter `Parked`;
-6. on supervisor-requested cancellation, retain work without incrementing its
-   attempt; changed facts or stronger pending work make the cancelled action
-   ineligible, so it cannot immediately restart unchanged;
-7. treat an unexpected `Aborted` outcome as a retryable failure after recording
-   the diagnostic distinction;
-8. preserve newer or stronger pending work, then reconcile immediately.
+3. on a success-class outcome (`Succeeded`, `CompletedWithResiduals`, or a
+   bounded `Abandoned`), acknowledge only work whose revision is no newer
+   than the effect's captured `policy_revision` and whose required impact is
+   covered by the completed effect; residuals are recorded as diagnostics,
+   and a teardown completion additionally clears the live-signaling record
+   for every generation in its teardown scope;
+4. on `Failed { diagnosis }` of still-current work, apply the classification
+   verdict for `(kind, diagnosis, context)`: `Retry` increments the attempt
+   and enters `BackingOff` with one capped, jittered absolute deadline;
+   `Escalate` promotes the intent, retaining its work revision, with a fresh
+   `Ready` gate; `Park` enters `Parked` and records the release mask;
+   `Abandon` extinguishes the teardown obligation at once with `Abandoned`
+   residuals, per the verdict definition;
+5. on supervisor-requested cancellation, retain work without incrementing its
+   attempt; when the recorded cancel reason is a pause, apply the deferred
+   `ExplicitPause` to the retained record in the same turn, before
+   reconciliation; for other reasons the gate is unchanged, and changed
+   facts or stronger pending work make the cancelled action ineligible, so
+   it cannot immediately restart unchanged;
+6. on `Aborted { cause }`, rule by cause rather than a blanket class:
+   a recorded supervisor cancellation is handled as step 5; a panic or
+   effect-contract violation is classified as `InvariantViolation` and takes
+   that diagnosis's fail-safe verdict immediately; a runtime shutdown takes
+   the `Terminating` bounded-teardown path; an unclassified abort is an
+   implementation failure, recorded as an ERROR and handled as that kind's
+   `InvariantViolation` cell;
+7. preserve newer or stronger pending work, then reconcile immediately.
+
+A recorded pause cancel reason is honored on every terminal outcome that
+retains or promotes the record: the deferred `ExplicitPause` is applied to
+the surviving record after the applicable step — after the step 4 verdict
+for `Failed`, in step 5 for `Cancelled`, per cause for `Aborted` — and
+before reconciliation.
+
+A consecutive-abort circuit breaker MAY additionally park a record whose
+aborts repeat, but it never masks a cause that is already classifiable as a
+panic or invariant failure.
 
 Immediate reconciliation may start other eligible work. It cannot restart the
 same failed work because that record is no longer `Ready`. A completion for
@@ -901,6 +1443,18 @@ does not create a retry gate or alter the replacement's attempt count.
 supervisor cancellation request. A task that ends as cancelled without that
 record is normalized to `Aborted`; this prevents an unexplained cancellation
 from bypassing failure policy.
+
+The outcome-to-machine mapping is one table rather than rules scattered at
+call sites:
+
+| Outcome | Execution input | Gate / policy handling |
+|---|---|---|
+| `Succeeded` | `Succeeded` | acknowledge covered obligations (step 3) |
+| `CompletedWithResiduals` | `Succeeded` | acknowledge; record residual diagnostics |
+| `Abandoned` (bounded teardown) | `Succeeded` | acknowledge; record residual diagnostics |
+| `Failed { diagnosis }` | `Failed` | classification verdict (step 4) |
+| `Cancelled` with recorded reason | `Cancelled` | retain work; gate unchanged, except a recorded pause reason applies its deferred `ExplicitPause` in the same turn (step 5) |
+| `Aborted { cause }` | `Cancelled` | ruled by cause (step 6) |
 
 Acknowledgement domains are explicit:
 
@@ -922,11 +1476,18 @@ release the Probe execution slot but cannot clear Cleanup. If a material route
 fact arrives while Reconnect runs, completion of that older Reconnect cannot
 acknowledge work derived from the newer route fact.
 
-An aborted or dropped effect task MUST produce a terminal outcome or have its
-ownership synchronously reclaimed by an identity-bearing guard. It cannot
-leave `Execution` permanently non-idle. The supervisor normalizes `Aborted` to
-the execution machine's `Cancelled` input to release the slot, while policy
-handles it as the retryable failure described above.
+Every termination path of an effect task — normal return, panic, abort,
+drop, and cancellation — is reported by its wrapper or join monitor as
+exactly one terminal `EffectCompleted`. The RAII guard's synchronous duty is
+limited to releasing resources and flight ownership; it MUST NOT mutate
+`Execution`. Only the supervisor, on accepting a terminal completion, moves
+`Execution` back to `Idle`: the supervisor is the sole writer of the
+execution machine, and no effect can leave it permanently non-idle. The
+completion delivery path MUST NOT drop terminal completions: the supervisor
+reserves mailbox capacity for one terminal completion per in-flight effect,
+and the join monitor redelivers if the task ends without reporting. The
+supervisor normalizes `Aborted` to the execution machine's `Cancelled` input
+to release the slot, while policy rules on its cause as described above.
 
 Platform event submission and effect completion are separate observations. A
 platform callback receives `event_id` and `policy_revision` once the fact is
@@ -941,7 +1502,7 @@ sequenceDiagram
     participant P as Platform
     participant S as RecoverySupervisor
     participant E as Effect task
-    P->>S: ReconnectRequested (revision 10)
+    P->>S: RecoveryRequested(minimum: Reconnect) (revision 10)
     S->>E: start reconnect (action 7, revision 10)
     P->>S: CleanupRequested (revision 11)
     S-->>E: cancel action 7
@@ -949,6 +1510,41 @@ sequenceDiagram
     Note over S: release execution slot<br/>preserve cleanup revision 11
     S->>E: start cleanup (action 8, revision 11)
 ```
+
+### Cleanup bounded completion
+
+Teardown must terminate. Cleanup and confirmed offline disconnect follow six
+rules:
+
+1. before any physical step, the effect synchronously invalidates the scoped
+   generations, commit rights, and new-work admission, so no later commit
+   can race the teardown;
+2. local close and drop steps are idempotent and best-effort, bounded by the
+   obligation's overall teardown deadline (a `Failure deadline` inventory
+   entry) — armed once when the obligation is created, never reset by a
+   retry; a running effect inherits its remaining budget, and expiry while
+   the record backs off is delivered as `TeardownDeadlineExpired`;
+3. a remote-notification failure never blocks local policy completion;
+4. when the overall deadline is reached, remaining physical steps are
+   aborted or detached and the effect completes with a structured residual
+   outcome: `CompletedWithResiduals` when the logical teardown goal was
+   reached but some physical steps left residuals, `Abandoned` when the
+   deadline aborted remaining steps before the goal; both carry residual
+   diagnostics;
+5. `CleanupWork` never enters long-term `Parked` and never occupies the
+   lifecycle slot with sustained retries; its only park is the deliberate
+   fail-closed `InvariantViolation` case outside `Terminating`, released by
+   an explicit command;
+6. under `Terminating`, teardown failures that would otherwise park —
+   invariant violations — take the `Abandon` verdict; availability failures
+   keep retrying inside the obligation deadline, and the supervisor ends
+   unconditionally at the shutdown overall deadline.
+
+Rule 5 is deliberately narrower than "no parked domain may ever shadow a
+lower one": failing closed on a broken invariant while the node is active
+can be the correct policy. What the rules guarantee is bounded liveness for
+cleanup and bounded termination for shutdown, which are the two paths where
+an unbounded shadow would otherwise wedge the whole lifecycle.
 
 ### Offline hysteresis
 
@@ -1164,7 +1760,7 @@ equivalent primitive MUST belong to one of these categories:
 | Protocol schedule | Run or rate-limit ping, heartbeat, lease, offer, or runtime-preemption work required by a protocol or safety contract | The schedule initiates or admits protocol work; it does not poll for completion |
 | Retention expiry | Expire stale peers, deduplication records, reassembly state, caches, or other retained state at its exact lifetime boundary | A state change cancels or recomputes the nearest deadline; there is no periodic full scan when an exact deadline is available |
 | Failure deadline | Bound connect, I/O, RPC, hook, shutdown, ICE, or drain duration | Event or future success wins immediately |
-| Failure backoff | Avoid a hot loop after an observed failure | A material trigger wakes work immediately; lost eligibility may suspend the timer but never resets its absolute deadline |
+| Failure backoff | Avoid a hot loop after an observed failure | A material trigger wakes work immediately; lost eligibility may suspend the timer but never resets its absolute deadline; herd-prone kinds MUST use bounded jitter per the backoff arithmetic |
 | Compatibility polling | Support an external implementation that cannot emit the required event | Explicitly documented and not used by the built-in production backend |
 | Compatibility debounce | Preserve an explicitly selected legacy coalescing contract during migration | Only opted-in callers pay the delay; it is deprecated and never used for correctness |
 
@@ -1196,9 +1792,15 @@ Principles alone are insufficient to prove that every timer is intentional.
 Production code MUST create timers through one audited timer facade or macro
 that requires a stable timer ID and category. Direct
 `tokio::time::{sleep, sleep_until, interval, timeout, timeout_at}` calls are
-allowed only inside that facade and test-only code. Equivalent timers owned by
-external libraries, such as ICE candidate-selection durations, are registered
-through the same policy API.
+allowed only inside that facade and test-only code. The enforced scope is
+what first-party code can observe: every first-party timer call site, every
+configurable duration the SDK passes into a dependency (registered as a
+configuration point, such as the ICE candidate-selection durations), and
+every external deadline the SDK explicitly adopts. Timers internal to
+dependency crates — STUN retransmission, DTLS and SCTP timers, ICE
+keepalives — are not claimed to be statically discoverable; the inventory
+records the dependency, its version, and its configuration entry points
+instead.
 
 The facade generates a source-controlled inventory with one entry for every
 production timer ID. Each entry records:
@@ -1228,6 +1830,8 @@ The initial inventory MUST explicitly include at least:
 | Heartbeat, ping, lease, ICE offer throttle, Wasmtime epoch tick | Protocol schedule |
 | Stale peer, deduplication, activity, reassembly, and cache expiry | Retention expiry |
 | Connect, send, RPC, hook, close, drain, ICE and shutdown deadlines | Failure deadline |
+| Cleanup and disconnect overall teardown deadlines | Failure deadline |
+| Gated-profile bootstrap phase deadline | Failure deadline |
 | Signaling, credential, connection and ICE restart retry delays | Failure backoff |
 | Third-party mailbox empty-queue interval | Compatibility polling |
 | Legacy nonzero network-event debounce | Compatibility debounce |
@@ -1255,9 +1859,15 @@ Correctness is demonstrated at five levels:
 
 1. YASM transition tests cover every declared transition and reject invalid
    normalized inputs.
-2. A pure reference reducer checks the composite action table, revision
-   acknowledgement, retry gating, and derived send policy over bounded input
-   sequences that include an effect in flight.
+2. A pure reference reducer — a Phase 1 deliverable with no runtime
+   dependencies — is the single generation source for the composite action
+   decision table and the derived send projection, and checks translation,
+   classification, revision acknowledgement, retry gating, escalation, and
+   send policy over bounded input sequences that include an effect in
+   flight. The checked documentation command regenerates and verifies the
+   eight local YASM tuple tables, the translation and classification tables,
+   the composite decision table, the send projection, and the
+   invariant/phase traceability matrix.
 3. Deterministic race tests use injected barriers to place disconnect,
    replacement, cancellation, and state notification at each commit boundary.
    They do not rely on wall-clock sleeps to "increase the chance" of a race.
@@ -1272,6 +1882,17 @@ Correctness is demonstrated at five levels:
 Where practical, lock and atomic ownership code SHOULD also run under a
 systematic concurrency checker such as Loom. A passing end-to-end test cannot
 substitute for a missing deterministic invariant test.
+
+Acceptance is traceable: the RFC maintains one matrix mapping every
+normative rule or table to the invariant or test property that verifies it
+and the phase that delivers it. The matrix is generated by the checked
+documentation command into its own source-controlled file,
+`rfcs/0400-traceability.md`, created in Phase 1; it is not inlined here.
+Phase gates cite invariant ranges for brevity, but the matrix is the
+authoritative coverage record; complete reducer coverage of the translation
+and classification tables is part of the Phase 2 gate. Not every table row
+needs its own numbered invariant; every normative rule needs a named
+verifying property.
 
 Performance validation records enqueue-to-decision and event-to-effect-start
 latency at p50, p95, and p99, plus idle wakeups and reconnect-attempt counts.
@@ -1289,7 +1910,13 @@ Recovery logs and tracing spans SHOULD include, when applicable:
 - `event_id`;
 - network `source_epoch` and sequence;
 - `policy_revision`, `action_id`, and captured effect revision;
-- pending-work domain, retry-gate state, attempt, `retry_id`, and failure class;
+- pending-work domain, retry-gate state, attempt, `retry_id`, the reported
+  diagnosis, the classification verdict, and the escalation source;
+- the release mask when a record parks, and the matching trigger when it is
+  released;
+- the extinguishment path and revision when an obligation ends;
+- structured rejections (`Rejected { mode, reason }` and release-mask
+  mismatches) reported on the status stream;
 - old state, input, and new state;
 - reason a stale completion or duplicate fact was discarded;
 - timer inventory ID, category, and deadline when a timer is armed;
@@ -1315,7 +1942,8 @@ Implementations conforming to this RFC must demonstrate:
 6. Duplicate foreground observations do not create recovery work.
 7. Background preserves recovery intent and healthy sessions while gating new
    active recovery; it cancels in-flight work only under an explicit platform
-   capability policy.
+   capability policy. Under a `Gated` profile, `Unknown` grants no phase
+   eligibility, and bootstrap-deadline expiry never grants it silently.
 8. Lifecycle-wide recovery effects are single-flight while the supervisor
    remains responsive; independent resource-scoped flights are not serialized
    unless their generation or teardown scopes conflict.
@@ -1324,7 +1952,11 @@ Implementations conforming to this RFC must demonstrate:
    intent.
 10. Failed work cannot hot-loop: it is in `BackingOff` or `Parked`, a duplicate
     input cannot reset its retry state, and only a matching deadline or material
-    trigger can make it `Ready`.
+    trigger can make it `Ready`. An availability-family failure never parks:
+    it backs off toward one capped, jittered deadline or is escalated.
+    `Parked` is entered only by a precondition-family verdict or an explicit
+    pause, always records a non-empty release mask, and is released only by
+    a trigger matching that mask.
 11. Event acceptance does not wait for effect completion, and a caller timeout
     cannot silently cancel or orphan accepted work.
 12. A stale signaling generation cannot publish `Connected` or invoke a
@@ -1345,15 +1977,46 @@ Implementations conforming to this RFC must demonstrate:
     consume a failure deadline after their success event.
 23. Parallel shutdown is bounded by one overall deadline rather than the number
     of registered child tasks multiplied by a per-child timeout.
-24. Every production timer uses the audited facade and has exactly one valid
-    inventory classification.
+24. Every first-party production timer, every configurable duration passed to
+    a dependency, and every explicitly adopted external deadline uses the
+    audited facade and has exactly one valid inventory classification.
+25. No effect classifies its own failure: `EffectCompleted` carries only a
+    typed diagnosis, and every retry, escalation, park, or abandon verdict is
+    produced
+    by the per-kind classification table in the translation layer.
+26. Translation is deterministic: identical policy view, input, instant,
+    entropy state, and configuration produce an identical decision, and the
+    reference reducer covers every normative translation and classification
+    row.
+27. Every non-`Idle` `Execution` eventually receives exactly one accepted
+    terminal completion, and only the supervisor mutates the execution
+    machine.
+28. Obligations end only through their domain's enumerated extinguishment
+    paths, each recorded with its path and revision; a fact reversal
+    extinguishes only the fact-derived domain it defines.
+29. `DisconnectPending` implies `NetworkPath == Offline` at reconciliation
+    entry, and a composite-table fall-through is logged, never silent.
+30. A cleanup or confirmed offline disconnect effect terminates — including
+    residual and bounded-abandon outcomes — within its overall teardown
+    deadline, and shutdown terminates the supervisor at its overall
+    deadline. The only unbounded teardown state is the deliberate
+    fail-closed `InvariantViolation` park outside `Terminating`, which
+    records its explicit-command release.
+31. `SessionActivated` while an older cleanup is pending derives the new
+    session's recovery obligation at a post-cleanup revision; completion of
+    that cleanup cannot extinguish it.
+32. A normalized resource fact produced by the current effect is recognized
+    by its origin and cannot make that effect's own completion stale.
 
 ## Drawbacks
 
 The design introduces more explicit state types and identities than a
 flag-based implementation. Engineers must decide which layer owns each new
 fact, maintain effect and resource generations, and understand policy state
-separately from execution state.
+separately from execution state. The classification and translation tables
+are an explicit policy surface: every new effect kind or diagnosis requires
+a reviewed table change rather than an ad-hoc call-site decision, which is
+deliberate but adds process.
 
 Event-driven code can still contain lost-wakeup bugs if notification
 registration and authoritative-state rechecks are ordered incorrectly.
@@ -1455,14 +2118,29 @@ is observed separately by revision and `action_id`.
 `MailboxDepthObserver` remains optional in this RFC, so third-party mailbox
 implementations retain the documented compatibility-polling path.
 
+Lifecycle profiles migrate without a silent behavior flip: the Rust core and
+headless deployments default to `Ungated` and keep recovering exactly as
+before, while the mobile bindings declare `Gated` and take on the
+bootstrap-injection duty in the same release that adopts this RFC.
+
+This revision is semantically atomic: translation, diagnosis, escalation,
+backoff, park release, and supersession are specified together and MUST NOT
+be adopted piecemeal into contradictory intermediate specifications. The
+implementation may land in stages behind feature gates, but any stage
+declared complete must satisfy that stage's full invariants.
+
 The proposal is phased as follows:
 
 ### Phase 1: executable policy documentation
 
-- add `RecoveryMode`, separate `CleanupWork`, reusable `RetryGate`, and update
-  the cancellation-aware YASM machines;
-- generate deterministically sorted diagrams, local transition tables, and the
-  composite decision table through a checked documentation command;
+- add `RecoveryMode`, separate `CleanupWork`, reusable `RetryGate` with
+  `ExplicitPause`, `SupersedeRecovery`, and the cancellation-aware YASM
+  machines;
+- deliver the pure reference reducer and use it as the single generation
+  source for the composite decision table and send projection; generate
+  deterministically sorted diagrams, local transition tables, the
+  translation and classification tables, and the traceability matrix
+  through one checked documentation command;
 - establish a source-controlled timer inventory and CI drift checks.
 
 Acceptance criteria: generated documentation matches the target policy in this
@@ -1471,15 +2149,21 @@ RFC, and every existing production timer has one inventory entry.
 ### Phase 2: responsive policy and effect execution
 
 - introduce the persistent layered recovery supervisor and execution state;
+- implement the pure translation layer, per-kind classification tables,
+  escalation, sustained capped backoff, park release masks, and bounded
+  cleanup completion;
 - run effects outside the supervisor and pass versioned completion messages
-  back to it;
-- retain recovery intent across receive cycles and lifecycle transitions;
-- implement recovery gating, foreground self-loop, preemption, revision
-  acknowledgement, retry gating, and offline barrier semantics;
+  back to it over the reserved-capacity completion path;
+- retain pending obligations across receive cycles and lifecycle transitions;
+- implement recovery gating, the lifecycle profile and bootstrap discipline,
+  foreground self-loop, preemption, revision acknowledgement, retry gating,
+  and offline barrier semantics;
 - separate event acceptance from effect completion.
 
-Acceptance criteria: invariants 1 through 11 pass under paused-time and
-deterministic interleaving tests without scheduler sleeps.
+Acceptance criteria: invariants 1 through 11 and 25 through 32 pass under
+paused-time and deterministic interleaving tests without scheduler sleeps,
+including full reducer coverage of the translation and classification
+tables.
 
 ### Phase 3: generation and cancellation safety
 
@@ -1539,7 +2223,17 @@ No design question blocks acceptance. This RFC makes these choices:
 - the audited timer facade is normative; its concrete generated-inventory
   format is an implementation detail;
 - supervisor enqueue time is the default `observed_at`; a platform timestamp is
-  used only after proven conversion into the same monotonic clock domain.
+  used only after proven conversion into the same monotonic clock domain;
+- the lifecycle profile defaults to `Ungated` for the Rust core and headless
+  deployments; mobile bindings declare `Gated`;
+- `background_reconnect_after` defaults to 60 seconds; escalation thresholds,
+  backoff bases, caps, jitter fractions, and the overall teardown and
+  shutdown deadlines are per-kind policy constants measured by telemetry,
+  not part of the state model;
+- an atomic reset-and-rebuild command (`ResetAndReconnectRequested`) is
+  deliberately not introduced; forced reconnect normalizes to
+  `RecoveryRequested { minimum: Reconnect }`, and a future need for a
+  transactional reset requires its own proposal.
 
 A later material change to these choices requires a follow-up RFC rather than an
 implementation-only deviation.
