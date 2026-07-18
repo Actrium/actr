@@ -135,6 +135,221 @@ Rust compile-time typestate such as
 `Node<Init> -> Node<Attached> -> Node<Registered> -> Node<Running>` remains
 compile-time state. Replacing it with a runtime FSM would weaken the API.
 
+### Generated YASM documentation
+
+The diagrams and transition-table rows in this section were emitted by YASM
+0.6.0 from the concrete machines in implementation draft #399. They are not
+independently hand-drawn interpretations of the design.
+
+The crate-local tests can regenerate them with:
+
+```rust
+StateMachineDoc::<Machine>::generate_mermaid();
+StateMachineDoc::<Machine>::generate_transition_table();
+```
+
+The generated transition-table heading is omitted below so it does not disturb
+this RFC's document hierarchy. Mermaid edge ordering is not normative because
+YASM may emit the same edge set in a different order.
+
+#### App phase
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Unknown --> Background : EnterBackground
+    Foreground --> Background : EnterBackground
+    Unknown --> Foreground : EnterForeground
+    Background --> Foreground : EnterForeground
+    Background --> Background : EnterBackground
+    Foreground --> Foreground : EnterForeground
+```
+
+<details>
+<summary>YASM-generated app-phase transition table</summary>
+
+| Current State | Input | Next State |
+|---------------|-------|------------|
+| Unknown | EnterForeground | Foreground |
+| Unknown | EnterBackground | Background |
+| Foreground | EnterForeground | Foreground |
+| Foreground | EnterBackground | Background |
+| Background | EnterForeground | Foreground |
+| Background | EnterBackground | Background |
+
+</details>
+
+#### Network path
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unknown
+    Online --> Unknown : ObserveUnknown
+    OfflineCandidate --> Offline : GraceExpired
+    Offline --> Online : ObserveOnline
+    Online --> OfflineCandidate : ObserveOffline
+    OfflineCandidate --> Unknown : ObserveUnknown
+    Unknown --> OfflineCandidate : ObserveOffline
+    OfflineCandidate --> Online : ObserveOnline
+    Offline --> Unknown : ObserveUnknown
+    Unknown --> Online : ObserveOnline
+    OfflineCandidate --> OfflineCandidate : ObserveOffline
+    Offline --> Offline : ObserveOffline / GraceExpired
+    Unknown --> Unknown : ObserveUnknown / GraceExpired
+    Online --> Online : ObserveOnline / GraceExpired
+```
+
+<details>
+<summary>YASM-generated network-path transition table</summary>
+
+| Current State | Input | Next State |
+|---------------|-------|------------|
+| Unknown | ObserveUnknown | Unknown |
+| Unknown | ObserveOnline | Online |
+| Unknown | ObserveOffline | OfflineCandidate |
+| Unknown | GraceExpired | Unknown |
+| Online | ObserveUnknown | Unknown |
+| Online | ObserveOnline | Online |
+| Online | ObserveOffline | OfflineCandidate |
+| Online | GraceExpired | Online |
+| OfflineCandidate | ObserveUnknown | Unknown |
+| OfflineCandidate | ObserveOnline | Online |
+| OfflineCandidate | ObserveOffline | OfflineCandidate |
+| OfflineCandidate | GraceExpired | Offline |
+| Offline | ObserveUnknown | Unknown |
+| Offline | ObserveOnline | Online |
+| Offline | ObserveOffline | Offline |
+| Offline | GraceExpired | Offline |
+
+</details>
+
+#### Recovery intent
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    RestorePending --> CleanupPending : RequestCleanup
+    RestorePending --> Idle : CompleteRestore
+    ReconnectPending --> Idle : CompleteReconnect
+    CleanupPending --> Idle : CompleteCleanup
+    ProbePending --> ReconnectPending : RequestReconnect
+    Idle --> ReconnectPending : RequestReconnect
+    ProbePending --> RestorePending : RequestRestore
+    ReconnectPending --> CleanupPending : RequestCleanup
+    Idle --> CleanupPending : RequestCleanup
+    ProbePending --> CleanupPending : RequestCleanup
+    Idle --> ProbePending : RequestProbe
+    Idle --> RestorePending : RequestRestore
+    ProbePending --> Idle : CompleteProbe
+    RestorePending --> ReconnectPending : RequestReconnect
+    ProbePending --> ProbePending : RequestProbe
+    ReconnectPending --> ReconnectPending : RequestProbe
+    ReconnectPending --> ReconnectPending : RequestRestore
+    ReconnectPending --> ReconnectPending : RequestReconnect
+    RestorePending --> RestorePending : RequestProbe / RequestRestore
+    CleanupPending --> CleanupPending : RequestProbe
+    CleanupPending --> CleanupPending : RequestRestore
+    CleanupPending --> CleanupPending : RequestReconnect
+    CleanupPending --> CleanupPending : RequestCleanup
+```
+
+<details>
+<summary>YASM-generated recovery-intent transition table</summary>
+
+| Current State | Input | Next State |
+|---------------|-------|------------|
+| Idle | RequestProbe | ProbePending |
+| Idle | RequestRestore | RestorePending |
+| Idle | RequestReconnect | ReconnectPending |
+| Idle | RequestCleanup | CleanupPending |
+| ProbePending | RequestProbe | ProbePending |
+| ProbePending | RequestRestore | RestorePending |
+| ProbePending | RequestReconnect | ReconnectPending |
+| ProbePending | RequestCleanup | CleanupPending |
+| ProbePending | CompleteProbe | Idle |
+| RestorePending | RequestProbe | RestorePending |
+| RestorePending | RequestRestore | RestorePending |
+| RestorePending | RequestReconnect | ReconnectPending |
+| RestorePending | RequestCleanup | CleanupPending |
+| RestorePending | CompleteRestore | Idle |
+| ReconnectPending | RequestProbe | ReconnectPending |
+| ReconnectPending | RequestRestore | ReconnectPending |
+| ReconnectPending | RequestReconnect | ReconnectPending |
+| ReconnectPending | RequestCleanup | CleanupPending |
+| ReconnectPending | CompleteReconnect | Idle |
+| CleanupPending | RequestProbe | CleanupPending |
+| CleanupPending | RequestRestore | CleanupPending |
+| CleanupPending | RequestReconnect | CleanupPending |
+| CleanupPending | RequestCleanup | CleanupPending |
+| CleanupPending | CompleteCleanup | Idle |
+
+</details>
+
+#### Offline work
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> DisconnectPending : RequestDisconnect
+    DisconnectPending --> Idle : CompleteDisconnect / SupersedeDisconnect
+    DisconnectPending --> DisconnectPending : RequestDisconnect
+    Idle --> Idle : CompleteDisconnect / SupersedeDisconnect
+```
+
+<details>
+<summary>YASM-generated offline-work transition table</summary>
+
+| Current State | Input | Next State |
+|---------------|-------|------------|
+| Idle | RequestDisconnect | DisconnectPending |
+| Idle | CompleteDisconnect | Idle |
+| Idle | SupersedeDisconnect | Idle |
+| DisconnectPending | RequestDisconnect | DisconnectPending |
+| DisconnectPending | CompleteDisconnect | Idle |
+| DisconnectPending | SupersedeDisconnect | Idle |
+
+</details>
+
+#### Recovery execution
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+    Idle --> Restoring : BeginRestore
+    Reconnecting --> Idle : Succeeded / Failed
+    Idle --> Disconnecting : BeginOffline
+    Idle --> Cleaning : BeginCleanup
+    Idle --> Probing : BeginProbe
+    Restoring --> Idle : Succeeded / Failed
+    Cleaning --> Idle : Succeeded / Failed
+    Disconnecting --> Idle : Succeeded / Failed
+    Probing --> Idle : Succeeded / Failed
+    Idle --> Reconnecting : BeginReconnect
+```
+
+<details>
+<summary>YASM-generated recovery-execution transition table</summary>
+
+| Current State | Input | Next State |
+|---------------|-------|------------|
+| Idle | BeginOffline | Disconnecting |
+| Idle | BeginProbe | Probing |
+| Idle | BeginRestore | Restoring |
+| Idle | BeginReconnect | Reconnecting |
+| Idle | BeginCleanup | Cleaning |
+| Disconnecting | Succeeded | Idle |
+| Disconnecting | Failed | Idle |
+| Probing | Succeeded | Idle |
+| Probing | Failed | Idle |
+| Restoring | Succeeded | Idle |
+| Restoring | Failed | Idle |
+| Reconnecting | Succeeded | Idle |
+| Reconnecting | Failed | Idle |
+| Cleaning | Succeeded | Idle |
+| Cleaning | Failed | Idle |
+
+</details>
+
 ### Input events
 
 Inputs are facts or effect completions, not requests to assign arbitrary state.
