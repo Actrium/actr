@@ -1,4 +1,4 @@
-# RFC-0400: Event-driven layered connection recovery
+# RFC-0400: Event-driven connection lifecycle and recovery
 
 - Status: Proposed
 - Date: 2026-07-18
