@@ -25,7 +25,8 @@ define_state_machine! {
         BeginReconnect,
         BeginCleanup,
         Succeeded,
-        Failed
+        Failed,
+        Cancelled
     },
     initial: Idle,
     transitions: {
@@ -45,7 +46,16 @@ define_state_machine! {
         Probing + Failed => Idle,
         Restoring + Failed => Idle,
         Reconnecting + Failed => Idle,
-        Cleaning + Failed => Idle
+        Cleaning + Failed => Idle,
+
+        // The supervisor normalizes both a recorded cancellation and an aborted
+        // task to `Cancelled` to release the single-flight slot; policy still
+        // rules on the underlying cause.
+        Disconnecting + Cancelled => Idle,
+        Probing + Cancelled => Idle,
+        Restoring + Cancelled => Idle,
+        Reconnecting + Cancelled => Idle,
+        Cleaning + Cancelled => Idle
     }
 }
 

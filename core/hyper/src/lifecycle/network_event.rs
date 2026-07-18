@@ -66,6 +66,7 @@
 //! - FFI path: Uses NetworkEventHandle + channel (implemented)
 //! - Actor path: Direct proto message to mailbox (TODO, future enhancement)
 
+use std::collections::HashMap;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -74,23 +75,23 @@ use std::time::{Duration, Instant};
 
 use crate::transport::PeerTransport;
 use crate::wire::webrtc::{CleanupGuard, SignalingClient, WebRtcCoordinator};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use super::connection_supervisor::{ConnectionFact, ConnectionSupervisor};
+use super::connection_supervisor::{
+    ConnectionSupervisor, StartedEffect, TimerOp, event_to_input, legacy_select_action,
+    network_action_of,
+};
 use super::recovery_execution::RecoveryExecutionTracker;
+use super::recovery_policy::diagnosis::{AbortCause, EffectDiagnosis, EffectOutcome};
+use super::recovery_policy::translate as tp;
 
-/// Grace period before committing an observed offline path to transport teardown.
-///
-/// Correctness does not depend on this delay: every event enters the policy FSM
-/// immediately. An available snapshot ends the grace period early, allowing
-/// the FSM to roll back before an irreversible disconnect side effect starts.
-const NETWORK_OFFLINE_GRACE_WINDOW: Duration = Duration::from_millis(400);
 const NETWORK_EVENT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNALING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(super) const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
 static NEXT_NETWORK_EVENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_NETWORK_RECOVERY_ACTION_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_NETWORK_SOURCE_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 /// Keeps outbound sends behind a network-event lifecycle barrier while the
 /// reconciler evaluates and processes a queued decision cycle.
@@ -207,10 +208,6 @@ fn network_event_needs_lifecycle_barrier(event: &NetworkEvent) -> bool {
         },
         NetworkEvent::CleanupConnections { .. } | NetworkEvent::ForceReconnect { .. } => true,
     }
-}
-
-fn network_event_is_batch_barrier(event: &NetworkEvent) -> bool {
-    matches!(event, NetworkEvent::CleanupConnections { .. })
 }
 
 /// Network event processing result
@@ -961,7 +958,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
 }
 
 pub fn select_network_recovery_action(events: &[NetworkEvent]) -> NetworkRecoveryAction {
-    ConnectionSupervisor::select_action(events)
+    legacy_select_action(events)
 }
 
 pub async fn process_network_event_batch(
@@ -1020,158 +1017,303 @@ async fn process_network_event_batch_with_action(
 pub struct NetworkEventRequest {
     pub event: NetworkEvent,
     pub result_tx: oneshot::Sender<NetworkEventResult>,
+    /// The path-monitor incarnation epoch stamped by the originating handle;
+    /// `(source_epoch, sequence)` lexicographic order decides snapshot acceptance.
+    pub source_epoch: u64,
+}
+
+/// A minimal observation of supervisor progress for tests and callers.
+///
+/// It exposes the causal `policy_revision`, the identity of the most recently
+/// started action, and the most recent effect outcome — the final result a
+/// caller would otherwise infer by racing an effect.
+#[derive(Debug, Clone, Default)]
+pub struct SupervisorStatus {
+    pub policy_revision: u64,
+    pub last_action_id: Option<u64>,
+    pub last_outcome: Option<ObservedOutcome>,
+}
+
+/// The observable class of the most recent effect completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObservedOutcome {
+    Succeeded,
+    CompletedWithResiduals,
+    Abandoned,
+    Failed,
+    Cancelled,
+    Aborted,
+}
+
+fn observed_outcome(outcome: &EffectOutcome) -> ObservedOutcome {
+    match outcome {
+        EffectOutcome::Succeeded => ObservedOutcome::Succeeded,
+        EffectOutcome::CompletedWithResiduals { .. } => ObservedOutcome::CompletedWithResiduals,
+        EffectOutcome::Abandoned { .. } => ObservedOutcome::Abandoned,
+        EffectOutcome::Failed { .. } => ObservedOutcome::Failed,
+        EffectOutcome::Cancelled => ObservedOutcome::Cancelled,
+        EffectOutcome::Aborted { .. } => ObservedOutcome::Aborted,
+    }
+}
+
+/// The shell's handle on the single in-flight effect: its identity and the
+/// cancellation token the supervisor toggles on a preemption request.
+struct RunningEffect {
+    action_id: u64,
+    token: CancellationToken,
 }
 
 pub async fn run_network_event_reconciler(
-    mut event_rx: mpsc::Receiver<NetworkEventRequest>,
+    event_rx: mpsc::Receiver<NetworkEventRequest>,
     processor: Arc<dyn NetworkEventProcessor>,
     shutdown_token: CancellationToken,
 ) {
+    let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
+    run_network_event_reconciler_with_status(event_rx, processor, shutdown_token, status_tx).await;
+}
+
+/// The responsive reconciler with an observable status stream.
+///
+/// The supervisor stays responsive while an effect runs: effects execute in
+/// separate tasks and report versioned completions back over a reserved-capacity
+/// internal channel, timers are armed as absolute deadlines that deliver their
+/// own expiry inputs, and event acceptance is decoupled from effect completion.
+pub async fn run_network_event_reconciler_with_status(
+    mut event_rx: mpsc::Receiver<NetworkEventRequest>,
+    processor: Arc<dyn NetworkEventProcessor>,
+    shutdown_token: CancellationToken,
+    status_tx: watch::Sender<SupervisorStatus>,
+) {
     tracing::info!("🔄 Network event reconciler started");
 
-    // Reachability and deferred recovery intent must survive across channel
-    // receive cycles. Recreating this per batch loses a reconnect requested
-    // while the committed path is offline.
-    let mut supervisor = ConnectionSupervisor::new();
+    let start = tokio::time::Instant::now();
+    // The Rust core is `Ungated`: phase eligibility never consults `AppPhase`.
+    let mut supervisor = ConnectionSupervisor::new(tp::LifecycleProfile::Ungated);
+
+    // Internal inputs: timer expiries and effect completions. Single-flight
+    // execution means at most one terminal completion is in flight; the buffer
+    // reserves ample room for that plus concurrently armed timer deliveries.
+    let (internal_tx, mut internal_rx) = mpsc::channel::<tp::Input>(64);
+    let mut timers: HashMap<tp::TimerId, tokio::task::AbortHandle> = HashMap::new();
+    let mut effect: Option<RunningEffect> = None;
+    let mut last_action_id: Option<u64> = None;
+    let mut last_outcome: Option<ObservedOutcome> = None;
+
+    // Arm the gated bootstrap deadline (no-op under `Ungated`).
+    if let Some(op) = supervisor.bootstrap_arm(start.elapsed()) {
+        arm_timer(&mut timers, start, &internal_tx, op);
+    }
 
     loop {
         tokio::select! {
-            Some(first_request) = event_rx.recv() => {
-                let batch_started = Instant::now();
-                tracing::debug!(
-                    event = ?first_request.event,
-                    "network_event.reconciler.received"
-                );
-                processor.prepare_network_event(&first_request.event);
-                let mut event_barrier = processor.begin_network_event_barrier(&first_request.event);
-                supervisor.submit_event(&first_request.event);
-                let mut batch_barrier_reached =
-                    network_event_is_batch_barrier(&first_request.event);
-                let mut offline_grace_applied = false;
-                let mut requests = vec![first_request];
-
-                // Drain already-queued non-offline facts. Stop as soon as the
-                // supervisor enters `OfflineCandidate`: the state, rather than
-                // the first request in this batch, owns the grace timer. An
-                // explicit cleanup is also a batch boundary so later recovery
-                // facts cannot be acknowledged and then absorbed by cleanup.
-                while !supervisor.offline_grace_pending() && !batch_barrier_reached {
-                    let Ok(next_request) = event_rx.try_recv() else {
-                        break;
-                    };
-                    batch_barrier_reached |=
-                        network_event_is_batch_barrier(&next_request.event);
-                    tracing::debug!(
-                        event = ?next_request.event,
-                        "network_event.reconciler.coalesced"
-                    );
-                    processor.prepare_network_event(&next_request.event);
-                    if event_barrier.is_none() {
-                        event_barrier =
-                            processor.begin_network_event_barrier(&next_request.event);
-                    }
-                    supervisor.submit_event(&next_request.event);
-                    requests.push(next_request);
-                }
-
-                if supervisor.offline_grace_pending() {
-                    if batch_barrier_reached {
-                        // Cleanup is stronger than an offline disconnect and
-                        // must not inherit the path-settling delay.
-                        supervisor.expire_offline_grace();
-                    } else {
-                        offline_grace_applied = true;
-                        let grace = tokio::time::sleep(NETWORK_OFFLINE_GRACE_WINDOW);
-                        tokio::pin!(grace);
-
-                        loop {
-                            tokio::select! {
-                                Some(next_request) = event_rx.recv() => {
-                                    batch_barrier_reached |=
-                                        network_event_is_batch_barrier(&next_request.event);
-                                    tracing::debug!(
-                                        event = ?next_request.event,
-                                        "network_event.reconciler.coalesced"
-                                    );
-                                    processor.prepare_network_event(&next_request.event);
-                                    if event_barrier.is_none() {
-                                        event_barrier = processor
-                                            .begin_network_event_barrier(&next_request.event);
-                                    }
-                                    supervisor.submit_event(&next_request.event);
-                                    requests.push(next_request);
-                                    if batch_barrier_reached
-                                        || !supervisor.offline_grace_pending()
-                                    {
-                                        break;
-                                    }
-                                }
-                                _ = &mut grace => {
-                                    break;
-                                }
-                                _ = shutdown_token.cancelled() => {
-                                    tracing::info!("🛑 Network event reconciler shutting down");
-                                    return;
-                                }
-                                else => {
-                                    break;
-                                }
-                            }
-                        }
-
-                        // Commit only if this candidate survived the grace. If
-                        // an online observation rolled it back, finish this
-                        // batch now; later queued events get their own decision
-                        // cycle and cannot grow this batch without bound.
-                        supervisor.expire_offline_grace();
-                    }
-                }
-
-                let events = requests
-                    .iter()
-                    .map(|request| request.event.clone())
-                    .collect::<Vec<_>>();
-                let action = supervisor.reconcile();
-                let facts = events
-                    .iter()
-                    .map(ConnectionFact::from_network_event)
-                    .collect::<Vec<_>>();
-                tracing::info!(
-                    event_count = events.len(),
-                    action = ?action,
-                    supervisor = ?supervisor,
-                    events = ?events,
-                    facts = ?facts,
-                    offline_grace_applied,
-                    offline_grace_limit_ms = NETWORK_OFFLINE_GRACE_WINDOW.as_millis() as u64,
-                    decision_elapsed_ms = batch_started.elapsed().as_millis() as u64,
-                    "network_event.reconciler.fsm_selected"
-                );
-
-                let results =
-                    process_network_event_batch_with_action(events, action, processor.clone()).await;
-                let action_succeeded = results.iter().all(|result| result.success);
-                supervisor.complete_action(action, action_succeeded);
-                tracing::debug!(
-                    action = ?action,
-                    success = action_succeeded,
-                    supervisor = ?supervisor,
-                    "network_event.supervisor.action_completed"
-                );
-                drop(event_barrier);
-
-                for (request, result) in requests.into_iter().zip(results) {
-                    if request.result_tx.send(result).is_err() {
-                        tracing::debug!("Network event caller dropped before receiving result");
-                    }
-                }
-            }
+            biased;
             _ = shutdown_token.cancelled() => {
                 tracing::info!("🛑 Network event reconciler shutting down");
                 break;
             }
+            Some(input) = internal_rx.recv() => {
+                let now = start.elapsed();
+                handle_supervisor_input(
+                    &mut supervisor, input, now, start, &internal_tx, &mut timers,
+                    &mut effect, &processor, &status_tx, &mut last_action_id, &mut last_outcome,
+                );
+            }
+            Some(request) = event_rx.recv() => {
+                let event = request.event.clone();
+                let epoch = request.source_epoch;
+                let wait_started = Instant::now();
+                tracing::debug!(event = ?event, "network_event.reconciler.received");
+                processor.prepare_network_event(&event);
+                let input = event_to_input(&event, epoch);
+                let now = start.elapsed();
+                handle_supervisor_input(
+                    &mut supervisor, input, now, start, &internal_tx, &mut timers,
+                    &mut effect, &processor, &status_tx, &mut last_action_id, &mut last_outcome,
+                );
+                // Acceptance: reply as soon as the fact is accepted and one
+                // synchronous reconcile round completes. The result does not
+                // wait for effect completion (RFC-0400 invariant 11).
+                let duration_ms = wait_started.elapsed().as_millis() as u64;
+                if request.result_tx.send(NetworkEventResult::success(event, duration_ms)).is_err() {
+                    tracing::debug!("Network event caller dropped before receiving acceptance");
+                }
+            }
             else => break,
         }
+    }
+
+    for (_, handle) in timers.drain() {
+        handle.abort();
+    }
+    if let Some(running) = effect.take() {
+        running.token.cancel();
+    }
+}
+
+fn arm_timer(
+    timers: &mut HashMap<tp::TimerId, tokio::task::AbortHandle>,
+    start: tokio::time::Instant,
+    internal_tx: &mpsc::Sender<tp::Input>,
+    op: TimerOp,
+) {
+    if let TimerOp::Arm { key, at, fire } = op {
+        if let Some(existing) = timers.remove(&key) {
+            existing.abort();
+        }
+        let itx = internal_tx.clone();
+        let target = start + at;
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep_until(target).await;
+            let _ = itx.send(fire).await;
+        });
+        timers.insert(key, handle.abort_handle());
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_supervisor_input(
+    supervisor: &mut ConnectionSupervisor,
+    input: tp::Input,
+    now: Duration,
+    start: tokio::time::Instant,
+    internal_tx: &mpsc::Sender<tp::Input>,
+    timers: &mut HashMap<tp::TimerId, tokio::task::AbortHandle>,
+    effect: &mut Option<RunningEffect>,
+    processor: &Arc<dyn NetworkEventProcessor>,
+    status_tx: &watch::Sender<SupervisorStatus>,
+    last_action_id: &mut Option<u64>,
+    last_outcome: &mut Option<ObservedOutcome>,
+) {
+    if let tp::Input::EffectCompleted { outcome, .. } = &input {
+        *last_outcome = Some(observed_outcome(outcome));
+    }
+
+    let outcome = supervisor.accept(input, now);
+
+    tracing::debug!(
+        advanced = outcome.advanced,
+        revision = supervisor.view().policy_revision,
+        send_policy = ?supervisor.send_policy(),
+        pending_action = ?supervisor.composite_action(),
+        "network_event.supervisor.reconciled"
+    );
+
+    for op in outcome.timer_ops {
+        match op {
+            TimerOp::Cancel { key } => {
+                if let Some(handle) = timers.remove(&key) {
+                    handle.abort();
+                }
+            }
+            arm @ TimerOp::Arm { .. } => arm_timer(timers, start, internal_tx, arm),
+        }
+    }
+
+    if outcome.cancel_effect
+        && let Some(running) = effect.as_ref()
+    {
+        tracing::debug!(
+            action_id = running.action_id,
+            "network_event.effect.cancel_requested"
+        );
+        running.token.cancel();
+    }
+
+    for record in &outcome.status {
+        match record {
+            tp::StatusRecord::RecoveryRejected { mode, reason } => {
+                tracing::info!(?mode, ?reason, "network_event.supervisor.recovery_rejected")
+            }
+            tp::StatusRecord::BootstrapDeadlineElapsed => {
+                tracing::error!("network_event.supervisor.bootstrap_deadline_elapsed")
+            }
+            tp::StatusRecord::ShutdownAbandon => {
+                tracing::warn!("network_event.supervisor.shutdown_abandon")
+            }
+        }
+    }
+
+    if let Some(started) = supervisor.maybe_start_effect() {
+        *last_action_id = Some(started.action_id);
+        let token = CancellationToken::new();
+        tracing::info!(
+            action_id = started.action_id,
+            kind = ?started.kind,
+            policy_revision = started.captured_revision,
+            "network_event.effect.started"
+        );
+        spawn_effect(
+            started,
+            token.clone(),
+            processor.clone(),
+            internal_tx.clone(),
+        );
+        *effect = Some(RunningEffect {
+            action_id: started.action_id,
+            token,
+        });
+    } else if supervisor.view().execution == tp::ExecutionState::Idle {
+        *effect = None;
+    }
+
+    let _ = status_tx.send(SupervisorStatus {
+        policy_revision: supervisor.view().policy_revision,
+        last_action_id: *last_action_id,
+        last_outcome: *last_outcome,
+    });
+}
+
+fn spawn_effect(
+    started: StartedEffect,
+    token: CancellationToken,
+    processor: Arc<dyn NetworkEventProcessor>,
+    internal_tx: mpsc::Sender<tp::Input>,
+) {
+    let action_id = started.action_id;
+    let kind = started.kind;
+    let policy_revision = started.captured_revision;
+    let net_action = network_action_of(started.action);
+
+    // Outer join monitor: every termination path — normal return, cancellation,
+    // or panic/abort — reports exactly one terminal completion.
+    tokio::spawn(async move {
+        let inner = tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => EffectOutcome::Cancelled,
+                res = processor.process_network_recovery_action(net_action) => match res {
+                    Ok(()) => EffectOutcome::Succeeded,
+                    Err(e) => EffectOutcome::Failed { diagnosis: diagnose_effect_error(&e) },
+                }
+            }
+        });
+        let outcome = match inner.await {
+            Ok(outcome) => outcome,
+            Err(join_err) => EffectOutcome::Aborted {
+                cause: if join_err.is_cancelled() {
+                    AbortCause::SupervisorCancellation
+                } else {
+                    AbortCause::PanicOrContractViolation
+                },
+            },
+        };
+        let _ = internal_tx
+            .send(tp::Input::EffectCompleted {
+                action_id,
+                kind,
+                policy_revision,
+                outcome,
+            })
+            .await;
+    });
+}
+
+/// Map an opaque effect error string to a typed diagnosis. Absent structured
+/// error typing (a later phase), it is treated as an availability-family
+/// `PathUnreachable`, so the policy retries inside the obligation deadline.
+fn diagnose_effect_error(error: &str) -> EffectDiagnosis {
+    EffectDiagnosis::PathUnreachable {
+        stage: error.to_string(),
     }
 }
 
@@ -1183,6 +1325,14 @@ pub struct NetworkEventHandle {
     /// Event sender (to ActrNode)
     event_tx: mpsc::Sender<NetworkEventRequest>,
     result_timeout: Duration,
+    /// The path-monitor incarnation epoch assigned when this handle is created.
+    ///
+    /// One handle is one authoritative monitor incarnation; every snapshot it
+    /// forwards carries this epoch, and clones share it. A restarted monitor
+    /// gets a fresh handle and therefore a newer epoch, so a stale replay from
+    /// the previous incarnation is rejected by `(epoch, sequence)` ordering
+    /// without any change to the existing sequence semantics callers rely on.
+    source_epoch: u64,
 }
 
 impl NetworkEventHandle {
@@ -1203,6 +1353,7 @@ impl NetworkEventHandle {
         Self {
             event_tx,
             result_timeout,
+            source_epoch: NEXT_NETWORK_SOURCE_EPOCH.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -1253,6 +1404,7 @@ impl NetworkEventHandle {
         let request = NetworkEventRequest {
             event: event.clone(),
             result_tx,
+            source_epoch: self.source_epoch,
         };
 
         tracing::info!(
@@ -1319,6 +1471,7 @@ impl Clone for NetworkEventHandle {
         Self {
             event_tx: self.event_tx.clone(),
             result_timeout: self.result_timeout,
+            source_epoch: self.source_epoch,
         }
     }
 }

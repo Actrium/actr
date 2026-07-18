@@ -453,7 +453,7 @@ impl View {
         }
     }
 
-    fn record(&self, domain: RetryDomain) -> Option<&PendingRecord> {
+    pub(crate) fn record(&self, domain: RetryDomain) -> Option<&PendingRecord> {
         match domain {
             RetryDomain::Recovery => self.recovery_record.as_ref(),
             RetryDomain::Cleanup => self.cleanup_record.as_ref(),
@@ -591,7 +591,7 @@ pub(crate) enum TimerCategory {
 }
 
 /// A stable timer inventory id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TimerId {
     OfflineCandidate,
     ShutdownOverall,

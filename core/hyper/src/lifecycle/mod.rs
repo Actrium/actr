@@ -16,13 +16,14 @@ mod recovery_execution;
 mod recovery_policy;
 pub(crate) mod session_state;
 
-pub use connection_supervisor::{ConnectionFact, ConnectionSupervisor};
+pub use connection_supervisor::ConnectionFact;
 pub use network_event::{
     AppLifecycleState, CleanupReason, DebounceConfig, DefaultNetworkEventProcessor,
     NetworkAvailability, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
     NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot,
-    NetworkTransportFlags, ReconnectReason, process_network_event_batch,
-    run_network_event_reconciler, select_network_recovery_action,
+    NetworkTransportFlags, ObservedOutcome, ReconnectReason, SupervisorStatus,
+    process_network_event_batch, run_network_event_reconciler,
+    run_network_event_reconciler_with_status, select_network_recovery_action,
 };
 pub use node::CredentialState;
 pub use session_state::{SessionPhase, SessionSnapshot, SessionState};

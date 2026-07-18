@@ -375,6 +375,39 @@ pub(crate) fn arm_backoff(
     now + jittered.max(retry_after)
 }
 
+/// The production jitter source: a self-contained SplitMix64 stream.
+///
+/// It draws no ambient randomness of its own; the supervisor seeds it once per
+/// instance so that clients and sessions de-correlate. A duplicate or stale
+/// input consumes no entropy because [`arm_backoff`] is the only caller.
+#[derive(Debug, Clone)]
+pub(crate) struct DefaultEntropy {
+    state: u64,
+}
+
+impl DefaultEntropy {
+    /// Seed the stream. Any non-zero seed produces a full-period stream; a zero
+    /// seed is nudged so the first draw is still well distributed.
+    pub(crate) fn seeded(seed: u64) -> Self {
+        Self {
+            state: seed ^ 0x9E37_79B9_7F4A_7C15,
+        }
+    }
+}
+
+impl EntropySource for DefaultEntropy {
+    fn next_unit(&mut self) -> f64 {
+        // SplitMix64: one wrapping add plus two avalanche multiplies.
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        // 53-bit mantissa in [0, 1).
+        (z >> 11) as f64 / (1u64 << 53) as f64
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct FixedEntropy {
     samples: Vec<f64>,
