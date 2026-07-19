@@ -1829,3 +1829,7 @@ pub(crate) fn derive_send_policy(view: &View) -> SendProjection {
 #[cfg(test)]
 #[path = "translate_tests.rs"]
 mod translate_tests;
+
+#[cfg(test)]
+#[path = "translate_bench.rs"]
+mod translate_bench;
