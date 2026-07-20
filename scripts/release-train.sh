@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Basic release train for the monorepo-managed foundations, tools, SDKs, and CLI.
+# Basic release train for the monorepo-managed foundations, tools, SDKs, CLI,
+# and Actrix server crates.
 # Supports staged execution via --stage for parallel CI jobs.
 
 readonly FINAL_TAG_PREFIX="v"
@@ -37,6 +38,22 @@ readonly SDK_CRATES=(
 
 readonly CLI_CRATES=(
   "actr-cli"
+)
+
+# Actrix crates in dependency order. Keep the server package last so every
+# registry dependency is visible before `actrix` is published.
+readonly ACTRIX_CRATES=(
+  "actrix-proto"
+  "actrix-signer"
+  "actrix-platform"
+  "actrix-admin"
+  "actrix-mfr"
+  "actrix-signaling"
+  "actrix-stun"
+  "actrix-turn"
+  "actrix-ais"
+  "actrix-sdk"
+  "actrix"
 )
 
 # GitHub Release binary matrix for the `actr` CLI.
@@ -863,6 +880,17 @@ package_files = [
     repo / "tools/protoc-gen/rust/Cargo.toml",
     repo / "tools/protoc-gen/web/Cargo.toml",
     repo / "cli/Cargo.toml",
+    repo / "actrix/crates/contracts/Cargo.toml",
+    repo / "actrix/crates/signer/Cargo.toml",
+    repo / "actrix/crates/platform/Cargo.toml",
+    repo / "actrix/crates/control/Cargo.toml",
+    repo / "actrix/crates/mfr/Cargo.toml",
+    repo / "actrix/crates/signaling/Cargo.toml",
+    repo / "actrix/crates/stun/Cargo.toml",
+    repo / "actrix/crates/turn/Cargo.toml",
+    repo / "actrix/crates/ais/Cargo.toml",
+    repo / "actrix/crates/sdk/Cargo.toml",
+    repo / "actrix/crates/actrixd/Cargo.toml",
     repo / "bindings/typescript/Cargo.toml",
     repo / "bindings/web/crates/actr-web-abi/Cargo.toml",
     repo / "bindings/web/crates/common/Cargo.toml",
@@ -912,6 +940,8 @@ def replace_first_version(lines: list[str]) -> list[str]:
         if line.startswith("version = "):
             lines[index] = f'version = "{version}"'
             return lines
+        if line.startswith("version.workspace = true"):
+            return lines
     raise RuntimeError("package version line not found")
 
 for path in package_files:
@@ -948,6 +978,11 @@ for path in package_files:
             stripped = line.strip()
             name = stripped.split("=", 1)[0].strip()
             if name in cli_dependency_names and "version = " in line:
+                lines[index] = re.sub(r'version = "[^"]+"', f'version = "{version}"', line)
+
+    if repo / "actrix/crates" in path.parents:
+        for index, line in enumerate(lines):
+            if 'path = "../' in line and "version = " in line:
                 lines[index] = re.sub(r'version = "[^"]+"', f'version = "{version}"', line)
 
     for index, line in enumerate(lines):
@@ -1055,7 +1090,8 @@ all_publishable_crates() {
     "${FOUNDATION_CRATES[@]}" \
     "${PROTOC_CRATES[@]}" \
     "${SDK_CRATES[@]}" \
-    "${CLI_CRATES[@]}"
+    "${CLI_CRATES[@]}" \
+    "${ACTRIX_CRATES[@]}"
 }
 
 package_workspace_dir() {
@@ -1595,6 +1631,17 @@ stage_release_version_files() {
     testing/mock-actrix/Cargo.toml \
     tools/protoc-gen/rust/Cargo.toml \
     tools/protoc-gen/web/Cargo.toml \
+    actrix/crates/contracts/Cargo.toml \
+    actrix/crates/signer/Cargo.toml \
+    actrix/crates/platform/Cargo.toml \
+    actrix/crates/control/Cargo.toml \
+    actrix/crates/mfr/Cargo.toml \
+    actrix/crates/signaling/Cargo.toml \
+    actrix/crates/stun/Cargo.toml \
+    actrix/crates/turn/Cargo.toml \
+    actrix/crates/ais/Cargo.toml \
+    actrix/crates/sdk/Cargo.toml \
+    actrix/crates/actrixd/Cargo.toml \
     tools/protoc-gen/swift/Sources/framework-codegen-swift/main.swift \
     tools/protoc-gen/typescript/src/main.ts \
     tools/protoc-gen/typescript/package.json \
@@ -1912,6 +1959,10 @@ stage_publish_rust() {
 
   for package in "${CLI_CRATES[@]}"; do
     publish_rust_package "$package" "cli"
+  done
+
+  for package in "${ACTRIX_CRATES[@]}"; do
+    publish_rust_package "$package" "actrix"
   done
 
   log_info "Stage publish-rust complete"
@@ -2243,6 +2294,10 @@ run_release_train() {
 
   for package in "${CLI_CRATES[@]}"; do
     publish_rust_package "$package" "cli"
+  done
+
+  for package in "${ACTRIX_CRATES[@]}"; do
+    publish_rust_package "$package" "actrix"
   done
 
   create_final_tag

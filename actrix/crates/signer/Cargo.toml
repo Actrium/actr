@@ -1,7 +1,6 @@
 [package]
 name = "actrix-signer"
 version.workspace = true
-publish = false
 edition.workspace = true
 repository.workspace = true
 description = "Signer - Ed25519 签名密钥生成和管理服务，私钥永不离开 Signer"
@@ -60,7 +59,7 @@ hex = { workspace = true }
 async-trait = "0.1"
 
 # Internal dependencies
-actrix-proto = { path = "../contracts" }
+actrix-proto = { path = "../contracts", version = "0.5.2" }
 # Note: circular dependency avoided - platform depends on signer for client types
 
 # Monitoring

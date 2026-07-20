@@ -10,6 +10,7 @@ on:
       - "Cargo.lock"
       - "core/**/Cargo.toml"
       - "cli/Cargo.toml"
+      - "actrix/crates/**/Cargo.toml"
       - "testing/**/Cargo.toml"
       - "tools/protoc-gen/**/Cargo.toml"
       - "tools/protoc-gen/**/pyproject.toml"
