@@ -59,7 +59,7 @@ hex = { workspace = true }
 async-trait = "0.1"
 
 # Internal dependencies
-actrix-proto = { path = "../contracts", version = "0.5.2" }
+actrix-proto = { path = "../contracts", version = "0.5.3" }
 # Note: circular dependency avoided - platform depends on signer for client types
 
 # Monitoring
