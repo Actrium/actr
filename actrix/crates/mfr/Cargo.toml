@@ -28,7 +28,7 @@ hex = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Internal dependencies
-platform = { path = "../platform", package = "actrix-platform", version = "0.5.2" }
+platform = { path = "../platform", package = "actrix-platform", version = "0.5.3" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
