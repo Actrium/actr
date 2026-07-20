@@ -697,7 +697,7 @@ async fn get_metrics_timeseries(
 
 #[cfg(feature = "admin-ui")]
 #[derive(rust_embed::RustEmbed)]
-#[folder = "admin/web/dist"]
+#[folder = "$OUT_DIR/admin-web/dist"]
 struct AdminAssets;
 
 #[cfg(feature = "admin-ui")]

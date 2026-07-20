@@ -19,6 +19,7 @@ fail() {
 }
 
 # Save original function definitions so tests can restore after stubbing.
+_original_fail=$(declare -f fail)
 _original_update_versions=$(declare -f update_versions)
 _original_run_validation_suite=$(declare -f run_validation_suite)
 _original_ensure_clean_worktree=$(declare -f ensure_clean_worktree)
@@ -53,6 +54,7 @@ _original_stage_build_cli_binaries=$(declare -f stage_build_cli_binaries)
 _original_stage_publish_cli_binaries=$(declare -f stage_publish_cli_binaries)
 
 restore_all_functions() {
+  eval "$_original_fail"
   eval "$_original_update_versions"
   eval "$_original_run_validation_suite"
   eval "$_original_ensure_clean_worktree"
@@ -1040,6 +1042,17 @@ EOF
     tools/protoc-gen/rust/Cargo.toml \
     tools/protoc-gen/web/Cargo.toml \
     cli/Cargo.toml \
+    actrix/crates/contracts/Cargo.toml \
+    actrix/crates/signer/Cargo.toml \
+    actrix/crates/platform/Cargo.toml \
+    actrix/crates/control/Cargo.toml \
+    actrix/crates/mfr/Cargo.toml \
+    actrix/crates/signaling/Cargo.toml \
+    actrix/crates/stun/Cargo.toml \
+    actrix/crates/turn/Cargo.toml \
+    actrix/crates/ais/Cargo.toml \
+    actrix/crates/sdk/Cargo.toml \
+    actrix/crates/actrixd/Cargo.toml \
     bindings/typescript/Cargo.toml \
     bindings/web/crates/actr-web-abi/Cargo.toml \
     bindings/web/crates/common/Cargo.toml \
@@ -1051,6 +1064,14 @@ EOF
     mkdir -p "$(dirname "$temp_dir/$f")"
     printf '[package]\nversion = "0.2.0"\n' >"$temp_dir/$f"
   done
+
+  cat >"$temp_dir/actrix/crates/platform/Cargo.toml" <<'EOF'
+[package]
+version.workspace = true
+
+[dependencies]
+signer = { path = "../signer", package = "actrix-signer", version = "0.2.0" }
+EOF
 
   # Create web packages.
   for wp in actr-dom web-sdk web-react; do
@@ -1115,6 +1136,10 @@ EOF
     'version = "0.3.0"' \
     "$(cat "$temp_dir/tools/protoc-gen/kotlin/build.gradle.kts")" \
     "Kotlin protoc plugin Gradle version"
+  assert_eq \
+    'signer = { path = "../signer", package = "actrix-signer", version = "0.3.0" }' \
+    "$(tail -n 1 "$temp_dir/actrix/crates/platform/Cargo.toml")" \
+    "Actrix path dependency version"
   if grep -q '0\.2\.0' "$temp_dir/tools/protoc-gen/kotlin/src/main/kotlin/io/actrium/codegen/Main.kt"; then
     printf 'Kotlin protoc plugin output versions were not synchronized\n' >&2
     rm -rf "$temp_dir"
@@ -1532,6 +1557,51 @@ test_release_train_delegates_cli_release_operations() {
   fi
 }
 
+test_actrix_crates_publish_in_dependency_order() {
+  local expected actual dependency
+  expected=$(cat <<'EOF'
+actrix-proto
+actrix-signer
+actrix-platform
+actrix-admin
+actrix-mfr
+actrix-signaling
+actrix-stun
+actrix-turn
+actrix-ais
+actrix-sdk
+actrix
+EOF
+)
+  actual=$(printf '%s\n' "${ACTRIX_CRATES[@]}")
+  assert_eq "$expected" "$actual" "Actrix publish order"
+
+  if grep -Rq '^publish = false$' actrix/crates --include Cargo.toml; then
+    printf 'Actrix crates must be publishable\n' >&2
+    exit 1
+  fi
+
+  while IFS= read -r dependency; do
+    if [[ "$dependency" != *'version = '* ]]; then
+      printf 'Actrix path dependency must declare a registry version: %s\n' "$dependency" >&2
+      exit 1
+    fi
+  done < <(grep -Rh 'path = "../' actrix/crates --include Cargo.toml)
+}
+
+test_publish_rust_stage_publishes_packages() {
+  reset_release_train_state
+
+  local calls=()
+  read_context() { calls+=("read_context"); }
+  publish_rust_package() { calls+=("publish_rust_package:$1:$2"); }
+
+  stage_publish_rust
+
+  assert_eq "read_context" "${calls[0]}" "publish-rust context load"
+  assert_eq "publish_rust_package:actr-protocol:foundation" "${calls[1]}" "first Rust publish"
+}
+
 test_python_release_tools_are_stage_scoped() {
   reset_release_train_state
 
@@ -1763,6 +1833,8 @@ test_release_prepare_workflow_closes_superseded_prs
 test_typescript_dry_run_uses_pack_without_registry_publish
 test_cli_has_no_unused_git2_dependency
 test_release_train_delegates_cli_release_operations
+test_actrix_crates_publish_in_dependency_order
+test_publish_rust_stage_publishes_packages
 test_python_release_tools_are_stage_scoped
 test_cli_release_workflows_share_one_matrix
 test_release_train_reuses_cli_workflow

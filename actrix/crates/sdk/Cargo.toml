@@ -1,7 +1,6 @@
 [package]
 name = "actrix-sdk"
 version.workspace = true
-publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -13,7 +12,7 @@ default = []
 testing = []
 
 [dependencies]
-admin = { path = "../control", package = "actrix-admin" }
+admin = { path = "../control", package = "actrix-admin", version = "0.5.2" }
 
 [lints]
 workspace = true
