@@ -305,9 +305,13 @@ impl WebRtcConnection {
                 continue;
             }
 
-            if tokio::time::timeout(DATA_CHANNEL_DRAIN_TIMEOUT, drained.notified())
-                .await
-                .is_err()
+            if crate::timer::timeout(
+                crate::timer::ids::DATA_CHANNEL_DRAIN,
+                DATA_CHANNEL_DRAIN_TIMEOUT,
+                drained.notified(),
+            )
+            .await
+            .is_err()
             {
                 let buffered_bytes = channel.buffered_amount().await;
                 tracing::warn!(
@@ -372,8 +376,12 @@ impl WebRtcConnection {
             "🔒 [close] serial={} step 2: closing peer_connection",
             self.peer_id
         );
-        let close_result =
-            tokio::time::timeout(PEER_CONNECTION_CLOSE_TIMEOUT, self.peer_connection.close()).await;
+        let close_result = crate::timer::timeout(
+            crate::timer::ids::PEER_CONNECTION_CLOSE,
+            PEER_CONNECTION_CLOSE_TIMEOUT,
+            self.peer_connection.close(),
+        )
+        .await;
         let close_error = match close_result {
             Ok(Ok(())) => None,
             Ok(Err(e)) => Some(e),

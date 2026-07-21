@@ -888,7 +888,7 @@ impl PeerGate {
                             "transient send failure, retrying after {:?}",
                             delay,
                         );
-                        tokio::time::sleep(delay).await;
+                        crate::timer::sleep(crate::timer::ids::PEER_SEND_BACKOFF, delay).await;
                         // exponential backoff capped at max_delay
                         delay = (delay * 2).min(policy.max_delay);
                     } else {
@@ -1057,23 +1057,24 @@ impl PeerGate {
         let sent_transport = Arc::new(Mutex::new(None));
         let sent_transport_for_send = Arc::clone(&sent_transport);
 
-        let result = tokio::time::timeout(timeout, async {
-            // 5a. Send with per-PayloadType retry on transient failures
-            let sent_identity = self
-                .send_with_retry_record_identity(&dest, payload_type, &data)
-                .await?;
-            *sent_transport_for_send.lock().await = Some(sent_identity);
-            tracing::debug!("Sent request to {:?}", target);
+        let result =
+            crate::timer::timeout(crate::timer::ids::PEER_REQUEST_DEADLINE, timeout, async {
+                // 5a. Send with per-PayloadType retry on transient failures
+                let sent_identity = self
+                    .send_with_retry_record_identity(&dest, payload_type, &data)
+                    .await?;
+                *sent_transport_for_send.lock().await = Some(sent_identity);
+                tracing::debug!("Sent request to {:?}", target);
 
-            // 5b. Wait for response
-            match response_rx.await {
-                Ok(result) => result,
-                Err(_) => Err(ActrError::Unavailable(
-                    "Response channel closed".to_string(),
-                )),
-            }
-        })
-        .await;
+                // 5b. Wait for response
+                match response_rx.await {
+                    Ok(result) => result,
+                    Err(_) => Err(ActrError::Unavailable(
+                        "Response channel closed".to_string(),
+                    )),
+                }
+            })
+            .await;
 
         match result {
             Ok(inner) => {
@@ -1189,7 +1190,13 @@ impl PeerGate {
         self.preflight_send(target, &dest).await?;
         let send = self.send_with_retry(&dest, payload_type, &data);
         if let Some(send_timeout) = send_timeout {
-            match tokio::time::timeout(send_timeout, send).await {
+            match crate::timer::timeout(
+                crate::timer::ids::PEER_REQUEST_DEADLINE,
+                send_timeout,
+                send,
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(_) => Err(ActrError::TimedOut),
             }
@@ -1349,7 +1356,8 @@ impl PeerGate {
             false
         };
 
-        let result = match tokio::time::timeout(
+        let result = match crate::timer::timeout(
+            crate::timer::ids::PEER_REQUEST_DEADLINE,
             send_timeout,
             self.transport_manager.send(&dest, payload_type, &data),
         )

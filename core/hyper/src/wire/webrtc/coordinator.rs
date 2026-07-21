@@ -1009,9 +1009,13 @@ impl WebRtcCoordinator {
             }
         };
 
-        if tokio::time::timeout(CLEANUP_BARRIER_WAIT_TIMEOUT, wait)
-            .await
-            .is_err()
+        if crate::timer::timeout(
+            crate::timer::ids::WEBRTC_CLEANUP_BARRIER,
+            CLEANUP_BARRIER_WAIT_TIMEOUT,
+            wait,
+        )
+        .await
+        .is_err()
         {
             tracing::warn!(
                 "⏱️ WebRTC cleanup barrier wait timed out after {:?}; continuing outbound send",
@@ -1650,7 +1654,8 @@ impl WebRtcCoordinator {
                 reason,
                 e
             );
-            match tokio::time::timeout(
+            match crate::timer::timeout(
+                crate::timer::ids::WEBRTC_CLOSE_FALLBACK,
                 PEER_CONNECTION_CLOSE_FALLBACK_TIMEOUT,
                 state.peer_connection.close(),
             )
@@ -1991,7 +1996,7 @@ impl WebRtcCoordinator {
         }
 
         let target_peer = peer_id.clone();
-        let sleep = tokio::time::sleep(timeout);
+        let sleep = crate::timer::sleep(crate::timer::ids::WEBRTC_PEER_SENDABLE, timeout);
         tokio::pin!(sleep);
 
         loop {
@@ -2833,11 +2838,14 @@ impl WebRtcCoordinator {
         }
 
         // Create a pinned sleep future for the current stage timeout.
-        let sleep = tokio::time::sleep(if ice_connected {
-            data_channel_after_ice_timeout
-        } else {
-            ice_connected_timeout
-        });
+        let sleep = crate::timer::sleep(
+            crate::timer::ids::WEBRTC_INITIAL_READINESS,
+            if ice_connected {
+                data_channel_after_ice_timeout
+            } else {
+                ice_connected_timeout
+            },
+        );
         tokio::pin!(sleep);
 
         loop {
@@ -3009,7 +3017,10 @@ impl WebRtcCoordinator {
                     Some(deadline) => {
                         tokio::select! {
                             _ = &mut changed => {}
-                            _ = tokio::time::sleep_until(deadline.into()) => {}
+                            _ = crate::timer::sleep_until(
+                                crate::timer::ids::STALE_PEER_EXPIRY,
+                                deadline.into(),
+                            ) => {}
                         }
                     }
                     None => changed.await,
@@ -3362,15 +3373,19 @@ impl WebRtcCoordinator {
 
         let state_phase_deadline = tokio::time::Instant::now() + CLOSE_ALL_QUIESCE_TIMEOUT;
         let restart_count = restart_handles.len();
-        if tokio::time::timeout_at(state_phase_deadline, async move {
-            for (peer_id, handle) in restart_handles {
-                if let Err(err) = handle.await
-                    && !err.is_cancelled()
-                {
-                    tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
+        if crate::timer::timeout_at(
+            crate::timer::ids::WEBRTC_CLOSE_ALL_QUIESCE,
+            state_phase_deadline,
+            async move {
+                for (peer_id, handle) in restart_handles {
+                    if let Err(err) = handle.await
+                        && !err.is_cancelled()
+                    {
+                        tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
+                    }
                 }
-            }
-        })
+            },
+        )
         .await
         .is_err()
         {
@@ -3386,8 +3401,10 @@ impl WebRtcCoordinator {
         // stable order, then drain while those gates are held. A send that
         // already crossed its final lifecycle/session check must finish before
         // its state is discarded; queued sends observe the epoch change.
-        let (all_peers, late_restart_handles) =
-            tokio::time::timeout_at(state_phase_deadline, async {
+        let (all_peers, late_restart_handles) = crate::timer::timeout_at(
+            crate::timer::ids::WEBRTC_CLOSE_ALL_QUIESCE,
+            state_phase_deadline,
+            async {
                 loop {
                     let mut peer_ids: Vec<ActrId> = {
                         let peers = self.peers.read().await;
@@ -3458,15 +3475,16 @@ impl WebRtcCoordinator {
                     drop(peer_gates);
                     break (all_peers, late_restart_handles);
                 }
-            })
-            .await
-            .map_err(|_| {
-                tracing::warn!(
-                    timeout_ms = CLOSE_ALL_QUIESCE_TIMEOUT.as_millis(),
-                    "Timed out waiting for WebRTC peer signaling commits to quiesce"
-                );
-                ActrError::TimedOut
-            })?;
+            },
+        )
+        .await
+        .map_err(|_| {
+            tracing::warn!(
+                timeout_ms = CLOSE_ALL_QUIESCE_TIMEOUT.as_millis(),
+                "Timed out waiting for WebRTC peer signaling commits to quiesce"
+            );
+            ActrError::TimedOut
+        })?;
 
         // This handoff is synchronous with the successful drain. If this
         // future is cancelled at any later await, the guard finishes physical
@@ -3487,15 +3505,19 @@ impl WebRtcCoordinator {
         Self::prune_restart_signaling_gates(&restart_signaling_gates).await;
 
         let restart_count = late_restart_handles.len();
-        if tokio::time::timeout(CLOSE_ALL_QUIESCE_TIMEOUT, async move {
-            for (peer_id, handle) in late_restart_handles {
-                if let Err(err) = handle.await
-                    && !err.is_cancelled()
-                {
-                    tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
+        if crate::timer::timeout(
+            crate::timer::ids::WEBRTC_CLOSE_ALL_QUIESCE,
+            CLOSE_ALL_QUIESCE_TIMEOUT,
+            async move {
+                for (peer_id, handle) in late_restart_handles {
+                    if let Err(err) = handle.await
+                        && !err.is_cancelled()
+                    {
+                        tracing::warn!("⚠️ ICE restart task join failed for {}: {}", peer_id, err);
+                    }
                 }
-            }
-        })
+            },
+        )
         .await
         .is_err()
         {
@@ -3537,7 +3559,14 @@ impl WebRtcCoordinator {
                     None,
                 ),
             );
-            if tokio::time::timeout_at(hook_deadline, hook).await.is_err() {
+            if crate::timer::timeout_at(
+                crate::timer::ids::WEBRTC_CLOSE_ALL_HOOK,
+                hook_deadline,
+                hook,
+            )
+            .await
+            .is_err()
+            {
                 tracing::warn!(
                     peer_id = %peer_id,
                     session_id = state.session_id,
@@ -4008,7 +4037,13 @@ impl WebRtcCoordinator {
         {
             Ok((ready_rx, webrtc_conn)) => {
                 // Wait for connection to be ready with timeout
-                match tokio::time::timeout(INITIAL_CONNECTION_TIMEOUT, ready_rx).await {
+                match crate::timer::timeout(
+                    crate::timer::ids::WEBRTC_CONNECTION_READY,
+                    INITIAL_CONNECTION_TIMEOUT,
+                    ready_rx,
+                )
+                .await
+                {
                     Ok(Ok(())) => {
                         tracing::info!("✅ Connection established to serial={}", target);
                         // Return a new channel that's already signaled
@@ -5444,7 +5479,8 @@ impl WebRtcCoordinator {
         expected_session_id: u64,
         peer_connection: &RTCPeerConnection,
     ) -> ActorResult<()> {
-        match tokio::time::timeout(
+        match crate::timer::timeout(
+            crate::timer::ids::WEBRTC_CANDIDATE_FLUSH,
             REMOTE_CANDIDATE_FLUSH_TIMEOUT,
             self.flush_pending_candidates_inner(peer_id, expected_session_id, peer_connection),
         )
@@ -5726,7 +5762,8 @@ impl WebRtcCoordinator {
                         &known_remote_ufrags,
                     ) {
                         RemoteCandidateDisposition::Apply => {
-                            match tokio::time::timeout(
+                            match crate::timer::timeout(
+                                crate::timer::ids::WEBRTC_CANDIDATE_FLUSH,
                                 REMOTE_CANDIDATE_FLUSH_TIMEOUT,
                                 self.negotiator
                                     .add_ice_candidate(&peer_connection, candidate),
@@ -5933,7 +5970,8 @@ impl WebRtcCoordinator {
         tracing::debug!("📤 Sending message to {:?}: {} bytes", target, data.len());
 
         // Wrap entire operation with overall timeout
-        let result = tokio::time::timeout(
+        let result = crate::timer::timeout(
+            crate::timer::ids::WEBRTC_SEND_OVERALL,
             OVERALL_TIMEOUT,
             self.send_message_with_retry(target, data, MAX_RETRIES),
         )
@@ -5980,7 +6018,7 @@ impl WebRtcCoordinator {
                     max_retries + 1,
                     delay
                 );
-                tokio::time::sleep(delay).await;
+                crate::timer::sleep(crate::timer::ids::WEBRTC_RETRY_BACKOFF, delay).await;
             }
 
             match self.try_send_message_once(target, data).await {
@@ -6122,7 +6160,13 @@ impl WebRtcCoordinator {
             tracing::debug!(?ready_rx, "ready_rx");
 
             // Wait for connection to be ready within the per-attempt initial connection budget.
-            match tokio::time::timeout(INITIAL_CONNECTION_TIMEOUT, ready_rx).await {
+            match crate::timer::timeout(
+                crate::timer::ids::WEBRTC_CONNECTION_READY,
+                INITIAL_CONNECTION_TIMEOUT,
+                ready_rx,
+            )
+            .await
+            {
                 Ok(Ok(())) => {
                     tracing::info!("✅ WebRTC connection ready: {}", target);
                 }
@@ -6210,7 +6254,8 @@ impl WebRtcCoordinator {
         })?;
 
         // Wrap the entire operation with overall timeout
-        let result = tokio::time::timeout(
+        let result = crate::timer::timeout(
+            crate::timer::ids::WEBRTC_SEND_OVERALL,
             OVERALL_TIMEOUT,
             self.create_connection_inner(dest, cancel_token.clone()),
         )
@@ -6311,10 +6356,13 @@ impl WebRtcCoordinator {
                                 "Connection creation cancelled during retry wait".to_string(),
                             ));
                         }
-                        _ = tokio::time::sleep(delay) => {}
+                        _ = crate::timer::sleep(
+                            crate::timer::ids::WEBRTC_RETRY_BACKOFF,
+                            delay,
+                        ) => {}
                     }
                 } else {
-                    tokio::time::sleep(delay).await;
+                    crate::timer::sleep(crate::timer::ids::WEBRTC_RETRY_BACKOFF, delay).await;
                 }
             } else {
                 tracing::info!(
@@ -6409,7 +6457,10 @@ impl WebRtcCoordinator {
                         "Connection creation cancelled while waiting".to_string(),
                     ));
                 }
-                _ = tokio::time::sleep(timeout_duration) => {
+                _ = crate::timer::sleep(
+                    crate::timer::ids::WEBRTC_CONNECTION_READY,
+                    timeout_duration,
+                ) => {
                     Err(ActrError::TimedOut)
                 }
                 result = ready_rx => {
@@ -6419,14 +6470,16 @@ impl WebRtcCoordinator {
                 }
             }
         } else {
-            tokio::time::timeout(timeout_duration, ready_rx)
-                .await
-                .map_err(|_| ActrError::TimedOut)?
-                .map_err(|_| {
-                    ActrError::Internal(
-                        "Connection establishment failed (channel closed)".to_string(),
-                    )
-                })
+            crate::timer::timeout(
+                crate::timer::ids::WEBRTC_CONNECTION_READY,
+                timeout_duration,
+                ready_rx,
+            )
+            .await
+            .map_err(|_| ActrError::TimedOut)?
+            .map_err(|_| {
+                ActrError::Internal("Connection establishment failed (channel closed)".to_string())
+            })
         };
 
         wait_result?;
@@ -7083,7 +7136,10 @@ impl WebRtcCoordinator {
             target
         );
 
-        let connected = tokio::time::timeout(ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT, async {
+        let connected = crate::timer::timeout(
+            crate::timer::ids::ANSWERER_SIGNALING_RECONNECT,
+            ANSWERER_SIGNALING_RECONNECT_WAIT_TIMEOUT,
+            async {
             loop {
                 match events.recv().await {
                     Ok(SignalingEvent::Connected) if signaling_client.is_connected() => {
@@ -7105,7 +7161,8 @@ impl WebRtcCoordinator {
                     }
                 }
             }
-        })
+            },
+        )
         .await;
 
         match connected {
@@ -7320,7 +7377,10 @@ impl WebRtcCoordinator {
                     delay
                 );
                 tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
+                    _ = crate::timer::sleep(
+                        crate::timer::ids::WEBRTC_RETRY_BACKOFF,
+                        delay,
+                    ) => {}
                     _ = restart_wake.notified() => {
                         tracing::info!(
                             "⚡ Backoff interrupted by wake notification (signaling guard), serial={}",
@@ -7373,7 +7433,10 @@ impl WebRtcCoordinator {
                             target
                         );
                     }
-                    _ = tokio::time::sleep(remaining) => {
+                    _ = crate::timer::sleep(
+                        crate::timer::ids::WEBRTC_ICE_GATHERING,
+                        remaining,
+                    ) => {
                         tracing::error!(
                             "❌ ICE gathering timed out, aborting ICE restart for serial={}",
                             target
@@ -7423,7 +7486,10 @@ impl WebRtcCoordinator {
                     remaining
                 );
                 tokio::select! {
-                    _ = tokio::time::sleep(remaining) => {}
+                    _ = crate::timer::sleep(
+                        crate::timer::ids::WEBRTC_RETRY_BACKOFF,
+                        remaining,
+                    ) => {}
                     _ = restart_wake.notified() => {
                         tracing::info!(
                             "⚡ ICE restart offer throttle interrupted by wake notification for serial={}",
@@ -7630,7 +7696,10 @@ impl WebRtcCoordinator {
                 drop(commit_guard);
                 Self::prune_restart_signaling_gates(&commit_context.state.gates).await;
                 tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
+                    _ = crate::timer::sleep(
+                        crate::timer::ids::WEBRTC_RETRY_BACKOFF,
+                        delay,
+                    ) => {}
                     _ = restart_wake.notified() => {
                         tracing::info!(
                             "⚡ Backoff interrupted by wake notification (send failed), serial={}",
@@ -7768,7 +7837,10 @@ impl WebRtcCoordinator {
                 target
             );
             tokio::select! {
-                _ = tokio::time::sleep(delay) => {}
+                _ = crate::timer::sleep(
+                    crate::timer::ids::WEBRTC_RETRY_BACKOFF,
+                    delay,
+                ) => {}
                 _ = restart_wake.notified() => {
                     tracing::info!(
                         "⚡ ICE restart backoff interrupted by wake notification for serial={}",
@@ -7811,7 +7883,8 @@ impl WebRtcCoordinator {
         event_broadcaster: &ConnectionEventBroadcaster,
     ) -> IceRestartWaitOutcome {
         let mut event_rx = event_broadcaster.subscribe();
-        let timeout_sleep = tokio::time::sleep(timeout);
+        let timeout_sleep =
+            crate::timer::sleep(crate::timer::ids::WEBRTC_ICE_RESTART_WAIT, timeout);
         tokio::pin!(timeout_sleep);
 
         loop {
@@ -8406,7 +8479,8 @@ impl WebRtcCoordinator {
             );
         }
 
-        match tokio::time::timeout(
+        match crate::timer::timeout(
+            crate::timer::ids::WEBRTC_ROLE_NEGOTIATION,
             ROLE_NEGOTIATION_TIMEOUT,
             Self::wait_for_role_result(&mut result_rx),
         )

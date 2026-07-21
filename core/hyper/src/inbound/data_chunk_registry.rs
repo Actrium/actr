@@ -523,7 +523,13 @@ impl DataChunkRegistry {
         let mut abort_guard = AbortWorkersOnDrop::new(&handles);
         let joined = futures_util::future::join_all(handles);
 
-        match tokio::time::timeout(SHUTDOWN_JOIN_TIMEOUT, joined).await {
+        match crate::timer::timeout(
+            crate::timer::ids::DATA_CHUNK_REGISTRY_SHUTDOWN,
+            SHUTDOWN_JOIN_TIMEOUT,
+            joined,
+        )
+        .await
+        {
             Ok(_) => {
                 abort_guard.disarm();
                 tracing::debug!("data stream workers joined on shutdown");

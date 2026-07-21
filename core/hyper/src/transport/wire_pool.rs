@@ -168,7 +168,10 @@ impl WirePool {
                             );
                             return;
                         }
-                        _ = tokio::time::sleep(delay) => {}
+                        _ = crate::timer::sleep(
+                            crate::timer::ids::WIRE_POOL_CONNECT_BACKOFF,
+                            delay,
+                        ) => {}
                     }
 
                     // Check again after sleep

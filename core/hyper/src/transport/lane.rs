@@ -577,9 +577,13 @@ impl DataLane for WebRtcDataLane {
                 continue;
             }
 
-            if tokio::time::timeout_at(deadline, &mut changed)
-                .await
-                .is_err()
+            if crate::timer::timeout_at(
+                crate::timer::ids::LANE_INITIAL_READY,
+                deadline,
+                &mut changed,
+            )
+            .await
+            .is_err()
             {
                 // Deliberately not a closed-like variant: treating a stuck
                 // Connecting channel as closed would make the stale-candidate

@@ -75,6 +75,11 @@ pub mod error;
 // Runtime error re-exports (from actr_protocol, distinct from HyperError)
 pub mod runtime_error;
 
+// RFC-0400 audited timer facade and source-controlled inventory. Production
+// code must not construct Tokio timers directly outside this module.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod timer;
+
 // Verify module: TrustProvider trait + built-in verifiers (native-only).
 // The verified manifest / package types live in `actr_pack` and are
 // re-exported below for downstream consumers.

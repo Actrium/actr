@@ -61,7 +61,8 @@ async fn get_power_reserve_and_availability(
 ) -> (f32, f32, ServiceAvailabilityState) {
     // TODO: Ensure the default value is correct
     // Get real power reserve from pwrzv (returns 1.0 to 5.0, where higher = more available)
-    let power_reserve = tokio::time::timeout(
+    let power_reserve = crate::timer::timeout(
+        crate::timer::ids::HEARTBEAT_POWER_RESERVE,
         POWER_RESERVE_FETCH_TIMEOUT,
         pwrzv::get_power_reserve_level_direct(),
     )
@@ -139,7 +140,8 @@ async fn send_heartbeat_and_handle_response(
         get_power_reserve_and_availability(mailbox).await;
 
     let ping_timeout = heartbeat_interval.mul_f64(0.4).max(Duration::from_secs(1));
-    let pong_response = tokio::time::timeout(
+    let pong_response = crate::timer::timeout(
+        crate::timer::ids::HEARTBEAT_PONG,
         ping_timeout,
         client.send_heartbeat(
             actor_id.clone(),
@@ -297,7 +299,8 @@ pub async fn heartbeat_task(
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     webrtc_gate: Option<Arc<WebRtcGate>>,
 ) {
-    let mut interval = tokio::time::interval(heartbeat_interval);
+    let mut interval =
+        crate::timer::interval(crate::timer::ids::HEARTBEAT_SCHEDULE, heartbeat_interval);
     let mut actor_id = actor_id;
     let mut consecutive_failures = 0;
 

@@ -330,6 +330,17 @@ impl WebRtcNegotiator {
 
         let advanced = &self.config.advanced;
 
+        crate::timer::register_external(
+            crate::timer::ids::EXTERNAL_ICE_CANDIDATE_SELECTION,
+            Duration::from_millis(
+                advanced
+                    .ice_host_acceptance_min_wait
+                    .max(advanced.ice_srflx_acceptance_min_wait)
+                    .max(advanced.ice_prflx_acceptance_min_wait)
+                    .max(advanced.ice_relay_acceptance_min_wait),
+            ),
+        );
+
         // Limit local ICE gathering to IPv4 UDP candidates. On local/dev setups
         // with localhost STUN/TURN, unusable UDP6 probes can stall gathering and
         // make DataChannel readiness flaky.

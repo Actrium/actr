@@ -70,7 +70,7 @@
 //! | 21 | Available quota can't stay idle from collapsed release notifications | `inbound::data_chunk_registry_tests::unregister_drains_queued_chunks` |
 //! | 22 | Successful transitions don't wait on fixed polling | `wire::webrtc::signaling_tests::test_reconnect_manager_lifetime_uses_drop_signal_not_periodic_polling` |
 //! | 23 | Parallel shutdown bounded by one overall deadline, not per-child | `wire::webrtc::coordinator::tests::{close_all_times_out_when_peer_commit_cannot_quiesce, coordinator_background_tasks_are_joined_by_shutdown}` |
-//! | 24 | Every timer uses the audited facade with one inventory classification | partial: every timer the supervisor arms carries a typed `recovery_policy::translate::{TimerId, TimerCategory}` classification (the shell lowers each to one absolute deadline). The full audited-facade timer inventory and its CI drift check are a later deliverable, so this is not yet a per-timer unit test. |
+//! | 24 | Every timer uses the audited facade with one inventory classification | `timer::tests::{inventory_metadata_is_complete_and_unique, production_timer_calls_and_inventory_do_not_drift}` plus the explicit RFC-0400 timer-inventory CI gate |
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

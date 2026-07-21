@@ -209,7 +209,10 @@ impl ActrRef {
         // All tasks have been asked to shut down; wait for them with a timeout,
         // and abort any that don't finish in time to avoid leaking background work.
         for handle in handles {
-            let sleep = tokio::time::sleep(Duration::from_secs(5));
+            let sleep = crate::timer::sleep(
+                crate::timer::ids::ACTR_REF_TASK_SHUTDOWN,
+                Duration::from_secs(5),
+            );
             tokio::pin!(handle);
             tokio::pin!(sleep);
 

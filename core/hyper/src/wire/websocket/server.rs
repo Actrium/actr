@@ -219,7 +219,8 @@ impl WebSocketServer {
                                 tokio::select! {
                                     biased;
                                     _ = shutdown_token.cancelled() => break,
-                                    _ = tokio::time::sleep(
+                                    _ = crate::timer::sleep(
+                                        crate::timer::ids::WEBSOCKET_REASSEMBLY_EXPIRY,
                                         tokio::time::Duration::from_millis(100)
                                     ) => {}
                                 }

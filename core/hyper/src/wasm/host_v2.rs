@@ -496,7 +496,8 @@ async fn instantiate_parts_v2(
         .set_fuel(limits.fuel_per_invocation)
         .map_err(|e| WasmError::LoadFailed(format!("set fuel: {e}")))?;
     store.set_epoch_deadline(epoch_deadline_ticks(limits));
-    let bindings = match tokio::time::timeout(
+    let bindings = match crate::timer::timeout(
+        crate::timer::ids::WASM_INSTANTIATION,
         limits.invocation_timeout,
         ActrWorkloadGuestV2::instantiate_async(&mut store, component, &linker),
     )
@@ -706,7 +707,13 @@ impl WasmWorkloadV2 {
                     .call_dispatch(accessor, wit_envelope, inv)
                     .await
             });
-        let region = match tokio::time::timeout(self.limits.invocation_timeout, region_fut).await {
+        let region = match crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
+            self.limits.invocation_timeout,
+            region_fut,
+        )
+        .await
+        {
             Ok(region) => region,
             Err(_) => return Err(self.timeout_poison()),
         };
@@ -767,7 +774,13 @@ impl WasmWorkloadV2 {
                     .call_on_start(accessor, inv)
                     .await
             });
-        let region = match tokio::time::timeout(self.limits.invocation_timeout, region_fut).await {
+        let region = match crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
+            self.limits.invocation_timeout,
+            region_fut,
+        )
+        .await
+        {
             Ok(region) => region,
             Err(_) => return Err(self.timeout_poison()),
         };
@@ -800,7 +813,13 @@ impl WasmWorkloadV2 {
                     .call_on_ready(accessor, inv)
                     .await
             });
-        let region = match tokio::time::timeout(self.limits.invocation_timeout, region_fut).await {
+        let region = match crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
+            self.limits.invocation_timeout,
+            region_fut,
+        )
+        .await
+        {
             Ok(region) => region,
             Err(_) => return Err(self.timeout_poison()),
         };
@@ -833,7 +852,13 @@ impl WasmWorkloadV2 {
                     .call_on_stop(accessor, inv)
                     .await
             });
-        let region = match tokio::time::timeout(self.limits.invocation_timeout, region_fut).await {
+        let region = match crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
+            self.limits.invocation_timeout,
+            region_fut,
+        )
+        .await
+        {
             Ok(region) => region,
             Err(_) => return Err(self.timeout_poison()),
         };
@@ -907,7 +932,13 @@ impl WasmWorkloadV2 {
                     .call_on_data_chunk(accessor, wit_chunk, wit_sender, inv)
                     .await
             });
-        let region = match tokio::time::timeout(self.limits.invocation_timeout, region_fut).await {
+        let region = match crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
+            self.limits.invocation_timeout,
+            region_fut,
+        )
+        .await
+        {
             Ok(region) => region,
             Err(_) => return Err(self.timeout_poison()),
         };
@@ -965,7 +996,13 @@ impl WasmWorkloadV2 {
             .run_concurrent(async move |accessor| {
                 run_hook_region(accessor, bindings, event, inv).await
             });
-        let region = match tokio::time::timeout(self.limits.invocation_timeout, region_fut).await {
+        let region = match crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
+            self.limits.invocation_timeout,
+            region_fut,
+        )
+        .await
+        {
             Ok(region) => region,
             Err(_) => return Err(self.timeout_poison()),
         };
@@ -1322,7 +1359,7 @@ fn arm_deadline(
 ) -> DeadlineGuard {
     let deadline_tx = deadline_tx.clone();
     let task = tokio::spawn(async move {
-        tokio::time::sleep(timeout).await;
+        crate::timer::sleep(crate::timer::ids::WASM_RESIDENT_DISPATCH, timeout).await;
         let _ = deadline_tx.send(DeadlineExpired { generation, token });
     });
     DeadlineGuard {

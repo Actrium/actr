@@ -136,6 +136,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
+      - name: Verify RFC-0400 timer inventory
+        run: cargo test -p actr-hyper --lib timer::tests::production_timer_calls_and_inventory_do_not_drift
       - name: Run tests
         run: cargo test --workspace --verbose --all-features
 

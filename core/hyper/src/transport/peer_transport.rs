@@ -297,14 +297,18 @@ impl PeerTransport {
                     continue;
                 }
 
-                tokio::time::timeout(Duration::from_secs(10), &mut completed)
-                    .await
-                    .map_err(|error| {
-                        NetworkError::TimeoutError(format!(
-                            "Timeout waiting for connection flight: {:?} {}",
-                            dest, error
-                        ))
-                    })?;
+                crate::timer::timeout(
+                    crate::timer::ids::PEER_TRANSPORT_CREATE,
+                    Duration::from_secs(10),
+                    &mut completed,
+                )
+                .await
+                .map_err(|error| {
+                    NetworkError::TimeoutError(format!(
+                        "Timeout waiting for connection flight: {:?} {}",
+                        dest, error
+                    ))
+                })?;
                 continue;
             }
 
@@ -792,7 +796,8 @@ impl PeerTransport {
         let conn_factory = Arc::clone(&self.conn_factory);
 
         tokio::spawn(async move {
-            let mut interval_timer = tokio::time::interval(interval);
+            let mut interval_timer =
+                crate::timer::interval(crate::timer::ids::PEER_TRANSPORT_HEALTH, interval);
             interval_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
             loop {

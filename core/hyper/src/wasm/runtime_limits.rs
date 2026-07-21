@@ -366,6 +366,7 @@ pub(crate) struct EpochTicker {
 
 impl EpochTicker {
     pub(crate) fn spawn(engine: &Engine, tick: Duration) -> WasmResult<Arc<Self>> {
+        crate::timer::register_external(crate::timer::ids::EXTERNAL_WASMTIME_EPOCH_TICK, tick);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread_engine = engine.clone();

@@ -143,6 +143,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Test Rust protoc plugin well-known types
         run: cargo test -p actr-framework-protoc-codegen --test well_known_type_smoke
+      - name: Verify RFC-0400 timer inventory
+        run: cargo test -p actr-hyper --lib timer::tests::production_timer_calls_and_inventory_do_not_drift
       - name: Clippy (deny warnings)
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 

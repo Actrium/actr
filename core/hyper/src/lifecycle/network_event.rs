@@ -880,7 +880,13 @@ impl DefaultNetworkEventProcessor {
         // teardown across its commit boundary.
         self.signaling_client.invalidate_generation();
 
-        match tokio::time::timeout(budget, self.cleanup_connections_collect()).await {
+        match crate::timer::timeout(
+            crate::timer::ids::RECOVERY_CLEANUP_TEARDOWN,
+            budget,
+            self.cleanup_connections_collect(),
+        )
+        .await
+        {
             Ok(residuals) => TeardownReport {
                 reached_goal: true,
                 deadline_reached: false,
@@ -903,7 +909,13 @@ impl DefaultNetworkEventProcessor {
     async fn bounded_offline(&self, budget: Duration) -> TeardownReport {
         self.signaling_client.invalidate_generation();
 
-        match tokio::time::timeout(budget, self.process_offline_collect()).await {
+        match crate::timer::timeout(
+            crate::timer::ids::RECOVERY_OFFLINE_TEARDOWN,
+            budget,
+            self.process_offline_collect(),
+        )
+        .await
+        {
             Ok(residuals) => TeardownReport {
                 reached_goal: true,
                 deadline_reached: false,
@@ -1462,7 +1474,7 @@ fn arm_timer(
         let itx = internal_tx.clone();
         let target = start + at;
         let handle = tokio::spawn(async move {
-            tokio::time::sleep_until(target).await;
+            crate::timer::sleep_until(crate::timer::ids::RECOVERY_POLICY_DEADLINE, target).await;
             let _ = itx.send(fire).await;
         });
         timers.insert(key, handle.abort_handle());
@@ -1836,7 +1848,13 @@ impl NetworkEventHandle {
             return Err(err);
         }
 
-        let result = match tokio::time::timeout(self.result_timeout, result_rx).await {
+        let result = match crate::timer::timeout(
+            crate::timer::ids::NETWORK_EVENT_ACCEPTANCE,
+            self.result_timeout,
+            result_rx,
+        )
+        .await
+        {
             Ok(Ok(result)) => Ok(result),
             Ok(Err(_)) => Err("Failed to receive network event result".to_string()),
             Err(_) => Err(format!(

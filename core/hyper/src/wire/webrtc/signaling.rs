@@ -790,7 +790,10 @@ impl WebSocketSignalingClient {
                             "❌ Reconnect attempt {attempt} failed: {e}, retrying in {delay:?}"
                         );
                         tokio::select! {
-                            _ = tokio::time::sleep(delay) => {}
+                            _ = crate::timer::sleep(
+                                crate::timer::ids::SIGNALING_RECONNECT_BACKOFF,
+                                delay,
+                            ) => {}
                             _ = self.reconnect_notify.notified() => {
                                 tracing::debug!("Explicit reconnect request interrupted reconnect backoff");
                             }
@@ -825,7 +828,10 @@ impl WebSocketSignalingClient {
             tracing::error!("Reconnect failed after {attempt} attempts, entering cooldown");
             let cooldown = std::time::Duration::from_secs(cfg.max_delay.max(1) * 2);
             tokio::select! {
-                _ = tokio::time::sleep(cooldown) => {}
+                _ = crate::timer::sleep(
+                    crate::timer::ids::SIGNALING_RECONNECT_COOLDOWN,
+                    cooldown,
+                ) => {}
                 _ = self.reconnect_notify.notified() => {
                     tracing::debug!("Explicit reconnect request interrupted reconnect cooldown");
                 }
@@ -1091,7 +1097,8 @@ impl WebSocketSignalingClient {
             connect_async_with_config(url.as_str(), Some(config), false).await
         } else {
             let timeout_duration = std::time::Duration::from_secs(timeout_secs);
-            tokio::time::timeout(
+            crate::timer::timeout(
+                crate::timer::ids::SIGNALING_CONNECT,
                 timeout_duration,
                 connect_async_with_config(url.as_str(), Some(config), false),
             )
@@ -1197,7 +1204,10 @@ impl WebSocketSignalingClient {
                 if delay > std::time::Duration::ZERO {
                     tracing::info!("Retry signaling connect after {delay:?} (attempt {attempt})");
                     tokio::select! {
-                        _ = tokio::time::sleep(delay) => {}
+                        _ = crate::timer::sleep(
+                            crate::timer::ids::SIGNALING_RECONNECT_BACKOFF,
+                            delay,
+                        ) => {}
                         _ = self.reconnect_notify.notified() => {
                             tracing::debug!("Explicit reconnect request interrupted signaling connect backoff");
                         }
@@ -1265,8 +1275,12 @@ impl WebSocketSignalingClient {
             return Err(e);
         }
 
-        let result =
-            tokio::time::timeout(std::time::Duration::from_secs(RESPONSE_TIMEOUT_SECS), rx).await;
+        let result = crate::timer::timeout(
+            crate::timer::ids::SIGNALING_REQUEST_RESPONSE,
+            std::time::Duration::from_secs(RESPONSE_TIMEOUT_SECS),
+            rx,
+        )
+        .await;
         // Clean up waiter on timeout
         if result.is_err() {
             self.pending_replies.lock().await.remove(&reply_for);
@@ -1432,7 +1446,11 @@ impl WebSocketSignalingClient {
 
         let handle = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(PING_INTERVAL_SECS)).await;
+                crate::timer::sleep(
+                    crate::timer::ids::SIGNALING_PING_SCHEDULE,
+                    std::time::Duration::from_secs(PING_INTERVAL_SECS),
+                )
+                .await;
 
                 if !connected.load(Ordering::Acquire) {
                     break;
@@ -1443,7 +1461,8 @@ impl WebSocketSignalingClient {
                 {
                     let mut sink_guard = sink.lock().await;
                     if let Some(sink) = sink_guard.as_mut() {
-                        match tokio::time::timeout(
+                        match crate::timer::timeout(
+                            crate::timer::ids::SIGNALING_SEND,
                             std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
                             sink.send(tokio_tungstenite::tungstenite::Message::Ping(
                                 Vec::new().into(),
@@ -1538,7 +1557,8 @@ impl WebSocketSignalingClient {
         // A ping or receiver task can be inside a socket operation while holding
         // one of those locks; aborting first keeps disconnect from waiting on
         // the task it is about to shut down.
-        let ping_handle = match tokio::time::timeout(
+        let ping_handle = match crate::timer::timeout(
+            crate::timer::ids::SIGNALING_DISCONNECT_LOCK,
             std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
             self.ping_task.lock(),
         )
@@ -1554,7 +1574,8 @@ impl WebSocketSignalingClient {
             handle.abort();
         }
 
-        let receiver_handle = match tokio::time::timeout(
+        let receiver_handle = match crate::timer::timeout(
+            crate::timer::ids::SIGNALING_DISCONNECT_LOCK,
             std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
             self.receiver_task.lock(),
         )
@@ -1575,7 +1596,8 @@ impl WebSocketSignalingClient {
         // Fetch and close the sink without holding the mutex during the close
         // await. The lock itself is bounded because a stalled send can hold it
         // on broken mobile network transitions.
-        let sink = match tokio::time::timeout(
+        let sink = match crate::timer::timeout(
+            crate::timer::ids::SIGNALING_DISCONNECT_LOCK,
             std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
             self.ws_sink.lock(),
         )
@@ -1591,7 +1613,8 @@ impl WebSocketSignalingClient {
         };
 
         if let Some(mut sink) = sink {
-            match tokio::time::timeout(
+            match crate::timer::timeout(
+                crate::timer::ids::SIGNALING_DISCONNECT_CLOSE,
                 std::time::Duration::from_secs(DISCONNECT_CLOSE_TIMEOUT_SECS),
                 sink.close(),
             )
@@ -1609,7 +1632,8 @@ impl WebSocketSignalingClient {
             }
         }
 
-        match tokio::time::timeout(
+        match crate::timer::timeout(
+            crate::timer::ids::SIGNALING_DISCONNECT_LOCK,
             std::time::Duration::from_secs(DISCONNECT_LOCK_TIMEOUT_SECS),
             self.ws_stream.lock(),
         )
@@ -1884,7 +1908,10 @@ impl WebSocketSignalingClient {
                         ));
                     }
                 }
-                _ = tokio::time::sleep_until(deadline) => {
+                _ = crate::timer::sleep_until(
+                    crate::timer::ids::SIGNALING_CONNECTED_WAIT,
+                    deadline,
+                ) => {
                     // Final check before giving up
                     if self.connected.load(Ordering::Acquire) {
                         tracing::debug!("Connection succeeded just before timeout");
@@ -2004,29 +2031,32 @@ impl SignalingClient for WebSocketSignalingClient {
             std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
         );
         let ping_payload = payload.clone();
-        let send_result = tokio::time::timeout(send_timeout, async {
-            let mut sink_guard = self.ws_sink.lock().await;
-            match sink_guard.as_mut() {
-                Some(sink) => sink
-                    .send(tokio_tungstenite::tungstenite::Message::Ping(
-                        ping_payload.into(),
-                    ))
-                    .await
-                    .map_err(|e| {
-                        NetworkError::ConnectionError(format!("Signaling probe ping failed: {e}"))
-                    }),
-                None => Err(NetworkError::ConnectionError(
-                    "Signaling probe failed: WebSocket sink is not available".to_string(),
-                )),
-            }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            Err(NetworkError::TimeoutError(format!(
-                "Timed out sending signaling probe ping after {}ms",
-                send_timeout.as_millis()
-            )))
-        });
+        let send_result =
+            crate::timer::timeout(crate::timer::ids::SIGNALING_SEND, send_timeout, async {
+                let mut sink_guard = self.ws_sink.lock().await;
+                match sink_guard.as_mut() {
+                    Some(sink) => sink
+                        .send(tokio_tungstenite::tungstenite::Message::Ping(
+                            ping_payload.into(),
+                        ))
+                        .await
+                        .map_err(|e| {
+                            NetworkError::ConnectionError(format!(
+                                "Signaling probe ping failed: {e}"
+                            ))
+                        }),
+                    None => Err(NetworkError::ConnectionError(
+                        "Signaling probe failed: WebSocket sink is not available".to_string(),
+                    )),
+                }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(NetworkError::TimeoutError(format!(
+                    "Timed out sending signaling probe ping after {}ms",
+                    send_timeout.as_millis()
+                )))
+            });
 
         if let Err(e) = send_result {
             self.pending_pongs.lock().await.remove(&payload);
@@ -2043,7 +2073,7 @@ impl SignalingClient for WebSocketSignalingClient {
             return Err(e);
         }
 
-        match tokio::time::timeout(timeout, rx).await {
+        match crate::timer::timeout(crate::timer::ids::SIGNALING_PROBE, timeout, rx).await {
             Ok(Ok(())) => {
                 self.last_pong.store(current_unix_secs(), Ordering::Release);
                 Ok(())
@@ -2304,7 +2334,8 @@ impl SignalingClient for WebSocketSignalingClient {
         let mut buf = Vec::new();
         envelope.encode(&mut buf)?;
         let msg = tokio_tungstenite::tungstenite::Message::Binary(buf.into());
-        let send_result = tokio::time::timeout(
+        let send_result = crate::timer::timeout(
+            crate::timer::ids::SIGNALING_SEND,
             std::time::Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS),
             async {
                 let mut sink_guard = self.ws_sink.lock().await;

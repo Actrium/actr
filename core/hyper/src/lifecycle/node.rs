@@ -1260,7 +1260,13 @@ impl Inner {
             }
         };
 
-        match tokio::time::timeout(timeout, wait_for_result).await {
+        match crate::timer::timeout(
+            crate::timer::ids::NODE_RPC_RESPONSE,
+            timeout,
+            wait_for_result,
+        )
+        .await
+        {
             Ok(result) => result,
             Err(_) => Err(ActrError::Unavailable(format!(
                 "duplicate request in-flight timed out after {}ms",
@@ -2526,7 +2532,8 @@ impl Inner {
                     }
 
                     // 2. Then send UnregisterRequest with a timeout (e.g. 5 seconds)
-                    let result = tokio::time::timeout(
+                    let result = crate::timer::timeout(
+                        crate::timer::ids::NODE_UNREGISTER,
                         Duration::from_secs(5),
                         client.send_unregister_request(
                             actor_id_for_unreg.clone(),
@@ -2969,7 +2976,10 @@ impl Inner {
                 let shutdown_for_poll = shutdown.clone();
                 let fire_for_poll = fire_if_rising.clone();
                 let watchdog_handle = tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                    let mut ticker = crate::timer::interval(
+                        crate::timer::ids::MAILBOX_DEPTH_FALLBACK,
+                        Duration::from_secs(1),
+                    );
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
                         tokio::select! {
@@ -3063,7 +3073,11 @@ impl Inner {
                                                 // custom mailbox backends that
                                                 // do not implement push
                                                 // notifications.
-                                                tokio::time::sleep(Duration::from_millis(10)).await;
+                                                crate::timer::sleep(
+                                                    crate::timer::ids::MAILBOX_EMPTY_FALLBACK,
+                                                    Duration::from_millis(10),
+                                                )
+                                                .await;
                                             }
                                         };
                                         tokio::pin!(idle_wake);
@@ -3272,7 +3286,10 @@ impl Inner {
                                     tokio::select! {
                                         biased;
                                         _ = shutdown.cancelled() => break,
-                                        _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                                        _ = crate::timer::sleep(
+                                            crate::timer::ids::MAILBOX_ERROR_BACKOFF,
+                                            Duration::from_secs(1),
+                                        ) => {}
                                     }
                                 }
                             }
