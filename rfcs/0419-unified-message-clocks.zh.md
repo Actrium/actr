@@ -2,7 +2,7 @@
 
 - Status: Proposed
 - Date: 2026-07-21
-- RFC PR:
+- RFC PR: [#420](https://github.com/Actrium/actr/pull/420)
 - Tracking issue: [#419](https://github.com/Actrium/actr/issues/419)
 - Superseded by:
 - Related: [Time, Clocks, and the Ordering of Events in a Distributed System](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/12/Time-Clocks-and-the-Ordering-of-Events-in-a-Distributed-System.pdf), [Logical Physical Clocks and Consistent Snapshots in Globally Distributed Databases](https://cse.buffalo.edu/tech-reports/2014-04.pdf), [RFC 5905: Network Time Protocol Version 4](https://www.rfc-editor.org/rfc/rfc5905)
