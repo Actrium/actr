@@ -6,9 +6,14 @@ Minimal actr workload authored in Go, compiled to `wasm32-wasip2`
 Component Model via **TinyGo** + **wit-bindgen-go**, packaged as a
 signed `.actr`.
 
-This example proves that the actr workload contract (`actr-workload-guest`
-world in `core/framework/wit/actr-workload.wit`) can host non-Rust guests
-end-to-end.
+> [!WARNING]
+> This example still emits the retired `actr:workload@0.1.0` world. The current
+> runtime accepts only the async `@0.2.0` world and rejects this component with
+> a rebuild diagnostic. The source remains as a Go binding/toolchain reference
+> until `wit-bindgen-go` supports the async workload contract.
+
+This example documents the legacy `actr-workload-guest` world in
+`core/framework/wit/actr-workload.wit` for non-Rust guests.
 
 ## What it does
 

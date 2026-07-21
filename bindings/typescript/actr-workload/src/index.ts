@@ -115,7 +115,9 @@ type WitActrId = Omit<ActrId, 'serialNumber'> & {
 };
 
 type WitDest =
-  { tag: 'host' } | { tag: 'workload' } | { tag: 'peer'; val: WitActrId };
+  | { tag: 'host' }
+  | { tag: 'workload' }
+  | { tag: 'peer'; val: WitActrId };
 
 type WitPayloadType = { tag: PayloadType };
 
@@ -148,7 +150,8 @@ export type StreamCallback = (
 // into the export, but callers may ignore it. Host-import wrappers below read
 // the `ctx-token` from an explicitly-passed `ctx` (the concurrency-safe path,
 // since StarlingMonkey has no `AsyncLocalStorage`), with an optional
-// `AsyncLocalStorage` store as a Node-side convenience.
+// `AsyncLocalStorage` store as a Node-side convenience. A host import without
+// either source fails closed instead of guessing a token.
 export interface Workload {
   dispatch(
     envelope: RpcEnvelope,
@@ -177,7 +180,8 @@ const streamCallbacks = new Map<string, StreamCallback>();
 // then thread `ctx` explicitly. Top-level `await` keeps this lazy and avoids a
 // static `node:` import that would break componentization.
 let invocationStorage:
-  import('node:async_hooks').AsyncLocalStorage<InvocationCtx> | undefined;
+  | import('node:async_hooks').AsyncLocalStorage<InvocationCtx>
+  | undefined;
 try {
   const { AsyncLocalStorage } = await import('node:async_hooks');
   invocationStorage = new AsyncLocalStorage<InvocationCtx>();
@@ -219,10 +223,9 @@ function resolveCtxToken(ctx?: InvocationCtx): bigint {
   if (stored?.ctxToken !== undefined) {
     return stored.ctxToken;
   }
-  // No active invocation (e.g. host-import called outside a dispatch in Node
-  // tests). Use `0n` rather than trapping so the wrappers remain callable in
-  // non-component contexts; a real component always threads a non-zero token.
-  return 0n;
+  throw new Error(
+    'ACTR host import requires an InvocationCtx; pass the ctx received by the workload export',
+  );
 }
 
 export function toUint8Array(value: PayloadBytes): Uint8Array {
@@ -281,10 +284,11 @@ function fromWitActrId(id: WitActrId): ActrId {
 // ── Host-import wrappers ──────────────────────────────────────────────────
 //
 // Each wrapper resolves the current `ctx-token` (explicit `ctx` arg first,
-// then the `AsyncLocalStorage` store, then `0n`) and forwards to the V2 host
-// import. V2 imports surface WIT `result<T, E>` as a resolved value on success
-// and a thrown JS `Error` on the `err` arm, so the wrappers simply await and
-// let errors propagate.
+// then the `AsyncLocalStorage` store) and forwards to the V2 host import. It
+// fails closed when neither source exists so a missing context can never route
+// through another invocation's token. V2 imports surface WIT `result<T, E>`
+// as a resolved value on success and a thrown JS `Error` on the `err` arm, so
+// the wrappers simply await and let errors propagate.
 
 export async function call(
   target: Dest,

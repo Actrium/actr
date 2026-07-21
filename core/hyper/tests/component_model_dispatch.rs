@@ -5,14 +5,12 @@
 //! actr host surface. Each test drives `WasmHost::compile` →
 //! `instantiate` → `call_on_start` → `handle` against the rebuilt
 //! `wasm_actor_fixture` Component, mirroring the shape of
-//! `core/hyper/src/wasm/host.rs::WasmWorkload::handle`.
+//! `core/hyper/src/wasm/host_v2.rs::WasmWorkloadV2::handle`.
 //!
 //! Skipped from the spike:
-//! - **Test 3** (concurrent dispatches on the same instance) — wasmtime's
-//!   `Store<T>` is not `Sync` and `call_dispatch` takes `&mut Store<T>`,
-//!   so the Rust borrow checker prevents writing that test in safe code.
-//!   The spike confirmed the guarantee at compile time; there is no
-//!   runtime behaviour left to verify.
+//! - **Test 3** (concurrent dispatches on the same instance) — superseded by
+//!   `wasm_open_concurrency`, which exercises the V2 `run_concurrent` resident
+//!   region and verifies real same-instance interleaving.
 //! - **Test 5** (guest-side async ergonomics) — compile-time covered by
 //!   the guest framework tests; not a runtime concern.
 //! - **Test 6** (100-dispatch throughput) — superseded by the Commit 6

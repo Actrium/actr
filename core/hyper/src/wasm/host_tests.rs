@@ -59,6 +59,23 @@ fn probe_world_rejects_component_without_workload_world() {
 }
 
 #[test]
+fn probe_world_rejects_retired_v1_component_with_rebuild_hint() {
+    let src = r#"
+        (component
+          (instance $v1)
+          (export "actr:workload/workload@0.1.0" (instance $v1))
+        )
+    "#;
+    let err = probe_wat(src).unwrap_err();
+    assert!(matches!(err, WasmError::LoadFailed(_)));
+    assert!(
+        err.to_string()
+            .contains("rebuild the package with the current SDK"),
+        "unexpected message: {err}"
+    );
+}
+
+#[test]
 fn probe_world_rejects_component_exporting_both_worlds() {
     // `(true, true)` arm: a component that exports both the 0.1.0 and 0.2.0
     // worlds is ambiguous and must be a clean `LoadFailed`, never a panic.

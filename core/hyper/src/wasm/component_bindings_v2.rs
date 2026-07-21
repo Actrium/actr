@@ -1,10 +1,9 @@
 //! Component Model bindings for the `actr:workload@0.2.0` async WIT world.
 //!
-//! This is the run_concurrent-ready sibling of
-//! [`super::component_bindings`] (the 0.1.0, synchronous world). The 0.2.0
-//! world declares every host import and workload export as a real WIT
-//! `async func`, so wasmtime 46 emits a fundamentally different binding
-//! shape here:
+//! These are the sole runtime bindings after retirement of the 0.1.0
+//! synchronous world. The 0.2.0 world declares every host import and workload
+//! export as a real WIT `async func`, so wasmtime 46 emits the following
+//! binding shape:
 //!
 //! - **Imports** become an *Accessor-based* host trait: the methods are
 //!   `async` **associated functions** taking `&Accessor<HostState, Self>`
@@ -17,17 +16,13 @@
 //!
 //! # No `async` flag
 //!
-//! Unlike the 0.1.0 bindings (`imports: { default: async | trappable }`),
-//! the async shape here is driven by the WIT `async func` declarations, not
-//! by a bindgen flag. wasmtime 46 detects the async world and generates the
-//! Accessor trait automatically. We keep `imports: { default: trappable }`
-//! so host implementations return `wasmtime::Result<Result<T, actr-error>>`
-//! — the outer `Result` is trap-level, the inner is the WIT variant return
-//! (the "double `?`" shape). This mirrors the proven Phase 0.75
+//! The async shape is driven by the WIT `async func` declarations, not by a
+//! bindgen flag. wasmtime 46 detects the async world and generates the
+//! Accessor trait automatically. We keep `imports: { default: trappable }` so
+//! host implementations return `wasmtime::Result<Result<T, actr-error>>` —
+//! the outer `Result` is trap-level, the inner is the WIT variant return (the
+//! "double `?`" shape). This mirrors the proven Phase 0.75
 //! `component-spike-runconcurrent` host.
-//!
-//! The 0.1.0 bindings in `component_bindings.rs` are untouched; the two
-//! worlds coexist and the load path probes which one a component implements.
 
 wasmtime::component::bindgen!({
     world: "actr-workload-guest-v2",

@@ -86,15 +86,18 @@ jobs:
           node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit-v2/actr-workload.wit
           npm pack --dry-run
 
-      # NOTE: `npm run componentize` is blocked upstream — jco 1.25.2
-      # guest-types emits the V2 async types, but `jco componentize` panics at
-      # the async-host-import bindgen step (spidermonkey-embedding-splicer "not
-      # yet implemented"). tsc + vitest are green. Drop continue-on-error once a
-      # jco release supports async-func host imports.
-      - name: Build TypeScript EchoService workload
+      - name: Build TypeScript EchoService sources
         working-directory: examples/typescript/echo-workload
-        continue-on-error: true
         run: |
           npm ci
           npm run build
-          npm run componentize
+
+      # NOTE: `npm run componentize` is blocked upstream — jco 1.25.2
+      # guest-types emits the V2 async types, but `jco componentize` panics at
+      # the async-host-import bindgen step (spidermonkey-embedding-splicer "not
+      # yet implemented"). Keep install/type-check coverage required and drop
+      # continue-on-error once a jco release supports async-func host imports.
+      - name: Componentize TypeScript EchoService workload
+        working-directory: examples/typescript/echo-workload
+        continue-on-error: true
+        run: npm run componentize

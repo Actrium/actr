@@ -10,7 +10,7 @@ is required.
 
 ## What It Does
 
-- Exports `acme:EchoService:0.1.0`.
+- Exports `acme:EchoService:0.2.0`.
 - Handles `echo.EchoService.Echo`.
 - Exercises DataChunk authoring by handling `PrepareStream` / `ReleaseStream`
   and using `registerStream`, `sendDataChunk`, and `unregisterStream`.
@@ -30,7 +30,7 @@ npm run componentize
 The output component is:
 
 ```text
-dist/echo-typescript-0.1.0-wasm32-wasip2.wasm
+dist/echo-typescript-0.2.0-wasm32-wasip2.wasm
 ```
 
 ## Regenerate Protobuf TypeScript

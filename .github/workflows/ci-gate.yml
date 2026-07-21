@@ -345,17 +345,19 @@ jobs:
           npm test
           node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit-v2/actr-workload.wit
           npm pack --dry-run
-      # jco 1.25.2 can emit V2 async guest types but cannot yet componentize
-      # async host imports (spidermonkey-embedding-splicer is unimplemented).
-      # Keep the compile/test coverage above required and allow only this
-      # upstream-blocked componentization smoke test to fail.
-      - name: Build TypeScript EchoService workload
+      - name: Build TypeScript EchoService sources
         working-directory: examples/typescript/echo-workload
-        continue-on-error: true
         run: |
           npm ci
           npm run build
-          npm run componentize
+      # jco 1.25.2 can emit V2 async guest types but cannot yet componentize
+      # async host imports (spidermonkey-embedding-splicer is unimplemented).
+      # Keep install/type-check coverage required and allow only this
+      # upstream-blocked componentization smoke test to fail.
+      - name: Componentize TypeScript EchoService workload
+        working-directory: examples/typescript/echo-workload
+        continue-on-error: true
+        run: npm run componentize
 
   python_codegen:
     name: Python Codegen

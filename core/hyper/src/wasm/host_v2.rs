@@ -252,8 +252,9 @@ impl HostWithStore<HostState> for HostState {
 // ─────────────────────────────────────────────────────────────────────────────
 // WIT (0.2.0) ↔ actr_protocol / actr_framework translation
 //
-// The 0.2.0 bindgen emits its own distinct type namespace, so these mirror
-// the 0.1.0 helpers in `host.rs` but target the v2 `wit2` structs.
+// The 0.2.0 bindgen emits its own type namespace. These helpers translate
+// that namespace to the protocol/framework types and the native host-operation
+// payloads still shared with DynClib.
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn wit_realm_to_proto(r: &WitRealm) -> Realm {
@@ -487,7 +488,7 @@ async fn instantiate_parts_v2(
     })?;
 
     let mut store = Store::new(engine, HostState::new(limits));
-    // issue #346: per-store limiter + fuel/epoch seed, same as the V1 path.
+    // issue #346: install the per-store limiter and initial fuel/epoch budget.
     store.limiter(|s| &mut s.limits);
     store
         .fuel_async_yield_interval(limits.fuel_async_yield_interval)
@@ -576,7 +577,8 @@ impl WasmWorkloadV2 {
         })
     }
 
-    /// Legacy init entry — mirrors the V1 path so the loader stays uniform.
+    /// Compatibility init entry for the loader's shared `InitPayloadV1`.
+    /// Component-model lifecycle initialization itself is handled by exports.
     pub(crate) fn init(&mut self, init_payload: &guest_abi::InitPayloadV1) -> WasmResult<()> {
         tracing::debug!(
             actr_type = %init_payload.actr_type,

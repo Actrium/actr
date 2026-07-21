@@ -65,13 +65,14 @@ describe('@actrium/actr-workload', () => {
     const { host, runtime } = await loadRuntime();
     const chunk = testChunk();
     const sender = testActorId();
+    const ctx = testInvocationCtx(11n);
     const received: Array<{ chunk: DataChunk; sender: ActrId }> = [];
     const callback: StreamCallback = async (incoming, from) => {
       await Promise.resolve();
       received.push({ chunk: incoming, sender: from });
     };
 
-    await runtime.registerStream('stream-1', callback);
+    await runtime.registerStream('stream-1', callback, ctx);
     await runtime.__dispatchDataChunk(chunk, sender);
 
     expect(host.hostCalls.registerStream).toEqual(['stream-1']);
@@ -90,11 +91,22 @@ describe('@actrium/actr-workload', () => {
     expect(host.hostCalls.ctxTokens).toEqual([37n]);
   });
 
-  it('unregisters streams and rejects later dispatches', async () => {
+  it('rejects host imports when no invocation context is active', async () => {
     const { host, runtime } = await loadRuntime();
 
-    await runtime.registerStream('stream-1', () => undefined);
-    await runtime.unregisterStream('stream-1');
+    await expect(
+      runtime.registerStream('missing-context', () => undefined),
+    ).rejects.toThrow('requires an InvocationCtx');
+    expect(host.hostCalls.ctxTokens).toEqual([]);
+    expect(host.hostCalls.registerStream).toEqual([]);
+  });
+
+  it('unregisters streams and rejects later dispatches', async () => {
+    const { host, runtime } = await loadRuntime();
+    const ctx = testInvocationCtx(12n);
+
+    await runtime.registerStream('stream-1', () => undefined, ctx);
+    await runtime.unregisterStream('stream-1', ctx);
 
     expect(host.hostCalls.unregisterStream).toEqual(['stream-1']);
     await expect(
@@ -105,6 +117,7 @@ describe('@actrium/actr-workload', () => {
   it('sends data chunks using WIT-shaped peer destinations', async () => {
     const { host, runtime } = await loadRuntime();
     const peer = testActorId(9);
+    const ctx = testInvocationCtx(13n);
 
     await runtime.sendDataChunk(
       { peer },
@@ -113,6 +126,7 @@ describe('@actrium/actr-workload', () => {
         timestampMs: 5678,
       }),
       runtime.PayloadType.StreamReliable,
+      ctx,
     );
 
     expect(host.hostCalls.sendDataChunk).toEqual([
@@ -138,16 +152,19 @@ describe('@actrium/actr-workload', () => {
 
   it('sends data chunks using host and workload destinations', async () => {
     const { host, runtime } = await loadRuntime();
+    const ctx = testInvocationCtx(14n);
 
     await runtime.sendDataChunk(
       'host',
       testChunk({ streamId: 'host-stream' }),
       runtime.PayloadType.StreamLatencyFirst,
+      ctx,
     );
     await runtime.sendDataChunk(
       'workload',
       testChunk({ streamId: 'workload-stream' }),
       runtime.PayloadType.StreamReliable,
+      ctx,
     );
 
     expect(host.hostCalls.sendDataChunk.map((call) => call.target)).toEqual([
@@ -162,6 +179,7 @@ describe('@actrium/actr-workload', () => {
   it('normalizes payload, metadata, sequence, and optional timestamp fields', async () => {
     const { host, runtime } = await loadRuntime();
     const buffer = new Uint8Array([9, 8, 7]).buffer;
+    const ctx = testInvocationCtx(15n);
 
     await runtime.sendDataChunk(
       { peer: testActorId(11n) },
@@ -171,6 +189,7 @@ describe('@actrium/actr-workload', () => {
         payload: buffer,
       },
       runtime.PayloadType.StreamLatencyFirst,
+      ctx,
     );
     await runtime.sendDataChunk(
       { peer: testActorId(12n) },
@@ -180,6 +199,7 @@ describe('@actrium/actr-workload', () => {
         payload: [6, 5, 4],
       },
       runtime.PayloadType.StreamReliable,
+      ctx,
     );
 
     expect(host.hostCalls.sendDataChunk[0]?.chunk).toEqual({

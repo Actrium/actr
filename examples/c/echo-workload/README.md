@@ -6,10 +6,16 @@ An actr workload authored in C, compiled to a wasm32-wasip2 Component that
 implements the [`actr-workload-guest`](../../../core/framework/wit/actr-workload.wit)
 world.
 
-This example proves the non-Rust authoring path for the actr Component Model
-contract: you can implement the sixteen lifecycle/transport/mailbox hooks plus
-the `dispatch` RPC entry directly in C, using wit-bindgen's canonical-ABI
-bindings.
+> [!WARNING]
+> This example still emits the retired `actr:workload@0.1.0` world. The current
+> runtime accepts only the async `@0.2.0` world and rejects this component with
+> a rebuild diagnostic. The source remains as a C binding/toolchain reference
+> until `wit-bindgen c` supports the async workload contract.
+
+This example documents the legacy non-Rust authoring path for the actr
+Component Model contract: it implements the sixteen lifecycle/transport/mailbox
+hooks plus the `dispatch` RPC entry directly in C, using wit-bindgen's
+canonical-ABI bindings.
 
 ## Semantics
 

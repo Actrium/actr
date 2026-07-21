@@ -125,8 +125,10 @@ pub(crate) struct HostState {
     /// to the callback invocation's live token/HostAbiFn.
     stream_context_tokens: HashMap<String, u64>,
     stream_token_aliases: HashMap<u64, u64>,
-    /// Monotonic token allocator. Reset to zero whenever the map is cleared
-    /// on a trap-poison so a rebuilt instance starts from a clean sheet.
+    /// Monotonic token allocator. Token zero is reserved as invalid so a guest
+    /// that omits its invocation context can never alias the first real call.
+    /// Reset to one whenever the map is cleared on a trap-poison so a rebuilt
+    /// instance starts from a clean sheet.
     next_token: u64,
     /// issue #346: per-store resource limits (memory/table/instance caps).
     /// Installed via `Store::limiter` so `memory.grow`/`table.grow` over the
@@ -161,7 +163,7 @@ impl HostState {
             invocations: HashMap::new(),
             stream_context_tokens: HashMap::new(),
             stream_token_aliases: HashMap::new(),
-            next_token: 0,
+            next_token: 1,
             limits: StoreResourceLimiter::new(limits),
         }
     }
@@ -173,6 +175,9 @@ impl HostState {
     pub(crate) fn alloc_invocation(&mut self, ctx: InvocationContext, host_abi: HostAbiFn) -> u64 {
         let token = self.next_token;
         self.next_token = self.next_token.wrapping_add(1);
+        if self.next_token == 0 {
+            self.next_token = 1;
+        }
         self.invocations
             .insert(token, InvocationEntry { ctx, host_abi });
         token
@@ -253,7 +258,7 @@ impl HostState {
         self.invocations.clear();
         self.stream_context_tokens.clear();
         self.stream_token_aliases.clear();
-        self.next_token = 0;
+        self.next_token = 1;
     }
 }
 
@@ -322,9 +327,9 @@ impl WasmHost {
                 return WasmError::LoadFailed(format!(
                     "this .actr package was built by an old SDK (wit-bindgen \
                      <= 0.57 async-lift ABI), which wasmtime 46 rejects per \
-                     the Component Model spec. Rebuild it with the current SDK \
-                     (synchronous-lift packages run on both new and old hosts). \
-                     wasmtime reported: {raw}"
+                     the Component Model spec. Rebuild it with the current SDK, \
+                     which emits the supported actr:workload@0.2.0 async-world \
+                     ABI. wasmtime reported: {raw}"
                 ));
             }
             WasmError::LoadFailed(format!(

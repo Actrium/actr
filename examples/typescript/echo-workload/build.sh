@@ -11,7 +11,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTR_ROOT="${HERE}/../../.."
-OUT_WASM="${HERE}/dist/echo-typescript-0.1.0-wasm32-wasip2.wasm"
+OUT_WASM="${HERE}/dist/echo-typescript-0.2.0-wasm32-wasip2.wasm"
 
 echo "[0/3] building local @actrium/actr-workload package ..."
 (

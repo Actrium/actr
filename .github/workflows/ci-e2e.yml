@@ -131,6 +131,10 @@ jobs:
 
   typescript-e2e:
     name: TypeScript E2E
+    # Blocked until jco can componentize the V2 async host imports. The required
+    # TypeScript source build remains covered by ci-typescript/ci-gate; re-enable
+    # this runtime E2E when the non-blocking componentization smoke test is green.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -385,6 +389,10 @@ jobs:
 
   swift-ts-workload-e2e:
     name: Swift TS Workload E2E
+    # This scenario packages the same currently-unbuildable V2 TypeScript WASM
+    # workload as typescript-e2e. Keep it disabled at the job boundary so the
+    # scheduled workflow does not consume a macOS runner before failing.
+    if: ${{ false }}
     runs-on: macos-latest
     timeout-minutes: 240
     permissions:
