@@ -4,7 +4,7 @@ import SwiftProtobufPluginLibrary
 
 @main
 struct ActrFrameworkGenerator {
-  static let version = "0.5.3"
+  static let version = "0.5.4"
 
   struct RemoteServiceInfo {
     let serviceName: String
