@@ -388,7 +388,8 @@ fn test_local_service_only() {
 
     let workload_content = fs::read_to_string(gen_dir.join("greeter_workload.ts")).unwrap();
     assert!(
-        workload_content.contains("import type { RpcEnvelope } from '@actrium/actr-workload';")
+        workload_content
+            .contains("import type { InvocationCtx, RpcEnvelope } from '@actrium/actr-workload';")
     );
     assert!(
         workload_content.contains("import { fromBinary, toBinary } from '@bufbuild/protobuf';")
@@ -398,10 +399,9 @@ fn test_local_service_only() {
             .contains("export const GREETER_SAY_HELLO_ROUTE = \"greeter.Greeter.SayHello\";")
     );
     assert!(workload_content.contains("export interface GreeterHandler"));
-    assert!(
-        workload_content
-            .contains("sayHello(req: HelloRequest): HelloResponse | Promise<HelloResponse>;")
-    );
+    assert!(workload_content.contains(
+        "sayHello(req: HelloRequest, ctx?: InvocationCtx): HelloResponse | Promise<HelloResponse>;"
+    ));
     assert!(workload_content.contains("export class GreeterDispatcher"));
     assert!(workload_content.contains("if (envelope.method === GREETER_SAY_HELLO_ROUTE)"));
     assert!(
@@ -429,7 +429,7 @@ fn test_local_service_only() {
             .contains("const dispatcher = new GreeterDispatcher(new GreeterHandlerImpl());")
     );
     assert!(actr_service_content.contains("export default defineWorkload({"));
-    assert!(actr_service_content.contains("return dispatcher.dispatch(envelope);"));
+    assert!(actr_service_content.contains("return dispatcher.dispatch(envelope, ctx);"));
     assert!(!actr_service_content.contains("Local RPC methods:', 1"));
     assert!(actr_service_content.contains("Remote RPC methods:', 0"));
     assert!(!actr_service_content.contains("Received workload RPC:', envelope.method"));
@@ -526,7 +526,7 @@ fn test_local_and_remote_services() {
         actr_service_content
             .contains("import { GreeterDispatcher } from './generated/greeter_workload.js';")
     );
-    assert!(actr_service_content.contains("return dispatcher.dispatch(envelope);"));
+    assert!(actr_service_content.contains("return dispatcher.dispatch(envelope, ctx);"));
     assert!(!actr_service_content.contains("Local RPC methods:', 1"));
     assert!(
         !actr_service_content.contains("// - Greeter.SayHello (HelloRequest -> HelloResponse)")
