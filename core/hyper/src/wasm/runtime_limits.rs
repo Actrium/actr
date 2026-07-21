@@ -168,14 +168,46 @@ static INVOCATION_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 static RESOURCE_DENIALS: AtomicU64 = AtomicU64::new(0);
 static COMPILE_FAILURES: AtomicU64 = AtomicU64::new(0);
 static INSTANTIATE_FAILURES: AtomicU64 = AtomicU64::new(0);
-static QUOTA_RELEASED: OnceLock<tokio::sync::Notify> = OnceLock::new();
-
-fn quota_released() -> &'static tokio::sync::Notify {
-    QUOTA_RELEASED.get_or_init(tokio::sync::Notify::new)
+#[derive(Debug, Default)]
+struct QuotaReleaseSignal {
+    generation: AtomicU64,
+    wake: tokio::sync::Notify,
 }
 
-pub(crate) async fn wait_for_quota_release() {
-    quota_released().notified().await;
+impl QuotaReleaseSignal {
+    fn snapshot(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    fn release(&self) {
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.wake.notify_waiters();
+    }
+
+    async fn wait_after(&self, observed_generation: u64) {
+        loop {
+            let mut wake = Box::pin(self.wake.notified());
+            wake.as_mut().enable();
+            if self.snapshot() != observed_generation {
+                return;
+            }
+            wake.await;
+        }
+    }
+}
+
+static QUOTA_RELEASED: OnceLock<QuotaReleaseSignal> = OnceLock::new();
+
+fn quota_released() -> &'static QuotaReleaseSignal {
+    QUOTA_RELEASED.get_or_init(QuotaReleaseSignal::default)
+}
+
+pub(crate) fn quota_release_snapshot() -> u64 {
+    quota_released().snapshot()
+}
+
+pub(crate) async fn wait_for_quota_release_after(observed_generation: u64) {
+    quota_released().wait_after(observed_generation).await;
 }
 
 /// Process-wide WASM resource counters suitable for metrics exporters.
@@ -236,7 +268,7 @@ pub(crate) struct QuotaPermit {
 impl Drop for QuotaPermit {
     fn drop(&mut self) {
         counter(self.kind).fetch_sub(self.amount, Ordering::AcqRel);
-        quota_released().notify_one();
+        quota_released().release();
     }
 }
 
@@ -403,6 +435,31 @@ impl Drop for EpochTicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn inv21_quota_release_generation_survives_collapsed_notifications() {
+        let signal = Arc::new(QuotaReleaseSignal::default());
+        let observed_generation = signal.snapshot();
+
+        // No waiter is registered yet, so bare Notify notifications would be
+        // collapsed or lost. The monotonically increasing generation makes
+        // every later waiter observe that quota may now be available.
+        signal.release();
+        signal.release();
+
+        let waiters = (0..8).map(|_| {
+            let signal = Arc::clone(&signal);
+            tokio::spawn(async move {
+                signal.wait_after(observed_generation).await;
+            })
+        });
+        futures_util::future::join_all(waiters)
+            .await
+            .into_iter()
+            .for_each(|result| result.expect("quota waiter should not panic"));
+
+        assert_eq!(signal.snapshot(), observed_generation.wrapping_add(2));
+    }
 
     fn non_trapping_limits(memory: usize, tables: u32) -> WasmRuntimeLimits {
         WasmRuntimeLimits {

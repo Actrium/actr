@@ -1370,7 +1370,7 @@ async fn test_cancelled_connect_future_releases_single_flight_immediately() {
 }
 
 #[tokio::test]
-async fn test_reconnect_manager_lifetime_uses_drop_signal_not_periodic_polling() {
+async fn inv22_reconnect_manager_lifetime_uses_drop_signal_not_periodic_polling() {
     let client = make_ws_client(make_config());
     let shutdown = client.reconnect_manager_shutdown.clone();
 

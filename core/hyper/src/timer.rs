@@ -662,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn inventory_metadata_is_complete_and_unique() {
+    fn inv24_inventory_metadata_is_complete_and_unique() {
         let mut stable_ids = HashSet::new();
         let mut symbols = HashSet::new();
         for entry in ids::ALL {
@@ -697,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn production_timer_calls_and_inventory_do_not_drift() {
+    fn inv24_production_timer_calls_and_inventory_do_not_drift() {
         let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let facade = source_root.join("timer.rs");
         let mut files = Vec::new();

@@ -42,6 +42,36 @@ use tracing::Instrument as _;
 /// into a `FuturesUnordered` and keep dequeuing.
 pub(crate) type IncomingContinuation = Pin<Box<dyn Future<Output = ActorResult<Bytes>> + Send>>;
 
+type MailboxTail = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MailboxIdleOutcome {
+    Shutdown,
+    Progress,
+}
+
+/// While durable storage is empty, keep polling the reply/ack tails that were
+/// already admitted. Waiting only for a future enqueue would leave completed
+/// tails parked indefinitely on an otherwise idle mailbox.
+async fn wait_for_mailbox_idle<F>(
+    shutdown: &CancellationToken,
+    inflight: &mut futures_util::stream::FuturesUnordered<MailboxTail>,
+    idle_wake: F,
+) -> MailboxIdleOutcome
+where
+    F: Future<Output = ()>,
+{
+    use futures_util::StreamExt as _;
+
+    tokio::pin!(idle_wake);
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => MailboxIdleOutcome::Shutdown,
+        Some(()) = inflight.next(), if !inflight.is_empty() => MailboxIdleOutcome::Progress,
+        _ = &mut idle_wake => MailboxIdleOutcome::Progress,
+    }
+}
+
 /// Type-erased startup future kept behind the crate-private node boundary.
 ///
 /// `Inner::start_inner` intentionally contains several large background-loop
@@ -3028,8 +3058,7 @@ impl Inner {
                 // loop.
                 let scheduler_on = node.dispatch_scheduler.is_some();
                 const MAILBOX_INFLIGHT_CAP: usize = 256;
-                let mut inflight: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>> =
-                    FuturesUnordered::new();
+                let mut inflight: FuturesUnordered<MailboxTail> = FuturesUnordered::new();
 
                 loop {
                     tokio::select! {
@@ -3080,16 +3109,15 @@ impl Inner {
                                                 .await;
                                             }
                                         };
-                                        tokio::pin!(idle_wake);
-                                        tokio::select! {
-                                            biased;
-                                            _ = shutdown.cancelled() => break,
-                                            // Empty durable storage does not
-                                            // imply that reply/ack tails are
-                                            // finished. Keep driving them while
-                                            // waiting for the next enqueue.
-                                            Some(()) = inflight.next(), if !inflight.is_empty() => {}
-                                            _ = &mut idle_wake => {}
+                                        if wait_for_mailbox_idle(
+                                            &shutdown,
+                                            &mut inflight,
+                                            idle_wake,
+                                        )
+                                        .await
+                                            == MailboxIdleOutcome::Shutdown
+                                        {
+                                            break;
                                         }
                                         continue;
                                     }

@@ -87,6 +87,14 @@ const WEBRTC_LATENCY_FIRST_INBOUND_QUEUE_DEPTH: usize = 64;
 const MAX_PENDING_ICE_CANDIDATES_PER_PEER: usize = 256;
 const MAX_KNOWN_REMOTE_ICE_GENERATIONS: usize = 8;
 
+fn arm_notification(
+    notify: &tokio::sync::Notify,
+) -> std::pin::Pin<Box<tokio::sync::futures::Notified<'_>>> {
+    let mut notification = Box::pin(notify.notified());
+    notification.as_mut().enable();
+    notification
+}
+
 tokio::task_local! {
     /// Identifies the exact close-all flight invoking a lifecycle hook so only
     /// re-entry into that same coordinator flight bypasses its own wait.
@@ -2818,14 +2826,17 @@ impl WebRtcCoordinator {
         ice_connected_timeout: Duration,
         data_channel_after_ice_timeout: Duration,
     ) -> bool {
-        // Quick check: if DataChannel is already open, return immediately
+        // Subscribe before the initial state observation. A DataChannel may
+        // open between two await points; installing the receiver first makes
+        // that transition visible either through the event or the state read.
+        let mut event_rx = event_broadcaster.subscribe();
+
+        // Quick check: if DataChannel is already open, return immediately.
         if webrtc_conn.has_open_data_channel().await {
             tracing::debug!("✅ DataChannel already open for peer {}", peer_id);
             return true;
         }
 
-        // Subscribe to events
-        let mut event_rx = event_broadcaster.subscribe();
         let target_peer = peer_id.clone();
         let mut ice_connected =
             Self::is_peer_session_connected(peer_id, expected_session_id, peers).await;
@@ -7397,6 +7408,12 @@ impl WebRtcCoordinator {
                 continue; // Skip this iteration, don't create offer
             }
 
+            // Arm the state-change listener before observing the current ICE
+            // state. `notify_waiters()` does not retain a permit when nobody
+            // is registered, so reversing this order can lose the exact
+            // Gathering -> Complete transition we are waiting for.
+            let mut gathering_changed = arm_notification(&ice_gathering_changed);
+
             // ========== Guard 2: Check ICE gathering state (with timeout detection) ==========
             let gathering_state = peer_connection.ice_gathering_state();
             if gathering_state == RTCIceGatheringState::Gathering {
@@ -7420,7 +7437,7 @@ impl WebRtcCoordinator {
                     gathering_duration
                 );
                 tokio::select! {
-                    _ = ice_gathering_changed.notified() => {}
+                    _ = &mut gathering_changed => {}
                     _ = restart_wake.notified() => {
                         tracing::info!(
                             "⚡ Backoff interrupted by wake notification (gathering guard), serial={}",

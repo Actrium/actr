@@ -1,5 +1,41 @@
 use super::*;
 use bytes::Bytes;
+use std::time::Duration;
+
+#[tokio::test]
+async fn inv17_data_channel_state_change_wakes_every_waiter() {
+    let state_changed = Arc::new(tokio::sync::Notify::new());
+    let mut waiters = Vec::new();
+
+    for _ in 0..8 {
+        let state_changed = Arc::clone(&state_changed);
+        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel();
+        waiters.push(tokio::spawn(async move {
+            let mut changed = Box::pin(state_changed.notified());
+            changed.as_mut().enable();
+            armed_tx
+                .send(())
+                .expect("waiter should report that its notification is armed");
+            changed.await;
+        }));
+        armed_rx
+            .await
+            .expect("waiter should arm before the state transition");
+    }
+
+    // The production DataChannel Open and Closed callbacks use
+    // `notify_waiters()`: a single state transition must release every send
+    // currently waiting for readiness, not just one of them.
+    state_changed.notify_waiters();
+    tokio::time::timeout(
+        Duration::from_millis(100),
+        futures_util::future::join_all(waiters),
+    )
+    .await
+    .expect("all DataChannel state waiters should wake from one transition")
+    .into_iter()
+    .for_each(|result| result.expect("state waiter should not panic"));
+}
 
 #[test]
 fn test_stream_closed_send_error_wins_over_stale_open_state() {

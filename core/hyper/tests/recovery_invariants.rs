@@ -55,20 +55,20 @@
 //! | 15 | Close and late connection success/failure linearized | `wire::webrtc::coordinator::tests::{inv15_close_all_rejects_late_successful_peer_publication, inv15_failed_close_all_commit_does_not_partially_remove_peer}` |
 //! | 16 | Transport creation racing per-peer/close-all teardown cannot deadlock | `wire::webrtc::coordinator::tests::{inv16_close_all_rejects_racing_peer_creation, inv16_reentrant_close_all_does_not_deadlock}` |
 //!
-//! Phase 4 (invariants 17-24, event-driven production paths — out of this
-//! round's gate; representative existing coverage, largely landed by the
-//! `perf(hyper): replace transport polling with notifications` commit):
+//! Phase 4 (invariants 17-24, event-driven production paths; each has a
+//! deterministic dedicated test, complementing the implementation landed by
+//! `perf(hyper): replace transport polling with notifications`):
 //!
 //! | # | Invariant (short) | Representative existing test(s) |
 //! |---|---|---|
-//! | 17 | Every DataChannel waiter wakes on Open/Closed | `wire::webrtc::connection::tests::data_channel_drain_waits_only_while_peer_connection_is_connected` |
-//! | 18 | Initial readiness/ICE gathering cannot lose a transition | `wire::webrtc::coordinator::tests::{initial_connecting_state_emits_connecting_hook, initial_failure_emits_idle_not_recovering, connecting_state_reopens_connected_hook_window}` |
-//! | 19 | Duplicate peer-state events don't extend stale-peer lifetime | `wire::webrtc::coordinator::tests::{duplicate_peer_state_does_not_extend_stale_reap_deadline, stale_peer_reap_uses_dedicated_disconnected_threshold}` |
-//! | 20 | Empty mailbox storage doesn't starve in-flight reply/ack | `inbound::data_chunk_registry_tests::{reliable_backpressure_blocks_then_delivers, unregister_then_reregister_waits_for_draining_worker}` |
-//! | 21 | Available quota can't stay idle from collapsed release notifications | `inbound::data_chunk_registry_tests::unregister_drains_queued_chunks` |
-//! | 22 | Successful transitions don't wait on fixed polling | `wire::webrtc::signaling_tests::test_reconnect_manager_lifetime_uses_drop_signal_not_periodic_polling` |
-//! | 23 | Parallel shutdown bounded by one overall deadline, not per-child | `wire::webrtc::coordinator::tests::{close_all_times_out_when_peer_commit_cannot_quiesce, coordinator_background_tasks_are_joined_by_shutdown}` |
-//! | 24 | Every timer uses the audited facade with one inventory classification | `timer::tests::{inventory_metadata_is_complete_and_unique, production_timer_calls_and_inventory_do_not_drift}` plus the explicit RFC-0400 timer-inventory CI gate |
+//! | 17 | Every DataChannel waiter wakes on Open/Closed | `transport::lane::tests::inv17_data_channel_state_change_wakes_every_waiter` |
+//! | 18 | Initial readiness/ICE gathering cannot lose a transition | `wire::webrtc::coordinator::tests::{inv18_ice_gathering_transition_is_retained_after_listener_is_armed, inv18_initial_readiness_subscribes_before_accepting_transition, inv18_initial_connecting_state_emits_connecting_hook, inv18_initial_failure_emits_idle_not_recovering, inv18_connecting_state_reopens_connected_hook_window}` |
+//! | 19 | Duplicate peer-state events don't extend stale-peer lifetime or combine a new state with an old timestamp | `wire::webrtc::coordinator::tests::{inv19_duplicate_peer_state_does_not_extend_stale_reap_deadline, inv19_stale_peer_reap_uses_dedicated_disconnected_threshold, inv19_new_peer_state_cannot_reuse_the_previous_states_timestamp}` |
+//! | 20 | Empty mailbox storage doesn't starve in-flight reply/ack | `lifecycle::node::tests::inv20_empty_mailbox_keeps_driving_inflight_reply_and_ack_tails` |
+//! | 21 | Available quota can't stay idle from collapsed release notifications | `wasm::runtime_limits::tests::inv21_quota_release_generation_survives_collapsed_notifications` |
+//! | 22 | Successful transitions don't wait on fixed polling or consume a failure deadline | `wire::webrtc::coordinator::tests::inv22_success_transition_completes_without_polling_or_failure_deadline`; `wire::webrtc::signaling_tests::inv22_reconnect_manager_lifetime_uses_drop_signal_not_periodic_polling` |
+//! | 23 | Parallel shutdown bounded by one overall deadline, not per-child | `wire::webrtc::coordinator::tests::{inv23_close_all_hooks_share_one_overall_deadline, inv23_coordinator_background_tasks_are_joined_by_shutdown}` |
+//! | 24 | Every timer uses the audited facade with one inventory classification | `timer::tests::{inv24_inventory_metadata_is_complete_and_unique, inv24_production_timer_calls_and_inventory_do_not_drift}` plus the explicit RFC-0400 timer-inventory CI gate |
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

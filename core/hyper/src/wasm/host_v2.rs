@@ -44,7 +44,8 @@ use super::error::{WasmError, WasmResult};
 use super::host::{HostState, epoch_deadline_ticks};
 use super::runtime_limits::{
     EpochTicker, QuotaPermit, StorePermit, acquire_instantiate, acquire_invocation,
-    record_instantiate_failure, record_timeout, wait_for_quota_release,
+    quota_release_snapshot, record_instantiate_failure, record_timeout,
+    wait_for_quota_release_after,
 };
 use crate::config::WasmRuntimeLimits;
 use crate::executor::{ActorCmd, LifecyclePhase};
@@ -1071,13 +1072,16 @@ impl WasmWorkloadV2 {
 
         loop {
             // Rebuild a poisoned store before (re)entering the region.
+            // Snapshot before the attempt so a release racing the denial
+            // cannot be lost between `ensure_instance` and the wait below.
+            let release_generation = quota_release_snapshot();
             if let Err(error) = self.ensure_instance().await {
                 if matches!(error, WasmError::ResourceLimitExceeded(_)) {
                     tracing::warn!(
                         %error,
                         "v2 interleaved runner: rebuild quota busy; waiting for a release event"
                     );
-                    wait_for_quota_release().await;
+                    wait_for_quota_release_after(release_generation).await;
                     continue;
                 }
                 tracing::error!(

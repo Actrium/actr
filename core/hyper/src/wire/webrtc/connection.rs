@@ -633,7 +633,7 @@ impl WebRtcConnection {
             tracing::info!("🔄 WebRTC DataChannel opened: {:?}", payload_type);
 
             Box::pin(async move {
-                state_changed.notify_one();
+                state_changed.notify_waiters();
                 let _ = event_tx.send(ConnectionEvent::DataChannelOpened {
                     peer_id,
                     session_id: session_id_for_open,
@@ -686,7 +686,7 @@ impl WebRtcConnection {
             let dc_weak = dc_for_close.clone();
             let state_changed = state_changed_for_close.clone();
             Box::pin(async move {
-                state_changed.notify_one();
+                state_changed.notify_waiters();
                 // Guard: if session is cancelled (connection already cleaned up),
                 // skip all side effects to avoid corrupting a new connection
                 if session.is_cancelled() {
@@ -944,7 +944,7 @@ impl WebRtcConnection {
             );
 
             Box::pin(async move {
-                state_changed.notify_one();
+                state_changed.notify_waiters();
                 let _ = event_tx.send(ConnectionEvent::DataChannelOpened {
                     peer_id,
                     session_id: session_id_for_open,
@@ -999,7 +999,7 @@ impl WebRtcConnection {
             let state_changed = state_changed_for_close.clone();
 
             Box::pin(async move {
-                state_changed.notify_one();
+                state_changed.notify_waiters();
                 // Guard: if session is cancelled (connection already cleaned up),
                 // skip all side effects to avoid corrupting a new connection
                 if session.is_cancelled() {
