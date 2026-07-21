@@ -311,7 +311,7 @@ static HOST_VTABLE: HostVTable = HostVTable {
 /// TODO: Revisit this contract if Dynclib gains a real per-instance ABI.
 pub struct DynclibHost {
     /// Loaded shared library handle. Must outlive all resolved function pointers.
-    _library: Library,
+    _library: Arc<Library>,
     init_fn: InitFn,
     handle_fn: HandleFn,
     free_response_fn: FreeResponseFn,
@@ -343,10 +343,10 @@ impl DynclibHost {
         // Safety: loading a shared library executes its static initialisers,
         // which is inherently unsafe. The caller must ensure the library is
         // trusted (e.g. verified by Hyper's package verification).
-        let library = unsafe {
+        let library = Arc::new(unsafe {
             Library::new(path)
                 .map_err(|e| DynclibError::LoadFailed(format!("{}: {e}", path.display())))?
-        };
+        });
 
         // Safety: we resolve raw symbol pointers and transmute them to typed
         // function pointers. The caller must guarantee that the SO exports
@@ -436,7 +436,8 @@ impl DynclibHost {
             free_response_fn: self.free_response_fn,
             shutdown_fn: self.shutdown_fn,
             ffi_gate: Arc::new(tokio::sync::Mutex::new(())),
-            is_shutdown: false,
+            library_guard: Arc::clone(&self._library),
+            shutdown_state: ShutdownState::Active,
         })
     }
 }
@@ -444,6 +445,13 @@ impl DynclibHost {
 // ─────────────────────────────────────────────────────────────────────────────
 // DynclibInstance
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ShutdownState {
+    Active,
+    Complete,
+    Failed,
+}
 
 /// Per-actor instance backed by a native shared library.
 ///
@@ -456,7 +464,9 @@ pub(crate) struct DynclibInstance {
     free_response_fn: FreeResponseFn,
     shutdown_fn: ShutdownFn,
     ffi_gate: Arc<tokio::sync::Mutex<()>>,
-    is_shutdown: bool,
+    /// Keeps guest code mapped while any fallback shutdown thread can call it.
+    library_guard: Arc<Library>,
+    shutdown_state: ShutdownState,
 }
 
 impl std::fmt::Debug for DynclibInstance {
@@ -470,9 +480,9 @@ unsafe impl Send for DynclibInstance {}
 
 /// Workload wrapper that keeps the loaded library alive for the lifetime of the actor instance.
 ///
-/// Field order matters: Rust drops fields in declaration order, so `instance`
-/// (which holds raw function pointers into the loaded library) must be dropped
-/// before `_host` (which unloads the library).
+/// Normal lifecycle teardown must call [`Self::call_on_stop`] (or the explicit
+/// shutdown helper) and await it. `Drop` only schedules a best-effort fallback;
+/// it never blocks an async runtime worker.
 #[derive(Debug)]
 pub(crate) struct DynClibWorkload {
     instance: DynclibInstance,
@@ -496,7 +506,7 @@ impl DynclibInstance {
     /// 2. Copies the response and frees the guest-allocated buffer
     /// 3. Leaves retained bridge tokens alive for any spawned guest tasks
     async fn handle_encoded_request(&mut self, request_owned: Vec<u8>) -> DynclibResult<Vec<u8>> {
-        if self.is_shutdown {
+        if self.shutdown_state != ShutdownState::Active {
             return Err(DynclibError::DispatchFailed(
                 "dynclib instance is shut down".into(),
             ));
@@ -639,53 +649,126 @@ impl DynclibInstance {
     }
 
     async fn shutdown(&mut self) -> DynclibResult<()> {
-        if self.is_shutdown {
-            return Ok(());
+        match self.shutdown_state {
+            ShutdownState::Complete => return Ok(()),
+            ShutdownState::Failed => {
+                return Err(DynclibError::DispatchFailed(
+                    "a previous actr_shutdown attempt failed; the dynamic library remains loaded"
+                        .into(),
+                ));
+            }
+            ShutdownState::Active => {}
         }
 
         let shutdown_fn = self.shutdown_fn;
         let ffi_guard = Arc::clone(&self.ffi_gate).lock_owned().await;
-        let code = tokio::task::spawn_blocking(move || {
-            let _ffi_guard = ffi_guard;
-            unsafe { shutdown_fn() }
-        })
-        .await
-        .map_err(|error| {
-            DynclibError::DispatchFailed(format!("actr_shutdown panicked: {error}"))
-        })?;
+        let shutdown_thread = match std::thread::Builder::new()
+            .name("actr-dynclib-shutdown".into())
+            .spawn(move || {
+                let _ffi_guard = ffi_guard;
+                unsafe { shutdown_fn() }
+            }) {
+            Ok(thread) => thread,
+            Err(error) => {
+                self.shutdown_state = ShutdownState::Failed;
+                return Err(DynclibError::DispatchFailed(format!(
+                    "failed to start actr_shutdown: {error}; the dynamic library will remain loaded"
+                )));
+            }
+        };
+        let code = match tokio::task::spawn_blocking(move || shutdown_thread.join()).await {
+            Ok(Ok(code)) => code,
+            Ok(Err(_)) => {
+                self.shutdown_state = ShutdownState::Failed;
+                return Err(DynclibError::DispatchFailed(
+                    "actr_shutdown panicked; the dynamic library will remain loaded".into(),
+                ));
+            }
+            Err(error) => {
+                self.shutdown_state = ShutdownState::Failed;
+                return Err(DynclibError::DispatchFailed(format!(
+                    "failed to join actr_shutdown: {error}; the dynamic library will remain loaded"
+                )));
+            }
+        };
         if code != guest_abi::code::SUCCESS {
+            self.shutdown_state = ShutdownState::Failed;
             return Err(DynclibError::DispatchFailed(format!(
-                "actr_shutdown returned error code {code}"
+                "actr_shutdown returned error code {code}; the dynamic library will remain loaded"
             )));
         }
-        self.is_shutdown = true;
+        self.shutdown_state = ShutdownState::Complete;
         Ok(())
     }
 }
 
 impl Drop for DynclibInstance {
     fn drop(&mut self) {
-        if self.is_shutdown {
-            return;
+        match self.shutdown_state {
+            ShutdownState::Complete => return,
+            ShutdownState::Failed => {
+                tracing::error!(
+                    "dynclib shutdown did not complete; retaining the dynamic library for process lifetime"
+                );
+                std::mem::forget(Arc::clone(&self.library_guard));
+                return;
+            }
+            ShutdownState::Active => {}
         }
 
         let shutdown_fn = self.shutdown_fn;
         let ffi_gate = Arc::clone(&self.ffi_gate);
-        let result = std::thread::Builder::new()
+        let shutdown_thread = std::thread::Builder::new()
             .name("actr-dynclib-shutdown".into())
             .spawn(move || {
                 let _ffi_guard = ffi_gate.blocking_lock();
                 unsafe { shutdown_fn() }
-            })
-            .and_then(|thread| {
-                thread
-                    .join()
-                    .map_err(|_| std::io::Error::other("actr_shutdown panicked"))
             });
-        if let Err(error) = result {
-            tracing::error!(%error, "failed to shut down dynclib before unload");
+        let shutdown_thread = match shutdown_thread {
+            Ok(thread) => thread,
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "failed to schedule fallback dynclib shutdown; retaining the dynamic library for process lifetime"
+                );
+                std::mem::forget(Arc::clone(&self.library_guard));
+                return;
+            }
+        };
+
+        // The reaper owns the library guard while the shutdown thread runs and
+        // only releases it after that thread has fully exited. This keeps any
+        // guest-owned thread-local destructors mapped during thread teardown.
+        let library_guard = Arc::clone(&self.library_guard);
+        let reaper = std::thread::Builder::new()
+            .name("actr-dynclib-reaper".into())
+            .spawn(move || match shutdown_thread.join() {
+                Ok(guest_abi::code::SUCCESS) => {}
+                Ok(code) => {
+                    tracing::error!(
+                        code,
+                        "fallback actr_shutdown failed; retaining the dynamic library for process lifetime"
+                    );
+                    std::mem::forget(library_guard);
+                }
+                Err(_) => {
+                    tracing::error!(
+                        "fallback actr_shutdown panicked; retaining the dynamic library for process lifetime"
+                    );
+                    std::mem::forget(library_guard);
+                }
+            });
+        if let Err(error) = reaper {
+            tracing::error!(
+                %error,
+                "failed to schedule fallback dynclib reaper; retaining the dynamic library for process lifetime"
+            );
+            std::mem::forget(Arc::clone(&self.library_guard));
+        } else {
+            tracing::warn!(
+                "dynclib dropped without explicit shutdown; scheduled non-blocking fallback teardown"
+            );
         }
-        self.is_shutdown = true;
     }
 }
 
@@ -756,7 +839,6 @@ impl DynClibWorkload {
             .await
     }
 
-    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) async fn shutdown(&mut self) -> DynclibResult<()> {
         self.instance.shutdown().await
     }

@@ -837,6 +837,9 @@ macro_rules! entry {
             }
 
             /// Stop background work before the host unloads this library.
+            ///
+            /// A non-success result means teardown could not prove that guest
+            /// code stopped; the host must keep the library mapped.
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn actr_shutdown() -> i32 {
                 let shutdown_result = $crate::guest::dynclib::shutdown();

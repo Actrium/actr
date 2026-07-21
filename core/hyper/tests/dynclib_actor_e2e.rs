@@ -121,6 +121,7 @@ async fn dynclib_unknown_route_returns_error() {
     let result = instance.handle(&req_bytes, test_ctx(), &executor).await;
 
     assert!(result.is_err(), "unknown route should return error");
+    instance.shutdown().await.expect("shutdown dynclib");
 }
 
 /// Echo route -> returns payload without outbound calls
@@ -141,6 +142,7 @@ async fn dynclib_echo_returns_payload() {
         .expect("echo dispatch failed");
 
     assert_eq!(result, payload, "echo should return payload as-is");
+    instance.shutdown().await.expect("shutdown dynclib");
 }
 
 /// Double route -> triggers vtable call trampoline, returns x*2
@@ -191,6 +193,7 @@ async fn dynclib_double_dispatch() {
     assert_eq!(result.len(), 4, "response should be 4 bytes");
     let resp_val = i32::from_le_bytes([result[0], result[1], result[2], result[3]]);
     assert_eq!(resp_val, 14, "response should be 7 * 2 = 14");
+    instance.shutdown().await.expect("shutdown dynclib");
 }
 
 /// Multiple dispatches -> verifies state does not leak between calls
@@ -229,6 +232,8 @@ async fn dynclib_multiple_dispatches() {
         let resp_val = i32::from_le_bytes([result[0], result[1], result[2], result[3]]);
         assert_eq!(resp_val, x * 2, "dispatch({x}) should return {}", x * 2);
     }
+
+    instance.shutdown().await.expect("shutdown dynclib");
 }
 
 /// A future that returns Pending is driven by the guest-owned Tokio runtime.
