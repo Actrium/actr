@@ -150,7 +150,7 @@ jobs:
   test:
     name: Test (Rust)
     needs: determine
-    if: needs.determine.outputs.rust_core == 'true' && github.event_name == 'push'
+    if: needs.determine.outputs.rust_core == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
