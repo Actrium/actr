@@ -39,6 +39,7 @@ pub fn initialize() -> ActorResult<()> {
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .thread_name("actr-dynclib")
         .build()
