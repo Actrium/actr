@@ -333,6 +333,11 @@ impl TestPackageHookObserver {
             }
         }
     }
+
+    /// Deterministically stop the owning workload runner and its backend.
+    pub async fn shutdown(&self) {
+        self.observer.workload_dispatch.shutdown().await;
+    }
 }
 
 pub struct TestDedupWaiter {
@@ -590,6 +595,10 @@ impl TestDynclibWorkload {
         call_executor: &HostAbiFn,
     ) -> Result<(), crate::dynclib::DynclibError> {
         self.inner.call_on_stop(ctx, call_executor).await
+    }
+
+    pub async fn shutdown(&mut self) -> Result<(), crate::dynclib::DynclibError> {
+        self.inner.shutdown().await
     }
 
     pub fn into_package_hook_observer(self) -> TestPackageHookObserver {
@@ -1201,3 +1210,8 @@ impl ConcurrentDispatch for TestNativeSerialDispatcher {
 #[cfg(feature = "wasm-engine")]
 #[path = "../../tests/common/concurrency.rs"]
 pub mod concurrency;
+
+#[cfg(feature = "dynclib-engine")]
+pub fn dynclib_active_bridge_count() -> usize {
+    crate::dynclib::active_bridge_count()
+}

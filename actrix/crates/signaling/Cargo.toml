@@ -1,7 +1,6 @@
 [package]
 name = "actrix-signaling"
 version.workspace = true
-publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -38,7 +37,7 @@ prost-types = { workspace = true }
 base64 = { workspace = true }
 
 # 内部依赖
-platform = { path = "../platform", package = "actrix-platform" }
+platform = { path = "../platform", package = "actrix-platform", version = "0.5.3" }
 
 # Database
 sqlx = { workspace = true }

@@ -1,7 +1,6 @@
 [package]
 name = "actrix-ais"
 version.workspace = true
-publish = false
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -48,9 +47,9 @@ governor = "0.10"
 
 
 # Internal dependencies
-platform = { path = "../platform", package = "actrix-platform" }
-signer = { path = "../signer", package = "actrix-signer" }
-actrix-mfr = { path = "../mfr" }
+platform = { path = "../platform", package = "actrix-platform", version = "0.5.3" }
+signer = { path = "../signer", package = "actrix-signer", version = "0.5.3" }
+actrix-mfr = { path = "../mfr", version = "0.5.3" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
