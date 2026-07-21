@@ -585,6 +585,9 @@ async fn run_loop(mut workload: Workload, mut rx: mpsc::Receiver<ActorCmd>) {
                 let _ = reply.send(result);
             }
             ActorCmd::Shutdown { done } => {
+                if let Err(error) = workload.shutdown().await {
+                    tracing::error!(%error, "workload backend shutdown failed");
+                }
                 if let Some(done) = done {
                     let _ = done.send(());
                 }
