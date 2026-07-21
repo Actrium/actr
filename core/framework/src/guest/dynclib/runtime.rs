@@ -1,7 +1,7 @@
 //! Tokio runtime owned by one loaded dynclib workload image.
 
 use std::future::Future;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard};
 
 use actr_protocol::{ActorResult, ActrError};
 use tokio::runtime::{Handle, Runtime};
@@ -18,21 +18,29 @@ struct ManagedTasks {
 
 struct DynclibRuntime {
     handle: Handle,
-    owner: Mutex<Option<Runtime>>,
-    tasks: Mutex<ManagedTasks>,
+    owner: Option<Runtime>,
+    tasks: ManagedTasks,
 }
 
-static RUNTIME: OnceLock<DynclibRuntime> = OnceLock::new();
+// Per shared-library image. A `Mutex<Option<...>>` (rather than `OnceLock`)
+// lets `shutdown` clear the slot so a subsequent `initialize` can rebuild a
+// fresh runtime. `OnceLock` can never be reset, so when a host loads → inits →
+// shuts down → unloads → reloads the same image within one process — as the
+// integration tests do, and as glibc may do without truly unmapping the
+// library on `dlclose` — the next `actr_init` sees the stale runtime and
+// returns `INIT_FAILED`.
+static RUNTIME: Mutex<Option<DynclibRuntime>> = Mutex::new(None);
 
-fn runtime() -> ActorResult<&'static DynclibRuntime> {
+fn lock() -> ActorResult<MutexGuard<'static, Option<DynclibRuntime>>> {
     RUNTIME
-        .get()
-        .ok_or_else(|| ActrError::Internal("dynclib Tokio runtime is not initialized".into()))
+        .lock()
+        .map_err(|_| ActrError::Internal("dynclib runtime lock poisoned".into()))
 }
 
 /// Initialize the runtime for this shared-library image.
 pub fn initialize() -> ActorResult<()> {
-    if RUNTIME.get().is_some() {
+    let mut guard = lock()?;
+    if guard.is_some() {
         return Err(ActrError::Internal(
             "dynclib Tokio runtime is already initialized".into(),
         ));
@@ -48,18 +56,15 @@ pub fn initialize() -> ActorResult<()> {
                 "failed to initialize dynclib Tokio runtime: {error}"
             ))
         })?;
-    let state = DynclibRuntime {
+    *guard = Some(DynclibRuntime {
         handle: runtime.handle().clone(),
-        owner: Mutex::new(Some(runtime)),
-        tasks: Mutex::new(ManagedTasks {
+        owner: Some(runtime),
+        tasks: ManagedTasks {
             accepting: true,
             handles: Vec::new(),
-        }),
-    };
-
-    RUNTIME
-        .set(state)
-        .map_err(|_| ActrError::Internal("dynclib Tokio runtime is already initialized".into()))
+        },
+    });
+    Ok(())
 }
 
 /// Drive a guest future to completion with the invocation's bridge token.
@@ -67,21 +72,25 @@ pub fn block_on<F>(bridge_token: u64, future: F) -> ActorResult<F::Output>
 where
     F: Future,
 {
-    let runtime = runtime()?;
-    let is_running = runtime
-        .owner
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib runtime owner lock poisoned".into()))?
-        .is_some();
-    if !is_running {
-        return Err(ActrError::Internal(
-            "dynclib Tokio runtime is shut down".into(),
-        ));
-    }
+    // Clone the handle and drop the guard before `block_on`: the driven future
+    // may call `spawn`, which also locks `RUNTIME`, so holding the guard here
+    // would deadlock the runtime worker.
+    let handle = {
+        let guard = lock()?;
+        let Some(runtime) = guard.as_ref() else {
+            return Err(ActrError::Internal(
+                "dynclib Tokio runtime is not initialized".into(),
+            ));
+        };
+        if runtime.owner.is_none() {
+            return Err(ActrError::Internal(
+                "dynclib Tokio runtime is shut down".into(),
+            ));
+        }
+        runtime.handle.clone()
+    };
 
-    Ok(runtime
-        .handle
-        .block_on(ACTIVE_BRIDGE_TOKEN.scope(bridge_token, future)))
+    Ok(handle.block_on(ACTIVE_BRIDGE_TOKEN.scope(bridge_token, future)))
 }
 
 /// Spawn a background task owned by the current dynclib workload.
@@ -93,19 +102,20 @@ pub fn spawn<F>(future: F) -> ActorResult<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let runtime = runtime()?;
-    let mut tasks = runtime
-        .tasks
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib task registry lock poisoned".into()))?;
-    if !tasks.accepting {
+    let mut guard = lock()?;
+    let Some(runtime) = guard.as_mut() else {
+        return Err(ActrError::Internal(
+            "dynclib Tokio runtime is not initialized".into(),
+        ));
+    };
+    if !runtime.tasks.accepting {
         return Err(ActrError::Unavailable(
             "dynclib workload is shutting down".into(),
         ));
     }
 
-    tasks.handles.retain(|handle| !handle.is_finished());
-    tasks.handles.push(runtime.handle.spawn(future));
+    runtime.tasks.handles.retain(|handle| !handle.is_finished());
+    runtime.tasks.handles.push(runtime.handle.spawn(future));
     Ok(())
 }
 
@@ -115,25 +125,19 @@ pub(crate) fn active_bridge_token() -> Option<u64> {
 
 /// Stop managed tasks and shut down the runtime before `dlclose`.
 pub fn shutdown() -> ActorResult<()> {
-    let runtime = runtime()?;
-    let is_running = runtime
-        .owner
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib runtime owner lock poisoned".into()))?
-        .is_some();
-    if !is_running {
-        return Ok(());
-    }
-
-    let handles = {
-        let mut tasks = runtime
-            .tasks
-            .lock()
-            .map_err(|_| ActrError::Internal("dynclib task registry lock poisoned".into()))?;
-        tasks.accepting = false;
-        std::mem::take(&mut tasks.handles)
+    // Take the runtime out of the global slot. This clears the cell so the
+    // next `initialize` can rebuild a fresh runtime even if the shared library
+    // is not actually unmapped by `dlclose` (e.g. glibc keeping the mapping).
+    let mut runtime = match lock()?.take() {
+        Some(runtime) => runtime,
+        None => return Ok(()),
     };
 
+    runtime.tasks.accepting = false;
+    let handles = std::mem::take(&mut runtime.tasks.handles);
+
+    // Abort/join managed tasks while the runtime is still owned, then drop the
+    // `Runtime` so its worker threads exit before the host calls `dlclose`.
     runtime.handle.block_on(async move {
         for handle in &handles {
             handle.abort();
@@ -143,11 +147,46 @@ pub fn shutdown() -> ActorResult<()> {
         }
     });
 
-    let owner = runtime
-        .owner
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib runtime owner lock poisoned".into()))?
-        .take();
-    drop(owner);
+    runtime.owner = None;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    // The runtime cell is process-global; serialise these tests so they do not
+    // race with each other over `RUNTIME`.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// `shutdown` must clear the cell so the next `initialize` can rebuild the
+    /// runtime. With `OnceLock` the cell never reset, so a second `initialize`
+    /// after `shutdown` saw stale state and failed — surfacing as `actr_init`
+    /// returning `INIT_FAILED` when a host reloaded a dynclib image within one
+    /// process (e.g. glibc keeping the mapping after `dlclose`).
+    #[test]
+    fn shutdown_clears_cell_for_reinitialize() {
+        let _guard = SERIAL.lock().unwrap();
+        initialize().expect("first initialize");
+        // A second initialize while running is still rejected.
+        assert!(
+            initialize().is_err(),
+            "initialize should fail while already running"
+        );
+        shutdown().expect("shutdown");
+
+        // After shutdown the cell must be reusable.
+        initialize().expect("reinitialize after shutdown");
+        shutdown().expect("second shutdown");
+    }
+
+    /// `shutdown` is idempotent: calling it with no active runtime is a no-op.
+    #[test]
+    fn shutdown_without_runtime_is_noop() {
+        let _guard = SERIAL.lock().unwrap();
+        // Drain anything left by other tests so this assertion is meaningful.
+        let _ = shutdown();
+        assert!(shutdown().is_ok());
+    }
 }
