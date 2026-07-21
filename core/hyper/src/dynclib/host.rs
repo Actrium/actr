@@ -303,10 +303,11 @@ static HOST_VTABLE: HostVTable = HostVTable {
 /// Loads and holds a single `.so` / `.dylib` / `.dll` image. Resolves ABI
 /// symbols once at load time.
 ///
-/// Under the current guest ABI, a loaded dynclib image supports only one
-/// successful `actr_init` because guest state is module-global and no instance
-/// handle is exposed back to the host. To create multiple independent
-/// `DynClibWorkload`s today, Hyper must load multiple library images.
+/// Under the current guest ABI, a loaded dynclib image supports only one active
+/// actor because guest state is module-global and no instance handle is exposed
+/// back to the host. A successful shutdown permits a new sequential
+/// initialization of the same image. Concurrent independent `DynClibWorkload`s
+/// still require separate library images.
 ///
 /// TODO: Revisit this contract if Dynclib gains a real per-instance ABI.
 pub struct DynclibHost {

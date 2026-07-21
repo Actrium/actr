@@ -6,7 +6,7 @@
 //! state so the host can keep the library mapped instead of blocking forever.
 
 use std::future::Future;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use actr_protocol::{ActorResult, ActrError};
@@ -25,38 +25,78 @@ struct ManagedTasks {
     handles: Vec<JoinHandle<()>>,
 }
 
-enum RuntimeOwner {
-    Running(Runtime),
-    ShutDown,
+enum RuntimeState {
+    Uninitialized,
+    Running {
+        handle: Handle,
+        owner: Runtime,
+        tasks: ManagedTasks,
+    },
+    ShuttingDown,
     ShutdownTimedOut,
 }
 
 struct DynclibRuntime {
-    handle: Handle,
     /// Serializes guest entrypoints that drive or tear down the runtime.
     ///
     /// Hyper also serializes `actr_handle` and `actr_shutdown` with its
     /// `ffi_gate`, but keeping the invariant here closes the check-then-act
     /// window for callers that invoke this public guest API directly.
     entry_gate: Mutex<()>,
-    owner: Mutex<RuntimeOwner>,
-    tasks: Mutex<ManagedTasks>,
+    state: Mutex<RuntimeState>,
 }
 
-static RUNTIME: OnceLock<DynclibRuntime> = OnceLock::new();
+impl DynclibRuntime {
+    const fn new() -> Self {
+        Self {
+            entry_gate: Mutex::new(()),
+            state: Mutex::new(RuntimeState::Uninitialized),
+        }
+    }
+}
 
-fn runtime() -> ActorResult<&'static DynclibRuntime> {
+// Per shared-library image. The state returns to `Uninitialized` only after a
+// successful shutdown, allowing a fresh runtime to be built even when the
+// loader keeps this image mapped across `dlclose` / `dlopen` cycles.
+static RUNTIME: DynclibRuntime = DynclibRuntime::new();
+
+fn lock_entry() -> ActorResult<MutexGuard<'static, ()>> {
     RUNTIME
-        .get()
-        .ok_or_else(|| ActrError::Internal("dynclib Tokio runtime is not initialized".into()))
+        .entry_gate
+        .lock()
+        .map_err(|_| ActrError::Internal("dynclib runtime entry lock poisoned".into()))
+}
+
+fn lock_state() -> ActorResult<MutexGuard<'static, RuntimeState>> {
+    RUNTIME
+        .state
+        .lock()
+        .map_err(|_| ActrError::Internal("dynclib runtime state lock poisoned".into()))
 }
 
 /// Initialize the runtime for this shared-library image.
 pub fn initialize() -> ActorResult<()> {
-    if RUNTIME.get().is_some() {
-        return Err(ActrError::Internal(
-            "dynclib Tokio runtime is already initialized".into(),
-        ));
+    let _entry_guard = lock_entry()?;
+    {
+        let state = lock_state()?;
+        match &*state {
+            RuntimeState::Uninitialized => {}
+            RuntimeState::Running { .. } => {
+                return Err(ActrError::Internal(
+                    "dynclib Tokio runtime is already initialized".into(),
+                ));
+            }
+            RuntimeState::ShuttingDown => {
+                return Err(ActrError::Unavailable(
+                    "dynclib Tokio runtime is shutting down".into(),
+                ));
+            }
+            RuntimeState::ShutdownTimedOut => {
+                return Err(ActrError::Internal(
+                    "dynclib Tokio runtime shutdown previously timed out".into(),
+                ));
+            }
+        }
     }
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -69,19 +109,21 @@ pub fn initialize() -> ActorResult<()> {
                 "failed to initialize dynclib Tokio runtime: {error}"
             ))
         })?;
-    let state = DynclibRuntime {
+    let mut state = lock_state()?;
+    if !matches!(*state, RuntimeState::Uninitialized) {
+        return Err(ActrError::Internal(
+            "dynclib Tokio runtime state changed during initialization".into(),
+        ));
+    }
+    *state = RuntimeState::Running {
         handle: runtime.handle().clone(),
-        entry_gate: Mutex::new(()),
-        owner: Mutex::new(RuntimeOwner::Running(runtime)),
-        tasks: Mutex::new(ManagedTasks {
+        owner: runtime,
+        tasks: ManagedTasks {
             accepting: true,
             handles: Vec::new(),
-        }),
+        },
     };
-
-    RUNTIME
-        .set(state)
-        .map_err(|_| ActrError::Internal("dynclib Tokio runtime is already initialized".into()))
+    Ok(())
 }
 
 /// Drive a guest future to completion with the invocation's bridge token.
@@ -89,33 +131,30 @@ pub fn block_on<F>(bridge_token: u64, future: F) -> ActorResult<F::Output>
 where
     F: Future,
 {
-    let runtime = runtime()?;
-    let _entry_guard = runtime
-        .entry_gate
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib runtime entry lock poisoned".into()))?;
-    let owner = runtime
-        .owner
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib runtime owner lock poisoned".into()))?;
-    match &*owner {
-        RuntimeOwner::Running(_) => {}
-        RuntimeOwner::ShutDown => {
-            return Err(ActrError::Internal(
-                "dynclib Tokio runtime is shut down".into(),
-            ));
+    let _entry_guard = lock_entry()?;
+    let handle = {
+        let state = lock_state()?;
+        match &*state {
+            RuntimeState::Running { handle, .. } => handle.clone(),
+            RuntimeState::Uninitialized => {
+                return Err(ActrError::Internal(
+                    "dynclib Tokio runtime is not initialized".into(),
+                ));
+            }
+            RuntimeState::ShuttingDown => {
+                return Err(ActrError::Unavailable(
+                    "dynclib Tokio runtime is shutting down".into(),
+                ));
+            }
+            RuntimeState::ShutdownTimedOut => {
+                return Err(ActrError::Internal(
+                    "dynclib Tokio runtime shutdown previously timed out".into(),
+                ));
+            }
         }
-        RuntimeOwner::ShutdownTimedOut => {
-            return Err(ActrError::Internal(
-                "dynclib Tokio runtime shutdown previously timed out".into(),
-            ));
-        }
-    }
-    drop(owner);
+    };
 
-    Ok(runtime
-        .handle
-        .block_on(ACTIVE_BRIDGE_TOKEN.scope(bridge_token, future)))
+    Ok(handle.block_on(ACTIVE_BRIDGE_TOKEN.scope(bridge_token, future)))
 }
 
 /// Spawn a background task owned by the current dynclib workload.
@@ -129,20 +168,29 @@ pub fn spawn<F>(future: F) -> ActorResult<()>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let runtime = runtime()?;
-    let mut tasks = runtime
-        .tasks
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib task registry lock poisoned".into()))?;
-    if !tasks.accepting {
-        return Err(ActrError::Unavailable(
-            "dynclib workload is shutting down".into(),
-        ));
-    }
+    let mut state = lock_state()?;
+    match &mut *state {
+        RuntimeState::Running { handle, tasks, .. } => {
+            if !tasks.accepting {
+                return Err(ActrError::Unavailable(
+                    "dynclib workload is shutting down".into(),
+                ));
+            }
 
-    tasks.handles.retain(|handle| !handle.is_finished());
-    tasks.handles.push(runtime.handle.spawn(future));
-    Ok(())
+            tasks.handles.retain(|handle| !handle.is_finished());
+            tasks.handles.push(handle.spawn(future));
+            Ok(())
+        }
+        RuntimeState::Uninitialized => Err(ActrError::Internal(
+            "dynclib Tokio runtime is not initialized".into(),
+        )),
+        RuntimeState::ShuttingDown => Err(ActrError::Unavailable(
+            "dynclib workload is shutting down".into(),
+        )),
+        RuntimeState::ShutdownTimedOut => Err(ActrError::Internal(
+            "dynclib Tokio runtime shutdown previously timed out".into(),
+        )),
+    }
 }
 
 pub(crate) fn active_bridge_token() -> Option<u64> {
@@ -178,52 +226,58 @@ fn abort_and_wait(handles: Vec<JoinHandle<()>>, timeout: Duration) -> Result<(),
 /// an error, and deliberately leaves the runtime unusable. The host must treat
 /// that error as "do not unload this library".
 pub fn shutdown() -> ActorResult<()> {
-    let runtime = runtime()?;
-    let _entry_guard = runtime
-        .entry_gate
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib runtime entry lock poisoned".into()))?;
-    let mut owner = runtime
-        .owner
-        .lock()
-        .map_err(|_| ActrError::Internal("dynclib runtime owner lock poisoned".into()))?;
-    match &*owner {
-        RuntimeOwner::Running(_) => {}
-        RuntimeOwner::ShutDown => return Ok(()),
-        RuntimeOwner::ShutdownTimedOut => {
-            return Err(ActrError::Internal(
-                "dynclib Tokio runtime shutdown previously timed out".into(),
-            ));
+    let _entry_guard = lock_entry()?;
+    let (runtime_owner, handles) = {
+        let mut state = lock_state()?;
+        let previous = std::mem::replace(&mut *state, RuntimeState::ShuttingDown);
+        match previous {
+            RuntimeState::Running {
+                owner, mut tasks, ..
+            } => {
+                tasks.accepting = false;
+                (owner, std::mem::take(&mut tasks.handles))
+            }
+            RuntimeState::Uninitialized => {
+                *state = RuntimeState::Uninitialized;
+                return Ok(());
+            }
+            RuntimeState::ShuttingDown => {
+                *state = RuntimeState::ShuttingDown;
+                return Err(ActrError::Unavailable(
+                    "dynclib Tokio runtime is already shutting down".into(),
+                ));
+            }
+            RuntimeState::ShutdownTimedOut => {
+                *state = RuntimeState::ShutdownTimedOut;
+                return Err(ActrError::Internal(
+                    "dynclib Tokio runtime shutdown previously timed out".into(),
+                ));
+            }
         }
-    }
-
-    let handles = {
-        let mut tasks = runtime
-            .tasks
-            .lock()
-            .map_err(|_| ActrError::Internal("dynclib task registry lock poisoned".into()))?;
-        tasks.accepting = false;
-        std::mem::take(&mut tasks.handles)
     };
 
     match abort_and_wait(handles, SHUTDOWN_TIMEOUT) {
         Ok(()) => {
-            let RuntimeOwner::Running(runtime_owner) =
-                std::mem::replace(&mut *owner, RuntimeOwner::ShutDown)
-            else {
-                unreachable!("dynclib runtime state changed while entry gate was held");
-            };
-            drop(owner);
             drop(runtime_owner);
+            let mut state = lock_state()?;
+            if !matches!(*state, RuntimeState::ShuttingDown) {
+                return Err(ActrError::Internal(
+                    "dynclib Tokio runtime state changed during shutdown".into(),
+                ));
+            }
+            *state = RuntimeState::Uninitialized;
             Ok(())
         }
         Err(unfinished) => {
-            let RuntimeOwner::Running(runtime_owner) =
-                std::mem::replace(&mut *owner, RuntimeOwner::ShutdownTimedOut)
-            else {
-                unreachable!("dynclib runtime state changed while entry gate was held");
-            };
-            drop(owner);
+            {
+                let mut state = lock_state()?;
+                if !matches!(*state, RuntimeState::ShuttingDown) {
+                    return Err(ActrError::Internal(
+                        "dynclib Tokio runtime state changed during shutdown".into(),
+                    ));
+                }
+                *state = RuntimeState::ShutdownTimedOut;
+            }
 
             tracing::error!(
                 unfinished_tasks = unfinished,
@@ -242,6 +296,31 @@ pub fn shutdown() -> ActorResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static RUNTIME_SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn shutdown_clears_state_for_reinitialize() {
+        let _guard = RUNTIME_SERIAL.lock().expect("lock runtime test");
+        shutdown().expect("reset runtime before test");
+
+        initialize().expect("first initialize");
+        assert!(
+            initialize().is_err(),
+            "initialize should fail while a runtime is active"
+        );
+        shutdown().expect("first shutdown");
+
+        initialize().expect("reinitialize after shutdown");
+        shutdown().expect("second shutdown");
+    }
+
+    #[test]
+    fn shutdown_without_runtime_is_noop() {
+        let _guard = RUNTIME_SERIAL.lock().expect("lock runtime test");
+        shutdown().expect("first shutdown without runtime");
+        shutdown().expect("second shutdown without runtime");
+    }
 
     #[test]
     fn abort_and_wait_drains_cancellable_task() {
