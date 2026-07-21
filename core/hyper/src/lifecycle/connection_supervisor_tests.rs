@@ -258,6 +258,68 @@ fn inv6_cold_and_duplicate_foreground_create_no_recovery_work() {
     assert_eq!(s.view().recovery_intent, tp::RecoveryIntentState::Idle);
 }
 
+#[test]
+fn long_background_reconnect_does_not_requeue_itself_on_explicit_disconnect() {
+    let mut g = gated();
+    g.accept(tp::Input::AppEnteredForeground, ms(0));
+    g.accept(online(1, 1), ms(1));
+    g.accept(
+        tp::Input::SignalingGenerationCommitted {
+            generation: 7,
+            origin: tp::SignalingOrigin::External,
+        },
+        ms(2),
+    );
+    g.accept(tp::Input::AppEnteredBackground, ms(3));
+
+    g.accept(tp::Input::AppEnteredForeground, ms(60_003));
+    let started = g
+        .maybe_start_effect(ms(60_003))
+        .expect("long background should start reconnect");
+    assert_eq!(started.kind, EffectKind::Reconnect);
+
+    // ForceReconnect intentionally disconnects the live signaling generation
+    // before opening a replacement. That disconnect is output covered by this
+    // effect, not a new external recovery obligation.
+    g.accept(
+        tp::Input::SignalingGenerationLost {
+            generation: 7,
+            cause: tp::SignalingLostCause::Disconnected,
+        },
+        ms(60_004),
+    );
+    assert_eq!(g.view().live_signaling_generation, None);
+    assert_eq!(
+        g.view()
+            .recovery_record
+            .as_ref()
+            .expect("reconnect record should remain pending")
+            .work_revision,
+        started.captured_revision,
+        "covered disconnect must not refresh the reconnect obligation"
+    );
+    g.accept(
+        tp::Input::SignalingGenerationCommitted {
+            generation: 9,
+            origin: tp::SignalingOrigin::External,
+        },
+        ms(60_005),
+    );
+    g.accept(
+        tp::Input::EffectCompleted {
+            action_id: started.action_id,
+            kind: started.kind,
+            policy_revision: started.captured_revision,
+            outcome: EffectOutcome::Succeeded,
+        },
+        ms(60_006),
+    );
+
+    assert_eq!(g.view().recovery_intent, tp::RecoveryIntentState::Idle);
+    assert_eq!(g.composite_action(), None);
+    assert!(g.maybe_start_effect(ms(60_006)).is_none());
+}
+
 // -- cleanup supersession (invariants 4, 31) --------------------------------
 
 #[test]

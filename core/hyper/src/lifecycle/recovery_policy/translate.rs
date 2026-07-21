@@ -842,8 +842,8 @@ pub(crate) fn translate(
         Input::SignalingGenerationCommitted { generation, origin } => {
             translate_signaling_committed(view, *generation, *origin)
         }
-        Input::SignalingGenerationLost { generation, .. } => {
-            translate_signaling_lost(view, *generation)
+        Input::SignalingGenerationLost { generation, cause } => {
+            translate_signaling_lost(view, *generation, *cause)
         }
         Input::EffectCompleted {
             action_id,
@@ -1407,10 +1407,32 @@ fn translate_signaling_committed(
     Decision::none()
 }
 
-fn translate_signaling_lost(view: &View, generation: Generation) -> Decision {
+fn translate_signaling_lost(
+    view: &View,
+    generation: Generation,
+    cause: SignalingLostCause,
+) -> Decision {
     // Row 1: stale generation -> logged, nothing.
     if view.live_signaling_generation != Some(generation) {
         return Decision::none();
+    }
+    // ForceReconnect intentionally disconnects the current signaling socket
+    // before opening its replacement. That explicit disconnect is output
+    // covered by the running reconnect effect; treating it as an independent
+    // loss would refresh the recovery record beyond the effect's captured
+    // revision, so its successful completion could never acknowledge the
+    // reconnect and would immediately start another ForceReconnect.
+    //
+    // Keep RemoteReset material: a spontaneous loss racing the reconnect is
+    // new information and must retain a recovery obligation.
+    if cause == SignalingLostCause::Disconnected
+        && view
+            .effect
+            .as_ref()
+            .is_some_and(|effect| effect.kind == EffectKind::Reconnect)
+        && view.execution == ExecutionState::Reconnecting
+    {
+        return Decision::advancing();
     }
     // Row 2: live; mode Active, cleanup idle and no cleanup effect -> restore.
     if view.recovery_mode == RecoveryModeState::Active

@@ -1103,6 +1103,54 @@ fn signaling_lost_derives_restore_when_active_and_no_cleanup() {
 }
 
 #[test]
+fn signaling_lost_by_current_reconnect_is_covered_output() {
+    let mut view = View::initial();
+    view.live_signaling_generation = Some(6);
+    view.recovery_intent = RecoveryIntentState::ReconnectPending;
+    view.recovery_record = Some(PendingRecord::recovery(2, RecoveryStrength::Reconnect));
+    view.execution = ExecutionState::Reconnecting;
+    view.effect = Some(recovery_effect(8, EffectKind::Reconnect, 2));
+
+    let d = tr(
+        &view,
+        Input::SignalingGenerationLost {
+            generation: 6,
+            cause: SignalingLostCause::Disconnected,
+        },
+    );
+
+    assert_eq!(d.revision, RevisionDirective::Advances);
+    assert!(!has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestRestore)
+    ));
+    assert!(d.gate_triggers.is_empty());
+}
+
+#[test]
+fn signaling_remote_reset_during_reconnect_remains_material() {
+    let mut view = View::initial();
+    view.live_signaling_generation = Some(6);
+    view.recovery_intent = RecoveryIntentState::ReconnectPending;
+    view.recovery_record = Some(PendingRecord::recovery(2, RecoveryStrength::Reconnect));
+    view.execution = ExecutionState::Reconnecting;
+    view.effect = Some(recovery_effect(8, EffectKind::Reconnect, 2));
+
+    let d = tr(
+        &view,
+        Input::SignalingGenerationLost {
+            generation: 6,
+            cause: SignalingLostCause::RemoteReset,
+        },
+    );
+
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestRestore)
+    ));
+}
+
+#[test]
 fn signaling_lost_absorbed_by_cleanup_derives_no_restore() {
     let mut view = View::initial();
     view.live_signaling_generation = Some(6);
