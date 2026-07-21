@@ -182,7 +182,7 @@ impl WireBuilder for SupersedableFactory {
 }
 
 #[tokio::test]
-async fn superseded_creator_cannot_overwrite_replacement_flight() {
+async fn inv14_only_current_destination_flight_can_commit_transport() {
     let first_wire = Arc::new(CountingWire::new(ConnType::WebSocket, None));
     let replacement_wire = Arc::new(CountingWire::new(ConnType::WebSocket, None));
     let factory = Arc::new(SupersedableFactory {
@@ -240,7 +240,7 @@ async fn superseded_creator_cannot_overwrite_replacement_flight() {
 }
 
 #[tokio::test]
-async fn cancelled_creator_releases_flight_without_waiter_timeout() {
+async fn inv13_cancelled_creator_releases_ownership_without_erasing_replacement() {
     let factory = Arc::new(SupersedableFactory {
         calls: AtomicUsize::new(0),
         first_started: Notify::new(),
@@ -262,7 +262,7 @@ async fn cancelled_creator_releases_flight_without_waiter_timeout() {
     first.abort();
     let _ = first.await;
 
-    timeout(
+    let replacement = timeout(
         Duration::from_secs(1),
         manager.get_or_create_transport(&dest),
     )
@@ -273,6 +273,15 @@ async fn cancelled_creator_releases_flight_without_waiter_timeout() {
         factory.calls.load(Ordering::Acquire),
         2,
         "replacement should own a fresh generation"
+    );
+
+    let current = manager
+        .get_or_create_transport(&dest)
+        .await
+        .expect("replacement transport should remain committed");
+    assert!(
+        Arc::ptr_eq(&current, &replacement),
+        "cancellation cleanup must not erase the replacement generation"
     );
 }
 

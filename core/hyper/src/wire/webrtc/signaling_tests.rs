@@ -1188,7 +1188,7 @@ async fn test_explicit_disconnect_cancels_in_flight_explicit_connect() {
 }
 
 #[tokio::test]
-async fn test_new_explicit_connect_replaces_cancelled_generation_without_wait_timeout() {
+async fn inv12_stale_signaling_generation_cannot_publish_connected() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("test listener should bind");

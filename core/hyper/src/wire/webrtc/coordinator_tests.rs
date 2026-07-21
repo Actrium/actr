@@ -2816,7 +2816,7 @@ async fn clear_pending_restarts_cancels_blocked_answerer_restart_request() {
 }
 
 #[tokio::test]
-async fn close_all_hook_reentry_returns_without_self_deadlock() {
+async fn inv16_reentrant_close_all_does_not_deadlock() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let target = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
@@ -3034,7 +3034,7 @@ async fn cancelled_close_all_after_drain_still_finishes_owned_teardown() {
 }
 
 #[tokio::test]
-async fn peer_creation_epoch_capture_rejects_active_close_all() {
+async fn inv16_close_all_rejects_racing_peer_creation() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let lifecycle_guard = coordinator.peer_signaling.lifecycle_gate.lock().await;
     let close_state_guard =
@@ -3057,7 +3057,7 @@ async fn peer_creation_epoch_capture_rejects_active_close_all() {
 }
 
 #[tokio::test]
-async fn stale_peer_creation_epoch_cannot_insert_after_close_all() {
+async fn inv15_close_all_rejects_late_successful_peer_publication() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let target = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
@@ -3091,7 +3091,7 @@ async fn stale_peer_creation_epoch_cannot_insert_after_close_all() {
 }
 
 #[tokio::test]
-async fn close_all_times_out_when_peer_commit_cannot_quiesce() {
+async fn inv15_failed_close_all_commit_does_not_partially_remove_peer() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let target = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;

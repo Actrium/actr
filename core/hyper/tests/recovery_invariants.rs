@@ -32,7 +32,7 @@
 //! | 5 | `LoggedOut`/`Terminating` not reactivated by network facts | unit: `connection_supervisor_tests::{inv5_logout_gates_recovery_and_is_not_reactivated_by_network_facts, inv30_app_terminating_enters_terminating_and_blocks_sends}` (the latter also asserts the `Terminating` half) |
 //! | 6 | Duplicate foreground creates no recovery work | here: `inv6_duplicate_foreground_creates_no_recovery_work`; unit: `connection_supervisor_tests::inv6_cold_and_duplicate_foreground_create_no_recovery_work` |
 //! | 7 | Background gates new active recovery only under `Gated`; preserves intent/healthy sessions | unit (only place `Gated` is constructible): `connection_supervisor_tests::{inv7_gated_profile_denies_eligibility_until_foreground, inv7_gated_bootstrap_expiry_keeps_profile_gated, inv7_gated_profile_background_gates_recovery_but_preserves_intent}`; integration documents the `Ungated` compatibility side (background never gates): `network_event_debounce::test_background_preserves_healthy_session_and_admits_reconnect_under_ungated` |
-//! | 8 | Lifecycle recovery effects single-flight while responsive; independent resource-scoped flights not needlessly serialized | unit: `connection_supervisor_tests::inv8_execution_is_single_flight_while_supervisor_stays_responsive`; the resource-scoped independence half is an architectural property of per-destination flights in `transport::peer_transport` (each destination owns its own singleflight state, not a shared lock) exercised incidentally by `peer_transport_tests::{superseded_creator_cannot_overwrite_replacement_flight, cancelled_creator_releases_flight_without_waiter_timeout}`; no dedicated concurrent-independence test exists yet — noted as a reasonable gap, not required by this round's gate |
+//! | 8 | Lifecycle recovery effects single-flight while responsive; independent resource-scoped flights not needlessly serialized | unit: `connection_supervisor_tests::inv8_execution_is_single_flight_while_supervisor_stays_responsive`; the resource-scoped independence half is an architectural property of per-destination flights in `transport::peer_transport` (each destination owns its own singleflight state, not a shared lock) exercised by `peer_transport_tests::{inv13_cancelled_creator_releases_ownership_without_erasing_replacement, inv14_only_current_destination_flight_can_commit_transport}` |
 //! | 9 | Stale/mismatched completion cannot acknowledge; weaker effect cannot acknowledge stronger intent | unit: `connection_supervisor_tests::{inv9_stale_completion_cannot_acknowledge_work, inv9_weaker_effect_completion_cannot_acknowledge_stronger_intent}` |
 //! | 10 | Failed work cannot hot-loop; availability never parks; `Parked` only from precondition/pause with non-empty mask | here: `inv10_repeated_availability_failures_back_off_instead_of_hot_looping`; unit: `connection_supervisor_tests::{inv10_availability_failure_backs_off_and_only_matching_deadline_rearms, inv10_auth_rejection_parks_recovery_until_a_clearing_trigger}` |
 //! | 11 | Acceptance decoupled from effect completion; caller timeout cannot orphan work | here: `inv11_acceptance_does_not_wait_for_effect_completion`; integration: `network_event_debounce::{test_l1_reconciler_shutdown_during_offline_grace_is_bounded, test_network_event_handle_pending_request_is_bounded_by_deadline}` |
@@ -45,17 +45,15 @@
 //! | 31 | `SessionActivated` during pending cleanup derives a post-cleanup obligation; cleanup's own completion cannot extinguish it | unit: `connection_supervisor_tests::inv31_session_activated_during_cleanup_derives_a_post_cleanup_obligation` |
 //! | 32 | A current-effect-origin fact cannot make that effect's own completion stale | reducer (S1, confirmed, not rewritten): `translate_tests::signaling_committed_current_effect_is_covered_output` |
 //!
-//! Phase 3 (invariants 12-16, generation/cancellation safety — out of this
-//! round's gate; existing coverage cited in good faith, not re-audited
-//! clause-by-clause here):
+//! Phase 3 (invariants 12-16, generation/cancellation safety):
 //!
 //! | # | Invariant (short) | Representative existing test(s) |
 //! |---|---|---|
-//! | 12 | Stale signaling generation cannot publish `Connected` | `wire::webrtc::signaling_tests::test_new_explicit_connect_replaces_cancelled_generation_without_wait_timeout` |
-//! | 13 | Cancelled creator releases ownership without erasing its replacement | `transport::peer_transport_tests::{superseded_creator_cannot_overwrite_replacement_flight, cancelled_creator_releases_flight_without_waiter_timeout}` |
-//! | 14 | Only the current destination flight may commit transport state | `transport::peer_transport_tests::superseded_creator_cannot_overwrite_replacement_flight` |
-//! | 15 | Close and late connection success/failure linearized | `wire::webrtc::coordinator::tests::{close_all_times_out_when_peer_commit_cannot_quiesce, session_guarded_candidate_send_serializes_with_cleanup}` |
-//! | 16 | Transport creation racing per-peer/close-all teardown cannot deadlock | `wire::webrtc::connection::tests::{test_close_with_concurrent_reads_no_deadlock, test_close_with_handle_state_change_no_deadlock, repro_close_blocked_by_lock_order_inversion}` |
+//! | 12 | Stale signaling generation cannot publish `Connected` | `wire::webrtc::signaling::tests::inv12_stale_signaling_generation_cannot_publish_connected` |
+//! | 13 | Cancelled creator releases ownership without erasing its replacement | `transport::peer_transport_tests::inv13_cancelled_creator_releases_ownership_without_erasing_replacement` |
+//! | 14 | Only the current destination flight may commit transport state | `transport::peer_transport_tests::inv14_only_current_destination_flight_can_commit_transport` |
+//! | 15 | Close and late connection success/failure linearized | `wire::webrtc::coordinator::tests::{inv15_close_all_rejects_late_successful_peer_publication, inv15_failed_close_all_commit_does_not_partially_remove_peer}` |
+//! | 16 | Transport creation racing per-peer/close-all teardown cannot deadlock | `wire::webrtc::coordinator::tests::{inv16_close_all_rejects_racing_peer_creation, inv16_reentrant_close_all_does_not_deadlock}` |
 //!
 //! Phase 4 (invariants 17-24, event-driven production paths — out of this
 //! round's gate; representative existing coverage, largely landed by the
