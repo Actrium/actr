@@ -181,6 +181,9 @@ jobs:
         run: |
           cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
       - name: Install prebuilt WebAssembly tools
         env:
           WASM_PACK_SHA256: c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a
@@ -214,9 +217,6 @@ jobs:
           wasm-pack --version
           wasm-component-ld --version
           wasm-tools --version
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-targets: false
       - name: Generate CLI web runtime assets
         run: bash bindings/web/scripts/sync-cli-assets.sh --build
       - name: Run tests
