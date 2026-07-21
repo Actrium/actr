@@ -413,16 +413,28 @@ impl DynclibHost {
         let init_bytes = guest_abi::encode_message(init_payload).map_err(|code| {
             DynclibError::DispatchFailed(format!("init payload encode failed: {code}"))
         })?;
-        let init_ptr = if init_bytes.is_empty() {
-            ptr::null()
-        } else {
-            init_bytes.as_ptr()
-        };
+        let init_fn = self.init_fn;
+        let init_thread = std::thread::Builder::new()
+            .name("actr-dynclib-init".into())
+            .spawn(move || {
+                let init_ptr = if init_bytes.is_empty() {
+                    ptr::null()
+                } else {
+                    init_bytes.as_ptr()
+                };
 
-        // Safety: `actr_init` is a C function resolved from the shared
-        // library. `HOST_VTABLE` is a static with stable address. `init_ptr`
-        // and `init_bytes.len()` describe a valid byte slice (or null/0).
-        let result = unsafe { (self.init_fn)(&HOST_VTABLE, init_ptr, init_bytes.len()) };
+                // Safety: `actr_init` is a C function resolved from the shared
+                // library. `HOST_VTABLE` is a static with stable address.
+                // `init_ptr` and `init_bytes.len()` describe a valid byte slice
+                // (or null/0) for the duration of this call.
+                unsafe { init_fn(&HOST_VTABLE, init_ptr, init_bytes.len()) }
+            })
+            .map_err(|error| {
+                DynclibError::DispatchFailed(format!("failed to start actr_init: {error}"))
+            })?;
+        let result = init_thread.join().map_err(|_| {
+            DynclibError::DispatchFailed("actr_init panicked on the guest thread".into())
+        })?;
 
         if result != 0 {
             tracing::error!(code = result, "actr_init failed");
@@ -502,7 +514,7 @@ impl DynclibInstance {
     /// Dispatch a request through the guest actor.
     ///
     /// This method:
-    /// 1. Calls the guest's `actr_handle` on a blocking thread
+    /// 1. Calls the guest's `actr_handle` on a short-lived OS thread
     /// 2. Copies the response and frees the guest-allocated buffer
     /// 3. Leaves retained bridge tokens alive for any spawned guest tasks
     async fn handle_encoded_request(&mut self, request_owned: Vec<u8>) -> DynclibResult<Vec<u8>> {
@@ -515,59 +527,81 @@ impl DynclibInstance {
         let free_response_fn = self.free_response_fn;
         let ffi_guard = Arc::clone(&self.ffi_gate).lock_owned().await;
 
-        let result = tokio::task::spawn_blocking(move || {
-            // Keep shutdown behind this call even if the awaiting future is cancelled.
-            let _ffi_guard = ffi_guard;
+        // Guest entrypoints may register thread-local destructors in the
+        // loaded image. Running them directly on Tokio's persistent blocking
+        // pool can therefore defer `dlclose` until that pool exits. Use a
+        // dedicated guest thread and let the blocking-pool task only join it.
+        let guest_thread = std::thread::Builder::new()
+            .name("actr-dynclib-handle".into())
+            .spawn(move || {
+                // Keep shutdown behind this call even if the awaiting future
+                // is cancelled.
+                let _ffi_guard = ffi_guard;
 
-            // Prepare output pointers.
-            let mut resp_ptr: *mut u8 = ptr::null_mut();
-            let mut resp_len: usize = 0;
+                // Prepare output pointers.
+                let mut resp_ptr: *mut u8 = ptr::null_mut();
+                let mut resp_len: usize = 0;
 
-            // Safety: `handle_fn` is a C function from the loaded SO.
-            // `request_owned` is a valid Vec<u8> and `as_ptr()`/`len()` describe
-            // a valid slice. `resp_ptr` and `resp_len` are stack-local variables
-            // whose addresses are valid for the duration of the call.
-            let code = unsafe {
-                (handle_fn)(
-                    request_owned.as_ptr(),
-                    request_owned.len(),
-                    &mut resp_ptr,
-                    &mut resp_len,
-                )
-            };
+                // Safety: `handle_fn` is a C function from the loaded SO.
+                // `request_owned` is a valid Vec<u8> and `as_ptr()`/`len()`
+                // describe a valid slice. `resp_ptr` and `resp_len` are
+                // stack-local variables whose addresses are valid for the
+                // duration of the call.
+                let code = unsafe {
+                    (handle_fn)(
+                        request_owned.as_ptr(),
+                        request_owned.len(),
+                        &mut resp_ptr,
+                        &mut resp_len,
+                    )
+                };
 
-            // Copy response bytes before freeing the guest buffer.
-            let response = if !resp_ptr.is_null() && resp_len > 0 {
-                // Safety: the guest set resp_ptr/resp_len to describe a valid
-                // allocation. We copy before calling free_response_fn.
-                let data = unsafe { std::slice::from_raw_parts(resp_ptr, resp_len).to_vec() };
+                // Copy response bytes before freeing the guest buffer.
+                let response = if !resp_ptr.is_null() && resp_len > 0 {
+                    // Safety: the guest set resp_ptr/resp_len to describe a
+                    // valid allocation. We copy before calling free_response_fn.
+                    let data = unsafe { std::slice::from_raw_parts(resp_ptr, resp_len).to_vec() };
 
-                // Safety: free the guest-allocated response buffer with the
-                // guest's own free function.
-                unsafe { (free_response_fn)(resp_ptr, resp_len) };
+                    // Safety: free the guest-allocated response buffer with
+                    // the guest's own free function.
+                    unsafe { (free_response_fn)(resp_ptr, resp_len) };
 
-                data
-            } else {
-                Vec::new()
-            };
+                    data
+                } else {
+                    Vec::new()
+                };
 
-            if code != 0 {
-                tracing::warn!(code, "actr_handle returned error");
+                if code != 0 {
+                    tracing::warn!(code, "actr_handle returned error");
+                    return Err(DynclibError::DispatchFailed(format!(
+                        "actr_handle returned error code {code}"
+                    )));
+                }
+
+                tracing::debug!(
+                    req_bytes = request_owned.len(),
+                    resp_bytes = response.len(),
+                    "actr_handle completed"
+                );
+
+                Ok(response)
+            })
+            .map_err(|error| {
+                DynclibError::DispatchFailed(format!("failed to start actr_handle: {error}"))
+            })?;
+        let result = match tokio::task::spawn_blocking(move || guest_thread.join()).await {
+            Ok(Ok(result)) => result?,
+            Ok(Err(_)) => {
+                return Err(DynclibError::DispatchFailed(
+                    "actr_handle panicked on the guest thread".into(),
+                ));
+            }
+            Err(error) => {
                 return Err(DynclibError::DispatchFailed(format!(
-                    "actr_handle returned error code {code}"
+                    "failed to join actr_handle: {error}"
                 )));
             }
-
-            tracing::debug!(
-                req_bytes = request_owned.len(),
-                resp_bytes = response.len(),
-                "actr_handle completed"
-            );
-
-            Ok(response)
-        })
-        .await
-        .map_err(|e| DynclibError::DispatchFailed(format!("spawn_blocking panicked: {e}")))??;
+        };
 
         let reply = guest_abi::decode_message::<AbiReply>(&result).map_err(|code| {
             DynclibError::DispatchFailed(format!(
