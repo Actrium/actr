@@ -56,5 +56,8 @@ class Workload(WorkloadProtocol):
     async def on_mailbox_backpressure(self, event, ctx) -> None:
         return None
 
+    async def on_data_chunk(self, chunk, sender, ctx) -> None:
+        return None
+
 
 __all__ = ["Workload"]

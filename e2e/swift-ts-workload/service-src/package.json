@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "componentize": "actr-workload-ts componentize dist/actr_service.js -o dist/duplex-echo-service.wasm --wit __REPO_ROOT__/core/framework/wit/actr-workload.wit",
+    "componentize": "actr-workload-ts componentize dist/actr_service.js -o dist/duplex-echo-service.wasm --wit __REPO_ROOT__/core/framework/wit-v2/actr-workload.wit",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

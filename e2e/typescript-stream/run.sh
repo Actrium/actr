@@ -192,6 +192,7 @@ import {
   registerStream,
   sendDataChunk,
   unregisterStream,
+  type InvocationCtx,
 } from '@actrium/actr-workload';
 
 import type {
@@ -234,6 +235,7 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
 
   async prepareStream(
     request: StreamPrepareRequest,
+    ctx?: InvocationCtx,
   ): Promise<StreamPrepareResponse> {
     const inboundStreamId = request.inboundStreamId;
     const replyStreamId = request.replyStreamId;
@@ -242,22 +244,27 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
       `typescript echo: prepare ${inboundStreamId} -> ${replyStreamId}`,
     );
 
-    await registerStream(inboundStreamId, async (chunk, sender) => {
-      const incoming = textDecoder.decode(toUint8Array(chunk.payload));
-      console.log(`typescript echo: stream ${inboundStreamId} ${incoming}`);
-      await sendDataChunk(
-        { peer: sender },
-        {
-          streamId: replyStreamId,
-          sequence: BigInt(chunk.sequence) + 1n,
-          payload: textEncoder.encode(`${replyMessage}: ${incoming}`),
-          metadata: [{ key: 'echo-runtime', value: 'typescript-wasm' }],
-          timestampMs: BigInt(Date.now()),
-        },
-        PayloadType.StreamReliable,
-      );
-      await unregisterStream(inboundStreamId);
-    });
+    await registerStream(
+      inboundStreamId,
+      async (chunk, sender) => {
+        const incoming = textDecoder.decode(toUint8Array(chunk.payload));
+        console.log(`typescript echo: stream ${inboundStreamId} ${incoming}`);
+        await sendDataChunk(
+          { peer: sender },
+          {
+            streamId: replyStreamId,
+            sequence: BigInt(chunk.sequence) + 1n,
+            payload: textEncoder.encode(`${replyMessage}: ${incoming}`),
+            metadata: [{ key: 'echo-runtime', value: 'typescript-wasm' }],
+            timestampMs: BigInt(Date.now()),
+          },
+          PayloadType.StreamReliable,
+          ctx,
+        );
+        await unregisterStream(inboundStreamId, ctx);
+      },
+      ctx,
+    );
 
     return create(StreamPrepareResponseSchema, {
       status: `registered:${inboundStreamId}`,
@@ -266,9 +273,10 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
 
   async releaseStream(
     request: StreamReleaseRequest,
+    ctx?: InvocationCtx,
   ): Promise<StreamReleaseResponse> {
     console.log(`typescript echo: release ${request.streamId}`);
-    await unregisterStream(request.streamId);
+    await unregisterStream(request.streamId, ctx);
     return create(StreamReleaseResponseSchema, {
       status: `unregistered:${request.streamId}`,
     });
@@ -282,8 +290,8 @@ export default defineWorkload({
     console.log('TypeScript EchoService workload started');
   },
 
-  async dispatch(envelope): Promise<Uint8Array> {
-    return dispatcher.dispatch(envelope);
+  async dispatch(envelope, ctx): Promise<Uint8Array> {
+    return dispatcher.dispatch(envelope, ctx);
   },
 });
 EOF_TS
@@ -298,7 +306,7 @@ write_ts_echo_project_overrides() {
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "componentize": "actr-workload-ts componentize dist/actr_service.js -o dist/echo-service-ts.wasm --wit $REPO_ROOT/core/framework/wit/actr-workload.wit"
+    "componentize": "actr-workload-ts componentize dist/actr_service.js -o dist/echo-service-ts.wasm --wit $REPO_ROOT/core/framework/wit-v2/actr-workload.wit"
   },
   "dependencies": {
     "@actrium/actr-workload": "file:$REPO_ROOT/bindings/typescript/actr-workload",

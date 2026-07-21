@@ -80,10 +80,10 @@ Hyper currently supports two runtime workload backends.
 ### 2.1 WASM Integration
 
 WASM Component Model binaries are loaded by WasmHost. Guest/host calls use the
-WIT contract in `core/framework/wit/actr-workload.wit` and the Component Model
+WIT contract in `core/framework/wit-v2/actr-workload.wit` and the Component Model
 canonical ABI; legacy core-module packages are no longer loadable.
 
-- **Dispatch Path**: `ActrNode::handle_incoming` → `Workload::handle` → `WasmWorkload` (wasmtime)
+- **Dispatch Path**: `ActrNode::handle_incoming` → `Workload::handle` → `WasmWorkloadV2` (wasmtime)
 - **Scheduling**: Dynamic dispatch via `Workload` enum
 - **Feature Gate**: `wasm-engine`
 - **I/O Model**: Guest calls WIT host imports (`call`, `tell`, `call-raw`, `discover`) and awaits the generated Component Model async bindings
@@ -142,7 +142,7 @@ Transport strategies are orthogonal to integration modes — any integration mod
 
 ```rust
 pub enum Workload {
-    Wasm(WasmWorkload),
+    Wasm(WasmWorkloadV2),
     DynClib(DynClibWorkload),
 }
 
