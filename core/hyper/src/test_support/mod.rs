@@ -336,7 +336,8 @@ impl TestPackageHookObserver {
 
     /// Deterministically stop the owning workload runner and its backend.
     pub async fn shutdown(&self) {
-        self.observer.workload_dispatch.shutdown().await;
+        let mut workload = self.observer.workload_dispatch.lock().await;
+        let _ = workload.shutdown().await;
     }
 }
 
