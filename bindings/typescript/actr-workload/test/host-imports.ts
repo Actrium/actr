@@ -9,9 +9,7 @@ type ActrId = {
 };
 
 type Dest =
-  | { tag: 'host' }
-  | { tag: 'workload' }
-  | { tag: 'peer'; val: ActrId };
+  { tag: 'host' } | { tag: 'workload' } | { tag: 'peer'; val: ActrId };
 
 type DataChunk = {
   streamId: string;
