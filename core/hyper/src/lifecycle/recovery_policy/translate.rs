@@ -590,6 +590,11 @@ pub(crate) enum CancelReason {
 /// the signaling client through the `NetworkEventProcessor` hooks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignalingDirective {
+    /// Invalidate every in-flight signaling connection attempt, including an
+    /// explicit attempt owned by a superseded recovery effect, and keep new
+    /// automatic attempts paused. The shell must lower this fence before it
+    /// requests cancellation of the superseded effect.
+    InvalidateConnectionAttempts,
     /// Invalidate in-flight automatic reconnect attempts and keep new attempts
     /// paused until a recovery path explicitly schedules them again.
     SuppressAutoReconnect,
@@ -898,7 +903,13 @@ fn translate_foreground(view: &View, now: PolicyInstant, config: &PolicyConfig) 
                 d.machine(MachineInput::RecoveryIntent(
                     RecoveryIntentInput::RequestReconnect,
                 ));
-                d.signals.push(SignalingDirective::SuppressAutoReconnect);
+                preempt_weaker_recovery(view, RecoveryStrength::Reconnect, &mut d);
+                if d.cancels.contains(&CancelReason::PreemptedByStronger) {
+                    d.signals
+                        .push(SignalingDirective::InvalidateConnectionAttempts);
+                } else {
+                    d.signals.push(SignalingDirective::SuppressAutoReconnect);
+                }
             }
             // Wakes records backing off after a phase-ineligible failure; parks
             // remain until their masks clear (foreground is not a mask trigger).
@@ -1103,13 +1114,10 @@ fn translate_recovery_requested(view: &View, minimum: RecoveryStrength) -> Decis
     if current.is_none_or(|c| c < minimum) {
         let mut d = Decision::advancing();
         d.machine(MachineInput::RecoveryIntent(minimum.request_input()));
-        // A stronger requirement preempts a weaker recovery effect already
-        // running, per the RFC effect-preemption table; the stronger action
-        // starts once the single-flight slot returns to Idle.
-        if let Some(running) = executing_recovery_strength(view.execution)
-            && running < minimum
-        {
-            d.cancels.push(CancelReason::PreemptedByStronger);
+        preempt_weaker_recovery(view, minimum, &mut d);
+        if d.cancels.contains(&CancelReason::PreemptedByStronger) {
+            d.signals
+                .push(SignalingDirective::InvalidateConnectionAttempts);
         }
         return d;
     }
@@ -1551,6 +1559,18 @@ fn executing_recovery_strength(exec: ExecutionState) -> Option<RecoveryStrength>
         ExecutionState::Restoring => Some(RecoveryStrength::Restore),
         ExecutionState::Reconnecting => Some(RecoveryStrength::Reconnect),
         _ => None,
+    }
+}
+
+/// Request cancellation when a newly-derived recovery requirement is stronger
+/// than the recovery effect occupying the single-flight slot. The signaling
+/// generation fence is emitted by the caller because only the caller knows
+/// whether this preemption is paired with another signaling directive.
+fn preempt_weaker_recovery(view: &View, requested: RecoveryStrength, d: &mut Decision) {
+    if let Some(running) = executing_recovery_strength(view.execution)
+        && running < requested
+    {
+        d.cancels.push(CancelReason::PreemptedByStronger);
     }
 }
 

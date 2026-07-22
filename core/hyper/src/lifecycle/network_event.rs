@@ -300,6 +300,11 @@ pub trait NetworkEventProcessor: Send + Sync {
     /// dequeued, before the reconciler optionally waits through offline grace.
     fn prepare_network_event(&self, _event: &NetworkEvent) {}
 
+    /// Invalidate commit rights for every in-flight signaling connection
+    /// attempt and keep automatic reconnect paused. The supervisor shell calls
+    /// this synchronously before cancelling a superseded recovery effect.
+    fn invalidate_signaling_connection_attempts(&self) {}
+
     /// Invalidate in-flight automatic reconnect and keep new attempts paused.
     ///
     /// Executed by the shell when policy translation emits
@@ -937,6 +942,10 @@ impl DefaultNetworkEventProcessor {
 
 #[async_trait::async_trait]
 impl NetworkEventProcessor for DefaultNetworkEventProcessor {
+    fn invalidate_signaling_connection_attempts(&self) {
+        self.signaling_client.invalidate_generation();
+    }
+
     fn suppress_auto_reconnect(&self) {
         // Executed when policy translation emits `SuppressAutoReconnect`
         // (entering the background, or a long-background foreground rebuild).
@@ -1525,21 +1534,15 @@ fn handle_supervisor_input(
         }
     }
 
-    if outcome.cancel_effect
-        && let Some(running) = effect.as_ref()
-    {
-        tracing::debug!(
-            action_id = running.action_id,
-            "network_event.effect.cancel_requested"
-        );
-        running.token.cancel();
-    }
-
     // Lower policy-derived signaling directives (auto-reconnect control) to the
-    // processor. These replace the pre-translation event sniffing that used to
-    // live in `prepare_network_event`.
+    // processor before requesting effect cancellation. A preemption fence must
+    // revoke the old effect's commit rights before cooperative cancellation.
     for signal in &outcome.signals {
         match signal {
+            tp::SignalingDirective::InvalidateConnectionAttempts => {
+                tracing::debug!("network_event.signaling.invalidate_connection_attempts");
+                processor.invalidate_signaling_connection_attempts();
+            }
             tp::SignalingDirective::SuppressAutoReconnect => {
                 tracing::debug!("network_event.signaling.suppress_auto_reconnect");
                 processor.suppress_auto_reconnect();
@@ -1549,6 +1552,16 @@ fn handle_supervisor_input(
                 processor.resume_auto_reconnect();
             }
         }
+    }
+
+    if outcome.cancel_effect
+        && let Some(running) = effect.as_ref()
+    {
+        tracing::debug!(
+            action_id = running.action_id,
+            "network_event.effect.cancel_requested"
+        );
+        running.token.cancel();
     }
 
     for record in &outcome.status {

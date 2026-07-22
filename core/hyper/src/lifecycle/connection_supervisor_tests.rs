@@ -320,6 +320,64 @@ fn long_background_reconnect_does_not_requeue_itself_on_explicit_disconnect() {
     assert!(g.maybe_start_effect(ms(60_006)).is_none());
 }
 
+#[test]
+fn long_foreground_must_preempt_running_restore_before_starting_reconnect() {
+    let mut s = ungated();
+    s.accept(tp::Input::AppEnteredForeground, ms(0));
+    s.accept(
+        tp::Input::SignalingGenerationCommitted {
+            generation: 7,
+            origin: tp::SignalingOrigin::External,
+        },
+        ms(1),
+    );
+    s.accept(tp::Input::AppEnteredBackground, ms(2));
+
+    // A signaling loss while the current production supervisor is Ungated
+    // starts Restore even though the app phase is Background.
+    s.accept(
+        tp::Input::SignalingGenerationLost {
+            generation: 7,
+            cause: tp::SignalingLostCause::RemoteReset,
+        },
+        ms(3),
+    );
+    let restore = s
+        .maybe_start_effect(ms(3))
+        .expect("signaling loss should start restore under the Ungated profile");
+    assert_eq!(restore.kind, EffectKind::Restore);
+
+    // Returning after the long-background threshold upgrades the pending intent
+    // to Reconnect. The running Restore must be preempted here; otherwise it can
+    // publish a short-lived signaling connection before Reconnect tears it down.
+    let foreground = s.accept(tp::Input::AppEnteredForeground, ms(65_002));
+    assert_eq!(
+        s.view().recovery_intent,
+        tp::RecoveryIntentState::ReconnectPending
+    );
+    assert!(
+        foreground.cancel_effect,
+        "long foreground must preempt Restore before starting Reconnect"
+    );
+
+    // Even if the superseded Restore races with cancellation and reports a stale
+    // success, it cannot acknowledge the newer Reconnect obligation. Releasing
+    // the execution slot must preserve and start the stronger action.
+    s.accept(
+        tp::Input::EffectCompleted {
+            action_id: restore.action_id,
+            kind: restore.kind,
+            policy_revision: restore.captured_revision,
+            outcome: EffectOutcome::Succeeded,
+        },
+        ms(65_003),
+    );
+    let reconnect = s
+        .maybe_start_effect(ms(65_003))
+        .expect("Reconnect intent should survive the stale Restore completion");
+    assert_eq!(reconnect.kind, EffectKind::Reconnect);
+}
+
 // -- cleanup supersession (invariants 4, 31) --------------------------------
 
 #[test]

@@ -16,6 +16,7 @@ struct ForceReconnectFakeSignalingClient {
     disconnect_calls: AtomicUsize,
     connect_once_calls: AtomicUsize,
     auto_reconnect_suppressed: AtomicBool,
+    invalidate_generation_calls: AtomicUsize,
     suppress_auto_reconnect_calls: AtomicUsize,
     schedule_auto_reconnect_calls: AtomicUsize,
     schedule_auto_reconnect_reset_backoff_calls: AtomicUsize,
@@ -37,6 +38,7 @@ impl ForceReconnectFakeSignalingClient {
             disconnect_calls: AtomicUsize::new(0),
             connect_once_calls: AtomicUsize::new(0),
             auto_reconnect_suppressed: AtomicBool::new(false),
+            invalidate_generation_calls: AtomicUsize::new(0),
             suppress_auto_reconnect_calls: AtomicUsize::new(0),
             schedule_auto_reconnect_calls: AtomicUsize::new(0),
             schedule_auto_reconnect_reset_backoff_calls: AtomicUsize::new(0),
@@ -70,6 +72,13 @@ impl SignalingClient for ForceReconnectFakeSignalingClient {
         self.auto_reconnect_suppressed
             .store(true, AtomicOrdering::SeqCst);
         self.suppress_auto_reconnect_calls
+            .fetch_add(1, AtomicOrdering::SeqCst);
+    }
+
+    fn invalidate_generation(&self) {
+        self.auto_reconnect_suppressed
+            .store(true, AtomicOrdering::SeqCst);
+        self.invalidate_generation_calls
             .fetch_add(1, AtomicOrdering::SeqCst);
     }
 
@@ -257,6 +266,21 @@ fn signaling_directive_hooks_control_auto_reconnect() {
     let signaling = Arc::new(ForceReconnectFakeSignalingClient::new(false));
     let processor = DefaultNetworkEventProcessor::new(signaling.clone(), None);
 
+    processor.invalidate_signaling_connection_attempts();
+    assert_eq!(
+        signaling
+            .invalidate_generation_calls
+            .load(AtomicOrdering::SeqCst),
+        1,
+        "InvalidateConnectionAttempts must fence explicit and automatic attempts"
+    );
+    assert!(
+        signaling
+            .auto_reconnect_suppressed
+            .load(AtomicOrdering::SeqCst),
+        "the generation fence must leave automatic reconnect paused"
+    );
+
     processor.suppress_auto_reconnect();
     assert_eq!(
         signaling
@@ -279,6 +303,110 @@ fn signaling_directive_hooks_control_auto_reconnect() {
             .load(AtomicOrdering::SeqCst),
         "ResumeAutoReconnect must re-enable future automatic reconnects"
     );
+}
+
+struct PreemptionFenceProcessor {
+    token: CancellationToken,
+    fence_calls: AtomicUsize,
+    fence_observed_before_cancel: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl NetworkEventProcessor for PreemptionFenceProcessor {
+    fn invalidate_signaling_connection_attempts(&self) {
+        self.fence_observed_before_cancel
+            .store(!self.token.is_cancelled(), AtomicOrdering::SeqCst);
+        self.fence_calls.fetch_add(1, AtomicOrdering::SeqCst);
+    }
+
+    async fn process_network_available(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_lost(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_type_changed(
+        &self,
+        _is_wifi: bool,
+        _is_cellular: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn cleanup_connections(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn stronger_reconnect_fences_restore_before_requesting_cancellation() {
+    let mut supervisor = ConnectionSupervisor::new(tp::LifecycleProfile::Ungated);
+    supervisor.accept(tp::Input::AppEnteredForeground, Duration::ZERO);
+    supervisor.accept(
+        tp::Input::SignalingGenerationCommitted {
+            generation: 7,
+            origin: tp::SignalingOrigin::External,
+        },
+        Duration::from_millis(1),
+    );
+    supervisor.accept(tp::Input::AppEnteredBackground, Duration::from_millis(2));
+    supervisor.accept(
+        tp::Input::SignalingGenerationLost {
+            generation: 7,
+            cause: tp::SignalingLostCause::RemoteReset,
+        },
+        Duration::from_millis(3),
+    );
+    let started = supervisor
+        .maybe_start_effect(Duration::from_millis(3))
+        .expect("signaling loss should start Restore");
+    assert_eq!(
+        started.kind,
+        crate::lifecycle::recovery_policy::diagnosis::EffectKind::Restore
+    );
+
+    let token = CancellationToken::new();
+    let recorder = Arc::new(PreemptionFenceProcessor {
+        token: token.clone(),
+        fence_calls: AtomicUsize::new(0),
+        fence_observed_before_cancel: AtomicBool::new(false),
+    });
+    let processor: Arc<dyn NetworkEventProcessor> = recorder.clone();
+    let mut effect = Some(RunningEffect {
+        action_id: started.action_id,
+        token: token.clone(),
+    });
+    let (internal_tx, _internal_rx) = mpsc::channel(1);
+    let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
+    let mut timers = HashMap::new();
+    let mut last_action_id = Some(started.action_id);
+    let mut last_outcome = None;
+
+    let terminate = handle_supervisor_input(
+        &mut supervisor,
+        tp::Input::AppEnteredForeground,
+        Duration::from_secs(65),
+        tokio::time::Instant::now(),
+        &internal_tx,
+        &mut timers,
+        &mut effect,
+        &processor,
+        &status_tx,
+        &mut last_action_id,
+        &mut last_outcome,
+    );
+
+    assert!(!terminate);
+    assert_eq!(recorder.fence_calls.load(AtomicOrdering::SeqCst), 1);
+    assert!(
+        recorder
+            .fence_observed_before_cancel
+            .load(AtomicOrdering::SeqCst),
+        "the old Restore must lose commit rights before cancellation is requested"
+    );
+    assert!(token.is_cancelled(), "the old Restore must be cancelled");
 }
 
 #[tokio::test]

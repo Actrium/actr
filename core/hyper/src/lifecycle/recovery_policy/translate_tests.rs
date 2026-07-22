@@ -156,6 +156,26 @@ fn short_foreground_emits_resume_and_long_foreground_emits_suppress() {
 }
 
 #[test]
+fn long_foreground_preempts_restore_and_fences_its_signaling_attempt() {
+    let mut view = running_recovery_view(EffectKind::Restore, RecoveryStrength::Restore);
+    view.app_phase = AppPhaseState::Background;
+    view.background_entered_at = Some(Duration::ZERO);
+
+    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(120));
+
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
+    ));
+    assert!(d.cancels.contains(&CancelReason::PreemptedByStronger));
+    assert!(
+        d.signals
+            .contains(&SignalingDirective::InvalidateConnectionAttempts),
+        "the old Restore must lose signaling commit rights before cancellation"
+    );
+}
+
+#[test]
 fn foreground_between_legacy_and_configured_thresholds_probes_and_resumes() {
     // Pins the single 60 s `background_reconnect_after` boundary: a stay in
     // the 30..60 s band is a short background. The legacy pre-translate hook
@@ -666,6 +686,10 @@ fn recovery_requested_preempts_weaker_running_effect() {
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
     ));
     assert!(d.cancels.contains(&CancelReason::PreemptedByStronger));
+    assert!(
+        d.signals
+            .contains(&SignalingDirective::InvalidateConnectionAttempts)
+    );
 }
 
 #[test]

@@ -1242,10 +1242,10 @@ async fn inv12_stale_signaling_generation_cannot_publish_connected() {
         .expect("first connection should reach the server")
         .expect("first accept notifier should remain open");
 
-    client
-        .disconnect()
-        .await
-        .expect("disconnect should invalidate the first generation");
+    // A stronger supervisor action fences the superseded Restore synchronously
+    // before requesting task cancellation. The explicit connect may still run
+    // to its next commit boundary, but it must no longer publish Connected.
+    client.invalidate_generation();
 
     let replacement_client = client.clone();
     let replacement_connect = tokio::spawn(async move { replacement_client.connect_once().await });
