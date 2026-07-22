@@ -15,9 +15,6 @@ permissions:
   contents: write
   pull-requests: write
 
-env:
-  PROTOC_VERSION: "29.3"
-
 jobs:
   prepare:
     name: Prepare release PR
@@ -44,6 +41,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.15.0 --locked

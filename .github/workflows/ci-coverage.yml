@@ -28,6 +28,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Install wasm Component Model toolchain
         run: |
           cargo install wasm-component-ld --version 0.5.26 --locked
@@ -78,6 +79,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
@@ -138,6 +140,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Install wasm-capable clang
         run: |
           sudo apt-get update
@@ -211,6 +214,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: npm install

@@ -4,9 +4,6 @@ on:
   workflow_call:
   workflow_dispatch:
 
-env:
-  PROTOC_VERSION: "29.3"
-
 permissions:
   contents: read
 
@@ -25,6 +22,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Cache uniffi-bindgen binary
         id: cache-uniffi
         uses: actions/cache@v4

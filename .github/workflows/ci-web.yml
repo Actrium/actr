@@ -5,7 +5,6 @@ on:
   workflow_dispatch:
 
 env:
-  PROTOC_VERSION: "29.3"
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
@@ -29,6 +28,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - uses: Swatinem/rust-cache@v2
 
@@ -75,6 +75,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Install wasm Component Model toolchain
         run: |

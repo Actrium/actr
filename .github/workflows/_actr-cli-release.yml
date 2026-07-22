@@ -15,7 +15,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  PROTOC_VERSION: "29.3"
 
 jobs:
   validate:
@@ -95,7 +94,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-          version: ${{ env.PROTOC_VERSION }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Cache wasm-pack
         id: cache-wasm-pack
         uses: actions/cache@v4
@@ -150,7 +149,7 @@ jobs:
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-          version: ${{ env.PROTOC_VERSION }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Set up Zig
         if: matrix.use_zig
         uses: mlugg/setup-zig@v2
