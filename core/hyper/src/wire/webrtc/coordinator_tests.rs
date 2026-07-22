@@ -2602,7 +2602,21 @@ async fn pending_candidate_flush_obeys_its_total_deadline() {
         }
     });
     tokio::task::yield_now().await;
-    tokio::time::advance(REMOTE_CANDIDATE_FLUSH_TIMEOUT + Duration::from_millis(1)).await;
+
+    // RFC-0419 §6 R4 double-sided boundary: one millisecond before the total
+    // flush deadline the task must still be pending — the timeout must not
+    // fire early.
+    tokio::time::advance(REMOTE_CANDIDATE_FLUSH_TIMEOUT - Duration::from_millis(1)).await;
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !flush_task.is_finished(),
+        "flush must stay pending one tick before its total deadline"
+    );
+
+    // Reaching the deadline fires the timeout.
+    tokio::time::advance(Duration::from_millis(1)).await;
 
     let error = flush_task
         .await

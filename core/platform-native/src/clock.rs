@@ -89,6 +89,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_clock_upholds_the_monotonic_clock_contract() {
+        // R4/R5 cross-implementation dimension: the native clock passes the
+        // same executable contract suite as the virtual TestClock, so code
+        // written against the trait behaves identically on both.
+        actr_platform_traits::assert_monotonic_clock_contract(&NativeMonotonicClock);
+    }
+
+    #[test]
+    fn elapsed_across_a_real_wait_is_at_least_the_requested_duration() {
+        // R4 on the native runtime: "fires no earlier than" against the real
+        // OS clock. The blocking wait is the measurement subject itself (the
+        // OS guarantees `thread::sleep` blocks for at least the requested
+        // time), not a synchronization device; it is the single intentional
+        // real wait in the platform clock tests and is kept short.
+        let clock = NativeMonotonicClock;
+        let requested = Duration::from_millis(10);
+
+        let start = clock.now();
+        std::thread::sleep(requested);
+        let elapsed = clock.elapsed(start, clock.now());
+
+        assert!(
+            elapsed >= requested,
+            "monotonic elapsed across a {requested:?} wait was only {elapsed:?}; \
+             a deadline computed from this clock would have fired early"
+        );
+    }
+
+    #[test]
     fn elapsed_saturates_to_zero_when_later_precedes_earlier() {
         let clock = NativeMonotonicClock;
         let earlier = clock.now();

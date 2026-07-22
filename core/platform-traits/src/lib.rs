@@ -22,7 +22,7 @@ pub mod storage;
 
 pub use clock::MonotonicClock;
 #[cfg(any(test, feature = "test-utils"))]
-pub use clock::{TestClock, TestInstant};
+pub use clock::{TestClock, TestInstant, assert_monotonic_clock_contract};
 pub use crypto::CryptoProvider;
 pub use platform::PlatformProvider;
 pub use storage::{KvOp, KvStore, KvStoreClone};

@@ -100,6 +100,100 @@ pub trait MonotonicClock: Send + Sync {
     fn elapsed(&self, earlier: Self::Instant, later: Self::Instant) -> Duration;
 }
 
+/// Executable contract suite for [`MonotonicClock`] implementations
+/// (RFC-0419 §2; §6 R4/R5, the cross-implementation dimension).
+///
+/// Every implementation — the deterministic [`TestClock`], the native clock,
+/// a future web clock — must pass this exact function. Running one shared
+/// suite against all implementations is what makes the §2 contract portable:
+/// deadline code written against the trait behaves identically on every
+/// runtime. Implementing crates call this from a regular `#[test]`.
+///
+/// Verifies, in order:
+///
+/// 1. `now` is non-decreasing across successive calls;
+/// 2. `add` and `elapsed` are mutually inverse for representable offsets
+///    (offsets start at 1 ms: the trait explicitly guarantees no
+///    sub-millisecond precision, so the shared suite must not demand it —
+///    the virtual clock's nanosecond exactness is asserted in its own tests);
+/// 3. `elapsed` saturates to [`Duration::ZERO`] on reversed arguments
+///    instead of panicking;
+/// 4. `add` saturates on overflow to a never-firing sentinel instead of
+///    panicking: not earlier than its input, than any normally computed
+///    deadline, or than a later reading of the clock.
+///
+/// The suite only advances time by calling `add` — it never sleeps — so it
+/// is deterministic on virtual clocks and instantaneous on real ones.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn assert_monotonic_clock_contract<C: MonotonicClock>(clock: &C) {
+    let century = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+
+    // 1. `now` is non-decreasing.
+    let mut previous = clock.now();
+    for _ in 0..64 {
+        let current = clock.now();
+        assert!(
+            current >= previous,
+            "now must be non-decreasing: {previous:?} -> {current:?}"
+        );
+        previous = current;
+    }
+
+    // 2. `add` and `elapsed` are mutually inverse.
+    let t = clock.now();
+    assert_eq!(
+        clock.add(t, Duration::ZERO),
+        t,
+        "add of zero must be identity"
+    );
+    for offset in [
+        Duration::from_millis(1),
+        Duration::from_millis(25),
+        Duration::from_secs(1),
+        century,
+    ] {
+        let later = clock.add(t, offset);
+        assert!(
+            later > t,
+            "a positive offset must land strictly later (offset {offset:?})"
+        );
+        assert_eq!(
+            clock.elapsed(t, later),
+            offset,
+            "elapsed(t, add(t, d)) must round-trip to d (offset {offset:?})"
+        );
+    }
+
+    // 3. `elapsed` saturates on reversed arguments.
+    let later = clock.add(t, Duration::from_secs(5));
+    assert_eq!(
+        clock.elapsed(later, t),
+        Duration::ZERO,
+        "elapsed must saturate to zero, not panic, when later < earlier"
+    );
+    assert_eq!(
+        clock.elapsed(t, t),
+        Duration::ZERO,
+        "zero distance to itself"
+    );
+
+    // 4. `add` saturates on overflow to a never-firing sentinel.
+    let sentinel = clock.add(t, Duration::MAX); // must not panic
+    assert!(sentinel >= t, "sentinel must not precede its input instant");
+    assert!(
+        sentinel >= clock.add(t, century),
+        "sentinel must not precede any normally computed deadline"
+    );
+    assert!(
+        sentinel >= clock.now(),
+        "sentinel must not precede a later reading of the clock"
+    );
+    assert!(
+        clock.elapsed(t, sentinel) >= century,
+        "sentinel must lie beyond any horizon a caller could wait for"
+    );
+}
+
 /// Reading of a [`TestClock`]: a virtual nanosecond count.
 ///
 /// Obtainable only through [`TestClock`]; carries no calendar meaning and,
@@ -184,6 +278,140 @@ fn saturate_nanos(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The minimal deadline decision the runtime performs everywhere:
+    /// "has this deadline passed?". Its only notion of time is the
+    /// monotonic clock — the signature admits no wall-clock input, which is
+    /// the structural guarantee the wall-clock immunity test below relies
+    /// on: whatever the system UTC clock does, it cannot reach this code.
+    fn deadline_expired<C: MonotonicClock>(clock: &C, deadline: C::Instant) -> bool {
+        clock.now() >= deadline
+    }
+
+    #[test]
+    fn test_clock_upholds_the_monotonic_clock_contract() {
+        // R4/R5: the virtual test clock passes the same executable contract
+        // suite as every production implementation.
+        assert_monotonic_clock_contract(&TestClock::new());
+    }
+
+    #[test]
+    fn deadline_decisions_are_immune_to_wall_clock_jumps() {
+        // R1, contract level: deadline verdicts must be a function of
+        // monotonic time only. Three runs over the identical monotonic
+        // schedule (checkpoints every 10 ms, deadline at 50 ms):
+        //
+        //   1. baseline    — no wall clock exists at all;
+        //   2. monotonic   — a hostile wall clock jumps around next to the
+        //                    decision; verdicts must equal the baseline;
+        //   3. naive wall  — what a wall-clock-based decider would answer,
+        //                    shown to diverge, proving the jump sequence is
+        //                    genuinely hostile and the equality in (2) is
+        //                    not vacuous.
+        const STEP: Duration = Duration::from_millis(10);
+        const TIMEOUT: Duration = Duration::from_millis(50);
+
+        // Run 1: baseline, wall time does not exist.
+        let baseline: Vec<bool> = {
+            let clock = TestClock::new();
+            let deadline = clock.add(clock.now(), TIMEOUT);
+            (0..7)
+                .map(|_| {
+                    let verdict = deadline_expired(&clock, deadline);
+                    clock.advance(STEP);
+                    verdict
+                })
+                .collect()
+        };
+        assert_eq!(
+            baseline,
+            [false, false, false, false, false, true, true],
+            "deadline at 50 ms expires exactly at the 50 ms checkpoint"
+        );
+
+        // Hostile wall-clock readings (Unix ms) observed at each checkpoint:
+        // normal tick, +2 h forward jump, -1 h backward jump, a freeze held
+        // for two checkpoints, then a jump back to sanity.
+        const HOUR_MS: i64 = 3_600_000;
+        let base_wall_ms: i64 = 1_700_000_000_000;
+        let hostile_wall_ms: [i64; 7] = [
+            base_wall_ms,                    // t=0    start
+            base_wall_ms + 10,               // t=10   normal tick
+            base_wall_ms + 2 * HOUR_MS + 20, // t=20   jumped 2 h forward
+            base_wall_ms - HOUR_MS,          // t=30   jumped 1 h backward
+            base_wall_ms - HOUR_MS,          // t=40   frozen
+            base_wall_ms - HOUR_MS,          // t=50   still frozen (real deadline passes here)
+            base_wall_ms + 60,               // t=60   back to sane
+        ];
+
+        // Run 2: same monotonic schedule with the hostile wall clock
+        // alongside. `deadline_expired` cannot read `wall_ms`; the verdicts
+        // must be bit-identical to the baseline.
+        let clock = TestClock::new();
+        let deadline = clock.add(clock.now(), TIMEOUT);
+        let with_hostile_wall: Vec<bool> = hostile_wall_ms
+            .iter()
+            .map(|_wall_ms| {
+                let verdict = deadline_expired(&clock, deadline);
+                clock.advance(STEP);
+                verdict
+            })
+            .collect();
+        assert_eq!(
+            with_hostile_wall, baseline,
+            "monotonic deadline verdicts must not change while the wall clock jumps"
+        );
+
+        // Run 3: the naive wall-clock decider under the same jumps, to prove
+        // the sequence above would actually break wall-based timing.
+        let wall_deadline_ms = base_wall_ms + TIMEOUT.as_millis() as i64;
+        let naive_wall: Vec<bool> = hostile_wall_ms
+            .iter()
+            .map(|wall_ms| *wall_ms >= wall_deadline_ms)
+            .collect();
+        assert_eq!(
+            naive_wall,
+            [false, false, true, false, false, false, true],
+            "wall-based verdicts fire prematurely on the forward jump (t=20) \
+             and miss the real expiry while frozen (t=50)"
+        );
+        assert_ne!(
+            naive_wall, baseline,
+            "the jump sequence must be hostile enough to break a wall-based decider"
+        );
+    }
+
+    #[test]
+    fn deadline_fires_no_earlier_than_its_exact_instant() {
+        // R4: "no earlier than" firing semantics at its precise boundary on
+        // the test runtime — 1 ns before the deadline is not expired, the
+        // very next nanosecond is.
+        let clock = TestClock::new();
+        clock.advance(Duration::from_secs(1));
+        let deadline = clock.add(clock.now(), Duration::from_millis(30));
+
+        clock.advance(Duration::from_millis(30) - Duration::from_nanos(1));
+        assert!(
+            !deadline_expired(&clock, deadline),
+            "1 ns before the deadline the timer must not have fired"
+        );
+        assert_eq!(
+            clock.elapsed(deadline, clock.now()),
+            Duration::ZERO,
+            "no time has elapsed past a deadline that has not been reached"
+        );
+
+        clock.advance(Duration::from_nanos(1));
+        assert!(
+            deadline_expired(&clock, deadline),
+            "at exactly the deadline instant the timer is due"
+        );
+        assert_eq!(
+            clock.now(),
+            deadline,
+            "expiry happened exactly on the boundary"
+        );
+    }
 
     #[test]
     fn now_is_stable_until_advanced() {
