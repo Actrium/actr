@@ -406,6 +406,9 @@ pub struct Hyper {
 #[cfg(not(target_arch = "wasm32"))]
 struct HyperInner {
     config: HyperConfig,
+    /// Private runtime gate for on-demand membership recovery. Keeping it out
+    /// of public `HyperConfig` preserves existing external struct literals.
+    membership_controller_enabled: bool,
     /// Locally unique ID generated and persisted on first startup
     instance_id: String,
     /// Optional platform provider for cross-platform abstraction
@@ -699,10 +702,22 @@ impl Hyper {
         Ok(Self {
             inner: Arc::new(HyperInner {
                 config,
+                membership_controller_enabled: false,
                 instance_id,
                 platform,
             }),
         })
+    }
+
+    /// Enable or disable on-demand membership recovery.
+    ///
+    /// This builder lives on `Hyper` instead of adding a required field to the
+    /// public [`HyperConfig`] struct.
+    pub fn with_membership_controller_enabled(mut self, enabled: bool) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("Hyper is uniquely owned before Node construction")
+            .membership_controller_enabled = enabled;
+        self
     }
 
     /// Verify a [`WorkloadPackage`] and return the verified package bundle
@@ -909,7 +924,7 @@ impl Node<Init> {
             hyper_inner.config.resolved_mailbox_backpressure_threshold();
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
         let dispatch_concurrency = hyper_inner.config.resolved_dispatch_concurrency();
-        let membership_controller_enabled = hyper_inner.config.membership_controller_enabled;
+        let membership_controller_enabled = hyper_inner.membership_controller_enabled;
         let mut node_inner = crate::lifecycle::node::Inner::build(
             runtime_config,
             loaded.workload,
@@ -963,7 +978,7 @@ impl Node<Init> {
             hyper_inner.config.resolved_mailbox_backpressure_threshold();
         let credential_expiry_warning = hyper_inner.config.credential_expiry_warning;
         let dispatch_concurrency = hyper_inner.config.resolved_dispatch_concurrency();
-        let membership_controller_enabled = hyper_inner.config.membership_controller_enabled;
+        let membership_controller_enabled = hyper_inner.membership_controller_enabled;
         let mut node_inner = crate::lifecycle::node::Inner::build(
             runtime_config,
             crate::workload::Workload::Linked(handle.clone()),

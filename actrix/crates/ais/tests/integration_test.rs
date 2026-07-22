@@ -3,8 +3,8 @@
 //! 在测试进程内启动临时 Signer gRPC 服务，验证 AIS 的签发与校验链路。
 
 use actr_protocol::{
-    ActrType, Realm, RegisterAuthMode, RegisterRequest, RegisterResponse, RenewCredentialRequest,
-    RenewCredentialResponse, register_response, renew_credential_response,
+    ActrType, Realm, RegisterAuthMode, RegisterRequest, RegisterResponse, ReissueCredentialRequest,
+    RenewCredentialRequest, RenewCredentialResponse, register_response, renew_credential_response,
 };
 use ais::signer_client_wrapper::create_signer_client;
 use ais::{
@@ -333,6 +333,32 @@ async fn post_register(
     RegisterResponse::decode(body).expect("decode register response")
 }
 
+async fn post_reissue(
+    app: Router,
+    request: ReissueCredentialRequest,
+    realm_secret: Option<&str>,
+) -> RegisterResponse {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri("/reissue")
+        .header("content-type", "application/protobuf")
+        .header("x-real-ip", "127.0.0.1");
+    if let Some(secret) = realm_secret {
+        builder = builder.header(REALM_SECRET_HEADER, secret);
+    }
+
+    let response = app
+        .oneshot(builder.body(Body::from(request.encode_to_vec())).unwrap())
+        .await
+        .expect("reissue route response");
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("reissue response body");
+    assert_eq!(status, StatusCode::OK);
+    RegisterResponse::decode(body).expect("decode reissue response")
+}
+
 #[tokio::test]
 #[serial]
 async fn test_register_route_linked_with_realm_secret_succeeds() {
@@ -355,6 +381,46 @@ async fn test_register_route_linked_with_realm_secret_succeeds() {
             panic!("linked /register with realm secret should succeed: {err:?}")
         }
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn test_reissue_route_preserves_linked_actor_id() {
+    let mut env = setup_test_environment().await;
+    let realm_secret = "linked-reissue-secret";
+    let realm_id = 22011;
+    seed_realm(realm_id, "linked-reissue", Some(realm_secret)).await;
+    let app = create_test_router(&env).await;
+
+    let mut registration = linked_register_request();
+    registration.realm = Realm { realm_id };
+    let initial = post_register(app.clone(), registration.clone(), Some(realm_secret)).await;
+    let initial_ok = match initial.result.expect("register result") {
+        register_response::Result::Success(ok) => ok,
+        register_response::Result::Error(err) => panic!("initial registration failed: {err:?}"),
+    };
+
+    let response = post_reissue(
+        app,
+        ReissueCredentialRequest {
+            actr_id: initial_ok.actr_id.clone(),
+            registration,
+        },
+        Some(realm_secret),
+    )
+    .await;
+    match response.result.expect("reissue result") {
+        register_response::Result::Success(ok) => {
+            assert_eq!(ok.actr_id, initial_ok.actr_id);
+            assert!(ok.renewal_token.is_some());
+            assert!(ok.renewal_token_expires_at.is_some());
+        }
+        register_response::Result::Error(err) => {
+            panic!("credential reissue should preserve the actor id: {err:?}")
+        }
+    }
+
+    env.shutdown_signer().await;
 }
 
 #[tokio::test]

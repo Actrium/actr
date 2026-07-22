@@ -6,7 +6,7 @@
 use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
 use crate::lifecycle::credential_manager::CredentialManager;
-use crate::lifecycle::membership::{MembershipHandle, MembershipReport};
+use crate::lifecycle::membership::MembershipHandle;
 use crate::transport::{AuthVerdict, NetworkError};
 use crate::wire::webrtc::gate::WebRtcGate;
 use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
@@ -42,13 +42,8 @@ async fn request_credential_refresh(
     credential_manager: Option<&CredentialManager>,
 ) {
     if let Some(handle) = membership {
-        let stale_generation = handle.credential_rx().borrow().generation;
-        handle
-            .report(MembershipReport {
-                verdict: AuthVerdict::Rejected,
-                stale_generation,
-            })
-            .await;
+        let stale_revision = handle.current_revision();
+        handle.report(AuthVerdict::Rejected, stale_revision).await;
         return;
     }
     if let Some(manager) = credential_manager {
@@ -338,6 +333,13 @@ pub async fn heartbeat_task(
                 }
 
                 if !client.is_connected() {
+                    if membership.is_some() {
+                        // The signaling reconnect manager is the sole socket
+                        // driver when membership recovery is enabled. Heartbeat
+                        // only wakes it and waits for the next connected tick.
+                        client.schedule_auto_reconnect();
+                        continue;
+                    }
                     match client.connect_once().await {
                         Ok(()) => {
                             tracing::info!("✅ Signaling reconnected before heartbeat");

@@ -75,22 +75,6 @@ pub struct HyperConfig {
     /// [`WasmRuntimeLimits::default`] (safe finite defaults — hardening on by
     /// default). See [`WasmRuntimeLimits`].
     pub wasm_limits: Option<WasmRuntimeLimits>,
-
-    /// Enable the structural self-healing credential lifecycle (membership
-    /// authority).
-    ///
-    /// Default `false` — exactly today's behavior: registration is a one-shot,
-    /// the signaling reconnect loop retries the stored credential, and the
-    /// heartbeat path drives renewal. When `true`, `ActrNode::start()` spawns a
-    /// `MembershipController` that owns the credential, is the sole caller of
-    /// `/renew` and `/register`, publishes credentials to the signaling client
-    /// over a `watch`, and receives auth verdicts (including handshake 401s that
-    /// today never reach the recovery engine) over an `mpsc`. This lets a
-    /// long-running node self-recover after an AIS restart / key rotation
-    /// without a process restart.
-    ///
-    /// Gated so the change is revertible and can land safely.
-    pub membership_controller_enabled: bool,
 }
 
 /// Conflict-key dispatch concurrency knobs (design doc §4.2, §7).
@@ -342,10 +326,6 @@ impl std::fmt::Debug for HyperConfig {
             )
             .field("dispatch_concurrency", &self.dispatch_concurrency)
             .field("wasm_limits", &self.wasm_limits)
-            .field(
-                "membership_controller_enabled",
-                &self.membership_controller_enabled,
-            )
             .finish()
     }
 }
@@ -371,6 +351,12 @@ pub(crate) struct HyperSection {
     /// `[[trust]]` array instead.
     #[serde(default)]
     pub trust: Option<HyperTrustAnchor>,
+
+    /// Enable on-demand credential recovery for signaling authentication
+    /// failures. Kept in the private runtime wrapper so adding the flag does not
+    /// add a required field to the public `HyperConfig` struct.
+    #[serde(default)]
+    pub membership_controller_enabled: Option<bool>,
 }
 
 /// Trust anchor config for `[hyper.trust]`. Superset of
@@ -480,6 +466,8 @@ pub(crate) async fn node_from_config_file_with_package(
         ))
     })?;
     let hyper_section = hyper_section.hyper;
+    let membership_controller_enabled =
+        hyper_section.membership_controller_enabled.unwrap_or(false);
 
     // Resolve the data_dir: [hyper].data_dir > CLI user-config default.
     let data_dir = if let Some(dir) = hyper_section.data_dir.clone() {
@@ -565,7 +553,9 @@ pub(crate) async fn node_from_config_file_with_package(
     // to the caller — bindings and the CLI both want control over when
     // the tracing subscriber gets installed (they may want to layer in
     // their own filters first).
-    let hyper = crate::Hyper::new(hyper_config).await?;
+    let hyper = crate::Hyper::new(hyper_config)
+        .await?
+        .with_membership_controller_enabled(membership_controller_enabled);
     let _ = &base_dir;
     Ok(crate::Node::from_hyper(hyper, runtime_config))
 }
@@ -658,16 +648,7 @@ impl HyperConfig {
             mailbox_backpressure_threshold: None,
             dispatch_concurrency: None,
             wasm_limits: None,
-            membership_controller_enabled: false,
         }
-    }
-
-    /// Enable / disable the membership controller (self-healing credential
-    /// lifecycle). Off by default. See
-    /// [`HyperConfig::membership_controller_enabled`].
-    pub fn with_membership_controller_enabled(mut self, enabled: bool) -> Self {
-        self.membership_controller_enabled = enabled;
-        self
     }
 
     pub fn with_storage_template(mut self, template: impl Into<String>) -> Self {

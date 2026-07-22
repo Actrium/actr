@@ -533,10 +533,9 @@ pub(crate) struct Inner {
     #[allow(dead_code)]
     pub(crate) credential_expiry_warning: Duration,
 
-    /// Whether `start()` spawns the membership controller (self-healing
-    /// credential lifecycle). Resolved from [`HyperConfig`] at construction.
-    /// Default `false` keeps exactly today's one-shot registration + heartbeat-
-    /// driven renewal behavior.
+    /// Whether `start()` spawns the membership controller for on-demand
+    /// credential recovery. Resolved from the private runtime configuration at
+    /// construction. The default `false` preserves the legacy lifecycle.
     pub(crate) membership_controller_enabled: bool,
 }
 
@@ -2001,6 +2000,12 @@ impl Inner {
         // task so credential events report to the owner instead of triggering
         // the legacy fire-and-forget renewal directly.
         let mut membership_handle: Option<crate::lifecycle::membership::MembershipHandle> = None;
+        // Construct and wire the controller before `on_start`, but do not spawn
+        // it until the fallible hook succeeds. This prevents a failed start from
+        // detaching credential-management tasks.
+        let mut pending_membership_controller: Option<
+            crate::lifecycle::membership::MembershipController,
+        > = None;
 
         {
             let actor_id = register_ok.actr_id;
@@ -2259,19 +2264,17 @@ impl Inner {
             // When enabled, the controller becomes the SOLE owner of the
             // credential: it seeds the `watch` with the just-registered gen-1
             // credential, installs the two typed channels on the signaling
-            // client, and spawns its coordinator loop + proactive expiry timer.
+            // client, and stages its on-demand coordinator loop.
             // The signaling client stops reading the stored credential and
             // instead builds handshake URLs from the watch and reports auth
             // verdicts (including handshake 401s) over the mpsc — closing the
             // gap where a handshake 401 never reached the recovery engine.
             if self.membership_controller_enabled {
-                use crate::lifecycle::membership::{
-                    MembershipController, spawn_membership_controller,
-                };
+                use crate::lifecycle::membership::MembershipController;
 
                 let seed = credential_manager.published_credential().await;
                 tracing::info!(
-                    generation = seed.generation,
+                    revision = seed.revision,
                     "🪪 Membership controller enabled; seeding credential watch"
                 );
 
@@ -2293,14 +2296,12 @@ impl Inner {
 
                 // Install the two typed channels on the signaling client.
                 self.signaling_client
-                    .install_membership(handle.credential_rx(), handle.report_tx())
+                    .install_membership(handle.clone())
                     .await;
 
-                for h in spawn_membership_controller(controller, &handle) {
-                    task_handles.push(h);
-                }
+                pending_membership_controller = Some(controller);
                 membership_handle = Some(handle);
-                tracing::info!("✅ Membership controller spawned (credential owner online)");
+                tracing::info!("✅ Membership controller staged for post-on_start spawn");
             }
 
             // Fire `on_start` once the runtime context can see the initialized
@@ -2319,6 +2320,13 @@ impl Inner {
                         .on_start(startup_ctx, invocation, &call_executor),
                 )
                 .await?;
+            }
+
+            if let Some(controller) = pending_membership_controller.take() {
+                task_handles.push(crate::lifecycle::membership::spawn_membership_controller(
+                    controller,
+                ));
+                tracing::info!("✅ Membership controller spawned (credential owner online)");
             }
 
             // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

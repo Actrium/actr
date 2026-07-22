@@ -1,6 +1,7 @@
 use super::*;
 use crate::inbound::MediaFrameRegistry;
 use crate::lifecycle::credential_manager::RegistrationContext;
+use crate::lifecycle::membership::{MembershipController, PublishedCredential};
 use crate::lifecycle::{SessionSnapshot, SessionState};
 use crate::transport::{NetworkError, NetworkResult};
 use crate::wire::webrtc::{DisconnectReason, SignalingEvent, SignalingStats, WebRtcConfig};
@@ -437,6 +438,81 @@ async fn heartbeat_tick_reconnects_before_sending_when_signaling_is_disconnected
 
     assert_eq!(client.connect_calls.load(Ordering::SeqCst), 1);
     assert!(client.heartbeat_calls.load(Ordering::SeqCst) >= 1);
+}
+
+#[tokio::test]
+async fn membership_heartbeat_never_drives_disconnected_socket() {
+    let actor_id = test_actor_id(1);
+    let credential = test_credential_for_actor(&actor_id, 7, 4_000_000_000);
+    let session = SessionState::new(SessionSnapshot {
+        actor_id: actor_id.clone(),
+        credential: credential.clone(),
+        credential_expires_at: prost_types::Timestamp {
+            seconds: 4_000_000_000,
+            nanos: 0,
+        },
+        turn_credential: TurnCredential::default(),
+        renewal_token: vec![7; 32].into(),
+        renewal_token_expires_at: prost_types::Timestamp {
+            seconds: 5_000_000_000,
+            nanos: 0,
+        },
+        generation: 1,
+    });
+    let manager = CredentialManager::new(
+        session,
+        RegistrationContext::Linked {
+            request: RegisterRequest {
+                actr_type: actor_id.r#type.clone(),
+                realm: actor_id.realm,
+                ..Default::default()
+            },
+            realm_secret: None,
+        },
+        "http://127.0.0.1:1",
+        None,
+    );
+    let shutdown = CancellationToken::new();
+    let (_controller, membership) = MembershipController::new(
+        manager,
+        PublishedCredential {
+            credential: credential.clone(),
+            credential_expires_at: None,
+            turn_credential: None,
+            actor_id: actor_id.clone(),
+            revision: 1,
+        },
+        Arc::new(|| {}),
+        shutdown.clone(),
+    );
+    let client = Arc::new(ReconnectBeforeHeartbeatClient::new_disconnected());
+    let task = tokio::spawn(heartbeat_task(
+        shutdown.clone(),
+        client.clone() as Arc<dyn SignalingClient>,
+        actor_id.clone(),
+        CredentialState::new(credential, None, None),
+        Arc::new(EmptyMailbox) as Arc<dyn Mailbox>,
+        Duration::from_millis(20),
+        RegisterRequest {
+            actr_type: actor_id.r#type.clone(),
+            realm: actor_id.realm,
+            ..Default::default()
+        },
+        "http://127.0.0.1:1".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(membership),
+    ));
+
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    shutdown.cancel();
+    task.await.unwrap();
+
+    assert_eq!(client.connect_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(client.heartbeat_calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

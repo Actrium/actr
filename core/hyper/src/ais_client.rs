@@ -14,8 +14,8 @@ use prost::Message;
 use tracing::{debug, error, info, warn};
 
 use actr_protocol::{
-    ErrorResponse, RegisterRequest, RegisterResponse, RenewCredentialRequest,
-    RenewCredentialResponse, renew_credential_response,
+    ErrorResponse, RegisterRequest, RegisterResponse, ReissueCredentialRequest,
+    RenewCredentialRequest, RenewCredentialResponse, renew_credential_response,
 };
 
 use crate::error::{HyperError, HyperResult};
@@ -97,6 +97,24 @@ impl AisClient {
         self.do_register(req).await
     }
 
+    /// Re-authenticate a workload and re-issue credentials for its existing,
+    /// stable [`actr_protocol::ActrId`].
+    ///
+    /// Unlike `/register`, `/reissue` never allocates a new identity. It is the
+    /// hard fallback when the renewal token is no longer usable.
+    pub async fn reissue_credential(
+        &self,
+        req: ReissueCredentialRequest,
+    ) -> HyperResult<RegisterResponse> {
+        info!(
+            endpoint = %self.endpoint,
+            actor_id = %req.actr_id.to_string_repr(),
+            "reissuing AIS credential for stable actor identity"
+        );
+        self.do_protobuf_request("reissue", req.encode_to_vec())
+            .await
+    }
+
     /// Soft renewal: authenticate with the renewal token bound to the current ActrId.
     pub async fn renew_credential(
         &self,
@@ -156,13 +174,20 @@ impl AisClient {
     /// reqwest/hyper's deeply nested combinator chain (~140 frames of generic
     /// state machines) exceeds GCD thread stack limits on iOS simulator.
     async fn do_register(&self, req: RegisterRequest) -> HyperResult<RegisterResponse> {
+        self.do_protobuf_request("register", req.encode_to_vec())
+            .await
+    }
+
+    /// Send a protobuf request that returns [`RegisterResponse`].
+    async fn do_protobuf_request(
+        &self,
+        path: &str,
+        body: Vec<u8>,
+    ) -> HyperResult<RegisterResponse> {
         let base = self.endpoint.to_string().trim_end_matches('/').to_string();
-        let url = format!("{}/register", base);
+        let url = format!("{base}/{path}");
 
-        // encode as protobuf bytes
-        let body = req.encode_to_vec();
-
-        debug!(url = %url, body_len = body.len(), "sending AIS register request");
+        debug!(url = %url, body_len = body.len(), "sending AIS protobuf request");
 
         let mut request_builder = self
             .http

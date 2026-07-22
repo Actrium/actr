@@ -313,7 +313,7 @@ fn from_json_error_into_network_error() {
 #[test]
 fn from_anyhow_into_network_error() {
     let e: NetworkError = anyhow::anyhow!("kaboom").into();
-    assert!(matches!(e, NetworkError::Other(_)));
+    assert!(matches!(&e, NetworkError::Other(_)));
     assert_eq!(e.severity(), 1);
     assert_eq!(e.kind(), ErrorKind::Internal);
 }
@@ -412,15 +412,9 @@ fn ws_http_error(status: u16, retry_after: Option<&str>) -> tokio_tungstenite::t
 }
 
 #[test]
-fn tungstenite_401_becomes_credential_rejected_with_verdict() {
+fn tungstenite_401_uses_existing_other_variant_with_verdict() {
     let e: NetworkError = ws_http_error(401, None).into();
-    assert!(matches!(
-        e,
-        NetworkError::CredentialRejected {
-            reason: RejectionReason::Handshake401,
-            ..
-        }
-    ));
+    assert!(matches!(&e, NetworkError::Other(_)));
     assert_eq!(e.auth_verdict(), Some(AuthVerdict::Rejected));
     assert_eq!(e.category(), "credential_rejected");
     // Client-kind, but the boundary conversion must give PermissionDenied, not NotFound.
@@ -430,19 +424,19 @@ fn tungstenite_401_becomes_credential_rejected_with_verdict() {
 }
 
 #[test]
-fn tungstenite_403_becomes_realm_denied_with_terminal_verdict() {
+fn tungstenite_403_uses_existing_other_variant_with_terminal_verdict() {
     let e: NetworkError = ws_http_error(403, None).into();
-    assert!(matches!(e, NetworkError::RealmDenied(_)));
+    assert!(matches!(&e, NetworkError::Other(_)));
     assert_eq!(e.auth_verdict(), Some(AuthVerdict::RealmDenied));
     let ae: ActrError = e.into();
     assert!(matches!(ae, ActrError::PermissionDenied(_)));
 }
 
 #[test]
-fn tungstenite_503_becomes_server_not_ready_no_verdict() {
+fn tungstenite_503_uses_existing_other_variant_without_verdict() {
     // 503 without Retry-After: transient, no verdict, no hint.
     let e: NetworkError = ws_http_error(503, None).into();
-    assert!(matches!(e, NetworkError::ServerNotReady { .. }));
+    assert!(matches!(&e, NetworkError::Other(_)));
     assert_eq!(e.auth_verdict(), None);
     assert_eq!(e.retry_after(), None);
     assert_eq!(e.kind(), ErrorKind::Transient);
@@ -460,7 +454,7 @@ fn tungstenite_503_honors_retry_after_seconds() {
 fn tungstenite_503_ignores_http_date_retry_after() {
     // HTTP-date form is not parsed (delta-seconds only); fall back to None.
     let e: NetworkError = ws_http_error(503, Some("Wed, 21 Oct 2099 07:28:00 GMT")).into();
-    assert!(matches!(e, NetworkError::ServerNotReady { .. }));
+    assert!(matches!(e, NetworkError::Other(_)));
     assert_eq!(e.retry_after(), None);
 }
 

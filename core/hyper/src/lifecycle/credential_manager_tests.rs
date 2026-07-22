@@ -64,13 +64,13 @@ fn register_ok(serial: u64, key_id: u32) -> register_response::RegisterOk {
 }
 
 #[tokio::test]
-async fn expired_renewal_token_hard_rebinds_via_register() {
+async fn expired_renewal_token_reissues_for_stable_actor_id() {
     let mut server = mockito::Server::new_async().await;
     let response = RegisterResponse {
-        result: Some(register_response::Result::Success(register_ok(2, 9))),
+        result: Some(register_response::Result::Success(register_ok(1, 9))),
     };
     let mock = server
-        .mock("POST", "/register")
+        .mock("POST", "/reissue")
         .with_status(200)
         .with_header("content-type", "application/x-protobuf")
         .with_body(response.encode_to_vec())
@@ -120,7 +120,7 @@ async fn expired_renewal_token_hard_rebinds_via_register() {
 
     mock.assert_async().await;
     let snapshot = session.snapshot().await;
-    assert_eq!(snapshot.actor_id, actor(2));
+    assert_eq!(snapshot.actor_id, actor(1));
     assert_eq!(snapshot.credential.key_id, 9);
     assert_eq!(snapshot.generation, 2);
     assert_eq!(
@@ -282,10 +282,10 @@ async fn package_hard_rebind_re_signs_manufacturer_proof() {
 
     let mut server = mockito::Server::new_async().await;
     let response = RegisterResponse {
-        result: Some(register_response::Result::Success(register_ok(2, 9))),
+        result: Some(register_response::Result::Success(register_ok(1, 9))),
     };
     let mock = server
-        .mock("POST", "/register")
+        .mock("POST", "/reissue")
         .with_status(200)
         .with_header("content-type", "application/x-protobuf")
         .with_body(response.encode_to_vec())

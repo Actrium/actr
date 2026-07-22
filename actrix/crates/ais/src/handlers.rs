@@ -2,8 +2,8 @@
 
 use crate::{issuer::AIdIssuer, ratelimit::ip_rate_limiter};
 use actr_protocol::{
-    ErrorResponse, RegisterRequest, RegisterResponse, RenewCredentialRequest,
-    RenewCredentialResponse, register_response, renew_credential_response,
+    ErrorResponse, RegisterRequest, RegisterResponse, ReissueCredentialRequest,
+    RenewCredentialRequest, RenewCredentialResponse, register_response, renew_credential_response,
 };
 use axum::{
     Router,
@@ -52,6 +52,7 @@ pub fn create_router(state: AISState) -> Router {
     Router::new()
         .route("/register", post(register_actr))
         .route("/renew", post(renew_credential))
+        .route("/reissue", post(reissue_credential))
         .route("/health", axum::routing::get(health_check))
         .route("/rotate-key", post(rotate_key))
         .route("/current-key", axum::routing::get(get_current_key))
@@ -256,6 +257,112 @@ async fn register_actr(State(state): State<AISState>, headers: HeaderMap, body: 
             }
         }
     };
+
+    encode_result(result)
+}
+
+/// POST /ais/reissue — re-authenticate and issue credentials for an existing
+/// stable ActrId without allocating a new serial number.
+async fn reissue_credential(
+    State(state): State<AISState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Bytes {
+    let start = std::time::Instant::now();
+    let request = match ReissueCredentialRequest::decode(body) {
+        Ok(request) => request,
+        Err(err) => {
+            platform::recording::error!("Failed to decode ReissueCredentialRequest: {}", err);
+            return encode_result(RegisterResponse {
+                result: Some(register_response::Result::Error(ErrorResponse {
+                    code: 400,
+                    message: format!("Invalid protobuf: {err}"),
+                })),
+            });
+        }
+    };
+
+    let registration = &request.registration;
+    if let Err(validation_err) = RealmEntity::validate_realm(registration.realm.realm_id).await {
+        let (code, message) = RealmEntity::map_validation_error(validation_err);
+        return encode_result(RegisterResponse {
+            result: Some(register_response::Result::Error(ErrorResponse {
+                code,
+                message: format!("Realm validation failed: {message}"),
+            })),
+        });
+    }
+
+    let provided_secret = headers
+        .get(REALM_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let realm_secret_check =
+        match verify_realm_secret(registration.realm.realm_id, provided_secret).await {
+            Ok(check @ RealmSecretCheck::NotConfigured)
+            | Ok(check @ RealmSecretCheck::ValidCurrent)
+            | Ok(check @ RealmSecretCheck::ValidPrevious) => check,
+            Ok(RealmSecretCheck::MissingRequired) => {
+                return encode_result(RegisterResponse {
+                    result: Some(register_response::Result::Error(ErrorResponse {
+                        code: 403,
+                        message: "Realm secret required".to_string(),
+                    })),
+                });
+            }
+            Ok(RealmSecretCheck::Invalid) => {
+                return encode_result(RegisterResponse {
+                    result: Some(register_response::Result::Error(ErrorResponse {
+                        code: 403,
+                        message: "Invalid realm secret".to_string(),
+                    })),
+                });
+            }
+            Err(err) => {
+                platform::recording::error!(
+                    "Failed to verify realm secret for credential reissue in realm {}: {}",
+                    registration.realm.realm_id,
+                    err
+                );
+                return encode_result(RegisterResponse {
+                    result: Some(register_response::Result::Error(ErrorResponse {
+                        code: 500,
+                        message: "Internal error while verifying realm secret".to_string(),
+                    })),
+                });
+            }
+        };
+
+    let result = match state
+        .issuer
+        .reissue_credential_with_realm_secret_check(
+            &request.actr_id,
+            registration,
+            Some(realm_secret_check),
+        )
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => RegisterResponse {
+            result: Some(register_response::Result::Error(
+                aid_error_to_error_response(err),
+            )),
+        },
+    };
+
+    let succeeded = matches!(&result.result, Some(register_response::Result::Success(_)));
+    if let Some(ref counters) = state.counters {
+        counters
+            .record_request(succeeded, start.elapsed().as_secs_f64() * 1000.0)
+            .await;
+    }
+    if succeeded {
+        platform::recording::info!(
+            "Credential reissued for actor {}",
+            request.actr_id.to_string_repr()
+        );
+    }
 
     encode_result(result)
 }

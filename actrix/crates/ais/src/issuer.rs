@@ -581,6 +581,62 @@ impl AIdIssuer {
         }
     }
 
+    /// Re-authenticate a registration context and issue fresh credentials for
+    /// an existing actor identity.
+    ///
+    /// This is deliberately separate from registration: callers must provide an
+    /// `ActrId` whose realm and type exactly match the authenticated registration
+    /// request, and no new serial number is allocated.
+    pub async fn reissue_credential_with_realm_secret_check(
+        &self,
+        actor_id: &ActrId,
+        request: &RegisterRequest,
+        realm_secret_check: Option<RealmSecretCheck>,
+    ) -> Result<RegisterResponse, AidError> {
+        let result = self
+            .reissue_credential_inner(actor_id, request, realm_secret_check.as_ref())
+            .await;
+
+        Ok(match result {
+            Ok(register_ok) => RegisterResponse {
+                result: Some(register_response::Result::Success(register_ok)),
+            },
+            Err(err) => RegisterResponse {
+                result: Some(register_response::Result::Error(ErrorResponse {
+                    code: aid_error_to_code(&err),
+                    message: err.to_string(),
+                })),
+            },
+        })
+    }
+
+    async fn reissue_credential_inner(
+        &self,
+        actor_id: &ActrId,
+        request: &RegisterRequest,
+        realm_secret_check: Option<&RealmSecretCheck>,
+    ) -> Result<register_response::RegisterOk, AidError> {
+        if actor_id.realm != request.realm || actor_id.r#type != request.actr_type {
+            platform::recording::warn!(
+                "Credential reissue identity mismatch: actor={}, requested_type={}, requested_realm={}",
+                actor_id.to_string_repr(),
+                request.actr_type.to_string_repr(),
+                request.realm.realm_id
+            );
+            return Err(AidError::InvalidFormat);
+        }
+
+        self.verify_registration_identity(request, realm_secret_check)
+            .await?;
+
+        let mut register_ok = self.issue_credential_for_actor(actor_id).await?;
+        let (renewal_token, renewal_token_expires_at) =
+            self.issue_fresh_renewal_token(actor_id).await?;
+        register_ok.renewal_token = Some(renewal_token);
+        register_ok.renewal_token_expires_at = Some(renewal_token_expires_at);
+        Ok(register_ok)
+    }
+
     /// 内部处理逻辑（Ed25519 签名，通过 KS Sign RPC）
     async fn issue_credential_inner(
         &self,
@@ -641,31 +697,8 @@ impl AIdIssuer {
         // Generate a time-limited TURN credential compatible with coturn --use-auth-secret.
         let turn_credential = self.generate_turn_credential(&actr_id.to_string_repr(), expr_time);
 
-        if self.config.renewal_token_secret.is_empty() {
-            return Err(AidError::GenerationFailed(
-                "renewal_token_secret is required".to_string(),
-            ));
-        }
-
-        let token = self.generate_renewal_token();
-        let renewal_expires = self.calculate_renewal_expiry_time();
-
-        // Persist token hash; failure here fails the whole registration.
-        let token_hash = crate::renewal::hash_token(&token);
-        crate::renewal::insert_renewal_token(&actr_id, &token_hash, renewal_expires)
-            .await
-            .map_err(|e| {
-                AidError::GenerationFailed(format!("Failed to persist renewal token: {e}"))
-            })?;
-
-        // Run global GC for expired tokens.
-        let _ = crate::renewal::gc_expired_tokens().await;
-
-        let renewal_token = Some(Bytes::from(token));
-        let renewal_token_expires_at = Some(Timestamp {
-            seconds: renewal_expires,
-            nanos: 0,
-        });
+        let (renewal_token, renewal_token_expires_at) =
+            self.issue_fresh_renewal_token(&actr_id).await?;
 
         Ok(register_response::RegisterOk {
             actr_id,
@@ -675,8 +708,8 @@ impl AIdIssuer {
             signaling_heartbeat_interval_secs: self.config.signaling_heartbeat_interval_secs,
             signing_pubkey: Bytes::from(verifying_key.as_bytes().to_vec()),
             signing_key_id: key_id,
-            renewal_token,
-            renewal_token_expires_at,
+            renewal_token: Some(renewal_token),
+            renewal_token_expires_at: Some(renewal_token_expires_at),
         })
     }
 
@@ -1165,6 +1198,41 @@ impl AIdIssuer {
         use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut token);
         token
+    }
+
+    async fn issue_fresh_renewal_token(
+        &self,
+        actor_id: &ActrId,
+    ) -> Result<(Bytes, Timestamp), AidError> {
+        if self.config.renewal_token_secret.is_empty() {
+            return Err(AidError::GenerationFailed(
+                "renewal_token_secret is required".to_string(),
+            ));
+        }
+
+        let token = self.generate_renewal_token();
+        let expires_at = self.calculate_renewal_expiry_time();
+        let token_hash = crate::renewal::hash_token(&token);
+        crate::renewal::insert_renewal_token(actor_id, &token_hash, expires_at)
+            .await
+            .map_err(|e| {
+                AidError::GenerationFailed(format!("Failed to persist renewal token: {e}"))
+            })?;
+
+        let _ = crate::renewal::gc_expired_tokens().await;
+        crate::renewal::trim_oldest_tokens_for_actor(actor_id)
+            .await
+            .map_err(|e| {
+                AidError::GenerationFailed(format!("Failed to trim renewal tokens: {e}"))
+            })?;
+
+        Ok((
+            Bytes::from(token),
+            Timestamp {
+                seconds: expires_at,
+                nanos: 0,
+            },
+        ))
     }
 
     /// 为已有 ActrId 重新签发 credential（供 /ais/renew 使用）
