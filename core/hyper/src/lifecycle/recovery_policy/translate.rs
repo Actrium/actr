@@ -1007,7 +1007,20 @@ fn translate_snapshot(
         SemanticPath::Online => {
             if view.network_path == NetworkPathState::Online {
                 // Online -> Online material route change: self-loop + trigger.
+                // If cleanup has already circled or removed the live signaling
+                // generation, retain this newer path fact as a post-cleanup
+                // Restore obligation. Otherwise cleanup completion would leave
+                // an Online policy snapshot with no transport and no future
+                // input capable of rebuilding it.
                 let mut d = Decision::advancing();
+                if view.recovery_mode == RecoveryModeState::Active
+                    && view.recovery_intent == RecoveryIntentState::Idle
+                    && !view.live_signaling_outside_teardown()
+                {
+                    d.machine(MachineInput::RecoveryIntent(
+                        RecoveryIntentInput::RequestRestore,
+                    ));
+                }
                 d.gate_triggers.push(GateTrigger::Wake {
                     domain: RetryDomain::Recovery,
                 });

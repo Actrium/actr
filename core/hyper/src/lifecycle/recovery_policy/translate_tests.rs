@@ -385,6 +385,7 @@ fn snapshot_online_supersedes_pending_disconnect() {
 fn snapshot_online_to_online_material_route_only_triggers() {
     let mut view = View::initial();
     view.network_path = NetworkPathState::Online;
+    view.live_signaling_generation = Some(7);
     view.last_snapshot = Some(AcceptedSnapshot {
         source_epoch: 1,
         sequence: 1,
@@ -394,6 +395,33 @@ fn snapshot_online_to_online_material_route_only_triggers() {
     let d = tr(&view, snapshot(1, 2, SemanticPath::Online, 2));
     assert_eq!(d.revision, RevisionDirective::Advances);
     assert!(d.machine_inputs.is_empty());
+    assert!(d.gate_triggers.contains(&GateTrigger::Wake {
+        domain: RetryDomain::Recovery
+    }));
+}
+
+#[test]
+fn snapshot_online_route_during_cleanup_retains_post_cleanup_restore() {
+    let mut view = View::initial();
+    view.network_path = NetworkPathState::Online;
+    view.last_snapshot = Some(AcceptedSnapshot {
+        source_epoch: 1,
+        sequence: 1,
+        semantic_path: SemanticPath::Online,
+        route_fingerprint: 1,
+    });
+    view.cleanup_work = CleanupWorkState::CleanupPending;
+    view.execution = ExecutionState::Cleaning;
+    view.live_signaling_generation = Some(7);
+    view.teardown_scope_generations.insert(7);
+
+    let d = tr(&view, snapshot(1, 2, SemanticPath::Online, 2));
+
+    assert_eq!(d.revision, RevisionDirective::Advances);
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestRestore)
+    ));
     assert!(d.gate_triggers.contains(&GateTrigger::Wake {
         domain: RetryDomain::Recovery
     }));
