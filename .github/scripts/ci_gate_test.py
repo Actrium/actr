@@ -437,6 +437,32 @@ def test_swift_e2e_only_shuts_down_its_selected_simulator() -> None:
     assert "xcrun simctl shutdown all" not in run_sh
 
 
+def test_swift_e2e_covers_short_and_long_background_recovery() -> None:
+    run_sh = (ROOT / "e2e/swift-echo-app/run.sh").read_text(encoding="utf-8")
+    content_view = (ROOT / "e2e/swift-echo-app/EchoApp/ContentView.swift").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'SHORT_BACKGROUND_SECONDS="${SHORT_BACKGROUND_SECONDS:-5}"' in run_sh
+    assert 'LONG_BACKGROUND_SECONDS="${LONG_BACKGROUND_SECONDS:-60}"' in run_sh
+    assert 'xcrun simctl launch "$DEVICE_UDID" com.apple.Preferences' in run_sh
+    assert 'ACTR_E2E_PHASE:background' in run_sh
+    assert 'ACTR_E2E_PHASE:foreground-${cycle}' in run_sh
+    assert "ACTR_ECHOAPP_LIFECYCLE_E2E" in content_view
+    assert "await sendRecoveryEcho(\"\\(input)-foreground-\\(cycle)\")" in content_view
+
+
+def test_swift_e2e_retries_bounded_connection_not_ready() -> None:
+    service = (ROOT / "e2e/swift-echo-app/EchoApp/ActrService.swift").read_text(
+        encoding="utf-8"
+    )
+
+    assert "func sendEchoWhenReady" in service
+    assert ".ConnectionNotReady(info)" in service
+    assert "clock.now < deadline" in service
+    assert "ACTR_E2E_RETRY:ConnectionNotReady" in service
+
+
 def _create_service_registry(db_path: Path) -> None:
     with sqlite3.connect(db_path) as connection:
         connection.execute(

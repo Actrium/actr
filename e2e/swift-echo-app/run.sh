@@ -21,6 +21,9 @@ ACTR_TARGET_DIR="$E2E_TARGET_ROOT/actr-cli"
 TEMP_SERVICE_TARGET_DIR="$E2E_TARGET_ROOT/temp-service"
 DEFAULT_MESSAGE="e2e-test-message"
 REALM_NAME_PREFIX="swift-echo-app"
+RUN_LIFECYCLE_SCENARIOS="${RUN_LIFECYCLE_SCENARIOS:-1}"
+SHORT_BACKGROUND_SECONDS="${SHORT_BACKGROUND_SECONDS:-5}"
+LONG_BACKGROUND_SECONDS="${LONG_BACKGROUND_SECONDS:-60}"
 
 TEST_INPUT="$DEFAULT_MESSAGE"
 
@@ -970,6 +973,7 @@ install_and_launch_app() {
     # may return before the app exits when detached from the terminal, so do not
     # treat the wrapper process as the app lifetime.
     SIMCTL_CHILD_ACTR_ECHOAPP_AUTO_SEND=1 \
+    SIMCTL_CHILD_ACTR_ECHOAPP_LIFECYCLE_E2E="$RUN_LIFECYCLE_SCENARIOS" \
     SIMCTL_CHILD_ACTR_ECHOAPP_TEST_INPUT="$TEST_INPUT" \
     xcrun simctl launch \
         "${launch_args[@]}" \
@@ -1026,6 +1030,47 @@ wait_for_echo_result() {
     fail "Timed out waiting for echo result after ${timeout}s"
 }
 
+wait_for_log_marker() {
+    local marker="$1"
+    local description="$2"
+    local timeout="${CLIENT_TIMEOUT_SECONDS:-120}"
+    local elapsed=0
+
+    while [ $elapsed -lt "$timeout" ]; do
+        if grep_app_logs -Fq "$marker"; then
+            success "$description"
+            return 0
+        fi
+
+        fail_if_app_exited_before_result "$description"
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    tail_app_logs 80
+    fail "Timed out waiting for $description after ${timeout}s"
+}
+
+run_background_recovery_cycle() {
+    local duration_seconds="$1"
+    local cycle="$2"
+    local expected_payload="${TEST_INPUT}-foreground-${cycle}"
+
+    section "📱 Background recovery cycle ${cycle} (${duration_seconds}s)"
+
+    xcrun simctl launch "$DEVICE_UDID" com.apple.Preferences >/dev/null
+    wait_for_log_marker "ACTR_E2E_PHASE:background" "App entered background"
+    sleep "$duration_seconds"
+
+    xcrun simctl launch "$DEVICE_UDID" "$APP_BUNDLE_ID" >/dev/null
+    wait_for_log_marker \
+        "ACTR_E2E_PHASE:foreground-${cycle}" \
+        "App returned to foreground for cycle ${cycle}"
+    wait_for_log_marker \
+        "ACTR_E2E_RESULT:Echo: swift-local:${expected_payload}" \
+        "Foreground echo succeeded for cycle ${cycle}"
+}
+
 # ──── Main ────
 
 section "🧪 Swift EchoApp E2E"
@@ -1066,6 +1111,10 @@ check_service_ready
 # Phase 5: Install app, launch, and verify
 install_and_launch_app
 wait_for_echo_result
+if [ "$RUN_LIFECYCLE_SCENARIOS" = "1" ]; then
+    run_background_recovery_cycle "$SHORT_BACKGROUND_SECONDS" 1
+    run_background_recovery_cycle "$LONG_BACKGROUND_SECONDS" 2
+fi
 
 echo ""
 success "Swift EchoApp e2e completed successfully"
