@@ -9,20 +9,22 @@
 //! complex scenario below runs the same reconciled events through the real
 //! network event processor with real signaling/WebRTC peers.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
     AppLifecycleState, CleanupReason, NetworkAvailability, NetworkEvent, NetworkEventHandle,
     NetworkEventProcessor, NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot,
-    NetworkTransportFlags, ReconnectReason, process_network_event_batch,
-    run_network_event_reconciler, select_network_recovery_action,
+    NetworkTransportFlags, ObservedOutcome, ReconnectReason, SupervisorStatus,
+    process_network_event_batch, run_network_event_reconciler,
+    run_network_event_reconciler_with_status, select_network_recovery_action,
 };
 use actr_hyper::outbound::PeerGate;
 use actr_hyper::test_support::{TestHarness, install_test_crypto_provider};
 use actr_hyper::wire::webrtc::WebRtcCoordinator;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{ActrId, DataChunk, Direction, PayloadType, RpcEnvelope};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
@@ -184,11 +186,11 @@ impl EventSpec {
             },
             EventSpec::ForegroundLong => NetworkEvent::AppLifecycleChanged {
                 state: actr_hyper::lifecycle::AppLifecycleState::Foreground {
-                    background_duration_ms: 45_000,
+                    background_duration_ms: 65_000,
                 },
             },
             EventSpec::CleanupConnections => NetworkEvent::CleanupConnections {
-                reason: CleanupReason::ManualReset,
+                reason: CleanupReason::UserLogout,
             },
             EventSpec::ForceReconnect => NetworkEvent::ForceReconnect {
                 reason: actr_hyper::lifecycle::ReconnectReason::ManualReconnect,
@@ -1086,6 +1088,184 @@ fn assert_documented_scenarios(platform: &str, scenarios: &[MobileScenario]) {
     }
 }
 
+struct SupervisorScenarioProcessor {
+    actions: StdMutex<Vec<NetworkRecoveryAction>>,
+    release: Semaphore,
+}
+
+impl SupervisorScenarioProcessor {
+    fn new() -> Self {
+        Self {
+            actions: StdMutex::new(Vec::new()),
+            release: Semaphore::new(0),
+        }
+    }
+
+    fn actions(&self) -> Vec<NetworkRecoveryAction> {
+        self.actions.lock().expect("actions mutex poisoned").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl NetworkEventProcessor for SupervisorScenarioProcessor {
+    async fn process_network_available(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_lost(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_type_changed(
+        &self,
+        _is_wifi: bool,
+        _is_cellular: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn cleanup_connections(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_recovery_action(
+        &self,
+        action: NetworkRecoveryAction,
+    ) -> Result<(), String> {
+        self.actions
+            .lock()
+            .expect("actions mutex poisoned")
+            .push(action);
+        self.release
+            .acquire()
+            .await
+            .expect("scenario release semaphore should stay open")
+            .forget();
+        Ok(())
+    }
+}
+
+async fn submit_supervisor_scenario_event(
+    handle: &NetworkEventHandle,
+    spec: EventSpec,
+    sequence: u64,
+) {
+    let event = spec.to_event(sequence);
+    let result = submit_mobile_event(handle.clone(), event.clone())
+        .await
+        .unwrap_or_else(|error| panic!("{event:?} should be accepted: {error}"));
+    assert!(result.success, "{event:?} should be accepted successfully");
+}
+
+async fn run_documented_scenario_through_supervisor(platform: &str, scenario: &MobileScenario) {
+    let expected_action = if matches!(scenario.sdk_events, [EventSpec::UnknownPath]) {
+        // Unknown invalidates an offline candidate but deliberately does not
+        // create recovery work in the persistent policy. The legacy batch
+        // selector mapped this standalone shape to Probe.
+        NetworkRecoveryAction::Noop
+    } else if scenario
+        .sdk_events
+        .iter()
+        .any(|spec| matches!(spec, EventSpec::ForegroundShort))
+    {
+        // A short foreground creates one Probe obligation. Later online
+        // snapshots coalesce into that in-flight obligation rather than
+        // replacing it with the legacy batch selector's Restore.
+        NetworkRecoveryAction::Probe
+    } else {
+        scenario.expected_action
+    };
+    let processor = Arc::new(SupervisorScenarioProcessor::new());
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(32);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(1));
+    let shutdown = CancellationToken::new();
+    let (status_tx, status_rx) = tokio::sync::watch::channel(SupervisorStatus::default());
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor.clone();
+    let reconciler = tokio::spawn(run_network_event_reconciler_with_status(
+        event_rx,
+        processor_for_task,
+        shutdown.clone(),
+        status_tx,
+    ));
+
+    for (index, spec) in scenario.sdk_events.iter().copied().enumerate() {
+        match spec {
+            // The responsive supervisor derives foreground recovery from its
+            // own background timestamp. Recreate the full lifecycle trace
+            // represented by the mobile callback's duration field.
+            EventSpec::ForegroundShort | EventSpec::ForegroundLong => {
+                submit_mobile_event(
+                    handle.clone(),
+                    NetworkEvent::AppLifecycleChanged {
+                        state: AppLifecycleState::Background,
+                    },
+                )
+                .await
+                .expect("background transition should be accepted");
+                let elapsed = match spec {
+                    EventSpec::ForegroundShort => Duration::from_secs(5),
+                    EventSpec::ForegroundLong => Duration::from_secs(65),
+                    _ => unreachable!(),
+                };
+                tokio::time::advance(elapsed).await;
+                submit_supervisor_scenario_event(&handle, spec, index as u64 + 1).await;
+            }
+            _ => {
+                submit_supervisor_scenario_event(&handle, spec, index as u64 + 1).await;
+            }
+        }
+    }
+
+    // Let a final offline candidate cross the policy's 400 ms grace. Timers
+    // from non-final offline candidates have been cancelled and remain inert.
+    tokio::time::advance(Duration::from_millis(401)).await;
+    processor
+        .release
+        .add_permits(scenario.sdk_events.len().saturating_mul(2) + 8);
+
+    let mut settled = false;
+    for _ in 0..256 {
+        tokio::task::yield_now().await;
+        let actions = processor.actions();
+        let status = status_rx.borrow().clone();
+        settled = match expected_action {
+            NetworkRecoveryAction::Noop => {
+                actions.is_empty()
+                    && status.last_action_id.is_none()
+                    && status.last_outcome.is_none()
+            }
+            expected => {
+                actions.last() == Some(&expected)
+                    && status.last_action_id == Some(actions.len() as u64)
+                    && status.last_outcome == Some(ObservedOutcome::Succeeded)
+            }
+        };
+        if settled {
+            break;
+        }
+    }
+
+    let label = format!("{platform}_{}", scenario.name);
+    let actions = processor.actions();
+    let status = status_rx.borrow().clone();
+    assert!(
+        settled,
+        "{label} did not settle as {:?}; actions={actions:?}, status={status:?}",
+        expected_action
+    );
+    if scenario.sdk_events.is_empty() {
+        assert_eq!(status.policy_revision, 0, "{label} should remain untouched");
+    } else {
+        assert!(
+            status.policy_revision > 0,
+            "{label} should publish an advancing policy revision"
+        );
+    }
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+}
+
 #[test]
 fn test_android_documented_network_scenarios() {
     assert_documented_scenarios("android", ANDROID_SCENARIOS);
@@ -1094,6 +1274,20 @@ fn test_android_documented_network_scenarios() {
 #[test]
 fn test_ios_documented_network_scenarios() {
     assert_documented_scenarios("ios", IOS_SCENARIOS);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_android_documented_scenarios_through_responsive_supervisor() {
+    for scenario in ANDROID_SCENARIOS {
+        run_documented_scenario_through_supervisor("android", scenario).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_ios_documented_scenarios_through_responsive_supervisor() {
+    for scenario in IOS_SCENARIOS {
+        run_documented_scenario_through_supervisor("ios", scenario).await;
+    }
 }
 
 #[test]
