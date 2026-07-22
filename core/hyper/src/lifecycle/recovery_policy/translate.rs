@@ -892,10 +892,15 @@ fn translate_foreground(view: &View, now: PolicyInstant, config: &PolicyConfig) 
             let elapsed = now.saturating_sub(view.background_entered_at.unwrap_or(now));
             if elapsed < config.background_reconnect_after {
                 // Short background: probe the possibly-healthy socket and let
-                // automatic reconnect resume rather than force a rebuild.
-                d.machine(MachineInput::RecoveryIntent(
-                    RecoveryIntentInput::RequestProbe,
-                ));
+                // automatic reconnect resume rather than force a rebuild. If
+                // recovery is already pending, the weaker probe is coalesced
+                // here so it cannot refresh that obligation's work revision
+                // while its effect is still running.
+                if view.current_recovery_strength().is_none() {
+                    d.machine(MachineInput::RecoveryIntent(
+                        RecoveryIntentInput::RequestProbe,
+                    ));
+                }
                 d.signals.push(SignalingDirective::ResumeAutoReconnect);
             } else {
                 // Long background: force a reconnect and keep any stale automatic

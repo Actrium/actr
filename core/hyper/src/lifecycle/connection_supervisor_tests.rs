@@ -378,6 +378,65 @@ fn long_foreground_must_preempt_running_restore_before_starting_reconnect() {
     assert_eq!(reconnect.kind, EffectKind::Reconnect);
 }
 
+#[test]
+fn short_foreground_does_not_requeue_running_restore() {
+    let mut s = ungated();
+    s.accept(tp::Input::AppEnteredForeground, ms(0));
+    s.accept(
+        tp::Input::SignalingGenerationCommitted {
+            generation: 7,
+            origin: tp::SignalingOrigin::External,
+        },
+        ms(1),
+    );
+    s.accept(
+        tp::Input::SignalingGenerationLost {
+            generation: 7,
+            cause: tp::SignalingLostCause::RemoteReset,
+        },
+        ms(2),
+    );
+    let restore = s
+        .maybe_start_effect(ms(2))
+        .expect("signaling loss should start restore");
+    assert_eq!(restore.kind, EffectKind::Restore);
+    let work_revision = s
+        .view()
+        .recovery_record
+        .as_ref()
+        .expect("restore record should exist")
+        .work_revision;
+
+    s.accept(tp::Input::AppEnteredBackground, ms(3));
+    let foreground = s.accept(tp::Input::AppEnteredForeground, ms(4));
+
+    assert!(!foreground.cancel_effect);
+    assert_eq!(s.view().execution, tp::ExecutionState::Restoring);
+    assert_eq!(
+        s.view()
+            .recovery_record
+            .as_ref()
+            .expect("restore record should remain pending")
+            .work_revision,
+        work_revision,
+        "short foreground must not replace the in-flight Restore obligation"
+    );
+
+    s.accept(
+        tp::Input::EffectCompleted {
+            action_id: restore.action_id,
+            kind: restore.kind,
+            policy_revision: restore.captured_revision,
+            outcome: EffectOutcome::Succeeded,
+        },
+        ms(5),
+    );
+
+    assert_eq!(s.view().recovery_intent, tp::RecoveryIntentState::Idle);
+    assert_eq!(s.composite_action(), None);
+    assert!(s.maybe_start_effect(ms(5)).is_none());
+}
+
 // -- cleanup supersession (invariants 4, 31) --------------------------------
 
 #[test]

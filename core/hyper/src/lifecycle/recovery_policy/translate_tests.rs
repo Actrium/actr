@@ -156,6 +156,26 @@ fn short_foreground_emits_resume_and_long_foreground_emits_suppress() {
 }
 
 #[test]
+fn short_foreground_coalesces_probe_while_restore_is_running() {
+    let mut view = running_recovery_view(EffectKind::Restore, RecoveryStrength::Restore);
+    view.app_phase = AppPhaseState::Background;
+    view.background_entered_at = Some(Duration::ZERO);
+
+    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(1));
+
+    assert!(has(
+        &d,
+        MachineInput::AppPhase(AppPhaseInput::EnterForeground)
+    ));
+    assert!(!has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
+    ));
+    assert!(d.signals.contains(&SignalingDirective::ResumeAutoReconnect));
+    assert!(d.cancels.is_empty());
+}
+
+#[test]
 fn long_foreground_preempts_restore_and_fences_its_signaling_attempt() {
     let mut view = running_recovery_view(EffectKind::Restore, RecoveryStrength::Restore);
     view.app_phase = AppPhaseState::Background;
