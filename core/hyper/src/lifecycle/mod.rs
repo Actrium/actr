@@ -30,6 +30,7 @@ pub use network_event::{
     process_network_event_batch, run_network_event_reconciler,
     run_network_event_reconciler_with_status, select_network_recovery_action,
 };
+#[cfg(feature = "test-utils")]
 pub(crate) use network_event::{
     run_network_event_reconciler_with_channel, supervisor_internal_channel,
 };
