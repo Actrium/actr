@@ -167,6 +167,60 @@ struct SupersedableFactory {
     replacement_wire: Arc<CountingWire>,
 }
 
+struct ParallelDestinationFactory {
+    calls: AtomicUsize,
+    both_started: Notify,
+    release: Notify,
+}
+
+#[async_trait]
+impl WireBuilder for ParallelDestinationFactory {
+    async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) + 1 == 2 {
+            self.both_started.notify_one();
+        }
+        self.release.notified().await;
+        Ok(vec![Arc::new(CountingWire::new(ConnType::WebSocket, None))])
+    }
+}
+
+#[tokio::test]
+async fn independent_destination_flights_are_not_serialized() {
+    let factory = Arc::new(ParallelDestinationFactory {
+        calls: AtomicUsize::new(0),
+        both_started: Notify::new(),
+        release: Notify::new(),
+    });
+    let manager = Arc::new(PeerTransport::new(ActrId::default(), factory.clone()));
+
+    let host_manager = manager.clone();
+    let host =
+        tokio::spawn(async move { host_manager.get_or_create_transport(&Dest::host()).await });
+    let workload_manager = manager.clone();
+    let workload = tokio::spawn(async move {
+        workload_manager
+            .get_or_create_transport(&Dest::workload())
+            .await
+    });
+
+    timeout(Duration::from_secs(1), factory.both_started.notified())
+        .await
+        .expect("both destination flights should enter the factory concurrently");
+    assert_eq!(factory.calls.load(Ordering::Acquire), 2);
+    factory.release.notify_waiters();
+
+    timeout(Duration::from_secs(1), host)
+        .await
+        .expect("host flight should finish")
+        .expect("host task should not panic")
+        .expect("host flight should succeed");
+    timeout(Duration::from_secs(1), workload)
+        .await
+        .expect("workload flight should finish")
+        .expect("workload task should not panic")
+        .expect("workload flight should succeed");
+}
+
 #[async_trait]
 impl WireBuilder for SupersedableFactory {
     async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {

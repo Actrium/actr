@@ -6,8 +6,9 @@ use actr_protocol::{
     AIdCredential, ActrId, Pong, RegisterRequest, RegisterResponse, RouteCandidatesRequest,
     RouteCandidatesResponse, ServiceAvailabilityState, SignalingEnvelope, UnregisterResponse,
 };
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-use tokio::sync::broadcast;
+use tokio::sync::{Notify, broadcast, mpsc};
 
 struct ForceReconnectFakeSignalingClient {
     connected: AtomicBool,
@@ -490,6 +491,290 @@ fn fact_sink_delivers_facts_to_internal_channel_in_order() {
         c,
         tp::Input::SignalingGenerationLost { generation: 7, .. }
     ));
+}
+
+#[derive(Clone, Copy)]
+enum EffectExit {
+    Succeed,
+    Fail,
+    Panic,
+    Pending,
+}
+
+struct EffectExitProcessor {
+    exit: EffectExit,
+    entered: Notify,
+}
+
+impl EffectExitProcessor {
+    fn new(exit: EffectExit) -> Self {
+        Self {
+            exit,
+            entered: Notify::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl NetworkEventProcessor for EffectExitProcessor {
+    async fn process_network_available(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_lost(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_type_changed(
+        &self,
+        _is_wifi: bool,
+        _is_cellular: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn cleanup_connections(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_recovery_action(
+        &self,
+        _action: NetworkRecoveryAction,
+    ) -> Result<(), String> {
+        self.entered.notify_one();
+        match self.exit {
+            EffectExit::Succeed => Ok(()),
+            EffectExit::Fail => Err("forced effect failure".to_string()),
+            EffectExit::Panic => panic!("forced effect panic"),
+            EffectExit::Pending => std::future::pending().await,
+        }
+    }
+}
+
+fn restore_effect(action_id: u64) -> StartedEffect {
+    StartedEffect {
+        action_id,
+        kind: crate::lifecycle::recovery_policy::diagnosis::EffectKind::Restore,
+        action: tp::Action::Restore,
+        captured_revision: 7,
+        teardown_budget: None,
+    }
+}
+
+async fn receive_effect_completion(
+    rx: &mut mpsc::Receiver<tp::Input>,
+) -> crate::lifecycle::recovery_policy::diagnosis::EffectOutcome {
+    let input = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("effect should complete within the test deadline")
+        .expect("effect completion channel should stay open");
+    let tp::Input::EffectCompleted {
+        action_id,
+        kind,
+        policy_revision,
+        outcome,
+    } = input
+    else {
+        panic!("expected EffectCompleted, got {input:?}");
+    };
+    assert_eq!(action_id, 1);
+    assert_eq!(
+        kind,
+        crate::lifecycle::recovery_policy::diagnosis::EffectKind::Restore
+    );
+    assert_eq!(policy_revision, 7);
+    outcome
+}
+
+#[tokio::test]
+async fn effect_reports_exactly_one_terminal_completion_for_every_exit_path() {
+    let cases = [
+        (EffectExit::Succeed, "succeed"),
+        (EffectExit::Fail, "fail"),
+        (EffectExit::Panic, "panic"),
+        (EffectExit::Pending, "cancel"),
+    ];
+
+    for (exit, name) in cases {
+        let processor = Arc::new(EffectExitProcessor::new(exit));
+        let token = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel(2);
+        spawn_effect(restore_effect(1), token.clone(), processor.clone(), tx);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            processor.entered.notified(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{name} effect should start"));
+        if matches!(exit, EffectExit::Pending) {
+            token.cancel();
+        }
+
+        let outcome = receive_effect_completion(&mut rx).await;
+        match exit {
+            EffectExit::Succeed => assert!(matches!(outcome, TpEffectOutcome::Succeeded)),
+            EffectExit::Fail => assert!(matches!(outcome, TpEffectOutcome::Failed { .. })),
+            EffectExit::Panic => assert!(matches!(
+                outcome,
+                TpEffectOutcome::Aborted {
+                    cause: AbortCause::PanicOrContractViolation
+                }
+            )),
+            EffectExit::Pending => assert!(matches!(outcome, TpEffectOutcome::Cancelled)),
+        }
+
+        tokio::task::yield_now().await;
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected)
+            ),
+            "{name} effect must report exactly one terminal completion"
+        );
+    }
+}
+
+#[tokio::test]
+async fn effect_completion_waits_for_internal_channel_capacity() {
+    let processor = Arc::new(EffectExitProcessor::new(EffectExit::Succeed));
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.try_send(tp::Input::ShutdownRequested)
+        .expect("test should fill the internal channel");
+
+    spawn_effect(
+        restore_effect(1),
+        CancellationToken::new(),
+        processor.clone(),
+        tx,
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        processor.entered.notified(),
+    )
+    .await
+    .expect("effect should run while the internal channel is full");
+    tokio::task::yield_now().await;
+
+    assert!(matches!(rx.try_recv(), Ok(tp::Input::ShutdownRequested)));
+    assert!(matches!(
+        receive_effect_completion(&mut rx).await,
+        TpEffectOutcome::Succeeded
+    ));
+}
+
+struct CleanupSessionProcessor {
+    actions: StdMutex<Vec<NetworkRecoveryAction>>,
+    cleanup_entered: Notify,
+    cleanup_release: Notify,
+    recovery_entered: Notify,
+}
+
+impl CleanupSessionProcessor {
+    fn actions(&self) -> Vec<NetworkRecoveryAction> {
+        self.actions.lock().expect("actions mutex poisoned").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl NetworkEventProcessor for CleanupSessionProcessor {
+    async fn process_network_available(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_lost(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_type_changed(
+        &self,
+        _is_wifi: bool,
+        _is_cellular: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn cleanup_connections(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_recovery_action(
+        &self,
+        action: NetworkRecoveryAction,
+    ) -> Result<(), String> {
+        self.actions
+            .lock()
+            .expect("actions mutex poisoned")
+            .push(action);
+        self.recovery_entered.notify_one();
+        Ok(())
+    }
+
+    async fn run_bounded_teardown(
+        &self,
+        action: NetworkRecoveryAction,
+        _budget: std::time::Duration,
+    ) -> TeardownReport {
+        self.actions
+            .lock()
+            .expect("actions mutex poisoned")
+            .push(action);
+        self.cleanup_entered.notify_one();
+        self.cleanup_release.notified().await;
+        TeardownReport::succeeded()
+    }
+}
+
+#[tokio::test]
+async fn session_activated_during_cleanup_runs_post_cleanup_recovery() {
+    let processor = Arc::new(CleanupSessionProcessor {
+        actions: StdMutex::new(Vec::new()),
+        cleanup_entered: Notify::new(),
+        cleanup_release: Notify::new(),
+        recovery_entered: Notify::new(),
+    });
+    let (event_tx, event_rx) = mpsc::channel(8);
+    let (fact_sink, channel) = supervisor_internal_channel();
+    let handle = NetworkEventHandle::new_with_fact_sink(event_tx, fact_sink);
+    let shutdown = CancellationToken::new();
+    let reconciler = tokio::spawn(run_network_event_reconciler_with_channel(
+        event_rx,
+        channel,
+        processor.clone(),
+        shutdown.clone(),
+    ));
+
+    let result = handle
+        .cleanup_connections(CleanupReason::ManualReset)
+        .await
+        .expect("cleanup should be accepted");
+    assert!(result.success);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        processor.cleanup_entered.notified(),
+    )
+    .await
+    .expect("cleanup effect should start");
+
+    handle.notify_session_activated(2);
+    processor.cleanup_release.notify_one();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        processor.recovery_entered.notified(),
+    )
+    .await
+    .expect("new session should derive recovery after cleanup");
+
+    assert_eq!(
+        processor.actions(),
+        vec![
+            NetworkRecoveryAction::CleanupOnly,
+            NetworkRecoveryAction::Restore
+        ]
+    );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
 }
 
 #[test]
