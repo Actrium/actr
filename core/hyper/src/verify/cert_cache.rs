@@ -61,6 +61,10 @@ impl MfrCertCache {
         };
         let cache = self.cache.read().expect("cert_cache read lock poisoned");
         cache.get(&cache_key).and_then(|entry| {
+            // Instant-based TTL is a deliberate in-process freshness policy:
+            // it cannot be skewed by wall-clock changes, but it freezes while
+            // the process is suspended, so after a long suspend entries look
+            // fresher than they really are. Known and accepted trade-off.
             if entry.fetched_at.elapsed() < self.ttl {
                 Some(entry.key)
             } else {
@@ -103,6 +107,7 @@ impl MfrCertCache {
                 cache_key,
                 CacheEntry {
                     key,
+                    // Monotonic stamp; see the TTL note in `get_from_cache`.
                     fetched_at: Instant::now(),
                 },
             );

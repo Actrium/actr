@@ -152,13 +152,36 @@ impl CompatLockFile {
                     source: e,
                 })?;
 
-        let lock_file: Self =
+        let mut lock_file: Self =
             toml::from_str(&content).map_err(|e| CompatLockError::ParseError {
                 path: file_path,
                 source: e,
             })?;
 
+        lock_file.clamp_expirations();
+
         Ok(Some(lock_file))
+    }
+
+    /// Clamp each entry's `expires_at` to `negotiated_at + DEFAULT_TTL_HOURS`.
+    ///
+    /// The lock file lives in the temp directory and can be corrupted or
+    /// written under a forward wall-clock jump; without this bound such an
+    /// entry would never expire. Entries written by [`NegotiationEntry::new`]
+    /// use exactly this TTL, so well-formed files are unaffected.
+    fn clamp_expirations(&mut self) {
+        for entry in &mut self.negotiation {
+            let max_expires_at = entry.negotiated_at + Duration::hours(DEFAULT_TTL_HOURS);
+            if entry.expires_at > max_expires_at {
+                warn!(
+                    service_name = %entry.service_name,
+                    expires_at = %entry.expires_at,
+                    clamped_to = %max_expires_at,
+                    "compat.lock entry expiry exceeds the negotiated TTL; clamping"
+                );
+                entry.expires_at = max_expires_at;
+            }
+        }
     }
 
     /// Save to file

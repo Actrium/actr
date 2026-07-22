@@ -1141,3 +1141,30 @@ async fn test_fake_client_tracks_connect_calls() {
         "FakeSignalingClient should accurately track connect call count"
     );
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 13. Pong liveness watchdog time base
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[test]
+fn pong_staleness_is_a_pure_monotonic_difference() {
+    // Within the timeout window: alive.
+    assert!(!pong_is_stale(5, 0, PONG_TIMEOUT_SECS));
+    // Exactly at the timeout boundary: still alive (strict '>' comparison).
+    assert!(!pong_is_stale(PONG_TIMEOUT_SECS, 0, PONG_TIMEOUT_SECS));
+    // One second past the timeout: stale.
+    assert!(pong_is_stale(PONG_TIMEOUT_SECS + 1, 0, PONG_TIMEOUT_SECS));
+    // A last_pong ahead of now (startup race) saturates to age zero
+    // instead of underflowing into a huge age.
+    assert!(!pong_is_stale(0, 5, PONG_TIMEOUT_SECS));
+}
+
+#[test]
+fn monotonic_secs_never_decreases() {
+    let earlier = monotonic_secs();
+    let later = monotonic_secs();
+    assert!(
+        later >= earlier,
+        "monotonic time base must never move backwards"
+    );
+}

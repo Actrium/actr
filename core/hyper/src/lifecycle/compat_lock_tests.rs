@@ -204,6 +204,53 @@ fn cleanup_expired_removes_only_expired_entries() {
     assert_eq!(lf.negotiation[0].service_name, "alive");
 }
 
+#[tokio::test]
+async fn load_clamps_far_future_expiry_to_negotiated_ttl() {
+    let dir = TempDir::new().unwrap();
+
+    // Simulate a corrupted or clock-jumped write: expires_at far beyond the
+    // TTL that was in force when the entry was negotiated.
+    let negotiated_at = Utc::now() - Duration::hours(48);
+    let mut lf = CompatLockFile::new();
+    lf.negotiation.push(NegotiationEntry {
+        service_name: "svc".into(),
+        requested_fingerprint: "a".into(),
+        resolved_fingerprint: "b".into(),
+        compatibility_check: CompatibilityCheck::BackwardCompatible,
+        negotiated_at,
+        expires_at: negotiated_at + Duration::days(3650),
+    });
+    lf.save(dir.path()).await.unwrap();
+
+    let loaded = CompatLockFile::load(dir.path()).await.unwrap().unwrap();
+    let entry = loaded.find_entry("svc").unwrap();
+    assert_eq!(
+        entry.expires_at,
+        negotiated_at + Duration::hours(DEFAULT_TTL_HOURS),
+        "expiry must be clamped to negotiated_at + TTL on load"
+    );
+    // negotiated_at is 48h old with a 24h TTL, so the clamped entry is expired.
+    assert!(entry.is_expired());
+    assert!(loaded.find_valid_entry("svc").is_none());
+
+    // An in-range expiry is left untouched by load.
+    let mut fresh = CompatLockFile::new();
+    fresh.upsert_entry(NegotiationEntry::new(
+        "fresh".into(),
+        "a".into(),
+        "b".into(),
+        CompatibilityCheck::BackwardCompatible,
+    ));
+    let expected_expires_at = fresh.find_entry("fresh").unwrap().expires_at;
+    fresh.save(dir.path()).await.unwrap();
+    let reloaded = CompatLockFile::load(dir.path()).await.unwrap().unwrap();
+    assert_eq!(
+        reloaded.find_entry("fresh").unwrap().expires_at,
+        expected_expires_at
+    );
+    assert!(reloaded.find_valid_entry("fresh").is_some());
+}
+
 #[test]
 fn is_expired_reflects_expires_at() {
     let fresh = NegotiationEntry::new(

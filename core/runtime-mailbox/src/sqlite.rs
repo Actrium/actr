@@ -165,6 +165,9 @@ impl Mailbox for SqliteMailbox {
             WHERE id IN (
                 SELECT id FROM messages
                 WHERE status = 0 -- Queued
+                -- Ordering by wall-clock created_at is a local queue policy:
+                -- a backwards clock jump can reorder FIFO within a priority
+                -- band, which is acceptable for these local semantics.
                 ORDER BY priority DESC, created_at ASC
                 LIMIT ?1
             )

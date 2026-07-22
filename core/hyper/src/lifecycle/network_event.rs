@@ -83,6 +83,14 @@ const NETWORK_EVENT_SETTLE_WINDOW: Duration = Duration::from_millis(400);
 const NETWORK_EVENT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNALING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(super) const LONG_BACKGROUND_RECONNECT_THRESHOLD_MS: u64 = 30_000;
+/// Upper bound accepted for `background_duration_ms` (30 days, in ms).
+///
+/// Bindings derive the duration from wall-clock timestamps, so a clock jump
+/// while the app is suspended can report absurd values. Anything above this
+/// bound is clamped (with a warning) before it reaches recovery decisions.
+/// Kept as a defensive limit even once bindings move to a suspend-aware
+/// monotonic source.
+pub(super) const MAX_BACKGROUND_DURATION_MS: u64 = 2_592_000_000;
 static NEXT_NETWORK_EVENT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Keeps outbound sends behind a network-event lifecycle barrier while the
@@ -134,6 +142,28 @@ pub struct NetworkTransportFlags {
 pub enum AppLifecycleState {
     Background,
     Foreground { background_duration_ms: u64 },
+}
+
+impl AppLifecycleState {
+    /// Clamp `background_duration_ms` to [`MAX_BACKGROUND_DURATION_MS`] with a
+    /// warning. Values within the bound are returned unchanged.
+    fn sanitized(self) -> Self {
+        match self {
+            Self::Foreground {
+                background_duration_ms,
+            } if background_duration_ms > MAX_BACKGROUND_DURATION_MS => {
+                tracing::warn!(
+                    background_duration_ms,
+                    clamped_ms = MAX_BACKGROUND_DURATION_MS,
+                    "background duration exceeds sanity bound; clamping (likely a wall-clock jump in the binding layer)"
+                );
+                Self::Foreground {
+                    background_duration_ms: MAX_BACKGROUND_DURATION_MS,
+                }
+            }
+            other => other,
+        }
+    }
 }
 
 /// Reason for a cleanup-only operation.
@@ -1061,12 +1091,17 @@ impl NetworkEventHandle {
     }
 
     /// Handle app lifecycle changes.
+    ///
+    /// The reported background duration is sanitized here, at the single
+    /// ingest point, so every downstream consumer sees a bounded value.
     pub async fn handle_app_lifecycle_changed(
         &self,
         state: AppLifecycleState,
     ) -> Result<NetworkEventResult, String> {
-        self.send_event_and_await_result(NetworkEvent::AppLifecycleChanged { state })
-            .await
+        self.send_event_and_await_result(NetworkEvent::AppLifecycleChanged {
+            state: state.sanitized(),
+        })
+        .await
     }
 
     /// Proactively clean up all connections with a reason. This never reconnects.

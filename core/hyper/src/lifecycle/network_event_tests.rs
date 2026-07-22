@@ -384,6 +384,34 @@ async fn restore_schedules_reset_backoff_before_quick_connect() {
 }
 
 #[test]
+fn foreground_background_duration_is_clamped_at_ingest() {
+    // Absurd values (wall-clock jump in the binding layer) are clamped.
+    let absurd = AppLifecycleState::Foreground {
+        background_duration_ms: u64::MAX,
+    };
+    assert_eq!(
+        absurd.sanitized(),
+        AppLifecycleState::Foreground {
+            background_duration_ms: MAX_BACKGROUND_DURATION_MS,
+        }
+    );
+
+    // Legal values pass through unchanged, including the bound itself.
+    let legal = AppLifecycleState::Foreground {
+        background_duration_ms: LONG_BACKGROUND_RECONNECT_THRESHOLD_MS,
+    };
+    assert_eq!(legal.sanitized(), legal);
+    let at_bound = AppLifecycleState::Foreground {
+        background_duration_ms: MAX_BACKGROUND_DURATION_MS,
+    };
+    assert_eq!(at_bound.sanitized(), at_bound);
+    assert_eq!(
+        AppLifecycleState::Background.sanitized(),
+        AppLifecycleState::Background
+    );
+}
+
+#[test]
 fn snapshot_is_offline_and_should_restore() {
     let offline = snapshot(1, NetworkAvailability::Unavailable);
     assert!(offline.is_offline());
