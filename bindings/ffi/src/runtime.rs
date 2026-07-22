@@ -142,9 +142,11 @@ impl ActrNode {
         register_linked_node(attached).await
     }
 
-    /// Create a network event handle for platform callbacks.
+    /// Create a lifecycle-gated network event handle for platform callbacks.
     ///
-    /// This must be called before `start()`.
+    /// This must be called before `start()`. Swift/Kotlin adapters must inject
+    /// their authoritative initial foreground/background state; until then,
+    /// active recovery remains gated.
     pub fn create_network_event_handle(&self) -> ActrResult<Arc<NetworkEventHandleWrapper>> {
         let mut handle_guard = self.network_event_handle.lock();
         if let Some(handle) = handle_guard.as_ref() {
@@ -163,13 +165,14 @@ impl ActrNode {
             msg: "runtime node is no longer available".to_string(),
         })?;
 
-        let handle = node.create_network_event_handle(0);
+        let handle = node.create_gated_network_event_handle(0);
         *handle_guard = Some(handle.clone());
 
         info!(
             api = "create_network_event_handle",
             reused = false,
             debounce_ms = 0_u64,
+            lifecycle_profile = "gated",
             "network_event.ffi.handle_created"
         );
 

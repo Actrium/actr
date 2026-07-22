@@ -10,6 +10,30 @@ import kotlin.test.assertTrue
 
 class MobileEventAdapterStateTest {
     @Test
+    fun `authoritative initial phase is emitted once and cannot overwrite an observer event`() {
+        val foreground = MobileEventAdapterState()
+        assertEquals(
+            AppLifecycleState.Foreground(0uL),
+            foreground.initializePhase(isForeground = true, nowMs = 1_000),
+        )
+        assertEquals(null, foreground.initializePhase(isForeground = false, nowMs = 2_000))
+
+        val background = MobileEventAdapterState()
+        assertSame(
+            AppLifecycleState.Background,
+            background.initializePhase(isForeground = false, nowMs = 1_000),
+        )
+        assertEquals(
+            AppLifecycleState.Foreground(5_000uL),
+            background.enterForeground(6_000),
+        )
+
+        val observerWonRace = MobileEventAdapterState()
+        observerWonRace.enterBackground(1_000)
+        assertEquals(null, observerWonRace.initializePhase(isForeground = true, nowMs = 2_000))
+    }
+
+    @Test
     fun `lifecycle timestamps map to clamped foreground duration`() {
         val state = MobileEventAdapterState()
 

@@ -985,6 +985,63 @@ fn online_route_snapshot(sequence: u64, wifi: bool) -> NetworkSnapshot {
 }
 
 #[tokio::test]
+async fn gated_reconciler_waits_for_authoritative_foreground() {
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let processor = Arc::new(ControlledRecoveryProcessor {
+        started_tx,
+        release: Semaphore::new(0),
+    });
+    let (event_tx, event_rx) = mpsc::channel(16);
+    let (fact_sink, channel) =
+        supervisor_internal_channel_with_profile(tp::LifecycleProfile::Gated);
+    let handle = NetworkEventHandle::new_with_fact_sink(event_tx, fact_sink);
+    let SupervisorInternalChannel {
+        tx: internal_tx,
+        rx: internal_rx,
+        profile,
+    } = channel;
+    let (status_tx, status_rx) = watch::channel(SupervisorStatus::default());
+    let shutdown = CancellationToken::new();
+    let reconciler = tokio::spawn(reconcile_loop(
+        event_rx,
+        internal_tx,
+        internal_rx,
+        processor.clone(),
+        shutdown.clone(),
+        status_tx,
+        profile,
+    ));
+
+    handle
+        .handle_network_path_changed(online_route_snapshot(1, true))
+        .await
+        .expect("initial online route should be accepted");
+    assert_eq!(status_rx.borrow().policy_revision, 1);
+    assert_eq!(
+        status_rx.borrow().last_action_id,
+        None,
+        "Gated recovery must stay ineligible while app phase is Unknown"
+    );
+    assert!(started_rx.try_recv().is_err());
+
+    handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Foreground {
+            background_duration_ms: 0,
+        })
+        .await
+        .expect("authoritative foreground should be accepted");
+    assert_eq!(status_rx.borrow().last_action_id, Some(1));
+    assert_eq!(
+        started_rx.recv().await,
+        Some(NetworkRecoveryAction::Restore)
+    );
+
+    processor.release.add_permits(1);
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+}
+
+#[tokio::test]
 async fn current_effect_fact_and_event_storm_preserve_monotonic_supervisor_status() {
     let (started_tx, mut started_rx) = mpsc::unbounded_channel();
     let processor = Arc::new(ControlledRecoveryProcessor {
@@ -997,6 +1054,7 @@ async fn current_effect_fact_and_event_storm_preserve_monotonic_supervisor_statu
     let SupervisorInternalChannel {
         tx: internal_tx,
         rx: internal_rx,
+        profile,
     } = channel;
     let (status_tx, mut status_rx) = watch::channel(SupervisorStatus::default());
     let shutdown = CancellationToken::new();
@@ -1007,6 +1065,7 @@ async fn current_effect_fact_and_event_storm_preserve_monotonic_supervisor_statu
         processor.clone(),
         shutdown.clone(),
         status_tx,
+        profile,
     ));
 
     handle

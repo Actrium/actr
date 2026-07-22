@@ -1,5 +1,6 @@
 package io.actrium.actr.dsl
 
+import android.app.ActivityManager
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -15,6 +16,7 @@ import io.actrium.actr.NetworkTransportFlags
 import io.actrium.actr.ReconnectReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 
 /**
@@ -28,6 +30,7 @@ import kotlinx.coroutines.launch
  *   handleAppLifecycleChanged
  * - Supports cleanupConnections and forceReconnect for explicit lifecycle ops
  * - Auto-detect initial network state
+ * - Injects one authoritative initial app lifecycle state
  * - Support manual network state checks
  *
  * Logging output examples:
@@ -445,6 +448,29 @@ class NetworkMonitor
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var isMonitoring = false
     private val eventAdapter = MobileEventAdapterState()
+    private data class LifecycleDelivery(
+        val state: AppLifecycleState,
+        val reportNetworkSnapshotAfter: Boolean,
+    )
+
+    private val lifecycleDeliveries = Channel<LifecycleDelivery>(Channel.UNLIMITED)
+
+    init {
+        val deliveryJob =
+            scope.launch(Dispatchers.IO) {
+                for (delivery in lifecycleDeliveries) {
+                    try {
+                        onAppLifecycleChanged?.invoke(delivery.state)
+                        if (delivery.reportNetworkSnapshotAfter) {
+                            onNetworkPathChanged?.invoke(buildCurrentNetworkSnapshot())
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to deliver app lifecycle state: ${e.message}", e)
+                    }
+                }
+            }
+        deliveryJob.invokeOnCompletion { lifecycleDeliveries.close() }
+    }
 
     // Current network state
     private var isNetworkAvailable = false
@@ -470,6 +496,8 @@ class NetworkMonitor
 
             isMonitoring = true
             Log.i(TAG, "Starting network state monitoring...")
+
+            injectInitialLifecycleState()
 
             // Log initial network state
             logCurrentNetworkState("initial state")
@@ -500,23 +528,42 @@ class NetworkMonitor
 
     // ---- App Lifecycle Methods ----
 
+    @Synchronized
+    private fun injectInitialLifecycleState() {
+        val processInfo = ActivityManager.RunningAppProcessInfo()
+        ActivityManager.getMyMemoryState(processInfo)
+        val isForeground =
+            processInfo.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+        val state =
+            eventAdapter.initializePhase(isForeground, System.currentTimeMillis()) ?: return
+        Log.i(TAG, "Initial app lifecycle state: ${if (isForeground) "foreground" else "background"}")
+        dispatchLifecycleState(state, reportNetworkSnapshotAfter = isForeground)
+    }
+
+    private fun dispatchLifecycleState(
+        state: AppLifecycleState,
+        reportNetworkSnapshotAfter: Boolean = false,
+    ) {
+        val result =
+            lifecycleDeliveries.trySend(
+                LifecycleDelivery(state, reportNetworkSnapshotAfter),
+            )
+        if (result.isFailure) {
+            Log.w(TAG, "Lifecycle delivery skipped because its scope is no longer active")
+        }
+    }
+
     /**
      * Call this from Activity.onPause / onStop when the app goes to background.
      *
      * This records the background entry time and notifies the runtime.
      */
+    @Synchronized
     fun onAppBackground() {
         val nowMs = System.currentTimeMillis()
         val state = eventAdapter.enterBackground(nowMs)
         Log.i(TAG, "App entered background at $nowMs")
-
-        scope.launch(Dispatchers.IO) {
-            try {
-                onAppLifecycleChanged?.invoke(state)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to handle app background: ${e.message}", e)
-            }
-        }
+        dispatchLifecycleState(state)
     }
 
     /**
@@ -525,23 +572,13 @@ class NetworkMonitor
      * This computes the background duration, notifies the runtime, and reports
      * the current NetworkSnapshot.
      */
+    @Synchronized
     fun onAppForeground() {
         val state = eventAdapter.enterForeground(System.currentTimeMillis())
         val backgroundDurationMs = (state as AppLifecycleState.Foreground).backgroundDurationMs
 
         Log.i(TAG, "App returned to foreground, background duration: ${backgroundDurationMs}ms")
-
-        scope.launch(Dispatchers.IO) {
-            try {
-                onAppLifecycleChanged?.invoke(state)
-
-                // After returning to foreground, also report current network snapshot
-                val snapshot = buildCurrentNetworkSnapshot()
-                onNetworkPathChanged?.invoke(snapshot)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to handle app foreground: ${e.message}", e)
-            }
-        }
+        dispatchLifecycleState(state, reportNetworkSnapshotAfter = true)
     }
 
     /** Cleanup connections without reconnecting (e.g. app terminating, user logout). */

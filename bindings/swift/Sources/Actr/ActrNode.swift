@@ -199,6 +199,7 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
     private let queue: DispatchQueue
     private var observers: [NSObjectProtocol] = []
     private var reducer = AppLifecycleEventReducer()
+    private var lifecycleDelivery: Task<Void, Never>?
 
     init(handle: NetworkEventHandleWrapper, networkEventMonitor: NetworkEventMonitor) {
         self.handle = handle
@@ -206,6 +207,7 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
         self.queue = DispatchQueue(label: "actr.lifecycle.monitor")
         print("AppLifecycleMonitor initialized: time=\(formattedTimestamp())")
         registerObservers()
+        injectInitialLifecycleState()
     }
 
     deinit {
@@ -249,6 +251,36 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
 #endif
     }
 
+    private func injectInitialLifecycleState() {
+#if canImport(UIKit)
+        DispatchQueue.main.async { [weak self] in
+            let isBackground = UIApplication.shared.applicationState == .background
+            self?.queue.async { [weak self] in
+                self?.handleInitialLifecycleState(isBackground: isBackground)
+            }
+        }
+#elseif canImport(AppKit)
+        DispatchQueue.main.async { [weak self] in
+            let isBackground = !NSApplication.shared.isActive
+            self?.queue.async { [weak self] in
+                self?.handleInitialLifecycleState(isBackground: isBackground)
+            }
+        }
+#endif
+    }
+
+    private func handleInitialLifecycleState(isBackground: Bool) {
+        guard let state = reducer.initializePhase(isBackground: isBackground, at: Date()) else {
+            print("AppLifecycleMonitor skipped stale initial phase: time=\(formattedTimestamp())")
+            return
+        }
+        print("AppLifecycleMonitor initial phase: time=\(formattedTimestamp()), background=\(isBackground)")
+        notifyLifecycleChanged(state: state)
+        if !isBackground {
+            networkEventMonitor?.notifyCurrentPath()
+        }
+    }
+
     private func handleDidEnterBackground() {
         let timestamp = formattedTimestamp()
         if let state = reducer.didEnterBackground(at: Date()) {
@@ -275,7 +307,9 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
     }
 
     private func notifyLifecycleChanged(state: AppLifecycleState) {
-        Task { [handle] in
+        let previous = lifecycleDelivery
+        lifecycleDelivery = Task { [handle] in
+            await previous?.value
             _ = try? await handle.handleAppLifecycleChanged(state: state)
         }
     }

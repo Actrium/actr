@@ -12,14 +12,37 @@ internal class MobileEventAdapterState {
     @Volatile
     private var backgroundEnteredAtMs: Long? = null
 
+    @Volatile
+    private var lifecycleInitialized = false
+
+    @Synchronized
+    fun initializePhase(
+        isForeground: Boolean,
+        nowMs: Long,
+    ): AppLifecycleState? {
+        if (lifecycleInitialized) {
+            return null
+        }
+        lifecycleInitialized = true
+        return if (isForeground) {
+            backgroundEnteredAtMs = null
+            AppLifecycleState.Foreground(0uL)
+        } else {
+            backgroundEnteredAtMs = nowMs
+            AppLifecycleState.Background
+        }
+    }
+
     @Synchronized
     fun enterBackground(nowMs: Long): AppLifecycleState {
+        lifecycleInitialized = true
         backgroundEnteredAtMs = nowMs
         return AppLifecycleState.Background
     }
 
     @Synchronized
     fun enterForeground(nowMs: Long): AppLifecycleState {
+        lifecycleInitialized = true
         val backgroundDurationMs =
             backgroundEnteredAtMs?.let { start ->
                 (nowMs - start).coerceAtLeast(0)

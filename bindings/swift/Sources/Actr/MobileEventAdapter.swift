@@ -59,8 +59,23 @@ struct NetworkPathEventReducer {
 
 struct AppLifecycleEventReducer {
     private var backgroundedAt: Date?
+    private var hasLifecycleObservation = false
+
+    mutating func initializePhase(isBackground: Bool, at now: Date) -> AppLifecycleState? {
+        guard !hasLifecycleObservation else {
+            return nil
+        }
+        hasLifecycleObservation = true
+        if isBackground {
+            backgroundedAt = now
+            return .background
+        }
+        backgroundedAt = nil
+        return .foreground(backgroundDurationMs: 0)
+    }
 
     mutating func didEnterBackground(at now: Date) -> AppLifecycleState? {
+        hasLifecycleObservation = true
         guard backgroundedAt == nil else {
             return nil
         }
@@ -69,6 +84,7 @@ struct AppLifecycleEventReducer {
     }
 
     mutating func willEnterForeground(at now: Date) -> AppLifecycleState {
+        hasLifecycleObservation = true
         guard let backgroundedAt else {
             return .foreground(backgroundDurationMs: 0)
         }

@@ -13,6 +13,7 @@ use crate::lifecycle::credential_manager::{
     CredentialManager, HardRebindHandles, RegistrationContext,
 };
 use crate::lifecycle::dedup::{DEDUP_TTL, DedupOutcome, DedupState, DedupWaiter};
+use crate::lifecycle::recovery_policy::translate::LifecycleProfile;
 use crate::lifecycle::session_state::{SessionSnapshot, SessionState};
 use crate::outbound::Gate;
 use crate::transport::HostTransport;
@@ -1827,6 +1828,24 @@ impl Inner {
         &mut self,
         debounce_ms: u64,
     ) -> crate::lifecycle::NetworkEventHandle {
+        self.create_network_event_handle_with_profile(debounce_ms, LifecycleProfile::Ungated)
+    }
+
+    /// Create network event infrastructure whose recovery eligibility is gated
+    /// by authoritative app lifecycle events. Mobile bindings use this entry
+    /// point and must inject the initial foreground/background state.
+    pub fn create_gated_network_event_handle(
+        &mut self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
+        self.create_network_event_handle_with_profile(debounce_ms, LifecycleProfile::Gated)
+    }
+
+    fn create_network_event_handle_with_profile(
+        &mut self,
+        debounce_ms: u64,
+        profile: LifecycleProfile,
+    ) -> crate::lifecycle::NetworkEventHandle {
         if self.network_event_rx.is_some() {
             panic!("create_network_event_handle() can only be called once");
         }
@@ -1845,7 +1864,7 @@ impl Inner {
         // it, so the signaling client and session state can report normalized
         // facts into the same policy-ordered queue as timers and completions.
         let (fact_sink, internal_channel) =
-            crate::lifecycle::network_event::supervisor_internal_channel();
+            crate::lifecycle::network_event::supervisor_internal_channel_with_profile(profile);
         self.signaling_client
             .set_supervisor_fact_sink(fact_sink.clone());
 
@@ -1856,6 +1875,7 @@ impl Inner {
 
         tracing::info!(
             debounce_ms,
+            ?profile,
             channel_capacity = 100_u64,
             "network_event.node.handle_created"
         );

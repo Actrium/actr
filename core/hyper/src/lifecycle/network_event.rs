@@ -1315,16 +1315,28 @@ impl SupervisorFactSink {
 pub struct SupervisorInternalChannel {
     tx: mpsc::Sender<tp::Input>,
     rx: mpsc::Receiver<tp::Input>,
+    profile: tp::LifecycleProfile,
 }
 
 /// Create the supervisor's internal input channel plus a [`SupervisorFactSink`]
 /// over its sender. The node hands the sink to resource owners and passes the
-/// channel into [`run_network_event_reconciler_with_channel`].
+/// channel into [`run_network_event_reconciler_with_channel`]. Rust and
+/// headless callers default to an ungated lifecycle profile.
+#[cfg(any(test, feature = "test-utils"))]
 pub(crate) fn supervisor_internal_channel() -> (SupervisorFactSink, SupervisorInternalChannel) {
+    supervisor_internal_channel_with_profile(tp::LifecycleProfile::Ungated)
+}
+
+/// Create the supervisor channel with an explicit constructor-time lifecycle
+/// profile. Mobile bindings use `Gated`; Rust and headless deployments use an
+/// `Ungated` profile.
+pub(crate) fn supervisor_internal_channel_with_profile(
+    profile: tp::LifecycleProfile,
+) -> (SupervisorFactSink, SupervisorInternalChannel) {
     let (tx, rx) = mpsc::channel::<tp::Input>(128);
     (
         SupervisorFactSink::new(tx.clone()),
-        SupervisorInternalChannel { tx, rx },
+        SupervisorInternalChannel { tx, rx, profile },
     )
 }
 
@@ -1342,6 +1354,7 @@ pub async fn run_network_event_reconciler(
         processor,
         shutdown_token,
         status_tx,
+        tp::LifecycleProfile::Ungated,
     )
     .await;
 }
@@ -1366,6 +1379,7 @@ pub async fn run_network_event_reconciler_with_status(
         processor,
         shutdown_token,
         status_tx,
+        tp::LifecycleProfile::Ungated,
     )
     .await;
 }
@@ -1381,13 +1395,15 @@ pub(crate) async fn run_network_event_reconciler_with_channel(
     shutdown_token: CancellationToken,
 ) {
     let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
+    let SupervisorInternalChannel { tx, rx, profile } = channel;
     reconcile_loop(
         event_rx,
-        channel.tx,
-        channel.rx,
+        tx,
+        rx,
         processor,
         shutdown_token,
         status_tx,
+        profile,
     )
     .await;
 }
@@ -1399,12 +1415,12 @@ async fn reconcile_loop(
     processor: Arc<dyn NetworkEventProcessor>,
     shutdown_token: CancellationToken,
     status_tx: watch::Sender<SupervisorStatus>,
+    profile: tp::LifecycleProfile,
 ) {
-    tracing::info!("🔄 Network event reconciler started");
+    tracing::info!(?profile, "🔄 Network event reconciler started");
 
     let start = tokio::time::Instant::now();
-    // The Rust core is `Ungated`: phase eligibility never consults `AppPhase`.
-    let mut supervisor = ConnectionSupervisor::new(tp::LifecycleProfile::Ungated);
+    let mut supervisor = ConnectionSupervisor::new(profile);
 
     let mut timers: HashMap<tp::TimerId, tokio::task::AbortHandle> = HashMap::new();
     let mut effect: Option<RunningEffect> = None;

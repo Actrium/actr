@@ -120,3 +120,24 @@ private func transport(
             == .foreground(backgroundDurationMs: 0)
     )
 }
+
+@Test func lifecycleReducerInitializesOneAuthoritativePhaseWithoutOverwritingEvents() {
+    let epoch = Date(timeIntervalSince1970: 1_000)
+    var foreground = AppLifecycleEventReducer()
+    #expect(
+        foreground.initializePhase(isBackground: false, at: epoch)
+            == .foreground(backgroundDurationMs: 0)
+    )
+    #expect(foreground.initializePhase(isBackground: true, at: epoch) == nil)
+
+    var background = AppLifecycleEventReducer()
+    #expect(background.initializePhase(isBackground: true, at: epoch) == .background)
+    #expect(
+        background.willEnterForeground(at: epoch.addingTimeInterval(5))
+            == .foreground(backgroundDurationMs: 5_000)
+    )
+
+    var observerWonRace = AppLifecycleEventReducer()
+    #expect(observerWonRace.didEnterBackground(at: epoch) == .background)
+    #expect(observerWonRace.initializePhase(isBackground: false, at: epoch) == nil)
+}
