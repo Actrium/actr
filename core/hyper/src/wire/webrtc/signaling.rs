@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
-    Arc, OnceLock,
+    Arc, Mutex, MutexGuard, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::time::Duration;
@@ -307,7 +307,8 @@ pub trait SignalingClient: Send + Sync {
     /// connection generation so no in-flight attempt can still commit, and
     /// suppress new automatic attempts. A bounded teardown calls this before any
     /// physical step so a later connect cannot race the teardown across its
-    /// commit boundary. Must not block. Default is a no-op.
+    /// commit boundary. It must not await or perform I/O; implementations may
+    /// enter a bounded synchronous commit critical section. Default is a no-op.
     fn invalidate_generation(&self) {}
 }
 
@@ -490,6 +491,9 @@ pub struct WebSocketSignalingClient {
     /// Incremented by lifecycle disconnects to invalidate every in-flight
     /// connection attempt, whether explicit or automatic.
     connection_generation: AtomicU64,
+    /// Serializes the generation linearization point with connection state
+    /// publication. No `.await` is allowed while this gate is held.
+    connection_commit_gate: Mutex<()>,
     /// Wakes connection waiters when lifecycle invalidates their generation.
     ///
     /// This is deliberately separate from `reconnect_notify`: connection
@@ -505,6 +509,9 @@ pub struct WebSocketSignalingClient {
     /// Supervisor fact sink for normalized signaling generation facts (set once,
     /// lock-free read). Absent for clients not wired to lifecycle recovery.
     supervisor_fact_sink: OnceLock<SupervisorFactSink>,
+    /// Deterministic two-phase barrier for the generation/publication race.
+    #[cfg(test)]
+    connection_publish_barrier: OnceLock<Arc<tokio::sync::Barrier>>,
 }
 
 impl WebSocketSignalingClient {
@@ -536,12 +543,21 @@ impl WebSocketSignalingClient {
             reconnect_manager_shutdown: CancellationToken::new(),
             auto_reconnect_suppressed: AtomicBool::new(false),
             connection_generation: AtomicU64::new(0),
+            connection_commit_gate: Mutex::new(()),
             connection_generation_notify: tokio::sync::Notify::new(),
             connection_attempt_notify: tokio::sync::Notify::new(),
             reconnect_backoff_reset_generation: AtomicU64::new(0),
             hook_callback: OnceLock::new(),
             supervisor_fact_sink: OnceLock::new(),
+            #[cfg(test)]
+            connection_publish_barrier: OnceLock::new(),
         }
+    }
+
+    fn lock_connection_commit(&self) -> MutexGuard<'_, ()> {
+        self.connection_commit_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Emit a `SignalingGenerationCommitted` fact if a supervisor fact sink is
@@ -1051,9 +1067,15 @@ impl WebSocketSignalingClient {
     }
 
     fn invalidate_connection_attempts_and_suppress_auto_reconnect(&self) {
-        self.connection_generation.fetch_add(1, Ordering::AcqRel);
-        self.auto_reconnect_suppressed
-            .store(true, Ordering::Release);
+        {
+            // The same gate covers the final generation check and socket
+            // publication. Whichever side acquires it first defines whether the
+            // candidate connection committed before or after invalidation.
+            let _commit_guard = self.lock_connection_commit();
+            self.connection_generation.fetch_add(1, Ordering::AcqRel);
+            self.auto_reconnect_suppressed
+                .store(true, Ordering::Release);
+        }
         self.connection_generation_notify.notify_waiters();
         self.reconnect_notify.notify_waiters();
     }
@@ -1117,49 +1139,84 @@ impl WebSocketSignalingClient {
         let (sink, stream) = ws_stream.split();
 
         if self.connect_intent_cancelled(intent) {
-            tracing::debug!(
-                intent = ?intent,
-                "Discarding completed signaling connection after lifecycle generation changed"
-            );
-            let mut sink = sink;
-            if let Err(e) = sink.close().await {
-                tracing::warn!(
-                    "Signaling socket close failed after lifecycle cancellation: {}",
-                    e
-                );
-            }
-            return Err(NetworkError::ConnectionError(
-                "Signaling connection was cancelled by explicit disconnect".to_string(),
-            ));
+            return self.discard_cancelled_connection(intent, sink).await;
         }
 
-        *self.ws_sink.lock().await = Some(sink);
-        *self.ws_stream.lock().await = Some(stream);
-        self.connected.store(true, Ordering::Release);
-        if matches!(intent, ConnectIntent::Explicit { .. }) {
-            self.auto_reconnect_suppressed
-                .store(false, Ordering::Release);
+        #[cfg(test)]
+        if let Some(barrier) = self.connection_publish_barrier.get() {
+            barrier.wait().await;
+            barrier.wait().await;
         }
-        self.last_pong.store(current_unix_secs(), Ordering::Release);
-        // Enqueue the hook before broadcasting to other subscribers.
-        self.invoke_hook(HookEvent::SignalingConnected).await;
-        let _ = self.event_tx.send(SignalingEvent::Connected);
 
-        self.stats.connections.fetch_add(1, Ordering::Relaxed);
-
-        // Authoritative commit: the generation was validated by
-        // connect_intent_cancelled above and the socket is now published under
-        // the same synchronization boundary shared with disconnect. Report the
-        // committed generation to the supervisor. Origin is External: signaling
-        // does not carry the driving effect's action_id, so translation treats
-        // it as resource-owner news rather than the effect's own covered output.
+        // Acquire every asynchronously-locked publication slot before entering
+        // the synchronous commit gate. Invalidation never waits for these
+        // locks, so there is no inverse lock ordering.
+        let mut sink_guard = self.ws_sink.lock().await;
+        let mut stream_guard = self.ws_stream.lock().await;
         let generation = match intent {
             ConnectIntent::Explicit { generation }
             | ConnectIntent::AutoReconnect { generation } => generation,
         };
-        self.emit_signaling_committed(generation, SignalingFactOrigin::External);
+        let mut candidate_sink = Some(sink);
+        let mut candidate_stream = Some(stream);
+        let committed = {
+            let _commit_guard = self.lock_connection_commit();
+            if self.connect_intent_cancelled(intent) {
+                false
+            } else {
+                *sink_guard = candidate_sink.take();
+                *stream_guard = candidate_stream.take();
+                self.connected.store(true, Ordering::Release);
+                if matches!(intent, ConnectIntent::Explicit { .. }) {
+                    self.auto_reconnect_suppressed
+                        .store(false, Ordering::Release);
+                }
+                self.last_pong.store(current_unix_secs(), Ordering::Release);
+                self.stats.connections.fetch_add(1, Ordering::Relaxed);
+                self.emit_signaling_committed(generation, SignalingFactOrigin::External);
+                true
+            }
+        };
+        drop(stream_guard);
+        drop(sink_guard);
+
+        if !committed {
+            return self
+                .discard_cancelled_connection(
+                    intent,
+                    candidate_sink.expect("uncommitted signaling sink must remain local"),
+                )
+                .await;
+        }
+
+        // Enqueue the hook before broadcasting to other subscribers.
+        self.invoke_hook(HookEvent::SignalingConnected).await;
+        let _ = self.event_tx.send(SignalingEvent::Connected);
 
         Ok(())
+    }
+
+    async fn discard_cancelled_connection(
+        &self,
+        intent: ConnectIntent,
+        mut sink: futures_util::stream::SplitSink<
+            WebSocketStream<MaybeTlsStream<TcpStream>>,
+            tokio_tungstenite::tungstenite::Message,
+        >,
+    ) -> NetworkResult<()> {
+        tracing::debug!(
+            intent = ?intent,
+            "Discarding completed signaling connection after lifecycle generation changed"
+        );
+        if let Err(e) = sink.close().await {
+            tracing::warn!(
+                "Signaling socket close failed after lifecycle cancellation: {}",
+                e
+            );
+        }
+        Err(NetworkError::ConnectionError(
+            "Signaling connection was cancelled by explicit disconnect".to_string(),
+        ))
     }
 
     /// Connect to signaling server with retry and exponential backoff based on reconnect_config.

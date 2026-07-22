@@ -1293,6 +1293,78 @@ async fn inv12_stale_signaling_generation_cannot_publish_connected() {
 }
 
 #[tokio::test]
+async fn inv12_generation_change_after_validation_cannot_publish_connection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener should bind");
+    let server_url = format!(
+        "ws://{}/signaling/ws",
+        listener
+            .local_addr()
+            .expect("test listener should have local addr")
+    );
+    let (finish_server_tx, finish_server_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        let (stream, _) = listener
+            .accept()
+            .await
+            .expect("test server should accept the tcp connection");
+        let websocket = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("test server should complete the websocket handshake");
+        let _ = finish_server_rx.await;
+        drop(websocket);
+    });
+
+    let mut config = make_config();
+    config.server_url = Url::parse(&server_url).expect("test websocket URL should parse");
+    config.connection_timeout = 5;
+    config.reconnect_config.enabled = false;
+    let client = make_ws_client(config);
+    let publish_barrier = Arc::new(tokio::sync::Barrier::new(2));
+    assert!(
+        client
+            .connection_publish_barrier
+            .set(publish_barrier.clone())
+            .is_ok(),
+        "test publication barrier should only be installed once"
+    );
+    let mut events = client.subscribe_events();
+
+    let stale_client = client.clone();
+    let stale_connect = tokio::spawn(async move { stale_client.connect_once().await });
+
+    tokio::time::timeout(Duration::from_secs(2), publish_barrier.wait())
+        .await
+        .expect("connection should reach the post-validation publication barrier");
+    client.invalidate_generation();
+    publish_barrier.wait().await;
+
+    tokio::time::timeout(Duration::from_secs(2), stale_connect)
+        .await
+        .expect("stale connection should finish promptly")
+        .expect("stale connection task should not panic")
+        .expect_err("generation invalidated before publication must not commit");
+    assert!(!client.is_connected());
+    assert!(client.ws_sink.lock().await.is_none());
+    assert!(client.ws_stream.lock().await.is_none());
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event, SignalingEvent::Connected),
+            "an invalidated generation must not publish Connected"
+        );
+    }
+
+    finish_server_tx
+        .send(())
+        .expect("test server should still be waiting");
+    tokio::time::timeout(Duration::from_secs(1), server_task)
+        .await
+        .expect("test server task should finish")
+        .expect("test server task should not panic");
+}
+
+#[tokio::test]
 async fn test_cancelled_connect_future_releases_single_flight_immediately() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
