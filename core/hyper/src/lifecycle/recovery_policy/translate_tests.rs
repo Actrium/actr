@@ -179,6 +179,42 @@ fn foreground_between_legacy_and_configured_thresholds_probes_and_resumes() {
 }
 
 #[test]
+fn foreground_reconnect_boundary_is_exact_at_sixty_seconds() {
+    let mut view = View::initial();
+    view.app_phase = AppPhaseState::Background;
+    view.background_entered_at = Some(Duration::ZERO);
+
+    for elapsed_ms in [59_999, 60_000, 60_001] {
+        let d = tr_at(
+            &view,
+            Input::AppEnteredForeground,
+            Duration::from_millis(elapsed_ms),
+        );
+        let is_long_background = elapsed_ms >= 60_000;
+
+        assert!(
+            has(
+                &d,
+                MachineInput::RecoveryIntent(if is_long_background {
+                    RecoveryIntentInput::RequestReconnect
+                } else {
+                    RecoveryIntentInput::RequestProbe
+                })
+            ),
+            "unexpected recovery intent at {elapsed_ms} ms"
+        );
+        assert!(
+            d.signals.contains(if is_long_background {
+                &SignalingDirective::SuppressAutoReconnect
+            } else {
+                &SignalingDirective::ResumeAutoReconnect
+            }),
+            "unexpected signaling directive at {elapsed_ms} ms"
+        );
+    }
+}
+
+#[test]
 fn background_already_background_is_a_no_op() {
     let mut view = View::initial();
     view.app_phase = AppPhaseState::Background;

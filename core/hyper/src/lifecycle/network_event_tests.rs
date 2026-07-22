@@ -8,7 +8,7 @@ use actr_protocol::{
 };
 use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
-use tokio::sync::{Notify, broadcast, mpsc};
+use tokio::sync::{Notify, Semaphore, broadcast, mpsc, watch};
 
 struct ForceReconnectFakeSignalingClient {
     connected: AtomicBool,
@@ -493,6 +493,28 @@ fn fact_sink_delivers_facts_to_internal_channel_in_order() {
     ));
 }
 
+#[test]
+fn fact_sink_is_non_blocking_when_internal_channel_is_full_or_closed() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let sink = SupervisorFactSink::new(tx);
+
+    sink.session_activated(1);
+    sink.session_activated(2);
+    assert!(matches!(
+        rx.try_recv().expect("first fact should occupy the channel"),
+        tp::Input::SessionActivated {
+            session_generation: 1
+        }
+    ));
+    assert!(matches!(
+        rx.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    drop(rx);
+    sink.session_activated(3);
+}
+
 #[derive(Clone, Copy)]
 enum EffectExit {
     Succeed,
@@ -772,6 +794,187 @@ async fn session_activated_during_cleanup_runs_post_cleanup_recovery() {
             NetworkRecoveryAction::Restore
         ]
     );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+}
+
+struct ControlledRecoveryProcessor {
+    started_tx: mpsc::UnboundedSender<NetworkRecoveryAction>,
+    release: Semaphore,
+}
+
+#[async_trait::async_trait]
+impl NetworkEventProcessor for ControlledRecoveryProcessor {
+    async fn process_network_available(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_lost(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_type_changed(
+        &self,
+        _is_wifi: bool,
+        _is_cellular: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn cleanup_connections(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_recovery_action(
+        &self,
+        action: NetworkRecoveryAction,
+    ) -> Result<(), String> {
+        self.started_tx
+            .send(action)
+            .map_err(|_| "test action receiver closed".to_string())?;
+        self.release
+            .acquire()
+            .await
+            .map_err(|_| "test release semaphore closed".to_string())?
+            .forget();
+        Ok(())
+    }
+}
+
+fn online_route_snapshot(sequence: u64, wifi: bool) -> NetworkSnapshot {
+    NetworkSnapshot {
+        sequence,
+        availability: NetworkAvailability::Available,
+        transport: NetworkTransportFlags {
+            wifi,
+            cellular: !wifi,
+            ..NetworkTransportFlags::default()
+        },
+        is_expensive: !wifi,
+        is_constrained: false,
+    }
+}
+
+#[tokio::test]
+async fn current_effect_fact_and_event_storm_preserve_monotonic_supervisor_status() {
+    let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+    let processor = Arc::new(ControlledRecoveryProcessor {
+        started_tx,
+        release: Semaphore::new(0),
+    });
+    let (event_tx, event_rx) = mpsc::channel(16);
+    let (fact_sink, channel) = supervisor_internal_channel();
+    let handle = NetworkEventHandle::new_with_fact_sink(event_tx, fact_sink.clone());
+    let SupervisorInternalChannel {
+        tx: internal_tx,
+        rx: internal_rx,
+    } = channel;
+    let (status_tx, mut status_rx) = watch::channel(SupervisorStatus::default());
+    let shutdown = CancellationToken::new();
+    let reconciler = tokio::spawn(reconcile_loop(
+        event_rx,
+        internal_tx,
+        internal_rx,
+        processor.clone(),
+        shutdown.clone(),
+        status_tx,
+    ));
+
+    handle
+        .handle_network_path_changed(online_route_snapshot(1, true))
+        .await
+        .expect("initial online route should be accepted");
+    assert_eq!(
+        started_rx.recv().await,
+        Some(NetworkRecoveryAction::Restore)
+    );
+    let mut statuses = vec![status_rx.borrow_and_update().clone()];
+    assert_eq!(statuses[0].policy_revision, 1);
+    assert_eq!(statuses[0].last_action_id, Some(1));
+    assert_eq!(statuses[0].last_outcome, None);
+
+    fact_sink
+        .signaling_generation_committed(7, SignalingFactOrigin::CurrentEffect { action_id: 1 });
+    status_rx
+        .wait_for(|status| status.policy_revision == 2)
+        .await
+        .expect("current-effect fact should be reconciled");
+    statuses.push(status_rx.borrow_and_update().clone());
+
+    for sequence in 2..=11 {
+        handle
+            .handle_network_path_changed(online_route_snapshot(sequence, sequence % 2 == 1))
+            .await
+            .expect("material route change should be accepted");
+        let status = status_rx.borrow_and_update().clone();
+        assert_eq!(status.policy_revision, sequence + 1);
+        assert_eq!(status.last_action_id, Some(1));
+        assert_eq!(status.last_outcome, None);
+        statuses.push(status);
+    }
+
+    for sequence in 12..=111 {
+        handle
+            .handle_network_path_changed(online_route_snapshot(sequence, true))
+            .await
+            .expect("duplicate route snapshot should be accepted");
+        let status = status_rx.borrow_and_update().clone();
+        assert_eq!(
+            status.policy_revision, 12,
+            "structural duplicates must not advance policy"
+        );
+        assert_eq!(status.last_action_id, Some(1));
+        assert_eq!(status.last_outcome, None);
+        statuses.push(status);
+    }
+
+    processor.release.add_permits(1);
+    status_rx
+        .wait_for(|status| status.last_outcome == Some(ObservedOutcome::Succeeded))
+        .await
+        .expect("the first effect completion should remain current");
+    let first_completion = status_rx.borrow_and_update().clone();
+    assert_eq!(first_completion.policy_revision, 12);
+    assert_eq!(first_completion.last_action_id, Some(1));
+    statuses.push(first_completion);
+
+    handle
+        .force_reconnect(ReconnectReason::ManualReconnect)
+        .await
+        .expect("a later recovery request should be accepted");
+    assert_eq!(
+        started_rx.recv().await,
+        Some(NetworkRecoveryAction::ForceReconnect)
+    );
+    let second_started = status_rx.borrow_and_update().clone();
+    assert_eq!(second_started.policy_revision, 13);
+    assert_eq!(second_started.last_action_id, Some(2));
+    assert_eq!(
+        second_started.last_outcome,
+        Some(ObservedOutcome::Succeeded),
+        "the previous terminal outcome should remain observable while new work runs"
+    );
+    statuses.push(second_started);
+
+    processor.release.add_permits(1);
+    status_rx
+        .changed()
+        .await
+        .expect("the second effect completion should publish status");
+    let second_completion = status_rx.borrow_and_update().clone();
+    assert_eq!(second_completion.policy_revision, 13);
+    assert_eq!(second_completion.last_action_id, Some(2));
+    assert_eq!(
+        second_completion.last_outcome,
+        Some(ObservedOutcome::Succeeded)
+    );
+    statuses.push(second_completion);
+
+    assert!(statuses.windows(2).all(|pair| {
+        pair[0].policy_revision <= pair[1].policy_revision
+            && pair[0].last_action_id <= pair[1].last_action_id
+    }));
 
     shutdown.cancel();
     reconciler.await.expect("reconciler should stop cleanly");
