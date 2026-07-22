@@ -13,6 +13,11 @@ categories = ["asynchronous", "cryptography"]
 [lints]
 workspace = true
 
+[features]
+# `test-utils`: enable testing helpers such as the deterministic virtual
+# `TestClock` (no extra dependencies; safe on all targets)
+test-utils = []
+
 [dependencies]
 async-trait.workspace = true
 thiserror.workspace = true
