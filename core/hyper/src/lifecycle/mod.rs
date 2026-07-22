@@ -30,5 +30,8 @@ pub use network_event::{
     process_network_event_batch, run_network_event_reconciler,
     run_network_event_reconciler_with_status, select_network_recovery_action,
 };
+pub(crate) use network_event::{
+    run_network_event_reconciler_with_channel, supervisor_internal_channel,
+};
 pub use node::CredentialState;
 pub use session_state::{SessionPhase, SessionSnapshot, SessionState};

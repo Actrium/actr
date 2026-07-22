@@ -41,6 +41,33 @@ pub use crate::transport::lane::{
     install_webrtc_fragment_send_hook_for_test,
 };
 
+/// Spawn the production reconciler shape with its normalized fact channel.
+///
+/// Integration tests use this instead of the public status-only entry point
+/// when they must drive real signaling generation facts through the same
+/// channel wiring that [`crate::Node`] installs in production.
+pub fn spawn_network_event_supervisor(
+    processor: Arc<dyn crate::lifecycle::NetworkEventProcessor>,
+) -> (
+    crate::lifecycle::NetworkEventHandle,
+    crate::lifecycle::SupervisorFactSink,
+    tokio_util::sync::CancellationToken,
+    tokio::task::JoinHandle<()>,
+) {
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
+    let (fact_sink, channel) = crate::lifecycle::supervisor_internal_channel();
+    let handle =
+        crate::lifecycle::NetworkEventHandle::new_with_fact_sink(event_tx, fact_sink.clone());
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let task = tokio::spawn(crate::lifecycle::run_network_event_reconciler_with_channel(
+        event_rx,
+        channel,
+        processor,
+        shutdown.clone(),
+    ));
+    (handle, fact_sink, shutdown, task)
+}
+
 /// Assert whether an attached node has the runtime hook observer installed.
 ///
 /// Package attach uses this observer to bridge observation hooks into Wasm /
