@@ -56,6 +56,19 @@ use crate::inbound::{InboundPacketDispatcher, MailboxProcessor, Scheduler};
 use crate::outbound::Gate;
 use crate::web_context::RuntimeBridge;
 
+/// Milliseconds from `performance.now()`: monotonic per RFC-0419, unlike
+/// `Date.now()`, which jumps when the wall clock changes (NTP, manual set).
+///
+/// Reads `performance` off the worker global scope; falls back to `Date.now()`
+/// if the Performance API is unavailable.
+fn monotonic_now_ms() -> f64 {
+    js_sys::global()
+        .unchecked_into::<web_sys::WorkerGlobalScope>()
+        .performance()
+        .map(|p| p.now())
+        .unwrap_or_else(js_sys::Date::now)
+}
+
 type StreamHandler = Rc<RefCell<Box<dyn FnMut(Bytes)>>>;
 
 #[derive(Serialize)]
@@ -171,7 +184,7 @@ impl SignalingClient {
         // Wait for open (max 15s)
         let ws_clone = ws.clone();
         let open_future = async move {
-            let start = js_sys::Date::now();
+            let start = monotonic_now_ms();
             loop {
                 if ws_clone.ready_state() == WebSocket::OPEN {
                     return Ok(());
@@ -179,7 +192,7 @@ impl SignalingClient {
                 if ws_clone.ready_state() == WebSocket::CLOSED {
                     return Err(JsValue::from_str("WebSocket closed"));
                 }
-                if js_sys::Date::now() - start > 15000.0 {
+                if monotonic_now_ms() - start > 15000.0 {
                     return Err(JsValue::from_str("WebSocket connect timeout"));
                 }
                 TimeoutFuture::new(10).await;

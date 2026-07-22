@@ -59,6 +59,7 @@ web-sys = { workspace = true, features = [
     "BinaryType",
     "Blob",
     "ErrorEvent",
+    "Performance",
 ] }
 
 # Async runtime
