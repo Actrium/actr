@@ -10,14 +10,12 @@ import android.util.Log
 import io.actrium.actr.ActrException
 import io.actrium.actr.AppLifecycleState
 import io.actrium.actr.CleanupReason
-import io.actrium.actr.NetworkAvailability
 import io.actrium.actr.NetworkSnapshot
 import io.actrium.actr.NetworkTransportFlags
 import io.actrium.actr.ReconnectReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicLong
 
 /**
  * NetworkMonitor - Independent network state monitor
@@ -446,13 +444,7 @@ class NetworkMonitor
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var isMonitoring = false
-
-    // Monotonically incrementing sequence number for NetworkSnapshot
-    private val sequenceCounter = AtomicLong(0)
-
-    // Time when the app entered background (epoch millis), null if in foreground
-    @Volatile
-    private var backgroundEnteredAtMs: Long? = null
+    private val eventAdapter = MobileEventAdapterState()
 
     // Current network state
     private var isNetworkAvailable = false
@@ -514,12 +506,13 @@ class NetworkMonitor
      * This records the background entry time and notifies the runtime.
      */
     fun onAppBackground() {
-        backgroundEnteredAtMs = System.currentTimeMillis()
-        Log.i(TAG, "App entered background at $backgroundEnteredAtMs")
+        val nowMs = System.currentTimeMillis()
+        val state = eventAdapter.enterBackground(nowMs)
+        Log.i(TAG, "App entered background at $nowMs")
 
         scope.launch(Dispatchers.IO) {
             try {
-                onAppLifecycleChanged?.invoke(AppLifecycleState.Background)
+                onAppLifecycleChanged?.invoke(state)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to handle app background: ${e.message}", e)
             }
@@ -533,22 +526,14 @@ class NetworkMonitor
      * the current NetworkSnapshot.
      */
     fun onAppForeground() {
-        val backgroundDurationMs =
-            backgroundEnteredAtMs?.let { start ->
-                (System.currentTimeMillis() - start).coerceAtLeast(0)
-            } ?: 0L
-
-        backgroundEnteredAtMs = null
+        val state = eventAdapter.enterForeground(System.currentTimeMillis())
+        val backgroundDurationMs = (state as AppLifecycleState.Foreground).backgroundDurationMs
 
         Log.i(TAG, "App returned to foreground, background duration: ${backgroundDurationMs}ms")
 
         scope.launch(Dispatchers.IO) {
             try {
-                onAppLifecycleChanged?.invoke(
-                    AppLifecycleState.Foreground(
-                        backgroundDurationMs = backgroundDurationMs.toULong(),
-                    ),
-                )
+                onAppLifecycleChanged?.invoke(state)
 
                 // After returning to foreground, also report current network snapshot
                 val snapshot = buildCurrentNetworkSnapshot()
@@ -585,14 +570,8 @@ class NetworkMonitor
 
     /** Build a NetworkSnapshot from the current network state. */
     private fun buildCurrentNetworkSnapshot(): NetworkSnapshot =
-        NetworkSnapshot(
-            sequence = sequenceCounter.incrementAndGet().toULong(),
-            availability =
-                if (isNetworkAvailable) {
-                    NetworkAvailability.AVAILABLE
-                } else {
-                    NetworkAvailability.UNAVAILABLE
-                },
+        eventAdapter.snapshot(
+            isAvailable = isNetworkAvailable,
             transport =
                 NetworkTransportFlags(
                     wifi = isWifiConnected,
