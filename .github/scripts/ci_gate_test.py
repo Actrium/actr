@@ -430,6 +430,13 @@ def test_run_sh_uses_correct_signaling_cache_table() -> None:
     assert "actor_registry" not in run_sh
 
 
+def test_swift_e2e_only_shuts_down_its_selected_simulator() -> None:
+    run_sh = (ROOT / "e2e/swift-echo-app/run.sh").read_text(encoding="utf-8")
+
+    assert 'xcrun simctl shutdown "$DEVICE_UDID"' in run_sh
+    assert "xcrun simctl shutdown all" not in run_sh
+
+
 def _create_service_registry(db_path: Path) -> None:
     with sqlite3.connect(db_path) as connection:
         connection.execute(

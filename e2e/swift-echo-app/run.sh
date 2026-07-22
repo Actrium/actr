@@ -383,8 +383,11 @@ cleanup() {
     rm -f "$ECHOAPP_ACTRIX_CONFIG" "$TMP_APP_DIR/.actr/config.toml"
     rmdir "$TMP_APP_DIR/.actr" 2>/dev/null || true
 
-    # Shut down booted iOS Simulators
-    xcrun simctl shutdown all 2>/dev/null || true
+    # Shut down only the simulator selected for this run. Other booted
+    # simulators may belong to an unrelated local development session.
+    if [ -n "$DEVICE_UDID" ]; then
+        xcrun simctl shutdown "$DEVICE_UDID" 2>/dev/null || true
+    fi
 
     # Move sanitized logs out of RUN_DIR to a fixed location so the
     # upload-artifact step can find them regardless of success or failure.
