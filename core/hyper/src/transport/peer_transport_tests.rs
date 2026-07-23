@@ -167,35 +167,41 @@ struct SupersedableFactory {
     replacement_wire: Arc<CountingWire>,
 }
 
-struct ParallelDestinationFactory {
+struct IndependentDestinationFactory {
     calls: AtomicUsize,
-    both_started: Notify,
-    release: Notify,
+    host_started: Notify,
+    host_release: Notify,
 }
 
 #[async_trait]
-impl WireBuilder for ParallelDestinationFactory {
-    async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
-        if self.calls.fetch_add(1, Ordering::AcqRel) + 1 == 2 {
-            self.both_started.notify_one();
+impl WireBuilder for IndependentDestinationFactory {
+    async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        if dest == &Dest::host() {
+            self.host_started.notify_one();
+            self.host_release.notified().await;
         }
-        self.release.notified().await;
         Ok(vec![Arc::new(CountingWire::new(ConnType::WebSocket, None))])
     }
 }
 
 #[tokio::test]
-async fn independent_destination_flights_are_not_serialized() {
-    let factory = Arc::new(ParallelDestinationFactory {
+async fn inv8_independent_destination_flights_are_not_serialized() {
+    let factory = Arc::new(IndependentDestinationFactory {
         calls: AtomicUsize::new(0),
-        both_started: Notify::new(),
-        release: Notify::new(),
+        host_started: Notify::new(),
+        host_release: Notify::new(),
     });
     let manager = Arc::new(PeerTransport::new(ActrId::default(), factory.clone()));
 
     let host_manager = manager.clone();
     let host =
         tokio::spawn(async move { host_manager.get_or_create_transport(&Dest::host()).await });
+
+    timeout(Duration::from_secs(1), factory.host_started.notified())
+        .await
+        .expect("host destination flight should enter the factory");
+
     let workload_manager = manager.clone();
     let workload = tokio::spawn(async move {
         workload_manager
@@ -203,22 +209,24 @@ async fn independent_destination_flights_are_not_serialized() {
             .await
     });
 
-    timeout(Duration::from_secs(1), factory.both_started.notified())
+    timeout(Duration::from_secs(1), workload)
         .await
-        .expect("both destination flights should enter the factory concurrently");
-    assert_eq!(factory.calls.load(Ordering::Acquire), 2);
-    factory.release.notify_waiters();
+        .expect("workload flight should finish while the host flight remains blocked")
+        .expect("workload task should not panic")
+        .expect("workload flight should succeed");
 
+    assert_eq!(factory.calls.load(Ordering::Acquire), 2);
+    assert!(
+        !host.is_finished(),
+        "the slow host destination should remain independently blocked"
+    );
+
+    factory.host_release.notify_one();
     timeout(Duration::from_secs(1), host)
         .await
         .expect("host flight should finish")
         .expect("host task should not panic")
         .expect("host flight should succeed");
-    timeout(Duration::from_secs(1), workload)
-        .await
-        .expect("workload flight should finish")
-        .expect("workload task should not panic")
-        .expect("workload flight should succeed");
 }
 
 #[async_trait]
