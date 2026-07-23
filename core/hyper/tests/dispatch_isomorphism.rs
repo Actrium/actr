@@ -75,7 +75,7 @@
     actr_wasm_fixture_available
 ))]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use actr_hyper::ConflictKeySpec;
@@ -96,6 +96,11 @@ mod wasm_actor_fixture;
 
 fn fixture_bytes() -> &'static [u8] {
     wasm_actor_fixture::WASM_ACTOR_FIXTURE
+}
+
+fn fixture_host() -> &'static WasmHost {
+    static HOST: OnceLock<WasmHost> = OnceLock::new();
+    HOST.get_or_init(|| WasmHost::compile(fixture_bytes()).expect("compile v2 fixture"))
 }
 
 // Native basis: the SAME guest source, compiled into this test binary. Off
@@ -179,8 +184,9 @@ impl Basis for WasmBasis {
         queue_cap: usize,
         dispatch_timeout: Option<Duration>,
     ) -> (Arc<Self::Dispatcher>, HostAbiFn, GateControls) {
-        let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-        let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+        let wl = instantiate_wasm_workload(fixture_host())
+            .await
+            .expect("instantiate");
         let dispatcher =
             Arc::new(wl.into_concurrent_dispatcher(spec, budget, queue_cap, dispatch_timeout));
         let (bridge, ctl) = gate_bridge();
@@ -196,8 +202,9 @@ impl Basis for WasmBasis {
     }
 
     async fn build_serial() -> (Arc<Self::SerialDispatcher>, HostAbiFn, GateControls) {
-        let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-        let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+        let wl = instantiate_wasm_workload(fixture_host())
+            .await
+            .expect("instantiate");
         let dispatcher = Arc::new(wl.into_serial_dispatcher());
         let (bridge, ctl) = gate_bridge();
         (dispatcher, bridge, ctl)

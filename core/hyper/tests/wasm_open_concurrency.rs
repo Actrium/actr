@@ -27,7 +27,7 @@
 
 #![cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 // The conflict-key concurrency harness (route consts, gate bridge, watchdog
@@ -57,12 +57,23 @@ fn fixture_bytes() -> &'static [u8] {
 /// source), used by the compat matrix to prove the V1-on-Interleaved fallback.
 const V1_SYNCLIFT_GUEST: &[u8] = include_bytes!("fixtures/v1_synclift_guest.wasm");
 
+fn v2_fixture_host() -> &'static WasmHost {
+    static HOST: OnceLock<WasmHost> = OnceLock::new();
+    HOST.get_or_init(|| WasmHost::compile(fixture_bytes()).expect("compile v2 fixture"))
+}
+
+fn v1_fixture_host() -> &'static WasmHost {
+    static HOST: OnceLock<WasmHost> = OnceLock::new();
+    HOST.get_or_init(|| WasmHost::compile(V1_SYNCLIFT_GUEST).expect("compile v1 fixture"))
+}
+
 // ── Facet 1 — distinct keys truly interleave (MAX_SEEN >= 2) ─────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn interleave_distinct_keys_reaches_max_seen_2() {
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let wl = instantiate_wasm_workload(v2_fixture_host())
+        .await
+        .expect("instantiate");
     let dispatcher = Arc::new(wl.into_concurrent_dispatcher(probe_spec(), 8, 256, None));
     let (bridge, mut ctl) = gate_bridge();
 
@@ -96,8 +107,9 @@ async fn interleave_distinct_keys_reaches_max_seen_2() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn same_key_stays_serial_max_seen_1() {
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let wl = instantiate_wasm_workload(v2_fixture_host())
+        .await
+        .expect("instantiate");
     let dispatcher = Arc::new(wl.into_concurrent_dispatcher(probe_spec(), 8, 256, None));
     let (bridge, mut ctl) = gate_bridge();
 
@@ -142,8 +154,9 @@ async fn same_key_stays_serial_max_seen_1() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrency_capped_at_budget() {
     const C: usize = 3;
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let wl = instantiate_wasm_workload(v2_fixture_host())
+        .await
+        .expect("instantiate");
     // queue_cap high enough to admit all submissions; budget bounds in-flight.
     let dispatcher = Arc::new(wl.into_concurrent_dispatcher(probe_spec(), C, 256, None));
     let (bridge, mut ctl) = gate_bridge();
@@ -184,8 +197,9 @@ async fn concurrency_capped_at_budget() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn inflight_trap_fails_all_siblings_then_rebuilds() {
     const SIBLINGS: u64 = 3;
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let wl = instantiate_wasm_workload(v2_fixture_host())
+        .await
+        .expect("instantiate");
     let dispatcher = Arc::new(wl.into_concurrent_dispatcher(probe_spec(), 8, 256, None));
     let (bridge, mut ctl) = gate_bridge();
 
@@ -253,8 +267,9 @@ async fn inflight_trap_fails_all_siblings_then_rebuilds() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn dispatch_timeout_discards_store_fails_siblings_and_recovers() {
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let wl = instantiate_wasm_workload(v2_fixture_host())
+        .await
+        .expect("instantiate");
     // 300ms per-dispatch deadline, enforced inside the region.
     let dispatcher = Arc::new(wl.into_concurrent_dispatcher(
         probe_spec(),
@@ -324,8 +339,9 @@ async fn dispatch_timeout_discards_store_fails_siblings_and_recovers() {
 // region.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn same_key_timeout_seam_seals_region_until_first_leaves() {
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let wl = instantiate_wasm_workload(v2_fixture_host())
+        .await
+        .expect("instantiate");
     // Short per-dispatch deadline so the parked first dispatch reliably times out
     // while leaving ample margin before the sealing assertion below.
     let dispatcher = Arc::new(wl.into_concurrent_dispatcher(
@@ -382,8 +398,9 @@ async fn gate_off_is_serial_max_seen_1() {
     use actr_hyper::workload::InvocationContext;
     use actr_protocol::{Direction, RpcEnvelope, prost::Message as _};
 
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let wl = instantiate_wasm_workload(v2_fixture_host())
+        .await
+        .expect("instantiate");
     // Serial runner (gate off): the V2 kernel drives the per-dispatch region.
     let runner = Arc::new(wl.into_workload_runner());
     let (bridge, mut ctl) = gate_bridge();
@@ -511,8 +528,9 @@ async fn admit_like(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn node_gate_on_dedup_writeback_survives_interleave() {
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let wl = instantiate_wasm_workload(v2_fixture_host())
+        .await
+        .expect("instantiate");
     let dispatcher = Arc::new(wl.into_concurrent_dispatcher(probe_spec(), 8, 256, None));
     let (bridge, mut ctl) = gate_bridge();
     let dedup = Arc::new(Mutex::new(TestDedupState::new()));
@@ -602,8 +620,7 @@ async fn node_gate_on_dedup_writeback_survives_interleave() {
 /// serial `run_loop`. Dispatch must still work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compat_v1_guest_on_interleaved_falls_back_to_serial() {
-    let host = WasmHost::compile(V1_SYNCLIFT_GUEST).expect("compile v1 fixture");
-    let wl = instantiate_wasm_workload(&host)
+    let wl = instantiate_wasm_workload(v1_fixture_host())
         .await
         .expect("instantiate v1");
     // Request Interleaved; a V1 kernel must transparently run serially.
@@ -639,8 +656,7 @@ async fn compat_v1_guest_on_interleaved_falls_back_to_serial() {
 /// dispatches correctly through the interleaved runner for a lone message too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn compat_v2_guest_single_dispatch_on_interleaved() {
-    let host = WasmHost::compile(fixture_bytes()).expect("compile v2 fixture");
-    let wl = instantiate_wasm_workload(&host)
+    let wl = instantiate_wasm_workload(v2_fixture_host())
         .await
         .expect("instantiate v2");
     let dispatcher = Arc::new(wl.into_concurrent_dispatcher(probe_spec(), 8, 256, None));
