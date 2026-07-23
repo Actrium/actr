@@ -7,8 +7,9 @@
 //! - **Crypto**: ed25519-dalek + sha2
 //! - **Filesystem**: tokio::fs
 //!
-//! Also implements `MonotonicClock` on top of `std::time::Instant`
-//! ([`NativeMonotonicClock`]).
+//! Also implements `MonotonicClock` ([`NativeMonotonicClock`]) with a
+//! suspend-excluding backend per platform: `std::time::Instant` on Unix and
+//! Apple targets, `QueryUnbiasedInterruptTime` on Windows.
 
 pub mod clock;
 pub mod crypto;
