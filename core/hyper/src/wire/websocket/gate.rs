@@ -17,6 +17,7 @@ use super::server::InboundWsConn;
 use crate::inbound::DataChunkRegistry;
 use crate::key_cache::AisKeyCache;
 use crate::lifecycle::CredentialState;
+use crate::lifecycle::expiry::{MAX_CREDENTIAL_REMAINING_SECS, expired_or_implausibly_far};
 use crate::transport::WsSink;
 use crate::wire::SignalingKeyFetcher;
 use crate::wire::webrtc::SignalingClient;
@@ -376,16 +377,27 @@ impl WebSocketGate {
             }
         };
 
-        // Check expires_at
+        // Check expires_at. Jump-tolerant (RFC-0419 §3): a remaining
+        // lifetime beyond the AIS issuance bound cannot come from a
+        // well-formed credential — under a rolled-back local clock the naive
+        // comparison would keep honoring an expired credential — so it is
+        // conservatively rejected like an expired one; the peer re-issues
+        // through its normal renewal path and reconnects.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs();
-        if claims.expires_at <= now {
+            .as_secs() as i64;
+        let expires_at = i64::try_from(claims.expires_at).unwrap_or(i64::MAX);
+        if expired_or_implausibly_far(
+            expires_at,
+            now,
+            MAX_CREDENTIAL_REMAINING_SECS,
+            "inbound WS AIdCredential",
+        ) {
             tracing::warn!(
                 key_id = credential.key_id,
                 expires_at = claims.expires_at,
-                "WS AIdCredential has expired"
+                "WS AIdCredential expired or implausibly far in the future, rejecting connection"
             );
             return None;
         }

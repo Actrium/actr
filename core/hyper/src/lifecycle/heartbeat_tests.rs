@@ -569,8 +569,16 @@ async fn credential_warning_triggers_credential_manager_renewal() {
             expires_at: OLD_EXPIRY as u64,
         },
         renewal_token: vec![7; 32].into(),
+        // Within the plausible issuance window measured from the real
+        // wall clock: the renewal-token pre-check treats implausibly far
+        // expiries (like the far-future OLD_EXPIRY placeholder) as expired
+        // and would divert into hard rebind.
         renewal_token_expires_at: prost_types::Timestamp {
-            seconds: OLD_EXPIRY + 1000,
+            seconds: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                + 3600,
             nanos: 0,
         },
         generation: 1,

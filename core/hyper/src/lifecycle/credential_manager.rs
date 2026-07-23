@@ -30,6 +30,7 @@ use crate::transport::PeerTransport;
 use crate::wire::webrtc::gate::WebRtcGate;
 use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
 
+use super::expiry::{MAX_RENEWAL_TOKEN_REMAINING_SECS, expired_or_implausibly_far};
 use super::node::CredentialState;
 use super::session_state::{SessionSnapshot, SessionState};
 
@@ -505,12 +506,24 @@ async fn run_hard_rebind(
     Ok(())
 }
 
+/// Local pre-check of the renewal token deadline before spending a
+/// `/ais/renew` round trip on it.
+///
+/// Jump-tolerant (RFC-0419 §3): a remaining lifetime beyond
+/// [`MAX_RENEWAL_TOKEN_REMAINING_SECS`] cannot come from a well-formed AIS
+/// issuance and is treated as expired, which routes into hard rebind — the
+/// same safe path a server-side `TokenRejected` would take.
 fn is_expired(expires_at: i64) -> bool {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    expires_at <= now
+    expired_or_implausibly_far(
+        expires_at,
+        now,
+        MAX_RENEWAL_TOKEN_REMAINING_SECS,
+        "renewal token",
+    )
 }
 
 async fn fire_credential_renewed(
