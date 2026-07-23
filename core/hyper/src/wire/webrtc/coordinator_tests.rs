@@ -324,6 +324,73 @@ fn new_test_coordinator(local_id: ActrId) -> Arc<WebRtcCoordinator> {
 }
 
 #[tokio::test]
+async fn connection_factory_cache_lookup_retires_closed_session_awaiting_cleanup() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "stale-session").await;
+    let stale_connection = coordinator
+        .peers
+        .read()
+        .await
+        .get(&peer_id)
+        .expect("stale peer should exist before close")
+        .webrtc_conn
+        .clone();
+
+    // Reproduce the timeout/reconnect race from CI: WebRtcConnection::close
+    // marks the shared ConnectionSession closed before the coordinator's
+    // asynchronous ConnectionClosed listener removes its PeerState. This test
+    // deliberately leaves that listener stopped so the boundary is stable.
+    stale_connection
+        .close_immediately()
+        .await
+        .expect("stale connection should close");
+    assert!(
+        coordinator.peers.read().await.contains_key(&peer_id),
+        "precondition: the closed session must still await coordinator cleanup"
+    );
+
+    assert!(
+        coordinator
+            .active_connection_or_retire(&peer_id)
+            .await
+            .is_none(),
+        "the factory cache lookup must not return a closed WebRTC session"
+    );
+    assert!(
+        !coordinator.peers.read().await.contains_key(&peer_id),
+        "the exact stale session should be retired before replacement"
+    );
+}
+
+#[tokio::test]
+async fn connection_factory_cache_lookup_keeps_session_during_ice_recovery() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "recovering-session").await;
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers
+            .get_mut(&peer_id)
+            .expect("recovering peer should exist");
+        state.current_state = RTCPeerConnectionState::Disconnected;
+        state.ice_restart_inflight = true;
+    }
+
+    let returned = coordinator
+        .active_connection_or_retire(&peer_id)
+        .await
+        .expect("an ICE-recovering session must remain reusable");
+
+    assert_eq!(
+        returned.session_id(),
+        session_id,
+        "the factory must not replace a non-terminal ICE-recovering session"
+    );
+}
+
+#[tokio::test]
 async fn inv18_ice_gathering_transition_is_retained_after_listener_is_armed() {
     let state_changed = tokio::sync::Notify::new();
     let notification = arm_notification(&state_changed);

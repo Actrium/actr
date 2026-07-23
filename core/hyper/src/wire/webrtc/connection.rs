@@ -126,6 +126,14 @@ impl WebRtcConnection {
         self.session.session_id
     }
 
+    /// Whether this connection has entered its terminal close path.
+    ///
+    /// `ConnectionSession::try_close` flips this flag before any asynchronous
+    /// teardown, so it covers both closing and fully closed connections.
+    pub(crate) fn is_closing_or_closed(&self) -> bool {
+        self.session.is_closed()
+    }
+
     /// Install a state-change handler on the underlying RTCPeerConnection.
     ///
     /// This keeps `connected` in sync with the WebRTC connection state and

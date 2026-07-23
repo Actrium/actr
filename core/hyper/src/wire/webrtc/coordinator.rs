@@ -6298,6 +6298,40 @@ impl WebRtcCoordinator {
         }
     }
 
+    /// Return the current non-terminal connection, retiring an exact stale
+    /// session before the factory attempts to create a replacement.
+    async fn active_connection_or_retire(&self, target_id: &ActrId) -> Option<WebRtcConnection> {
+        loop {
+            let existing = {
+                let peers = self.peers.read().await;
+                peers
+                    .get(target_id)
+                    .map(|state| (state.session_id, state.webrtc_conn.clone()))
+            };
+
+            let (session_id, connection) = existing?;
+
+            if !connection.is_closing_or_closed() {
+                return Some(connection);
+            }
+
+            tracing::warn!(
+                peer_id = %target_id,
+                session_id,
+                "Factory found a closing or closed WebRTC session; retiring it before reconnect"
+            );
+            self.cleanup_connection_if_session(
+                target_id,
+                session_id,
+                true,
+                "connection factory found closing or closed session",
+            )
+            .await;
+            // Cleanup is session-guarded. Re-read in case a concurrent inbound
+            // offer installed a newer connection while the stale one retired.
+        }
+    }
+
     /// Inner implementation of create_connection without overall timeout
     async fn create_connection_inner(
         self: &Arc<Self>,
@@ -6320,16 +6354,13 @@ impl WebRtcCoordinator {
 
         tracing::debug!("🏭 [Factory] Creating WebRTC connection to {:?}", target_id);
 
-        // 2. Check if connection already exists
-        {
-            let peers = self.peers.read().await;
-            if let Some(state) = peers.get(target_id) {
-                tracing::debug!(
-                    "♻️ [Factory] Reusing existing WebRTC connection: {:?}",
-                    target_id
-                );
-                return Ok(state.webrtc_conn.clone());
-            }
+        // 2. Reuse only a session that has not entered terminal teardown.
+        if let Some(connection) = self.active_connection_or_retire(target_id).await {
+            tracing::debug!(
+                "♻️ [Factory] Reusing existing WebRTC connection: {:?}",
+                target_id
+            );
+            return Ok(connection);
         }
 
         // 3. Retry loop with exponential backoff (max 3 retries)
