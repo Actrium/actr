@@ -1095,10 +1095,33 @@ fn snapshot_accepted(last: &Option<tp::AcceptedSnapshot>, epoch: u64, sequence: 
     }
 }
 
+/// Per-supervisor jitter seed: a per-process base drawn from OS entropy,
+/// advanced by a Weyl step per instance. The random base decorrelates fleets —
+/// devices that lose the network together must not retry in lockstep — while
+/// the Weyl increment decorrelates supervisors within one process.
 fn next_entropy_seed() -> u64 {
+    use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU64, Ordering};
-    static SEED: AtomicU64 = AtomicU64::new(0xD1B5_4A32_D192_ED03);
-    SEED.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed)
+    static SEED: OnceLock<AtomicU64> = OnceLock::new();
+    let cell = SEED.get_or_init(|| AtomicU64::new(entropy_seed_base()));
+    cell.fetch_add(0x9E37_79B9_7F4A_7C15, Ordering::Relaxed)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn entropy_seed_base() -> u64 {
+    use rand::RngCore as _;
+    rand::thread_rng().next_u64()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn entropy_seed_base() -> u64 {
+    let mut bytes = [0u8; 8];
+    match getrandom::getrandom(&mut bytes) {
+        Ok(()) => u64::from_le_bytes(bytes),
+        // No entropy source available: fall back to a fixed base. Jitter still
+        // decorrelates supervisors within the process via the Weyl step.
+        Err(_) => 0xD1B5_4A32_D192_ED03,
+    }
 }
 
 // ---------------------------------------------------------------------------

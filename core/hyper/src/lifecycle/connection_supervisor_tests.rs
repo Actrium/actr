@@ -1367,3 +1367,12 @@ fn deterministic_mobile_event_permutations_eventually_converge_online() {
         );
     }
 }
+
+#[test]
+fn entropy_seeds_differ_within_a_process() {
+    // The Weyl step guarantees distinct seeds for successive supervisors in
+    // one process, regardless of what base the OS entropy produced.
+    let first = super::next_entropy_seed();
+    let second = super::next_entropy_seed();
+    assert_ne!(first, second, "consecutive supervisor seeds must differ");
+}
