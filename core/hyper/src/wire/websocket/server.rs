@@ -220,7 +220,7 @@ impl WebSocketServer {
                                     biased;
                                     _ = shutdown_token.cancelled() => break,
                                     _ = crate::timer::sleep(
-                                        crate::timer::ids::WEBSOCKET_REASSEMBLY_EXPIRY,
+                                        crate::timer::ids::WEBSOCKET_ACCEPT_BACKOFF,
                                         tokio::time::Duration::from_millis(100)
                                     ) => {}
                                 }

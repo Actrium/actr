@@ -161,11 +161,53 @@ timer_inventory! {
         success: "offline teardown reaches its local goal", interrupt: "path reversal or completion",
         expiry: "report abandoned teardown", reset: "new offline obligation only", external: false
     },
-    RECOVERY_POLICY_DEADLINE => {
-        id: "lifecycle.recovery.policy_deadline", owner: "recovery_supervisor", category: BusinessHysteresis,
-        duration: "absolute translated policy deadline", arm: "supervisor emits TimerDirective::Arm",
-        success: "matching timer is cancelled by material input", interrupt: "replacement timer identity",
-        expiry: "enqueue identity-bearing policy input", reset: "material policy transition only", external: false
+    RECOVERY_OFFLINE_CANDIDATE => {
+        id: "lifecycle.recovery.offline_candidate", owner: "recovery_supervisor", category: BusinessHysteresis,
+        duration: "observed_at + PolicyConfig.offline_grace", arm: "first accepted offline observation",
+        success: "online or unknown path fact", interrupt: "candidate replacement, cleanup, or shutdown",
+        expiry: "enqueue matching OfflineGraceExpired", reset: "new material offline transition only", external: false
+    },
+    RECOVERY_SHUTDOWN_OVERALL => {
+        id: "lifecycle.recovery.shutdown_overall", owner: "recovery_supervisor", category: FailureDeadline,
+        duration: "PolicyConfig.shutdown_deadline", arm: "app termination cleanup is requested",
+        success: "supervisor shutdown completes", interrupt: "supervisor termination",
+        expiry: "enqueue matching ShutdownDeadlineExpired", reset: "one terminating lifecycle only", external: false
+    },
+    RECOVERY_CLEANUP_OBLIGATION => {
+        id: "lifecycle.recovery.cleanup_obligation", owner: "recovery_supervisor", category: FailureDeadline,
+        duration: "absolute cleanup obligation deadline", arm: "cleanup work is created",
+        success: "cleanup obligation is extinguished", interrupt: "matching completion or shutdown",
+        expiry: "enqueue matching cleanup TeardownDeadlineExpired", reset: "new cleanup obligation only", external: false
+    },
+    RECOVERY_OFFLINE_OBLIGATION => {
+        id: "lifecycle.recovery.offline_obligation", owner: "recovery_supervisor", category: FailureDeadline,
+        duration: "absolute offline-disconnect obligation deadline", arm: "offline candidate commits",
+        success: "offline obligation is extinguished", interrupt: "path reversal, completion, or shutdown",
+        expiry: "enqueue matching offline TeardownDeadlineExpired", reset: "new offline obligation only", external: false
+    },
+    RECOVERY_BOOTSTRAP_PHASE => {
+        id: "lifecycle.recovery.bootstrap_phase", owner: "recovery_supervisor", category: FailureDeadline,
+        duration: "PolicyConfig.bootstrap_phase_deadline", arm: "gated supervisor starts without an authoritative phase",
+        success: "foreground or background phase arrives", interrupt: "first authoritative phase or shutdown",
+        expiry: "enqueue BootstrapPhaseDeadlineExpired", reset: "never", external: false
+    },
+    RECOVERY_RETRY_BACKOFF => {
+        id: "lifecycle.recovery.retry_backoff", owner: "recovery_supervisor", category: FailureBackoff,
+        duration: "absolute recovery retry deadline", arm: "recovery effect receives a Retry verdict",
+        success: "matching retry deadline", interrupt: "material recovery trigger, pause, or shutdown",
+        expiry: "enqueue matching recovery RetryDeadlineExpired", reset: "new classified recovery failure only", external: false
+    },
+    RECOVERY_CLEANUP_RETRY_BACKOFF => {
+        id: "lifecycle.recovery.cleanup_retry_backoff", owner: "recovery_supervisor", category: FailureBackoff,
+        duration: "absolute cleanup retry deadline", arm: "cleanup effect receives a Retry verdict",
+        success: "matching retry deadline", interrupt: "material cleanup trigger or shutdown",
+        expiry: "enqueue matching cleanup RetryDeadlineExpired", reset: "new classified cleanup failure only", external: false
+    },
+    RECOVERY_OFFLINE_RETRY_BACKOFF => {
+        id: "lifecycle.recovery.offline_retry_backoff", owner: "recovery_supervisor", category: FailureBackoff,
+        duration: "absolute offline-disconnect retry deadline", arm: "offline effect receives a Retry verdict",
+        success: "matching retry deadline", interrupt: "path reversal, material trigger, or shutdown",
+        expiry: "enqueue matching offline RetryDeadlineExpired", reset: "new classified offline failure only", external: false
     },
     NETWORK_EVENT_ACCEPTANCE => {
         id: "lifecycle.network_event.acceptance", owner: "network_event_handle", category: FailureDeadline,
@@ -431,11 +473,11 @@ timer_inventory! {
         success: "matching pong", interrupt: "disconnect or generation replacement",
         expiry: "report path unreachable", reset: "new probe only", external: false
     },
-    WEBSOCKET_REASSEMBLY_EXPIRY => {
-        id: "websocket.reassembly_expiry", owner: "websocket_server", category: RetentionExpiry,
-        duration: "fixed 100ms scan cadence for legacy chunk assembler", arm: "server owns partial chunks",
-        success: "chunk completes", interrupt: "server shutdown",
-        expiry: "expire stale partial chunks", reset: "new chunk activity", external: false
+    WEBSOCKET_ACCEPT_BACKOFF => {
+        id: "websocket.accept_backoff", owner: "websocket_server", category: FailureBackoff,
+        duration: "fixed 100ms", arm: "listener accept returns an error",
+        success: "backoff deadline", interrupt: "server shutdown",
+        expiry: "retry listener accept", reset: "each accept failure", external: false
     },
     EXTERNAL_ICE_CANDIDATE_SELECTION => {
         id: "external.webrtc.ice_candidate_selection", owner: "webrtc_ice", category: ProtocolSelection,

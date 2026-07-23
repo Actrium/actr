@@ -200,6 +200,44 @@ fn restarted_monitor_gets_a_fresh_epoch_while_clones_keep_the_incarnation() {
 }
 
 #[test]
+fn recovery_timer_ids_keep_their_normative_categories() {
+    use crate::timer::TimerCategory;
+
+    let cases = [
+        (
+            tp::TimerId::OfflineCandidate,
+            TimerCategory::BusinessHysteresis,
+        ),
+        (tp::TimerId::ShutdownOverall, TimerCategory::FailureDeadline),
+        (
+            tp::TimerId::TeardownOverall(tp::TeardownDomain::Cleanup),
+            TimerCategory::FailureDeadline,
+        ),
+        (
+            tp::TimerId::TeardownOverall(tp::TeardownDomain::OfflineDisconnect),
+            TimerCategory::FailureDeadline,
+        ),
+        (tp::TimerId::BootstrapPhase, TimerCategory::FailureDeadline),
+        (
+            tp::TimerId::FailureBackoff(tp::RetryDomain::Recovery),
+            TimerCategory::FailureBackoff,
+        ),
+        (
+            tp::TimerId::FailureBackoff(tp::RetryDomain::Cleanup),
+            TimerCategory::FailureBackoff,
+        ),
+        (
+            tp::TimerId::FailureBackoff(tp::RetryDomain::Offline),
+            TimerCategory::FailureBackoff,
+        ),
+    ];
+
+    for (id, expected_category) in cases {
+        assert_eq!(recovery_timer_definition(id).category, expected_category);
+    }
+}
+
+#[test]
 fn recovery_effect_errors_preserve_typed_network_diagnoses() {
     let cases = [
         (

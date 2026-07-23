@@ -1701,13 +1701,37 @@ fn arm_timer(
         if let Some(existing) = timers.remove(&key) {
             existing.abort();
         }
+        let definition = recovery_timer_definition(key);
         let itx = internal_tx.clone();
         let target = start + at;
         let handle = tokio::spawn(async move {
-            crate::timer::sleep_until(crate::timer::ids::RECOVERY_POLICY_DEADLINE, target).await;
+            crate::timer::sleep_until(definition, target).await;
             let _ = itx.send(fire);
         });
         timers.insert(key, handle.abort_handle());
+    }
+}
+
+fn recovery_timer_definition(key: tp::TimerId) -> crate::timer::TimerDefinition {
+    match key {
+        tp::TimerId::OfflineCandidate => crate::timer::ids::RECOVERY_OFFLINE_CANDIDATE,
+        tp::TimerId::ShutdownOverall => crate::timer::ids::RECOVERY_SHUTDOWN_OVERALL,
+        tp::TimerId::TeardownOverall(tp::TeardownDomain::Cleanup) => {
+            crate::timer::ids::RECOVERY_CLEANUP_OBLIGATION
+        }
+        tp::TimerId::TeardownOverall(tp::TeardownDomain::OfflineDisconnect) => {
+            crate::timer::ids::RECOVERY_OFFLINE_OBLIGATION
+        }
+        tp::TimerId::BootstrapPhase => crate::timer::ids::RECOVERY_BOOTSTRAP_PHASE,
+        tp::TimerId::FailureBackoff(tp::RetryDomain::Recovery) => {
+            crate::timer::ids::RECOVERY_RETRY_BACKOFF
+        }
+        tp::TimerId::FailureBackoff(tp::RetryDomain::Cleanup) => {
+            crate::timer::ids::RECOVERY_CLEANUP_RETRY_BACKOFF
+        }
+        tp::TimerId::FailureBackoff(tp::RetryDomain::Offline) => {
+            crate::timer::ids::RECOVERY_OFFLINE_RETRY_BACKOFF
+        }
     }
 }
 
