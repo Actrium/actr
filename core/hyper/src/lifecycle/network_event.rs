@@ -1231,14 +1231,12 @@ struct RunningEffect {
 ///
 /// Facts share the supervisor's internal input channel, so they are processed
 /// in the same one-input-at-a-time policy order as timer expiries and effect
-/// completions. Delivery is non-blocking: a full or closed channel is logged
-/// rather than awaited, so a resource owner holding a transport lock never
-/// blocks on the supervisor. The teardown-crossing "Lost must arrive" guarantee
-/// does not rely on this best-effort path — it is enforced by the supervisor
-/// dropping a teardown-scoped generation when the teardown effect completes.
+/// completions. Delivery is non-blocking and lossless while the supervisor is
+/// alive: the internal queue is unbounded because resource owners may emit
+/// while holding a transport lock and therefore cannot await capacity.
 #[derive(Clone)]
 pub struct SupervisorFactSink {
-    tx: mpsc::Sender<tp::Input>,
+    tx: mpsc::UnboundedSender<tp::Input>,
 }
 
 /// The origin of a normalized signaling-committed fact, as seen at the public
@@ -1264,19 +1262,13 @@ pub enum SignalingFactLostCause {
 }
 
 impl SupervisorFactSink {
-    pub(crate) fn new(tx: mpsc::Sender<tp::Input>) -> Self {
+    pub(crate) fn new(tx: mpsc::UnboundedSender<tp::Input>) -> Self {
         Self { tx }
     }
 
     fn emit(&self, input: tp::Input) {
-        match self.tx.try_send(input) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(input)) => {
-                tracing::error!(?input, "network_event.fact_sink.dropped_full");
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::debug!("network_event.fact_sink.closed");
-            }
+        if self.tx.send(input).is_err() {
+            tracing::debug!("network_event.fact_sink.closed");
         }
     }
 
@@ -1313,8 +1305,8 @@ impl SupervisorFactSink {
 /// hold and hand it to [`run_network_event_reconciler_with_channel`] without
 /// naming the crate-private input type.
 pub struct SupervisorInternalChannel {
-    tx: mpsc::Sender<tp::Input>,
-    rx: mpsc::Receiver<tp::Input>,
+    tx: mpsc::UnboundedSender<tp::Input>,
+    rx: mpsc::UnboundedReceiver<tp::Input>,
     profile: tp::LifecycleProfile,
 }
 
@@ -1340,7 +1332,7 @@ pub(crate) fn supervisor_internal_channel_gated() -> (SupervisorFactSink, Superv
 pub(crate) fn supervisor_internal_channel_with_profile(
     profile: tp::LifecycleProfile,
 ) -> (SupervisorFactSink, SupervisorInternalChannel) {
-    let (tx, rx) = mpsc::channel::<tp::Input>(128);
+    let (tx, rx) = mpsc::unbounded_channel::<tp::Input>();
     (
         SupervisorFactSink::new(tx.clone()),
         SupervisorInternalChannel { tx, rx, profile },
@@ -1352,7 +1344,7 @@ pub async fn run_network_event_reconciler(
     processor: Arc<dyn NetworkEventProcessor>,
     shutdown_token: CancellationToken,
 ) {
-    let (internal_tx, internal_rx) = mpsc::channel::<tp::Input>(64);
+    let (internal_tx, internal_rx) = mpsc::unbounded_channel::<tp::Input>();
     let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
     reconcile_loop(
         event_rx,
@@ -1369,7 +1361,7 @@ pub async fn run_network_event_reconciler(
 /// The responsive reconciler with an observable status stream.
 ///
 /// The supervisor stays responsive while an effect runs: effects execute in
-/// separate tasks and report versioned completions back over a reserved-capacity
+/// separate tasks and report versioned completions back over the ordered
 /// internal channel, timers are armed as absolute deadlines that deliver their
 /// own expiry inputs, and event acceptance is decoupled from effect completion.
 pub async fn run_network_event_reconciler_with_status(
@@ -1378,7 +1370,7 @@ pub async fn run_network_event_reconciler_with_status(
     shutdown_token: CancellationToken,
     status_tx: watch::Sender<SupervisorStatus>,
 ) {
-    let (internal_tx, internal_rx) = mpsc::channel::<tp::Input>(64);
+    let (internal_tx, internal_rx) = mpsc::unbounded_channel::<tp::Input>();
     reconcile_loop(
         event_rx,
         internal_tx,
@@ -1417,8 +1409,8 @@ pub(crate) async fn run_network_event_reconciler_with_channel(
 
 async fn reconcile_loop(
     mut event_rx: mpsc::Receiver<NetworkEventRequest>,
-    internal_tx: mpsc::Sender<tp::Input>,
-    mut internal_rx: mpsc::Receiver<tp::Input>,
+    internal_tx: mpsc::UnboundedSender<tp::Input>,
+    mut internal_rx: mpsc::UnboundedReceiver<tp::Input>,
     processor: Arc<dyn NetworkEventProcessor>,
     shutdown_token: CancellationToken,
     status_tx: watch::Sender<SupervisorStatus>,
@@ -1496,7 +1488,7 @@ async fn reconcile_loop(
 fn arm_timer(
     timers: &mut HashMap<tp::TimerId, tokio::task::AbortHandle>,
     start: tokio::time::Instant,
-    internal_tx: &mpsc::Sender<tp::Input>,
+    internal_tx: &mpsc::UnboundedSender<tp::Input>,
     op: TimerOp,
 ) {
     if let TimerOp::Arm { key, at, fire } = op {
@@ -1507,7 +1499,7 @@ fn arm_timer(
         let target = start + at;
         let handle = tokio::spawn(async move {
             crate::timer::sleep_until(crate::timer::ids::RECOVERY_POLICY_DEADLINE, target).await;
-            let _ = itx.send(fire).await;
+            let _ = itx.send(fire);
         });
         timers.insert(key, handle.abort_handle());
     }
@@ -1523,7 +1515,7 @@ fn handle_supervisor_input(
     input: tp::Input,
     now: Duration,
     start: tokio::time::Instant,
-    internal_tx: &mpsc::Sender<tp::Input>,
+    internal_tx: &mpsc::UnboundedSender<tp::Input>,
     timers: &mut HashMap<tp::TimerId, tokio::task::AbortHandle>,
     effect: &mut Option<RunningEffect>,
     processor: &Arc<dyn NetworkEventProcessor>,
@@ -1641,7 +1633,7 @@ fn spawn_effect(
     started: StartedEffect,
     token: CancellationToken,
     processor: Arc<dyn NetworkEventProcessor>,
-    internal_tx: mpsc::Sender<tp::Input>,
+    internal_tx: mpsc::UnboundedSender<tp::Input>,
 ) {
     let action_id = started.action_id;
     let kind = started.kind;
@@ -1682,14 +1674,12 @@ fn spawn_effect(
                 },
             },
         };
-        let _ = internal_tx
-            .send(tp::Input::EffectCompleted {
-                action_id,
-                kind,
-                policy_revision,
-                outcome,
-            })
-            .await;
+        let _ = internal_tx.send(tp::Input::EffectCompleted {
+            action_id,
+            kind,
+            policy_revision,
+            outcome,
+        });
     });
 }
 

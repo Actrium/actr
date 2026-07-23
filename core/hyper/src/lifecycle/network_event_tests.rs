@@ -383,7 +383,7 @@ async fn stronger_reconnect_fences_restore_before_requesting_cancellation() {
         action_id: started.action_id,
         token: token.clone(),
     });
-    let (internal_tx, _internal_rx) = mpsc::channel(1);
+    let (internal_tx, _internal_rx) = mpsc::unbounded_channel();
     let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
     let mut timers = HashMap::new();
     let mut last_action_id = Some(started.action_id);
@@ -629,8 +629,8 @@ fn fact_sink_delivers_facts_to_internal_channel_in_order() {
 }
 
 #[test]
-fn fact_sink_is_non_blocking_when_internal_channel_is_full_or_closed() {
-    let (tx, mut rx) = mpsc::channel(1);
+fn fact_sink_is_non_blocking_during_a_burst_or_after_close() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
     let sink = SupervisorFactSink::new(tx);
 
     sink.session_activated(1);
@@ -642,12 +642,40 @@ fn fact_sink_is_non_blocking_when_internal_channel_is_full_or_closed() {
         }
     ));
     assert!(matches!(
-        rx.try_recv(),
-        Err(mpsc::error::TryRecvError::Empty)
+        rx.try_recv().expect("second fact should remain queued"),
+        tp::Input::SessionActivated {
+            session_generation: 2
+        }
     ));
 
     drop(rx);
     sink.session_activated(3);
+}
+
+#[test]
+fn fact_sink_retains_terminal_generation_fact_after_capacity_burst() {
+    let (sink, mut channel) = super::supervisor_internal_channel();
+
+    for generation in 1..=128 {
+        sink.session_activated(generation);
+    }
+    sink.signaling_generation_lost(77, SignalingFactLostCause::RemoteReset);
+
+    let mut received = 0;
+    let mut saw_terminal_loss = false;
+    while let Ok(input) = channel.rx.try_recv() {
+        received += 1;
+        saw_terminal_loss |= matches!(
+            input,
+            tp::Input::SignalingGenerationLost { generation: 77, .. }
+        );
+    }
+
+    assert_eq!(received, 129, "a fact burst must remain lossless");
+    assert!(
+        saw_terminal_loss,
+        "the terminal generation loss must survive a full fact channel"
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -719,7 +747,7 @@ fn restore_effect(action_id: u64) -> StartedEffect {
 }
 
 async fn receive_effect_completion(
-    rx: &mut mpsc::Receiver<tp::Input>,
+    rx: &mut mpsc::UnboundedReceiver<tp::Input>,
 ) -> crate::lifecycle::recovery_policy::diagnosis::EffectOutcome {
     let input = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
         .await
@@ -755,7 +783,7 @@ async fn effect_reports_exactly_one_terminal_completion_for_every_exit_path() {
     for (exit, name) in cases {
         let processor = Arc::new(EffectExitProcessor::new(exit));
         let token = CancellationToken::new();
-        let (tx, mut rx) = mpsc::channel(2);
+        let (tx, mut rx) = mpsc::unbounded_channel();
         spawn_effect(restore_effect(1), token.clone(), processor.clone(), tx);
 
         tokio::time::timeout(
@@ -793,11 +821,11 @@ async fn effect_reports_exactly_one_terminal_completion_for_every_exit_path() {
 }
 
 #[tokio::test]
-async fn effect_completion_waits_for_internal_channel_capacity() {
+async fn effect_completion_queues_behind_existing_internal_input() {
     let processor = Arc::new(EffectExitProcessor::new(EffectExit::Succeed));
-    let (tx, mut rx) = mpsc::channel(1);
-    tx.try_send(tp::Input::ShutdownRequested)
-        .expect("test should fill the internal channel");
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    tx.send(tp::Input::ShutdownRequested)
+        .expect("test should queue the earlier internal input");
 
     spawn_effect(
         restore_effect(1),
@@ -810,7 +838,7 @@ async fn effect_completion_waits_for_internal_channel_capacity() {
         processor.entered.notified(),
     )
     .await
-    .expect("effect should run while the internal channel is full");
+    .expect("effect should run while an earlier internal input is queued");
     tokio::task::yield_now().await;
 
     assert!(matches!(rx.try_recv(), Ok(tp::Input::ShutdownRequested)));

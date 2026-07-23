@@ -1826,6 +1826,16 @@ impl WebRtcCoordinator {
         peers.get(peer_id).map(|state| state.session_id)
     }
 
+    /// Remove only the offer-throttle timestamp so virtual-time integration
+    /// tests can drive consecutive real ICE restart attempts without waiting
+    /// for `std::time::Instant` to advance.
+    #[cfg(feature = "test-utils")]
+    pub async fn clear_ice_restart_offer_throttle_for_test(&self, peer_id: &ActrId) {
+        if let Some(state) = self.peers.write().await.get_mut(peer_id) {
+            state.last_ice_restart_offer_at = None;
+        }
+    }
+
     fn should_retrigger_existing_recovery(existing_reason: &str, new_reason: &str) -> bool {
         existing_reason == "NetworkLost" && new_reason != "NetworkLost"
     }

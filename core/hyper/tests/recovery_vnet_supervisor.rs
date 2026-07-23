@@ -14,9 +14,11 @@ use actr_hyper::lifecycle::{
     SignalingFactLostCause, SignalingFactOrigin, TeardownReport,
 };
 use actr_hyper::test_support::{
-    TestHarness, spawn_gated_network_event_supervisor, spawn_network_event_supervisor,
+    TestHarness, TestSignalingServer, spawn_gated_network_event_supervisor,
+    spawn_network_event_supervisor,
 };
-use actr_protocol::ActrId;
+use actr_protocol::prost::Message;
+use actr_protocol::{ActrId, DataChunk, PayloadType};
 use tokio::sync::Notify;
 
 struct RpcTasks(Vec<tokio::task::JoinHandle<()>>);
@@ -280,6 +282,120 @@ async fn expect_rpc(harness: &TestHarness, from: u64, to: u64, prefix: &str) {
         assert!(
             tokio::time::Instant::now() < deadline,
             "{prefix} did not recover before the deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+fn spawn_stream_receiver(
+    coordinator: Arc<actr_hyper::wire::webrtc::WebRtcCoordinator>,
+) -> (
+    tokio::task::JoinHandle<()>,
+    tokio::sync::mpsc::UnboundedReceiver<(ActrId, DataChunk)>,
+) {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::spawn(async move {
+        loop {
+            match coordinator.receive_message().await {
+                Ok(Some((sender_id, payload, payload_type))) => {
+                    if !matches!(
+                        payload_type,
+                        PayloadType::StreamReliable | PayloadType::StreamLatencyFirst
+                    ) {
+                        continue;
+                    }
+                    let Ok(sender_id) = ActrId::decode(sender_id.as_slice()) else {
+                        continue;
+                    };
+                    let Ok(chunk) = DataChunk::decode(payload.as_ref()) else {
+                        continue;
+                    };
+                    if tx.send((sender_id, chunk)).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+    });
+    (task, rx)
+}
+
+async fn expect_stream(
+    harness: &TestHarness,
+    from: u64,
+    to: u64,
+    prefix: &str,
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<(ActrId, DataChunk)>,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let expected_sender = harness.peer(from).id.clone();
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        let stream_id = format!("{prefix}_{attempt}");
+        let expected_payload = format!("payload_{stream_id}").into_bytes();
+        let chunk = DataChunk {
+            stream_id: stream_id.clone(),
+            sequence: attempt,
+            payload: expected_payload.clone().into(),
+            metadata: Vec::new(),
+            timestamp_ms: Some(0),
+        };
+        let encoded = chunk.encode_to_vec().into();
+        let send = harness.peer(from).gate.send_data_chunk(
+            &harness.peer(to).id,
+            PayloadType::StreamReliable,
+            &stream_id,
+            encoded,
+        );
+
+        match tokio::time::timeout(Duration::from_secs(3), send).await {
+            Ok(Ok(())) => {
+                let receive_deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                while tokio::time::Instant::now() < receive_deadline {
+                    let remaining = receive_deadline - tokio::time::Instant::now();
+                    let Some((sender, received)) = tokio::time::timeout(remaining, receiver.recv())
+                        .await
+                        .expect("stream receive timed out after a successful send")
+                    else {
+                        panic!("stream receiver stopped before {stream_id}");
+                    };
+                    if received.stream_id != stream_id {
+                        continue;
+                    }
+                    assert_eq!(sender, expected_sender);
+                    assert_eq!(received.sequence, attempt);
+                    assert_eq!(received.payload.as_ref(), expected_payload.as_slice());
+                    return;
+                }
+            }
+            Ok(Err(error)) => {
+                let message = error.to_string().to_ascii_lowercase();
+                assert!(
+                    [
+                        "connection",
+                        "recovering",
+                        "data channel",
+                        "datachannel",
+                        "channel error",
+                        "not opened",
+                        "timeout",
+                        "unavailable",
+                        "all transport candidates exhausted",
+                    ]
+                    .iter()
+                    .any(|needle| message.contains(needle)),
+                    "{prefix} failed with an unexpected stream error: {error}"
+                );
+            }
+            Err(_) => {}
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "{prefix} did not deliver before the recovery deadline"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -794,5 +910,214 @@ async fn cleanup_request_and_recovery_overlap_cannot_revive_stale_session() {
 
     shutdown.cancel();
     reconciler.await.expect("reconciler should stop cleanly");
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_real_signaling_restore_retries_after_same_endpoint_returns() {
+    let (mut harness, _rpc_tasks) = setup_bidirectional_vnet().await;
+    let processor = harness.peer(100).network_processor();
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor;
+    let (handle, sink, shutdown, reconciler) = spawn_network_event_supervisor(processor_for_task);
+    harness
+        .peer(100)
+        .signaling_client
+        .set_supervisor_fact_sink(sink.clone());
+    prime_live_generation(&handle, &sink).await;
+
+    let signaling_port = harness.server.port();
+    harness.server.shutdown().await;
+    let disconnected_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while harness.peer(100).signaling_client.is_connected() {
+        assert!(
+            tokio::time::Instant::now() < disconnected_deadline,
+            "signaling client did not observe the real server shutdown"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    sink.signaling_generation_lost(1, SignalingFactLostCause::RemoteReset);
+    let accepted = handle
+        .handle_network_path_changed(snapshot(1, NetworkAvailability::Available, true))
+        .await
+        .expect("online recovery should be accepted while signaling is down");
+    assert!(accepted.success);
+
+    tokio::time::sleep(Duration::from_millis(750)).await;
+    assert!(
+        !harness.peer(100).signaling_client.is_connected(),
+        "the first real signaling restore should fail while the endpoint is down"
+    );
+
+    harness.server = TestSignalingServer::start_on_port(signaling_port)
+        .await
+        .expect("signaling endpoint should restart on its original port");
+
+    expect_rpc(&harness, 100, 200, "signaling_retry_100_200").await;
+    expect_rpc(&harness, 200, 100, "signaling_retry_200_100").await;
+    assert_eq!(harness.peer(100).pending_count().await, 0);
+    assert_eq!(harness.peer(200).pending_count().await, 0);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovered_vnet_delivers_reliable_streams_bidirectionally() {
+    let mut harness = TestHarness::with_vnet().await;
+    harness.add_peer(100).await;
+    harness.add_peer(200).await;
+    let (receiver_100_task, mut receiver_100) =
+        spawn_stream_receiver(harness.peer(100).coordinator.clone());
+    let (receiver_200_task, mut receiver_200) =
+        spawn_stream_receiver(harness.peer(200).coordinator.clone());
+
+    expect_stream(
+        &harness,
+        100,
+        200,
+        "stream_setup_100_200",
+        &mut receiver_200,
+    )
+    .await;
+    expect_stream(
+        &harness,
+        200,
+        100,
+        "stream_setup_200_100",
+        &mut receiver_100,
+    )
+    .await;
+
+    let inner = harness.peer(100).network_processor();
+    let processor = Arc::new(RecordingProcessor::new(inner));
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor.clone();
+    let (handle, sink, shutdown, reconciler) = spawn_network_event_supervisor(processor_for_task);
+    harness
+        .peer(100)
+        .signaling_client
+        .set_supervisor_fact_sink(sink.clone());
+    prime_live_generation(&handle, &sink).await;
+
+    harness.simulate_disconnect();
+    handle
+        .handle_network_path_changed(snapshot(1, NetworkAvailability::Unavailable, false))
+        .await
+        .expect("offline stream recovery event should be accepted");
+    wait_for_actions(&processor, &[NetworkRecoveryAction::Offline]).await;
+
+    harness.simulate_reconnect();
+    handle
+        .handle_network_path_changed(snapshot(2, NetworkAvailability::Available, true))
+        .await
+        .expect("online stream recovery event should be accepted");
+    wait_for_actions(
+        &processor,
+        &[
+            NetworkRecoveryAction::Offline,
+            NetworkRecoveryAction::Restore,
+        ],
+    )
+    .await;
+
+    expect_stream(
+        &harness,
+        100,
+        200,
+        "stream_recovered_100_200",
+        &mut receiver_200,
+    )
+    .await;
+    expect_stream(
+        &harness,
+        200,
+        100,
+        "stream_recovered_200_100",
+        &mut receiver_100,
+    )
+    .await;
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+    receiver_100_task.abort();
+    receiver_200_task.abort();
+    let _ = receiver_100_task.await;
+    let _ = receiver_200_task.await;
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn exhausted_real_ice_restart_falls_back_to_new_session_bidirectionally() {
+    let (harness, _rpc_tasks) = setup_bidirectional_vnet().await;
+    let target = harness.peer(200).id.clone();
+    let initial_session = harness
+        .peer(100)
+        .coordinator
+        .get_peer_session_id(&target)
+        .await
+        .expect("initial WebRTC session should exist");
+
+    harness.simulate_disconnect();
+    tokio::time::pause();
+
+    let recovery_targets = harness
+        .peer(100)
+        .coordinator
+        .begin_network_recovery("test exhausted ICE restart")
+        .await;
+    assert_eq!(recovery_targets, vec![target.clone()]);
+    harness
+        .peer(100)
+        .coordinator
+        .restart_network_recovery_connections_for(&recovery_targets)
+        .await;
+
+    for _ in 0..160 {
+        tokio::time::advance(Duration::from_secs(1)).await;
+        harness
+            .peer(100)
+            .coordinator
+            .clear_ice_restart_offer_throttle_for_test(&target)
+            .await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        if harness
+            .peer(100)
+            .coordinator
+            .get_peer_session_id(&target)
+            .await
+            .is_none()
+        {
+            break;
+        }
+    }
+
+    assert_eq!(
+        harness
+            .peer(100)
+            .coordinator
+            .get_peer_session_id(&target)
+            .await,
+        None,
+        "exhausted ICE restart must retire the unusable WebRTC session"
+    );
+
+    tokio::time::resume();
+    harness.simulate_reconnect();
+    expect_rpc(&harness, 100, 200, "ice_fallback_100_200").await;
+    expect_rpc(&harness, 200, 100, "ice_fallback_200_100").await;
+
+    let rebuilt_session = harness
+        .peer(100)
+        .coordinator
+        .get_peer_session_id(&target)
+        .await
+        .expect("a new WebRTC session should be established lazily");
+    assert_ne!(rebuilt_session, initial_session);
+    assert_eq!(harness.peer(100).pending_count().await, 0);
+    assert_eq!(harness.peer(200).pending_count().await, 0);
+
     harness.shutdown().await;
 }
