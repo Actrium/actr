@@ -54,9 +54,6 @@ permissions:
   contents: write
   id-token: write
 
-env:
-  PROTOC_VERSION: "29.3"
-
 jobs:
   # ── Gate ──────────────────────────────────────────────────────────────
   gate:
@@ -302,6 +299,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Cache cargo-installed tools
         id: cargo-tools
@@ -606,6 +604,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Setup Zig
         if: ${{ matrix.use_zig }}
