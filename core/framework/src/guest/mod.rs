@@ -7,16 +7,16 @@
 //! # Execution contract
 //!
 //! - One loaded guest instance corresponds to one logical actor instance.
-//! - DynClib and the legacy 0.1.0 WASM world serialize dispatch into the guest
-//!   instance. The 0.2.0 async WASM world may cooperatively interleave
-//!   distinct-conflict-key dispatches at host-import await points; same-key and
-//!   undeclared dispatches remain serialized by the host scheduler.
+//! - The retired 0.1.0 WASM world is rejected at load. DynClib remains serial.
+//!   The sole supported 0.2.0 async WASM world may cooperatively interleave
+//!   distinct-conflict-key dispatches at host-import await points; same-key
+//!   and undeclared dispatches remain serialized by the host scheduler.
 //!
 //! # Supported platforms
 //!
 //! - **WASM Component Model** (`target_arch = "wasm32"`, no `web` feature):
 //!   wit-bindgen generates the `Guest` trait + `host` imports from
-//!   `core/framework/wit/actr-workload.wit`; the [`entry!`] macro
+//!   `core/framework/wit-v2/actr-workload.wit`; the [`entry!`] macro
 //!   produces an adapter that bridges the user's [`Workload`] impl into
 //!   the generated `Guest`. Targets `wasm32-wasip2` and requires
 //!   `wasm-component-ld 0.5.22+` as the linker (see

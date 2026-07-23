@@ -113,11 +113,9 @@ jobs:
         with:
           repo-token: ${{ github.token }}
       - name: Verify actr-hyper WIT drift
-        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
-        # framework original (shipped in the actr-hyper tarball so bindgen
-        # works without the sibling framework crate). Fail fast if they drift.
+        # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
+        # without the sibling framework crate. Fail fast if the copy drifts.
         run: |
-          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
@@ -175,11 +173,9 @@ jobs:
         with:
           repo-token: ${{ github.token }}
       - name: Verify actr-hyper WIT drift
-        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
-        # framework original (shipped in the actr-hyper tarball so bindgen
-        # works without the sibling framework crate). Fail fast if they drift.
+        # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
+        # without the sibling framework crate. Fail fast if the copy drifts.
         run: |
-          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - uses: Swatinem/rust-cache@v2
         with:
@@ -350,14 +346,10 @@ jobs:
         run: |
           npm ci
           npm run build
-      # jco 1.25.2 can emit V2 async guest types but cannot yet componentize
-      # async host imports (spidermonkey-embedding-splicer is unimplemented).
-      # Keep install/type-check coverage required and allow only this
-      # upstream-blocked componentization smoke test to fail.
+      # ComponentizeJS#335 / #427: accept only the known async-func bindgen
+      # panic. Any unrelated componentization failure must still fail CI.
       - name: Componentize TypeScript EchoService workload
-        working-directory: examples/typescript/echo-workload
-        continue-on-error: true
-        run: npm run componentize
+        run: bash .github/scripts/verify-typescript-componentize-blocker.sh
 
   python_codegen:
     name: Python Codegen
@@ -456,11 +448,9 @@ jobs:
         with:
           repo-token: ${{ github.token }}
       - name: Verify actr-hyper WIT drift
-        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
-        # framework original (shipped in the actr-hyper tarball so bindgen
-        # works without the sibling framework crate). Fail fast if they drift.
+        # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
+        # without the sibling framework crate. Fail fast if the copy drifts.
         run: |
-          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
@@ -498,6 +488,14 @@ jobs:
       - name: Build Python echo workload
         working-directory: examples/python/echo-workload
         run: ./build.sh package
+      - name: Build generated Python scaffold
+        # The first build preserves the hand-written workload. Move it aside so
+        # `actr gen` stamps the real CLI scaffold, then componentize that output
+        # against the V2 bindings as a regression guard.
+        working-directory: examples/python/echo-workload
+        run: |
+          mv workload.py workload.py.handwritten
+          ./build.sh
 
   swift:
     name: Swift

@@ -589,7 +589,7 @@ async fn node_gate_on_dedup_writeback_survives_interleave() {
     dispatcher.shutdown().await;
 }
 
-// ── Facet 9 — package compat matrix ──────────────────────────────────────────
+// ── V2 interleaved single-dispatch positive control ──────────────────────────
 
 /// A V2 guest must work in BOTH modes: serial (facet 7 above) and interleaved
 /// (facets 1-3 above). This is the positive control that the same 0.2.0 package

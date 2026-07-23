@@ -12,7 +12,11 @@ Drift triggers a non-zero exit; the wired CI step is in `.github/workflows/ci-ru
 
 ## Relationship to `actr-wit-compile-web`
 
-The two tools live side-by-side under `tools/` and read the same WIT file but solve **different** drift problems. Both pin `wit-parser = 0.247.0` so they cannot disagree about how the WIT parses.
+The two tools live side-by-side under `tools/` but intentionally read different
+contracts while the browser migration tracked by #429 is pending. `wit-lint`
+checks the canonical V2 workload WIT; `actr-wit-compile-web` still consumes the
+retained V1 browser WIT. Both pin `wit-parser = 0.247.0` so parser behavior stays
+aligned.
 
 | Tool | Drives what | Drift it catches |
 |---|---|---|

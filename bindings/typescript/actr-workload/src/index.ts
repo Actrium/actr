@@ -67,14 +67,22 @@ export interface InvocationCtx {
   requestId: string;
 }
 
+export type ErrorCategory =
+  | { tag: 'handler-panic' }
+  | { tag: 'handler-error' }
+  | { tag: 'signaling-failure' }
+  | { tag: 'transport-failure' }
+  | { tag: 'data-chunk-delivery-uncertain' };
+
+export type WebRtcPeerStatus =
+  | { tag: 'idle' }
+  | { tag: 'connecting' }
+  | { tag: 'connected' }
+  | { tag: 'recovering' };
+
 export interface ErrorEvent {
   source: ActrError;
-  category:
-    | 'handler-panic'
-    | 'handler-error'
-    | 'signaling-failure'
-    | 'transport-failure'
-    | 'data-chunk-delivery-uncertain';
+  category: ErrorCategory;
   context: string;
   timestamp: { seconds: bigint; nanoseconds: number };
 }
@@ -82,7 +90,7 @@ export interface ErrorEvent {
 export interface PeerEvent {
   peer: ActrId;
   relayed?: boolean;
-  status?: 'idle' | 'connecting' | 'connected' | 'recovering';
+  status?: WebRtcPeerStatus;
 }
 
 export interface CredentialEvent {
@@ -142,6 +150,7 @@ export type PayloadType = (typeof PayloadType)[keyof typeof PayloadType];
 export type StreamCallback = (
   chunk: DataChunk,
   sender: ActrId,
+  ctx: InvocationCtx,
 ) => void | Promise<void>;
 
 // `ctx` is optional on every hook: the host always threads an `invocation-ctx`
@@ -383,10 +392,11 @@ export async function logMessage(
 export async function __dispatchDataChunk(
   chunk: DataChunk,
   sender: ActrId,
+  ctx: InvocationCtx,
 ): Promise<void> {
   const callback = streamCallbacks.get(chunk.streamId);
   if (!callback) {
     throw new Error(`No stream callback registered for ${chunk.streamId}`);
   }
-  await callback(chunk, sender);
+  await callback(chunk, sender, ctx);
 }

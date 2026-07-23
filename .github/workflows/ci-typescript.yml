@@ -92,12 +92,7 @@ jobs:
           npm ci
           npm run build
 
-      # NOTE: `npm run componentize` is blocked upstream — jco 1.25.2
-      # guest-types emits the V2 async types, but `jco componentize` panics at
-      # the async-host-import bindgen step (spidermonkey-embedding-splicer "not
-      # yet implemented"). Keep install/type-check coverage required and drop
-      # continue-on-error once a jco release supports async-func host imports.
+      # ComponentizeJS#335 / #427: accept only the known async-func bindgen
+      # panic. Any unrelated componentization failure must still fail CI.
       - name: Componentize TypeScript EchoService workload
-        working-directory: examples/typescript/echo-workload
-        continue-on-error: true
-        run: npm run componentize
+        run: bash .github/scripts/verify-typescript-componentize-blocker.sh

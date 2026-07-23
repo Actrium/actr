@@ -66,7 +66,7 @@ pub struct HyperConfig {
     /// node keeps it bit-for-bit serial and never spawns a scheduler, so the
     /// resident concurrency machinery only engages once a method declares a
     /// conflict key on a workload that can multiplex (native `Linked` /
-    /// `Wasm(V2)`). Pass `Some(DispatchConcurrency { enabled: false, .. })` (or
+    /// V2 `Wasm`). Pass `Some(DispatchConcurrency { enabled: false, .. })` (or
     /// set `ACTR_DISPATCH_SERIAL=1`) to force the fully-serial B1 runner. See
     /// [`DispatchConcurrency`].
     pub dispatch_concurrency: Option<DispatchConcurrency>,

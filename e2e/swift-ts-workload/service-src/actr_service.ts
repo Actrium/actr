@@ -84,8 +84,8 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
 
     await registerStream(
       request.clientToServiceStreamId,
-      async (chunk, sender) => {
-        await this.onClientChunk(chunk, sender, ctx);
+      async (chunk, sender, streamCtx) => {
+        await this.onClientChunk(chunk, sender, streamCtx);
       },
       ctx,
     );
@@ -122,7 +122,7 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
   private async onClientChunk(
     chunk: DataChunk,
     sender: ActrId,
-    ctx?: InvocationCtx,
+    ctx: InvocationCtx,
   ): Promise<void> {
     const sessionId = sessionIdByClientStreamId.get(chunk.streamId);
     const state = sessionId ? sessionsById.get(sessionId) : undefined;

@@ -1624,17 +1624,16 @@ impl Inner {
         // even with the gate on — stays on the serial `run_loop` with no
         // scheduler spawned, bit-for-bit the M4 path: default-on costs it
         // nothing. When engaged, the runner mode is `Interleaved` regardless of
-        // world; the executor then routes by the workload's actual concurrency
-        // capability:
-        //   * `Linked`     → native `&self` concurrency (B2)
-        //   * `Wasm(V2)`   → resident `run_concurrent` region (M5 open concurrency)
-        //   * `Wasm(V1)` / `DynClib` → serial `run_loop` (single-Store fallback)
-        // The node stays world-agnostic: it never inspects the wasm kernel
-        // version — that adjudication lives entirely in the executor match, so
-        // the "no-op key on a serial-only package" case degrades silently. The
-        // second safety net is orthogonal to the gate default: whenever a
-        // scheduler *is* running, an undeclared method still projects to the
-        // global `ConflictKey::Serial` barrier and can never interleave.
+        // backend; the executor then routes by the workload's actual
+        // concurrency capability:
+        //   * `Linked`  → native `&self` concurrency (B2)
+        //   * `Wasm`    → resident V2 `run_concurrent` region (M5)
+        //   * `DynClib` → serial `run_loop`
+        // The 0.1.0 sync-world WASM ABI is retired and rejected at load, so
+        // DynClib is the only packaged serial fallback. The second safety net
+        // is orthogonal to the gate default: whenever a scheduler *is* running,
+        // an undeclared method still projects to the global
+        // `ConflictKey::Serial` barrier and can never interleave.
         let conflict_keys = Arc::new(conflict_keys.unwrap_or_default());
         let gate_on = dispatch_concurrency.enabled;
         let scheduler_on = scheduler_engaged(gate_on, !conflict_keys.is_empty());

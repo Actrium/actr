@@ -5,8 +5,11 @@ import { dirname, resolve } from 'node:path';
 
 import { build } from 'esbuild';
 
-import { runJco } from './bindings.js';
+import { JcoCommandError, runJco } from './bindings.js';
 import { resolveWorkloadWit } from './paths.js';
+
+export const ASYNC_COMPONENTIZE_UPSTREAM_ISSUE =
+  'https://github.com/bytecodealliance/ComponentizeJS/issues/335';
 
 export interface ComponentizeOptions {
   output: string;
@@ -90,7 +93,7 @@ export const workload = {
         await activeWorkload().onDataChunk(chunk, sender, ctx);
         return;
       }
-      await __dispatchDataChunk(chunk, sender);
+      await __dispatchDataChunk(chunk, sender, ctx);
     });
   },
 
@@ -168,21 +171,25 @@ export async function componentize(
       logLevel: 'silent',
     });
 
-    await runJco([
-      'componentize',
-      bundlePath,
-      '--wit',
-      wit,
-      '-n',
-      'actr-workload-guest-v2',
-      '--disable',
-      'http',
-      'fetch-event',
-      '-o',
-      output,
-      '--debug-bindings-dir',
-      bindingsDir,
-    ]);
+    try {
+      await runJco([
+        'componentize',
+        bundlePath,
+        '--wit',
+        wit,
+        '-n',
+        'actr-workload-guest-v2',
+        '--disable',
+        'http',
+        'fetch-event',
+        '-o',
+        output,
+        '--debug-bindings-dir',
+        bindingsDir,
+      ]);
+    } catch (error) {
+      throw explainComponentizeFailure(error);
+    }
     await assertOutputFile(output);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -190,6 +197,26 @@ export async function componentize(
       await rm(bindingsDir, { recursive: true, force: true });
     }
   }
+}
+
+export function explainComponentizeFailure(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  const output = error instanceof JcoCommandError ? error.output : '';
+  const detail = `${message}\n${output}`;
+
+  if (
+    detail.includes('spidermonkey-embedding-splicer') &&
+    detail.includes('not yet implemented')
+  ) {
+    return new Error(
+      'TypeScript V2 workload componentization is blocked by missing async-func ' +
+        'export support in ComponentizeJS (spidermonkey-embedding-splicer: ' +
+        `"not yet implemented"). Track ${ASYNC_COMPONENTIZE_UPSTREAM_ISSUE} ` +
+        'and retry after @bytecodealliance/componentize-js ships that support.',
+    );
+  }
+
+  return error instanceof Error ? error : new Error(message);
 }
 
 async function assertOutputFile(output: string): Promise<void> {

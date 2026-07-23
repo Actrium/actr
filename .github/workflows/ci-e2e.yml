@@ -133,7 +133,8 @@ jobs:
     name: TypeScript E2E
     # Blocked until jco can componentize the V2 async host imports. The required
     # TypeScript source build remains covered by ci-typescript/ci-gate; re-enable
-    # this runtime E2E when the non-blocking componentization smoke test is green.
+    # this runtime E2E under #431 when the guarded componentization smoke test is
+    # green (upstream ComponentizeJS#335, local tracking #427).
     if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -172,6 +173,9 @@ jobs:
 
   web-browser-e2e:
     name: Web Browser E2E
+    # e2e/web-browser/run.sh packages the same currently-unbuildable V2
+    # TypeScript workload as typescript-e2e. Re-enable under #431 after #427.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -392,6 +396,7 @@ jobs:
     # This scenario packages the same currently-unbuildable V2 TypeScript WASM
     # workload as typescript-e2e. Keep it disabled at the job boundary so the
     # scheduled workflow does not consume a macOS runner before failing.
+    # Re-enable under #431 after #427.
     if: ${{ false }}
     runs-on: macos-latest
     timeout-minutes: 240

@@ -83,7 +83,7 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             targets["ts_binding"] = True
             targets["swift_binding"] = True
             targets["web_binding"] = True
-            if path == "core/framework/wit/actr-workload.wit":
+            if path == "core/framework/wit-v2/actr-workload.wit":
                 targets["python_workload"] = True
                 targets["ts_workload"] = True
             reasons.append(f"core_dependency:{path}")

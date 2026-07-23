@@ -66,17 +66,21 @@ describe('@actrium/actr-workload', () => {
     const chunk = testChunk();
     const sender = testActorId();
     const ctx = testInvocationCtx(11n);
-    const received: Array<{ chunk: DataChunk; sender: ActrId }> = [];
-    const callback: StreamCallback = async (incoming, from) => {
+    const received: Array<{
+      chunk: DataChunk;
+      sender: ActrId;
+      ctx: InvocationCtx;
+    }> = [];
+    const callback: StreamCallback = async (incoming, from, callbackCtx) => {
       await Promise.resolve();
-      received.push({ chunk: incoming, sender: from });
+      received.push({ chunk: incoming, sender: from, ctx: callbackCtx });
     };
 
     await runtime.registerStream('stream-1', callback, ctx);
-    await runtime.__dispatchDataChunk(chunk, sender);
+    await runtime.__dispatchDataChunk(chunk, sender, ctx);
 
     expect(host.hostCalls.registerStream).toEqual(['stream-1']);
-    expect(received).toEqual([{ chunk, sender }]);
+    expect(received).toEqual([{ chunk, sender, ctx }]);
   });
 
   it('forwards an explicit invocation context token to host imports', async () => {
@@ -89,6 +93,41 @@ describe('@actrium/actr-workload', () => {
     );
 
     expect(host.hostCalls.ctxTokens).toEqual([37n]);
+  });
+
+  it('resolves every host import token from AsyncLocalStorage', async () => {
+    const { host, runtime } = await loadRuntime();
+    const ctx = testInvocationCtx(91n);
+    const payload = new Uint8Array([4, 2]);
+    const targetType = testActorId().type;
+
+    await runtime.withInvocationCtx(ctx, async () => {
+      expect(runtime.getCurrentInvocationCtx()).toBe(ctx);
+      await runtime.call('host', 'echo', payload);
+      await runtime.tell('workload', 'notify', payload);
+      await runtime.callRaw(testActorId(), 'raw', payload);
+      await runtime.discover(targetType);
+      await runtime.registerStream('als-stream', () => undefined);
+      await runtime.unregisterStream('als-stream');
+      await runtime.sendDataChunk(
+        'host',
+        testChunk(),
+        runtime.PayloadType.StreamReliable,
+      );
+      await runtime.logMessage('info', 'from active invocation');
+    });
+
+    expect(host.hostCalls.ctxTokens).toEqual(Array(8).fill(91n));
+    expect(host.hostCalls.operations).toEqual([
+      'call',
+      'tell',
+      'callRaw',
+      'discover',
+      'registerStream',
+      'unregisterStream',
+      'sendDataChunk',
+      'logMessage',
+    ]);
   });
 
   it('rejects host imports when no invocation context is active', async () => {
@@ -110,7 +149,7 @@ describe('@actrium/actr-workload', () => {
 
     expect(host.hostCalls.unregisterStream).toEqual(['stream-1']);
     await expect(
-      runtime.__dispatchDataChunk(testChunk(), testActorId()),
+      runtime.__dispatchDataChunk(testChunk(), testActorId(), ctx),
     ).rejects.toThrow('No stream callback registered for stream-1');
   });
 

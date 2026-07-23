@@ -13,6 +13,18 @@ interface RunJcoOptions {
   cwd?: string;
 }
 
+const MAX_CAPTURED_OUTPUT_BYTES = 256 * 1024;
+
+export class JcoCommandError extends Error {
+  constructor(
+    message: string,
+    public readonly output: string,
+  ) {
+    super(message);
+    this.name = 'JcoCommandError';
+  }
+}
+
 function nodeModulesBinCandidates(): string[] {
   const candidates: string[] = [];
   let current = dirname(fileURLToPath(import.meta.url));
@@ -37,19 +49,33 @@ export function runJco(
   options: RunJcoOptions = {},
 ): Promise<void> {
   return new Promise((resolvePromise, reject) => {
+    let combinedOutput = '';
     const child = spawn('jco', args, {
       cwd: options.cwd,
-      stdio: 'inherit',
+      stdio: ['inherit', 'pipe', 'pipe'],
       env: {
         ...process.env,
         PATH: buildPathEnv(),
       },
     });
 
+    const capture = (chunk: Buffer, destination: NodeJS.WriteStream): void => {
+      destination.write(chunk);
+      combinedOutput += chunk.toString('utf8');
+      if (
+        Buffer.byteLength(combinedOutput, 'utf8') > MAX_CAPTURED_OUTPUT_BYTES
+      ) {
+        combinedOutput = combinedOutput.slice(-MAX_CAPTURED_OUTPUT_BYTES);
+      }
+    };
+    child.stdout?.on('data', (chunk: Buffer) => capture(chunk, process.stdout));
+    child.stderr?.on('data', (chunk: Buffer) => capture(chunk, process.stderr));
+
     child.on('error', (error) => {
       reject(
-        new Error(
+        new JcoCommandError(
           `Failed to start jco. Ensure @bytecodealliance/jco is installed. ${error.message}`,
+          combinedOutput,
         ),
       );
     });
@@ -62,7 +88,12 @@ export function runJco(
 
       const reason =
         code === null ? `signal ${signal ?? 'unknown'}` : `exit code ${code}`;
-      reject(new Error(`jco ${args.join(' ')} failed with ${reason}.`));
+      reject(
+        new JcoCommandError(
+          `jco ${args.join(' ')} failed with ${reason}.`,
+          combinedOutput,
+        ),
+      );
     });
   });
 }

@@ -48,7 +48,7 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
 
     await registerStream(
       inboundStreamId,
-      async (chunk, sender) => {
+      async (chunk, sender, streamCtx) => {
         const incoming = textDecoder.decode(toUint8Array(chunk.payload));
 
         await sendDataChunk(
@@ -61,10 +61,10 @@ class EchoServiceHandlerImpl implements EchoServiceHandler {
             timestampMs: BigInt(Date.now()),
           },
           PayloadType.StreamReliable,
-          ctx,
+          streamCtx,
         );
 
-        await unregisterStream(inboundStreamId, ctx);
+        await unregisterStream(inboundStreamId, streamCtx);
       },
       ctx,
     );

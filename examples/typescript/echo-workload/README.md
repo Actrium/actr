@@ -21,13 +21,19 @@ is required.
 
 ## Build
 
+Source compilation is available now. Component generation is blocked by
+[ComponentizeJS #335](https://github.com/bytecodealliance/ComponentizeJS/issues/335)
+until ComponentizeJS supports async-function exports; ACTR tracks the upgrade in
+[#427](https://github.com/Actrium/actr/issues/427). The componentizer reports an
+actionable error for this known failure instead of exposing the upstream panic.
+
 ```bash
 npm install
 npm run build
-npm run componentize
 ```
 
-The output component is:
+After #427 is resolved, run `npm run componentize`. Its output component will
+be:
 
 ```text
 dist/echo-typescript-0.2.0-wasm32-wasip2.wasm
@@ -44,6 +50,8 @@ coverage: they must build/import without depending on stale workload runtime
 APIs.
 
 ## Packaging
+
+Packaging also depends on componentization and is blocked by #427.
 
 ```bash
 npm run package -- --key dist/dev-key.json
