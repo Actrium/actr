@@ -189,6 +189,70 @@ fn snapshot(sequence: u64, availability: NetworkAvailability) -> NetworkSnapshot
 }
 
 #[test]
+fn recovery_effect_errors_preserve_typed_network_diagnoses() {
+    let cases = [
+        (
+            NetworkRecoveryError::from_network_error(
+                "connect",
+                NetworkError::ConnectionError("offline".to_string()),
+            ),
+            EffectDiagnosis::PathUnreachable {
+                stage: "connect: Connection error: offline".to_string(),
+            },
+        ),
+        (
+            NetworkRecoveryError::from_network_error(
+                "probe",
+                NetworkError::TimeoutError("deadline".to_string()),
+            ),
+            EffectDiagnosis::Timeout {
+                stage: "probe: Timeout error: deadline".to_string(),
+            },
+        ),
+        (
+            NetworkRecoveryError::from_network_error(
+                "connect",
+                NetworkError::ResourceExhaustedError("sockets".to_string()),
+            ),
+            EffectDiagnosis::ResourceExhausted {
+                resource: "connect: Resource exhausted: sockets".to_string(),
+            },
+        ),
+        (
+            NetworkRecoveryError::from_network_error(
+                "connect",
+                NetworkError::AuthenticationError("revoked".to_string()),
+            ),
+            EffectDiagnosis::AuthRejected {
+                kind: "connect: Authentication error: revoked".to_string(),
+            },
+        ),
+        (
+            NetworkRecoveryError::from_network_error(
+                "connect",
+                NetworkError::ConfigurationError("endpoint".to_string()),
+            ),
+            EffectDiagnosis::ConfigRejected {
+                detail: "connect: Configuration error: endpoint".to_string(),
+            },
+        ),
+        (
+            NetworkRecoveryError::from_network_error(
+                "decode",
+                NetworkError::DeserializationError("invalid frame".to_string()),
+            ),
+            EffectDiagnosis::InvariantViolation {
+                detail: "decode: Deserialization error: invalid frame".to_string(),
+            },
+        ),
+    ];
+
+    for (error, expected) in cases {
+        assert_eq!(error.into_diagnosis(), expected);
+    }
+}
+
+#[test]
 fn lifecycle_barrier_is_scoped_to_events_that_change_connections() {
     let cases = [
         (

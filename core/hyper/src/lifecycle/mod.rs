@@ -24,10 +24,10 @@ pub use recovery_supervisor::ConnectionFact;
 pub use network_event::{
     AppLifecycleState, CleanupReason, DebounceConfig, DefaultNetworkEventProcessor,
     NetworkAvailability, NetworkEvent, NetworkEventHandle, NetworkEventProcessor,
-    NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction, NetworkSnapshot,
-    NetworkTransportFlags, ObservedOutcome, ReconnectReason, SignalingFactLostCause,
-    SignalingFactOrigin, SupervisorFactSink, SupervisorStatus, TeardownReport,
-    process_network_event_batch, run_network_event_reconciler,
+    NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction, NetworkRecoveryError,
+    NetworkSnapshot, NetworkTransportFlags, ObservedOutcome, ReconnectReason,
+    SignalingFactLostCause, SignalingFactOrigin, SupervisorFactSink, SupervisorStatus,
+    TeardownReport, process_network_event_batch, run_network_event_reconciler,
     run_network_event_reconciler_with_status, select_network_recovery_action,
 };
 #[cfg(feature = "test-utils")]

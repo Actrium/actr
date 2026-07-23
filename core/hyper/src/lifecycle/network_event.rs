@@ -73,7 +73,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use crate::transport::PeerTransport;
+use crate::transport::{NetworkError, PeerTransport};
 use crate::wire::webrtc::{CleanupGuard, SignalingClient, WebRtcCoordinator};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -191,6 +191,93 @@ pub enum NetworkRecoveryAction {
     Restore,
     CleanupOnly,
     ForceReconnect,
+}
+
+/// Typed failure reported by a network recovery effect.
+///
+/// This is deliberately smaller than [`NetworkError`]: an effect only reports
+/// observations that the recovery policy can classify without inspecting an
+/// opaque error string. In particular, generic transport failures remain
+/// availability-family `PathUnreachable` unless the effect has independently
+/// verified a stronger fact.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum NetworkRecoveryError {
+    #[error("path unreachable: {stage}")]
+    PathUnreachable { stage: String },
+    #[error("operation timed out: {stage}")]
+    Timeout { stage: String },
+    #[error("resource exhausted: {resource}")]
+    ResourceExhausted { resource: String },
+    #[error("authentication rejected: {kind}")]
+    AuthRejected { kind: String },
+    #[error("configuration rejected: {detail}")]
+    ConfigRejected { detail: String },
+    #[error("recovery invariant violated: {detail}")]
+    InvariantViolation { detail: String },
+}
+
+impl NetworkRecoveryError {
+    fn from_opaque(stage: &str, detail: impl std::fmt::Display) -> Self {
+        Self::PathUnreachable {
+            stage: format!("{stage}: {detail}"),
+        }
+    }
+
+    fn from_network_error(stage: &str, error: NetworkError) -> Self {
+        let detail = format!("{stage}: {error}");
+        match error {
+            NetworkError::TimeoutError(_) => Self::Timeout { stage: detail },
+            NetworkError::ResourceExhaustedError(_) => Self::ResourceExhausted { resource: detail },
+            NetworkError::AuthenticationError(_)
+            | NetworkError::CredentialExpired(_)
+            | NetworkError::PermissionError(_) => Self::AuthRejected { kind: detail },
+            NetworkError::ProtocolError(_)
+            | NetworkError::ConfigurationError(_)
+            | NetworkError::ServiceDiscoveryError(_)
+            | NetworkError::NotImplemented(_)
+            | NetworkError::NoRoute(_)
+            | NetworkError::InvalidOperation(_)
+            | NetworkError::InvalidArgument(_)
+            | NetworkError::UrlParseError(_) => Self::ConfigRejected { detail },
+            NetworkError::SerializationError(_)
+            | NetworkError::DeserializationError(_)
+            | NetworkError::BroadcastError(_)
+            | NetworkError::JsonError(_)
+            | NetworkError::Other(_) => Self::InvariantViolation { detail },
+            NetworkError::ConnectionError(_)
+            | NetworkError::SignalingError(_)
+            | NetworkError::WebRtcError(_)
+            | NetworkError::NetworkUnreachableError(_)
+            | NetworkError::NatTraversalError(_)
+            | NetworkError::DataChannelError(_)
+            | NetworkError::DataChannelClosed(_)
+            | NetworkError::DataChannelNotOpen(_)
+            | NetworkError::IceError(_)
+            | NetworkError::DtlsError(_)
+            | NetworkError::StunTurnError(_)
+            | NetworkError::WebSocketError(_)
+            | NetworkError::WebSocketClosed(_)
+            | NetworkError::ConnectionNotFound(_)
+            | NetworkError::ConnectionClosed(_)
+            | NetworkError::PeerConnectionClosed(_)
+            | NetworkError::ChannelClosed(_)
+            | NetworkError::SendError(_)
+            | NetworkError::ChannelNotFound(_)
+            | NetworkError::IoError(_) => Self::PathUnreachable { stage: detail },
+        }
+    }
+
+    fn into_diagnosis(self) -> EffectDiagnosis {
+        match self {
+            Self::PathUnreachable { stage } => EffectDiagnosis::PathUnreachable { stage },
+            Self::Timeout { stage } => EffectDiagnosis::Timeout { stage },
+            Self::ResourceExhausted { resource } => EffectDiagnosis::ResourceExhausted { resource },
+            Self::AuthRejected { kind } => EffectDiagnosis::AuthRejected { kind },
+            Self::ConfigRejected { detail } => EffectDiagnosis::ConfigRejected { detail },
+            Self::InvariantViolation { detail } => EffectDiagnosis::InvariantViolation { detail },
+        }
+    }
 }
 
 /// The structured result of a bounded teardown effect (cleanup or confirmed
@@ -399,6 +486,22 @@ pub trait NetworkEventProcessor: Send + Sync {
             NetworkRecoveryAction::CleanupOnly => self.cleanup_connections().await,
             NetworkRecoveryAction::ForceReconnect => self.force_reconnect().await,
         }
+    }
+
+    /// Execute a policy-selected recovery action while preserving a typed
+    /// diagnosis for the supervisor.
+    ///
+    /// The compatibility default wraps legacy `String` errors as
+    /// `PathUnreachable`; the runtime processor overrides this method so native
+    /// [`NetworkError`] variants reach the policy without string parsing.
+    #[doc(hidden)]
+    async fn process_network_recovery_effect(
+        &self,
+        action: NetworkRecoveryAction,
+    ) -> Result<(), NetworkRecoveryError> {
+        self.process_network_recovery_action(action)
+            .await
+            .map_err(|detail| NetworkRecoveryError::from_opaque("custom recovery effect", detail))
     }
 
     /// Run a bounded teardown effect (cleanup or confirmed offline disconnect).
@@ -621,7 +724,10 @@ impl DefaultNetworkEventProcessor {
         }
     }
 
-    async fn ensure_signaling_healthy_once(&self, reason: &str) -> Result<(), String> {
+    async fn ensure_signaling_healthy_once_typed(
+        &self,
+        reason: &str,
+    ) -> Result<(), NetworkRecoveryError> {
         let _guard = self.recovery_state.connect_lock.lock().await;
 
         if !self.signaling_client.is_connected() {
@@ -633,9 +739,9 @@ impl DefaultNetworkEventProcessor {
                 .schedule_auto_reconnect_reset_backoff();
             tracing::info!(reason = reason, "🔄 Connecting signaling");
             self.signaling_client.connect_once().await.map_err(|e| {
-                let err_msg = format!("WebSocket connect failed: {}", e);
-                tracing::error!("❌ {}", err_msg);
-                err_msg
+                let error = NetworkRecoveryError::from_network_error("WebSocket connect failed", e);
+                tracing::error!("❌ {}", error);
+                error
             })?;
 
             *self.recovery_state.last_successful_connect.lock().await = Some(Instant::now());
@@ -687,9 +793,12 @@ impl DefaultNetworkEventProcessor {
                     .connect_once()
                     .await
                     .map_err(|connect_err| {
-                        let err_msg = format!("WebSocket rebuild failed: {}", connect_err);
-                        tracing::error!("❌ {}", err_msg);
-                        err_msg
+                        let error = NetworkRecoveryError::from_network_error(
+                            "WebSocket rebuild failed",
+                            connect_err,
+                        );
+                        tracing::error!("❌ {}", error);
+                        error
                     })?;
 
                 *self.recovery_state.last_successful_connect.lock().await = Some(Instant::now());
@@ -699,7 +808,10 @@ impl DefaultNetworkEventProcessor {
         }
     }
 
-    async fn restore_signaling_and_webrtc(&self, reason: &str) -> Result<(), String> {
+    async fn restore_signaling_and_webrtc_typed(
+        &self,
+        reason: &str,
+    ) -> Result<(), NetworkRecoveryError> {
         let _cleanup_guard = self.lifecycle_barrier();
         let recovery_targets = if let Some(coordinator) = self.webrtc_coordinator.clone() {
             coordinator.begin_network_recovery(reason).await
@@ -707,7 +819,7 @@ impl DefaultNetworkEventProcessor {
             Vec::new()
         };
 
-        self.ensure_signaling_healthy_once(reason).await?;
+        self.ensure_signaling_healthy_once_typed(reason).await?;
 
         let coordinator = self.webrtc_coordinator.clone();
 
@@ -732,19 +844,37 @@ impl DefaultNetworkEventProcessor {
         self.signaling_client.schedule_auto_reconnect();
     }
 
-    async fn restore_signaling_and_webrtc_from_network_event(
+    async fn restore_signaling_and_webrtc_from_network_event_typed(
         &self,
         reason: &str,
-    ) -> Result<(), String> {
-        let result = self.restore_signaling_and_webrtc(reason).await;
+    ) -> Result<(), NetworkRecoveryError> {
+        let result = self.restore_signaling_and_webrtc_typed(reason).await;
         if let Err(err) = &result {
-            self.schedule_auto_reconnect_after_recovery_failure(reason, err);
+            self.schedule_auto_reconnect_after_recovery_failure(reason, &err.to_string());
         }
         result
     }
 
-    async fn probe_or_restore(&self, reason: &str) -> Result<(), String> {
-        match self.probe_connectivity().await {
+    async fn restore_signaling_and_webrtc_from_network_event(
+        &self,
+        reason: &str,
+    ) -> Result<(), String> {
+        self.restore_signaling_and_webrtc_from_network_event_typed(reason)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn probe_connectivity_typed(&self) -> Result<(), NetworkRecoveryError> {
+        self.signaling_client
+            .probe_alive(SIGNALING_PROBE_TIMEOUT)
+            .await
+            .map_err(|error| {
+                NetworkRecoveryError::from_network_error("Signaling probe failed", error)
+            })
+    }
+
+    async fn probe_or_restore_typed(&self, reason: &str) -> Result<(), NetworkRecoveryError> {
+        match self.probe_connectivity_typed().await {
             Ok(()) => Ok(()),
             Err(e) => {
                 tracing::warn!(
@@ -759,10 +889,30 @@ impl DefaultNetworkEventProcessor {
                         disconnect_err
                     );
                 }
-                self.restore_signaling_and_webrtc_from_network_event(reason)
+                self.restore_signaling_and_webrtc_from_network_event_typed(reason)
                     .await
             }
         }
+    }
+
+    async fn process_network_available_typed(&self) -> Result<(), NetworkRecoveryError> {
+        let should_process = self.should_process_event(DebounceEvent::Available).await;
+        if !should_process && self.signaling_client.is_connected() {
+            return Ok(());
+        }
+
+        tracing::info!("📱 Processing: Network available");
+
+        self.restore_signaling_and_webrtc_from_network_event_typed("NetworkAvailable")
+            .await
+    }
+
+    async fn force_reconnect_typed(&self) -> Result<(), NetworkRecoveryError> {
+        self.cleanup_connections()
+            .await
+            .map_err(|error| NetworkRecoveryError::from_opaque("ForceReconnect cleanup", error))?;
+        self.restore_signaling_and_webrtc_from_network_event_typed("ForceReconnect")
+            .await
     }
 
     async fn process_offline(&self) -> Result<(), String> {
@@ -968,16 +1118,9 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
 
     /// Process network available event
     async fn process_network_available(&self) -> Result<(), String> {
-        // Debounce check
-        let should_process = self.should_process_event(DebounceEvent::Available).await;
-        if !should_process && self.signaling_client.is_connected() {
-            return Ok(());
-        }
-
-        tracing::info!("📱 Processing: Network available");
-
-        self.restore_signaling_and_webrtc_from_network_event("NetworkAvailable")
+        self.process_network_available_typed()
             .await
+            .map_err(|error| error.to_string())
     }
 
     /// Process network lost event
@@ -1048,22 +1191,30 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
     }
 
     async fn probe_connectivity(&self) -> Result<(), String> {
-        self.signaling_client
-            .probe_alive(SIGNALING_PROBE_TIMEOUT)
+        self.probe_connectivity_typed()
             .await
-            .map_err(|e| format!("Signaling probe failed: {}", e))
+            .map_err(|error| error.to_string())
     }
 
     async fn force_reconnect(&self) -> Result<(), String> {
-        self.cleanup_connections().await?;
-        self.restore_signaling_and_webrtc_from_network_event("ForceReconnect")
+        self.force_reconnect_typed()
             .await
+            .map_err(|error| error.to_string())
     }
 
     async fn process_network_recovery_action(
         &self,
         action: NetworkRecoveryAction,
     ) -> Result<(), String> {
+        self.process_network_recovery_effect(action)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    async fn process_network_recovery_effect(
+        &self,
+        action: NetworkRecoveryAction,
+    ) -> Result<(), NetworkRecoveryError> {
         if action == NetworkRecoveryAction::Noop {
             return Ok(());
         }
@@ -1084,11 +1235,17 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         );
         let result = match action {
             NetworkRecoveryAction::Noop => Ok(()),
-            NetworkRecoveryAction::Offline => self.process_offline().await,
-            NetworkRecoveryAction::Probe => self.probe_or_restore("Probe").await,
-            NetworkRecoveryAction::Restore => self.process_network_available().await,
-            NetworkRecoveryAction::CleanupOnly => self.cleanup_connections().await,
-            NetworkRecoveryAction::ForceReconnect => self.force_reconnect().await,
+            NetworkRecoveryAction::Offline => self
+                .process_offline()
+                .await
+                .map_err(|error| NetworkRecoveryError::from_opaque("Offline", error)),
+            NetworkRecoveryAction::Probe => self.probe_or_restore_typed("Probe").await,
+            NetworkRecoveryAction::Restore => self.process_network_available_typed().await,
+            NetworkRecoveryAction::CleanupOnly => self
+                .cleanup_connections()
+                .await
+                .map_err(|error| NetworkRecoveryError::from_opaque("CleanupOnly", error)),
+            NetworkRecoveryAction::ForceReconnect => self.force_reconnect_typed().await,
         };
         tracing::info!(
             action_id,
@@ -1657,9 +1814,11 @@ fn spawn_effect(
                 None => tokio::select! {
                     biased;
                     _ = token.cancelled() => EffectOutcome::Cancelled,
-                    res = processor.process_network_recovery_action(net_action) => match res {
+                    res = processor.process_network_recovery_effect(net_action) => match res {
                         Ok(()) => EffectOutcome::Succeeded,
-                        Err(e) => EffectOutcome::Failed { diagnosis: diagnose_effect_error(&e) },
+                        Err(error) => EffectOutcome::Failed {
+                            diagnosis: error.into_diagnosis(),
+                        },
                     }
                 },
             }
@@ -1681,15 +1840,6 @@ fn spawn_effect(
             outcome,
         });
     });
-}
-
-/// Map an opaque effect error string to a typed diagnosis. Absent structured
-/// error typing (a later phase), it is treated as an availability-family
-/// `PathUnreachable`, so the policy retries inside the obligation deadline.
-fn diagnose_effect_error(error: &str) -> EffectDiagnosis {
-    EffectDiagnosis::PathUnreachable {
-        stage: error.to_string(),
-    }
 }
 
 /// Map a bounded [`TeardownReport`] onto the effect completion vocabulary.
