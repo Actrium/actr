@@ -451,18 +451,22 @@ class NetworkMonitor
     private data class LifecycleDelivery(
         val state: AppLifecycleState,
         val reportNetworkSnapshotAfter: Boolean,
+        val gate: MobileEventDeliveryGate,
     )
 
     private val lifecycleDeliveries = Channel<LifecycleDelivery>(Channel.UNLIMITED)
+    @Volatile private var deliveryGate = MobileEventDeliveryGate()
 
     init {
         val deliveryJob =
             scope.launch(Dispatchers.IO) {
                 for (delivery in lifecycleDeliveries) {
                     try {
-                        onAppLifecycleChanged?.invoke(delivery.state)
-                        if (delivery.reportNetworkSnapshotAfter) {
-                            onNetworkPathChanged?.invoke(buildCurrentNetworkSnapshot())
+                        delivery.gate.deliver {
+                            onAppLifecycleChanged?.invoke(delivery.state)
+                            if (delivery.reportNetworkSnapshotAfter) {
+                                onNetworkPathChanged?.invoke(buildCurrentNetworkSnapshot())
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to deliver app lifecycle state: ${e.message}", e)
@@ -489,6 +493,7 @@ class NetworkMonitor
         }
 
         try {
+            deliveryGate = MobileEventDeliveryGate()
             connectivityManager =
                 context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -508,6 +513,7 @@ class NetworkMonitor
 
     /** Stop network monitoring */
     fun stopMonitoring() {
+        deliveryGate.close()
         if (!isMonitoring) {
             return
         }
@@ -546,7 +552,7 @@ class NetworkMonitor
     ) {
         val result =
             lifecycleDeliveries.trySend(
-                LifecycleDelivery(state, reportNetworkSnapshotAfter),
+                LifecycleDelivery(state, reportNetworkSnapshotAfter, deliveryGate),
             )
         if (result.isFailure) {
             Log.w(TAG, "Lifecycle delivery skipped because its scope is no longer active")
@@ -583,9 +589,10 @@ class NetworkMonitor
 
     /** Cleanup connections without reconnecting (e.g. app terminating, user logout). */
     fun cleanupConnections(reason: CleanupReason = CleanupReason.MANUAL_RESET) {
+        val gate = deliveryGate
         scope.launch(Dispatchers.IO) {
             try {
-                onCleanupConnections?.invoke(reason)
+                gate.deliver { onCleanupConnections?.invoke(reason) }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to cleanup connections: ${e.message}", e)
             }
@@ -594,9 +601,10 @@ class NetworkMonitor
 
     /** Force cleanup and reconnect (e.g. manual reconnect, long background). */
     fun forceReconnect(reason: ReconnectReason = ReconnectReason.MANUAL_RECONNECT) {
+        val gate = deliveryGate
         scope.launch(Dispatchers.IO) {
             try {
-                onForceReconnect?.invoke(reason)
+                gate.deliver { onForceReconnect?.invoke(reason) }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to force reconnect: ${e.message}", e)
             }
@@ -623,6 +631,7 @@ class NetworkMonitor
 
     /** Setup network callback */
     private fun setupNetworkCallback() {
+        val callbackGate = deliveryGate
         val networkRequest =
             NetworkRequest
                 .Builder()
@@ -658,6 +667,7 @@ class NetworkMonitor
                     ) {
                         notifyNetworkPathChanged(
                             reason = "onAvailable (wasAvail=$wasNetworkAvailable nowAvail=$isNetworkAvailable)",
+                            gate = callbackGate,
                         )
                     }
 
@@ -672,10 +682,10 @@ class NetworkMonitor
                     updateNetworkState()
 
                     if (wasNetworkAvailable && !isNetworkAvailable) {
-                        notifyNetworkPathChanged(reason = "onLost (avail→unavail)")
+                        notifyNetworkPathChanged(reason = "onLost (avail→unavail)", gate = callbackGate)
                     } else if (wasNetworkAvailable) {
                         // Still have other networks, but path may have changed
-                        notifyNetworkPathChanged(reason = "onLost partial")
+                        notifyNetworkPathChanged(reason = "onLost partial", gate = callbackGate)
                     }
                 }
 
@@ -715,7 +725,10 @@ class NetworkMonitor
                             "Network type/capability changed: $networkType",
                         )
 
-                        notifyNetworkPathChanged(reason = "capabilitiesChanged → $networkType")
+                        notifyNetworkPathChanged(
+                            reason = "capabilitiesChanged → $networkType",
+                            gate = callbackGate,
+                        )
                     }
                 }
 
@@ -732,7 +745,10 @@ class NetworkMonitor
     }
 
     /** Notify the upper layer about a network path change via the unified callback. */
-    private fun notifyNetworkPathChanged(reason: String) {
+    private fun notifyNetworkPathChanged(
+        reason: String,
+        gate: MobileEventDeliveryGate = deliveryGate,
+    ) {
         val snapshot = buildCurrentNetworkSnapshot()
         Log.i(
             TAG,
@@ -745,7 +761,7 @@ class NetworkMonitor
 
         scope.launch(Dispatchers.IO) {
             try {
-                onNetworkPathChanged?.invoke(snapshot)
+                gate.deliver { onNetworkPathChanged?.invoke(snapshot) }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to handle network path change: ${e.message}", e)
             }

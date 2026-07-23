@@ -20,6 +20,23 @@ private func transport(
     )
 }
 
+private actor RecordingMobileEventSender: MobileEventSending {
+    private(set) var networkSnapshots: [NetworkSnapshot] = []
+    private(set) var lifecycleStates: [AppLifecycleState] = []
+
+    func sendNetworkPathChanged(snapshot: NetworkSnapshot) async {
+        networkSnapshots.append(snapshot)
+    }
+
+    func sendAppLifecycleChanged(state: AppLifecycleState) async {
+        lifecycleStates.append(state)
+    }
+
+    func recordedCounts() -> (network: Int, lifecycle: Int) {
+        (networkSnapshots.count, lifecycleStates.count)
+    }
+}
+
 @Test func networkPathReducerSuppressesInitialAndDuplicateObservations() {
     var reducer = NetworkPathEventReducer()
     let wifi = NetworkPathObservation(
@@ -140,4 +157,24 @@ private func transport(
     var observerWonRace = AppLifecycleEventReducer()
     #expect(observerWonRace.didEnterBackground(at: epoch) == .background)
     #expect(observerWonRace.initializePhase(isBackground: false, at: epoch) == nil)
+}
+
+@Test func mobileEventDeliveryGateIgnoresCallbacksAfterClose() async {
+    let sender = RecordingMobileEventSender()
+    let gate = MobileEventDeliveryGate(sender: sender)
+    let snapshot = NetworkSnapshot(
+        sequence: 1,
+        availability: .available,
+        transport: transport(wifi: true),
+        isExpensive: false,
+        isConstrained: false
+    )
+
+    gate.close()
+    await gate.sendAppLifecycleChanged(state: .background)
+    await gate.sendNetworkPathChanged(snapshot: snapshot)
+
+    let counts = await sender.recordedCounts()
+    #expect(counts.lifecycle == 0)
+    #expect(counts.network == 0)
 }

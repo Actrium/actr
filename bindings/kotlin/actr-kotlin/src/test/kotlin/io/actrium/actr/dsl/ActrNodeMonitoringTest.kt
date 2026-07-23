@@ -4,6 +4,7 @@ import io.actrium.actr.CleanupReason
 import io.actrium.actr.NetworkEventHandleWrapper
 import io.actrium.actr.NoHandle
 import io.actrium.actr.ReconnectReason
+import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -81,5 +82,39 @@ class ActrNodeMonitoringTest {
         assertEquals(listOf(ReconnectReason.MANUAL_RECONNECT), monitor.reconnectReasons)
         assertEquals(1, monitor.triggerCount)
         assertEquals("WiFi", resources.getCurrentNetworkStatus())
+    }
+
+    @Test
+    fun `managed network resources ignore stale callbacks after close`() {
+        val handle = RecordingHandle()
+        val monitor = RecordingMonitor()
+        val resources = ManagedNetworkResources(handle, monitor)
+
+        resources.close()
+        resources.onAppBackground()
+        resources.onAppForeground()
+        resources.cleanupConnections(CleanupReason.MANUAL_RESET)
+        resources.forceReconnect(ReconnectReason.LONG_BACKGROUND)
+        resources.triggerNetworkCheck()
+
+        assertEquals(1, monitor.stopCount)
+        assertEquals(1, handle.closeCount)
+        assertEquals(0, monitor.backgroundCount)
+        assertEquals(0, monitor.foregroundCount)
+        assertEquals(emptyList(), monitor.cleanupReasons)
+        assertEquals(emptyList(), monitor.reconnectReasons)
+        assertEquals(0, monitor.triggerCount)
+        assertEquals(null, resources.getCurrentNetworkStatus())
+    }
+
+    @Test
+    fun `mobile event delivery gate drops queued callback after close`() = runTest {
+        val gate = MobileEventDeliveryGate()
+        var delivered = 0
+
+        gate.close()
+        gate.deliver { delivered += 1 }
+
+        assertEquals(0, delivered)
     }
 }

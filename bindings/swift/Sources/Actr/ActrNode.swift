@@ -118,11 +118,11 @@ public final class ActrNode: Sendable {
 private final class NetworkEventMonitor: @unchecked Sendable {
     private let monitor: NWPathMonitor
     private let queue: DispatchQueue
-    private let handle: NetworkEventHandleWrapper
+    private let delivery: MobileEventDeliveryGate
     private var reducer = NetworkPathEventReducer()
 
     init(handle: NetworkEventHandleWrapper) {
-        self.handle = handle
+        delivery = MobileEventDeliveryGate(handle: handle)
         monitor = NWPathMonitor()
         queue = DispatchQueue(label: "actr.network.monitor")
         monitor.pathUpdateHandler = { [weak self] path in
@@ -132,6 +132,7 @@ private final class NetworkEventMonitor: @unchecked Sendable {
     }
 
     deinit {
+        delivery.close()
         monitor.cancel()
     }
 
@@ -181,8 +182,8 @@ private final class NetworkEventMonitor: @unchecked Sendable {
     }
 
     private func notifyPathChanged(snapshot: NetworkSnapshot) {
-        Task { [handle] in
-            _ = try? await handle.handleNetworkPathChanged(snapshot: snapshot)
+        Task { [delivery] in
+            await delivery.sendNetworkPathChanged(snapshot: snapshot)
         }
     }
 
@@ -194,7 +195,7 @@ private final class NetworkEventMonitor: @unchecked Sendable {
 }
 
 private final class AppLifecycleMonitor: @unchecked Sendable {
-    private let handle: NetworkEventHandleWrapper
+    private let delivery: MobileEventDeliveryGate
     private weak var networkEventMonitor: NetworkEventMonitor?
     private let queue: DispatchQueue
     private var observers: [NSObjectProtocol] = []
@@ -202,7 +203,7 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
     private var lifecycleDelivery: Task<Void, Never>?
 
     init(handle: NetworkEventHandleWrapper, networkEventMonitor: NetworkEventMonitor) {
-        self.handle = handle
+        delivery = MobileEventDeliveryGate(handle: handle)
         self.networkEventMonitor = networkEventMonitor
         self.queue = DispatchQueue(label: "actr.lifecycle.monitor")
         print("AppLifecycleMonitor initialized: time=\(formattedTimestamp())")
@@ -211,6 +212,7 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
     }
 
     deinit {
+        delivery.close()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         print("AppLifecycleMonitor deinitialized: time=\(formattedTimestamp())")
     }
@@ -308,9 +310,9 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
 
     private func notifyLifecycleChanged(state: AppLifecycleState) {
         let previous = lifecycleDelivery
-        lifecycleDelivery = Task { [handle] in
+        lifecycleDelivery = Task { [delivery] in
             await previous?.value
-            _ = try? await handle.handleAppLifecycleChanged(state: state)
+            await delivery.sendAppLifecycleChanged(state: state)
         }
     }
 

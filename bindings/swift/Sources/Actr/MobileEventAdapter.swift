@@ -2,6 +2,63 @@ import ActrBindings
 import Foundation
 import Network
 
+protocol MobileEventSending: Sendable {
+    func sendNetworkPathChanged(snapshot: NetworkSnapshot) async
+    func sendAppLifecycleChanged(state: AppLifecycleState) async
+}
+
+private final class BindingMobileEventSender: MobileEventSending, @unchecked Sendable {
+    private let handle: NetworkEventHandleWrapper
+
+    init(handle: NetworkEventHandleWrapper) {
+        self.handle = handle
+    }
+
+    func sendNetworkPathChanged(snapshot: NetworkSnapshot) async {
+        _ = try? await handle.handleNetworkPathChanged(snapshot: snapshot)
+    }
+
+    func sendAppLifecycleChanged(state: AppLifecycleState) async {
+        _ = try? await handle.handleAppLifecycleChanged(state: state)
+    }
+}
+
+final class MobileEventDeliveryGate: @unchecked Sendable {
+    private let sender: any MobileEventSending
+    private let stateLock = NSLock()
+    private var closed = false
+
+    convenience init(handle: NetworkEventHandleWrapper) {
+        self.init(sender: BindingMobileEventSender(handle: handle))
+    }
+
+    init(sender: any MobileEventSending) {
+        self.sender = sender
+    }
+
+    func close() {
+        stateLock.lock()
+        closed = true
+        stateLock.unlock()
+    }
+
+    func sendNetworkPathChanged(snapshot: NetworkSnapshot) async {
+        guard isOpen() else { return }
+        await sender.sendNetworkPathChanged(snapshot: snapshot)
+    }
+
+    func sendAppLifecycleChanged(state: AppLifecycleState) async {
+        guard isOpen() else { return }
+        await sender.sendAppLifecycleChanged(state: state)
+    }
+
+    private func isOpen() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return !closed
+    }
+}
+
 struct NetworkPathObservation: Equatable {
     let status: NWPath.Status
     let transport: NetworkTransportFlags
