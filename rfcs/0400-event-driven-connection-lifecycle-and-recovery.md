@@ -1399,9 +1399,11 @@ current action:
 3. on a success-class outcome (`Succeeded`, `CompletedWithResiduals`, or a
    bounded `Abandoned`), acknowledge only work whose revision is no newer
    than the effect's captured `policy_revision` and whose required impact is
-   covered by the completed effect; residuals are recorded as diagnostics,
-   and a teardown completion additionally clears the live-signaling record
-   for every generation in its teardown scope;
+   covered by the completed effect — for a peer-scoped recovery effect,
+   impact coverage is defined by the per-peer coverage contract below;
+   residuals are recorded as diagnostics, and a teardown completion
+   additionally clears the live-signaling record for every generation in
+   its teardown scope;
 4. on `Failed { diagnosis }` of still-current work, apply the classification
    verdict for `(kind, diagnosis, context)`: `Retry` increments the attempt
    and enters `BackingOff` with one capped, jittered absolute deadline;
@@ -1465,6 +1467,9 @@ Acknowledgement domains are explicit:
   `OfflineWork` because the physical teardown covers it;
 - Cleanup never acknowledges a later recovery intent.
 
+When Restore or Reconnect is peer-scoped, acknowledging `RecoveryIntent`
+additionally requires the per-peer coverage contract defined below.
+
 The supervisor dispatches a YASM completion input only when the corresponding
 pending domain and covered revision still match. For example, `CompleteProbe`
 is not sent to a `ReconnectPending` recovery machine after intent promotion.
@@ -1510,6 +1515,51 @@ sequenceDiagram
     Note over S: release execution slot<br/>preserve cleanup revision 11
     S->>E: start cleanup (action 8, revision 11)
 ```
+
+#### Per-peer coverage for peer-scoped recovery
+
+A peer-scoped Restore or Reconnect effect may fan out into independent
+per-peer recovery tasks, such as one ICE restart per impaired peer. Peer
+concurrency stays resource-scoped: per-peer tasks run concurrently under
+the effect's overall deadline, and peers do not enter the supervisor's
+machines — there is no global peer FSM. Coverage of the target set, not
+dispatch, is what completes the effect:
+
+1. at dispatch, the effect captures its target set in `EffectContext`:
+   one identity tuple — peer identity, `session_id`, and ICE generation —
+   per target peer, frozen together with the captured `policy_revision`;
+2. dispatching per-peer tasks MUST NOT by itself produce a success-class
+   outcome;
+3. each target peer reports one terminal per-peer fact carrying its
+   identity tuple; a fact whose tuple does not match a captured target
+   entry, or whose ICE generation has been superseded, is logged and
+   discarded and covers nothing — the per-peer analogue of the
+   effect-level `action_id` and `policy_revision` guard;
+4. the effect's single terminal `EffectCompleted` is synthesized from
+   per-peer terminal facts only:
+   - `Succeeded` requires every target to be covered by a valid success
+     fact;
+   - an uncovered target whose failure the classification table can
+     retry yields `Failed { diagnosis }` carrying the most severe
+     representative diagnosis, with per-peer detail attached as
+     diagnostics; the standard classification verdict applies and the
+     obligation is retained, and a retry derives its target set afresh
+     from current facts, so peers that recovered in the meantime drop
+     out;
+   - an uncovered target that is conclusively out of scope — the peer
+     left the session or the session ended — yields
+     `CompletedWithResiduals` with one residual per uncovered peer,
+     naming its identity tuple and reason;
+   - an `Abandon` verdict keeps its existing bounded-teardown semantics;
+5. `RecoveryIntent` is discharged only by full coverage or by an explicit
+   residual or abandon record, both auditable; there is no silent
+   partial success.
+
+For example, if Reconnect fans out to three peers and one terminal fact
+arrives bearing a superseded ICE generation, that fact is discarded: two
+targets are covered, one is not, and the effect MUST NOT report
+`Succeeded`. It fails with the uncovered peer's representative diagnosis
+or, if that peer has left the session, completes with one named residual.
 
 ### Cleanup bounded completion
 
@@ -2007,6 +2057,11 @@ Implementations conforming to this RFC must demonstrate:
     that cleanup cannot extinguish it.
 32. A normalized resource fact produced by the current effect is recognized
     by its origin and cannot make that effect's own completion stale.
+33. A peer-scoped recovery effect never reports a success-class outcome for
+    dispatch alone: every target peer is either covered by an
+    identity-validated terminal fact matching its captured identity tuple
+    or named in a recorded residual before `RecoveryIntent` is
+    acknowledged.
 
 ## Drawbacks
 
@@ -2160,7 +2215,7 @@ RFC, and every existing production timer has one inventory entry.
   and offline barrier semantics;
 - separate event acceptance from effect completion.
 
-Acceptance criteria: invariants 1 through 11 and 25 through 32 pass under
+Acceptance criteria: invariants 1 through 11 and 25 through 33 pass under
 paused-time and deterministic interleaving tests without scheduler sleeps,
 including full reducer coverage of the translation and classification
 tables.
