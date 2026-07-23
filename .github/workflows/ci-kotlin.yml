@@ -98,6 +98,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Cache wasm-pack binary
         id: wasm-pack-cache
         uses: actions/cache@v4

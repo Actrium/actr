@@ -69,9 +69,6 @@ permissions:
   contents: read
   id-token: write
 
-env:
-  PROTOC_VERSION: "29.3"
-
 jobs:
   verify:
     name: Verify basic release train dry-run
@@ -102,6 +99,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Run release train script unit checks
         run: |

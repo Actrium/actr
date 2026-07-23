@@ -4,9 +4,6 @@ on:
   workflow_call:
   workflow_dispatch:
 
-env:
-  PROTOC_VERSION: "29.3"
-
 permissions:
   contents: read
 
@@ -36,6 +33,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Install wasm-tools
         run: cargo install wasm-tools --version 1.253.0 --locked
