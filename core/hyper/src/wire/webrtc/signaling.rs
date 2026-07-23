@@ -835,10 +835,10 @@ impl WebSocketSignalingClient {
             envelope_version: 1,
             envelope_id: self.next_envelope_id().await,
             reply_for: None,
-            timestamp: prost_types::Timestamp {
+            timestamp: Some(prost_types::Timestamp {
                 seconds: chrono::Utc::now().timestamp(),
                 nanos: 0,
-            },
+            }),
             traceparent: None,
             tracestate: None,
             flow: Some(flow),

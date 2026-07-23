@@ -131,10 +131,10 @@ impl SignalingServerHandle {
             envelope_version: 1,
             envelope_id: Uuid::new_v4().to_string(),
             reply_for: reply_for.map(|id| id.to_string()),
-            timestamp: prost_types::Timestamp {
+            timestamp: Some(prost_types::Timestamp {
                 seconds: chrono::Utc::now().timestamp(),
                 nanos: 0,
-            },
+            }),
             traceparent: None,
             tracestate: None,
             flow: Some(flow),

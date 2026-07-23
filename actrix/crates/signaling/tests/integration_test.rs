@@ -116,10 +116,10 @@ fn create_envelope(flow: signaling_envelope::Flow) -> SignalingEnvelope {
     SignalingEnvelope {
         envelope_version: 1,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: Timestamp {
+        timestamp: Some(Timestamp {
             seconds: now.as_secs() as i64,
             nanos: now.subsec_nanos() as i32,
-        },
+        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,

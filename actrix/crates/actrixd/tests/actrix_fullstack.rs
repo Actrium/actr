@@ -532,10 +532,10 @@ fn make_envelope(flow: signaling_envelope::Flow) -> actr_protocol::SignalingEnve
     actr_protocol::SignalingEnvelope {
         envelope_version: 1,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: prost_types::Timestamp {
+        timestamp: Some(prost_types::Timestamp {
             seconds: chrono::Utc::now().timestamp(),
             nanos: 0,
-        },
+        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,
@@ -873,10 +873,10 @@ async fn actrix_end_to_end_register_and_health() {
     let envelope = actr_protocol::SignalingEnvelope {
         envelope_version: 1,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: prost_types::Timestamp {
+        timestamp: Some(prost_types::Timestamp {
             seconds: chrono::Utc::now().timestamp(),
             nanos: 0,
-        },
+        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,
@@ -930,10 +930,10 @@ async fn actrix_end_to_end_register_and_health() {
     actr_protocol::SignalingEnvelope {
         envelope_version: 1,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: prost_types::Timestamp {
+        timestamp: Some(prost_types::Timestamp {
             seconds: chrono::Utc::now().timestamp(),
             nanos: 0,
-        },
+        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,
@@ -988,10 +988,10 @@ async fn actrix_end_to_end_register_and_health() {
     actr_protocol::SignalingEnvelope {
         envelope_version: 1,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: prost_types::Timestamp {
+        timestamp: Some(prost_types::Timestamp {
             seconds: chrono::Utc::now().timestamp(),
             nanos: 0,
-        },
+        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,

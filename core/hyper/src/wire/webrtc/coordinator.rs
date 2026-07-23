@@ -3666,10 +3666,10 @@ impl WebRtcCoordinator {
             envelope_version: 1,
             envelope_id: Self::new_envelope_id(),
             reply_for: None,
-            timestamp: prost_types::Timestamp {
+            timestamp: Some(prost_types::Timestamp {
                 seconds: chrono::Utc::now().timestamp(),
                 nanos: 0,
-            },
+            }),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrRelay(relay)),

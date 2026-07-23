@@ -274,7 +274,7 @@ impl SignalingClient {
         if envelope.envelope_version == 0 {
             envelope.envelope_version = 1;
         }
-        envelope.timestamp = Self::now_timestamp();
+        envelope.timestamp = Some(Self::now_timestamp());
 
         let bytes = envelope.encode_to_vec();
         self.ws.send_with_u8_array(&bytes)?;
@@ -1254,7 +1254,7 @@ impl SwRuntime {
             envelope_version: 1,
             envelope_id: self.signaling.next_envelope_id(),
             reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
+            timestamp: Some(SignalingClient::now_timestamp()),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrToServer(ActrToSignaling {
@@ -1336,7 +1336,7 @@ impl SwRuntime {
             envelope_version: 1,
             envelope_id: self.signaling.next_envelope_id(),
             reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
+            timestamp: Some(SignalingClient::now_timestamp()),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrToServer(ActrToSignaling {
@@ -1445,7 +1445,7 @@ impl SwRuntime {
             envelope_version: 1,
             envelope_id: self.signaling.next_envelope_id(),
             reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
+            timestamp: Some(SignalingClient::now_timestamp()),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrToServer(ActrToSignaling {
@@ -1551,7 +1551,7 @@ impl SwRuntime {
             envelope_version: 1,
             envelope_id: self.signaling.next_envelope_id(),
             reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
+            timestamp: Some(SignalingClient::now_timestamp()),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
@@ -2091,7 +2091,7 @@ impl SwRuntime {
                     envelope_version: 1,
                     envelope_id: self.signaling.next_envelope_id(),
                     reply_for: None,
-                    timestamp: SignalingClient::now_timestamp(),
+                    timestamp: Some(SignalingClient::now_timestamp()),
                     traceparent: None,
                     tracestate: None,
                     flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
@@ -2120,7 +2120,7 @@ impl SwRuntime {
                     envelope_version: 1,
                     envelope_id: self.signaling.next_envelope_id(),
                     reply_for: None,
-                    timestamp: SignalingClient::now_timestamp(),
+                    timestamp: Some(SignalingClient::now_timestamp()),
                     traceparent: None,
                     tracestate: None,
                     flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
@@ -2329,7 +2329,7 @@ impl SwRuntime {
                     envelope_version: 1,
                     envelope_id: self.signaling.next_envelope_id(),
                     reply_for: None,
-                    timestamp: SignalingClient::now_timestamp(),
+                    timestamp: Some(SignalingClient::now_timestamp()),
                     traceparent: None,
                     tracestate: None,
                     flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
