@@ -77,13 +77,20 @@ pub trait PhysicalClock {
     fn now_ms(&self) -> i64;
 }
 
-/// System UTC source. Not available on wasm32 (`SystemTime::now` panics
-/// there).
-#[cfg(not(target_arch = "wasm32"))]
+/// System UTC source.
+///
+/// Available on native targets and on WASI targets (`wasm32-wasip1`,
+/// `wasm32-wasip2`), where the runtime's `clock_time_get` backs
+/// `SystemTime::now`. Not available on `wasm32-unknown-unknown`: that
+/// target has no ambient clock and `SystemTime::now` panics there, so an
+/// embedding must inject its own [`PhysicalClock`] wired to host time (in a
+/// browser, `Date.now()`); that platform glue belongs to the embedding's
+/// web-side crate, not to this dependency-free library.
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 impl PhysicalClock for SystemClock {
     fn now_ms(&self) -> i64 {
         use std::time::{SystemTime, UNIX_EPOCH};
