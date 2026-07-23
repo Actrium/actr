@@ -6,7 +6,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use actr_hlc::{Clock, Error, PhysicalClock, RemoteError, State, Timestamp, validate_remote};
+use actr_hlc::{Clock, Error, RemoteError, State, Timestamp, UtcClock, validate_remote};
 
 /// Programmable physical clock shared between the test body and the clock
 /// under test.
@@ -31,7 +31,7 @@ impl ScriptClock {
     }
 }
 
-impl PhysicalClock for ScriptClock {
+impl UtcClock for ScriptClock {
     fn now_ms(&self) -> i64 {
         self.now.get()
     }

@@ -13,6 +13,7 @@
 //!
 //! | RFC sketch        | This crate    |
 //! |-------------------|---------------|
+//! | `UtcClock`        | [`UtcClock`]  |
 //! | `HybridTimestamp` | [`Timestamp`] |
 //! | `HlcState`        | [`State`]     |
 //! | `HybridClock`     | [`Clock`]     |
@@ -66,11 +67,15 @@
 
 use std::fmt;
 
-/// Source of physical time for a [`Clock`].
+/// Source of UTC readings for a [`Clock`].
 ///
-/// Calibrated, simulated or domain-specific time bases plug in through this
-/// trait without changing the HLC algorithm.
-pub trait PhysicalClock {
+/// The physical component of issued timestamps is specifically a system
+/// clock (UTC) reading, never a process-local monotonic reading — the
+/// latter is private to one process and would make the component
+/// incomparable across nodes (RFC-0419 §4). Calibrated, simulated or
+/// domain-specific time bases plug in through this trait without changing
+/// the HLC algorithm.
+pub trait UtcClock {
     /// Milliseconds since the Unix epoch. All participants exchanging
     /// timestamps must share the same time base; cross-node comparability of
     /// the physical component depends entirely on it.
@@ -83,7 +88,7 @@ pub trait PhysicalClock {
 /// `wasm32-wasip2`), where the runtime's `clock_time_get` backs
 /// `SystemTime::now`. Not available on `wasm32-unknown-unknown`: that
 /// target has no ambient clock and `SystemTime::now` panics there, so an
-/// embedding must inject its own [`PhysicalClock`] wired to host time (in a
+/// embedding must inject its own [`UtcClock`] wired to host time (in a
 /// browser, `Date.now()`); that platform glue belongs to the embedding's
 /// web-side crate, not to this dependency-free library.
 #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
@@ -91,7 +96,7 @@ pub trait PhysicalClock {
 pub struct SystemClock;
 
 #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-impl PhysicalClock for SystemClock {
+impl UtcClock for SystemClock {
     fn now_ms(&self) -> i64 {
         use std::time::{SystemTime, UNIX_EPOCH};
         match SystemTime::now().duration_since(UNIX_EPOCH) {
@@ -235,12 +240,12 @@ pub fn validate_remote(
 /// crate-level documentation — every issued timestamp is strictly greater
 /// than all timestamps previously issued or observed by this clock.
 #[derive(Debug)]
-pub struct Clock<P: PhysicalClock> {
+pub struct Clock<P: UtcClock> {
     physical: P,
     state: State,
 }
 
-impl<P: PhysicalClock> Clock<P> {
+impl<P: UtcClock> Clock<P> {
     /// Creates a clock with the initial state `(physical_ms: 0, logical: 0)`.
     ///
     /// The first [`Clock::local_event`] or [`Clock::observe`] converges to
