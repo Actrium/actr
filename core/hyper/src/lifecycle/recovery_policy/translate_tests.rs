@@ -18,6 +18,12 @@ fn tr_at(view: &View, input: Input, now: Duration) -> Decision {
     translate(view, &input, now, &config(), &mut entropy)
 }
 
+fn foreground() -> Input {
+    Input::AppEnteredForeground {
+        observed_background_duration: None,
+    }
+}
+
 fn has(d: &Decision, input: MachineInput) -> bool {
     d.machine_inputs.contains(&input)
 }
@@ -40,7 +46,7 @@ fn foreground_while_logged_out_only_updates_phase() {
     let mut view = View::initial();
     view.recovery_mode = RecoveryModeState::LoggedOut;
     view.app_phase = AppPhaseState::Background;
-    let d = tr(&view, Input::AppEnteredForeground);
+    let d = tr(&view, foreground());
     assert_eq!(d.revision, RevisionDirective::Advances);
     assert_eq!(
         d.machine_inputs,
@@ -55,7 +61,7 @@ fn foreground_from_background_derives_probe_or_reconnect_by_duration() {
     view.background_entered_at = Some(Duration::ZERO);
 
     // Short background -> probe.
-    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(1));
+    let d = tr_at(&view, foreground(), Duration::from_secs(1));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
@@ -65,7 +71,7 @@ fn foreground_from_background_derives_probe_or_reconnect_by_duration() {
     }));
 
     // Long background -> reconnect.
-    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(120));
+    let d = tr_at(&view, foreground(), Duration::from_secs(120));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
@@ -76,7 +82,7 @@ fn foreground_from_background_derives_probe_or_reconnect_by_duration() {
 fn foreground_first_authoritative_phase_wakes_backing_off() {
     let mut view = View::initial();
     view.app_phase = AppPhaseState::Unknown;
-    let d = tr(&view, Input::AppEnteredForeground);
+    let d = tr(&view, foreground());
     assert_eq!(d.revision, RevisionDirective::Advances);
     assert!(has(
         &d,
@@ -96,7 +102,7 @@ fn foreground_first_authoritative_phase_wakes_backing_off() {
 fn foreground_already_foreground_is_a_no_op() {
     let mut view = View::initial();
     view.app_phase = AppPhaseState::Foreground;
-    let d = tr(&view, Input::AppEnteredForeground);
+    let d = tr(&view, foreground());
     assert_eq!(d, Decision::none());
 }
 
@@ -136,7 +142,7 @@ fn short_foreground_emits_resume_and_long_foreground_emits_suppress() {
     view.background_entered_at = Some(Duration::ZERO);
 
     // Short background -> probe path re-enables automatic reconnect.
-    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(1));
+    let d = tr_at(&view, foreground(), Duration::from_secs(1));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
@@ -144,7 +150,7 @@ fn short_foreground_emits_resume_and_long_foreground_emits_suppress() {
     assert!(d.signals.contains(&SignalingDirective::ResumeAutoReconnect));
 
     // Long background -> reconnect path keeps stale automatic reconnect suppressed.
-    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(120));
+    let d = tr_at(&view, foreground(), Duration::from_secs(120));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
@@ -161,7 +167,7 @@ fn short_foreground_coalesces_probe_while_restore_is_running() {
     view.app_phase = AppPhaseState::Background;
     view.background_entered_at = Some(Duration::ZERO);
 
-    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(1));
+    let d = tr_at(&view, foreground(), Duration::from_secs(1));
 
     assert!(has(
         &d,
@@ -181,7 +187,7 @@ fn long_foreground_preempts_restore_and_fences_its_signaling_attempt() {
     view.app_phase = AppPhaseState::Background;
     view.background_entered_at = Some(Duration::ZERO);
 
-    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(120));
+    let d = tr_at(&view, foreground(), Duration::from_secs(120));
 
     assert!(has(
         &d,
@@ -196,6 +202,30 @@ fn long_foreground_preempts_restore_and_fences_its_signaling_attempt() {
 }
 
 #[test]
+fn foreground_uses_platform_background_duration_when_delivery_was_delayed() {
+    let mut view = View::initial();
+    view.app_phase = AppPhaseState::Background;
+    view.background_entered_at = Some(Duration::from_secs(99));
+
+    let d = tr_at(
+        &view,
+        Input::AppEnteredForeground {
+            observed_background_duration: Some(Duration::from_secs(60)),
+        },
+        Duration::from_secs(100),
+    );
+
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
+    ));
+    assert!(
+        d.signals
+            .contains(&SignalingDirective::SuppressAutoReconnect)
+    );
+}
+
+#[test]
 fn foreground_between_legacy_and_configured_thresholds_probes_and_resumes() {
     // Pins the single 60 s `background_reconnect_after` boundary: a stay in
     // the 30..60 s band is a short background. The legacy pre-translate hook
@@ -206,7 +236,7 @@ fn foreground_between_legacy_and_configured_thresholds_probes_and_resumes() {
     view.app_phase = AppPhaseState::Background;
     view.background_entered_at = Some(Duration::ZERO);
 
-    let d = tr_at(&view, Input::AppEnteredForeground, Duration::from_secs(45));
+    let d = tr_at(&view, foreground(), Duration::from_secs(45));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
@@ -225,11 +255,7 @@ fn foreground_reconnect_boundary_is_exact_at_sixty_seconds() {
     view.background_entered_at = Some(Duration::ZERO);
 
     for elapsed_ms in [59_999, 60_000, 60_001] {
-        let d = tr_at(
-            &view,
-            Input::AppEnteredForeground,
-            Duration::from_millis(elapsed_ms),
-        );
+        let d = tr_at(&view, foreground(), Duration::from_millis(elapsed_ms));
         let is_long_background = elapsed_ms >= 60_000;
 
         assert!(

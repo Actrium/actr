@@ -32,6 +32,18 @@ fn ms(n: u64) -> Duration {
     Duration::from_millis(n)
 }
 
+fn foreground() -> tp::Input {
+    tp::Input::AppEnteredForeground {
+        observed_background_duration: None,
+    }
+}
+
+fn reported_foreground(background_duration_ms: u64) -> tp::Input {
+    tp::Input::AppEnteredForeground {
+        observed_background_duration: Some(ms(background_duration_ms)),
+    }
+}
+
 fn snapshot(epoch: u64, sequence: u64, path: tp::SemanticPath) -> tp::Input {
     tp::Input::NetworkSnapshot {
         source_epoch: epoch,
@@ -248,12 +260,12 @@ fn inv5_logout_gates_recovery_and_is_not_reactivated_by_network_facts() {
 fn inv6_cold_and_duplicate_foreground_create_no_recovery_work() {
     let mut s = ungated();
     // First authoritative phase from Unknown does not fabricate recovery work.
-    s.accept(tp::Input::AppEnteredForeground, ms(0));
+    s.accept(foreground(), ms(0));
     assert_eq!(s.view().app_phase, tp::AppPhaseState::Foreground);
     assert_eq!(s.view().recovery_intent, tp::RecoveryIntentState::Idle);
 
     // A duplicate foreground is a self-loop.
-    let dup = s.accept(tp::Input::AppEnteredForeground, ms(1));
+    let dup = s.accept(foreground(), ms(1));
     assert!(!dup.advanced);
     assert_eq!(s.view().recovery_intent, tp::RecoveryIntentState::Idle);
 }
@@ -261,7 +273,7 @@ fn inv6_cold_and_duplicate_foreground_create_no_recovery_work() {
 #[test]
 fn long_background_reconnect_does_not_requeue_itself_on_explicit_disconnect() {
     let mut g = gated();
-    g.accept(tp::Input::AppEnteredForeground, ms(0));
+    g.accept(foreground(), ms(0));
     g.accept(online(1, 1), ms(1));
     g.accept(
         tp::Input::SignalingGenerationCommitted {
@@ -272,7 +284,7 @@ fn long_background_reconnect_does_not_requeue_itself_on_explicit_disconnect() {
     );
     g.accept(tp::Input::AppEnteredBackground, ms(3));
 
-    g.accept(tp::Input::AppEnteredForeground, ms(60_003));
+    g.accept(foreground(), ms(60_003));
     let started = g
         .maybe_start_effect(ms(60_003))
         .expect("long background should start reconnect");
@@ -323,7 +335,7 @@ fn long_background_reconnect_does_not_requeue_itself_on_explicit_disconnect() {
 #[test]
 fn long_foreground_must_preempt_running_restore_before_starting_reconnect() {
     let mut s = ungated();
-    s.accept(tp::Input::AppEnteredForeground, ms(0));
+    s.accept(foreground(), ms(0));
     s.accept(
         tp::Input::SignalingGenerationCommitted {
             generation: 7,
@@ -350,7 +362,7 @@ fn long_foreground_must_preempt_running_restore_before_starting_reconnect() {
     // Returning after the long-background threshold upgrades the pending intent
     // to Reconnect. The running Restore must be preempted here; otherwise it can
     // publish a short-lived signaling connection before Reconnect tears it down.
-    let foreground = s.accept(tp::Input::AppEnteredForeground, ms(65_002));
+    let foreground = s.accept(foreground(), ms(65_002));
     assert_eq!(
         s.view().recovery_intent,
         tp::RecoveryIntentState::ReconnectPending
@@ -381,7 +393,7 @@ fn long_foreground_must_preempt_running_restore_before_starting_reconnect() {
 #[test]
 fn short_foreground_does_not_requeue_running_restore() {
     let mut s = ungated();
-    s.accept(tp::Input::AppEnteredForeground, ms(0));
+    s.accept(foreground(), ms(0));
     s.accept(
         tp::Input::SignalingGenerationCommitted {
             generation: 7,
@@ -408,7 +420,7 @@ fn short_foreground_does_not_requeue_running_restore() {
         .work_revision;
 
     s.accept(tp::Input::AppEnteredBackground, ms(3));
-    let foreground = s.accept(tp::Input::AppEnteredForeground, ms(4));
+    let foreground = s.accept(foreground(), ms(4));
 
     assert!(!foreground.cancel_effect);
     assert_eq!(s.view().execution, tp::ExecutionState::Restoring);
@@ -956,7 +968,7 @@ fn inv7_gated_profile_denies_eligibility_until_foreground() {
 
     // The first authoritative foreground makes recovery eligible and cancels the
     // bootstrap deadline.
-    let out = g.accept(tp::Input::AppEnteredForeground, ms(2));
+    let out = g.accept(foreground(), ms(2));
     assert!(out.timer_ops.iter().any(|op| matches!(
         op,
         super::TimerOp::Cancel {
@@ -984,7 +996,7 @@ fn inv7_gated_bootstrap_expiry_keeps_profile_gated() {
 fn inv7_gated_profile_background_gates_recovery_but_preserves_intent() {
     let mut g = gated();
     // Foreground once, establishing eligibility over a healthy online path.
-    g.accept(tp::Input::AppEnteredForeground, ms(0));
+    g.accept(foreground(), ms(0));
     g.accept(online(1, 1), ms(1));
 
     // An explicit reconnect request is retained while still eligible...
@@ -1015,7 +1027,7 @@ fn inv7_gated_profile_background_gates_recovery_but_preserves_intent() {
     // Foreground derives its own (weaker, elapsed-time-based) probe/reconnect
     // request on top of whatever is already pending; the stronger explicit
     // `RestorePending` must not be downgraded by it.
-    g.accept(tp::Input::AppEnteredForeground, ms(4));
+    g.accept(foreground(), ms(4));
     assert_eq!(g.composite_action(), Some(tp::Action::Restore));
 }
 
@@ -1109,4 +1121,249 @@ fn inv27_cleanup_preempts_a_running_probe() {
     );
     assert_eq!(s.view().execution, tp::ExecutionState::Idle);
     assert_eq!(s.composite_action(), Some(tp::Action::Cleanup));
+}
+
+fn complete_started_effect(
+    supervisor: &mut ConnectionSupervisor,
+    started: super::StartedEffect,
+    now: Duration,
+    signaling_generation: &mut u64,
+) {
+    if matches!(started.kind, EffectKind::Restore | EffectKind::Reconnect) {
+        *signaling_generation = signaling_generation.saturating_add(1);
+        supervisor.accept(
+            tp::Input::SignalingGenerationCommitted {
+                generation: *signaling_generation,
+                origin: tp::SignalingOrigin::CurrentEffect {
+                    action_id: started.action_id,
+                },
+            },
+            now,
+        );
+    }
+    supervisor.accept(
+        tp::Input::EffectCompleted {
+            action_id: started.action_id,
+            kind: started.kind,
+            policy_revision: started.captured_revision,
+            outcome: EffectOutcome::Succeeded,
+        },
+        now + ms(1),
+    );
+}
+
+fn cancel_started_effect(
+    supervisor: &mut ConnectionSupervisor,
+    started: super::StartedEffect,
+    now: Duration,
+) {
+    supervisor.accept(
+        tp::Input::EffectCompleted {
+            action_id: started.action_id,
+            kind: started.kind,
+            policy_revision: started.captured_revision,
+            outcome: EffectOutcome::Cancelled,
+        },
+        now,
+    );
+}
+
+fn next_deterministic(seed: &mut u64) -> u64 {
+    *seed = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    *seed
+}
+
+#[test]
+fn deterministic_mobile_event_permutations_eventually_converge_online() {
+    const SEEDS: u64 = 128;
+    const EVENTS_PER_SEED: u64 = 48;
+
+    for seed_number in 0..SEEDS {
+        let mut supervisor = gated();
+        let mut seed = seed_number + 1;
+        let mut now_ms = 0;
+        let mut sequence = 1;
+        let mut route_fingerprint = 1;
+        let mut current_semantic_path = tp::SemanticPath::Online;
+        let mut signaling_generation = 1;
+        let mut running = None;
+        let mut previous_revision = 0;
+
+        supervisor.accept(reported_foreground(0), ms(now_ms));
+        now_ms += 1;
+        supervisor.accept(
+            tp::Input::NetworkSnapshot {
+                source_epoch: 1,
+                sequence,
+                semantic_path: tp::SemanticPath::Online,
+                route_fingerprint,
+            },
+            ms(now_ms),
+        );
+        now_ms += 1;
+        supervisor.accept(
+            tp::Input::SignalingGenerationCommitted {
+                generation: signaling_generation,
+                origin: tp::SignalingOrigin::External,
+            },
+            ms(now_ms),
+        );
+        supervisor.accept(
+            tp::Input::SessionActivated {
+                session_generation: 1,
+            },
+            ms(now_ms),
+        );
+
+        for _ in 0..EVENTS_PER_SEED {
+            now_ms += 1;
+            let choice = next_deterministic(&mut seed) % 10;
+            let input = match choice {
+                0 => tp::Input::AppEnteredBackground,
+                1 => reported_foreground(5_000),
+                2 => reported_foreground(65_000),
+                3 => {
+                    sequence += 1;
+                    route_fingerprint = route_fingerprint.wrapping_add(1);
+                    current_semantic_path = tp::SemanticPath::Online;
+                    tp::Input::NetworkSnapshot {
+                        source_epoch: 1,
+                        sequence,
+                        semantic_path: tp::SemanticPath::Online,
+                        route_fingerprint,
+                    }
+                }
+                4 => {
+                    sequence += 1;
+                    current_semantic_path = tp::SemanticPath::Offline;
+                    tp::Input::NetworkSnapshot {
+                        source_epoch: 1,
+                        sequence,
+                        semantic_path: tp::SemanticPath::Offline,
+                        route_fingerprint,
+                    }
+                }
+                5 => tp::Input::SignalingGenerationLost {
+                    generation: signaling_generation,
+                    cause: tp::SignalingLostCause::RemoteReset,
+                },
+                6 => tp::Input::RecoveryRequested {
+                    minimum: tp::RecoveryStrength::Restore,
+                    reason: tp::RecoveryRequestReason::NetworkPathChanged,
+                },
+                7 => tp::Input::CleanupRequested {
+                    reason: tp::CleanupReason::ManualReset,
+                },
+                8 => tp::Input::NetworkSnapshot {
+                    source_epoch: 1,
+                    sequence: sequence.saturating_sub(1),
+                    semantic_path: tp::SemanticPath::Offline,
+                    route_fingerprint: route_fingerprint.wrapping_add(9),
+                },
+                _ => tp::Input::NetworkSnapshot {
+                    source_epoch: 1,
+                    sequence,
+                    semantic_path: current_semantic_path,
+                    route_fingerprint,
+                },
+            };
+
+            let outcome = supervisor.accept(input, ms(now_ms));
+            assert!(
+                supervisor.view().policy_revision >= previous_revision,
+                "seed {seed_number} moved policy revision backwards"
+            );
+            previous_revision = supervisor.view().policy_revision;
+
+            if outcome.cancel_effect
+                && let Some(started) = running.take()
+            {
+                now_ms += 1;
+                cancel_started_effect(&mut supervisor, started, ms(now_ms));
+            }
+            if running.is_none() {
+                running = supervisor.maybe_start_effect(ms(now_ms));
+            }
+            if next_deterministic(&mut seed).is_multiple_of(3)
+                && let Some(started) = running.take()
+            {
+                now_ms += 1;
+                complete_started_effect(
+                    &mut supervisor,
+                    started,
+                    ms(now_ms),
+                    &mut signaling_generation,
+                );
+            }
+        }
+
+        if let Some(started) = running.take() {
+            now_ms += 1;
+            complete_started_effect(
+                &mut supervisor,
+                started,
+                ms(now_ms),
+                &mut signaling_generation,
+            );
+        }
+
+        now_ms += 1;
+        supervisor.accept(reported_foreground(5_000), ms(now_ms));
+        sequence += 1;
+        route_fingerprint = route_fingerprint.wrapping_add(1);
+        now_ms += 1;
+        supervisor.accept(
+            tp::Input::NetworkSnapshot {
+                source_epoch: 1,
+                sequence,
+                semantic_path: tp::SemanticPath::Online,
+                route_fingerprint,
+            },
+            ms(now_ms),
+        );
+        now_ms += 1;
+        supervisor.accept(
+            tp::Input::SessionActivated {
+                session_generation: seed_number + 2,
+            },
+            ms(now_ms),
+        );
+
+        for _ in 0..32 {
+            let Some(started) = supervisor.maybe_start_effect(ms(now_ms)) else {
+                break;
+            };
+            now_ms += 1;
+            complete_started_effect(
+                &mut supervisor,
+                started,
+                ms(now_ms),
+                &mut signaling_generation,
+            );
+        }
+
+        assert_eq!(
+            supervisor.view().app_phase,
+            tp::AppPhaseState::Foreground,
+            "seed {seed_number} did not finish foreground"
+        );
+        assert_eq!(
+            supervisor.view().network_path,
+            tp::NetworkPathState::Online,
+            "seed {seed_number} did not finish online"
+        );
+        assert_eq!(
+            supervisor.view().execution,
+            tp::ExecutionState::Idle,
+            "seed {seed_number} leaked an executing effect"
+        );
+        assert_eq!(
+            supervisor.composite_action(),
+            None,
+            "seed {seed_number} retained recovery work: {:?}",
+            supervisor.view()
+        );
+    }
 }

@@ -89,7 +89,9 @@ fn representative_inputs() -> Vec<Input> {
             semantic_path: SemanticPath::Offline,
             route_fingerprint: 1,
         },
-        Input::AppEnteredForeground,
+        Input::AppEnteredForeground {
+            observed_background_duration: None,
+        },
         Input::AppEnteredBackground,
         Input::RecoveryRequested {
             minimum: RecoveryStrength::Reconnect,

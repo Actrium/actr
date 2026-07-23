@@ -485,7 +485,9 @@ impl View {
 /// The full RFC-0400 supervisor input model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Input {
-    AppEnteredForeground,
+    AppEnteredForeground {
+        observed_background_duration: Option<Duration>,
+    },
     AppEnteredBackground,
     SessionActivated {
         session_generation: Generation,
@@ -804,7 +806,9 @@ pub(crate) fn translate(
     entropy: &mut dyn EntropySource,
 ) -> Decision {
     match input {
-        Input::AppEnteredForeground => translate_foreground(view, now, config),
+        Input::AppEnteredForeground {
+            observed_background_duration,
+        } => translate_foreground(view, now, *observed_background_duration, config),
         Input::AppEnteredBackground => translate_background(view),
         Input::SessionActivated { session_generation } => {
             translate_session_activated(view, *session_generation)
@@ -871,7 +875,12 @@ pub(crate) fn translate(
     }
 }
 
-fn translate_foreground(view: &View, now: PolicyInstant, config: &PolicyConfig) -> Decision {
+fn translate_foreground(
+    view: &View,
+    now: PolicyInstant,
+    observed_background_duration: Option<Duration>,
+    config: &PolicyConfig,
+) -> Decision {
     // Row 1: mode LoggedOut/Terminating -> phase only, gated.
     if matches!(
         view.recovery_mode,
@@ -889,7 +898,8 @@ fn translate_foreground(view: &View, now: PolicyInstant, config: &PolicyConfig) 
         AppPhaseState::Background => {
             let mut d = Decision::advancing();
             d.machine(MachineInput::AppPhase(AppPhaseInput::EnterForeground));
-            let elapsed = now.saturating_sub(view.background_entered_at.unwrap_or(now));
+            let elapsed = observed_background_duration
+                .unwrap_or_else(|| now.saturating_sub(view.background_entered_at.unwrap_or(now)));
             if elapsed < config.background_reconnect_after {
                 // Short background: probe the possibly-healthy socket and let
                 // automatic reconnect resume rather than force a rebuild. If

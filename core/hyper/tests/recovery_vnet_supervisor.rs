@@ -4,6 +4,7 @@
 //! driving lifecycle inputs through `NetworkEventHandle` plus the normalized
 //! fact channel used by the production node.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -12,8 +13,11 @@ use actr_hyper::lifecycle::{
     NetworkEventProcessor, NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags,
     SignalingFactLostCause, SignalingFactOrigin, TeardownReport,
 };
-use actr_hyper::test_support::{TestHarness, spawn_network_event_supervisor};
+use actr_hyper::test_support::{
+    TestHarness, spawn_gated_network_event_supervisor, spawn_network_event_supervisor,
+};
 use actr_protocol::ActrId;
+use tokio::sync::Notify;
 
 struct RpcTasks(Vec<tokio::task::JoinHandle<()>>);
 
@@ -28,6 +32,42 @@ impl Drop for RpcTasks {
 struct RecordingProcessor {
     inner: Arc<DefaultNetworkEventProcessor>,
     actions: StdMutex<Vec<NetworkRecoveryAction>>,
+}
+
+struct BlockingRecoveryProcessor {
+    inner: Arc<DefaultNetworkEventProcessor>,
+    actions: StdMutex<Vec<NetworkRecoveryAction>>,
+    block_action: NetworkRecoveryAction,
+    block_once: AtomicBool,
+    blocked: Notify,
+    release: Notify,
+}
+
+impl BlockingRecoveryProcessor {
+    fn new(inner: Arc<DefaultNetworkEventProcessor>, block_action: NetworkRecoveryAction) -> Self {
+        Self {
+            inner,
+            actions: StdMutex::new(Vec::new()),
+            block_action,
+            block_once: AtomicBool::new(true),
+            blocked: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    fn actions(&self) -> Vec<NetworkRecoveryAction> {
+        self.actions.lock().expect("actions mutex poisoned").clone()
+    }
+
+    async fn wait_until_blocked(&self) {
+        tokio::time::timeout(Duration::from_secs(10), self.blocked.notified())
+            .await
+            .expect("recovery action did not reach the deterministic block point");
+    }
+
+    fn release(&self) {
+        self.release.notify_one();
+    }
 }
 
 impl RecordingProcessor {
@@ -104,6 +144,74 @@ impl NetworkEventProcessor for RecordingProcessor {
         budget: Duration,
     ) -> TeardownReport {
         self.record(action);
+        self.inner.run_bounded_teardown(action, budget).await
+    }
+}
+
+#[async_trait::async_trait]
+impl NetworkEventProcessor for BlockingRecoveryProcessor {
+    fn suppress_auto_reconnect(&self) {
+        self.inner.suppress_auto_reconnect();
+    }
+
+    fn resume_auto_reconnect(&self) {
+        self.inner.resume_auto_reconnect();
+    }
+
+    async fn process_network_available(&self) -> Result<(), String> {
+        self.inner.process_network_available().await
+    }
+
+    async fn process_network_lost(&self) -> Result<(), String> {
+        self.inner.process_network_lost().await
+    }
+
+    async fn process_network_type_changed(
+        &self,
+        is_wifi: bool,
+        is_cellular: bool,
+    ) -> Result<(), String> {
+        self.inner
+            .process_network_type_changed(is_wifi, is_cellular)
+            .await
+    }
+
+    async fn cleanup_connections(&self) -> Result<(), String> {
+        self.inner.cleanup_connections().await
+    }
+
+    async fn probe_connectivity(&self) -> Result<(), String> {
+        self.inner.probe_connectivity().await
+    }
+
+    async fn force_reconnect(&self) -> Result<(), String> {
+        self.inner.force_reconnect().await
+    }
+
+    async fn process_network_recovery_action(
+        &self,
+        action: NetworkRecoveryAction,
+    ) -> Result<(), String> {
+        self.actions
+            .lock()
+            .expect("actions mutex poisoned")
+            .push(action);
+        if action == self.block_action && self.block_once.swap(false, Ordering::SeqCst) {
+            self.blocked.notify_one();
+            self.release.notified().await;
+        }
+        self.inner.process_network_recovery_action(action).await
+    }
+
+    async fn run_bounded_teardown(
+        &self,
+        action: NetworkRecoveryAction,
+        budget: Duration,
+    ) -> TeardownReport {
+        self.actions
+            .lock()
+            .expect("actions mutex poisoned")
+            .push(action);
         self.inner.run_bounded_teardown(action, budget).await
     }
 }
@@ -243,6 +351,161 @@ async fn expect_connection_not_ready(
         Ok(Err(error)) => panic!("request task panicked: {error}"),
         Err(_) => panic!("ConnectionNotReady request did not fail fast"),
     }
+}
+
+async fn start_blocked_restore(
+    handle: &actr_hyper::lifecycle::NetworkEventHandle,
+    sink: &actr_hyper::lifecycle::SupervisorFactSink,
+    processor: &BlockingRecoveryProcessor,
+) {
+    sink.signaling_generation_lost(1, SignalingFactLostCause::RemoteReset);
+    let accepted = handle
+        .handle_network_path_changed(snapshot(1, NetworkAvailability::Available, true))
+        .await
+        .expect("online route change should be accepted");
+    assert!(accepted.success);
+    processor.wait_until_blocked().await;
+    assert_eq!(processor.actions(), vec![NetworkRecoveryAction::Restore]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn short_foreground_preserves_inflight_restore_and_recovers_vnet_bidirectionally() {
+    let (harness, _rpc_tasks) = setup_bidirectional_vnet().await;
+    let target = harness.peer(200).id.clone();
+    let initial_session = harness
+        .peer(100)
+        .coordinator
+        .get_peer_session_id(&target)
+        .await
+        .expect("initial WebRTC session should exist");
+
+    let processor = Arc::new(BlockingRecoveryProcessor::new(
+        harness.peer(100).network_processor(),
+        NetworkRecoveryAction::Restore,
+    ));
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor.clone();
+    let (handle, sink, shutdown, reconciler) =
+        spawn_gated_network_event_supervisor(processor_for_task);
+    harness
+        .peer(100)
+        .signaling_client
+        .set_supervisor_fact_sink(sink.clone());
+    prime_live_generation(&handle, &sink).await;
+
+    start_blocked_restore(&handle, &sink, &processor).await;
+    let background = handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Background)
+        .await
+        .expect("background should be accepted while Restore is running");
+    assert!(background.success);
+    let foreground = handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Foreground {
+            background_duration_ms: 5_000,
+        })
+        .await
+        .expect("short foreground should be accepted while Restore is running");
+    assert!(foreground.success);
+    tokio::task::yield_now().await;
+    assert_eq!(
+        processor.actions(),
+        vec![NetworkRecoveryAction::Restore],
+        "short foreground must neither cancel nor duplicate the in-flight Restore"
+    );
+
+    processor.release();
+    expect_rpc(&harness, 100, 200, "short_foreground_restore_100_200").await;
+    expect_rpc(&harness, 200, 100, "short_foreground_restore_200_100").await;
+    assert_eq!(
+        harness
+            .peer(100)
+            .coordinator
+            .get_peer_session_id(&target)
+            .await,
+        Some(initial_session),
+        "short foreground should preserve the ICE-restarted WebRTC session"
+    );
+    assert_eq!(harness.peer(100).pending_count().await, 0);
+    assert_eq!(harness.peer(200).pending_count().await, 0);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn long_foreground_preempts_inflight_restore_and_rebuilds_vnet_bidirectionally() {
+    let (harness, _rpc_tasks) = setup_bidirectional_vnet().await;
+    let target = harness.peer(200).id.clone();
+    let initial_session = harness
+        .peer(100)
+        .coordinator
+        .get_peer_session_id(&target)
+        .await
+        .expect("initial WebRTC session should exist");
+
+    let processor = Arc::new(BlockingRecoveryProcessor::new(
+        harness.peer(100).network_processor(),
+        NetworkRecoveryAction::Restore,
+    ));
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor.clone();
+    let (handle, sink, shutdown, reconciler) =
+        spawn_gated_network_event_supervisor(processor_for_task);
+    harness
+        .peer(100)
+        .signaling_client
+        .set_supervisor_fact_sink(sink.clone());
+    prime_live_generation(&handle, &sink).await;
+
+    start_blocked_restore(&handle, &sink, &processor).await;
+    let background = handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Background)
+        .await
+        .expect("background should be accepted while Restore is running");
+    assert!(background.success);
+    let foreground = handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Foreground {
+            background_duration_ms: 60_001,
+        })
+        .await
+        .expect("long foreground should be accepted while Restore is running");
+    assert!(foreground.success);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let actions = processor.actions();
+        if actions
+            == vec![
+                NetworkRecoveryAction::Restore,
+                NetworkRecoveryAction::ForceReconnect,
+            ]
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "long foreground did not preempt Restore with Reconnect: {actions:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    expect_rpc(&harness, 100, 200, "long_foreground_reconnect_100_200").await;
+    expect_rpc(&harness, 200, 100, "long_foreground_reconnect_200_100").await;
+    let rebuilt_session = harness
+        .peer(100)
+        .coordinator
+        .get_peer_session_id(&target)
+        .await
+        .expect("long foreground should create a replacement WebRTC session");
+    assert_ne!(
+        rebuilt_session, initial_session,
+        "long foreground must not revive the pre-Reconnect WebRTC session"
+    );
+    assert_eq!(harness.peer(100).pending_count().await, 0);
+    assert_eq!(harness.peer(200).pending_count().await, 0);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+    harness.shutdown().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

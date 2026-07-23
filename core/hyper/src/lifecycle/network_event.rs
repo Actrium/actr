@@ -1327,6 +1327,13 @@ pub(crate) fn supervisor_internal_channel() -> (SupervisorFactSink, SupervisorIn
     supervisor_internal_channel_with_profile(tp::LifecycleProfile::Ungated)
 }
 
+/// Test-support constructor matching the lifecycle-gated mobile binding path.
+#[cfg(feature = "test-utils")]
+pub(crate) fn supervisor_internal_channel_gated() -> (SupervisorFactSink, SupervisorInternalChannel)
+{
+    supervisor_internal_channel_with_profile(tp::LifecycleProfile::Gated)
+}
+
 /// Create the supervisor channel with an explicit constructor-time lifecycle
 /// profile. Mobile bindings use `Gated`; Rust and headless deployments use an
 /// `Ungated` profile.

@@ -54,8 +54,37 @@ pub fn spawn_network_event_supervisor(
     tokio_util::sync::CancellationToken,
     tokio::task::JoinHandle<()>,
 ) {
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
     let (fact_sink, channel) = crate::lifecycle::supervisor_internal_channel();
+    spawn_network_event_supervisor_with_channel(processor, fact_sink, channel)
+}
+
+/// Spawn the production reconciler shape used by mobile bindings.
+///
+/// Unlike [`spawn_network_event_supervisor`], recovery eligibility remains
+/// gated until an authoritative foreground lifecycle observation arrives.
+pub fn spawn_gated_network_event_supervisor(
+    processor: Arc<dyn crate::lifecycle::NetworkEventProcessor>,
+) -> (
+    crate::lifecycle::NetworkEventHandle,
+    crate::lifecycle::SupervisorFactSink,
+    tokio_util::sync::CancellationToken,
+    tokio::task::JoinHandle<()>,
+) {
+    let (fact_sink, channel) = crate::lifecycle::supervisor_internal_channel_gated();
+    spawn_network_event_supervisor_with_channel(processor, fact_sink, channel)
+}
+
+fn spawn_network_event_supervisor_with_channel(
+    processor: Arc<dyn crate::lifecycle::NetworkEventProcessor>,
+    fact_sink: crate::lifecycle::SupervisorFactSink,
+    channel: crate::lifecycle::SupervisorInternalChannel,
+) -> (
+    crate::lifecycle::NetworkEventHandle,
+    crate::lifecycle::SupervisorFactSink,
+    tokio_util::sync::CancellationToken,
+    tokio::task::JoinHandle<()>,
+) {
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
     let handle =
         crate::lifecycle::NetworkEventHandle::new_with_fact_sink(event_tx, fact_sink.clone());
     let shutdown = tokio_util::sync::CancellationToken::new();

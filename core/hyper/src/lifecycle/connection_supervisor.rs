@@ -1333,7 +1333,11 @@ pub(crate) fn event_to_input(event: &NetworkEvent, source_epoch: u64) -> tp::Inp
         },
         NetworkEvent::AppLifecycleChanged { state } => match state {
             AppLifecycleState::Background => tp::Input::AppEnteredBackground,
-            AppLifecycleState::Foreground { .. } => tp::Input::AppEnteredForeground,
+            AppLifecycleState::Foreground {
+                background_duration_ms,
+            } => tp::Input::AppEnteredForeground {
+                observed_background_duration: Some(Duration::from_millis(*background_duration_ms)),
+            },
         },
         NetworkEvent::CleanupConnections { reason } => tp::Input::CleanupRequested {
             reason: match reason {
