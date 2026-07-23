@@ -1088,7 +1088,7 @@ fn translate_snapshot(
             d.timers.push(TimerDirective::Arm {
                 id: TimerId::OfflineCandidate,
                 category: TimerCategory::BusinessHysteresis,
-                deadline: now + config.offline_grace,
+                deadline: now.saturating_add(config.offline_grace),
             });
             d
         }
@@ -1252,7 +1252,7 @@ fn translate_cleanup(
             d.timers.push(TimerDirective::Arm {
                 id: TimerId::ShutdownOverall,
                 category: TimerCategory::FailureDeadline,
-                deadline: now + config.shutdown_deadline,
+                deadline: now.saturating_add(config.shutdown_deadline),
             });
         }
         CleanupReason::ManualReset | CleanupReason::StaleConnectionSuspected => {}
@@ -1270,7 +1270,7 @@ fn translate_cleanup(
     d.timers.push(TimerDirective::Arm {
         id: TimerId::TeardownOverall(TeardownDomain::Cleanup),
         category: TimerCategory::FailureDeadline,
-        deadline: now + config.cleanup_teardown_deadline,
+        deadline: now.saturating_add(config.cleanup_teardown_deadline),
     });
     // Supersede recovery intent and offline work with revision <= r.
     if view.recovery_intent != RecoveryIntentState::Idle {
@@ -1314,7 +1314,7 @@ fn translate_offline_grace_expired(
     d.timers.push(TimerDirective::Arm {
         id: TimerId::TeardownOverall(TeardownDomain::OfflineDisconnect),
         category: TimerCategory::FailureDeadline,
-        deadline: now + config.offline_teardown_deadline,
+        deadline: now.saturating_add(config.offline_teardown_deadline),
     });
     d
 }

@@ -348,7 +348,7 @@ impl ConnectionSupervisor {
         if self.view.profile == tp::LifecycleProfile::Gated {
             Some(TimerOp::Arm {
                 key: tp::TimerId::BootstrapPhase,
-                at: now + self.config.bootstrap_phase_deadline,
+                at: now.saturating_add(self.config.bootstrap_phase_deadline),
                 fire: tp::Input::BootstrapPhaseDeadlineExpired,
             })
         } else {

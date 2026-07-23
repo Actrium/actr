@@ -372,7 +372,9 @@ pub(crate) fn arm_backoff(
     let jitter = 1.0 - params.jitter_fraction.clamp(0.0, 1.0) * unit;
     let jittered = delay.mul_f64(jitter);
 
-    now + jittered.max(retry_after)
+    // Saturate: `retry_after` arrives from the wire, so `now + floor` must cap
+    // at the far future instead of panicking on `Duration` overflow.
+    now.saturating_add(jittered.max(retry_after))
 }
 
 /// The production jitter source: a self-contained SplitMix64 stream.
@@ -882,5 +884,16 @@ mod tests {
         let _ = arm_backoff(now, 1, &p, Duration::ZERO, &mut e);
         let _ = arm_backoff(now, 2, &p, Duration::ZERO, &mut e);
         assert_eq!(e.drawn(), 2);
+    }
+
+    #[test]
+    fn extreme_retry_after_saturates_instead_of_panicking() {
+        // A hostile or corrupt `retry_after` must never panic the policy
+        // engine; the deadline saturates at the far future.
+        let now = Duration::from_secs(1);
+        let p = params();
+        let mut e = FixedEntropy::constant(0.0);
+        let deadline = arm_backoff(now, 1, &p, Duration::MAX, &mut e);
+        assert_eq!(deadline, Duration::MAX);
     }
 }
