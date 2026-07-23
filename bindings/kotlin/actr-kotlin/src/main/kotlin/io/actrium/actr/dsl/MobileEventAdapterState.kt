@@ -34,8 +34,11 @@ internal class MobileEventAdapterState {
     }
 
     @Synchronized
-    fun enterBackground(nowMs: Long): AppLifecycleState {
+    fun enterBackground(nowMs: Long): AppLifecycleState? {
         lifecycleInitialized = true
+        if (backgroundEnteredAtMs != null) {
+            return null
+        }
         backgroundEnteredAtMs = nowMs
         return AppLifecycleState.Background
     }

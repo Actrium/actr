@@ -34,6 +34,18 @@ class MobileEventAdapterStateTest {
     }
 
     @Test
+    fun `duplicate background preserves the first transition timestamp`() {
+        val state = MobileEventAdapterState()
+
+        assertSame(AppLifecycleState.Background, state.enterBackground(1_000))
+        assertEquals(null, state.enterBackground(56_000))
+        assertEquals(
+            AppLifecycleState.Foreground(65_000uL),
+            state.enterForeground(66_000),
+        )
+    }
+
+    @Test
     fun `lifecycle timestamps map to clamped foreground duration`() {
         val state = MobileEventAdapterState()
 

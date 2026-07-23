@@ -572,6 +572,10 @@ class NetworkMonitor
         // depends on this duration being trustworthy.
         val nowMs = SystemClock.elapsedRealtime()
         val state = eventAdapter.enterBackground(nowMs)
+        if (state == null) {
+            Log.d(TAG, "Ignoring duplicate app background callback")
+            return
+        }
         Log.i(TAG, "App entered background (elapsedRealtime=${nowMs}ms)")
         dispatchLifecycleState(state)
     }
