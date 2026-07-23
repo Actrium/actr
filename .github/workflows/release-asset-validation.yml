@@ -38,9 +38,6 @@ permissions:
   actions: read
   contents: read
 
-env:
-  PROTOC_VERSION: "29.3"
-
 jobs:
   context:
     name: Resolve validation context
@@ -143,7 +140,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-          version: ${{ env.PROTOC_VERSION }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -377,7 +374,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-          version: ${{ env.PROTOC_VERSION }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Cache wasm-pack
         id: cache-wasm-pack
@@ -543,7 +540,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-          version: ${{ env.PROTOC_VERSION }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Setup Zig
         if: matrix.use_zig
@@ -759,7 +756,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-          version: ${{ env.PROTOC_VERSION }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Cache UniFFI bindgen
         id: cache-uniffi
@@ -933,7 +930,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
-          version: ${{ env.PROTOC_VERSION }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - name: Cache UniFFI bindgen
         id: cache-uniffi

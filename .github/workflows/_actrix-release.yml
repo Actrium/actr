@@ -104,6 +104,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - uses: dtolnay/rust-toolchain@stable
 

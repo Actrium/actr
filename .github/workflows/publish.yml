@@ -11,7 +11,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  PROTOC_VERSION: "29.3"
 
 jobs:
   publish:
@@ -34,6 +33,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ vars.PROTOC_VERSION }}
 
       - uses: Swatinem/rust-cache@v2
       - name: Publish crates.io release train
