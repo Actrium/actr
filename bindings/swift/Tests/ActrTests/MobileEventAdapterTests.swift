@@ -121,42 +121,42 @@ private actor RecordingMobileEventSender: MobileEventSending {
 
 @Test func lifecycleReducerPreservesFirstBackgroundTimestampAndClampsClockRollback() {
     var reducer = AppLifecycleEventReducer()
-    let epoch = Date(timeIntervalSince1970: 1_000)
+    let epochMs: UInt64 = 1_000_000
 
-    #expect(reducer.willEnterForeground(at: epoch) == .foreground(backgroundDurationMs: 0))
-    #expect(reducer.didEnterBackground(at: epoch) == .background)
-    #expect(reducer.didEnterBackground(at: epoch.addingTimeInterval(10)) == nil)
+    #expect(reducer.willEnterForeground(atMs: epochMs) == .foreground(backgroundDurationMs: 0))
+    #expect(reducer.didEnterBackground(atMs: epochMs) == .background)
+    #expect(reducer.didEnterBackground(atMs: epochMs + 10_000) == nil)
     #expect(
-        reducer.willEnterForeground(at: epoch.addingTimeInterval(60))
+        reducer.willEnterForeground(atMs: epochMs + 60_000)
             == .foreground(backgroundDurationMs: 60_000)
     )
 
-    #expect(reducer.didEnterBackground(at: epoch.addingTimeInterval(120)) == .background)
+    #expect(reducer.didEnterBackground(atMs: epochMs + 120_000) == .background)
     #expect(
-        reducer.willEnterForeground(at: epoch.addingTimeInterval(119))
+        reducer.willEnterForeground(atMs: epochMs + 119_000)
             == .foreground(backgroundDurationMs: 0)
     )
 }
 
 @Test func lifecycleReducerInitializesOneAuthoritativePhaseWithoutOverwritingEvents() {
-    let epoch = Date(timeIntervalSince1970: 1_000)
+    let epochMs: UInt64 = 1_000_000
     var foreground = AppLifecycleEventReducer()
     #expect(
-        foreground.initializePhase(isBackground: false, at: epoch)
+        foreground.initializePhase(isBackground: false, atMs: epochMs)
             == .foreground(backgroundDurationMs: 0)
     )
-    #expect(foreground.initializePhase(isBackground: true, at: epoch) == nil)
+    #expect(foreground.initializePhase(isBackground: true, atMs: epochMs) == nil)
 
     var background = AppLifecycleEventReducer()
-    #expect(background.initializePhase(isBackground: true, at: epoch) == .background)
+    #expect(background.initializePhase(isBackground: true, atMs: epochMs) == .background)
     #expect(
-        background.willEnterForeground(at: epoch.addingTimeInterval(5))
+        background.willEnterForeground(atMs: epochMs + 5_000)
             == .foreground(backgroundDurationMs: 5_000)
     )
 
     var observerWonRace = AppLifecycleEventReducer()
-    #expect(observerWonRace.didEnterBackground(at: epoch) == .background)
-    #expect(observerWonRace.initializePhase(isBackground: false, at: epoch) == nil)
+    #expect(observerWonRace.didEnterBackground(atMs: epochMs) == .background)
+    #expect(observerWonRace.initializePhase(isBackground: false, atMs: epochMs) == nil)
 }
 
 @Test func mobileEventDeliveryGateIgnoresCallbacksAfterClose() async {

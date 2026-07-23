@@ -114,40 +114,65 @@ struct NetworkPathEventReducer {
     }
 }
 
+/// Milliseconds on a suspend-aware monotonic timeline.
+///
+/// The background duration feeds the runtime's short/long-background decision,
+/// so it must keep counting while the device sleeps and must ignore wall-clock
+/// adjustments (NTP, manual changes). On Darwin, `CLOCK_MONOTONIC` advances
+/// across sleep; on Linux, `CLOCK_BOOTTIME` is the equivalent.
+enum SuspendAwareClock {
+    static func nowMs() -> UInt64 {
+        #if canImport(Darwin)
+        return clock_gettime_nsec_np(CLOCK_MONOTONIC) / 1_000_000
+        #else
+        var ts = timespec()
+        clock_gettime(CLOCK_BOOTTIME, &ts)
+        return UInt64(ts.tv_sec) * 1_000 + UInt64(ts.tv_nsec) / 1_000_000
+        #endif
+    }
+}
+
+/// Reduces app lifecycle callbacks into `AppLifecycleState` values.
+///
+/// Timestamps are suspend-aware monotonic milliseconds (`SuspendAwareClock`);
+/// entering background and returning to foreground must use the same clock
+/// source or the reported duration is meaningless.
 struct AppLifecycleEventReducer {
-    private var backgroundedAt: Date?
+    private var backgroundedAtMs: UInt64?
     private var hasLifecycleObservation = false
 
-    mutating func initializePhase(isBackground: Bool, at now: Date) -> AppLifecycleState? {
+    mutating func initializePhase(isBackground: Bool, atMs now: UInt64) -> AppLifecycleState? {
         guard !hasLifecycleObservation else {
             return nil
         }
         hasLifecycleObservation = true
         if isBackground {
-            backgroundedAt = now
+            backgroundedAtMs = now
             return .background
         }
-        backgroundedAt = nil
+        backgroundedAtMs = nil
         return .foreground(backgroundDurationMs: 0)
     }
 
-    mutating func didEnterBackground(at now: Date) -> AppLifecycleState? {
+    mutating func didEnterBackground(atMs now: UInt64) -> AppLifecycleState? {
         hasLifecycleObservation = true
-        guard backgroundedAt == nil else {
+        guard backgroundedAtMs == nil else {
             return nil
         }
-        backgroundedAt = now
+        backgroundedAtMs = now
         return .background
     }
 
-    mutating func willEnterForeground(at now: Date) -> AppLifecycleState {
+    mutating func willEnterForeground(atMs now: UInt64) -> AppLifecycleState {
         hasLifecycleObservation = true
-        guard let backgroundedAt else {
+        guard let backgroundedAtMs else {
             return .foreground(backgroundDurationMs: 0)
         }
 
-        self.backgroundedAt = nil
-        let elapsedMs = max(0, now.timeIntervalSince(backgroundedAt) * 1_000)
-        return .foreground(backgroundDurationMs: UInt64(elapsedMs.rounded()))
+        self.backgroundedAtMs = nil
+        // A monotonic clock never runs backwards; the clamp only keeps an
+        // unexpected reversal from wrapping the unsigned subtraction.
+        let elapsedMs = now >= backgroundedAtMs ? now - backgroundedAtMs : 0
+        return .foreground(backgroundDurationMs: elapsedMs)
     }
 }

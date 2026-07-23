@@ -7,6 +7,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import io.actrium.actr.ActrException
 import io.actrium.actr.AppLifecycleState
@@ -541,7 +542,7 @@ class NetworkMonitor
         val isForeground =
             processInfo.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
         val state =
-            eventAdapter.initializePhase(isForeground, System.currentTimeMillis()) ?: return
+            eventAdapter.initializePhase(isForeground, SystemClock.elapsedRealtime()) ?: return
         Log.i(TAG, "Initial app lifecycle state: ${if (isForeground) "foreground" else "background"}")
         dispatchLifecycleState(state, reportNetworkSnapshotAfter = isForeground)
     }
@@ -566,9 +567,12 @@ class NetworkMonitor
      */
     @Synchronized
     fun onAppBackground() {
-        val nowMs = System.currentTimeMillis()
+        // elapsedRealtime is suspend-aware and immune to wall-clock changes
+        // (NTP, user adjustment); the runtime's short/long-background decision
+        // depends on this duration being trustworthy.
+        val nowMs = SystemClock.elapsedRealtime()
         val state = eventAdapter.enterBackground(nowMs)
-        Log.i(TAG, "App entered background at $nowMs")
+        Log.i(TAG, "App entered background (elapsedRealtime=${nowMs}ms)")
         dispatchLifecycleState(state)
     }
 
@@ -580,7 +584,7 @@ class NetworkMonitor
      */
     @Synchronized
     fun onAppForeground() {
-        val state = eventAdapter.enterForeground(System.currentTimeMillis())
+        val state = eventAdapter.enterForeground(SystemClock.elapsedRealtime())
         val backgroundDurationMs = (state as AppLifecycleState.Foreground).backgroundDurationMs
 
         Log.i(TAG, "App returned to foreground, background duration: ${backgroundDurationMs}ms")

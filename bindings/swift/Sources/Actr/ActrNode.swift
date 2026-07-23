@@ -272,7 +272,7 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
     }
 
     private func handleInitialLifecycleState(isBackground: Bool) {
-        guard let state = reducer.initializePhase(isBackground: isBackground, at: Date()) else {
+        guard let state = reducer.initializePhase(isBackground: isBackground, atMs: SuspendAwareClock.nowMs()) else {
             print("AppLifecycleMonitor skipped stale initial phase: time=\(formattedTimestamp())")
             return
         }
@@ -285,7 +285,7 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
 
     private func handleDidEnterBackground() {
         let timestamp = formattedTimestamp()
-        if let state = reducer.didEnterBackground(at: Date()) {
+        if let state = reducer.didEnterBackground(atMs: SuspendAwareClock.nowMs()) {
             print("🔵 App entered background: time=\(timestamp)")
             notifyLifecycleChanged(state: state)
         } else {
@@ -295,7 +295,7 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
 
     private func handleWillEnterForeground() {
         let timestamp = formattedTimestamp()
-        let state = reducer.willEnterForeground(at: Date())
+        let state = reducer.willEnterForeground(atMs: SuspendAwareClock.nowMs())
         guard case let .foreground(backgroundDurationMs) = state else {
             return
         }
