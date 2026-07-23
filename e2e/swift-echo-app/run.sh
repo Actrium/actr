@@ -42,7 +42,6 @@ done
 for cmd in cargo curl jq sqlite3 python3 perl rustc lsof; do
     require_cmd "$cmd"
 done
-ensure_actrix_available "$REPO_ROOT"
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$RANDOM"
 RUN_DIR="$SCRIPT_DIR/.tmp/run-$RUN_ID"
@@ -458,6 +457,30 @@ build_local_actr_cli() {
     ACTR_CLI_BIN="$ACTR_TARGET_DIR/debug/actr"
     [ -x "$ACTR_CLI_BIN" ] || fail "actr CLI binary missing at $ACTR_CLI_BIN"
     success "actr CLI ready: $ACTR_CLI_BIN"
+}
+
+build_local_actrix() {
+    if [ -n "${ACTRIX_BIN:-}" ]; then
+        local resolved_actrix
+        resolved_actrix="$(command -v "$ACTRIX_BIN" 2>/dev/null || true)"
+        if [ -z "$resolved_actrix" ] && [ -x "$ACTRIX_BIN" ]; then
+            resolved_actrix="$ACTRIX_BIN"
+        fi
+        [ -n "$resolved_actrix" ] || fail "ACTRIX_BIN is set but not executable: $ACTRIX_BIN"
+        ACTRIX_BIN="$resolved_actrix"
+        export ACTRIX_BIN
+        success "Using caller-provided actrix: $ACTRIX_BIN"
+        return 0
+    fi
+
+    section "🔨 Building local actrix from source"
+    CARGO_TARGET_DIR="$ACTR_TARGET_DIR" cargo build \
+        --manifest-path "$REPO_ROOT/actrix/crates/actrixd/Cargo.toml" \
+        --bin actrix >/dev/null
+    ACTRIX_BIN="$ACTR_TARGET_DIR/debug/actrix"
+    [ -x "$ACTRIX_BIN" ] || fail "actrix binary missing at $ACTRIX_BIN"
+    export ACTRIX_BIN
+    success "actrix ready: $ACTRIX_BIN"
 }
 
 append_workspace_patch() {
@@ -1076,12 +1099,13 @@ run_background_recovery_cycle() {
 section "🧪 Swift EchoApp E2E"
 echo "Run directory: $RUN_DIR"
 echo "Message:       $TEST_INPUT"
-echo "Actrix binary: $ACTRIX_BIN"
+echo "Actrix binary: ${ACTRIX_BIN:-workspace source (built below)}"
 echo "Host target:   $HOST_TARGET"
 
 # Phase 1: Prepare actrix infrastructure
 render_runtime_configs
 build_local_actr_cli
+build_local_actrix
 start_actrix
 login_admin
 warmup_ais_key

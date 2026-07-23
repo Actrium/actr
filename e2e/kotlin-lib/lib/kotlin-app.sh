@@ -104,6 +104,25 @@ actr-service-compat = { path = "$repo_path/core/service-compat" }
 EOF
 }
 
+pin_workspace_actr_dependencies() {
+    local cargo_toml="$1"
+
+    ACTR_FRAMEWORK_PATH="$REPO_ROOT/core/framework" \
+    ACTR_PROTOCOL_PATH="$REPO_ROOT/core/protocol" \
+        perl -i -pe '
+            if (/^actr-framework = /) {
+                $_ = qq{actr-framework = { path = "$ENV{ACTR_FRAMEWORK_PATH}" }\n};
+            } elsif (/^actr-protocol = /) {
+                $_ = qq{actr-protocol = { path = "$ENV{ACTR_PROTOCOL_PATH}" }\n};
+            }
+        ' "$cargo_toml"
+
+    grep -Fq "actr-framework = { path = \"$REPO_ROOT/core/framework\" }" "$cargo_toml" ||
+        fail "Failed to pin actr-framework to the workspace"
+    grep -Fq "actr-protocol = { path = \"$REPO_ROOT/core/protocol\" }" "$cargo_toml" ||
+        fail "Failed to pin actr-protocol to the workspace"
+}
+
 write_project_keychain_config() {
     local project_dir="$1"
     local keychain_path="$2"
@@ -506,7 +525,10 @@ run_connected_android_test() {
     # `am instrument` returns 0 even when tests fail (assertion or invalid-class
     # errors), so the pass/fail signal must come from the output, not the exit code.
     adb "${adb_flag[@]}" shell am instrument -w \
-        -e class "${test_class}" "$instrument_target" 2>&1 | tee "$instrument_log"
+        -e class "${test_class}" \
+        -e shortBackgroundSeconds "${SHORT_BACKGROUND_SECONDS:-5}" \
+        -e longBackgroundSeconds "${LONG_BACKGROUND_SECONDS:-60}" \
+        "$instrument_target" 2>&1 | tee "$instrument_log"
 
     local status=0
     if grep -qE "FAILURES!!!|Process crashed|java\.lang\.reflect\.|InvalidTestClassError" "$instrument_log"; then

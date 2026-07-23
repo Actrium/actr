@@ -925,13 +925,21 @@ internal object IntegrityCheckingUniffiLib {
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_call_raw(
     ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_caller_id(
+    ): Short
     external fun uniffi_actr_checksum_method_contextbridge_discover(
+    ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_log(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_register_media_track(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_register_stream(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_remove_media_track(
+    ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_request_id(
+    ): Short
+    external fun uniffi_actr_checksum_method_contextbridge_self_id(
     ): Short
     external fun uniffi_actr_checksum_method_contextbridge_send_data_chunk(
     ): Short
@@ -1060,14 +1068,22 @@ external fun uniffi_actr_fn_method_contextbridge_add_media_track(`ptr`: Long,`ta
 ): Long
 external fun uniffi_actr_fn_method_contextbridge_call_raw(`ptr`: Long,`target`: RustBuffer.ByValue,`routeKey`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,`payload`: RustBuffer.ByValue,`timeoutMs`: Long,
 ): Long
+external fun uniffi_actr_fn_method_contextbridge_caller_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
 external fun uniffi_actr_fn_method_contextbridge_discover(`ptr`: Long,`targetType`: RustBuffer.ByValue,
 ): Long
+external fun uniffi_actr_fn_method_contextbridge_log(`ptr`: Long,`level`: RustBuffer.ByValue,`msg`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus,
+): Unit
 external fun uniffi_actr_fn_method_contextbridge_register_media_track(`ptr`: Long,`trackId`: RustBuffer.ByValue,`callback`: Long,
 ): Long
 external fun uniffi_actr_fn_method_contextbridge_register_stream(`ptr`: Long,`streamId`: RustBuffer.ByValue,`callback`: Long,
 ): Long
 external fun uniffi_actr_fn_method_contextbridge_remove_media_track(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,
 ): Long
+external fun uniffi_actr_fn_method_contextbridge_request_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
+external fun uniffi_actr_fn_method_contextbridge_self_id(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus,
+): RustBuffer.ByValue
 external fun uniffi_actr_fn_method_contextbridge_send_data_chunk(`ptr`: Long,`target`: RustBuffer.ByValue,`chunk`: RustBuffer.ByValue,`payloadType`: RustBuffer.ByValue,
 ): Long
 external fun uniffi_actr_fn_method_contextbridge_send_media_sample(`ptr`: Long,`target`: RustBuffer.ByValue,`trackId`: RustBuffer.ByValue,`sample`: RustBuffer.ByValue,
@@ -1322,7 +1338,13 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_actr_checksum_method_contextbridge_call_raw() != 51062.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_actr_checksum_method_contextbridge_caller_id() != 7075.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_actr_checksum_method_contextbridge_discover() != 38410.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_contextbridge_log() != 34242.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_contextbridge_register_media_track() != 43039.toShort()) {
@@ -1332,6 +1354,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_contextbridge_remove_media_track() != 43937.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_contextbridge_request_id() != 61345.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_actr_checksum_method_contextbridge_self_id() != 56416.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_contextbridge_send_data_chunk() != 60974.toShort()) {
@@ -1355,7 +1383,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_actr_checksum_method_opusencoder_frame_size() != 18284.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 24690.toShort()) {
+    if (lib.uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 40057.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_actr_checksum_method_actrnode_start() != 22494.toShort()) {
@@ -2128,9 +2156,11 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 public interface ActrNodeInterface {
     
     /**
-     * Create a network event handle for platform callbacks.
+     * Create a lifecycle-gated network event handle for platform callbacks.
      *
-     * This must be called before `start()`.
+     * This must be called before `start()`. Swift/Kotlin adapters must inject
+     * their authoritative initial foreground/background state; until then,
+     * active recovery remains gated.
      */
     fun `createNetworkEventHandle`(): NetworkEventHandleWrapper
     
@@ -2243,9 +2273,11 @@ open class ActrNode: Disposable, AutoCloseable, ActrNodeInterface
 
     
     /**
-     * Create a network event handle for platform callbacks.
+     * Create a lifecycle-gated network event handle for platform callbacks.
      *
-     * This must be called before `start()`.
+     * This must be called before `start()`. Swift/Kotlin adapters must inject
+     * their authoritative initial foreground/background state; until then,
+     * active recovery remains gated.
      */
     @Throws(ActrException::class)override fun `createNetworkEventHandle`(): NetworkEventHandleWrapper {
             return FfiConverterTypeNetworkEventHandleWrapper.lift(
@@ -2919,6 +2951,11 @@ public interface ContextBridgeInterface {
     suspend fun `callRaw`(`target`: ActrId, `routeKey`: kotlin.String, `payloadType`: PayloadType, `payload`: kotlin.ByteArray, `timeoutMs`: kotlin.Long): kotlin.ByteArray
     
     /**
+     * Caller actor ID when this context was created from an inbound actor call.
+     */
+    fun `callerId`(): ActrId?
+
+    /**
      * Discover an actor of the specified type
      *
      * # Arguments
@@ -2929,6 +2966,11 @@ public interface ContextBridgeInterface {
      */
     suspend fun `discover`(`targetType`: ActrType): ActrId
     
+    /**
+     * Emit a workload-scoped log record through the runtime's context logging hook.
+     */
+    fun `log`(`level`: LogLevel, `msg`: kotlin.String)
+
     /**
      * Register a callback for incoming media track samples
      */
@@ -2944,6 +2986,16 @@ public interface ContextBridgeInterface {
      */
     suspend fun `removeMediaTrack`(`target`: ActrId, `trackId`: kotlin.String)
     
+    /**
+     * Request ID associated with the current dispatch or lifecycle context.
+     */
+    fun `requestId`(): kotlin.String
+
+    /**
+     * Current actor ID associated with this context.
+     */
+    fun `selfId`(): ActrId
+
     /**
      * Send a DataChunk to a remote actor (Fast Path)
      *
@@ -3143,6 +3195,22 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
 
     
     /**
+     * Caller actor ID when this context was created from an inbound actor call.
+     */override fun `callerId`(): ActrId? {
+            return FfiConverterOptionalTypeActrId.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_method_contextbridge_caller_id(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    /**
      * Discover an actor of the specified type
      *
      * # Arguments
@@ -3172,6 +3240,21 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
     }
 
     
+    /**
+     * Emit a workload-scoped log record through the runtime's context logging hook.
+     */override fun `log`(`level`: LogLevel, `msg`: kotlin.String)
+        =
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_method_contextbridge_log(
+        it,
+        FfiConverterTypeLogLevel.lower(`level`),FfiConverterString.lower(`msg`),_status)
+}
+    }
+
+
+
+
     /**
      * Register a callback for incoming media track samples
      */
@@ -3247,6 +3330,38 @@ open class ContextBridge: Disposable, AutoCloseable, ContextBridgeInterface
     }
 
     
+    /**
+     * Request ID associated with the current dispatch or lifecycle context.
+     */override fun `requestId`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_method_contextbridge_request_id(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
+    /**
+     * Current actor ID associated with this context.
+     */override fun `selfId`(): ActrId {
+            return FfiConverterTypeActrId.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_actr_fn_method_contextbridge_self_id(
+        it,
+        _status)
+}
+    }
+    )
+    }
+
+
+
     /**
      * Send a DataChunk to a remote actor (Fast Path)
      *
@@ -5853,6 +5968,46 @@ public object FfiConverterTypeErrorKind: FfiConverterRustBuffer<ErrorKind> {
 
 
 /**
+ * Workload log severity emitted through a Context.
+ */
+
+enum class LogLevel {
+
+    TRACE,
+    DEBUG,
+    INFO,
+    WARN,
+    ERROR;
+
+
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeLogLevel: FfiConverterRustBuffer<LogLevel> {
+    override fun read(buf: ByteBuffer) = try {
+        LogLevel.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: LogLevel) = 4UL
+
+    override fun write(value: LogLevel, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
  * Media type for MediaTrack
  */
 
@@ -6304,7 +6459,7 @@ public object FfiConverterTypeCredentialObserverBridge: FfiConverterCallbackInte
 public interface DataChunkCallback {
     
     /**
-     * Handle an incoming DataChunk chunk.
+     * Handle an incoming DataChunk.
      */
     suspend fun `onStream`(`chunk`: DataChunk, `sender`: ActrId)
     
@@ -7488,6 +7643,38 @@ public object FfiConverterOptionalTypeContextBridge: FfiConverterRustBuffer<Cont
         } else {
             buf.put(1)
             FfiConverterTypeContextBridge.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeActrId: FfiConverterRustBuffer<ActrId?> {
+    override fun read(buf: ByteBuffer): ActrId? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeActrId.read(buf)
+    }
+
+    override fun allocationSize(value: ActrId?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeActrId.allocationSize(value)
+        }
+    }
+
+    override fun write(value: ActrId?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeActrId.write(value, buf)
         }
     }
 }
