@@ -471,6 +471,27 @@ fn snapshot_online_derives_probe_when_live_generation_exists() {
 }
 
 #[test]
+fn snapshot_online_ignores_teardown_scoped_live_generation() {
+    let mut view = View::initial();
+    view.network_path = NetworkPathState::Offline;
+    view.offline_work = OfflineWorkState::DisconnectPending;
+    view.execution = ExecutionState::Disconnecting;
+    view.live_signaling_generation = Some(4);
+    view.teardown_scope_generations.insert(4);
+
+    let d = tr(&view, snapshot(1, 1, SemanticPath::Online, 1));
+
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestRestore)
+    ));
+    assert!(!has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
+    ));
+}
+
+#[test]
 fn snapshot_online_supersedes_pending_disconnect() {
     let mut view = View::initial();
     view.network_path = NetworkPathState::Offline;

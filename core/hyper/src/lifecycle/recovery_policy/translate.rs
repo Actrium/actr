@@ -1068,7 +1068,7 @@ fn translate_snapshot(
                 if view.recovery_mode == RecoveryModeState::Active
                     && view.recovery_intent == RecoveryIntentState::Idle
                 {
-                    let derived = if view.live_signaling_generation.is_some() {
+                    let derived = if view.live_signaling_outside_teardown() {
                         RecoveryIntentInput::RequestProbe
                     } else {
                         RecoveryIntentInput::RequestRestore
