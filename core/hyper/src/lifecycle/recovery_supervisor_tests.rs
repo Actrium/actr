@@ -285,7 +285,7 @@ fn long_background_reconnect_does_not_requeue_itself_on_explicit_disconnect() {
     );
     g.accept(tp::Input::AppEnteredBackground, ms(3));
 
-    g.accept(foreground(), ms(60_003));
+    g.accept(reported_foreground(60_000), ms(60_003));
     let started = g
         .maybe_start_effect(ms(60_003))
         .expect("long background should start reconnect");
@@ -363,7 +363,7 @@ fn long_foreground_must_preempt_running_restore_before_starting_reconnect() {
     // Returning after the long-background threshold upgrades the pending intent
     // to Reconnect. The running Restore must be preempted here; otherwise it can
     // publish a short-lived signaling connection before Reconnect tears it down.
-    let foreground = s.accept(foreground(), ms(65_002));
+    let foreground = s.accept(reported_foreground(65_000), ms(65_002));
     assert_eq!(
         s.view().recovery_intent,
         tp::RecoveryIntentState::ReconnectPending
@@ -421,7 +421,7 @@ fn short_foreground_does_not_requeue_running_restore() {
         .work_revision;
 
     s.accept(tp::Input::AppEnteredBackground, ms(3));
-    let foreground = s.accept(foreground(), ms(4));
+    let foreground = s.accept(reported_foreground(1), ms(4));
 
     assert!(!foreground.cancel_effect);
     assert_eq!(s.view().execution, tp::ExecutionState::Restoring);
@@ -1025,10 +1025,10 @@ fn inv7_gated_profile_background_gates_recovery_but_preserves_intent() {
     );
     assert_eq!(g.view().network_path, tp::NetworkPathState::Online);
 
-    // Foreground derives its own (weaker, elapsed-time-based) probe/reconnect
+    // Foreground derives its own (weaker, observed-duration-based) probe
     // request on top of whatever is already pending; the stronger explicit
     // `RestorePending` must not be downgraded by it.
-    g.accept(foreground(), ms(4));
+    g.accept(reported_foreground(1), ms(4));
     assert_eq!(g.composite_action(), Some(tp::Action::Restore));
 }
 

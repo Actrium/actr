@@ -405,6 +405,12 @@ pub(crate) struct View {
     pub offline_candidate: Option<OfflineCandidate>,
     pub cleanup_teardown: Option<TeardownDeadline>,
     pub offline_teardown: Option<TeardownDeadline>,
+    /// When the shell last stamped a Background entry, in the in-process
+    /// monotonic clock domain. That clock freezes while the platform suspends
+    /// the process, so `now - background_entered_at` is only a *lower bound*
+    /// on the real stay: it can corroborate a long background but can never
+    /// prove a short one (RFC-0419). It is retained as that lower-bound
+    /// anchor and must not be used to classify a stay as short.
     pub background_entered_at: Option<PolicyInstant>,
     pub committed_session_generation: Option<Generation>,
     pub live_signaling_generation: Option<Generation>,
@@ -658,6 +664,13 @@ pub(crate) enum StatusRecord {
         mode: RecoveryModeState,
         reason: RejectReason,
     },
+    /// A Background -> Foreground transition arrived without the platform's
+    /// suspend-aware background-duration observation, violating the binding
+    /// layer's reporting contract. The stay cannot be proven short from
+    /// inside the process (RFC-0419: the in-process monotonic clock freezes
+    /// during suspension), so the supervisor is forced onto the conservative
+    /// long-background path and rebuilds the connection unconditionally.
+    BackgroundObservationMissing,
     /// The gated bootstrap deadline elapsed with no authoritative phase.
     BootstrapDeadlineElapsed,
     /// The shutdown overall deadline aborted remaining work with `Abandoned`
@@ -809,7 +822,7 @@ pub(crate) fn translate(
     match input {
         Input::AppEnteredForeground {
             observed_background_duration,
-        } => translate_foreground(view, now, *observed_background_duration, config),
+        } => translate_foreground(view, *observed_background_duration, config),
         Input::AppEnteredBackground => translate_background(view),
         Input::SessionActivated { session_generation } => {
             translate_session_activated(view, *session_generation)
@@ -879,7 +892,6 @@ pub(crate) fn translate(
 
 fn translate_foreground(
     view: &View,
-    now: PolicyInstant,
     observed_background_duration: Option<Duration>,
     config: &PolicyConfig,
 ) -> Decision {
@@ -896,13 +908,27 @@ fn translate_foreground(
     match view.app_phase {
         // Row 4: already Foreground -> self-loop, no revision.
         AppPhaseState::Foreground => Decision::none(),
-        // Row 2: from Background -> derive probe or reconnect by elapsed time.
+        // Row 2: from Background -> derive probe or reconnect from the
+        // platform's suspend-aware background-duration observation.
         AppPhaseState::Background => {
             let mut d = Decision::advancing();
             d.machine(MachineInput::AppPhase(AppPhaseInput::EnterForeground));
-            let elapsed = observed_background_duration
-                .unwrap_or_else(|| now.saturating_sub(view.background_entered_at.unwrap_or(now)));
-            if elapsed < config.background_reconnect_after {
+            // RFC-0419: only a platform suspend-aware observation may classify
+            // the stay as short. The in-process monotonic clock freezes during
+            // suspension, so a delta against `view.background_entered_at` is a
+            // lower bound that can never prove "short" (a device asleep for an
+            // hour advances it by seconds). A missing observation therefore
+            // takes the long path unconditionally; this also subsumes the case
+            // where the lower bound already exceeds the threshold, since that
+            // bound could only confirm the same "long" verdict.
+            let is_short_background = match observed_background_duration {
+                Some(observed) => observed < config.background_reconnect_after,
+                None => {
+                    d.status.push(StatusRecord::BackgroundObservationMissing);
+                    false
+                }
+            };
+            if is_short_background {
                 // Short background: probe the possibly-healthy socket and let
                 // automatic reconnect resume rather than force a rebuild. If
                 // recovery is already pending, the weaker probe is coalesced

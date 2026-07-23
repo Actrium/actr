@@ -18,9 +18,17 @@ fn tr_at(view: &View, input: Input, now: Duration) -> Decision {
     translate(view, &input, now, &config(), &mut entropy)
 }
 
+/// A foreground transition whose platform background observation is missing.
 fn foreground() -> Input {
     Input::AppEnteredForeground {
         observed_background_duration: None,
+    }
+}
+
+/// A foreground transition carrying the platform's suspend-aware observation.
+fn foreground_after(observed: Duration) -> Input {
+    Input::AppEnteredForeground {
+        observed_background_duration: Some(observed),
     }
 }
 
@@ -61,7 +69,7 @@ fn foreground_from_background_derives_probe_or_reconnect_by_duration() {
     view.background_entered_at = Some(Duration::ZERO);
 
     // Short background -> probe.
-    let d = tr_at(&view, foreground(), Duration::from_secs(1));
+    let d = tr(&view, foreground_after(Duration::from_secs(1)));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
@@ -71,7 +79,7 @@ fn foreground_from_background_derives_probe_or_reconnect_by_duration() {
     }));
 
     // Long background -> reconnect.
-    let d = tr_at(&view, foreground(), Duration::from_secs(120));
+    let d = tr(&view, foreground_after(Duration::from_secs(120)));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
@@ -142,7 +150,7 @@ fn short_foreground_emits_resume_and_long_foreground_emits_suppress() {
     view.background_entered_at = Some(Duration::ZERO);
 
     // Short background -> probe path re-enables automatic reconnect.
-    let d = tr_at(&view, foreground(), Duration::from_secs(1));
+    let d = tr(&view, foreground_after(Duration::from_secs(1)));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
@@ -150,7 +158,7 @@ fn short_foreground_emits_resume_and_long_foreground_emits_suppress() {
     assert!(d.signals.contains(&SignalingDirective::ResumeAutoReconnect));
 
     // Long background -> reconnect path keeps stale automatic reconnect suppressed.
-    let d = tr_at(&view, foreground(), Duration::from_secs(120));
+    let d = tr(&view, foreground_after(Duration::from_secs(120)));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
@@ -167,7 +175,7 @@ fn short_foreground_coalesces_probe_while_restore_is_running() {
     view.app_phase = AppPhaseState::Background;
     view.background_entered_at = Some(Duration::ZERO);
 
-    let d = tr_at(&view, foreground(), Duration::from_secs(1));
+    let d = tr(&view, foreground_after(Duration::from_secs(1)));
 
     assert!(has(
         &d,
@@ -187,7 +195,7 @@ fn long_foreground_preempts_restore_and_fences_its_signaling_attempt() {
     view.app_phase = AppPhaseState::Background;
     view.background_entered_at = Some(Duration::ZERO);
 
-    let d = tr_at(&view, foreground(), Duration::from_secs(120));
+    let d = tr(&view, foreground_after(Duration::from_secs(120)));
 
     assert!(has(
         &d,
@@ -226,6 +234,60 @@ fn foreground_uses_platform_background_duration_when_delivery_was_delayed() {
 }
 
 #[test]
+fn foreground_missing_observation_is_long_despite_small_internal_delta() {
+    // RFC-0419: the in-process monotonic clock freezes during platform
+    // suspension, so a small `now - background_entered_at` delta cannot prove
+    // the stay was short (a device asleep for an hour advances it by seconds).
+    // A missing platform observation must take the long-background path even
+    // though the internal delta is tiny.
+    let mut view = View::initial();
+    view.app_phase = AppPhaseState::Background;
+    view.background_entered_at = Some(Duration::ZERO);
+
+    let d = tr_at(&view, foreground(), Duration::from_secs(1));
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestReconnect)
+    ));
+    assert!(!has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
+    ));
+    assert!(
+        d.signals
+            .contains(&SignalingDirective::SuppressAutoReconnect)
+    );
+    assert!(!d.signals.contains(&SignalingDirective::ResumeAutoReconnect));
+}
+
+#[test]
+fn foreground_missing_observation_reports_contract_violation_status() {
+    // A Background -> Foreground transition without the platform observation
+    // is a binding-layer contract violation and must surface on the status
+    // stream, where the shell logs it at error level.
+    let mut view = View::initial();
+    view.app_phase = AppPhaseState::Background;
+    view.background_entered_at = Some(Duration::ZERO);
+    let d = tr_at(&view, foreground(), Duration::from_secs(1));
+    assert!(
+        d.status
+            .contains(&StatusRecord::BackgroundObservationMissing)
+    );
+
+    // An observed transition is contract-clean regardless of classification.
+    let d = tr(&view, foreground_after(Duration::from_secs(1)));
+    assert!(d.status.is_empty());
+    let d = tr(&view, foreground_after(Duration::from_secs(120)));
+    assert!(d.status.is_empty());
+
+    // Cold start delivers the first authoritative phase from `Unknown` without
+    // any prior background stay to measure; a missing observation there is
+    // legitimate and must not be reported.
+    let d = tr(&View::initial(), foreground());
+    assert!(d.status.is_empty());
+}
+
+#[test]
 fn foreground_between_legacy_and_configured_thresholds_probes_and_resumes() {
     // Pins the single 60 s `background_reconnect_after` boundary: a stay in
     // the 30..60 s band is a short background. The legacy pre-translate hook
@@ -236,7 +298,7 @@ fn foreground_between_legacy_and_configured_thresholds_probes_and_resumes() {
     view.app_phase = AppPhaseState::Background;
     view.background_entered_at = Some(Duration::ZERO);
 
-    let d = tr_at(&view, foreground(), Duration::from_secs(45));
+    let d = tr(&view, foreground_after(Duration::from_secs(45)));
     assert!(has(
         &d,
         MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
@@ -255,7 +317,7 @@ fn foreground_reconnect_boundary_is_exact_at_sixty_seconds() {
     view.background_entered_at = Some(Duration::ZERO);
 
     for elapsed_ms in [59_999, 60_000, 60_001] {
-        let d = tr_at(&view, foreground(), Duration::from_millis(elapsed_ms));
+        let d = tr(&view, foreground_after(Duration::from_millis(elapsed_ms)));
         let is_long_background = elapsed_ms >= 60_000;
 
         assert!(

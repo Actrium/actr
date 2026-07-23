@@ -1814,6 +1814,16 @@ fn handle_supervisor_input(
             tp::StatusRecord::RecoveryRejected { mode, reason } => {
                 tracing::info!(?mode, ?reason, "network_event.supervisor.recovery_rejected")
             }
+            tp::StatusRecord::BackgroundObservationMissing => {
+                // The binding layer broke its reporting contract: a foreground
+                // transition carried no suspend-aware background duration. The
+                // supervisor cannot rule out a long suspension and is forced
+                // into a conservative full connection rebuild.
+                tracing::error!(
+                    consequence = "forced long-background reconnect",
+                    "network_event.supervisor.background_observation_missing"
+                )
+            }
             tp::StatusRecord::BootstrapDeadlineElapsed => {
                 tracing::error!("network_event.supervisor.bootstrap_deadline_elapsed")
             }

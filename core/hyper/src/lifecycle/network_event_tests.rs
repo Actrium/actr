@@ -505,7 +505,7 @@ async fn stronger_reconnect_fences_restore_before_requesting_cancellation() {
     let terminate = handle_supervisor_input(
         &mut supervisor,
         tp::Input::AppEnteredForeground {
-            observed_background_duration: None,
+            observed_background_duration: Some(Duration::from_secs(65)),
         },
         Duration::from_secs(65),
         tokio::time::Instant::now(),
