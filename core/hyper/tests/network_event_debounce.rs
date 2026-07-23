@@ -1424,6 +1424,7 @@ async fn test_offline_candidate_drained_after_non_offline_head_owns_grace() {
             event: online_event(1),
             result_tx: online_tx,
             source_epoch: 1,
+            observed_at: tokio::time::Instant::now(),
         })
         .await
         .expect("online event should queue");
@@ -1433,6 +1434,7 @@ async fn test_offline_candidate_drained_after_non_offline_head_owns_grace() {
             event: offline_event(2),
             result_tx: offline_tx,
             source_epoch: 1,
+            observed_at: tokio::time::Instant::now(),
         })
         .await
         .expect("offline event should queue behind the online head");
@@ -1497,6 +1499,7 @@ async fn test_new_offline_candidate_after_fast_rollback_restarts_grace() {
                 event,
                 result_tx,
                 source_epoch: 1,
+                observed_at: tokio::time::Instant::now(),
             })
             .await
             .expect("path event should queue");
@@ -2008,6 +2011,7 @@ async fn test_l1_cleanup_is_a_batch_barrier_for_later_recovery_facts() {
             },
             result_tx: cleanup_tx,
             source_epoch: 1,
+            observed_at: tokio::time::Instant::now(),
         })
         .expect("cleanup should be queued");
     event_tx
@@ -2015,6 +2019,7 @@ async fn test_l1_cleanup_is_a_batch_barrier_for_later_recovery_facts() {
             event: online_event(1),
             result_tx: online_tx,
             source_epoch: 1,
+            observed_at: tokio::time::Instant::now(),
         })
         .expect("online snapshot should be queued after cleanup");
 

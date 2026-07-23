@@ -152,11 +152,12 @@ impl ActrNode {
         if let Some(handle) = handle_guard.as_ref() {
             info!(
                 api = "create_network_event_handle",
-                reused = true,
+                reused_channel = true,
+                new_monitor_incarnation = true,
                 "network_event.ffi.handle_created"
             );
             return Ok(Arc::new(NetworkEventHandleWrapper {
-                inner: handle.clone(),
+                inner: handle.new_monitor_incarnation(),
             }));
         }
 
@@ -170,7 +171,8 @@ impl ActrNode {
 
         info!(
             api = "create_network_event_handle",
-            reused = false,
+            reused_channel = false,
+            new_monitor_incarnation = true,
             debounce_ms = 0_u64,
             lifecycle_profile = "gated",
             "network_event.ffi.handle_created"
@@ -713,7 +715,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn repeated_create_network_event_handle_reuses_cached_channel_until_start() {
+    async fn repeated_create_network_event_handle_reuses_channel_with_fresh_incarnations() {
         let mut server = MockActrixServer::start()
             .await
             .expect("mock actrix server should start");

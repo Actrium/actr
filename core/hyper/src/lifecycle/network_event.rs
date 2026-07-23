@@ -1339,6 +1339,11 @@ pub struct NetworkEventRequest {
     /// The path-monitor incarnation epoch stamped by the originating handle;
     /// `(source_epoch, sequence)` lexicographic order decides snapshot acceptance.
     pub source_epoch: u64,
+    /// Monotonic supervisor-ingress time captured before the request is sent.
+    ///
+    /// This stays out of [`NetworkSnapshot`] so the platform FFI schema does
+    /// not need to expose a runtime-specific clock representation.
+    pub observed_at: tokio::time::Instant,
 }
 
 /// A minimal observation of supervisor progress for tests and callers.
@@ -1465,6 +1470,13 @@ pub struct SupervisorInternalChannel {
     tx: mpsc::UnboundedSender<tp::Input>,
     rx: mpsc::UnboundedReceiver<tp::Input>,
     profile: tp::LifecycleProfile,
+    clock_origin: tokio::time::Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ReconcilerConfig {
+    profile: tp::LifecycleProfile,
+    clock_origin: tokio::time::Instant,
 }
 
 /// Create the supervisor's internal input channel plus a [`SupervisorFactSink`]
@@ -1490,9 +1502,15 @@ pub(crate) fn supervisor_internal_channel_with_profile(
     profile: tp::LifecycleProfile,
 ) -> (SupervisorFactSink, SupervisorInternalChannel) {
     let (tx, rx) = mpsc::unbounded_channel::<tp::Input>();
+    let clock_origin = tokio::time::Instant::now();
     (
         SupervisorFactSink::new(tx.clone()),
-        SupervisorInternalChannel { tx, rx, profile },
+        SupervisorInternalChannel {
+            tx,
+            rx,
+            profile,
+            clock_origin,
+        },
     )
 }
 
@@ -1501,6 +1519,7 @@ pub async fn run_network_event_reconciler(
     processor: Arc<dyn NetworkEventProcessor>,
     shutdown_token: CancellationToken,
 ) {
+    let clock_origin = tokio::time::Instant::now();
     let (internal_tx, internal_rx) = mpsc::unbounded_channel::<tp::Input>();
     let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
     reconcile_loop(
@@ -1510,7 +1529,10 @@ pub async fn run_network_event_reconciler(
         processor,
         shutdown_token,
         status_tx,
-        tp::LifecycleProfile::Ungated,
+        ReconcilerConfig {
+            profile: tp::LifecycleProfile::Ungated,
+            clock_origin,
+        },
     )
     .await;
 }
@@ -1527,6 +1549,7 @@ pub async fn run_network_event_reconciler_with_status(
     shutdown_token: CancellationToken,
     status_tx: watch::Sender<SupervisorStatus>,
 ) {
+    let clock_origin = tokio::time::Instant::now();
     let (internal_tx, internal_rx) = mpsc::unbounded_channel::<tp::Input>();
     reconcile_loop(
         event_rx,
@@ -1535,7 +1558,10 @@ pub async fn run_network_event_reconciler_with_status(
         processor,
         shutdown_token,
         status_tx,
-        tp::LifecycleProfile::Ungated,
+        ReconcilerConfig {
+            profile: tp::LifecycleProfile::Ungated,
+            clock_origin,
+        },
     )
     .await;
 }
@@ -1551,7 +1577,12 @@ pub(crate) async fn run_network_event_reconciler_with_channel(
     shutdown_token: CancellationToken,
 ) {
     let (status_tx, _status_rx) = watch::channel(SupervisorStatus::default());
-    let SupervisorInternalChannel { tx, rx, profile } = channel;
+    let SupervisorInternalChannel {
+        tx,
+        rx,
+        profile,
+        clock_origin,
+    } = channel;
     reconcile_loop(
         event_rx,
         tx,
@@ -1559,7 +1590,10 @@ pub(crate) async fn run_network_event_reconciler_with_channel(
         processor,
         shutdown_token,
         status_tx,
-        profile,
+        ReconcilerConfig {
+            profile,
+            clock_origin,
+        },
     )
     .await;
 }
@@ -1571,11 +1605,15 @@ async fn reconcile_loop(
     processor: Arc<dyn NetworkEventProcessor>,
     shutdown_token: CancellationToken,
     status_tx: watch::Sender<SupervisorStatus>,
-    profile: tp::LifecycleProfile,
+    config: ReconcilerConfig,
 ) {
+    let ReconcilerConfig {
+        profile,
+        clock_origin,
+    } = config;
     tracing::info!(?profile, "🔄 Network event reconciler started");
 
-    let start = tokio::time::Instant::now();
+    let start = clock_origin;
     let mut supervisor = RecoverySupervisor::new(profile);
 
     let mut timers: HashMap<tp::TimerId, tokio::task::AbortHandle> = HashMap::new();
@@ -1612,8 +1650,12 @@ async fn reconcile_loop(
                 let wait_started = Instant::now();
                 tracing::debug!(event = ?event, "network_event.reconciler.received");
                 processor.prepare_network_event(&event);
-                let input = event_to_input(&event, epoch);
                 let now = start.elapsed();
+                let observed_at = request
+                    .observed_at
+                    .checked_duration_since(start)
+                    .unwrap_or(Duration::ZERO);
+                let input = event_to_input(&event, epoch, observed_at);
                 let terminate = handle_supervisor_input(
                     &mut supervisor, input, now, start, &internal_tx, &mut timers,
                     &mut effect, &processor, &status_tx, &mut last_action_id, &mut last_outcome,
@@ -1940,6 +1982,20 @@ impl NetworkEventHandle {
         }
     }
 
+    /// Create a handle for a newly attached or restarted path monitor.
+    ///
+    /// The returned handle shares the same supervisor channel and fact sink,
+    /// but receives a fresh `source_epoch`; ordinary [`Clone`] keeps the current
+    /// epoch and is therefore only for sharing one monitor incarnation.
+    pub fn new_monitor_incarnation(&self) -> Self {
+        Self {
+            event_tx: self.event_tx.clone(),
+            result_timeout: self.result_timeout,
+            source_epoch: NEXT_NETWORK_SOURCE_EPOCH.fetch_add(1, Ordering::Relaxed),
+            fact_sink: self.fact_sink.clone(),
+        }
+    }
+
     /// Report that a new session generation was authoritatively committed.
     ///
     /// This is the explicit path for an upper layer whose session/credential
@@ -2004,6 +2060,7 @@ impl NetworkEventHandle {
             event: event.clone(),
             result_tx,
             source_epoch: self.source_epoch,
+            observed_at: tokio::time::Instant::now(),
         };
 
         tracing::info!(

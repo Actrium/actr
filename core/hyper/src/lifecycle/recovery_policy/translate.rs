@@ -495,6 +495,7 @@ pub(crate) enum Input {
     NetworkSnapshot {
         source_epoch: u64,
         sequence: u64,
+        observed_at: PolicyInstant,
         semantic_path: SemanticPath,
         route_fingerprint: u64,
     },
@@ -816,15 +817,16 @@ pub(crate) fn translate(
         Input::NetworkSnapshot {
             source_epoch,
             sequence,
+            observed_at,
             semantic_path,
             route_fingerprint,
         } => translate_snapshot(
             view,
             *source_epoch,
             *sequence,
+            *observed_at,
             *semantic_path,
             *route_fingerprint,
-            now,
             config,
         ),
         Input::RecoveryRequested { minimum, .. } => translate_recovery_requested(view, *minimum),
@@ -998,9 +1000,9 @@ fn translate_snapshot(
     view: &View,
     source_epoch: u64,
     sequence: u64,
+    observed_at: PolicyInstant,
     semantic_path: SemanticPath,
     route_fingerprint: u64,
-    now: PolicyInstant,
     config: &PolicyConfig,
 ) -> Decision {
     // Acceptance by (epoch, sequence).
@@ -1088,7 +1090,7 @@ fn translate_snapshot(
             d.timers.push(TimerDirective::Arm {
                 id: TimerId::OfflineCandidate,
                 category: TimerCategory::BusinessHysteresis,
-                deadline: now.saturating_add(config.offline_grace),
+                deadline: observed_at.saturating_add(config.offline_grace),
             });
             d
         }

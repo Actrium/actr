@@ -334,6 +334,7 @@ async fn send_raw(
             event,
             result_tx,
             source_epoch,
+            observed_at: tokio::time::Instant::now(),
         })
         .await
         .expect("request should queue");

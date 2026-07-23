@@ -393,9 +393,20 @@ fn session_activated_derives_restore_when_live_generation_is_inside_teardown() {
 // ---------------------------------------------------------------------------
 
 fn snapshot(epoch: u64, sequence: u64, path: SemanticPath, route: u64) -> Input {
+    snapshot_at(epoch, sequence, Duration::ZERO, path, route)
+}
+
+fn snapshot_at(
+    epoch: u64,
+    sequence: u64,
+    observed_at: Duration,
+    path: SemanticPath,
+    route: u64,
+) -> Input {
     Input::NetworkSnapshot {
         source_epoch: epoch,
         sequence,
+        observed_at,
         semantic_path: path,
         route_fingerprint: route,
     }
@@ -562,7 +573,7 @@ fn snapshot_to_offline_arms_candidate() {
     });
     let d = tr_at(
         &view,
-        snapshot(1, 2, SemanticPath::Offline, 1),
+        snapshot_at(1, 2, Duration::from_millis(250), SemanticPath::Offline, 1),
         Duration::from_secs(1),
     );
     assert!(has(
@@ -572,7 +583,7 @@ fn snapshot_to_offline_arms_candidate() {
     assert!(d.timers.contains(&TimerDirective::Arm {
         id: TimerId::OfflineCandidate,
         category: TimerCategory::BusinessHysteresis,
-        deadline: Duration::from_secs(1) + config().offline_grace,
+        deadline: Duration::from_millis(250) + config().offline_grace,
     }));
 }
 

@@ -189,6 +189,17 @@ fn snapshot(sequence: u64, availability: NetworkAvailability) -> NetworkSnapshot
 }
 
 #[test]
+fn restarted_monitor_gets_a_fresh_epoch_while_clones_keep_the_incarnation() {
+    let (event_tx, _event_rx) = mpsc::channel(1);
+    let first = NetworkEventHandle::new(event_tx);
+    let shared = first.clone();
+    let restarted = first.new_monitor_incarnation();
+
+    assert_eq!(shared.source_epoch, first.source_epoch);
+    assert!(restarted.source_epoch > first.source_epoch);
+}
+
+#[test]
 fn recovery_effect_errors_preserve_typed_network_diagnoses() {
     let cases = [
         (
@@ -1098,6 +1109,7 @@ async fn gated_reconciler_waits_for_authoritative_foreground() {
         tx: internal_tx,
         rx: internal_rx,
         profile,
+        clock_origin,
     } = channel;
     let (status_tx, status_rx) = watch::channel(SupervisorStatus::default());
     let shutdown = CancellationToken::new();
@@ -1108,7 +1120,10 @@ async fn gated_reconciler_waits_for_authoritative_foreground() {
         processor.clone(),
         shutdown.clone(),
         status_tx,
-        profile,
+        ReconcilerConfig {
+            profile,
+            clock_origin,
+        },
     ));
 
     handle
@@ -1154,6 +1169,7 @@ async fn current_effect_fact_and_event_storm_preserve_monotonic_supervisor_statu
         tx: internal_tx,
         rx: internal_rx,
         profile,
+        clock_origin,
     } = channel;
     let (status_tx, mut status_rx) = watch::channel(SupervisorStatus::default());
     let shutdown = CancellationToken::new();
@@ -1164,7 +1180,10 @@ async fn current_effect_fact_and_event_storm_preserve_monotonic_supervisor_statu
         processor.clone(),
         shutdown.clone(),
         status_tx,
-        profile,
+        ReconcilerConfig {
+            profile,
+            clock_origin,
+        },
     ));
 
     handle

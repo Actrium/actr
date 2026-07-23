@@ -460,6 +460,7 @@ impl RecoverySupervisor {
             tp::Input::NetworkSnapshot {
                 source_epoch,
                 sequence,
+                observed_at: _,
                 semantic_path,
                 route_fingerprint,
             } => {
@@ -1341,12 +1342,18 @@ mod legacy {
 /// Convert a public [`NetworkEvent`] into an RFC supervisor [`tp::Input`].
 ///
 /// `source_epoch` is stamped by the [`super::network_event::NetworkEventHandle`]
-/// at construction; existing callers keep their sequence semantics unchanged.
-pub(crate) fn event_to_input(event: &NetworkEvent, source_epoch: u64) -> tp::Input {
+/// at construction. `observed_at` is captured when the handle enqueues the
+/// event, in the same monotonic clock domain used by the supervisor.
+pub(crate) fn event_to_input(
+    event: &NetworkEvent,
+    source_epoch: u64,
+    observed_at: PolicyInstant,
+) -> tp::Input {
     match event {
         NetworkEvent::NetworkPathChanged { snapshot } => tp::Input::NetworkSnapshot {
             source_epoch,
             sequence: snapshot.sequence,
+            observed_at,
             semantic_path: match snapshot.availability {
                 super::network_event::NetworkAvailability::Unknown => tp::SemanticPath::Unknown,
                 super::network_event::NetworkAvailability::Available => tp::SemanticPath::Online,

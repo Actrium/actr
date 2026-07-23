@@ -48,6 +48,7 @@ fn snapshot(epoch: u64, sequence: u64, path: tp::SemanticPath) -> tp::Input {
     tp::Input::NetworkSnapshot {
         source_epoch: epoch,
         sequence,
+        observed_at: Duration::ZERO,
         semantic_path: path,
         route_fingerprint: 0,
     }
@@ -1197,6 +1198,7 @@ fn deterministic_mobile_event_permutations_eventually_converge_online() {
             tp::Input::NetworkSnapshot {
                 source_epoch: 1,
                 sequence,
+                observed_at: ms(now_ms),
                 semantic_path: tp::SemanticPath::Online,
                 route_fingerprint,
             },
@@ -1231,6 +1233,7 @@ fn deterministic_mobile_event_permutations_eventually_converge_online() {
                     tp::Input::NetworkSnapshot {
                         source_epoch: 1,
                         sequence,
+                        observed_at: ms(now_ms),
                         semantic_path: tp::SemanticPath::Online,
                         route_fingerprint,
                     }
@@ -1241,6 +1244,7 @@ fn deterministic_mobile_event_permutations_eventually_converge_online() {
                     tp::Input::NetworkSnapshot {
                         source_epoch: 1,
                         sequence,
+                        observed_at: ms(now_ms),
                         semantic_path: tp::SemanticPath::Offline,
                         route_fingerprint,
                     }
@@ -1259,12 +1263,14 @@ fn deterministic_mobile_event_permutations_eventually_converge_online() {
                 8 => tp::Input::NetworkSnapshot {
                     source_epoch: 1,
                     sequence: sequence.saturating_sub(1),
+                    observed_at: ms(now_ms),
                     semantic_path: tp::SemanticPath::Offline,
                     route_fingerprint: route_fingerprint.wrapping_add(9),
                 },
                 _ => tp::Input::NetworkSnapshot {
                     source_epoch: 1,
                     sequence,
+                    observed_at: ms(now_ms),
                     semantic_path: current_semantic_path,
                     route_fingerprint,
                 },
@@ -1318,6 +1324,7 @@ fn deterministic_mobile_event_permutations_eventually_converge_online() {
             tp::Input::NetworkSnapshot {
                 source_epoch: 1,
                 sequence,
+                observed_at: ms(now_ms),
                 semantic_path: tp::SemanticPath::Online,
                 route_fingerprint,
             },

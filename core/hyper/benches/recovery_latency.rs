@@ -305,6 +305,7 @@ async fn m2_one_run() -> Percentiles {
                 },
                 result_tx,
                 source_epoch: M2_SOURCE_EPOCH,
+                observed_at: tokio::time::Instant::now(),
             })
             .await
             .expect("enqueue fact");

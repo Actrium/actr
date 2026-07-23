@@ -80,12 +80,14 @@ fn representative_inputs() -> Vec<Input> {
         Input::NetworkSnapshot {
             source_epoch: 1,
             sequence: 2,
+            observed_at: Duration::ZERO,
             semantic_path: SemanticPath::Online,
             route_fingerprint: 1,
         },
         Input::NetworkSnapshot {
             source_epoch: 1,
             sequence: 3,
+            observed_at: Duration::ZERO,
             semantic_path: SemanticPath::Offline,
             route_fingerprint: 1,
         },

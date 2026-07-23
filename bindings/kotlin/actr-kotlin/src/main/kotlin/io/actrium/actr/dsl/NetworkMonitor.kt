@@ -19,6 +19,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * NetworkMonitor - Independent network state monitor
@@ -97,23 +99,51 @@ class NetworkMonitor
             scope: CoroutineScope,
             getSystem: () -> ActrNode?,
             onNetworkStatusLog: ((String) -> Unit)? = null,
-        ): NetworkMonitor =
-            NetworkMonitor(
+        ): NetworkMonitor {
+            val handleLock = Mutex()
+            var monitorHandle: NetworkEventHandle? = null
+
+            suspend fun getMonitorHandle(): NetworkEventHandle? =
+                handleLock.withLock {
+                    monitorHandle
+                        ?: getSystem()
+                            ?.createNetworkMonitorEventHandle()
+                            ?.also { monitorHandle = it }
+                }
+
+            return NetworkMonitor(
                 context = context,
                 scope = scope,
                 onNetworkPathChanged = { snapshot ->
-                    handleNetworkPathChangedInternal(getSystem, snapshot, onNetworkStatusLog)
+                    handleNetworkPathChangedWithHandle(
+                        { getMonitorHandle() },
+                        snapshot,
+                        onNetworkStatusLog,
+                    )
                 },
                 onAppLifecycleChanged = { state ->
-                    handleAppLifecycleChangedInternal(getSystem, state, onNetworkStatusLog)
+                    handleAppLifecycleChangedWithHandle(
+                        { getMonitorHandle() },
+                        state,
+                        onNetworkStatusLog,
+                    )
                 },
                 onCleanupConnections = { reason ->
-                    handleCleanupConnectionsInternal(getSystem, reason, onNetworkStatusLog)
+                    handleCleanupConnectionsWithHandle(
+                        { getMonitorHandle() },
+                        reason,
+                        onNetworkStatusLog,
+                    )
                 },
                 onForceReconnect = { reason ->
-                    handleForceReconnectInternal(getSystem, reason, onNetworkStatusLog)
+                    handleForceReconnectWithHandle(
+                        { getMonitorHandle() },
+                        reason,
+                        onNetworkStatusLog,
+                    )
                 },
             )
+        }
 
         /**
          * Create a NetworkMonitor integrated with NetworkEventHandle
@@ -137,176 +167,39 @@ class NetworkMonitor
                 context = context,
                 scope = scope,
                 onNetworkPathChanged = { snapshot ->
-                    handleNetworkPathChangedWithHandle(getHandle, snapshot, onNetworkStatusLog)
+                    handleNetworkPathChangedWithHandle(
+                        { getHandle() },
+                        snapshot,
+                        onNetworkStatusLog,
+                    )
                 },
                 onAppLifecycleChanged = { state ->
-                    handleAppLifecycleChangedWithHandle(getHandle, state, onNetworkStatusLog)
+                    handleAppLifecycleChangedWithHandle(
+                        { getHandle() },
+                        state,
+                        onNetworkStatusLog,
+                    )
                 },
                 onCleanupConnections = { reason ->
-                    handleCleanupConnectionsWithHandle(getHandle, reason, onNetworkStatusLog)
+                    handleCleanupConnectionsWithHandle(
+                        { getHandle() },
+                        reason,
+                        onNetworkStatusLog,
+                    )
                 },
                 onForceReconnect = { reason ->
-                    handleForceReconnectWithHandle(getHandle, reason, onNetworkStatusLog)
+                    handleForceReconnectWithHandle(
+                        { getHandle() },
+                        reason,
+                        onNetworkStatusLog,
+                    )
                 },
             )
-
-        private suspend fun handleNetworkPathChangedInternal(
-            getSystem: () -> ActrNode?,
-            snapshot: NetworkSnapshot,
-            onLog: ((String) -> Unit)?,
-        ) {
-            val system = getSystem()
-            if (system == null) {
-                Log.d(TAG, "ActrNode not available, skipping network path changed event")
-                return
-            }
-
-            try {
-                val handle = system.createNetworkEventHandle()
-                val result = handle.handleNetworkPathChangedCatching(snapshot)
-                result
-                    .onSuccess { eventResult ->
-                        Log.i(
-                            TAG,
-                            "Network path changed event handled successfully: $eventResult",
-                        )
-                        onLog?.invoke(
-                            "🌐 Network path changed - " +
-                                "avail=${snapshot.availability}, " +
-                                "wifi=${snapshot.transport.wifi}, " +
-                                "cell=${snapshot.transport.cellular}, " +
-                                "vpn=${snapshot.transport.vpn}",
-                        )
-                    }.onFailure { error ->
-                        if (error is ActrException.Internal) {
-                            Log.d(TAG, "Runtime node no longer available, skipping network path changed event")
-                        } else {
-                            Log.e(TAG, "Failed to handle network path changed event", error)
-                            onLog?.invoke("❌ Network path changed event failed: ${error.message}")
-                        }
-                    }
-            } catch (e: ActrException.Internal) {
-                Log.d(TAG, "Runtime node no longer available, skipping network path changed event")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error handling network path changed", e)
-                onLog?.invoke("❌ Network path changed error: ${e.message}")
-            }
-        }
-
-        private suspend fun handleAppLifecycleChangedInternal(
-            getSystem: () -> ActrNode?,
-            state: AppLifecycleState,
-            onLog: ((String) -> Unit)?,
-        ) {
-            val system = getSystem()
-            if (system == null) {
-                Log.d(TAG, "ActrNode not available, skipping app lifecycle event")
-                return
-            }
-
-            try {
-                val handle = system.createNetworkEventHandle()
-                val result = handle.handleAppLifecycleChangedCatching(state)
-                result
-                    .onSuccess { eventResult ->
-                        Log.i(
-                            TAG,
-                            "App lifecycle event handled successfully: $eventResult",
-                        )
-                        val label = when (state) {
-                            is AppLifecycleState.Background -> "Background"
-                            is AppLifecycleState.Foreground ->
-                                "Foreground (bg_duration=${state.backgroundDurationMs}ms)"
-                        }
-                        onLog?.invoke("📱 App lifecycle: $label")
-                    }.onFailure { error ->
-                        if (error is ActrException.Internal) {
-                            Log.d(TAG, "Runtime node no longer available, skipping app lifecycle event")
-                        } else {
-                            Log.e(TAG, "Failed to handle app lifecycle event", error)
-                            onLog?.invoke("❌ App lifecycle event failed: ${error.message}")
-                        }
-                    }
-            } catch (e: ActrException.Internal) {
-                Log.d(TAG, "Runtime node no longer available, skipping app lifecycle event")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error handling app lifecycle", e)
-                onLog?.invoke("❌ App lifecycle error: ${e.message}")
-            }
-        }
-
-        private suspend fun handleCleanupConnectionsInternal(
-            getSystem: () -> ActrNode?,
-            reason: CleanupReason,
-            onLog: ((String) -> Unit)?,
-        ) {
-            val system = getSystem()
-            if (system == null) {
-                Log.d(TAG, "ActrNode not available, skipping cleanup connections")
-                return
-            }
-
-            try {
-                val handle = system.createNetworkEventHandle()
-                val result = handle.cleanupConnectionsCatching(reason)
-                result
-                    .onSuccess { eventResult ->
-                        Log.i(TAG, "Cleanup connections handled successfully: $eventResult")
-                        onLog?.invoke("🧹 Cleanup connections: $reason")
-                    }.onFailure { error ->
-                        if (error is ActrException.Internal) {
-                            Log.d(TAG, "Runtime node no longer available, skipping cleanup connections")
-                        } else {
-                            Log.e(TAG, "Failed to cleanup connections", error)
-                            onLog?.invoke("❌ Cleanup connections failed: ${error.message}")
-                        }
-                    }
-            } catch (e: ActrException.Internal) {
-                Log.d(TAG, "Runtime node no longer available, skipping cleanup connections")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error cleaning up connections", e)
-                onLog?.invoke("❌ Cleanup connections error: ${e.message}")
-            }
-        }
-
-        private suspend fun handleForceReconnectInternal(
-            getSystem: () -> ActrNode?,
-            reason: ReconnectReason,
-            onLog: ((String) -> Unit)?,
-        ) {
-            val system = getSystem()
-            if (system == null) {
-                Log.d(TAG, "ActrNode not available, skipping force reconnect")
-                return
-            }
-
-            try {
-                val handle = system.createNetworkEventHandle()
-                val result = handle.forceReconnectCatching(reason)
-                result
-                    .onSuccess { eventResult ->
-                        Log.i(TAG, "Force reconnect handled successfully: $eventResult")
-                        onLog?.invoke("🔄 Force reconnect: $reason")
-                    }.onFailure { error ->
-                        if (error is ActrException.Internal) {
-                            Log.d(TAG, "Runtime node no longer available, skipping force reconnect")
-                        } else {
-                            Log.e(TAG, "Failed to force reconnect", error)
-                            onLog?.invoke("❌ Force reconnect failed: ${error.message}")
-                        }
-                    }
-            } catch (e: ActrException.Internal) {
-                Log.d(TAG, "Runtime node no longer available, skipping force reconnect")
-            } catch (e: Exception) {
-                Log.e(TAG, "Error force reconnecting", e)
-                onLog?.invoke("❌ Force reconnect error: ${e.message}")
-            }
-        }
 
         // ---- Handle-based variants ----
 
         private suspend fun handleNetworkPathChangedWithHandle(
-            getHandle: () -> NetworkEventHandle?,
+            getHandle: suspend () -> NetworkEventHandle?,
             snapshot: NetworkSnapshot,
             onLog: ((String) -> Unit)?,
         ) {
@@ -347,7 +240,7 @@ class NetworkMonitor
         }
 
         private suspend fun handleAppLifecycleChangedWithHandle(
-            getHandle: () -> NetworkEventHandle?,
+            getHandle: suspend () -> NetworkEventHandle?,
             state: AppLifecycleState,
             onLog: ((String) -> Unit)?,
         ) {
@@ -383,7 +276,7 @@ class NetworkMonitor
         }
 
         private suspend fun handleCleanupConnectionsWithHandle(
-            getHandle: () -> NetworkEventHandle?,
+            getHandle: suspend () -> NetworkEventHandle?,
             reason: CleanupReason,
             onLog: ((String) -> Unit)?,
         ) {
@@ -414,7 +307,7 @@ class NetworkMonitor
         }
 
         private suspend fun handleForceReconnectWithHandle(
-            getHandle: () -> NetworkEventHandle?,
+            getHandle: suspend () -> NetworkEventHandle?,
             reason: ReconnectReason,
             onLog: ((String) -> Unit)?,
         ) {
