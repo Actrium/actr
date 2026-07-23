@@ -78,11 +78,11 @@ use crate::wire::webrtc::{CleanupGuard, SignalingClient, WebRtcCoordinator};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
-use super::connection_supervisor::{
-    ConnectionSupervisor, StartedEffect, TimerOp, event_to_input, network_action_of,
-};
 use super::recovery_policy::diagnosis::{AbortCause, EffectDiagnosis, EffectOutcome};
 use super::recovery_policy::translate as tp;
+use super::recovery_supervisor::{
+    RecoverySupervisor, StartedEffect, TimerOp, event_to_input, network_action_of,
+};
 
 const NETWORK_EVENT_RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 const SIGNALING_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -1111,7 +1111,7 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
             run_network_event_reconciler, which drives the RFC translate engine")]
 #[allow(deprecated)]
 pub fn select_network_recovery_action(events: &[NetworkEvent]) -> NetworkRecoveryAction {
-    super::connection_supervisor::legacy_select_action(events)
+    super::recovery_supervisor::legacy_select_action(events)
 }
 
 /// Process a batch of events by selecting one action and running it once.
@@ -1131,7 +1131,7 @@ pub async fn process_network_event_batch(
         return Vec::new();
     }
 
-    let action = super::connection_supervisor::legacy_select_action(&events);
+    let action = super::recovery_supervisor::legacy_select_action(&events);
     process_network_event_batch_with_action(events, action, processor).await
 }
 
@@ -1419,7 +1419,7 @@ async fn reconcile_loop(
     tracing::info!(?profile, "🔄 Network event reconciler started");
 
     let start = tokio::time::Instant::now();
-    let mut supervisor = ConnectionSupervisor::new(profile);
+    let mut supervisor = RecoverySupervisor::new(profile);
 
     let mut timers: HashMap<tp::TimerId, tokio::task::AbortHandle> = HashMap::new();
     let mut effect: Option<RunningEffect> = None;
@@ -1511,7 +1511,7 @@ fn arm_timer(
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 fn handle_supervisor_input(
-    supervisor: &mut ConnectionSupervisor,
+    supervisor: &mut RecoverySupervisor,
     input: tp::Input,
     now: Duration,
     start: tokio::time::Instant,

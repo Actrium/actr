@@ -273,7 +273,7 @@ pub(crate) struct StartedEffect {
 // ---------------------------------------------------------------------------
 
 /// The persistent, layered recovery supervisor.
-pub struct ConnectionSupervisor {
+pub struct RecoverySupervisor {
     view: tp::View,
     config: tp::PolicyConfig,
     entropy: Box<dyn EntropySource + Send>,
@@ -284,21 +284,21 @@ pub struct ConnectionSupervisor {
     pending_ops: Vec<TimerOp>,
 }
 
-impl std::fmt::Debug for ConnectionSupervisor {
+impl std::fmt::Debug for RecoverySupervisor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ConnectionSupervisor")
+        f.debug_struct("RecoverySupervisor")
             .field("view", &self.view)
             .finish_non_exhaustive()
     }
 }
 
-impl Default for ConnectionSupervisor {
+impl Default for RecoverySupervisor {
     fn default() -> Self {
         Self::new(tp::LifecycleProfile::Ungated)
     }
 }
 
-impl ConnectionSupervisor {
+impl RecoverySupervisor {
     /// Construct a supervisor with the given lifecycle profile. The Rust core
     /// and headless deployments use `Ungated`; mobile bindings use `Gated`.
     pub(crate) fn new(profile: tp::LifecycleProfile) -> Self {
@@ -535,7 +535,7 @@ impl ConnectionSupervisor {
                 self.view.recovery_mode = tp::RecoveryModeState::Terminating
             }
             None => {
-                tracing::error!(input = ?i, "connection_supervisor.recovery_mode.invalid_transition")
+                tracing::error!(input = ?i, "recovery_supervisor.recovery_mode.invalid_transition")
             }
         }
     }
@@ -556,7 +556,7 @@ impl ConnectionSupervisor {
             Some(app_phase::State::Foreground) => tp::AppPhaseState::Foreground,
             Some(app_phase::State::Background) => tp::AppPhaseState::Background,
             None => {
-                tracing::error!(input = ?i, "connection_supervisor.app_phase.invalid_transition");
+                tracing::error!(input = ?i, "recovery_supervisor.app_phase.invalid_transition");
                 return;
             }
         };
@@ -591,7 +591,7 @@ impl ConnectionSupervisor {
             Some(path::State::OfflineCandidate) => tp::NetworkPathState::OfflineCandidate,
             Some(path::State::Offline) => tp::NetworkPathState::Offline,
             None => {
-                tracing::error!(input = ?i, "connection_supervisor.network_path.invalid_transition");
+                tracing::error!(input = ?i, "recovery_supervisor.network_path.invalid_transition");
                 return;
             }
         };
@@ -673,7 +673,7 @@ impl ConnectionSupervisor {
                 Some(tp::RecoveryIntentState::ReconnectPending)
             }
             None => {
-                tracing::error!(input = ?i, "connection_supervisor.recovery_intent.invalid_transition");
+                tracing::error!(input = ?i, "recovery_supervisor.recovery_intent.invalid_transition");
                 None
             }
         }
@@ -695,7 +695,7 @@ impl ConnectionSupervisor {
                 self.view.cleanup_work = tp::CleanupWorkState::CleanupPending
             }
             None => {
-                tracing::error!(input = ?i, "connection_supervisor.cleanup_work.invalid_transition");
+                tracing::error!(input = ?i, "recovery_supervisor.cleanup_work.invalid_transition");
                 return;
             }
         }
@@ -733,7 +733,7 @@ impl ConnectionSupervisor {
                 self.view.offline_work = tp::OfflineWorkState::DisconnectPending
             }
             None => {
-                tracing::error!(input = ?i, "connection_supervisor.offline_work.invalid_transition");
+                tracing::error!(input = ?i, "recovery_supervisor.offline_work.invalid_transition");
                 return;
             }
         }
@@ -767,7 +767,7 @@ impl ConnectionSupervisor {
             0
         };
         let Some(rec) = self.record_mut(domain) else {
-            tracing::error!(?domain, input = ?input, "connection_supervisor.retry_gate.missing_record");
+            tracing::error!(?domain, input = ?input, "recovery_supervisor.retry_gate.missing_record");
             return;
         };
         let Some(next) = retry_gate_next(rec.gate, input) else {
@@ -860,7 +860,7 @@ impl ConnectionSupervisor {
             tp::ExecutionInput::Cancelled => EI::Cancelled,
         };
         let Some(next) = <EM as StateMachine>::next_state(&cur, &inp) else {
-            tracing::error!(input = ?i, "connection_supervisor.execution.invalid_transition");
+            tracing::error!(input = ?i, "recovery_supervisor.execution.invalid_transition");
             return;
         };
         // A completion (any input returning to Idle) releases the effect context;
@@ -1076,7 +1076,7 @@ fn retry_gate_next(
         Some(g::State::BackingOff) => Some(tp::RetryGateState::BackingOff),
         Some(g::State::Parked) => Some(tp::RetryGateState::Parked),
         None => {
-            tracing::error!(state = ?cur, input = ?input, "connection_supervisor.retry_gate.invalid_transition");
+            tracing::error!(state = ?cur, input = ?input, "recovery_supervisor.retry_gate.invalid_transition");
             None
         }
     }
@@ -1406,5 +1406,5 @@ fn route_fingerprint(snapshot: &NetworkSnapshot) -> u64 {
 const _: Duration = Duration::from_millis(LONG_BACKGROUND_RECONNECT_THRESHOLD_MS);
 
 #[cfg(test)]
-#[path = "connection_supervisor_tests.rs"]
+#[path = "recovery_supervisor_tests.rs"]
 mod tests;

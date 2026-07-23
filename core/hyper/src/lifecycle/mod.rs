@@ -4,7 +4,6 @@
 //! - `node::Inner`: internal running-state struct used by `Node<S>` / `ActrRef`.
 
 pub(crate) mod compat_lock;
-mod connection_supervisor;
 pub(crate) mod credential_manager;
 pub(crate) mod dedup;
 mod heartbeat;
@@ -14,9 +13,10 @@ mod network_event;
 pub(crate) mod node;
 mod recovery_execution;
 mod recovery_policy;
+mod recovery_supervisor;
 pub(crate) mod session_state;
 
-pub use connection_supervisor::ConnectionFact;
+pub use recovery_supervisor::ConnectionFact;
 // `process_network_event_batch` and `select_network_recovery_action` are the
 // deprecated legacy batch path; they are still re-exported for the migration
 // window, so this re-export intentionally allows the deprecation lint.

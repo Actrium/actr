@@ -1171,8 +1171,8 @@ fn test_batch_action_uses_latest_network_state_event() {
     );
 }
 
-// `test_connection_supervisor_fact_matrix` (pre-RFC-0400) was removed here.
-// It drove the deprecated per-instance `ConnectionSupervisor::submit_fact` /
+// `test_recovery_supervisor_fact_matrix` (pre-RFC-0400) was removed here.
+// It drove the deprecated per-instance `RecoverySupervisor::submit_fact` /
 // `reconcile` API directly with hand-built `ConnectionFact` values; that API
 // is no longer public (the RFC-0400 supervisor rewrite replaced it with the
 // translate()-driven engine, and the pre-RFC selector now lives only as the
@@ -1647,7 +1647,7 @@ async fn test_reconnect_intent_survives_across_reconciler_receive_cycles() {
 // reconciler entry point and is covered instead by
 // `gated_profile_denies_eligibility_until_foreground` and
 // `gated_profile_background_gates_recovery_but_preserves_intent` in
-// `connection_supervisor_tests.rs`.
+// `recovery_supervisor_tests.rs`.
 #[tokio::test]
 async fn test_background_preserves_healthy_session_and_admits_reconnect_under_ungated() {
     let client = Arc::new(FakeSignalingClient::new());

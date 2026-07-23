@@ -342,7 +342,7 @@ impl NetworkEventProcessor for PreemptionFenceProcessor {
 
 #[tokio::test]
 async fn stronger_reconnect_fences_restore_before_requesting_cancellation() {
-    let mut supervisor = ConnectionSupervisor::new(tp::LifecycleProfile::Ungated);
+    let mut supervisor = RecoverySupervisor::new(tp::LifecycleProfile::Ungated);
     supervisor.accept(
         tp::Input::AppEnteredForeground {
             observed_background_duration: None,

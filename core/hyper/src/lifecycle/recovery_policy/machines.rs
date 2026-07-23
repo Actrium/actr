@@ -2,7 +2,7 @@
 //!
 //! `RecoveryMode`, `CleanupWork`, and `RetryGate` complete the normative
 //! machine set alongside the pre-RFC machines in
-//! [`super::super::connection_supervisor`] and
+//! [`super::super::recovery_supervisor`] and
 //! [`super::super::recovery_execution`]. Each machine is isolated in its own
 //! module so the generated `State` / `Input` enums do not collide, mirroring
 //! the isolation pattern used by the connection supervisor.

@@ -9,20 +9,20 @@
 
 use std::time::Duration;
 
-use super::ConnectionSupervisor;
+use super::RecoverySupervisor;
 use crate::lifecycle::recovery_policy::classification::FixedEntropy;
 use crate::lifecycle::recovery_policy::diagnosis::{EffectDiagnosis, EffectKind, EffectOutcome};
 use crate::lifecycle::recovery_policy::translate as tp;
 
-fn ungated() -> ConnectionSupervisor {
-    ConnectionSupervisor::new_with_entropy(
+fn ungated() -> RecoverySupervisor {
+    RecoverySupervisor::new_with_entropy(
         tp::LifecycleProfile::Ungated,
         Box::new(FixedEntropy::constant(0.5)),
     )
 }
 
-fn gated() -> ConnectionSupervisor {
-    ConnectionSupervisor::new_with_entropy(
+fn gated() -> RecoverySupervisor {
+    RecoverySupervisor::new_with_entropy(
         tp::LifecycleProfile::Gated,
         Box::new(FixedEntropy::constant(0.5)),
     )
@@ -1124,7 +1124,7 @@ fn inv27_cleanup_preempts_a_running_probe() {
 }
 
 fn complete_started_effect(
-    supervisor: &mut ConnectionSupervisor,
+    supervisor: &mut RecoverySupervisor,
     started: super::StartedEffect,
     now: Duration,
     signaling_generation: &mut u64,
@@ -1153,7 +1153,7 @@ fn complete_started_effect(
 }
 
 fn cancel_started_effect(
-    supervisor: &mut ConnectionSupervisor,
+    supervisor: &mut RecoverySupervisor,
     started: super::StartedEffect,
     now: Duration,
 ) {

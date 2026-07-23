@@ -16,8 +16,8 @@
 //!   entropy) -> Decision` reducer, the composite action decision, and the
 //!   derived send projection.
 //!
-//! The layer is the production policy core: [`super::connection_supervisor`]'s
-//! `ConnectionSupervisor::accept` drives every transition through
+//! The layer is the production policy core: [`super::recovery_supervisor`]'s
+//! `RecoverySupervisor::accept` drives every transition through
 //! [`translate`], and the responsive reconciler in [`super::network_event`]
 //! executes the resulting decisions. The module-level `allow(dead_code)` keeps
 //! the full RFC vocabulary present for diagnostics and future phases even where

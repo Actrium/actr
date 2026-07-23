@@ -24,9 +24,9 @@
 
 use yasm::StateMachine;
 
-use super::connection_supervisor::{app_phase, offline_work, path, recovery};
 use super::recovery_execution::RecoveryExecutionMachine;
 use super::recovery_policy::machines::{cleanup_work, recovery_mode, retry_gate};
+use super::recovery_supervisor::{app_phase, offline_work, path, recovery};
 
 /// Generate a transition table sorted by `(current_state, input, next_state)`.
 ///
