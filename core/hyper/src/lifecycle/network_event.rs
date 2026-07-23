@@ -1240,7 +1240,14 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
                 .await
                 .map_err(|error| NetworkRecoveryError::from_opaque("Offline", error)),
             NetworkRecoveryAction::Probe => self.probe_or_restore_typed("Probe").await,
-            NetworkRecoveryAction::Restore => self.process_network_available_typed().await,
+            // Supervisor-selected work has already passed structural duplicate
+            // suppression and single-flight admission. Running it through the
+            // legacy direct-call debounce can silently acknowledge required
+            // Restore work without executing it.
+            NetworkRecoveryAction::Restore => {
+                self.restore_signaling_and_webrtc_from_network_event_typed("SupervisorRestore")
+                    .await
+            }
             NetworkRecoveryAction::CleanupOnly => self
                 .cleanup_connections()
                 .await

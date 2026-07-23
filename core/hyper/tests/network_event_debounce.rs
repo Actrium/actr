@@ -737,6 +737,45 @@ async fn test_network_available_probes_when_already_connected() {
 }
 
 #[tokio::test]
+async fn test_supervisor_restore_bypasses_legacy_available_debounce() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+
+    let processor = DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_secs(60),
+        },
+    );
+
+    processor
+        .process_network_available()
+        .await
+        .expect("legacy available call should succeed");
+    processor
+        .process_network_available()
+        .await
+        .expect("legacy duplicate should be debounced");
+    assert_eq!(client.probe_calls(), 1);
+
+    processor
+        .process_network_recovery_action(NetworkRecoveryAction::Restore)
+        .await
+        .expect("supervisor Restore should execute");
+    processor
+        .process_network_recovery_action(NetworkRecoveryAction::Restore)
+        .await
+        .expect("later supervisor Restore should also execute");
+
+    assert_eq!(
+        client.probe_calls(),
+        3,
+        "policy-admitted Restore work must not be swallowed by direct-call debounce"
+    );
+}
+
+#[tokio::test]
 async fn test_network_available_rebuilds_when_signaling_probe_fails() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
@@ -1403,7 +1442,7 @@ async fn test_network_event_handle_rolls_back_offline_before_grace_expires() {
     assert_eq!(
         client.probe_calls(),
         1,
-        "Available path updates inside the debounce window should probe once"
+        "Equivalent available paths should be structurally deduplicated"
     );
 
     shutdown.cancel();
@@ -1713,7 +1752,7 @@ async fn test_background_preserves_healthy_session_and_admits_reconnect_under_un
 }
 
 #[tokio::test]
-async fn test_repeated_available_path_updates_probe_once_inside_debounce_window() {
+async fn test_material_path_updates_bypass_legacy_debounce() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
 
@@ -1773,6 +1812,15 @@ async fn test_repeated_available_path_updates_probe_once_inside_debounce_window(
             .expect("type changed task should not panic")
             .unwrap();
 
+        let expected_probes = cycle * 2;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while client.probe_calls() < expected_probes {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("policy-admitted probes should complete");
+
         assert!(
             available_result.success,
             "foreground Available should succeed in cycle {}",
@@ -1808,8 +1856,8 @@ async fn test_repeated_available_path_updates_probe_once_inside_debounce_window(
         );
         assert_eq!(
             client.probe_calls(),
-            1,
-            "rapid available updates should stay inside one debounce window in cycle {}",
+            expected_probes,
+            "material route changes must not be swallowed by legacy debounce in cycle {}",
             cycle
         );
     }
