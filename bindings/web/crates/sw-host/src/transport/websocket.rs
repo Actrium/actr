@@ -20,13 +20,26 @@ use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 /// `Date.now()`, which jumps when the wall clock changes (NTP, manual set).
 ///
 /// Reads `performance` off the worker global scope; falls back to `Date.now()`
-/// if the Performance API is unavailable.
+/// if the Performance API is unavailable. The fallback warns once per worker
+/// (the degradation is permanent for the worker's lifetime, so a single warn
+/// carries the full signal without flooding the console on every poll tick).
 fn monotonic_now_ms() -> f64 {
     js_sys::global()
         .unchecked_into::<web_sys::WorkerGlobalScope>()
         .performance()
         .map(|p| p.now())
-        .unwrap_or_else(js_sys::Date::now)
+        .unwrap_or_else(|| {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                log::warn!(
+                    "[WebSocketLane] Performance API unavailable; connect-timeout pacing \
+                     degrades to Date.now(), so wall-clock jumps (NTP, manual set) can fire \
+                     or stall connection timeouts"
+                );
+            }
+            js_sys::Date::now()
+        })
 }
 
 /// Builder for a WebSocket lane.

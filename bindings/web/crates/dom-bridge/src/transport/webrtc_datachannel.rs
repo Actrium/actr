@@ -24,12 +24,26 @@ use web_sys::{MessageEvent, RtcDataChannel, RtcDataChannelInit, RtcDataChannelSt
 /// Milliseconds from `performance.now()`: monotonic per RFC-0419, unlike
 /// `Date.now()`, which jumps when the wall clock changes (NTP, manual set).
 ///
-/// Falls back to `Date.now()` if the Performance API is unavailable.
+/// Falls back to `Date.now()` if the Performance API is unavailable. The
+/// fallback warns once per page (the degradation is permanent for the page's
+/// lifetime, so a single warn carries the full signal without flooding the
+/// console on every poll tick).
 fn monotonic_now_ms() -> f64 {
     web_sys::window()
         .and_then(|w| w.performance())
         .map(|p| p.now())
-        .unwrap_or_else(js_sys::Date::now)
+        .unwrap_or_else(|| {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                log::warn!(
+                    "[WebRtcDataChannelLane] Performance API unavailable; open-timeout \
+                     pacing degrades to Date.now(), so wall-clock jumps (NTP, manual set) \
+                     can fire or stall channel-open timeouts"
+                );
+            }
+            js_sys::Date::now()
+        })
 }
 
 /// WebRTC DataChannel lane builder.
