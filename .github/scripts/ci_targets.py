@@ -18,6 +18,7 @@ TARGETS = (
     "swift_binding",
     "kotlin_binding",
     "web_binding",
+    "c_go_workloads",
     "release_related",
 )
 
@@ -83,6 +84,8 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
             targets["ts_binding"] = True
             targets["swift_binding"] = True
             targets["web_binding"] = True
+            if path == "core/framework/wit-v2/actr-workload.wit":
+                targets["c_go_workloads"] = True
             if path == "core/framework/wit/actr-workload.wit":
                 targets["python_workload"] = True
                 targets["ts_workload"] = True
@@ -148,6 +151,16 @@ def detect_targets(changed_files: list[str], full_run: bool) -> tuple[dict[str, 
         if path.startswith("examples/typescript/echo-workload/"):
             targets["ts_workload"] = True
             reasons.append(f"typescript_workload:{path}")
+            continue
+
+        if path.startswith(
+            (
+                "examples/c/echo-workload/",
+                "examples/go/echo-workload/",
+            )
+        ):
+            targets["c_go_workloads"] = True
+            reasons.append(f"c_go_workload:{path}")
             continue
 
         if path.startswith("e2e/typescript-stream/"):
