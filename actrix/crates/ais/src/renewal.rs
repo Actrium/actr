@@ -25,6 +25,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// How long an expired renewal-token record remains a valid possession proof
+/// for `/ais/reissue` (issuer-recorded actor binding).
+///
+/// Renewal (`/ais/renew`) keeps requiring an unexpired token; this grace only
+/// lets a long-offline node prove it once owned the exact serial so it can
+/// recover its stable identity through the hard-reissue path. Records older
+/// than expiry + grace are garbage-collected and the identity can no longer
+/// be reissued (the node must register a fresh serial).
+pub const REISSUE_BINDING_GRACE_SECS: i64 = 30 * 86_400;
+
 // -------- public API ---------------------------------------------------------
 
 /// Compute SHA-256(token) for storage lookup.
@@ -150,6 +160,31 @@ pub async fn find_unexpired_token(
     )
 }
 
+/// Check whether `actor_id + token_hash` matches an issuer-recorded binding
+/// for `/ais/reissue` possession proof.
+///
+/// Unlike [`find_unexpired_token`], this accepts tokens that expired up to
+/// [`REISSUE_BINDING_GRACE_SECS`] ago: the reissue path exists precisely for
+/// nodes whose renewal token can no longer be used for `/renew`.
+pub async fn has_binding_token(actor_id: &ActrId, token_hash: &[u8]) -> Result<bool, sqlx::Error> {
+    let pool = platform::storage::db::get_database().get_pool();
+    let now = now_secs();
+
+    let row: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM ais_renewal_token
+         WHERE actor_id = ?1 AND token_hash = ?2 AND expires_at + ?3 > ?4
+         LIMIT 1",
+    )
+    .bind(actor_id.to_string_repr())
+    .bind(token_hash)
+    .bind(REISSUE_BINDING_GRACE_SECS)
+    .bind(now)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.is_some())
+}
+
 /// Delete all expired tokens for a given actor.
 pub async fn delete_expired_tokens_for_actor(actor_id: &ActrId) -> Result<u64, sqlx::Error> {
     let pool = platform::storage::db::get_database().get_pool();
@@ -188,15 +223,19 @@ pub async fn trim_oldest_tokens_for_actor(actor_id: &ActrId) -> Result<u64, sqlx
     Ok(result.rows_affected())
 }
 
-/// Global GC: delete all expired tokens across all actors.
+/// Global GC: delete tokens across all actors once they are expired beyond
+/// [`REISSUE_BINDING_GRACE_SECS`].
 ///
 /// Called periodically (low-frequency) and at the start of each
-/// register/renew transaction.
+/// register/renew transaction. Rows inside the grace window are kept on
+/// purpose: they are the issuer-recorded binding that `/ais/reissue` uses to
+/// verify actor possession after the token stopped being renewable.
 pub async fn gc_expired_tokens() -> Result<u64, sqlx::Error> {
     let pool = platform::storage::db::get_database().get_pool();
     let now = now_secs();
 
-    let result = sqlx::query("DELETE FROM ais_renewal_token WHERE expires_at <= ?1")
+    let result = sqlx::query("DELETE FROM ais_renewal_token WHERE expires_at + ?1 <= ?2")
+        .bind(REISSUE_BINDING_GRACE_SECS)
         .bind(now)
         .execute(pool)
         .await?;

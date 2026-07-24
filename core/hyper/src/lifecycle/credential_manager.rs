@@ -410,6 +410,7 @@ async fn run_hard_rebind(
         .reissue_credential(ReissueCredentialRequest {
             actr_id: old_snapshot.actor_id.clone(),
             registration,
+            renewal_proof: reissue_possession_proof(&old_snapshot),
         })
         .await
         .map_err(|err| format!("hard rebind reissue failed before commit: {err}"))?;
@@ -817,6 +818,7 @@ async fn run_credential_only_hard_rebind(
         .reissue_credential(ReissueCredentialRequest {
             actr_id: old_snapshot.actor_id.clone(),
             registration,
+            renewal_proof: reissue_possession_proof(&old_snapshot),
         })
         .await
     {
@@ -937,6 +939,21 @@ async fn run_credential_only_hard_rebind(
         // MembershipController assigns current_revision + 1 at publish time.
         revision: 0,
     })
+}
+
+/// Possession proof for `/ais/reissue`: the last renewal token issued to this
+/// node, even when it is already expired or was rejected by `/ais/renew`.
+/// AIS matches its hash against the issuer-recorded binding for the actor so
+/// only the holder of that token can reissue credentials for this serial.
+fn reissue_possession_proof(snapshot: &SessionSnapshot) -> Option<bytes::Bytes> {
+    if snapshot.renewal_token.is_empty() {
+        tracing::warn!(
+            actor_id = %snapshot.actor_id.to_string_repr(),
+            "hard rebind has no renewal token to prove actor possession; AIS will reject the reissue"
+        );
+        return None;
+    }
+    Some(snapshot.renewal_token.clone())
 }
 
 fn is_expired(expires_at: i64) -> bool {

@@ -405,6 +405,7 @@ async fn test_reissue_route_preserves_linked_actor_id() {
         ReissueCredentialRequest {
             actr_id: initial_ok.actr_id.clone(),
             registration,
+            renewal_proof: initial_ok.renewal_token.clone(),
         },
         Some(realm_secret),
     )
@@ -417,6 +418,188 @@ async fn test_reissue_route_preserves_linked_actor_id() {
         }
         register_response::Result::Error(err) => {
             panic!("credential reissue should preserve the actor id: {err:?}")
+        }
+    }
+
+    env.shutdown_signer().await;
+}
+
+/// P0 regression: a caller that authenticates the workload context (realm
+/// secret) but supplies another actor's serial must NOT receive credentials.
+/// The registration context is realm/type-wide; only the renewal-token
+/// possession proof binds the caller to a specific serial.
+#[tokio::test]
+#[serial]
+async fn test_reissue_route_rejects_foreign_serial() {
+    let mut env = setup_test_environment().await;
+    let realm_secret = "linked-foreign-serial-secret";
+    let realm_id = 22012;
+    seed_realm(realm_id, "linked-foreign-serial", Some(realm_secret)).await;
+    let app = create_test_router(&env).await;
+
+    let mut registration = linked_register_request();
+    registration.realm = Realm { realm_id };
+
+    // Two same-realm/type actors, each with its own renewal token.
+    let victim = match post_register(app.clone(), registration.clone(), Some(realm_secret))
+        .await
+        .result
+        .expect("victim register result")
+    {
+        register_response::Result::Success(ok) => ok,
+        register_response::Result::Error(err) => panic!("victim registration failed: {err:?}"),
+    };
+    let attacker = match post_register(app.clone(), registration.clone(), Some(realm_secret))
+        .await
+        .result
+        .expect("attacker register result")
+    {
+        register_response::Result::Success(ok) => ok,
+        register_response::Result::Error(err) => panic!("attacker registration failed: {err:?}"),
+    };
+    assert_ne!(victim.actr_id, attacker.actr_id);
+
+    // The attacker presents its own (valid) renewal token as proof but names
+    // the victim's serial. Must be rejected: the proof is recorded under the
+    // attacker's ActrId, not the victim's.
+    let response = post_reissue(
+        app.clone(),
+        ReissueCredentialRequest {
+            actr_id: victim.actr_id.clone(),
+            registration: registration.clone(),
+            renewal_proof: attacker.renewal_token.clone(),
+        },
+        Some(realm_secret),
+    )
+    .await;
+    match response.result.expect("foreign-serial reissue result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 403, "foreign serial should be forbidden");
+            assert!(err.message.contains("possession"));
+        }
+        register_response::Result::Success(_) => {
+            panic!("reissue must not mint credentials for a foreign serial")
+        }
+    }
+
+    // An arbitrary, never-registered serial must be rejected the same way.
+    let mut unknown_id = attacker.actr_id.clone();
+    unknown_id.serial_number = attacker.actr_id.serial_number.wrapping_add(987_654_321);
+    let response = post_reissue(
+        app,
+        ReissueCredentialRequest {
+            actr_id: unknown_id,
+            registration,
+            renewal_proof: attacker.renewal_token.clone(),
+        },
+        Some(realm_secret),
+    )
+    .await;
+    match response.result.expect("unknown-serial reissue result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 403, "unknown serial should be forbidden");
+        }
+        register_response::Result::Success(_) => {
+            panic!("reissue must not mint credentials for an unknown serial")
+        }
+    }
+
+    env.shutdown_signer().await;
+}
+
+/// A reissue request without any possession proof must be rejected even when
+/// the workload context authenticates.
+#[tokio::test]
+#[serial]
+async fn test_reissue_route_rejects_missing_possession_proof() {
+    let mut env = setup_test_environment().await;
+    let realm_secret = "linked-missing-proof-secret";
+    let realm_id = 22013;
+    seed_realm(realm_id, "linked-missing-proof", Some(realm_secret)).await;
+    let app = create_test_router(&env).await;
+
+    let mut registration = linked_register_request();
+    registration.realm = Realm { realm_id };
+    let initial = post_register(app.clone(), registration.clone(), Some(realm_secret)).await;
+    let initial_ok = match initial.result.expect("register result") {
+        register_response::Result::Success(ok) => ok,
+        register_response::Result::Error(err) => panic!("initial registration failed: {err:?}"),
+    };
+
+    let response = post_reissue(
+        app,
+        ReissueCredentialRequest {
+            actr_id: initial_ok.actr_id.clone(),
+            registration,
+            renewal_proof: None,
+        },
+        Some(realm_secret),
+    )
+    .await;
+    match response.result.expect("missing-proof reissue result") {
+        register_response::Result::Error(err) => {
+            assert_eq!(err.code, 403);
+            assert!(err.message.contains("possession"));
+        }
+        register_response::Result::Success(_) => {
+            panic!("reissue without possession proof must be rejected")
+        }
+    }
+
+    env.shutdown_signer().await;
+}
+
+/// A renewal token that already expired (so `/renew` rejects it) must still
+/// prove possession for `/reissue` within the binding grace window — this is
+/// the self-healing path for long-offline nodes.
+#[tokio::test]
+#[serial]
+async fn test_reissue_route_accepts_expired_recorded_proof() {
+    let mut env = setup_test_environment().await;
+    let realm_secret = "linked-expired-proof-secret";
+    let realm_id = 22014;
+    seed_realm(realm_id, "linked-expired-proof", Some(realm_secret)).await;
+    let app = create_test_router(&env).await;
+
+    let mut registration = linked_register_request();
+    registration.realm = Realm { realm_id };
+    let initial = post_register(app.clone(), registration.clone(), Some(realm_secret)).await;
+    let initial_ok = match initial.result.expect("register result") {
+        register_response::Result::Success(ok) => ok,
+        register_response::Result::Error(err) => panic!("initial registration failed: {err:?}"),
+    };
+
+    // Force the recorded token to be expired (but well inside the grace
+    // window), as if the node had been offline past the renewal TTL.
+    let pool = platform::storage::db::get_database().get_pool();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    sqlx::query("UPDATE ais_renewal_token SET expires_at = ?1 WHERE actor_id = ?2")
+        .bind(now - 3600)
+        .bind(initial_ok.actr_id.to_string_repr())
+        .execute(pool)
+        .await
+        .expect("expire recorded renewal token");
+
+    let response = post_reissue(
+        app,
+        ReissueCredentialRequest {
+            actr_id: initial_ok.actr_id.clone(),
+            registration,
+            renewal_proof: initial_ok.renewal_token.clone(),
+        },
+        Some(realm_secret),
+    )
+    .await;
+    match response.result.expect("expired-proof reissue result") {
+        register_response::Result::Success(ok) => {
+            assert_eq!(ok.actr_id, initial_ok.actr_id);
+            assert!(ok.renewal_token.is_some());
+        }
+        register_response::Result::Error(err) => {
+            panic!("expired-but-recorded proof should still reissue within grace: {err:?}")
         }
     }
 

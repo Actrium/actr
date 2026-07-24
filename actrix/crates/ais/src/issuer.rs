@@ -104,9 +104,10 @@ fn aid_error_to_code(err: &AidError) -> u32 {
         | AidError::Base64DecodeError(_)
         | AidError::HexDecodeError(_) => 400,
         AidError::Expired => 401,
-        AidError::RealmError(_) | AidError::ManufacturerNotVerified | AidError::PackageRevoked => {
-            403
-        }
+        AidError::RealmError(_)
+        | AidError::ManufacturerNotVerified
+        | AidError::ActorPossessionNotProven
+        | AidError::PackageRevoked => 403,
         AidError::GenerationFailed(msg) => {
             if msg.contains("KS unavailable") || msg.contains("KS service") {
                 503
@@ -587,14 +588,21 @@ impl AIdIssuer {
     /// This is deliberately separate from registration: callers must provide an
     /// `ActrId` whose realm and type exactly match the authenticated registration
     /// request, and no new serial number is allocated.
+    ///
+    /// `renewal_proof` is the caller's possession proof for exactly this
+    /// `actor_id`: the raw renewal token most recently issued to that actor.
+    /// Registration authentication alone only proves the caller may run this
+    /// package/type in this realm — it must never be enough to mint
+    /// credentials for an arbitrary serial number.
     pub async fn reissue_credential_with_realm_secret_check(
         &self,
         actor_id: &ActrId,
         request: &RegisterRequest,
+        renewal_proof: Option<&[u8]>,
         realm_secret_check: Option<RealmSecretCheck>,
     ) -> Result<RegisterResponse, AidError> {
         let result = self
-            .reissue_credential_inner(actor_id, request, realm_secret_check.as_ref())
+            .reissue_credential_inner(actor_id, request, renewal_proof, realm_secret_check.as_ref())
             .await;
 
         Ok(match result {
@@ -614,6 +622,7 @@ impl AIdIssuer {
         &self,
         actor_id: &ActrId,
         request: &RegisterRequest,
+        renewal_proof: Option<&[u8]>,
         realm_secret_check: Option<&RealmSecretCheck>,
     ) -> Result<register_response::RegisterOk, AidError> {
         if actor_id.realm != request.realm || actor_id.r#type != request.actr_type {
@@ -628,6 +637,8 @@ impl AIdIssuer {
 
         self.verify_registration_identity(request, realm_secret_check)
             .await?;
+        self.verify_actor_possession(actor_id, renewal_proof)
+            .await?;
 
         let mut register_ok = self.issue_credential_for_actor(actor_id).await?;
         let (renewal_token, renewal_token_expires_at) =
@@ -635,6 +646,57 @@ impl AIdIssuer {
         register_ok.renewal_token = Some(renewal_token);
         register_ok.renewal_token_expires_at = Some(renewal_token_expires_at);
         Ok(register_ok)
+    }
+
+    /// Verify that the reissue caller actually owns `actor_id`.
+    ///
+    /// `verify_registration_identity` authenticates the workload context
+    /// (package proof or realm authorization) but does not bind the caller to
+    /// `actor_id.serial_number`. The binding proof is the renewal token AIS
+    /// itself issued to that actor: its hash must match an issuer-recorded
+    /// token for exactly this `ActrId`. Expired tokens remain acceptable for
+    /// [`crate::renewal::REISSUE_BINDING_GRACE_SECS`] so long-offline nodes can
+    /// still recover their stable identity; unknown or unbound IDs are
+    /// rejected with 403 and no credential is signed.
+    async fn verify_actor_possession(
+        &self,
+        actor_id: &ActrId,
+        renewal_proof: Option<&[u8]>,
+    ) -> Result<(), AidError> {
+        let Some(proof) = renewal_proof.filter(|proof| !proof.is_empty()) else {
+            platform::recording::warn!(
+                "Credential reissue rejected: missing possession proof for actor {}; refusing to sign for an unproven serial",
+                actor_id.to_string_repr()
+            );
+            return Err(AidError::ActorPossessionNotProven);
+        };
+
+        if proof.len() != 32 {
+            platform::recording::warn!(
+                "Credential reissue rejected: possession proof has invalid length {} for actor {}",
+                proof.len(),
+                actor_id.to_string_repr()
+            );
+            return Err(AidError::InvalidFormat);
+        }
+
+        let proof_hash = crate::renewal::hash_token(proof);
+        let bound = crate::renewal::has_binding_token(actor_id, &proof_hash)
+            .await
+            .map_err(|e| {
+                AidError::GenerationFailed(format!("reissue binding lookup failed: {e}"))
+            })?;
+
+        if !bound {
+            // Never log the proof or its hash — treat them like credentials.
+            platform::recording::warn!(
+                "Credential reissue rejected: possession proof does not match any recorded binding for actor {}; possible cross-actor credential minting attempt",
+                actor_id.to_string_repr()
+            );
+            return Err(AidError::ActorPossessionNotProven);
+        }
+
+        Ok(())
     }
 
     /// 内部处理逻辑（Ed25519 签名，通过 KS Sign RPC）

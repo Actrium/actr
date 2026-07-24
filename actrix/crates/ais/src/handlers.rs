@@ -339,6 +339,7 @@ async fn reissue_credential(
         .reissue_credential_with_realm_secret_check(
             &request.actr_id,
             registration,
+            request.renewal_proof.as_deref(),
             Some(realm_secret_check),
         )
         .await
@@ -715,6 +716,7 @@ fn aid_error_to_response(err: AidError) -> (u32, String) {
         AidError::Expired => 401,
         AidError::RealmError(_) => 403, // Forbidden
         AidError::ManufacturerNotVerified => 403,
+        AidError::ActorPossessionNotProven => 403,
         AidError::PackageRevoked => 403,
 
         // 服务端错误 (5xx)
