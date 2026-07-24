@@ -33,7 +33,8 @@ pub use network_event::{
 #[cfg(feature = "test-utils")]
 pub(crate) use network_event::{
     SupervisorInternalChannel, run_network_event_reconciler_with_channel,
-    supervisor_internal_channel, supervisor_internal_channel_gated,
+    run_network_event_reconciler_with_channel_and_status, supervisor_internal_channel,
+    supervisor_internal_channel_gated,
 };
 pub use node::CredentialState;
 pub use session_state::{SessionPhase, SessionSnapshot, SessionState};

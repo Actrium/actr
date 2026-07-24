@@ -11,8 +11,8 @@ use actr_hyper::lifecycle::{
     AppLifecycleState, CleanupReason, CredentialState, DebounceConfig,
     DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent, NetworkEventHandle,
     NetworkEventProcessor, NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction,
-    NetworkSnapshot, NetworkTransportFlags, ReconnectReason, process_network_event_batch,
-    run_network_event_reconciler, select_network_recovery_action,
+    NetworkRecoveryError, NetworkSnapshot, NetworkTransportFlags, ReconnectReason,
+    process_network_event_batch, run_network_event_reconciler, select_network_recovery_action,
 };
 use actr_hyper::transport::{NetworkError, NetworkResult};
 use actr_hyper::wire::webrtc::{DisconnectReason, SignalingClient, SignalingEvent, SignalingStats};
@@ -2427,4 +2427,139 @@ async fn test_l1_cloned_handles_mixed_concurrent_calls_complete_without_crossed_
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
+}
+
+// ---------------------------------------------------------------------------
+// RFC-0400: the supervisor Probe effect reports a typed outcome; the policy —
+// not the effect — derives the Restore successor. The deprecated direct-call
+// surface keeps the pre-RFC self-healing probe-then-restore contract.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn supervisor_probe_effect_reports_typed_outcome_without_inline_restore() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    client.set_probe_success(false);
+    let processor = DefaultNetworkEventProcessor::new(client.clone(), None);
+
+    let err = processor
+        .process_network_recovery_effect(NetworkRecoveryAction::Probe)
+        .await
+        .expect_err("a failed liveness probe must surface its typed outcome");
+    assert!(
+        matches!(err, NetworkRecoveryError::TransportImpaired { .. }),
+        "probe failure must report the conclusive liveness observation: {err:?}"
+    );
+
+    assert_eq!(client.probe_calls(), 1);
+    let stats = client.get_stats();
+    assert_eq!(
+        stats.disconnections, 0,
+        "the effect must not disconnect: translate() derives the successor"
+    );
+    assert_eq!(
+        client.connect_once_calls(),
+        0,
+        "the effect must not rebuild inline"
+    );
+}
+
+#[tokio::test]
+async fn legacy_probe_action_retains_self_healing_restore() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    client.set_probe_success(false);
+    let processor = DefaultNetworkEventProcessor::new(client.clone(), None);
+
+    processor
+        .process_network_recovery_action(NetworkRecoveryAction::Probe)
+        .await
+        .expect("the direct-call surface keeps probe-then-restore self-healing");
+
+    assert_eq!(client.probe_calls(), 1);
+    let stats = client.get_stats();
+    assert_eq!(stats.disconnections, 1);
+    assert_eq!(client.connect_once_calls(), 1);
+    assert!(client.is_connected());
+}
+
+#[tokio::test]
+async fn route_change_with_live_signaling_probes_then_escalates_to_restore() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let (handle, sink, shutdown, reconciler, mut status_rx) =
+        actr_hyper::test_support::spawn_network_event_supervisor_with_status(processor);
+
+    // A live signaling generation committed by the resource owner.
+    sink.signaling_generation_committed(1, actr_hyper::lifecycle::SignalingFactOrigin::External);
+
+    // Establish the Online path on Wi-Fi; the derived probe (action 1) runs
+    // against the healthy socket, and its completion is reconciled before the
+    // route changes.
+    assert!(
+        handle
+            .handle_network_path_changed(snapshot(
+                1,
+                NetworkAvailability::Available,
+                true,
+                false,
+                false
+            ))
+            .await
+            .expect("initial online snapshot should be accepted")
+            .success
+    );
+    status_rx
+        .wait_for(|s| {
+            s.last_action_id == Some(1)
+                && s.last_outcome == Some(actr_hyper::lifecycle::ObservedOutcome::Succeeded)
+        })
+        .await
+        .expect("the initial healthy probe should settle");
+    assert_eq!(client.probe_calls(), 1);
+
+    // The route now migrates Wi-Fi -> cellular and the old socket is half-open:
+    // every further liveness probe fails. The supervisor must actively probe
+    // (action 2 — not wait 10-15s for an I/O or Pong failure), and translate()
+    // must escalate the typed probe failure into a Restore (action 3) that
+    // rebuilds the socket.
+    client.set_probe_success(false);
+    assert!(
+        handle
+            .handle_network_path_changed(snapshot(
+                2,
+                NetworkAvailability::Available,
+                false,
+                true,
+                false
+            ))
+            .await
+            .expect("material route change should be accepted")
+            .success
+    );
+    status_rx
+        .wait_for(|s| {
+            s.last_action_id == Some(3)
+                && s.last_outcome == Some(actr_hyper::lifecycle::ObservedOutcome::Succeeded)
+        })
+        .await
+        .expect("the escalated restore should settle");
+
+    assert!(client.is_connected());
+    assert_eq!(
+        client.probe_calls(),
+        3,
+        "route probe + the restore's own health probe follow the initial probe"
+    );
+    assert_eq!(
+        client.get_stats().disconnections,
+        1,
+        "the restore effect (not the probe) disconnects the half-open socket once"
+    );
+    assert_eq!(client.connect_once_calls(), 1, "exactly one rebuild");
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
 }

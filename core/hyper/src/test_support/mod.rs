@@ -74,6 +74,41 @@ pub fn spawn_gated_network_event_supervisor(
     spawn_network_event_supervisor_with_channel(processor, fact_sink, channel)
 }
 
+/// Spawn the production reconciler shape with its fact channel *and* the
+/// observable status stream.
+///
+/// The status receiver lets a test await the processed policy state
+/// (`policy_revision` / `last_action_id` / `last_outcome`) instead of polling
+/// effect-side counters, which cannot prove a completion has already been
+/// reconciled.
+pub fn spawn_network_event_supervisor_with_status(
+    processor: Arc<dyn crate::lifecycle::NetworkEventProcessor>,
+) -> (
+    crate::lifecycle::NetworkEventHandle,
+    crate::lifecycle::SupervisorFactSink,
+    tokio_util::sync::CancellationToken,
+    tokio::task::JoinHandle<()>,
+    tokio::sync::watch::Receiver<crate::lifecycle::SupervisorStatus>,
+) {
+    let (fact_sink, channel) = crate::lifecycle::supervisor_internal_channel();
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
+    let handle =
+        crate::lifecycle::NetworkEventHandle::new_with_fact_sink(event_tx, fact_sink.clone());
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let (status_tx, status_rx) =
+        tokio::sync::watch::channel(crate::lifecycle::SupervisorStatus::default());
+    let task = tokio::spawn(
+        crate::lifecycle::run_network_event_reconciler_with_channel_and_status(
+            event_rx,
+            channel,
+            processor,
+            shutdown.clone(),
+            status_tx,
+        ),
+    );
+    (handle, fact_sink, shutdown, task, status_rx)
+}
+
 fn spawn_network_event_supervisor_with_channel(
     processor: Arc<dyn crate::lifecycle::NetworkEventProcessor>,
     fact_sink: crate::lifecycle::SupervisorFactSink,

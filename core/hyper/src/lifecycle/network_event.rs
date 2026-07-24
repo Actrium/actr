@@ -209,6 +209,8 @@ pub enum NetworkRecoveryError {
     Timeout { stage: String },
     #[error("resource exhausted: {resource}")]
     ResourceExhausted { resource: String },
+    #[error("transport impaired: {}", scopes.join(", "))]
+    TransportImpaired { scopes: Vec<String> },
     #[error("authentication rejected: {kind}")]
     AuthRejected { kind: String },
     #[error("configuration rejected: {detail}")]
@@ -273,6 +275,7 @@ impl NetworkRecoveryError {
             Self::PathUnreachable { stage } => EffectDiagnosis::PathUnreachable { stage },
             Self::Timeout { stage } => EffectDiagnosis::Timeout { stage },
             Self::ResourceExhausted { resource } => EffectDiagnosis::ResourceExhausted { resource },
+            Self::TransportImpaired { scopes } => EffectDiagnosis::TransportImpaired { scopes },
             Self::AuthRejected { kind } => EffectDiagnosis::AuthRejected { kind },
             Self::ConfigRejected { detail } => EffectDiagnosis::ConfigRejected { detail },
             Self::InvariantViolation { detail } => EffectDiagnosis::InvariantViolation { detail },
@@ -873,6 +876,15 @@ impl DefaultNetworkEventProcessor {
             })
     }
 
+    /// Legacy self-healing probe: on failure, disconnect the unhealthy socket
+    /// and restore in the same call.
+    ///
+    /// Only the deprecated direct-call/batch surface may use this: those
+    /// callers have no supervisor to translate a typed probe outcome, so the
+    /// pre-RFC probe-then-restore contract is preserved for them. The
+    /// supervisor-driven effect path reports the typed outcome instead
+    /// ([`Self::probe_signaling_liveness_typed`]) and lets `translate()`
+    /// derive the successor action.
     async fn probe_or_restore_typed(&self, reason: &str) -> Result<(), NetworkRecoveryError> {
         match self.probe_connectivity_typed().await {
             Ok(()) => Ok(()),
@@ -893,6 +905,34 @@ impl DefaultNetworkEventProcessor {
                     .await
             }
         }
+    }
+
+    /// The supervisor-driven Probe effect: establish whether the live signaling
+    /// generation's channel answers, and report the observation.
+    ///
+    /// Per RFC-0400 the effect never chooses its successor action. A failed
+    /// liveness check is the conclusive `TransportImpaired` observation — the
+    /// probe's entire contract is to determine channel liveness, so failing it
+    /// (timeout, ping error, or no socket at all) is a verified statement that
+    /// the signaling channel is dead, not an inconclusive availability error.
+    /// Classification rules `Probe + TransportImpaired -> Escalate { Restore }`,
+    /// so the rebuild is derived centrally by `translate()` within one probe
+    /// timeout instead of inline here.
+    async fn probe_signaling_liveness_typed(&self) -> Result<(), NetworkRecoveryError> {
+        self.signaling_client
+            .probe_alive(SIGNALING_PROBE_TIMEOUT)
+            .await
+            .map_err(|error| {
+                let error = NetworkRecoveryError::TransportImpaired {
+                    scopes: vec![format!("signaling: {error}")],
+                };
+                tracing::warn!(
+                    error = %error,
+                    consequence = "policy escalates the probe obligation to Restore",
+                    "network_event.probe.liveness_failed"
+                );
+                error
+            })
     }
 
     async fn process_network_available_typed(&self) -> Result<(), NetworkRecoveryError> {
@@ -1206,9 +1246,19 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
         &self,
         action: NetworkRecoveryAction,
     ) -> Result<(), String> {
-        self.process_network_recovery_effect(action)
-            .await
-            .map_err(|error| error.to_string())
+        match action {
+            // The direct-call/batch surface has no supervisor to translate a
+            // typed probe outcome into a successor action, so it keeps the
+            // pre-RFC self-healing probe-then-restore contract.
+            NetworkRecoveryAction::Probe => self
+                .probe_or_restore_typed("Probe")
+                .await
+                .map_err(|error| error.to_string()),
+            other => self
+                .process_network_recovery_effect(other)
+                .await
+                .map_err(|error| error.to_string()),
+        }
     }
 
     async fn process_network_recovery_effect(
@@ -1239,7 +1289,10 @@ impl NetworkEventProcessor for DefaultNetworkEventProcessor {
                 .process_offline()
                 .await
                 .map_err(|error| NetworkRecoveryError::from_opaque("Offline", error)),
-            NetworkRecoveryAction::Probe => self.probe_or_restore_typed("Probe").await,
+            // The Probe effect only observes; on failure it reports the typed
+            // `TransportImpaired` outcome and `translate()` derives the Restore
+            // successor (RFC-0400: effects report, policy decides).
+            NetworkRecoveryAction::Probe => self.probe_signaling_liveness_typed().await,
             // Supervisor-selected work has already passed structural duplicate
             // suppression and single-flight admission. Running it through the
             // legacy direct-call debounce can silently acknowledge required
@@ -1519,6 +1572,39 @@ pub(crate) fn supervisor_internal_channel_with_profile(
             clock_origin,
         },
     )
+}
+
+/// Test-support variant of [`run_network_event_reconciler_with_channel`] that
+/// additionally exposes the observable status stream, so tests can await the
+/// processed policy state (revision / action id / outcome) deterministically
+/// instead of polling effect-side counters.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) async fn run_network_event_reconciler_with_channel_and_status(
+    event_rx: mpsc::Receiver<NetworkEventRequest>,
+    channel: SupervisorInternalChannel,
+    processor: Arc<dyn NetworkEventProcessor>,
+    shutdown_token: CancellationToken,
+    status_tx: watch::Sender<SupervisorStatus>,
+) {
+    let SupervisorInternalChannel {
+        tx,
+        rx,
+        profile,
+        clock_origin,
+    } = channel;
+    reconcile_loop(
+        event_rx,
+        tx,
+        rx,
+        processor,
+        shutdown_token,
+        status_tx,
+        ReconcilerConfig {
+            profile,
+            clock_origin,
+        },
+    )
+    .await;
 }
 
 pub async fn run_network_event_reconciler(
