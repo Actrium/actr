@@ -578,7 +578,7 @@ fn snapshot_online_supersedes_pending_disconnect() {
 }
 
 #[test]
-fn snapshot_online_to_online_material_route_only_triggers() {
+fn snapshot_online_to_online_material_route_derives_probe_with_live_signaling() {
     let mut view = View::initial();
     view.network_path = NetworkPathState::Online;
     view.live_signaling_generation = Some(7);
@@ -590,6 +590,59 @@ fn snapshot_online_to_online_material_route_only_triggers() {
     });
     let d = tr(&view, snapshot(1, 2, SemanticPath::Online, 2));
     assert_eq!(d.revision, RevisionDirective::Advances);
+    // A live generation only describes local lifecycle state, not path
+    // reachability: a route change can leave the socket half-open, so the
+    // policy actively probes instead of waiting for an I/O or Pong failure.
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestProbe)
+    ));
+    assert!(!has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestRestore)
+    ));
+    assert!(d.gate_triggers.contains(&GateTrigger::Wake {
+        domain: RetryDomain::Recovery
+    }));
+}
+
+#[test]
+fn snapshot_online_to_online_material_route_restores_without_live_signaling() {
+    let mut view = View::initial();
+    view.network_path = NetworkPathState::Online;
+    view.last_snapshot = Some(AcceptedSnapshot {
+        source_epoch: 1,
+        sequence: 1,
+        semantic_path: SemanticPath::Online,
+        route_fingerprint: 1,
+    });
+    let d = tr(&view, snapshot(1, 2, SemanticPath::Online, 2));
+    assert_eq!(d.revision, RevisionDirective::Advances);
+    // No generation to probe: there is nothing whose liveness a probe could
+    // establish, so the route fact derives the rebuild directly.
+    assert!(has(
+        &d,
+        MachineInput::RecoveryIntent(RecoveryIntentInput::RequestRestore)
+    ));
+}
+
+#[test]
+fn snapshot_online_to_online_route_change_with_pending_recovery_only_wakes() {
+    let mut view = View::initial();
+    view.network_path = NetworkPathState::Online;
+    view.live_signaling_generation = Some(7);
+    view.recovery_intent = RecoveryIntentState::RestorePending;
+    view.recovery_record = Some(PendingRecord::recovery(1, RecoveryStrength::Restore));
+    view.last_snapshot = Some(AcceptedSnapshot {
+        source_epoch: 1,
+        sequence: 1,
+        semantic_path: SemanticPath::Online,
+        route_fingerprint: 1,
+    });
+    let d = tr(&view, snapshot(1, 2, SemanticPath::Online, 2));
+    assert_eq!(d.revision, RevisionDirective::Advances);
+    // An existing obligation absorbs the route fact; the weaker probe must not
+    // refresh or replace the pending Restore.
     assert!(d.machine_inputs.is_empty());
     assert!(d.gate_triggers.contains(&GateTrigger::Wake {
         domain: RetryDomain::Recovery

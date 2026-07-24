@@ -1060,20 +1060,33 @@ fn translate_snapshot(
     match semantic_path {
         SemanticPath::Online => {
             if view.network_path == NetworkPathState::Online {
-                // Online -> Online material route change: self-loop + trigger.
+                // Online -> Online material route change: path self-loop, but
+                // the route fact itself demands an active check. A live
+                // signaling generation only describes local lifecycle state,
+                // not path reachability: a Wi-Fi <-> cellular transition can
+                // change the local endpoint and leave an ordinary TCP/WSS
+                // socket half-open, so waiting for an I/O or Pong failure
+                // would add 10-15s of dead air. Derive a Probe of the live
+                // generation instead; a typed probe failure (the conclusive
+                // `TransportImpaired` liveness observation) escalates to
+                // Restore in classification, so a non-migratable transport
+                // still reaches the rebuild within one probe timeout.
+                //
                 // If cleanup has already circled or removed the live signaling
                 // generation, retain this newer path fact as a post-cleanup
-                // Restore obligation. Otherwise cleanup completion would leave
-                // an Online policy snapshot with no transport and no future
-                // input capable of rebuilding it.
+                // Restore obligation instead. Otherwise cleanup completion
+                // would leave an Online policy snapshot with no transport and
+                // no future input capable of rebuilding it.
                 let mut d = Decision::advancing();
                 if view.recovery_mode == RecoveryModeState::Active
                     && view.recovery_intent == RecoveryIntentState::Idle
-                    && !view.live_signaling_outside_teardown()
                 {
-                    d.machine(MachineInput::RecoveryIntent(
-                        RecoveryIntentInput::RequestRestore,
-                    ));
+                    let derived = if view.live_signaling_outside_teardown() {
+                        RecoveryIntentInput::RequestProbe
+                    } else {
+                        RecoveryIntentInput::RequestRestore
+                    };
+                    d.machine(MachineInput::RecoveryIntent(derived));
                 }
                 d.gate_triggers.push(GateTrigger::Wake {
                     domain: RetryDomain::Recovery,

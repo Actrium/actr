@@ -833,6 +833,77 @@ fn transport_impairment_escalates_probe_to_restore_retaining_revision() {
     assert_eq!(record.work_revision, work_revision);
 }
 
+// -- route change with live signaling probes, then escalates ----------------
+
+#[test]
+fn route_change_with_live_signaling_probes_and_escalates_on_typed_failure() {
+    let mut s = ungated();
+    // Establish an Online path and a live (externally committed) generation.
+    assert!(s.accept(online(1, 1), ms(0)).advanced);
+    s.accept(
+        tp::Input::SignalingGenerationCommitted {
+            generation: 7,
+            origin: tp::SignalingOrigin::External,
+        },
+        ms(1),
+    );
+    // The initial Online observation derived a Restore (no live generation yet
+    // at that revision); let it succeed so the intent returns to Idle.
+    let warmup = s.maybe_start_effect(ms(1)).expect("initial restore starts");
+    s.accept(
+        tp::Input::EffectCompleted {
+            action_id: warmup.action_id,
+            kind: warmup.kind,
+            policy_revision: warmup.captured_revision,
+            outcome: EffectOutcome::Succeeded,
+        },
+        ms(2),
+    );
+    assert_eq!(s.view().recovery_intent, tp::RecoveryIntentState::Idle);
+
+    // A material Online -> Online route change with the generation still
+    // live must derive an active Probe, not wait for an I/O or Pong failure.
+    let out = s.accept(
+        tp::Input::NetworkSnapshot {
+            source_epoch: 1,
+            sequence: 2,
+            observed_at: ms(3),
+            semantic_path: tp::SemanticPath::Online,
+            route_fingerprint: 42,
+        },
+        ms(3),
+    );
+    assert!(out.advanced);
+    assert_eq!(
+        s.view().recovery_intent,
+        tp::RecoveryIntentState::ProbePending
+    );
+    let probe = s.maybe_start_effect(ms(3)).expect("route probe starts");
+    assert_eq!(probe.kind, EffectKind::Probe);
+
+    // The probe effect reports the conclusive liveness observation; the
+    // policy — not the effect — derives the Restore successor.
+    s.accept(
+        tp::Input::EffectCompleted {
+            action_id: probe.action_id,
+            kind: EffectKind::Probe,
+            policy_revision: probe.captured_revision,
+            outcome: EffectOutcome::Failed {
+                diagnosis: EffectDiagnosis::TransportImpaired {
+                    scopes: vec!["signaling: pong timeout".into()],
+                },
+            },
+        },
+        ms(4),
+    );
+    assert_eq!(
+        s.view().recovery_intent,
+        tp::RecoveryIntentState::RestorePending
+    );
+    let restore = s.maybe_start_effect(ms(4)).expect("restore starts");
+    assert_eq!(restore.kind, EffectKind::Restore);
+}
+
 // -- precondition failure parks with a mask ---------------------------------
 
 #[test]
