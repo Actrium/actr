@@ -33,8 +33,8 @@ use actr_framework::Bytes;
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrRelay, IceCandidate, IceRestartRequest, PayloadType, RoleAssignment,
-    RoleNegotiation, SignalingEnvelope, actr_relay, session_description::Type as SdpType,
-    signaling_envelope,
+    RoleNegotiation, SIGNALING_ENVELOPE_VERSION, SignalingEnvelope, actr_relay,
+    session_description::Type as SdpType, signaling_envelope,
 };
 use actr_protocol::{ActorResult, ActrError};
 use std::collections::{HashMap, VecDeque, hash_map::Entry};
@@ -3663,13 +3663,9 @@ impl WebRtcCoordinator {
         };
 
         SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: Self::new_envelope_id(),
             reply_for: None,
-            timestamp: Some(prost_types::Timestamp {
-                seconds: chrono::Utc::now().timestamp(),
-                nanos: 0,
-            }),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrRelay(relay)),

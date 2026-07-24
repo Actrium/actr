@@ -5,9 +5,9 @@ use crate::core::{
 use actr_hyper::AisClient;
 use actr_protocol::{
     AIdCredential, ActrId, ActrToSignaling, ActrType, DiscoveryRequest, ErrorResponse,
-    GetServiceSpecRequest, Realm, RegisterAuthMode, RegisterRequest, SignalingEnvelope,
-    actr_to_signaling, discovery_response, get_service_spec_response, register_response,
-    signaling_envelope, signaling_to_actr,
+    GetServiceSpecRequest, Realm, RegisterAuthMode, RegisterRequest, SIGNALING_ENVELOPE_VERSION,
+    SignalingEnvelope, actr_to_signaling, discovery_response, get_service_spec_response,
+    register_response, signaling_envelope, signaling_to_actr,
 };
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -267,13 +267,9 @@ impl NetworkServiceDiscovery {
 
     fn build_envelope(flow: signaling_envelope::Flow) -> Result<SignalingEnvelope> {
         Ok(SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: uuid::Uuid::new_v4().to_string(),
             reply_for: None,
-            timestamp: Some(prost_types::Timestamp {
-                seconds: chrono::Utc::now().timestamp(),
-                nanos: 0,
-            }),
             traceparent: None,
             tracestate: None,
             flow: Some(flow),

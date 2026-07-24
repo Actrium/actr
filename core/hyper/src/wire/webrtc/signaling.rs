@@ -13,8 +13,9 @@ use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrToSignaling, GetSigningKeyRequest, PeerToSignaling, Ping, Pong,
     RegisterRequest, RegisterResponse, RouteCandidatesRequest, RouteCandidatesResponse,
-    ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest, UnregisterResponse,
-    actr_to_signaling, peer_to_signaling, signaling_envelope, signaling_to_actr,
+    SIGNALING_ENVELOPE_VERSION, ServiceAvailabilityState, SignalingEnvelope, UnregisterRequest,
+    UnregisterResponse, actr_to_signaling, peer_to_signaling, signaling_envelope,
+    signaling_to_actr,
 };
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -832,13 +833,9 @@ impl WebSocketSignalingClient {
     /// Create SignalingEnvelope
     async fn create_envelope(&self, flow: signaling_envelope::Flow) -> SignalingEnvelope {
         SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: self.next_envelope_id().await,
             reply_for: None,
-            timestamp: Some(prost_types::Timestamp {
-                seconds: chrono::Utc::now().timestamp(),
-                nanos: 0,
-            }),
             traceparent: None,
             tracestate: None,
             flow: Some(flow),

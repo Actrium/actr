@@ -32,9 +32,9 @@
 
 use actr_protocol::{
     AIdCredential, ActrId, ActrRelay, ActrToSignaling, ActrType, ErrorResponse, PeerToSignaling,
-    Ping, Pong, Realm, RegisterResponse, RoleAssignment, RoleNegotiation, SignalingEnvelope,
-    SignalingToActr, actr_relay, actr_to_signaling, peer_to_signaling, register_response,
-    signaling_envelope, signaling_to_actr,
+    Ping, Pong, Realm, RegisterResponse, RoleAssignment, RoleNegotiation,
+    SIGNALING_ENVELOPE_VERSION, SignalingEnvelope, SignalingToActr, actr_relay, actr_to_signaling,
+    peer_to_signaling, register_response, signaling_envelope, signaling_to_actr,
 };
 use futures_util::{SinkExt, StreamExt};
 use platform::aid::credential::validator::AIdCredentialValidator;
@@ -128,13 +128,9 @@ impl SignalingServerHandle {
     ) -> SignalingEnvelope {
         #[allow(unused_mut)]
         let mut envelope = SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: Uuid::new_v4().to_string(),
             reply_for: reply_for.map(|id| id.to_string()),
-            timestamp: Some(prost_types::Timestamp {
-                seconds: chrono::Utc::now().timestamp(),
-                nanos: 0,
-            }),
             traceparent: None,
             tracestate: None,
             flow: Some(flow),

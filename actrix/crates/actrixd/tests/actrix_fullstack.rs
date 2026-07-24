@@ -1,8 +1,8 @@
 use actr_protocol::acl_rule::{Permission, SourceRealm};
 use actr_protocol::{
     Acl, AclRule, ActrRelay, ActrType, Realm, RegisterAuthMode, RegisterRequest, RegisterResponse,
-    RoleNegotiation, acl_rule, actr_relay, peer_to_signaling, register_response,
-    route_candidates_response, signaling_envelope, signaling_to_actr,
+    RoleNegotiation, SIGNALING_ENVELOPE_VERSION, acl_rule, actr_relay, peer_to_signaling,
+    register_response, route_candidates_response, signaling_envelope, signaling_to_actr,
 };
 use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
@@ -530,12 +530,8 @@ async fn connect_ws_raw(
 
 fn make_envelope(flow: signaling_envelope::Flow) -> actr_protocol::SignalingEnvelope {
     actr_protocol::SignalingEnvelope {
-        envelope_version: 1,
+        envelope_version: SIGNALING_ENVELOPE_VERSION,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: Some(prost_types::Timestamp {
-            seconds: chrono::Utc::now().timestamp(),
-            nanos: 0,
-        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,
@@ -871,12 +867,8 @@ async fn actrix_end_to_end_register_and_health() {
         )),
     };
     let envelope = actr_protocol::SignalingEnvelope {
-        envelope_version: 1,
+        envelope_version: SIGNALING_ENVELOPE_VERSION,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: Some(prost_types::Timestamp {
-            seconds: chrono::Utc::now().timestamp(),
-            nanos: 0,
-        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,
@@ -928,12 +920,8 @@ async fn actrix_end_to_end_register_and_health() {
     };
     let mut text_ping_buf = Vec::new();
     actr_protocol::SignalingEnvelope {
-        envelope_version: 1,
+        envelope_version: SIGNALING_ENVELOPE_VERSION,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: Some(prost_types::Timestamp {
-            seconds: chrono::Utc::now().timestamp(),
-            nanos: 0,
-        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,
@@ -986,12 +974,8 @@ async fn actrix_end_to_end_register_and_health() {
     };
     let mut buf = Vec::new();
     actr_protocol::SignalingEnvelope {
-        envelope_version: 1,
+        envelope_version: SIGNALING_ENVELOPE_VERSION,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: Some(prost_types::Timestamp {
-            seconds: chrono::Utc::now().timestamp(),
-            nanos: 0,
-        }),
         reply_for: None,
         traceparent: None,
         tracestate: None,

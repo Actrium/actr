@@ -122,7 +122,6 @@ url = "2.5"
 # Protocol buffer generation
 prost-build = "0.14"
 prost = "0.14"
-prost-types = "0.14"
 
 # Code generation utilities (for protoc-gen-actrframework)
 quote = "1.0"

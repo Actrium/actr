@@ -16,9 +16,9 @@ use std::time::{Duration, Instant};
 use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, ActrId, ActrRelay, RegisterRequest, RegisterResponse, RouteCandidatesResponse,
-    SignalingEnvelope, SignalingToActr, TurnCredential, actr_relay, actr_to_signaling,
-    peer_to_signaling, register_response, route_candidates_response, signaling_envelope,
-    signaling_to_actr,
+    SIGNALING_ENVELOPE_VERSION, SignalingEnvelope, SignalingToActr, TurnCredential, actr_relay,
+    actr_to_signaling, peer_to_signaling, register_response, route_candidates_response,
+    signaling_envelope, signaling_to_actr,
 };
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
@@ -253,10 +253,9 @@ async fn handle_peer_to_server(
             };
 
             let response_envelope = SignalingEnvelope {
-                envelope_version: 1,
+                envelope_version: SIGNALING_ENVELOPE_VERSION,
                 envelope_id: uuid::Uuid::new_v4().to_string(),
                 reply_for: Some(envelope.envelope_id.clone()),
-                timestamp: Some(now_timestamp()),
                 flow: Some(signaling_envelope::Flow::ServerToActr(SignalingToActr {
                     target: register_ok.actr_id.clone(),
                     payload: Some(signaling_to_actr::Payload::RegisterResponse(response)),
@@ -643,10 +642,9 @@ async fn handle_actr_relay(
         let from_is_offerer = role_neg.from.serial_number < role_neg.to.serial_number;
 
         let envelope_for_from = SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: uuid::Uuid::new_v4().to_string(),
             reply_for: None,
-            timestamp: Some(now_timestamp()),
             flow: Some(signaling_envelope::Flow::ActrRelay(ActrRelay {
                 source: role_neg.to.clone(),
                 credential: AIdCredential::default(),
@@ -663,10 +661,9 @@ async fn handle_actr_relay(
         };
 
         let envelope_for_to = SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: uuid::Uuid::new_v4().to_string(),
             reply_for: None,
-            timestamp: Some(now_timestamp()),
             flow: Some(signaling_envelope::Flow::ActrRelay(ActrRelay {
                 source: role_neg.from.clone(),
                 credential: AIdCredential::default(),
@@ -734,10 +731,9 @@ async fn forward_relay_to_target(
     if let Some(target_cid) = target_client_id {
         if let Some(tx) = clients.get(&target_cid) {
             let forwarded = SignalingEnvelope {
-                envelope_version: 1,
+                envelope_version: SIGNALING_ENVELOPE_VERSION,
                 envelope_id: uuid::Uuid::new_v4().to_string(),
                 reply_for: None,
-                timestamp: Some(now_timestamp()),
                 flow: Some(signaling_envelope::Flow::ActrRelay(relay.clone())),
                 traceparent: envelope.traceparent.clone(),
                 tracestate: envelope.tracestate.clone(),
@@ -773,10 +769,9 @@ async fn send_response(
     state: &Arc<MockState>,
 ) {
     let response_envelope = SignalingEnvelope {
-        envelope_version: 1,
+        envelope_version: SIGNALING_ENVELOPE_VERSION,
         envelope_id: uuid::Uuid::new_v4().to_string(),
         reply_for: Some(original_envelope.envelope_id.clone()),
-        timestamp: Some(now_timestamp()),
         flow: Some(signaling_envelope::Flow::ServerToActr(payload)),
         traceparent: None,
         tracestate: None,
@@ -852,13 +847,6 @@ fn collect_reachable_route_candidates(
     (candidates, ws_address_map, skipped_unbound)
 }
 
-fn now_timestamp() -> prost_types::Timestamp {
-    prost_types::Timestamp {
-        seconds: chrono::Utc::now().timestamp(),
-        nanos: 0,
-    }
-}
-
 /// Parse an `ActrId` from the `actor_id` query parameter sent by clients
 /// after HTTP registration.
 fn parse_actor_id(s: &str) -> Option<ActrId> {
@@ -869,13 +857,14 @@ fn parse_actor_id(s: &str) -> Option<ActrId> {
 mod tests {
     use super::{
         build_register_ok, collect_reachable_route_candidates, forward_relay_to_target,
-        now_timestamp, resolve_role_negotiation_targets,
+        resolve_role_negotiation_targets,
     };
     use crate::state::{MockState, RegisteredActor};
     use actr_protocol::prost::Message as ProstMessage;
     use actr_protocol::{
-        AIdCredential, ActrId, ActrRelay, ActrType, Realm, RegisterRequest, SessionDescription,
-        SignalingEnvelope, actr_relay, session_description::Type as SdpType, signaling_envelope,
+        AIdCredential, ActrId, ActrRelay, ActrType, Realm, RegisterRequest,
+        SIGNALING_ENVELOPE_VERSION, SessionDescription, SignalingEnvelope, actr_relay,
+        session_description::Type as SdpType, signaling_envelope,
     };
     use axum::extract::ws::Message;
     use ed25519_dalek::SigningKey;
@@ -1038,10 +1027,9 @@ mod tests {
             )),
         };
         let original = SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: "original-envelope".to_string(),
             reply_for: Some("hop-local-reply".to_string()),
-            timestamp: Some(now_timestamp()),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrRelay(relay.clone())),
