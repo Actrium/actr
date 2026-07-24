@@ -73,6 +73,26 @@ def test_pr_gate_excludes_heavy_root_e2e_jobs() -> None:
     assert "web_browser_e2e" not in workflow
 
 
+def test_native_workload_gate_builds_c_and_go_with_pinned_tools() -> None:
+    workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
+    native_job = _job(workflow, "c_go_workloads", "gate")
+
+    for version in (
+        "wit-bindgen-0.59.0-x86_64-linux.tar.gz",
+        "wasm-tools-1.253.0-x86_64-linux.tar.gz",
+        "wasi-sdk-24.0-x86_64-linux.tar.gz",
+        "go1.25.5-wasi-on-idle",
+        "wasi_snapshot_preview1.reactor.wasm",
+    ):
+        assert version in native_job
+
+    assert "sha256sum --check --status" in native_job
+    assert "make -C examples/c/echo-workload verify" in native_job
+    assert "bash examples/go/echo-workload/build.sh" in native_job
+    assert "C_GO_WORKLOADS_RESULT" in workflow
+    assert '"c_go_workloads": os.environ["C_GO_WORKLOADS_RESULT"]' in workflow
+
+
 def test_scheduled_e2e_runs_root_level_browser_and_stream_e2e() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
 
