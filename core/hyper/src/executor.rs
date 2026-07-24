@@ -44,7 +44,8 @@
 //! ## M5 evolution path (delivered — do not break this contract)
 //!
 //! B1 keeps the runner body a plain serial loop. M5 **delivered** the wasm
-//! open-concurrency runner: a `Wasm(V2)` workload in `Interleaved` mode now
+//! open-concurrency runner: the sole supported V2 `Wasm` workload in
+//! `Interleaved` mode now
 //! runs [`crate::wasm::WasmWorkloadV2::run_interleaved`], a resident
 //! `store.run_concurrent(async |accessor| { … })` region that `select!`s new
 //! commands off `cmd_rx` and pushes dispatches into a `FuturesUnordered` (the
@@ -406,10 +407,10 @@ impl Drop for ActorHandle {
 /// Execution discipline for the runner task.
 ///
 /// `Serial` is the B1 contract: one command at a time, run-to-completion. It is
-/// mandatory for `Wasm(V1)` / `DynClib` workloads (single `Store` / `&mut`
-/// guest ABI) and is the default. `Interleaved` is the B2 concurrency point for
-/// `Linked` workloads and `Wasm(V2)` async-world guests, whose dispatch APIs can
-/// safely multiplex distinct-key invocations.
+/// mandatory for `DynClib` workloads and is the default. `Interleaved` is the
+/// B2 concurrency point for `Linked` workloads and 0.2.0 async-world WASM
+/// guests, whose dispatch APIs can safely multiplex distinct-key invocations.
+/// Retired 0.1.0 sync-world WASM packages are rejected before a runner exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunnerMode {
     Serial,
@@ -445,19 +446,18 @@ pub(crate) fn spawn_runner(workload: Workload) -> ActorHandle {
 ///   sibling and queued commands fail rather than touching partially-mutated
 ///   actor state. A caught guest panic follows the same fail-closed path after
 ///   replying `Internal`.
-/// * `Workload::Wasm(V2)` — the 0.2.0 async world drives a **resident**
+/// * `Workload::Wasm` — the sole supported 0.2.0 async world drives a **resident**
 ///   `Store::run_concurrent` region ([`crate::wasm::WasmWorkloadV2::run_interleaved`]),
 ///   interleaving distinct-key dispatches at their host-import `.await` points
 ///   (M5). External per-dispatch deadlines supervise that region and discard
 ///   the whole Store before any timeout reply releases a scheduler key.
 ///
-/// Every other packaged workload (`Wasm(V1)` 0.1.0 sync world, `DynClib`) falls
-/// back to the serial `run_loop` even when `Interleaved` is requested, so the
-/// single-`Store` / `&mut` guest-ABI contract is never violated — the conflict
-/// key is a no-op routing hint there. Combined with the node's strategy-A gate
-/// (`Interleaved` is only ever requested for a *keyed* actor), this keeps every
-/// keyless or serial-only workload a bit-for-bit B1 degradation even though the
-/// dispatch gate now defaults on.
+/// `DynClib` falls back to the serial `run_loop` even when `Interleaved` is
+/// requested, so its single-threaded guest-ABI contract is never violated —
+/// the conflict key is a no-op routing hint there. Combined with the node's
+/// strategy-A gate (`Interleaved` is only ever requested for a *keyed*
+/// actor), this keeps every keyless or serial-only workload a bit-for-bit
+/// B1 degradation even though the dispatch gate now defaults on.
 pub(crate) fn spawn_runner_with_mode(
     workload: Workload,
     mode: RunnerMode,
@@ -469,13 +469,9 @@ pub(crate) fn spawn_runner_with_mode(
             tokio::spawn(run_loop_interleaved(handle, rx, dispatch_timeout))
         }
         #[cfg(feature = "wasm-engine")]
-        (RunnerMode::Interleaved, Workload::Wasm(kernel)) if kernel.is_v2() => match kernel {
-            crate::wasm::WasmKernel::V2(v2) => {
-                tokio::spawn(v2.run_interleaved(rx, dispatch_timeout))
-            }
-            // Unreachable given the `is_v2()` guard, but keeps the match total.
-            other => tokio::spawn(run_loop(Workload::Wasm(other), rx)),
-        },
+        (RunnerMode::Interleaved, Workload::Wasm(v2)) => {
+            tokio::spawn(v2.run_interleaved(rx, dispatch_timeout))
+        }
         (_, workload) => tokio::spawn(run_loop(workload, rx)),
     };
     let abort = join.abort_handle();

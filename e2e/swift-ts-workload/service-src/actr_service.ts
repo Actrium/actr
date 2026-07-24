@@ -7,6 +7,7 @@ import {
   unregisterStream,
   type ActrId,
   type DataChunk,
+  type InvocationCtx,
   type MetadataEntry,
 } from '@actrium/actr-workload';
 
@@ -67,6 +68,7 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
 
   async startDuplexStream(
     request: StartDuplexStreamRequest,
+    ctx?: InvocationCtx,
   ): Promise<StartDuplexStreamResponse> {
     const payloadType = payloadTypeFor(request.payloadMode);
     const serviceToClientStreamId = `s2c-${request.sessionId}`;
@@ -80,9 +82,13 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
       serviceChunksSent: 0,
     };
 
-    await registerStream(request.clientToServiceStreamId, async (chunk, sender) => {
-      await this.onClientChunk(chunk, sender);
-    });
+    await registerStream(
+      request.clientToServiceStreamId,
+      async (chunk, sender, streamCtx) => {
+        await this.onClientChunk(chunk, sender, streamCtx);
+      },
+      ctx,
+    );
 
     sessionsById.set(request.sessionId, state);
     sessionIdByClientStreamId.set(request.clientToServiceStreamId, request.sessionId);
@@ -97,9 +103,10 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
 
   async finishDuplexStream(
     request: FinishDuplexStreamRequest,
+    ctx?: InvocationCtx,
   ): Promise<FinishDuplexStreamResponse> {
     const state = sessionsById.get(request.sessionId);
-    await unregisterStream(request.clientToServiceStreamId);
+    await unregisterStream(request.clientToServiceStreamId, ctx);
     sessionIdByClientStreamId.delete(request.clientToServiceStreamId);
     if (state) {
       sessionsById.delete(request.sessionId);
@@ -112,7 +119,11 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
     });
   }
 
-  private async onClientChunk(chunk: DataChunk, sender: ActrId): Promise<void> {
+  private async onClientChunk(
+    chunk: DataChunk,
+    sender: ActrId,
+    ctx: InvocationCtx,
+  ): Promise<void> {
     const sessionId = sessionIdByClientStreamId.get(chunk.streamId);
     const state = sessionId ? sessionsById.get(sessionId) : undefined;
     if (!state) {
@@ -143,6 +154,7 @@ class DuplexEchoServiceHandlerImpl implements DuplexEchoServiceHandler {
         timestampMs: BigInt(Date.now()),
       },
       state.payloadType,
+      ctx,
     );
   }
 }
@@ -156,7 +168,7 @@ export default defineWorkload({
   async onStop(): Promise<void> {
     console.log('[DuplexEchoService] workload stopped');
   },
-  async dispatch(envelope): Promise<Uint8Array> {
-    return dispatcher.dispatch(envelope);
+  async dispatch(envelope, ctx): Promise<Uint8Array> {
+    return dispatcher.dispatch(envelope, ctx);
   },
 });

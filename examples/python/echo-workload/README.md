@@ -32,7 +32,7 @@ The script:
 
 1. Creates `.venv/`.
 2. Installs `../../../bindings/python/actr-workload[build]`, which pins
-   `componentize-py==0.23.0`.
+   `componentize-py==0.25.0`.
 3. Runs `actr-workload bindings bindings --world-module actr_workload_bindings`.
 4. Runs `actr-workload componentize workload --bindings-dir bindings`,
    with the local `actr-workload/src` directory on the componentizer
@@ -43,7 +43,7 @@ The script:
 The output component is:
 
 ```text
-dist/generated-echo-python-0.1.0-wasm32-wasip2.wasm
+dist/generated-echo-python-0.2.0-wasm32-wasip2.wasm
 ```
 
 ## Packaging
@@ -55,7 +55,7 @@ dist/generated-echo-python-0.1.0-wasm32-wasip2.wasm
 The package output is:
 
 ```text
-dist/acme-EchoService-0.1.0-wasm32-wasip2.actr
+dist/acme-EchoService-0.2.0-wasm32-wasip2.actr
 ```
 
 ## Files

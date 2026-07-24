@@ -8,13 +8,13 @@ Components. It provides:
 - A lightweight `Workload` `Protocol` for user code.
 - A small CLI/API wrapper around `componentize-py`.
 - Default WIT resolution against the repository source of truth at
-  `core/framework/wit/actr-workload.wit`.
+  `core/framework/wit-v2/actr-workload.wit`.
 
 The build extra pins the currently supported componentizer:
 
 ```bash
 python -m pip install 'actr-workload[build]'
-componentize-py --version  # componentize-py 0.23.0
+componentize-py --version  # componentize-py 0.25.0
 ```
 
 ## WIT Resolution
@@ -22,14 +22,14 @@ componentize-py --version  # componentize-py 0.23.0
 The canonical workload WIT source is:
 
 ```text
-core/framework/wit/actr-workload.wit
+core/framework/wit-v2/actr-workload.wit
 ```
 
 `actr-workload` resolves WIT in this order:
 
 1. An explicit `--wit PATH` argument or API `wit=` argument.
 2. The `ACTR_WORKLOAD_WIT` environment variable.
-3. The nearest checked-out repo WIT at `core/framework/wit/actr-workload.wit`.
+3. The nearest checked-out repo WIT at `core/framework/wit-v2/actr-workload.wit`.
 4. A packaged resource copied from that repo WIT when building a wheel or sdist.
 
 Package-specific WIT copies, such as the TypeScript workload package
@@ -48,7 +48,7 @@ This runs:
 
 ```bash
 componentize-py \
-  -w actr-workload-guest \
+  -w actr-workload-guest-v2 \
   -d <resolved actr-workload.wit> \
   --world-module actr_workload_bindings \
   bindings bindings
@@ -64,7 +64,7 @@ Use `--wit PATH` to override the resolved WIT file.
 
 ```bash
 actr-workload componentize workload \
-  -o dist/echo-python-0.1.0-wasm32-wasip2.wasm \
+  -o dist/echo-python-0.2.0-wasm32-wasip2.wasm \
   --project-dir . \
   --bindings-dir bindings
 ```
@@ -79,7 +79,7 @@ from actr_workload import Workload as WorkloadProtocol
 
 
 class Workload(WorkloadProtocol):
-    def dispatch(self, envelope) -> bytes:
+    async def dispatch(self, envelope, ctx) -> bytes:
         return bytes(envelope.payload)
 ```
 

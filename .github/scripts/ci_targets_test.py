@@ -49,6 +49,23 @@ class CiTargetsTest(unittest.TestCase):
                 self.assertTrue(targets["kotlin_binding"])
                 self.assertIn(f"kotlin_codegen:{path}", reasons)
 
+    def test_v2_workload_wit_triggers_sdk_checks(self) -> None:
+        path = "core/framework/wit-v2/actr-workload.wit"
+        targets, reasons = ci_targets.detect_targets([path], full_run=False)
+
+        self.assertTrue(targets["rust_core"])
+        self.assertTrue(targets["python_workload"])
+        self.assertTrue(targets["ts_workload"])
+        self.assertIn(f"core_dependency:{path}", reasons)
+
+    def test_retained_web_wit_does_not_trigger_workload_sdk_checks(self) -> None:
+        path = "core/framework/wit/actr-workload.wit"
+        targets, _ = ci_targets.detect_targets([path], full_run=False)
+
+        self.assertTrue(targets["rust_core"])
+        self.assertFalse(targets["python_workload"])
+        self.assertFalse(targets["ts_workload"])
+
 
 if __name__ == "__main__":
     unittest.main()

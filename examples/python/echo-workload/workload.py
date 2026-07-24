@@ -22,58 +22,58 @@ class Workload(WorkloadProtocol):
     def __init__(self) -> None:
         self._dispatcher = EchoServiceDispatcher(EchoServiceHandler())
 
-    def dispatch(self, envelope) -> bytes:
+    async def dispatch(self, envelope, ctx) -> bytes:
         return self._dispatcher.dispatch(envelope)
 
-    def on_start(self) -> None:
+    async def on_start(self, ctx) -> None:
         return None
 
-    def on_ready(self) -> None:
+    async def on_ready(self, ctx) -> None:
         return None
 
-    def on_stop(self) -> None:
+    async def on_stop(self, ctx) -> None:
         return None
 
-    def on_error(self, event) -> None:
+    async def on_error(self, event, ctx) -> None:
         return None
 
-    def on_signaling_connecting(self) -> None:
+    async def on_signaling_connecting(self, ctx) -> None:
         return None
 
-    def on_signaling_connected(self) -> None:
+    async def on_signaling_connected(self, ctx) -> None:
         return None
 
-    def on_signaling_disconnected(self) -> None:
+    async def on_signaling_disconnected(self, ctx) -> None:
         return None
 
-    def on_websocket_connecting(self, event) -> None:
+    async def on_websocket_connecting(self, event, ctx) -> None:
         return None
 
-    def on_websocket_connected(self, event) -> None:
+    async def on_websocket_connected(self, event, ctx) -> None:
         return None
 
-    def on_websocket_disconnected(self, event) -> None:
+    async def on_websocket_disconnected(self, event, ctx) -> None:
         return None
 
-    def on_webrtc_connecting(self, event) -> None:
+    async def on_webrtc_connecting(self, event, ctx) -> None:
         return None
 
-    def on_webrtc_connected(self, event) -> None:
+    async def on_webrtc_connected(self, event, ctx) -> None:
         return None
 
-    def on_webrtc_disconnected(self, event) -> None:
+    async def on_webrtc_disconnected(self, event, ctx) -> None:
         return None
 
-    def on_credential_renewed(self, event) -> None:
+    async def on_credential_renewed(self, event, ctx) -> None:
         return None
 
-    def on_credential_expiring(self, event) -> None:
+    async def on_credential_expiring(self, event, ctx) -> None:
         return None
 
-    def on_mailbox_backpressure(self, event) -> None:
+    async def on_mailbox_backpressure(self, event, ctx) -> None:
         return None
 
-    def on_data_chunk(self, chunk, sender) -> None:
+    async def on_data_chunk(self, chunk, sender, ctx) -> None:
         return None
 
 

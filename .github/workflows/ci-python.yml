@@ -43,7 +43,6 @@ jobs:
 
       - name: Verify TypeScript workload WIT drift
         run: |
-          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
 
       - name: Build actr-workload package
@@ -55,7 +54,7 @@ jobs:
         run: python -m pip install -e 'bindings/python/actr-workload[build]'
 
       - name: Verify componentize-py pin
-        run: componentize-py --version | grep 'componentize-py 0.23.0'
+        run: componentize-py --version | grep 'componentize-py 0.25.0'
 
       - name: Generate workload bindings
         run: |

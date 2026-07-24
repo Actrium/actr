@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "actr-workload"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python authoring helpers for actr workload components"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,7 +25,7 @@ classifiers = [
 
 [project.optional-dependencies]
 build = [
-    "componentize-py==0.23.0",
+    "componentize-py==0.25.0",
 ]
 
 [project.scripts]

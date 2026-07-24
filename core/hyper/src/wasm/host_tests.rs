@@ -37,7 +37,7 @@ fn compile_rejects_legacy_core_module_magic() {
 
 /// Compile a WAT component source into a real wasmtime [`Component`] on an
 /// engine configured exactly like production ([`build_engine`]).
-fn probe_wat(src: &str) -> WasmResult<WasmWorkloadKind> {
+fn probe_wat(src: &str) -> WasmResult<()> {
     let bytes = wat::parse_str(src).expect("test WAT must assemble");
     let engine =
         build_engine(&crate::config::WasmRuntimeLimits::default()).expect("engine must build");
@@ -54,6 +54,23 @@ fn probe_world_rejects_component_without_workload_world() {
     assert!(matches!(err, WasmError::LoadFailed(_)));
     assert!(
         err.to_string().contains("no recognised"),
+        "unexpected message: {err}"
+    );
+}
+
+#[test]
+fn probe_world_rejects_retired_v1_component_with_rebuild_hint() {
+    let src = r#"
+        (component
+          (instance $v1)
+          (export "actr:workload/workload@0.1.0" (instance $v1))
+        )
+    "#;
+    let err = probe_wat(src).unwrap_err();
+    assert!(matches!(err, WasmError::LoadFailed(_)));
+    assert!(
+        err.to_string()
+            .contains("rebuild the package with the current SDK"),
         "unexpected message: {err}"
     );
 }

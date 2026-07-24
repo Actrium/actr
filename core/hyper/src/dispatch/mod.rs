@@ -44,9 +44,10 @@
 //! Concurrency therefore only appears for methods a consumer explicitly declares
 //! a conflict key for; everything else stays serial regardless of the gate.
 //! Backend execution capability is a separate constraint: only native `Linked`
-//! workloads and 0.2.0 async-world `Wasm(V2)` guests can multiplex dispatches.
-//! A 0.1.0 sync-world `Wasm(V1)` guest or `DynClib` guest remains serial, so a
-//! declared key is only a routing hint and yields no throughput increase there.
+//! workloads and 0.2.0 async-world WASM guests can multiplex dispatches. The
+//! retired 0.1.0 sync-world is rejected at load. `DynClib` is the only supported
+//! packaged backend that remains serial, so a declared key is only a routing
+//! hint and yields no throughput increase there.
 //!
 //! ## Scope (B2)
 //!

@@ -17,6 +17,7 @@ fn test_template_context() {
     assert_eq!(ctx.signaling_url, "ws://localhost:8080");
     assert_eq!(ctx.ais_endpoint_url, "http://localhost:8080/ais");
     assert_eq!(ctx.actr_swift_version, DEFAULT_ACTR_SWIFT_VERSION);
+    assert_eq!(ctx.actr_workload_version, DEFAULT_ACTR_WORKLOAD_VERSION);
 }
 
 #[test]

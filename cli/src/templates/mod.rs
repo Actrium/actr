@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 pub use crate::commands::SupportedLanguage;
 
+pub const DEFAULT_ACTR_WORKLOAD_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_ACTR_SWIFT_VERSION: &str = "0.1.15";
 pub const DEFAULT_MANUFACTURER: &str = "acme";
 
@@ -91,6 +92,8 @@ pub struct TemplateContext {
     pub workload_name: String,
     #[serde(rename = "ACTR_SWIFT_VERSION")]
     pub actr_swift_version: String,
+    #[serde(rename = "ACTR_WORKLOAD_VERSION")]
+    pub actr_workload_version: String,
     #[serde(rename = "ACTR_LOCAL_PATH")]
     pub actr_local_path: Option<String>,
 
@@ -126,6 +129,7 @@ impl TemplateContext {
             service_name: service_name.to_string(),
             workload_name: format!("{}Workload", project_name_pascal),
             actr_swift_version: DEFAULT_ACTR_SWIFT_VERSION.to_string(),
+            actr_workload_version: DEFAULT_ACTR_WORKLOAD_VERSION.to_string(),
             actr_local_path: resolve_actr_swift_local_path(),
             realm_id: 2368266035,
             stun_urls: r#"["stun:actrix1.develenv.com:3478"]"#.to_string(),

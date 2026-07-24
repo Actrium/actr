@@ -28,7 +28,7 @@ mod wasm_actor_fixture;
 /// `wasm_actor_fixture.rs`. Previously this was a hand-rolled core wasm
 /// module exposing `actr_alloc` / `actr_handle` — obsolete since
 /// Commit 2 switched the host to `Component::from_binary`. The fresh
-/// Component exposes the `actr:workload/workload@0.1.0` world and loads
+/// Component exposes the `actr:workload/workload@0.2.0` world and loads
 /// cleanly through `WasmHost::compile`.
 #[cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 fn echo_guest_wasm() -> Vec<u8> {

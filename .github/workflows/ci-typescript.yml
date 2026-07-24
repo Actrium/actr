@@ -73,7 +73,6 @@ jobs:
 
       - name: Verify TypeScript workload WIT drift
         run: |
-          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
 
       - name: Build TypeScript workload package
@@ -82,12 +81,16 @@ jobs:
           npm ci
           npm run build
           npm test
-          node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
+          node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit-v2/actr-workload.wit
           npm pack --dry-run
 
-      - name: Build TypeScript EchoService workload
+      - name: Build TypeScript EchoService sources
         working-directory: examples/typescript/echo-workload
         run: |
           npm ci
           npm run build
-          npm run componentize
+
+      # ComponentizeJS#335 / #427: accept only the known async-func bindgen
+      # panic. Any unrelated componentization failure must still fail CI.
+      - name: Componentize TypeScript EchoService workload
+        run: bash .github/scripts/verify-typescript-componentize-blocker.sh

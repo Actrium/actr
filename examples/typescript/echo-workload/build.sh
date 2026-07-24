@@ -4,14 +4,18 @@
 # Build the TypeScript EchoService workload as a Component Model wasm.
 #
 # Usage:
-#   ./build.sh          # npm install + build + componentize
-#   ./build.sh package  # additionally run actr build --no-compile
+#   ./build.sh          # npm install + build, then attempt componentize
+#   ./build.sh package  # additionally package after componentize succeeds
+#
+# Componentization currently ends with an actionable blocker diagnostic until
+# https://github.com/bytecodealliance/ComponentizeJS/issues/335 is resolved
+# (tracked in Actrium/actr#427).
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACTR_ROOT="${HERE}/../../.."
-OUT_WASM="${HERE}/dist/echo-typescript-0.1.0-wasm32-wasip2.wasm"
+OUT_WASM="${HERE}/dist/echo-typescript-0.2.0-wasm32-wasip2.wasm"
 
 echo "[0/3] building local @actrium/actr-workload package ..."
 (
@@ -33,6 +37,7 @@ echo "[2/3] TypeScript build ..."
 )
 
 echo "[3/3] componentize ..."
+echo "      V2 async exports require ComponentizeJS#335 (tracked by actr#427)."
 (
     cd "${HERE}"
     npm run componentize

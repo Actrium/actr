@@ -285,6 +285,10 @@ realm_id = 1001
     );
     assert!(!scaffold.contains("local_data_stream_app_pb2.ContinuePromptResultStreamsRequest"));
     assert!(!scaffold.contains("data_stream_app_pb2.ContinuePromptResultStreamsRequest"));
+    assert!(scaffold.contains("async def dispatch(self, envelope, ctx) -> bytes:"));
+    assert!(scaffold.contains("async def on_error(self, event, ctx) -> None:"));
+    assert!(scaffold.contains("async def on_data_chunk(self, chunk, sender, ctx) -> None:"));
+    assert!(!scaffold.contains("\n    def dispatch(self, envelope)"));
 }
 
 #[test]

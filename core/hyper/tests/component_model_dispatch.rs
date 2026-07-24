@@ -5,14 +5,12 @@
 //! actr host surface. Each test drives `WasmHost::compile` →
 //! `instantiate` → `call_on_start` → `handle` against the rebuilt
 //! `wasm_actor_fixture` Component, mirroring the shape of
-//! `core/hyper/src/wasm/host.rs::WasmWorkload::handle`.
+//! `core/hyper/src/wasm/host_v2.rs::WasmWorkloadV2::handle`.
 //!
 //! Skipped from the spike:
-//! - **Test 3** (concurrent dispatches on the same instance) — wasmtime's
-//!   `Store<T>` is not `Sync` and `call_dispatch` takes `&mut Store<T>`,
-//!   so the Rust borrow checker prevents writing that test in safe code.
-//!   The spike confirmed the guarantee at compile time; there is no
-//!   runtime behaviour left to verify.
+//! - **Test 3** (concurrent dispatches on the same instance) — superseded by
+//!   `wasm_open_concurrency`, which exercises the V2 `run_concurrent` resident
+//!   region and verifies real same-instance interleaving.
 //! - **Test 5** (guest-side async ergonomics) — compile-time covered by
 //!   the guest framework tests; not a runtime concern.
 //! - **Test 6** (100-dispatch throughput) — superseded by the Commit 6
@@ -607,7 +605,7 @@ async fn component_model_call_on_start_does_not_trap() {
 
 /// A guest trap poisons the store; the runner's *next* command must trigger
 /// B0's lazy rebuild and recover — proving the runner reuses the underlying
-/// `WasmWorkload` (with its `ensure_instance` / `trap_poison` logic) unchanged.
+/// `WasmWorkloadV2` (with its `ensure_instance` / `trap_poison` logic) unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runner_trap_then_next_cmd_rebuilds() {
     let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");

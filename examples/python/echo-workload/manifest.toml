@@ -4,14 +4,14 @@ exports = ["protos/local/echo.proto"]
 [package]
 name = "EchoService"
 manufacturer = "acme"
-version = "0.1.0"
+version = "0.2.0"
 description = "Generated Python EchoService workload"
 authors = ["Actr Dev Team"]
 license = "Apache-2.0"
 tags = ["dev", "python-guest", "component-model", "generated"]
 
 [binary]
-path = "dist/generated-echo-python-0.1.0-wasm32-wasip2.wasm"
+path = "dist/generated-echo-python-0.2.0-wasm32-wasip2.wasm"
 target = "wasm32-wasip2"
 
 [dependencies]

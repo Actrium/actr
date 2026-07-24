@@ -1,14 +1,14 @@
 //! WasmWorkloadV2 — the `actr:workload@0.2.0` async-world execution path.
 //!
-//! Sibling of [`super::host::WasmWorkload`] (the 0.1.0 serial path). Where
-//! the V1 path drives the guest through `call_dispatch(&mut store, ...)`
-//! (borrow-checker-serialized), V2 drives it through a
-//! `Store::run_concurrent(async |accessor| ...)` region and Accessor-based
-//! host imports. Under M4 the region holds exactly ONE task at a time (the
-//! runner is still serial), so behaviour is identical to V1 end-to-end;
-//! M5 opens the region to `FuturesUnordered` for real same-instance
-//! concurrency with zero further changes to the host-import side (each
-//! in-flight invocation keys its `HostAbiFn` by `ctx-token`).
+//! The sole actr:workload execution path (the 0.1.0 synchronous serial
+//! world is retired — a component exporting it is rejected at load by
+//! `probe_world`). Every guest entry drives the guest through a
+//! `Store::run_concurrent(async |accessor| ...)` region with Accessor-based
+//! host imports, so multiple distinct-key dispatches can interleave at their
+//! host-import `.await` points on a single instance. The M5 open-concurrency
+//! runner holds the region open across a `FuturesUnordered` for real
+//! same-instance concurrency; each in-flight invocation keys its `HostAbiFn`
+//! by `ctx-token`.
 //!
 //! The host-import trait here is Accessor-based: methods are static async
 //! associated functions taking `&Accessor<HostState, Self>`, and store
@@ -252,8 +252,9 @@ impl HostWithStore<HostState> for HostState {
 // ─────────────────────────────────────────────────────────────────────────────
 // WIT (0.2.0) ↔ actr_protocol / actr_framework translation
 //
-// The 0.2.0 bindgen emits its own distinct type namespace, so these mirror
-// the 0.1.0 helpers in `host.rs` but target the v2 `wit2` structs.
+// The 0.2.0 bindgen emits its own type namespace. These helpers translate
+// that namespace to the protocol/framework types and the native host-operation
+// payloads still shared with DynClib.
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn wit_realm_to_proto(r: &WitRealm) -> Realm {
@@ -487,7 +488,7 @@ async fn instantiate_parts_v2(
     })?;
 
     let mut store = Store::new(engine, HostState::new(limits));
-    // issue #346: per-store limiter + fuel/epoch seed, same as the V1 path.
+    // issue #346: install the per-store limiter and initial fuel/epoch budget.
     store.limiter(|s| &mut s.limits);
     store
         .fuel_async_yield_interval(limits.fuel_async_yield_interval)
@@ -524,9 +525,9 @@ async fn instantiate_parts_v2(
 
 /// Single 0.2.0 async-world wasm actor instance.
 ///
-/// Mirrors [`super::host::WasmWorkload`]'s lifecycle (engine/component/store
-/// plus poison/rebuild), but every guest entry runs inside a single-task
-/// `Store::run_concurrent` region. The per-invocation `ctx-token` is
+/// Owns the engine/component/store lifecycle (plus poison/rebuild); every
+/// guest entry runs inside a single-task `Store::run_concurrent` region. The
+/// per-invocation `ctx-token` is
 /// allocated into [`HostState`]'s invocation table just before the region
 /// opens and retired after it closes; a trap clears the whole table.
 pub(crate) struct WasmWorkloadV2 {
@@ -576,7 +577,8 @@ impl WasmWorkloadV2 {
         })
     }
 
-    /// Legacy init entry — mirrors the V1 path so the loader stays uniform.
+    /// Compatibility init entry for the loader's shared `InitPayloadV1`.
+    /// Component-model lifecycle initialization itself is handled by exports.
     pub(crate) fn init(&mut self, init_payload: &guest_abi::InitPayloadV1) -> WasmResult<()> {
         tracing::debug!(
             actr_type = %init_payload.actr_type,

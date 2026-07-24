@@ -66,7 +66,7 @@ pub struct HyperConfig {
     /// node keeps it bit-for-bit serial and never spawns a scheduler, so the
     /// resident concurrency machinery only engages once a method declares a
     /// conflict key on a workload that can multiplex (native `Linked` /
-    /// `Wasm(V2)`). Pass `Some(DispatchConcurrency { enabled: false, .. })` (or
+    /// V2 `Wasm`). Pass `Some(DispatchConcurrency { enabled: false, .. })` (or
     /// set `ACTR_DISPATCH_SERIAL=1`) to force the fully-serial B1 runner. See
     /// [`DispatchConcurrency`].
     pub dispatch_concurrency: Option<DispatchConcurrency>,
@@ -186,7 +186,7 @@ pub struct WasmRuntimeLimits {
     /// If set, wasmtime cooperatively yields the guest back to the host every
     /// `n` fuel instead of trapping on exhaustion — enabling fair interleaving
     /// under `run_concurrent`. `None` (default) = trap on exhaustion; the
-    /// instance is rebuilt on the next entry (`WasmWorkload::ensure_instance`).
+    /// instance is rebuilt on the next entry (`WasmWorkloadV2::ensure_instance`).
     pub fuel_async_yield_interval: Option<u64>,
     /// Max `.actr` component byte size accepted by the loader. Package
     /// verification also uses this as both the per-entry and cumulative

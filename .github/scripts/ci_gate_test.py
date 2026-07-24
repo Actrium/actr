@@ -9,10 +9,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CI_GATE_WORKFLOW = ROOT / ".github/workflows/ci-gate.yml"
 CI_E2E_WORKFLOW = ROOT / ".github/workflows/ci-e2e.yml"
+CI_TYPESCRIPT_WORKFLOW = ROOT / ".github/workflows/ci-typescript.yml"
 RELEASE_TRAIN_WORKFLOW = ROOT / ".github/workflows/release-train.yml"
 RELEASE_TRAIN_SCRIPT = ROOT / "scripts/release-train.sh"
 CLI_TEST_SUPPORT = ROOT / "cli/src/test_support.rs"
 SWIFT_E2E_READINESS = ROOT / "e2e/swift-echo-app/lib/readiness.sh"
+TS_COMPONENTIZE_GUARD = ROOT / ".github/scripts/verify-typescript-componentize-blocker.sh"
 
 
 def _job(workflow: str, name: str, next_name: str) -> str:
@@ -73,13 +75,58 @@ def test_pr_gate_excludes_heavy_root_e2e_jobs() -> None:
     assert "web_browser_e2e" not in workflow
 
 
-def test_scheduled_e2e_runs_root_level_browser_and_stream_e2e() -> None:
+def test_blocked_typescript_component_e2e_jobs_share_disable_gate() -> None:
     workflow = CI_E2E_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "typescript-e2e:" in workflow
-    assert "web-browser-e2e:" in workflow
-    assert "bash e2e/typescript-stream/run.sh" in workflow
-    assert "bash e2e/web-browser/run.sh" in workflow
+    typescript_job = _job(workflow, "typescript-e2e", "web-browser-e2e")
+    web_browser_job = _job(workflow, "web-browser-e2e", "swift-echo-app-e2e")
+    swift_ts_job = _job(workflow, "swift-ts-workload-e2e", "kotlin-echo-app-e2e")
+
+    for job in (typescript_job, web_browser_job, swift_ts_job):
+        assert "if: ${{ false }}" in job
+        assert "#431" in job
+
+    assert "bash e2e/typescript-stream/run.sh" in typescript_job
+    assert "bash e2e/web-browser/run.sh" in web_browser_job
+
+
+def test_typescript_componentize_only_allows_known_upstream_failure() -> None:
+    gate_workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
+    gate_job = _job(gate_workflow, "typescript", "python_codegen")
+    typescript_workflow = CI_TYPESCRIPT_WORKFLOW.read_text(encoding="utf-8")
+    guard = TS_COMPONENTIZE_GUARD.read_text(encoding="utf-8")
+
+    for workflow in (gate_job, typescript_workflow):
+        assert "continue-on-error: true" not in workflow
+        assert "bash .github/scripts/verify-typescript-componentize-blocker.sh" in workflow
+
+    assert 'grep -Fq "spidermonkey-embedding-splicer"' in guard
+    assert 'grep -Fq "not yet implemented"' in guard
+    assert "tracked by #427" in guard
+    assert 'exit "${componentize_status}"' in guard
+
+
+def test_python_workload_gate_builds_generated_cli_scaffold() -> None:
+    workflow = CI_GATE_WORKFLOW.read_text(encoding="utf-8")
+    python_job = _job(workflow, "python_workload", "swift")
+
+    assert "- name: Build generated Python scaffold" in python_job
+    assert "mv workload.py workload.py.handwritten" in python_job
+    assert "./build.sh" in python_job
+
+
+def test_python_template_keeps_project_and_abi_versions_distinct() -> None:
+    manifest = (
+        ROOT / "cli/fixtures/python/echo/manifest.toml.jinja2"
+    ).read_text(encoding="utf-8")
+    build_script = (
+        ROOT / "cli/fixtures/python/echo/build.sh.jinja2"
+    ).read_text(encoding="utf-8")
+
+    assert 'version = "0.1.0"' in manifest
+    assert "{{PROJECT_NAME_SNAKE}}-0.1.0-wasm32-wasip2.wasm" in manifest
+    assert "{{PROJECT_NAME_SNAKE}}-0.1.0-wasm32-wasip2.wasm" in build_script
+    assert 'WORLD="actr-workload-guest-v2"' in build_script
 
 
 def test_pr_gate_swift_uses_macos_only_xcframework() -> None:
@@ -624,7 +671,10 @@ if __name__ == "__main__":
     test_rust_test_gate_restores_cache_before_installing_tools()
     test_msrv_gate_builds_full_workspace_on_pinned_toolchain()
     test_pr_gate_excludes_heavy_root_e2e_jobs()
-    test_scheduled_e2e_runs_root_level_browser_and_stream_e2e()
+    test_blocked_typescript_component_e2e_jobs_share_disable_gate()
+    test_typescript_componentize_only_allows_known_upstream_failure()
+    test_python_workload_gate_builds_generated_cli_scaffold()
+    test_python_template_keeps_project_and_abi_versions_distinct()
     test_pr_gate_swift_uses_macos_only_xcframework()
     test_release_train_has_valid_publish_steps()
     test_release_train_verifies_ci_gate_triggered()

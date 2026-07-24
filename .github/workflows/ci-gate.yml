@@ -111,11 +111,9 @@ jobs:
           repo-token: ${{ github.token }}
           version: ${{ vars.PROTOC_VERSION }}
       - name: Verify actr-hyper WIT drift
-        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
-        # framework original (shipped in the actr-hyper tarball so bindgen
-        # works without the sibling framework crate). Fail fast if they drift.
+        # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
+        # without the sibling framework crate. Fail fast if the copy drifts.
         run: |
-          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
@@ -174,11 +172,9 @@ jobs:
           repo-token: ${{ github.token }}
           version: ${{ vars.PROTOC_VERSION }}
       - name: Verify actr-hyper WIT drift
-        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
-        # framework original (shipped in the actr-hyper tarball so bindgen
-        # works without the sibling framework crate). Fail fast if they drift.
+        # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
+        # without the sibling framework crate. Fail fast if the copy drifts.
         run: |
-          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - uses: Swatinem/rust-cache@v2
         with:
@@ -337,7 +333,6 @@ jobs:
             examples/typescript/echo-workload/package-lock.json
       - name: Verify TypeScript workload WIT drift
         run: |
-          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
       - name: Build TypeScript workload package
         working-directory: bindings/typescript/actr-workload
@@ -345,14 +340,17 @@ jobs:
           npm ci
           npm run build
           npm test
-          node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit/actr-workload.wit
+          node dist/cli.js bindings /tmp/actr-workload-ts-bindings --wit ../../../core/framework/wit-v2/actr-workload.wit
           npm pack --dry-run
-      - name: Build TypeScript EchoService workload
+      - name: Build TypeScript EchoService sources
         working-directory: examples/typescript/echo-workload
         run: |
           npm ci
           npm run build
-          npm run componentize
+      # ComponentizeJS#335 / #427: accept only the known async-func bindgen
+      # panic. Any unrelated componentization failure must still fail CI.
+      - name: Componentize TypeScript EchoService workload
+        run: bash .github/scripts/verify-typescript-componentize-blocker.sh
 
   python_codegen:
     name: Python Codegen
@@ -453,11 +451,9 @@ jobs:
           repo-token: ${{ github.token }}
           version: ${{ vars.PROTOC_VERSION }}
       - name: Verify actr-hyper WIT drift
-        # core/hyper/wit/actr-workload.wit is a publish-time copy of the
-        # framework original (shipped in the actr-hyper tarball so bindgen
-        # works without the sibling framework crate). Fail fast if they drift.
+        # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
+        # without the sibling framework crate. Fail fast if the copy drifts.
         run: |
-          cmp core/framework/wit/actr-workload.wit core/hyper/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit core/hyper/wit-v2/actr-workload.wit
       - name: Cache cargo-installed tools
         id: cargo-tools
@@ -475,7 +471,6 @@ jobs:
         run: cargo install wasm-pack --version 0.15.0 --locked
       - name: Verify TypeScript workload WIT drift
         run: |
-          cmp core/framework/wit/actr-workload.wit bindings/typescript/actr-workload/src/wit/actr-workload.wit
           cmp core/framework/wit-v2/actr-workload.wit bindings/typescript/actr-workload/src/wit-v2/actr-workload.wit
       - name: Build actr-workload package
         run: |
@@ -484,7 +479,7 @@ jobs:
       - name: Install actr-workload build extra
         run: python -m pip install -e 'bindings/python/actr-workload[build]'
       - name: Verify componentize-py pin
-        run: componentize-py --version | grep 'componentize-py 0.23.0'
+        run: componentize-py --version | grep 'componentize-py 0.25.0'
       - name: Generate workload bindings
         run: |
           rm -rf /tmp/actr-workload-bindings
@@ -496,6 +491,14 @@ jobs:
       - name: Build Python echo workload
         working-directory: examples/python/echo-workload
         run: ./build.sh package
+      - name: Build generated Python scaffold
+        # The first build preserves the hand-written workload. Move it aside so
+        # `actr gen` stamps the real CLI scaffold, then componentize that output
+        # against the V2 bindings as a regression guard.
+        working-directory: examples/python/echo-workload
+        run: |
+          mv workload.py workload.py.handwritten
+          ./build.sh
 
   swift:
     name: Swift

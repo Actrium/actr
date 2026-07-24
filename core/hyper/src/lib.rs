@@ -854,10 +854,11 @@ impl Node<Init> {
     /// Declaring a key asserts that distinct-key invocations of that method may
     /// run concurrently — see [`crate::dispatch::ConflictKeySpec`] for the
     /// consumer-side concurrency contract. Execution concurrency is available
-    /// only to native `Linked` workloads and 0.2.0 async-world `Wasm(V2)`
-    /// guests. A 0.1.0 sync-world `Wasm(V1)` guest or `DynClib` guest stays
-    /// serial regardless of the gate or budget: its key affects scheduler
-    /// routing but provides no dispatch-throughput benefit.
+    /// only to native `Linked` workloads and 0.2.0 async-world WASM guests.
+    /// The retired 0.1.0 sync-world is rejected at load. `DynClib` is the only
+    /// supported packaged backend that stays serial regardless of the gate or
+    /// budget: its key affects scheduler routing but provides no
+    /// dispatch-throughput benefit.
     pub fn with_conflict_keys(mut self, spec: crate::dispatch::ConflictKeySpec) -> Self {
         self.pending_conflict_keys = Some(spec);
         self

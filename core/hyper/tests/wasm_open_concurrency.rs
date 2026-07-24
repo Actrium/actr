@@ -18,8 +18,6 @@
 //! 8. the node-integration seam: the dedup write-back (node.rs:~1204) is correct
 //!    around a gate-on interleaved wasm V2 dispatch (see the scope note on that
 //!    test for what a full real-node crossing is blocked by)
-//! 9. the package compat matrix: a V1 (sync-world) guest stays serial even when
-//!    Interleaved is requested; a V2 guest works in both modes
 //!
 //! Evidence is gathered without sleep-based coordination: the guest reports the
 //! peak in-flight count it observed in its own linear memory (MAX_SEEN), and the
@@ -41,7 +39,7 @@ use actr_hyper::test_support::{
     TestConcurrentDispatcher, TestDedupOutcome, TestDedupState, instantiate_wasm_workload,
 };
 use actr_hyper::wasm::WasmHost;
-use actr_hyper::workload::{HostAbiFn, HostOperationResult};
+use actr_hyper::workload::HostAbiFn;
 use actr_protocol::ActrId;
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc};
@@ -52,10 +50,6 @@ mod wasm_actor_fixture;
 fn fixture_bytes() -> &'static [u8] {
     wasm_actor_fixture::WASM_ACTOR_FIXTURE
 }
-
-/// A genuine 0.1.0 sync-lift Component (frozen pre-M4 build of the same guest
-/// source), used by the compat matrix to prove the V1-on-Interleaved fallback.
-const V1_SYNCLIFT_GUEST: &[u8] = include_bytes!("fixtures/v1_synclift_guest.wasm");
 
 // ── Facet 1 — distinct keys truly interleave (MAX_SEEN >= 2) ─────────────────
 
@@ -595,44 +589,7 @@ async fn node_gate_on_dedup_writeback_survives_interleave() {
     dispatcher.shutdown().await;
 }
 
-// ── Facet 9 — package compat matrix ──────────────────────────────────────────
-
-/// A V1 (0.1.0 sync-world) guest must stay serial even when Interleaved is
-/// requested: `WasmKernel::is_v2()` is false, so the executor routes it to the
-/// serial `run_loop`. Dispatch must still work.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn compat_v1_guest_on_interleaved_falls_back_to_serial() {
-    let host = WasmHost::compile(V1_SYNCLIFT_GUEST).expect("compile v1 fixture");
-    let wl = instantiate_wasm_workload(&host)
-        .await
-        .expect("instantiate v1");
-    // Request Interleaved; a V1 kernel must transparently run serially.
-    let runner = wl.into_interleaved_runner(None);
-
-    use actr_protocol::{Direction, RpcEnvelope, prost::Message as _};
-    let payload = b"v1-serial-fallback".to_vec();
-    let bytes = RpcEnvelope {
-        route_key: "test/echo".to_string(),
-        payload: Some(Bytes::from(payload.clone())),
-        request_id: "v1-compat".to_string(),
-        direction: Some(Direction::Request as i32),
-        ..Default::default()
-    }
-    .encode_to_vec();
-    let inv = actr_hyper::workload::InvocationContext {
-        self_id: ActrId::default(),
-        caller_id: None,
-        request_id: "v1-compat".to_string(),
-    };
-    let bridge: HostAbiFn = Arc::new(|_| Box::pin(async move { HostOperationResult::Error(-1) }));
-
-    let reply = runner
-        .dispatch(&bytes, inv, &bridge)
-        .await
-        .expect("V1 echo must dispatch on the serial fallback");
-    assert_eq!(reply.as_ref(), payload.as_slice());
-    runner.shutdown().await;
-}
+// ── V2 interleaved single-dispatch positive control ──────────────────────────
 
 /// A V2 guest must work in BOTH modes: serial (facet 7 above) and interleaved
 /// (facets 1-3 above). This is the positive control that the same 0.2.0 package

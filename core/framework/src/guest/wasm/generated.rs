@@ -1,4 +1,4 @@
-//! Component Model bindings generated from `core/framework/wit/actr-workload.wit`.
+//! Component Model bindings generated from `core/framework/wit-v2/actr-workload.wit`.
 //!
 //! Re-runs `wit_bindgen::generate!` once per compiled guest; the emitted
 //! types live under `exports::actr::workload::workload` (the guest-provided

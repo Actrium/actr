@@ -10,7 +10,7 @@ from setuptools.command.sdist import sdist
 
 BUILD_WIT = Path("actr_workload/wit/actr-workload.wit")
 SDIST_WIT = Path("src/actr_workload/wit/actr-workload.wit")
-REPO_WIT = Path(__file__).resolve().parents[3] / "core/framework/wit/actr-workload.wit"
+REPO_WIT = Path(__file__).resolve().parents[3] / "core/framework/wit-v2/actr-workload.wit"
 
 
 def source_wit() -> Path:
