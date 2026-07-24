@@ -94,6 +94,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Build
         run: cargo build --release -p actr-framework-protoc-codegen --bin protoc-gen-actrframework --target aarch64-apple-darwin --locked
       - name: Package

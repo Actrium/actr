@@ -16,9 +16,6 @@ on:
 permissions:
   contents: read
 
-env:
-  PROTOC_VERSION: "29.3"
-
 jobs:
   determine:
     name: Determine Affected Targets
@@ -112,6 +109,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Verify actr-hyper WIT drift
         # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
         # without the sibling framework crate. Fail fast if the copy drifts.
@@ -172,6 +170,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Verify actr-hyper WIT drift
         # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
         # without the sibling framework crate. Fail fast if the copy drifts.
@@ -242,6 +241,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Cache cargo-installed tools
         id: cargo-tools
         uses: actions/cache@v4
@@ -288,6 +288,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         working-directory: bindings/typescript
@@ -377,6 +378,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Smoke generate typed workload
         run: |
           tmp="$(mktemp -d)"
@@ -447,6 +449,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Verify actr-hyper WIT drift
         # The V2 WIT is shipped in the actr-hyper tarball so host bindgen works
         # without the sibling framework crate. Fail fast if the copy drifts.
@@ -515,6 +518,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - name: Cache uniffi-bindgen binary
         id: cache-uniffi
         uses: actions/cache@v4
@@ -603,6 +607,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Cache cargo-installed tools
         id: cargo-tools

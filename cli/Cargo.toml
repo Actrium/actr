@@ -1,6 +1,6 @@
 [package]
 name = "actr-cli"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2024"
 rust-version.workspace = true
 license = "Apache-2.0"
@@ -33,34 +33,34 @@ path = "src/main.rs"
 
 [dependencies]
 # Actor-RTC main crate with config feature (includes protocol, config, version)
-actr = { path = "..", version = "0.5.3", features = ["config"] }
+actr = { path = "..", version = "0.5.4", features = ["config"] }
 
 # Hyper layer - binary hash computation and manifest embed for dev tooling
-actr-hyper = { path = "../core/hyper", version = "0.5.3" }
+actr-hyper = { path = "../core/hyper", version = "0.5.4" }
 
 # Package format (.actr ZIP STORE)
 actr-pack.workspace = true
 
 # Platform provider for native execution
-actr-platform-native = { path = "../core/platform-native", version = "0.5.3" }
+actr-platform-native = { path = "../core/platform-native", version = "0.5.4" }
 
 # Key generation for actr dev keygen
 rand.workspace = true
 
 # DLQ storage (for actr dlq subcommand)
-actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.5.3" }
+actr-runtime-mailbox = { path = "../core/runtime-mailbox", version = "0.5.4" }
 
 
 # Direct access to config/protocol for CLI-specific types
 # (These have different APIs than actr umbrella re-exports)
-actr-config = { path = "../core/config", version = "0.5.3" }
-actr-protocol = { path = "../core/protocol", version = "0.5.3" }
+actr-config = { path = "../core/config", version = "0.5.4" }
+actr-protocol = { path = "../core/protocol", version = "0.5.4" }
 
 # Version / fingerprint utilities
-actr-service-compat = { path = "../core/service-compat", version = "0.5.3" }
+actr-service-compat = { path = "../core/service-compat", version = "0.5.4" }
 
 # Protoc code generator - CLI specific tool
-actr-framework-protoc-codegen = { path = "../tools/protoc-gen/rust", version = "0.5.3" }
+actr-framework-protoc-codegen = { path = "../tools/protoc-gen/rust", version = "0.5.4" }
 
 # Command line interface
 clap = { version = "4.5", features = ["derive", "cargo"] }
@@ -122,7 +122,6 @@ url = "2.5"
 # Protocol buffer generation
 prost-build = "0.14"
 prost = "0.14"
-prost-types = "0.14"
 
 # Code generation utilities (for protoc-gen-actrframework)
 quote = "1.0"

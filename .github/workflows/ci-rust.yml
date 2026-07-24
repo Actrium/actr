@@ -7,7 +7,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  PROTOC_VERSION: "29.3"
   # Fail the build if core/hyper/build.rs can't compile the wasm fixture
   # (missing wasm32-wasip2 / wasm-component-ld) rather than silently compiling
   # the fixture tests out — symmetric with ci-gate.yml.
@@ -85,6 +84,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       # Component Model toolchain:
       # - wasm-component-ld >= 0.5.22 is required to link the V2 async-world
       #   guest fixture (actr:workload@0.2.0) built by core/hyper/build.rs; that
@@ -124,6 +124,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ github.token }}
+          version: ${{ vars.PROTOC_VERSION }}
       # Phase 1 Component Model toolchain — see `build` job for rationale.
       - name: Install wasm Component Model toolchain
         run: |
@@ -151,6 +152,7 @@ jobs:
         uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+          version: ${{ vars.PROTOC_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Run dynclib tests
         run: |

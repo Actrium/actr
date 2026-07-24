@@ -51,14 +51,14 @@ axum-server = { version = "0.7.3", default-features = false, features = [
 ] }
 
 # Local dependencies
-actrix-sdk = { path = "../sdk", version = "0.5.3" }
-platform = { path = "../platform", package = "actrix-platform", version = "0.5.3" }
-signaling = { path = "../signaling", package = "actrix-signaling", version = "0.5.3" }
-stun = { path = "../stun", package = "actrix-stun", version = "0.5.3" }
-turn = { path = "../turn", package = "actrix-turn", version = "0.5.3" }
-ais = { path = "../ais", package = "actrix-ais", version = "0.5.3" }
-actrix-mfr = { path = "../mfr", version = "0.5.3" }
-signer = { path = "../signer", package = "actrix-signer", version = "0.5.3" }
+actrix-sdk = { path = "../sdk", version = "0.5.4" }
+platform = { path = "../platform", package = "actrix-platform", version = "0.5.4" }
+signaling = { path = "../signaling", package = "actrix-signaling", version = "0.5.4" }
+stun = { path = "../stun", package = "actrix-stun", version = "0.5.4" }
+turn = { path = "../turn", package = "actrix-turn", version = "0.5.4" }
+ais = { path = "../ais", package = "actrix-ais", version = "0.5.4" }
+actrix-mfr = { path = "../mfr", version = "0.5.4" }
+signer = { path = "../signer", package = "actrix-signer", version = "0.5.4" }
 rand = "0.9.1"
 futures = "0.3.31"
 num_cpus = "1.16.0"
@@ -99,8 +99,8 @@ tracing-opentelemetry = { version = "0.32.0", optional = true }
 nix = { version = "0.30", features = ["user"] }
 
 [dev-dependencies]
-actrix-sdk = { path = "../sdk", version = "0.5.3", features = ["testing"] }
-platform = { path = "../platform", package = "actrix-platform", version = "0.5.3" }
+actrix-sdk = { path = "../sdk", version = "0.5.4", features = ["testing"] }
+platform = { path = "../platform", package = "actrix-platform", version = "0.5.4" }
 tempfile = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 urlencoding = "2.1"
@@ -110,7 +110,6 @@ actr-protocol = { workspace = true }
 actr-runtime = { workspace = true }
 actr-runtime-mailbox = { workspace = true }
 prost = { workspace = true }
-prost-types = { workspace = true }
 serial_test = "3.3"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 opentelemetry-proto = { version = "0.31.0", default-features = false, features = ["gen-tonic", "trace"] }

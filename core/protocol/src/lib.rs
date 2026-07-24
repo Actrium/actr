@@ -8,6 +8,9 @@
 //! It strictly adheres to its role as a data definition layer and does not contain
 //! higher-level traits, business logic, or runtime-specific implementations.
 
+/// Current schema version emitted by [`SignalingEnvelope`] writers.
+pub const SIGNALING_ENVELOPE_VERSION: u32 = 2;
+
 // Include generated protobuf code from prost
 pub mod generated {
     pub mod actr {

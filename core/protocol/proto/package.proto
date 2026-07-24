@@ -83,6 +83,18 @@ message DataChunk {
     required uint64 sequence = 2;
     required bytes payload = 3;
     repeated MetadataEntry metadata = 4;
+    // Producer-defined data time for the chunk's content (sampling instant,
+    // simulation tick, authoring time — the producing application chooses
+    // the clock and the meaning). Purely an application annotation: the
+    // runtime never reads it, ordering is carried by `sequence` alone, it
+    // is not a freshness or timeout input, and receivers must not compare
+    // it against their local clocks.
+    //
+    // Deliberately the only application-semantic annotation promoted to a
+    // dedicated field: time is the overwhelmingly common stream annotation,
+    // and a typed slot keeps every SDK on one name and one type instead of
+    // per-app string conventions. Not a precedent — any other application
+    // annotation belongs in `metadata`.
     optional int64 timestamp_ms = 5;
 }
 
