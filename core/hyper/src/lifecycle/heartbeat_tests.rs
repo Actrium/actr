@@ -187,6 +187,7 @@ struct ReconnectBeforeHeartbeatClient {
     connected: AtomicBool,
     connect_calls: AtomicUsize,
     heartbeat_calls: AtomicUsize,
+    reconnect_wakes: AtomicUsize,
     heartbeat_sent: Notify,
 }
 
@@ -292,6 +293,7 @@ impl ReconnectBeforeHeartbeatClient {
             connected: AtomicBool::new(false),
             connect_calls: AtomicUsize::new(0),
             heartbeat_calls: AtomicUsize::new(0),
+            reconnect_wakes: AtomicUsize::new(0),
             heartbeat_sent: Notify::new(),
         }
     }
@@ -389,6 +391,10 @@ impl SignalingClient for ReconnectBeforeHeartbeatClient {
     fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
         let (_tx, rx) = broadcast::channel(1);
         rx
+    }
+
+    fn schedule_auto_reconnect(&self) {
+        self.reconnect_wakes.fetch_add(1, Ordering::SeqCst);
     }
 
     async fn set_actor_id(&self, _actor_id: ActrId) {}
@@ -513,6 +519,118 @@ async fn membership_heartbeat_never_drives_disconnected_socket() {
 
     assert_eq!(client.connect_calls.load(Ordering::SeqCst), 0);
     assert_eq!(client.heartbeat_calls.load(Ordering::SeqCst), 0);
+}
+
+/// Shared fixture for the membership heartbeat wake-gating tests: a
+/// disconnected client, a credential manager over `session`, and a membership
+/// handle. Returns the wake/connect counters after ~4 heartbeat intervals.
+async fn run_membership_heartbeat_ticks(
+    session: SessionState,
+) -> (Arc<ReconnectBeforeHeartbeatClient>, usize, usize) {
+    let actor_id = test_actor_id(1);
+    let credential = test_credential_for_actor(&actor_id, 7, 4_000_000_000);
+    let manager = CredentialManager::new(
+        session,
+        RegistrationContext::Linked {
+            request: RegisterRequest {
+                actr_type: actor_id.r#type.clone(),
+                realm: actor_id.realm,
+                ..Default::default()
+            },
+            realm_secret: None,
+        },
+        "http://127.0.0.1:1",
+        None,
+    );
+    let shutdown = CancellationToken::new();
+    let (_controller, membership) = MembershipController::new(
+        manager.clone(),
+        PublishedCredential {
+            credential: credential.clone(),
+            credential_expires_at: None,
+            turn_credential: None,
+            actor_id: actor_id.clone(),
+            revision: 1,
+        },
+        Arc::new(|| {}),
+        shutdown.clone(),
+    );
+    let client = Arc::new(ReconnectBeforeHeartbeatClient::new_disconnected());
+    let task = tokio::spawn(heartbeat_task(
+        shutdown.clone(),
+        client.clone() as Arc<dyn SignalingClient>,
+        actor_id.clone(),
+        CredentialState::new(credential, None, None),
+        Arc::new(EmptyMailbox) as Arc<dyn Mailbox>,
+        Duration::from_millis(20),
+        RegisterRequest {
+            actr_type: actor_id.r#type.clone(),
+            realm: actor_id.realm,
+            ..Default::default()
+        },
+        "http://127.0.0.1:1".to_string(),
+        None,
+        Some(manager),
+        None,
+        None,
+        None,
+        Some(membership),
+    ));
+
+    tokio::time::sleep(Duration::from_millis(75)).await;
+    shutdown.cancel();
+    task.await.unwrap();
+
+    let wakes = client.reconnect_wakes.load(Ordering::SeqCst);
+    let connects = client.connect_calls.load(Ordering::SeqCst);
+    (client, wakes, connects)
+}
+
+fn membership_session(actor_id: &ActrId) -> SessionState {
+    SessionState::new(SessionSnapshot {
+        actor_id: actor_id.clone(),
+        credential: test_credential_for_actor(actor_id, 7, 4_000_000_000),
+        credential_expires_at: prost_types::Timestamp {
+            seconds: 4_000_000_000,
+            nanos: 0,
+        },
+        turn_credential: TurnCredential::default(),
+        renewal_token: vec![7; 32].into(),
+        renewal_token_expires_at: prost_types::Timestamp {
+            seconds: 5_000_000_000,
+            nanos: 0,
+        },
+        generation: 1,
+    })
+}
+
+/// Control: while the session is Active, a disconnected heartbeat tick keeps
+/// waking the reconnect manager (and never drives the socket itself).
+#[tokio::test]
+async fn membership_heartbeat_wakes_reconnect_while_active() {
+    let session = membership_session(&test_actor_id(1));
+    let (_client, wakes, connects) = run_membership_heartbeat_ticks(session).await;
+    assert!(
+        wakes >= 1,
+        "active session should keep waking the reconnect manager"
+    );
+    assert_eq!(connects, 0, "heartbeat must never drive the socket");
+}
+
+/// P2 regression: after a terminal Denied verdict (RealmUnavailable), the
+/// disconnected heartbeat tick must NOT wake the reconnect manager — that
+/// would restart the handshake, collect another Denied and loop forever,
+/// violating the no-automatic-reprobe contract.
+#[tokio::test]
+async fn membership_heartbeat_does_not_wake_reconnect_after_terminal_denial() {
+    let session = membership_session(&test_actor_id(1));
+    session.set_realm_unavailable().await;
+    let (_client, wakes, connects) = run_membership_heartbeat_ticks(session).await;
+    assert_eq!(
+        wakes, 0,
+        "terminal realm denial must suppress heartbeat auto-reconnect wakes"
+    );
+    assert_eq!(connects, 0, "heartbeat must never drive the socket");
 }
 
 #[tokio::test]

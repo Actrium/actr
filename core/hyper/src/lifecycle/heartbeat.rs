@@ -7,6 +7,7 @@ use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
 use crate::lifecycle::credential_manager::CredentialManager;
 use crate::lifecycle::membership::MembershipHandle;
+use crate::lifecycle::session_state::SessionPhase;
 use crate::transport::{AuthVerdict, NetworkError};
 use crate::wire::webrtc::gate::WebRtcGate;
 use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
@@ -334,6 +335,19 @@ pub async fn heartbeat_task(
 
                 if !client.is_connected() {
                     if membership.is_some() {
+                        // Terminal realm denial: the membership contract is
+                        // "no automatic re-probe". Waking the reconnect
+                        // manager here would restart the handshake, collect
+                        // another Denied verdict and loop against the realm
+                        // on every heartbeat tick.
+                        if let Some(manager) = credential_manager.as_ref()
+                            && manager.phase().await == SessionPhase::RealmUnavailable
+                        {
+                            tracing::debug!(
+                                "💓 Heartbeat: realm denied membership (terminal); suppressing auto-reconnect wake"
+                            );
+                            continue;
+                        }
                         // The signaling reconnect manager is the sole socket
                         // driver when membership recovery is enabled. Heartbeat
                         // only wakes it and waits for the next connected tick.
