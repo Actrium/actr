@@ -269,6 +269,7 @@ async fn run_renewal_once(
             realm_secret,
             registration_ctx,
             hard_rebind_handles,
+            hook_callback,
         )
         .await;
     }
@@ -280,6 +281,7 @@ async fn run_renewal_once(
             realm_secret,
             registration_ctx,
             hard_rebind_handles,
+            hook_callback,
         )
         .await;
     }
@@ -307,6 +309,7 @@ async fn run_renewal_once(
                 realm_secret,
                 registration_ctx,
                 hard_rebind_handles,
+                hook_callback,
             )
             .await;
         }
@@ -394,6 +397,7 @@ async fn run_hard_rebind(
     realm_secret: Option<String>,
     registration_ctx: RegistrationContext,
     hard_rebind_handles: Option<HardRebindHandles>,
+    hook_callback: Option<HookCallback>,
 ) -> Result<(), String> {
     let old_snapshot = session.snapshot().await;
     tracing::warn!(
@@ -514,6 +518,12 @@ async fn run_hard_rebind(
         if let Some(gate) = handles.webrtc_gate.as_ref() {
             gate.set_local_id(new_snapshot.actor_id.clone()).await;
         }
+
+        // The credential is committed and the runtime handles carry the new
+        // material — deliver the documented CredentialRenewed notification
+        // now. The socket reconnect below is best-effort and must not gate it.
+        fire_credential_renewed(hook_callback.as_ref(), &new_snapshot.credential_expires_at).await;
+
         match handles.signaling_client.connect_once().await {
             Ok(()) => session.set_active().await,
             Err(err) => {
@@ -525,6 +535,7 @@ async fn run_hard_rebind(
         }
     } else {
         session.set_active().await;
+        fire_credential_renewed(hook_callback.as_ref(), &new_snapshot.credential_expires_at).await;
     }
 
     tracing::info!(
@@ -647,6 +658,7 @@ async fn run_reacquire_once(
         realm_secret,
         registration_ctx,
         hard_rebind_handles,
+        hook_callback,
     )
     .await
 }
@@ -799,6 +811,7 @@ async fn run_credential_only_hard_rebind(
     realm_secret: Option<String>,
     registration_ctx: RegistrationContext,
     hard_rebind_handles: Option<HardRebindHandles>,
+    hook_callback: Option<HookCallback>,
 ) -> ReacquireOutcome {
     let old_snapshot = session.snapshot().await;
     tracing::warn!(
@@ -923,6 +936,11 @@ async fn run_credential_only_hard_rebind(
 
     // Back to Active — the socket driver will reconnect on the wake edge.
     session.set_active().await;
+
+    // Hard reissue commits and publishes new credential material exactly like
+    // a soft renew does — workloads get the same documented CredentialRenewed
+    // notification here.
+    fire_credential_renewed(hook_callback.as_ref(), &new_snapshot.credential_expires_at).await;
 
     tracing::info!(
         actor_id = %new_snapshot.actor_id.to_string_repr(),
