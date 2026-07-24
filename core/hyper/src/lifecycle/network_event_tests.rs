@@ -1071,6 +1071,9 @@ async fn session_activated_during_cleanup_runs_post_cleanup_recovery() {
         ]
     );
 
+    // External shutdown now runs the bounded-teardown cleanup effect before
+    // the loop exits; leave a stored permit so it completes promptly.
+    processor.cleanup_release.notify_one();
     shutdown.cancel();
     reconciler.await.expect("reconciler should stop cleanly");
 }
@@ -1188,7 +1191,9 @@ async fn gated_reconciler_waits_for_authoritative_foreground() {
         Some(NetworkRecoveryAction::Restore)
     );
 
-    processor.release.add_permits(1);
+    // One permit releases the in-flight Restore; the second lets the
+    // shutdown-injected bounded-teardown cleanup effect complete.
+    processor.release.add_permits(2);
     shutdown.cancel();
     reconciler.await.expect("reconciler should stop cleanly");
 }
@@ -1319,6 +1324,8 @@ async fn current_effect_fact_and_event_storm_preserve_monotonic_supervisor_statu
             && pair[0].last_action_id <= pair[1].last_action_id
     }));
 
+    // A permit for the shutdown-injected bounded-teardown cleanup effect.
+    processor.release.add_permits(1);
     shutdown.cancel();
     reconciler.await.expect("reconciler should stop cleanly");
 }
@@ -1346,6 +1353,126 @@ fn teardown_outcome_maps_every_report_class() {
         super::teardown_outcome(failed),
         TpEffectOutcome::Failed { .. }
     ));
+}
+
+/// Records bounded-teardown invocations; `hang` makes the teardown never
+/// complete so the shutdown overall deadline is the only way out.
+struct ShutdownTeardownProcessor {
+    teardowns: StdMutex<Vec<(NetworkRecoveryAction, std::time::Duration)>>,
+    hang: bool,
+}
+
+impl ShutdownTeardownProcessor {
+    fn new(hang: bool) -> Self {
+        Self {
+            teardowns: StdMutex::new(Vec::new()),
+            hang,
+        }
+    }
+
+    fn teardowns(&self) -> Vec<(NetworkRecoveryAction, std::time::Duration)> {
+        self.teardowns
+            .lock()
+            .expect("teardowns mutex poisoned")
+            .clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl NetworkEventProcessor for ShutdownTeardownProcessor {
+    async fn process_network_available(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_lost(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn process_network_type_changed(
+        &self,
+        _is_wifi: bool,
+        _is_cellular: bool,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn cleanup_connections(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn run_bounded_teardown(
+        &self,
+        action: NetworkRecoveryAction,
+        budget: std::time::Duration,
+    ) -> TeardownReport {
+        self.teardowns
+            .lock()
+            .expect("teardowns mutex poisoned")
+            .push((action, budget));
+        if self.hang {
+            std::future::pending::<()>().await;
+        }
+        TeardownReport::succeeded()
+    }
+}
+
+#[tokio::test]
+async fn external_shutdown_runs_bounded_teardown_before_exit() {
+    let processor = Arc::new(ShutdownTeardownProcessor::new(false));
+    let (_event_tx, event_rx) = mpsc::channel::<NetworkEventRequest>(8);
+    let (_fact_sink, channel) = supervisor_internal_channel();
+    let shutdown = CancellationToken::new();
+    let reconciler = tokio::spawn(run_network_event_reconciler_with_channel(
+        event_rx,
+        channel,
+        processor.clone(),
+        shutdown.clone(),
+    ));
+
+    // External cancellation must not exit the loop directly: it is lowered to
+    // `ShutdownRequested`, whose decision derives the cleanup obligation and
+    // runs it as a bounded teardown before the reconciler ends.
+    shutdown.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(5), reconciler)
+        .await
+        .expect("reconciler must exit promptly once the teardown is discharged")
+        .expect("reconciler task should not panic");
+
+    let teardowns = processor.teardowns();
+    assert_eq!(teardowns.len(), 1, "exactly one cleanup obligation runs");
+    assert_eq!(teardowns[0].0, NetworkRecoveryAction::CleanupOnly);
+    assert!(
+        teardowns[0].1 > std::time::Duration::ZERO,
+        "the cleanup effect must inherit a bounded teardown budget"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn external_shutdown_with_hanging_cleanup_ends_at_shutdown_deadline() {
+    let processor = Arc::new(ShutdownTeardownProcessor::new(true));
+    let (_event_tx, event_rx) = mpsc::channel::<NetworkEventRequest>(8);
+    let (_fact_sink, channel) = supervisor_internal_channel();
+    let shutdown = CancellationToken::new();
+    let started_at = tokio::time::Instant::now();
+    let reconciler = tokio::spawn(run_network_event_reconciler_with_channel(
+        event_rx,
+        channel,
+        processor.clone(),
+        shutdown.clone(),
+    ));
+
+    shutdown.cancel();
+    // The cleanup effect never completes; the injected `ShutdownRequested`
+    // armed the shutdown overall deadline, which terminates the supervisor
+    // unconditionally (virtual time auto-advances to the deadline).
+    reconciler
+        .await
+        .expect("reconciler must terminate at the shutdown overall deadline");
+    assert!(
+        started_at.elapsed() >= std::time::Duration::from_secs(10),
+        "termination must come from the 10s shutdown deadline, not an early exit"
+    );
+    assert_eq!(processor.teardowns().len(), 1);
 }
 
 #[derive(Clone, Copy)]

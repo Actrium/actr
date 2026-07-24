@@ -1285,10 +1285,6 @@ async fn mobile_event_storm_during_call_and_data_chunk_does_not_hang() {
         storm_task
             .await
             .expect("mobile event storm task should not panic");
-        network_shutdown.cancel();
-        network_task
-            .await
-            .expect("network event reconciler task should not panic");
         assert_eq!(
             harness.peer(case.mobile_serial).pending_count().await,
             0,
@@ -1307,6 +1303,14 @@ async fn mobile_event_storm_during_call_and_data_chunk_does_not_hang() {
             Duration::from_secs(30),
         )
         .await;
+
+        // Cancel the reconciler only after the post-storm traffic: external
+        // cancellation is now lowered to `ShutdownRequested` and runs the real
+        // bounded teardown, which disconnects signaling and closes peers.
+        network_shutdown.cancel();
+        network_task
+            .await
+            .expect("network event reconciler task should not panic");
         shutdown_scenario(harness, background_tasks).await;
     }
 }

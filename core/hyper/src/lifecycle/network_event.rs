@@ -1719,12 +1719,30 @@ async fn reconcile_loop(
         arm_timer(&mut timers, start, &internal_tx, op);
     }
 
+    // Whether the external shutdown token has already been lowered into a
+    // `ShutdownRequested` reducer input. External cancellation must not exit
+    // the loop directly: that would skip the cleanup obligations and the
+    // bounded shutdown deadline the RFC ties to `ShutdownRequested`.
+    let mut external_shutdown = false;
+
     loop {
         tokio::select! {
             biased;
-            _ = shutdown_token.cancelled() => {
-                tracing::info!("🛑 Network event reconciler shutting down");
-                break;
+            _ = shutdown_token.cancelled(), if !external_shutdown => {
+                external_shutdown = true;
+                tracing::info!(
+                    consequence = "running bounded teardown before exit",
+                    "🛑 Network event reconciler shutdown requested"
+                );
+                let now = start.elapsed();
+                let terminate = handle_supervisor_input(
+                    &mut supervisor, tp::Input::ShutdownRequested, now, start, &internal_tx,
+                    &mut timers, &mut effect, &processor, &status_tx, &mut last_action_id,
+                    &mut last_outcome,
+                );
+                if terminate || shutdown_teardown_discharged(&supervisor) {
+                    break;
+                }
             }
             Some(input) = internal_rx.recv() => {
                 let now = start.elapsed();
@@ -1734,6 +1752,9 @@ async fn reconcile_loop(
                 );
                 if terminate {
                     tracing::info!("🛑 Supervisor ended at shutdown deadline");
+                    break;
+                }
+                if external_shutdown && shutdown_teardown_discharged(&supervisor) {
                     break;
                 }
             }
@@ -1764,9 +1785,21 @@ async fn reconcile_loop(
                     tracing::info!("🛑 Supervisor ended at shutdown deadline");
                     break;
                 }
+                if external_shutdown && shutdown_teardown_discharged(&supervisor) {
+                    break;
+                }
             }
             else => break,
         }
+    }
+
+    if external_shutdown {
+        tracing::info!(
+            recovery_mode = ?supervisor.view().recovery_mode,
+            cleanup_work = ?supervisor.view().cleanup_work,
+            offline_work = ?supervisor.view().offline_work,
+            "🛑 Network event reconciler exiting after bounded teardown"
+        );
     }
 
     for (_, handle) in timers.drain() {
@@ -1775,6 +1808,20 @@ async fn reconcile_loop(
     if let Some(running) = effect.take() {
         running.token.cancel();
     }
+}
+
+/// Whether an externally requested shutdown has discharged every teardown
+/// obligation, so the reconcile loop may exit before the shutdown overall
+/// deadline. This is loop-lifecycle bookkeeping, not policy: the obligations,
+/// their bounded budgets, and the unconditional deadline were all derived by
+/// `translate()` from the injected `ShutdownRequested`; the shell merely stops
+/// hosting a supervisor that is `Terminating` with nothing left to tear down.
+fn shutdown_teardown_discharged(supervisor: &RecoverySupervisor) -> bool {
+    let view = supervisor.view();
+    view.recovery_mode == tp::RecoveryModeState::Terminating
+        && view.cleanup_work == tp::CleanupWorkState::Idle
+        && view.offline_work == tp::OfflineWorkState::Idle
+        && view.execution == tp::ExecutionState::Idle
 }
 
 fn arm_timer(
