@@ -142,19 +142,22 @@ impl ActrNode {
         register_linked_node(attached).await
     }
 
-    /// Create a network event handle for platform callbacks.
+    /// Create a lifecycle-gated network event handle for platform callbacks.
     ///
-    /// This must be called before `start()`.
+    /// This must be called before `start()`. Swift/Kotlin adapters must inject
+    /// their authoritative initial foreground/background state; until then,
+    /// active recovery remains gated.
     pub fn create_network_event_handle(&self) -> ActrResult<Arc<NetworkEventHandleWrapper>> {
         let mut handle_guard = self.network_event_handle.lock();
         if let Some(handle) = handle_guard.as_ref() {
             info!(
                 api = "create_network_event_handle",
-                reused = true,
+                reused_channel = true,
+                new_monitor_incarnation = true,
                 "network_event.ffi.handle_created"
             );
             return Ok(Arc::new(NetworkEventHandleWrapper {
-                inner: handle.clone(),
+                inner: handle.new_monitor_incarnation(),
             }));
         }
 
@@ -163,13 +166,15 @@ impl ActrNode {
             msg: "runtime node is no longer available".to_string(),
         })?;
 
-        let handle = node.create_network_event_handle(0);
+        let handle = node.create_gated_network_event_handle(0);
         *handle_guard = Some(handle.clone());
 
         info!(
             api = "create_network_event_handle",
-            reused = false,
+            reused_channel = false,
+            new_monitor_incarnation = true,
             debounce_ms = 0_u64,
+            lifecycle_profile = "gated",
             "network_event.ffi.handle_created"
         );
 
@@ -710,7 +715,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn repeated_create_network_event_handle_reuses_cached_channel_until_start() {
+    async fn repeated_create_network_event_handle_reuses_channel_with_fresh_incarnations() {
         let mut server = MockActrixServer::start()
             .await
             .expect("mock actrix server should start");

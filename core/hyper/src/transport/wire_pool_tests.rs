@@ -12,6 +12,41 @@ struct MockWire {
     identity: Option<WireIdentity>,
 }
 
+#[derive(Debug)]
+struct BlockingWire {
+    started: tokio::sync::Notify,
+    closed: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl WireHandle for BlockingWire {
+    fn connection_type(&self) -> ConnType {
+        ConnType::WebSocket
+    }
+
+    fn priority(&self) -> u8 {
+        1
+    }
+
+    async fn connect(&self) -> NetworkResult<()> {
+        self.started.notify_one();
+        std::future::pending().await
+    }
+
+    fn is_connected(&self) -> bool {
+        false
+    }
+
+    async fn close(&self) -> NetworkResult<()> {
+        self.closed.notify_one();
+        Ok(())
+    }
+
+    async fn get_lane(&self, _: PayloadType) -> NetworkResult<Arc<dyn DataLane>> {
+        Err(NetworkError::NotImplemented("mock has no lane".into()))
+    }
+}
+
 #[async_trait::async_trait]
 impl WireHandle for MockWire {
     fn connection_type(&self) -> ConnType {
@@ -98,6 +133,25 @@ async fn close_all_marks_pool_closed_and_clears_ready() {
     assert!(pool.is_closed());
     // Ready set broadcast as empty.
     assert!(pool.watch_ready().borrow().is_empty());
+}
+
+#[tokio::test]
+async fn close_all_interrupts_an_inflight_connection_attempt() {
+    let pool = WirePool::new(RetryConfig::default());
+    let wire = Arc::new(BlockingWire {
+        started: tokio::sync::Notify::new(),
+        closed: tokio::sync::Notify::new(),
+    });
+
+    pool.add_connection(wire.clone()).await;
+    tokio::time::timeout(Duration::from_secs(1), wire.started.notified())
+        .await
+        .expect("connection attempt should start");
+
+    pool.close_all().await;
+    tokio::time::timeout(Duration::from_secs(1), wire.closed.notified())
+        .await
+        .expect("pool close must cancel and close the in-flight wire immediately");
 }
 
 #[tokio::test]

@@ -23,8 +23,8 @@
 
 #![cfg(all(feature = "wasm-engine", actr_wasm_fixture_available))]
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use actr_hyper::config::WasmRuntimeLimits;
@@ -42,6 +42,13 @@ mod wasm_actor_fixture;
 
 fn fixture_component_bytes() -> &'static [u8] {
     wasm_actor_fixture::WASM_ACTOR_FIXTURE
+}
+
+fn fixture_host() -> &'static WasmHost {
+    static HOST: OnceLock<WasmHost> = OnceLock::new();
+    HOST.get_or_init(|| {
+        WasmHost::compile(fixture_component_bytes()).expect("compile fixture component")
+    })
 }
 
 fn test_actr_id() -> ActrId {
@@ -165,8 +172,8 @@ fn captured_context_chunk() -> DataChunk {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_basic_echo_round_trip() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut wl = instantiate_wasm_workload(host).await.expect("instantiate");
     // This dispatch-focused test drives `handle` directly. Lifecycle context
     // propagation has dedicated coverage in `component_model_call_on_start_*`
     // below; the V2 ABI now threads an explicit invocation context into every
@@ -184,8 +191,8 @@ async fn component_model_basic_echo_round_trip() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serial_stream_callback_rebinds_captured_context_token() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut workload = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut workload = instantiate_wasm_workload(host).await.expect("instantiate");
     workload
         .handle(
             &make_envelope("test/register-stream-context", Vec::new()),
@@ -210,8 +217,8 @@ async fn serial_stream_callback_rebinds_captured_context_token() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn resident_stream_callback_rebinds_captured_context_token() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let workload = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let workload = instantiate_wasm_workload(host).await.expect("instantiate");
     let runner = workload.into_interleaved_runner(None);
     runner
         .dispatch(
@@ -279,11 +286,11 @@ async fn non_yielding_guest_is_interrupted_and_store_recovers() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn component_model_cross_instance_parallelism() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl_a = instantiate_wasm_workload(&host)
+    let host = fixture_host();
+    let mut wl_a = instantiate_wasm_workload(host)
         .await
         .expect("instantiate A");
-    let mut wl_b = instantiate_wasm_workload(&host)
+    let mut wl_b = instantiate_wasm_workload(host)
         .await
         .expect("instantiate B");
 
@@ -332,8 +339,8 @@ async fn component_model_cross_instance_parallelism() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_executor_non_blocking_during_host_await() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut wl = instantiate_wasm_workload(host).await.expect("instantiate");
     let tick_count = Arc::new(AtomicU64::new(0));
     let tick_stop = Arc::new(AtomicBool::new(false));
 
@@ -373,8 +380,8 @@ async fn component_model_executor_non_blocking_during_host_await() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_error_variant_propagates() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut wl = instantiate_wasm_workload(host).await.expect("instantiate");
     let bridge = unreachable_bridge();
     let req = make_envelope("unknown/route", Vec::new());
 
@@ -398,8 +405,8 @@ async fn component_model_error_variant_propagates() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_panic_after_await_surfaces_as_trap() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut wl = instantiate_wasm_workload(host).await.expect("instantiate");
     // Bridge replies with any bytes; the guest panics immediately after
     // the .await returns.
     let (bridge, counter) = doubling_bridge(Some(Duration::from_millis(10)));
@@ -443,8 +450,8 @@ async fn component_model_panic_after_await_surfaces_as_trap() {
 /// counter advances 1→2, proving the poison flag is reset each time.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_trap_rebuilds_instance_and_recovers() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut wl = instantiate_wasm_workload(host).await.expect("instantiate");
 
     assert_eq!(wl.rebuild_count(), 0, "no rebuild before any trap");
 
@@ -496,8 +503,8 @@ async fn component_model_trap_rebuilds_instance_and_recovers() {
 /// stays at zero.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_business_error_does_not_rebuild() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut wl = instantiate_wasm_workload(host).await.expect("instantiate");
 
     let req = make_envelope("unknown/route", Vec::new());
     let err = wl
@@ -542,8 +549,8 @@ async fn component_model_business_error_does_not_rebuild() {
 /// error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_per_call_overhead() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut wl = instantiate_wasm_workload(host).await.expect("instantiate");
     let bridge = unreachable_bridge();
     let payload = vec![0u8; 64];
     let req = make_envelope("test/echo", payload);
@@ -578,8 +585,8 @@ async fn component_model_per_call_overhead() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn component_model_call_on_start_does_not_trap() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let mut wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let mut wl = instantiate_wasm_workload(host).await.expect("instantiate");
 
     // Fixture uses a request-id-sensitive `on_start`. The test support wrapper
     // installs a non-package lifecycle request id, so this completes cleanly
@@ -610,8 +617,8 @@ async fn component_model_call_on_start_does_not_trap() {
 /// `WasmWorkload` (with its `ensure_instance` / `trap_poison` logic) unchanged.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runner_trap_then_next_cmd_rebuilds() {
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let wl = instantiate_wasm_workload(host).await.expect("instantiate");
     let runner = wl.into_workload_runner();
 
     // Command 1: trap. The bridge answers the pre-panic call_raw, then the
@@ -654,8 +661,8 @@ async fn runner_concurrent_dispatch_stays_serial_with_real_guest() {
     use std::sync::atomic::AtomicU64;
     use tokio::sync::{Semaphore, mpsc};
 
-    let host = WasmHost::compile(fixture_component_bytes()).expect("compile component");
-    let wl = instantiate_wasm_workload(&host).await.expect("instantiate");
+    let host = fixture_host();
+    let wl = instantiate_wasm_workload(host).await.expect("instantiate");
     let runner = Arc::new(wl.into_workload_runner());
 
     // Gating bridge: the FIRST call signals entry and blocks on a semaphore;

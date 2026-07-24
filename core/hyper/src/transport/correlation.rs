@@ -186,7 +186,7 @@ impl<M> PendingRpc<M> {
             .rx
             .take()
             .expect("PendingRpc receiver is consumed exactly once");
-        match tokio::time::timeout(timeout, rx).await {
+        match crate::timer::timeout(crate::timer::ids::CORRELATION_RESPONSE, timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(ActrError::Unavailable("Response channel closed".into())),
             Err(_) => Err(ActrError::TimedOut),

@@ -47,11 +47,6 @@ const TELL_SEND_TIMEOUT: Duration = Duration::from_secs(13);
 const RECOVERY_REASON_PEER_DISCONNECTED: &str = "peer state Disconnected";
 const RECOVERY_REASON_PEER_FAILED: &str = "peer state Failed";
 const RECOVERY_REASON_ICE_NETWORK_STARTED: &str = "ice/network recovery started";
-/// Extra delay exposed to callers on top of the internal recovery guard.
-///
-/// The internal guard still times out at `NETWORK_RECOVERY_TIMEOUT`; this grace
-/// keeps mobile fallback retries from firing exactly on the cleanup boundary.
-const CONNECTION_NOT_READY_RETRY_GRACE: Duration = Duration::from_millis(300);
 
 /// PeerGate - Outproc transport adapter (outbound)
 ///
@@ -131,7 +126,7 @@ impl PeerGate {
     }
 
     fn connection_not_ready_retry_window_ms() -> u64 {
-        (NETWORK_RECOVERY_TIMEOUT + CONNECTION_NOT_READY_RETRY_GRACE).as_millis() as u64
+        NETWORK_RECOVERY_TIMEOUT.as_millis() as u64
     }
 
     async fn notify_active_data_chunks_uncertain(
@@ -893,7 +888,7 @@ impl PeerGate {
                             "transient send failure, retrying after {:?}",
                             delay,
                         );
-                        tokio::time::sleep(delay).await;
+                        crate::timer::sleep(crate::timer::ids::PEER_SEND_BACKOFF, delay).await;
                         // exponential backoff capped at max_delay
                         delay = (delay * 2).min(policy.max_delay);
                     } else {
@@ -1062,23 +1057,24 @@ impl PeerGate {
         let sent_transport = Arc::new(Mutex::new(None));
         let sent_transport_for_send = Arc::clone(&sent_transport);
 
-        let result = tokio::time::timeout(timeout, async {
-            // 5a. Send with per-PayloadType retry on transient failures
-            let sent_identity = self
-                .send_with_retry_record_identity(&dest, payload_type, &data)
-                .await?;
-            *sent_transport_for_send.lock().await = Some(sent_identity);
-            tracing::debug!("Sent request to {:?}", target);
+        let result =
+            crate::timer::timeout(crate::timer::ids::PEER_REQUEST_DEADLINE, timeout, async {
+                // 5a. Send with per-PayloadType retry on transient failures
+                let sent_identity = self
+                    .send_with_retry_record_identity(&dest, payload_type, &data)
+                    .await?;
+                *sent_transport_for_send.lock().await = Some(sent_identity);
+                tracing::debug!("Sent request to {:?}", target);
 
-            // 5b. Wait for response
-            match response_rx.await {
-                Ok(result) => result,
-                Err(_) => Err(ActrError::Unavailable(
-                    "Response channel closed".to_string(),
-                )),
-            }
-        })
-        .await;
+                // 5b. Wait for response
+                match response_rx.await {
+                    Ok(result) => result,
+                    Err(_) => Err(ActrError::Unavailable(
+                        "Response channel closed".to_string(),
+                    )),
+                }
+            })
+            .await;
 
         match result {
             Ok(inner) => {
@@ -1194,7 +1190,13 @@ impl PeerGate {
         self.preflight_send(target, &dest).await?;
         let send = self.send_with_retry(&dest, payload_type, &data);
         if let Some(send_timeout) = send_timeout {
-            match tokio::time::timeout(send_timeout, send).await {
+            match crate::timer::timeout(
+                crate::timer::ids::PEER_REQUEST_DEADLINE,
+                send_timeout,
+                send,
+            )
+            .await
+            {
                 Ok(result) => result,
                 Err(_) => Err(ActrError::TimedOut),
             }
@@ -1354,7 +1356,8 @@ impl PeerGate {
             false
         };
 
-        let result = match tokio::time::timeout(
+        let result = match crate::timer::timeout(
+            crate::timer::ids::PEER_REQUEST_DEADLINE,
             send_timeout,
             self.transport_manager.send(&dest, payload_type, &data),
         )

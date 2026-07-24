@@ -13,6 +13,7 @@ use crate::lifecycle::credential_manager::{
     CredentialManager, HardRebindHandles, RegistrationContext,
 };
 use crate::lifecycle::dedup::{DEDUP_TTL, DedupOutcome, DedupState, DedupWaiter};
+use crate::lifecycle::recovery_policy::translate::LifecycleProfile;
 use crate::lifecycle::session_state::{SessionSnapshot, SessionState};
 use crate::outbound::Gate;
 use crate::transport::HostTransport;
@@ -41,6 +42,36 @@ use tracing::Instrument as _;
 /// See [`Inner::admit_incoming`]. `'static + Send` so an entry loop may push it
 /// into a `FuturesUnordered` and keep dequeuing.
 pub(crate) type IncomingContinuation = Pin<Box<dyn Future<Output = ActorResult<Bytes>> + Send>>;
+
+type MailboxTail = Pin<Box<dyn Future<Output = ()> + Send>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MailboxIdleOutcome {
+    Shutdown,
+    Progress,
+}
+
+/// While durable storage is empty, keep polling the reply/ack tails that were
+/// already admitted. Waiting only for a future enqueue would leave completed
+/// tails parked indefinitely on an otherwise idle mailbox.
+async fn wait_for_mailbox_idle<F>(
+    shutdown: &CancellationToken,
+    inflight: &mut futures_util::stream::FuturesUnordered<MailboxTail>,
+    idle_wake: F,
+) -> MailboxIdleOutcome
+where
+    F: Future<Output = ()>,
+{
+    use futures_util::StreamExt as _;
+
+    tokio::pin!(idle_wake);
+    tokio::select! {
+        biased;
+        _ = shutdown.cancelled() => MailboxIdleOutcome::Shutdown,
+        Some(()) = inflight.next(), if !inflight.is_empty() => MailboxIdleOutcome::Progress,
+        _ = &mut idle_wake => MailboxIdleOutcome::Progress,
+    }
+}
 
 /// Type-erased startup future kept behind the crate-private node boundary.
 ///
@@ -460,6 +491,16 @@ pub(crate) struct Inner {
     /// Network event debounce configuration
     pub(crate) network_event_debounce_config:
         Option<crate::lifecycle::network_event::DebounceConfig>,
+
+    /// The supervisor's internal input channel, created alongside the network
+    /// event handle so a fact sink over the same sender can feed normalized
+    /// signaling and session facts into the reconciler. Taken at `start()`.
+    pub(crate) network_event_internal:
+        Option<crate::lifecycle::network_event::SupervisorInternalChannel>,
+
+    /// Fact sink over the supervisor's internal input channel, handed to the
+    /// signaling client and session state so resource owners can report facts.
+    pub(crate) supervisor_fact_sink: Option<crate::lifecycle::network_event::SupervisorFactSink>,
 
     /// Request deduplication state (15 s TTL response cache, prevents double-processing on retry)
     pub(crate) dedup_state: Arc<Mutex<DedupState>>,
@@ -1250,7 +1291,13 @@ impl Inner {
             }
         };
 
-        match tokio::time::timeout(timeout, wait_for_result).await {
+        match crate::timer::timeout(
+            crate::timer::ids::NODE_RPC_RESPONSE,
+            timeout,
+            wait_for_result,
+        )
+        .await
+        {
             Ok(result) => result,
             Err(_) => Err(ActrError::Unavailable(format!(
                 "duplicate request in-flight timed out after {}ms",
@@ -1697,6 +1744,8 @@ impl Inner {
             actr_lock,
             network_event_rx: None,
             network_event_debounce_config: None,
+            network_event_internal: None,
+            supervisor_fact_sink: None,
             dedup_state: Arc::new(Mutex::new(DedupState::new())),
             package_manifest,
             preregistered_credential: None,
@@ -1779,6 +1828,24 @@ impl Inner {
         &mut self,
         debounce_ms: u64,
     ) -> crate::lifecycle::NetworkEventHandle {
+        self.create_network_event_handle_with_profile(debounce_ms, LifecycleProfile::Ungated)
+    }
+
+    /// Create network event infrastructure whose recovery eligibility is gated
+    /// by authoritative app lifecycle events. Mobile bindings use this entry
+    /// point and must inject the initial foreground/background state.
+    pub fn create_gated_network_event_handle(
+        &mut self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
+        self.create_network_event_handle_with_profile(debounce_ms, LifecycleProfile::Gated)
+    }
+
+    fn create_network_event_handle_with_profile(
+        &mut self,
+        debounce_ms: u64,
+        profile: LifecycleProfile,
+    ) -> crate::lifecycle::NetworkEventHandle {
         if self.network_event_rx.is_some() {
             panic!("create_network_event_handle() can only be called once");
         }
@@ -1793,16 +1860,27 @@ impl Inner {
             None
         };
 
+        // Create the supervisor's internal input channel and a fact sink over
+        // it, so the signaling client and session state can report normalized
+        // facts into the same policy-ordered queue as timers and completions.
+        let (fact_sink, internal_channel) =
+            crate::lifecycle::network_event::supervisor_internal_channel_with_profile(profile);
+        self.signaling_client
+            .set_supervisor_fact_sink(fact_sink.clone());
+
         self.network_event_rx = Some(event_rx);
         self.network_event_debounce_config = debounce_config;
+        self.network_event_internal = Some(internal_channel);
+        self.supervisor_fact_sink = Some(fact_sink.clone());
 
         tracing::info!(
             debounce_ms,
+            ?profile,
             channel_capacity = 100_u64,
             "network_event.node.handle_created"
         );
 
-        crate::lifecycle::NetworkEventHandle::new(event_tx)
+        crate::lifecycle::NetworkEventHandle::new_with_fact_sink(event_tx, fact_sink)
     }
 
     /// Attach a credential already issued by AIS so that `start()` can skip
@@ -2027,6 +2105,11 @@ impl Inner {
                 generation: 1,
             });
             self.session_state = Some(session_state.clone());
+            // Wire the supervisor fact sink so a hard-rebind generation commit
+            // reports `SessionActivated` to the connection supervisor.
+            if let Some(sink) = self.supervisor_fact_sink.clone() {
+                session_state.set_fact_sink(sink).await;
+            }
             let registration_context = self
                 .preregistered_registration_context
                 .take()
@@ -2430,8 +2513,26 @@ impl Inner {
                     };
 
                 let shutdown = self.shutdown_token.clone();
+                // The internal channel is created with the handle; a fact sink
+                // over its sender was already wired into the signaling client and
+                // session state, so signaling and session facts share the
+                // supervisor's policy-ordered input queue.
+                let internal_channel = self.network_event_internal.take();
                 let network_event_handle = tokio::spawn(async move {
-                    Self::network_event_loop(event_rx, event_processor, shutdown).await;
+                    match internal_channel {
+                        Some(channel) => {
+                            crate::lifecycle::network_event::run_network_event_reconciler_with_channel(
+                                event_rx,
+                                channel,
+                                event_processor,
+                                shutdown,
+                            )
+                            .await;
+                        }
+                        None => {
+                            Self::network_event_loop(event_rx, event_processor, shutdown).await;
+                        }
+                    }
                 });
                 task_handles.push(network_event_handle);
                 tracing::info!("network_event.node.loop_started");
@@ -2481,7 +2582,8 @@ impl Inner {
                     }
 
                     // 2. Then send UnregisterRequest with a timeout (e.g. 5 seconds)
-                    let result = tokio::time::timeout(
+                    let result = crate::timer::timeout(
+                        crate::timer::ids::NODE_UNREGISTER,
                         Duration::from_secs(5),
                         client.send_unregister_request(
                             actor_id_for_unreg.clone(),
@@ -2845,6 +2947,8 @@ impl Inner {
         // Fallback path: mailbox backends without depth support (or
         // which can't cheaply compute depth on every enqueue) keep
         // using a 1 Hz poll of [`Mailbox::status`].
+        let mailbox_enqueue_wake = Arc::new(tokio::sync::Notify::new());
+        let mailbox_has_push_observer;
         let backpressure_threshold = node_ref.mailbox_backpressure_threshold;
         {
             use std::sync::atomic::{AtomicBool, Ordering};
@@ -2893,9 +2997,11 @@ impl Inner {
             // and we fall through to polling.
             struct EnqueueObserver {
                 fire: Arc<dyn Fn(usize) + Send + Sync + 'static>,
+                wake: Arc<tokio::sync::Notify>,
             }
             impl actr_runtime_mailbox::MailboxDepthObserver for EnqueueObserver {
                 fn on_depth_change(&self, queued_messages: usize) {
+                    self.wake.notify_one();
                     (self.fire)(queued_messages);
                 }
             }
@@ -2904,9 +3010,11 @@ impl Inner {
                 let observer: Arc<dyn actr_runtime_mailbox::MailboxDepthObserver> =
                     Arc::new(EnqueueObserver {
                         fire: fire_if_rising.clone(),
+                        wake: mailbox_enqueue_wake.clone(),
                     });
                 mailbox.set_depth_observer(observer)
             };
+            mailbox_has_push_observer = installed;
 
             if installed {
                 tracing::debug!("mailbox backpressure watchdog: push notifications enabled");
@@ -2918,7 +3026,10 @@ impl Inner {
                 let shutdown_for_poll = shutdown.clone();
                 let fire_for_poll = fire_if_rising.clone();
                 let watchdog_handle = tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+                    let mut ticker = crate::timer::interval(
+                        crate::timer::ids::MAILBOX_DEPTH_FALLBACK,
+                        Duration::from_secs(1),
+                    );
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                     loop {
                         tokio::select! {
@@ -2955,6 +3066,7 @@ impl Inner {
             let webrtc_gate = node_ref.webrtc_gate.clone();
             let ws_gate = node_ref.websocket_gate.clone();
             let shutdown = shutdown_token.clone();
+            let mailbox_enqueue_wake = mailbox_enqueue_wake.clone();
 
             let mailbox_handle = tokio::spawn(async move {
                 use futures_util::StreamExt as _;
@@ -2966,8 +3078,7 @@ impl Inner {
                 // loop.
                 let scheduler_on = node.dispatch_scheduler.is_some();
                 const MAILBOX_INFLIGHT_CAP: usize = 256;
-                let mut inflight: FuturesUnordered<Pin<Box<dyn Future<Output = ()> + Send>>> =
-                    FuturesUnordered::new();
+                let mut inflight: FuturesUnordered<MailboxTail> = FuturesUnordered::new();
 
                 loop {
                     tokio::select! {
@@ -2986,10 +3097,13 @@ impl Inner {
                         // Pause while the continuation set is full so
                         // back-pressure reaches the durable mailbox.
                         batch = async {
+                            let mut enqueued =
+                                Box::pin(mailbox_enqueue_wake.clone().notified_owned());
+                            enqueued.as_mut().enable();
                             let admission = node.mailbox_batch_admission.enter().await?;
-                            Some((admission, mailbox.dequeue().await))
+                            Some((admission, mailbox.dequeue().await, enqueued))
                         }, if inflight.len() < MAILBOX_INFLIGHT_CAP => {
-                            let Some((batch_admission, result)) = batch else {
+                            let Some((batch_admission, result, enqueued)) = batch else {
                                 tracing::info!("📭 Mailbox batch admission closed");
                                 break;
                             };
@@ -2997,8 +3111,34 @@ impl Inner {
                                 Ok(messages) => {
                                     if messages.is_empty() {
                                         drop(batch_admission);
-                                        // Queue empty, sleep briefly
-                                        tokio::time::sleep(Duration::from_millis(10)).await;
+                                        let idle_wake = async {
+                                            if mailbox_has_push_observer {
+                                                // The enqueue observer closes
+                                                // the dequeue/await race and
+                                                // wakes immediately on new work.
+                                                enqueued.await;
+                                            } else {
+                                                // Compatibility fallback for
+                                                // custom mailbox backends that
+                                                // do not implement push
+                                                // notifications.
+                                                crate::timer::sleep(
+                                                    crate::timer::ids::MAILBOX_EMPTY_FALLBACK,
+                                                    Duration::from_millis(10),
+                                                )
+                                                .await;
+                                            }
+                                        };
+                                        if wait_for_mailbox_idle(
+                                            &shutdown,
+                                            &mut inflight,
+                                            idle_wake,
+                                        )
+                                        .await
+                                            == MailboxIdleOutcome::Shutdown
+                                        {
+                                            break;
+                                        }
                                         continue;
                                     }
                                     tracing::debug!("📬 Mailbox dequeue: {} messages", messages.len());
@@ -3191,7 +3331,14 @@ impl Inner {
                                         error_category = "mailbox_error",
                                         "❌ Mailbox dequeue failed: {:?}", e
                                     );
-                                    tokio::time::sleep(Duration::from_secs(1)).await;
+                                    tokio::select! {
+                                        biased;
+                                        _ = shutdown.cancelled() => break,
+                                        _ = crate::timer::sleep(
+                                            crate::timer::ids::MAILBOX_ERROR_BACKOFF,
+                                            Duration::from_secs(1),
+                                        ) => {}
+                                    }
                                 }
                             }
                         }

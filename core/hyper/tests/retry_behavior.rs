@@ -200,7 +200,10 @@ async fn test_call_succeeds_after_wirepool_reconnect() {
         &mut event_rx,
         &target_id,
         &[ConnectionState::Disconnected, ConnectionState::Failed],
-        Duration::from_secs(12),
+        // ICE failure detection can be delayed when the full workspace test
+        // suite is competing for CPU. Keep this above the production ICE
+        // timeout so the test observes the transition instead of racing it.
+        Duration::from_secs(20),
     )
     .await;
 

@@ -1,12 +1,17 @@
+// The legacy batch helpers (`select_network_recovery_action`,
+// `process_network_event_batch`) are deprecated in favor of the responsive
+// reconciler; these compatibility tests still exercise them intentionally.
+#![allow(deprecated)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use actr_hyper::lifecycle::{
-    AppLifecycleState, CleanupReason, ConnectionFact, ConnectionSupervisor, CredentialState,
-    DebounceConfig, DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent,
-    NetworkEventHandle, NetworkEventProcessor, NetworkEventRequest, NetworkEventResult,
-    NetworkRecoveryAction, NetworkSnapshot, NetworkTransportFlags, ReconnectReason,
+    AppLifecycleState, CleanupReason, CredentialState, DebounceConfig,
+    DefaultNetworkEventProcessor, NetworkAvailability, NetworkEvent, NetworkEventHandle,
+    NetworkEventProcessor, NetworkEventRequest, NetworkEventResult, NetworkRecoveryAction,
+    NetworkRecoveryError, NetworkSnapshot, NetworkTransportFlags, ReconnectReason,
     process_network_event_batch, run_network_event_reconciler, select_network_recovery_action,
 };
 use actr_hyper::transport::{NetworkError, NetworkResult};
@@ -24,6 +29,9 @@ struct FakeSignalingClient {
     disconnections: AtomicU64,
     probe_calls: AtomicU64,
     probe_success: AtomicBool,
+    auto_reconnect_suppressed: AtomicBool,
+    suppress_auto_reconnect_calls: AtomicU64,
+    resume_auto_reconnect_calls: AtomicU64,
     event_tx: broadcast::Sender<SignalingEvent>,
     connect_delay: Duration,
     connect_once_delay: Duration,
@@ -43,6 +51,9 @@ impl FakeSignalingClient {
             disconnections: AtomicU64::new(0),
             probe_calls: AtomicU64::new(0),
             probe_success: AtomicBool::new(true),
+            auto_reconnect_suppressed: AtomicBool::new(false),
+            suppress_auto_reconnect_calls: AtomicU64::new(0),
+            resume_auto_reconnect_calls: AtomicU64::new(0),
             event_tx,
             connect_delay,
             connect_once_delay,
@@ -69,6 +80,18 @@ impl FakeSignalingClient {
         self.probe_success.store(success, Ordering::SeqCst);
     }
 
+    fn auto_reconnect_suppressed(&self) -> bool {
+        self.auto_reconnect_suppressed.load(Ordering::SeqCst)
+    }
+
+    fn suppress_auto_reconnect_calls(&self) -> u64 {
+        self.suppress_auto_reconnect_calls.load(Ordering::SeqCst)
+    }
+
+    fn resume_auto_reconnect_calls(&self) -> u64 {
+        self.resume_auto_reconnect_calls.load(Ordering::SeqCst)
+    }
+
     fn publish_connected(&self) {
         self.connected.store(true, Ordering::SeqCst);
         self.connections.fetch_add(1, Ordering::SeqCst);
@@ -93,6 +116,19 @@ impl SignalingClient for FakeSignalingClient {
         }
         self.publish_connected();
         Ok(())
+    }
+
+    fn suppress_auto_reconnect(&self) {
+        self.suppress_auto_reconnect_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.auto_reconnect_suppressed.store(true, Ordering::SeqCst);
+    }
+
+    fn resume_auto_reconnect(&self) {
+        self.resume_auto_reconnect_calls
+            .fetch_add(1, Ordering::SeqCst);
+        self.auto_reconnect_suppressed
+            .store(false, Ordering::SeqCst);
     }
 
     async fn disconnect(&self) -> NetworkResult<()> {
@@ -204,6 +240,30 @@ impl SignalingClient for FakeSignalingClient {
     async fn set_credential_state(&self, _credential_state: CredentialState) {}
 
     async fn clear_identity(&self) {}
+}
+
+/// Wait for the next signaling event matching `pred`, skipping unrelated
+/// events instead of assuming the first delivery is the one under test.
+///
+/// Event acceptance is decoupled from effect completion (RFC-0400 invariant
+/// 11), so a caller can no longer infer "the effect ran" from its acceptance
+/// reply alone. This observes the effect's actual, authoritative completion
+/// off the signaling client's event stream — a real notification, not a
+/// sleep — so it also drives a paused clock's timers (offline grace,
+/// backoff) forward exactly as far as the effect chain requires.
+async fn wait_for_event(
+    events: &mut broadcast::Receiver<SignalingEvent>,
+    mut pred: impl FnMut(&SignalingEvent) -> bool,
+) {
+    loop {
+        let event = events
+            .recv()
+            .await
+            .expect("signaling event stream should stay open for the duration of the test");
+        if pred(&event) {
+            return;
+        }
+    }
 }
 
 fn snapshot(
@@ -522,6 +582,11 @@ fn test_l0_documented_event_action_matrix() {
             events: vec![foreground_event(60_000), offline_event(1)],
             expected: NetworkRecoveryAction::Offline,
         },
+        Case {
+            case_id: "L0-28 short foreground before online restores",
+            events: vec![background_event(), foreground_event(5_000), online_event(1)],
+            expected: NetworkRecoveryAction::Restore,
+        },
     ];
 
     for case in cases {
@@ -529,13 +594,6 @@ fn test_l0_documented_event_action_matrix() {
             select_network_recovery_action(&case.events),
             case.expected,
             "{} selected unexpected action for {:?}",
-            case.case_id,
-            case.events
-        );
-        assert_eq!(
-            ConnectionSupervisor::select_action(&case.events),
-            case.expected,
-            "{} supervisor selected unexpected action for {:?}",
             case.case_id,
             case.events
         );
@@ -679,6 +737,45 @@ async fn test_network_available_probes_when_already_connected() {
 }
 
 #[tokio::test]
+async fn test_supervisor_restore_bypasses_legacy_available_debounce() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+
+    let processor = DefaultNetworkEventProcessor::new_with_debounce(
+        client.clone(),
+        None,
+        DebounceConfig {
+            window: Duration::from_secs(60),
+        },
+    );
+
+    processor
+        .process_network_available()
+        .await
+        .expect("legacy available call should succeed");
+    processor
+        .process_network_available()
+        .await
+        .expect("legacy duplicate should be debounced");
+    assert_eq!(client.probe_calls(), 1);
+
+    processor
+        .process_network_recovery_action(NetworkRecoveryAction::Restore)
+        .await
+        .expect("supervisor Restore should execute");
+    processor
+        .process_network_recovery_action(NetworkRecoveryAction::Restore)
+        .await
+        .expect("later supervisor Restore should also execute");
+
+    assert_eq!(
+        client.probe_calls(),
+        3,
+        "policy-admitted Restore work must not be swallowed by direct-call debounce"
+    );
+}
+
+#[tokio::test]
 async fn test_network_available_rebuilds_when_signaling_probe_fails() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
@@ -742,6 +839,84 @@ async fn test_short_foreground_failed_probe_disconnects_before_restore() {
     );
     assert_eq!(stats.connections, 2);
     assert!(client.is_connected());
+}
+
+#[tokio::test]
+async fn test_short_foreground_reenables_auto_reconnect_without_starting_an_extra_connect() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let reconciler_shutdown = shutdown.clone();
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor_for_task, reconciler_shutdown).await;
+    });
+
+    handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Background)
+        .await
+        .expect("background event should complete");
+    assert!(client.auto_reconnect_suppressed());
+    assert_eq!(client.suppress_auto_reconnect_calls(), 1);
+
+    handle
+        .handle_app_lifecycle_changed(AppLifecycleState::Foreground {
+            background_duration_ms: 1_000,
+        })
+        .await
+        .expect("short foreground event should complete");
+
+    assert!(!client.auto_reconnect_suppressed());
+    assert_eq!(client.resume_auto_reconnect_calls(), 1);
+    assert_eq!(
+        client.connect_once_calls(),
+        0,
+        "healthy signaling must not reconnect just to clear suppression"
+    );
+    assert_eq!(client.probe_calls(), 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+}
+
+#[tokio::test]
+async fn test_default_recovery_uses_snapshot_state_instead_of_timed_debounce() {
+    assert_eq!(DebounceConfig::default().window, Duration::ZERO);
+
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let reconciler_shutdown = shutdown.clone();
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor_for_task, reconciler_shutdown).await;
+    });
+
+    for sequence in [1, 2] {
+        handle
+            .handle_network_path_changed(match online_event(sequence) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+            .expect("online snapshot should complete");
+    }
+
+    assert_eq!(
+        client.probe_calls(),
+        1,
+        "newer equivalent snapshots are suppressed by state, not elapsed time"
+    );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
 }
 
 #[tokio::test]
@@ -1035,107 +1210,24 @@ fn test_batch_action_uses_latest_network_state_event() {
     );
 }
 
-#[test]
-fn test_connection_supervisor_fact_matrix() {
-    struct Case {
-        name: &'static str,
-        facts: Vec<ConnectionFact>,
-        expected: NetworkRecoveryAction,
-    }
-
-    let cases = vec![
-        Case {
-            name: "background_only",
-            facts: vec![ConnectionFact::AppEnteredBackground],
-            expected: NetworkRecoveryAction::Noop,
-        },
-        Case {
-            name: "short_foreground_without_network_fact",
-            facts: vec![ConnectionFact::AppEnteredForeground {
-                background_duration_ms: 5_000,
-            }],
-            expected: NetworkRecoveryAction::Probe,
-        },
-        Case {
-            name: "foreground_then_online",
-            facts: vec![
-                ConnectionFact::AppEnteredBackground,
-                ConnectionFact::AppEnteredForeground {
-                    background_duration_ms: 5_000,
-                },
-                ConnectionFact::NetworkSnapshotChanged(snapshot(
-                    1,
-                    NetworkAvailability::Available,
-                    true,
-                    false,
-                    false,
-                )),
-            ],
-            expected: NetworkRecoveryAction::Restore,
-        },
-        Case {
-            name: "cleanup_suppresses_later_restore",
-            facts: vec![
-                ConnectionFact::CleanupRequested(CleanupReason::UserLogout),
-                ConnectionFact::NetworkSnapshotChanged(snapshot(
-                    1,
-                    NetworkAvailability::Available,
-                    true,
-                    false,
-                    false,
-                )),
-            ],
-            expected: NetworkRecoveryAction::CleanupOnly,
-        },
-        Case {
-            name: "latest_snapshot_sequence_wins",
-            facts: vec![
-                ConnectionFact::NetworkSnapshotChanged(snapshot(
-                    2,
-                    NetworkAvailability::Available,
-                    true,
-                    false,
-                    true,
-                )),
-                ConnectionFact::NetworkSnapshotChanged(snapshot(
-                    1,
-                    NetworkAvailability::Unavailable,
-                    false,
-                    false,
-                    false,
-                )),
-            ],
-            expected: NetworkRecoveryAction::Restore,
-        },
-        Case {
-            name: "offline_suppresses_forced_reconnect",
-            facts: vec![
-                ConnectionFact::ForceReconnectRequested(ReconnectReason::ManualReconnect),
-                ConnectionFact::NetworkSnapshotChanged(snapshot(
-                    1,
-                    NetworkAvailability::Unavailable,
-                    false,
-                    false,
-                    false,
-                )),
-            ],
-            expected: NetworkRecoveryAction::Offline,
-        },
-    ];
-
-    for case in cases {
-        let mut supervisor = ConnectionSupervisor::new();
-        for fact in case.facts {
-            supervisor.submit_fact(fact);
-        }
-        assert_eq!(
-            supervisor.reconcile(),
-            case.expected,
-            "{} selected unexpected action",
-            case.name
-        );
-    }
-}
+// `test_recovery_supervisor_fact_matrix` (pre-RFC-0400) was removed here.
+// It drove the deprecated per-instance `RecoverySupervisor::submit_fact` /
+// `reconcile` API directly with hand-built `ConnectionFact` values; that API
+// is no longer public (the RFC-0400 supervisor rewrite replaced it with the
+// translate()-driven engine, and the pre-RFC selector now lives only as the
+// crate-private `legacy_select_action` used by `select_network_recovery_action`).
+// Every one of its six cases already exercised the identical underlying
+// selector through `select_network_recovery_action`'s `NetworkEvent` entry
+// point (which converts each event to the same `ConnectionFact` before
+// reconciling), so none of it was unique coverage:
+//   - "background_only"                    == L0-13
+//   - "short_foreground_without_network_fact" == L0-14
+//   - "cleanup_suppresses_later_restore"    == L0-11
+//   - "latest_snapshot_sequence_wins"       == L0-15 / L0-26
+//   - "offline_suppresses_forced_reconnect" == L0-24
+//   - "foreground_then_online" had no exact prior case, so it was ported
+//     forward as L0-28 in `test_l0_documented_event_action_matrix` above
+//     instead of being dropped.
 
 #[tokio::test]
 async fn test_cleanup_batches_disconnect_without_reconnect() {
@@ -1250,8 +1342,8 @@ async fn test_cleanup_batches_disconnect_without_reconnect() {
     }
 }
 
-#[tokio::test]
-async fn test_network_event_handle_settle_window_merges_events_once() {
+#[tokio::test(start_paused = true)]
+async fn test_network_event_handle_rolls_back_offline_before_grace_expires() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
 
@@ -1272,6 +1364,7 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
     let reconciler = tokio::spawn(async move {
         run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
     });
+    let started = tokio::time::Instant::now();
 
     let lost = {
         let handle = handle.clone();
@@ -1332,24 +1425,334 @@ async fn test_network_event_handle_settle_window_merges_events_once() {
         NetworkEvent::NetworkPathChanged { .. }
     ));
     assert!(client.is_connected());
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "an available path should roll back pending offline before the grace period expires"
+    );
 
     let stats = client.get_stats();
     assert_eq!(
         stats.connections, 1,
-        "Lost + Available + TypeChanged in one settle window should keep healthy signaling"
+        "Fast offline rollback should keep healthy signaling"
     );
     assert_eq!(
         stats.disconnections, 0,
-        "Batched restore should not disconnect when signaling probe succeeds"
+        "Rolled-back offline state should not disconnect when signaling probe succeeds"
     );
-    assert_eq!(client.probe_calls(), 1, "Batched restore should probe once");
+    assert_eq!(
+        client.probe_calls(),
+        1,
+        "Equivalent available paths should be structurally deduplicated"
+    );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_offline_candidate_drained_after_non_offline_head_owns_grace() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let mut events = client.subscribe_events();
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+
+    let (online_tx, online_rx) = tokio::sync::oneshot::channel();
+    event_tx
+        .send(NetworkEventRequest {
+            event: online_event(1),
+            result_tx: online_tx,
+            source_epoch: 1,
+            observed_at: tokio::time::Instant::now(),
+        })
+        .await
+        .expect("online event should queue");
+    let (offline_tx, offline_rx) = tokio::sync::oneshot::channel();
+    event_tx
+        .send(NetworkEventRequest {
+            event: offline_event(2),
+            result_tx: offline_tx,
+            source_epoch: 1,
+            observed_at: tokio::time::Instant::now(),
+        })
+        .await
+        .expect("offline event should queue behind the online head");
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let started = tokio::time::Instant::now();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    // Acceptance does not wait for effect completion (invariant 11): both
+    // requests are acknowledged as soon as they are dequeued and reconciled,
+    // well before the 400ms OfflineCandidate grace timer the offline head
+    // arms.
+    assert!(
+        online_rx
+            .await
+            .expect("online result sender should remain open")
+            .success
+    );
+    assert!(
+        offline_rx
+            .await
+            .expect("offline result sender should remain open")
+            .success
+    );
+
+    // The confirmed-offline disconnect only runs once the grace timer
+    // expires; observe that completion off the signaling event stream rather
+    // than inferring it from the (now-immediate) acceptance reply.
+    wait_for_event(&mut events, |event| {
+        matches!(event, SignalingEvent::Disconnected { .. })
+    })
+    .await;
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "an offline candidate discovered while draining queued requests must still honor its own grace timer"
+    );
+    assert!(!client.is_connected());
+    assert_eq!(client.get_stats().disconnections, 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_new_offline_candidate_after_fast_rollback_restarts_grace() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let mut events = client.subscribe_events();
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+
+    let mut results = Vec::new();
+    for event in [offline_event(1), online_event(2), offline_event(3)] {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        event_tx
+            .send(NetworkEventRequest {
+                event,
+                result_tx,
+                source_epoch: 1,
+                observed_at: tokio::time::Instant::now(),
+            })
+            .await
+            .expect("path event should queue");
+        results.push(result_rx);
+    }
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let started = tokio::time::Instant::now();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    // Acceptance does not wait for effect completion (invariant 11): all three
+    // requests are acknowledged well before the rolled-back first candidate's
+    // grace timer, let alone the second candidate's fresh one, could expire.
+    for result in results {
+        assert!(
+            result
+                .await
+                .expect("path result sender should remain open")
+                .success
+        );
+    }
+
+    // Only the final (rolled-back-then-recommitted) candidate should ever
+    // reach a confirmed disconnect; observe that off the event stream.
+    wait_for_event(&mut events, |event| {
+        matches!(event, SignalingEvent::Disconnected { .. })
+    })
+    .await;
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(400),
+        "a new offline candidate after rollback must start its own grace period"
+    );
+    assert!(!client.is_connected());
+    assert_eq!(
+        client.get_stats().disconnections,
+        1,
+        "only the final committed offline candidate should disconnect"
+    );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_reconnect_intent_survives_across_reconciler_receive_cycles() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let mut events = client.subscribe_events();
+
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    // Acceptance does not wait for effect completion (invariant 11): the
+    // offline snapshot is acknowledged immediately, well before its 400ms
+    // OfflineCandidate grace timer could expire.
+    let offline_result = handle
+        .handle_network_path_changed(match offline_event(1) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
+        .await
+        .expect("offline event should be accepted");
+    assert!(offline_result.success);
+
+    wait_for_event(&mut events, |event| {
+        matches!(event, SignalingEvent::Disconnected { .. })
+    })
+    .await;
+    assert!(!client.is_connected());
+    assert_eq!(client.get_stats().disconnections, 1);
+
+    let duplicate_offline = handle
+        .handle_network_path_changed(match offline_event(2) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
+        .await
+        .expect("a later duplicate offline fact should complete");
+    assert!(duplicate_offline.success);
+    assert_eq!(
+        client.get_stats().disconnections,
+        1,
+        "a committed offline state must not disconnect transports repeatedly"
+    );
+
+    let deferred = handle
+        .force_reconnect(ReconnectReason::ManualReconnect)
+        .await
+        .expect("offline reconnect request should be accepted and deferred");
+    assert!(deferred.success);
+    assert!(!client.is_connected());
+    assert_eq!(
+        client.connect_once_calls(),
+        0,
+        "a committed offline path must gate reconnect execution"
+    );
+
+    let restored = handle
+        .handle_network_path_changed(match online_event(3) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
+        .await
+        .expect("available path should be accepted");
+    assert!(restored.success);
+
+    // The deferred reconnect intent now executes; observe its completion off
+    // the event stream rather than the (already-returned) acceptance reply.
+    wait_for_event(&mut events, |event| {
+        matches!(event, SignalingEvent::Connected)
+    })
+    .await;
+    assert!(client.is_connected());
+    assert_eq!(
+        client.connect_once_calls(),
+        1,
+        "the reconnect intent must survive into a later receive cycle"
+    );
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+// `test_background_defers_active_recovery_until_foreground` (pre-RFC-0400)
+// assumed background always gates active recovery. RFC-0400 scopes that
+// gating to the `Gated` lifecycle profile only (see the RFC's "lifecycle
+// profile" term and its compatibility section): "the Rust core and headless
+// deployments default to `Ungated` and keep recovering exactly as before".
+// `run_network_event_reconciler` always constructs `Ungated` (see
+// `reconcile_loop`), so under this entry point background never gates a
+// reconnect — this is intentional, not a regression. The replacement test
+// below verifies the two things that *do* still hold under `Ungated`:
+// background alone does not disturb a healthy session, and an explicit
+// reconnect is admitted (not silently dropped) while backgrounded. The
+// `Gated` profile's actual phase gating cannot be exercised through a public
+// reconciler entry point and is covered instead by
+// `gated_profile_denies_eligibility_until_foreground` and
+// `gated_profile_background_gates_recovery_but_preserves_intent` in
+// `recovery_supervisor_tests.rs`.
+#[tokio::test]
+async fn test_background_preserves_healthy_session_and_admits_reconnect_under_ungated() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let mut events = client.subscribe_events();
+
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    assert!(
+        handle
+            .handle_app_lifecycle_changed(AppLifecycleState::Background)
+            .await
+            .expect("background fact should complete")
+            .success
+    );
+    assert!(
+        client.is_connected(),
+        "entering background must not tear down a healthy connection"
+    );
+    assert_eq!(client.get_stats().disconnections, 0);
+
+    assert!(
+        handle
+            .handle_network_path_changed(match online_event(1) {
+                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+                _ => unreachable!(),
+            })
+            .await
+            .expect("available path should be recorded in background")
+            .success
+    );
+    assert!(
+        handle
+            .force_reconnect(ReconnectReason::ManualReconnect)
+            .await
+            .expect("an explicit reconnect must be admitted, not gated, under Ungated")
+            .success
+    );
+
+    // Acceptance does not wait for effect completion (invariant 11); observe
+    // the reconnect's actual completion off the signaling event stream.
+    wait_for_event(&mut events, |event| {
+        matches!(event, SignalingEvent::Connected)
+    })
+    .await;
+    assert!(client.is_connected());
+    assert_eq!(client.connect_once_calls(), 1);
+    assert_eq!(client.get_stats().disconnections, 1);
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
 }
 
 #[tokio::test]
-async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
+async fn test_material_path_updates_bypass_legacy_debounce() {
     let client = Arc::new(FakeSignalingClient::new());
     client.connect().await.expect("initial connect");
 
@@ -1409,6 +1812,15 @@ async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
             .expect("type changed task should not panic")
             .unwrap();
 
+        let expected_probes = cycle * 2;
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while client.probe_calls() < expected_probes {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("policy-admitted probes should complete");
+
         assert!(
             available_result.success,
             "foreground Available should succeed in cycle {}",
@@ -1444,8 +1856,8 @@ async fn test_repeated_foreground_restore_batches_probe_once_per_cycle() {
         );
         assert_eq!(
             client.probe_calls(),
-            cycle,
-            "foreground cycle {} should probe once for the settled restore batch",
+            expected_probes,
+            "material route changes must not be swallowed by legacy debounce in cycle {}",
             cycle
         );
     }
@@ -1537,8 +1949,21 @@ async fn test_l1_old_handle_after_reconciler_shutdown_fails_fast() {
     );
 }
 
+// `test_l1_reconciler_shutdown_during_offline_grace_is_bounded` (pre-RFC-0400)
+// assumed the handle call blocked until the offline grace timer resolved (or
+// the caller's own result timeout elapsed), so a shutdown mid-wait had to
+// surface as a caller-side timeout error. RFC-0400 invariant 11 decouples
+// event acceptance from effect completion: the handle call now returns as
+// soon as the snapshot is accepted, well before the 400ms OfflineCandidate
+// grace timer could ever fire, so there is no longer a caller left waiting
+// during the grace window. The rewritten test instead verifies invariant 30
+// directly: shutting the reconciler down while the grace timer (and,
+// potentially, its disconnect effect) is still armed terminates it promptly
+// rather than hanging on either. No sleep is needed — the acceptance reply
+// and `shutdown.cancel()` race nothing, since `select!` is biased towards
+// the shutdown branch.
 #[tokio::test]
-async fn test_l1_reconciler_shutdown_during_settle_window_is_bounded() {
+async fn test_l1_reconciler_shutdown_during_offline_grace_is_bounded() {
     let client = Arc::new(FakeSignalingClient::new());
     let processor = Arc::new(DefaultNetworkEventProcessor::new(client, None));
     let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
@@ -1551,28 +1976,19 @@ async fn test_l1_reconciler_shutdown_during_settle_window_is_bounded() {
         run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
     });
 
-    let event_call = tokio::spawn(async move {
-        handle
-            .handle_network_path_changed(match online_event(1) {
-                NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
-                _ => unreachable!(),
-            })
-            .await
-    });
-
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    shutdown.cancel();
-    reconciler.await.expect("reconciler task should not panic");
-
-    let err = event_call
+    let accepted = handle
+        .handle_network_path_changed(match offline_event(1) {
+            NetworkEvent::NetworkPathChanged { snapshot } => snapshot,
+            _ => unreachable!(),
+        })
         .await
-        .expect("event call should not panic")
-        .expect_err("shutdown during settle should not leave caller waiting forever");
-    assert!(
-        err.contains("Timed out waiting for network event result")
-            || err.contains("Failed to receive network event result"),
-        "unexpected error: {err}"
-    );
+        .expect("acceptance must not wait for the offline grace timer or its disconnect effect");
+    assert!(accepted.success);
+
+    shutdown.cancel();
+    reconciler
+        .await
+        .expect("reconciler task must not panic and must not hang on a pending grace timer");
 }
 
 #[tokio::test]
@@ -1622,6 +2038,94 @@ async fn test_l1_command_apis_complete_through_network_event_handle() {
     ));
     assert!(client.is_connected());
     assert_eq!(client.connect_once_calls(), 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler task should not panic");
+}
+
+#[tokio::test]
+async fn test_l1_cleanup_is_a_batch_barrier_for_later_recovery_facts() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let (cleanup_tx, cleanup_rx) = tokio::sync::oneshot::channel();
+    let (online_tx, online_rx) = tokio::sync::oneshot::channel();
+
+    event_tx
+        .try_send(NetworkEventRequest {
+            event: NetworkEvent::CleanupConnections {
+                reason: CleanupReason::ManualReset,
+            },
+            result_tx: cleanup_tx,
+            source_epoch: 1,
+            observed_at: tokio::time::Instant::now(),
+        })
+        .expect("cleanup should be queued");
+    event_tx
+        .try_send(NetworkEventRequest {
+            event: online_event(1),
+            result_tx: online_tx,
+            source_epoch: 1,
+            observed_at: tokio::time::Instant::now(),
+        })
+        .expect("online snapshot should be queued after cleanup");
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let reconciler_shutdown = shutdown.clone();
+    let processor_for_task: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor_for_task, reconciler_shutdown).await;
+    });
+
+    assert!(
+        cleanup_rx
+            .await
+            .expect("cleanup result should be delivered")
+            .success
+    );
+    assert!(
+        online_rx
+            .await
+            .expect("online result should be delivered")
+            .success
+    );
+    assert!(
+        client.is_connected(),
+        "the post-cleanup online fact must execute in its own decision cycle"
+    );
+    assert_eq!(client.connect_once_calls(), 1);
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_l1_explicit_cleanup_bypasses_offline_grace() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client, None));
+
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel(10);
+    let handle = NetworkEventHandle::new_with_result_timeout(event_tx, Duration::from_secs(2));
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let reconciler_shutdown = shutdown.clone();
+    let reconciler = tokio::spawn(async move {
+        run_network_event_reconciler(event_rx, processor, reconciler_shutdown).await;
+    });
+
+    let started = tokio::time::Instant::now();
+    let cleanup = handle
+        .cleanup_connections(CleanupReason::ManualReset)
+        .await
+        .expect("cleanup command should complete without path settling");
+
+    assert!(cleanup.success);
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "explicit cleanup must not wait for the offline grace period"
+    );
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
@@ -1923,4 +2427,139 @@ async fn test_l1_cloned_handles_mixed_concurrent_calls_complete_without_crossed_
 
     shutdown.cancel();
     reconciler.await.expect("reconciler task should not panic");
+}
+
+// ---------------------------------------------------------------------------
+// RFC-0400: the supervisor Probe effect reports a typed outcome; the policy —
+// not the effect — derives the Restore successor. The deprecated direct-call
+// surface keeps the pre-RFC self-healing probe-then-restore contract.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn supervisor_probe_effect_reports_typed_outcome_without_inline_restore() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    client.set_probe_success(false);
+    let processor = DefaultNetworkEventProcessor::new(client.clone(), None);
+
+    let err = processor
+        .process_network_recovery_effect(NetworkRecoveryAction::Probe)
+        .await
+        .expect_err("a failed liveness probe must surface its typed outcome");
+    assert!(
+        matches!(err, NetworkRecoveryError::TransportImpaired { .. }),
+        "probe failure must report the conclusive liveness observation: {err:?}"
+    );
+
+    assert_eq!(client.probe_calls(), 1);
+    let stats = client.get_stats();
+    assert_eq!(
+        stats.disconnections, 0,
+        "the effect must not disconnect: translate() derives the successor"
+    );
+    assert_eq!(
+        client.connect_once_calls(),
+        0,
+        "the effect must not rebuild inline"
+    );
+}
+
+#[tokio::test]
+async fn legacy_probe_action_retains_self_healing_restore() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    client.set_probe_success(false);
+    let processor = DefaultNetworkEventProcessor::new(client.clone(), None);
+
+    processor
+        .process_network_recovery_action(NetworkRecoveryAction::Probe)
+        .await
+        .expect("the direct-call surface keeps probe-then-restore self-healing");
+
+    assert_eq!(client.probe_calls(), 1);
+    let stats = client.get_stats();
+    assert_eq!(stats.disconnections, 1);
+    assert_eq!(client.connect_once_calls(), 1);
+    assert!(client.is_connected());
+}
+
+#[tokio::test]
+async fn route_change_with_live_signaling_probes_then_escalates_to_restore() {
+    let client = Arc::new(FakeSignalingClient::new());
+    client.connect().await.expect("initial connect");
+    let processor = Arc::new(DefaultNetworkEventProcessor::new(client.clone(), None));
+    let processor: Arc<dyn NetworkEventProcessor> = processor;
+    let (handle, sink, shutdown, reconciler, mut status_rx) =
+        actr_hyper::test_support::spawn_network_event_supervisor_with_status(processor);
+
+    // A live signaling generation committed by the resource owner.
+    sink.signaling_generation_committed(1, actr_hyper::lifecycle::SignalingFactOrigin::External);
+
+    // Establish the Online path on Wi-Fi; the derived probe (action 1) runs
+    // against the healthy socket, and its completion is reconciled before the
+    // route changes.
+    assert!(
+        handle
+            .handle_network_path_changed(snapshot(
+                1,
+                NetworkAvailability::Available,
+                true,
+                false,
+                false
+            ))
+            .await
+            .expect("initial online snapshot should be accepted")
+            .success
+    );
+    status_rx
+        .wait_for(|s| {
+            s.last_action_id == Some(1)
+                && s.last_outcome == Some(actr_hyper::lifecycle::ObservedOutcome::Succeeded)
+        })
+        .await
+        .expect("the initial healthy probe should settle");
+    assert_eq!(client.probe_calls(), 1);
+
+    // The route now migrates Wi-Fi -> cellular and the old socket is half-open:
+    // every further liveness probe fails. The supervisor must actively probe
+    // (action 2 — not wait 10-15s for an I/O or Pong failure), and translate()
+    // must escalate the typed probe failure into a Restore (action 3) that
+    // rebuilds the socket.
+    client.set_probe_success(false);
+    assert!(
+        handle
+            .handle_network_path_changed(snapshot(
+                2,
+                NetworkAvailability::Available,
+                false,
+                true,
+                false
+            ))
+            .await
+            .expect("material route change should be accepted")
+            .success
+    );
+    status_rx
+        .wait_for(|s| {
+            s.last_action_id == Some(3)
+                && s.last_outcome == Some(actr_hyper::lifecycle::ObservedOutcome::Succeeded)
+        })
+        .await
+        .expect("the escalated restore should settle");
+
+    assert!(client.is_connected());
+    assert_eq!(
+        client.probe_calls(),
+        3,
+        "route probe + the restore's own health probe follow the initial probe"
+    );
+    assert_eq!(
+        client.get_stats().disconnections,
+        1,
+        "the restore effect (not the probe) disconnects the half-open socket once"
+    );
+    assert_eq!(client.connect_once_calls(), 1, "exactly one rebuild");
+
+    shutdown.cancel();
+    reconciler.await.expect("reconciler should stop cleanly");
 }

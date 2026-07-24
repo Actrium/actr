@@ -53,6 +53,7 @@ toml.workspace = true
 uuid = { version = "1.18", features = ["v4", "serde"] }
 thiserror.workspace = true
 anyhow.workspace = true
+yasm.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 base64.workspace = true
@@ -108,7 +109,6 @@ pwrzv.workspace = true
 crossbeam.workspace = true
 dashmap.workspace = true
 dotenvy = "0.15"
-either = "1.15"
 num_cpus = "1.17"
 actr-mock-actrix = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
@@ -129,6 +129,16 @@ libloading = { version = "0.8", optional = true }
 # is a no-op stub.
 [[bench]]
 name = "dispatch_throughput"
+harness = false
+
+# Recovery-supervisor latency benchmarks (RFC-0400 / PR #399 quantitative
+# validation): M1 acceptance latency and M2 enqueue-to-decision latency.
+# `harness = false`: it owns its own single-threaded tokio runtime (the
+# reconciler and its spawned effect/timer tasks are genuinely concurrent, so
+# criterion's synchronous harness does not apply). No feature gate: only
+# public API (`actr_hyper::lifecycle`), builds on every target.
+[[bench]]
+name = "recovery_latency"
 harness = false
 
 [dev-dependencies]

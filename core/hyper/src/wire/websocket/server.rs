@@ -214,8 +214,16 @@ impl WebSocketServer {
                             }
                             Err(e) => {
                                 tracing::error!("❌ WebSocketServer accept error: {}", e);
-                                // Sleep briefly before retrying to avoid a tight error loop.
-                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                // Back off after a real listener failure, but
+                                // never make shutdown wait for that backoff.
+                                tokio::select! {
+                                    biased;
+                                    _ = shutdown_token.cancelled() => break,
+                                    _ = crate::timer::sleep(
+                                        crate::timer::ids::WEBSOCKET_ACCEPT_BACKOFF,
+                                        tokio::time::Duration::from_millis(100)
+                                    ) => {}
+                                }
                             }
                         }
                     }

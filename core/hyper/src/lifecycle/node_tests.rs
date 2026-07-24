@@ -1,5 +1,32 @@
 use super::*;
 
+#[tokio::test]
+async fn inv20_empty_mailbox_keeps_driving_inflight_reply_and_ack_tails() {
+    let shutdown = CancellationToken::new();
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut inflight = futures_util::stream::FuturesUnordered::<MailboxTail>::new();
+    inflight.push(Box::pin({
+        let completed = Arc::clone(&completed);
+        async move {
+            completed.store(true, std::sync::atomic::Ordering::Release);
+        }
+    }));
+
+    let outcome = tokio::time::timeout(
+        Duration::from_millis(100),
+        wait_for_mailbox_idle(&shutdown, &mut inflight, std::future::pending()),
+    )
+    .await
+    .expect("an in-flight reply/ack tail must beat an idle mailbox wake");
+
+    assert_eq!(outcome, MailboxIdleOutcome::Progress);
+    assert!(
+        completed.load(std::sync::atomic::Ordering::Acquire),
+        "empty durable storage must not starve an admitted reply/ack tail"
+    );
+    assert!(inflight.is_empty());
+}
+
 // ── Strategy A: keyless zero-overhead scheduler gate ────────────────────────
 //
 // `scheduler_engaged` is the single predicate the node uses to decide whether

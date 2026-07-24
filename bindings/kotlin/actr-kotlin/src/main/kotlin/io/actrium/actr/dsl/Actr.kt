@@ -411,6 +411,16 @@ class ActrNode private constructor(
     suspend fun createNetworkEventHandle(): NetworkEventHandle =
         networkResources?.handle ?: inner.createNetworkEventHandle()
 
+    /**
+     * Allocate one source epoch for a newly attached/restarted Android monitor.
+     *
+     * Unlike [createNetworkEventHandle], this intentionally bypasses the
+     * retained monitor handle so each monitor incarnation receives a fresh
+     * `(source_epoch, sequence)` domain.
+     */
+    internal suspend fun createNetworkMonitorEventHandle(): NetworkEventHandle =
+        inner.createNetworkEventHandle()
+
     /** Notify the retained Android monitor that the app moved to background. */
     fun onAppBackground() {
         networkResources?.onAppBackground()

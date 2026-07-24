@@ -237,13 +237,13 @@ async fn run_renewal_once(
         }
         Err(RenewError::RateLimited { retry_after }) => {
             if let Some(delay) = retry_after {
-                tokio::time::sleep(delay).await;
+                crate::timer::sleep(crate::timer::ids::CREDENTIAL_RATE_LIMIT, delay).await;
             }
             return Err("renewal rate limited".to_string());
         }
         Err(RenewError::Retryable(err)) => {
             let mut backoff = Backoff::new();
-            tokio::time::sleep(backoff.next()).await;
+            crate::timer::sleep(crate::timer::ids::CREDENTIAL_RETRY_BACKOFF, backoff.next()).await;
             return Err(format!("retryable renew error: {err}"));
         }
         Err(err) => return Err(err.to_string()),

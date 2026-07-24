@@ -673,7 +673,13 @@ async fn run_loop_interleaved(
                                     // A native future has no general cancellation-
                                     // safety contract. Mark the runner poisoned on
                                     // expiry so no sibling can reuse this handle.
-                                    Some(d) => match tokio::time::timeout(d, guarded_fut).await {
+                                    Some(d) => match crate::timer::timeout(
+                                        crate::timer::ids::EXECUTOR_DISPATCH,
+                                        d,
+                                        guarded_fut,
+                                    )
+                                    .await
+                                    {
                                         Ok((result, panicked)) => (
                                             result,
                                             if panicked {

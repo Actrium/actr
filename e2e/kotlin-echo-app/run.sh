@@ -35,6 +35,8 @@ SERVICE_ACTOR="EchoService"
 APP_ACTOR="KotlinEchoApp"
 APP_VERSION="0.1.0"
 APPLICATION_ID="io.actrium.kotlinechoapp"
+SHORT_BACKGROUND_SECONDS="${SHORT_BACKGROUND_SECONDS:-5}"
+LONG_BACKGROUND_SECONDS="${LONG_BACKGROUND_SECONDS:-60}"
 
 for cmd in cargo curl jq sqlite3 python3 perl rustc lsof adb; do
     require_cmd "$cmd"
@@ -81,6 +83,7 @@ scaffold_echo_service() {
         "$TMP_SERVICE_DIR"
 
     append_workspace_patch "$TMP_SERVICE_DIR/Cargo.toml"
+    pin_workspace_actr_dependencies "$TMP_SERVICE_DIR/Cargo.toml"
     mkdir -p "$(dirname "$SERVICE_KEYCHAIN")"
     cp "$PROVISIONED_KEYCHAIN" "$SERVICE_KEYCHAIN"
     cp "$PROVISIONED_PUBLIC_KEY" "$SERVICE_PUBLIC_KEY"

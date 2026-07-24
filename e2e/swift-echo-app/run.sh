@@ -21,6 +21,9 @@ ACTR_TARGET_DIR="$E2E_TARGET_ROOT/actr-cli"
 TEMP_SERVICE_TARGET_DIR="$E2E_TARGET_ROOT/temp-service"
 DEFAULT_MESSAGE="e2e-test-message"
 REALM_NAME_PREFIX="swift-echo-app"
+RUN_LIFECYCLE_SCENARIOS="${RUN_LIFECYCLE_SCENARIOS:-1}"
+SHORT_BACKGROUND_SECONDS="${SHORT_BACKGROUND_SECONDS:-5}"
+LONG_BACKGROUND_SECONDS="${LONG_BACKGROUND_SECONDS:-60}"
 
 TEST_INPUT="$DEFAULT_MESSAGE"
 
@@ -39,7 +42,6 @@ done
 for cmd in cargo curl jq sqlite3 python3 perl rustc lsof; do
     require_cmd "$cmd"
 done
-ensure_actrix_available "$REPO_ROOT"
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$RANDOM"
 RUN_DIR="$SCRIPT_DIR/.tmp/run-$RUN_ID"
@@ -383,8 +385,11 @@ cleanup() {
     rm -f "$ECHOAPP_ACTRIX_CONFIG" "$TMP_APP_DIR/.actr/config.toml"
     rmdir "$TMP_APP_DIR/.actr" 2>/dev/null || true
 
-    # Shut down booted iOS Simulators
-    xcrun simctl shutdown all 2>/dev/null || true
+    # Shut down only the simulator selected for this run. Other booted
+    # simulators may belong to an unrelated local development session.
+    if [ -n "$DEVICE_UDID" ]; then
+        xcrun simctl shutdown "$DEVICE_UDID" 2>/dev/null || true
+    fi
 
     # Move sanitized logs out of RUN_DIR to a fixed location so the
     # upload-artifact step can find them regardless of success or failure.
@@ -452,6 +457,30 @@ build_local_actr_cli() {
     ACTR_CLI_BIN="$ACTR_TARGET_DIR/debug/actr"
     [ -x "$ACTR_CLI_BIN" ] || fail "actr CLI binary missing at $ACTR_CLI_BIN"
     success "actr CLI ready: $ACTR_CLI_BIN"
+}
+
+build_local_actrix() {
+    if [ -n "${ACTRIX_BIN:-}" ]; then
+        local resolved_actrix
+        resolved_actrix="$(command -v "$ACTRIX_BIN" 2>/dev/null || true)"
+        if [ -z "$resolved_actrix" ] && [ -x "$ACTRIX_BIN" ]; then
+            resolved_actrix="$ACTRIX_BIN"
+        fi
+        [ -n "$resolved_actrix" ] || fail "ACTRIX_BIN is set but not executable: $ACTRIX_BIN"
+        ACTRIX_BIN="$resolved_actrix"
+        export ACTRIX_BIN
+        success "Using caller-provided actrix: $ACTRIX_BIN"
+        return 0
+    fi
+
+    section "🔨 Building local actrix from source"
+    CARGO_TARGET_DIR="$ACTR_TARGET_DIR" cargo build \
+        --manifest-path "$REPO_ROOT/actrix/crates/actrixd/Cargo.toml" \
+        --bin actrix >/dev/null
+    ACTRIX_BIN="$ACTR_TARGET_DIR/debug/actrix"
+    [ -x "$ACTRIX_BIN" ] || fail "actrix binary missing at $ACTRIX_BIN"
+    export ACTRIX_BIN
+    success "actrix ready: $ACTRIX_BIN"
 }
 
 append_workspace_patch() {
@@ -967,6 +996,7 @@ install_and_launch_app() {
     # may return before the app exits when detached from the terminal, so do not
     # treat the wrapper process as the app lifetime.
     SIMCTL_CHILD_ACTR_ECHOAPP_AUTO_SEND=1 \
+    SIMCTL_CHILD_ACTR_ECHOAPP_LIFECYCLE_E2E="$RUN_LIFECYCLE_SCENARIOS" \
     SIMCTL_CHILD_ACTR_ECHOAPP_TEST_INPUT="$TEST_INPUT" \
     xcrun simctl launch \
         "${launch_args[@]}" \
@@ -1023,17 +1053,59 @@ wait_for_echo_result() {
     fail "Timed out waiting for echo result after ${timeout}s"
 }
 
+wait_for_log_marker() {
+    local marker="$1"
+    local description="$2"
+    local timeout="${CLIENT_TIMEOUT_SECONDS:-120}"
+    local elapsed=0
+
+    while [ $elapsed -lt "$timeout" ]; do
+        if grep_app_logs -Fq "$marker"; then
+            success "$description"
+            return 0
+        fi
+
+        fail_if_app_exited_before_result "$description"
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+
+    tail_app_logs 80
+    fail "Timed out waiting for $description after ${timeout}s"
+}
+
+run_background_recovery_cycle() {
+    local duration_seconds="$1"
+    local cycle="$2"
+    local expected_payload="${TEST_INPUT}-foreground-${cycle}"
+
+    section "📱 Background recovery cycle ${cycle} (${duration_seconds}s)"
+
+    xcrun simctl launch "$DEVICE_UDID" com.apple.Preferences >/dev/null
+    wait_for_log_marker "ACTR_E2E_PHASE:background" "App entered background"
+    sleep "$duration_seconds"
+
+    xcrun simctl launch "$DEVICE_UDID" "$APP_BUNDLE_ID" >/dev/null
+    wait_for_log_marker \
+        "ACTR_E2E_PHASE:foreground-${cycle}" \
+        "App returned to foreground for cycle ${cycle}"
+    wait_for_log_marker \
+        "ACTR_E2E_RESULT:Echo: swift-local:${expected_payload}" \
+        "Foreground echo succeeded for cycle ${cycle}"
+}
+
 # ──── Main ────
 
 section "🧪 Swift EchoApp E2E"
 echo "Run directory: $RUN_DIR"
 echo "Message:       $TEST_INPUT"
-echo "Actrix binary: $ACTRIX_BIN"
+echo "Actrix binary: ${ACTRIX_BIN:-workspace source (built below)}"
 echo "Host target:   $HOST_TARGET"
 
 # Phase 1: Prepare actrix infrastructure
 render_runtime_configs
 build_local_actr_cli
+build_local_actrix
 start_actrix
 login_admin
 warmup_ais_key
@@ -1063,6 +1135,10 @@ check_service_ready
 # Phase 5: Install app, launch, and verify
 install_and_launch_app
 wait_for_echo_result
+if [ "$RUN_LIFECYCLE_SCENARIOS" = "1" ]; then
+    run_background_recovery_cycle "$SHORT_BACKGROUND_SECONDS" 1
+    run_background_recovery_cycle "$LONG_BACKGROUND_SECONDS" 2
+fi
 
 echo ""
 success "Swift EchoApp e2e completed successfully"

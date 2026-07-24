@@ -70,7 +70,7 @@ async fn close_transport_if_current_replaced_instance_does_not_mark_closing() {
     mgr.transports
         .write()
         .await
-        .insert(dest.clone(), Either::Right(current_transport));
+        .insert(dest.clone(), DestState::Connected(current_transport));
 
     let closed = mgr
         .close_transport_if_current(&dest, &old_ref)
@@ -159,6 +159,240 @@ impl DataLane for NoopLane {
     }
 }
 
+struct SupersedableFactory {
+    calls: AtomicUsize,
+    first_started: Notify,
+    first_release: Notify,
+    first_wire: Arc<CountingWire>,
+    replacement_wire: Arc<CountingWire>,
+}
+
+struct IndependentDestinationFactory {
+    calls: AtomicUsize,
+    host_started: Notify,
+    host_release: Notify,
+}
+
+#[async_trait]
+impl WireBuilder for IndependentDestinationFactory {
+    async fn create_connections(&self, dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        if dest == &Dest::host() {
+            self.host_started.notify_one();
+            self.host_release.notified().await;
+        }
+        Ok(vec![Arc::new(CountingWire::new(ConnType::WebSocket, None))])
+    }
+}
+
+#[tokio::test]
+async fn inv8_independent_destination_flights_are_not_serialized() {
+    let factory = Arc::new(IndependentDestinationFactory {
+        calls: AtomicUsize::new(0),
+        host_started: Notify::new(),
+        host_release: Notify::new(),
+    });
+    let manager = Arc::new(PeerTransport::new(ActrId::default(), factory.clone()));
+
+    let host_manager = manager.clone();
+    let host =
+        tokio::spawn(async move { host_manager.get_or_create_transport(&Dest::host()).await });
+
+    timeout(Duration::from_secs(1), factory.host_started.notified())
+        .await
+        .expect("host destination flight should enter the factory");
+
+    let workload_manager = manager.clone();
+    let workload = tokio::spawn(async move {
+        workload_manager
+            .get_or_create_transport(&Dest::workload())
+            .await
+    });
+
+    timeout(Duration::from_secs(1), workload)
+        .await
+        .expect("workload flight should finish while the host flight remains blocked")
+        .expect("workload task should not panic")
+        .expect("workload flight should succeed");
+
+    assert_eq!(factory.calls.load(Ordering::Acquire), 2);
+    assert!(
+        !host.is_finished(),
+        "the slow host destination should remain independently blocked"
+    );
+
+    factory.host_release.notify_one();
+    timeout(Duration::from_secs(1), host)
+        .await
+        .expect("host flight should finish")
+        .expect("host task should not panic")
+        .expect("host flight should succeed");
+}
+
+#[async_trait]
+impl WireBuilder for SupersedableFactory {
+    async fn create_connections(&self, _dest: &Dest) -> NetworkResult<Vec<Arc<dyn WireHandle>>> {
+        let call = self.calls.fetch_add(1, Ordering::AcqRel);
+        if call == 0 {
+            self.first_started.notify_one();
+            self.first_release.notified().await;
+            Ok(vec![self.first_wire.clone()])
+        } else {
+            Ok(vec![self.replacement_wire.clone()])
+        }
+    }
+}
+
+#[tokio::test]
+async fn inv14_only_current_destination_flight_can_commit_transport() {
+    let first_wire = Arc::new(CountingWire::new(ConnType::WebSocket, None));
+    let replacement_wire = Arc::new(CountingWire::new(ConnType::WebSocket, None));
+    let factory = Arc::new(SupersedableFactory {
+        calls: AtomicUsize::new(0),
+        first_started: Notify::new(),
+        first_release: Notify::new(),
+        first_wire: first_wire.clone(),
+        replacement_wire,
+    });
+    let manager = Arc::new(PeerTransport::new(ActrId::default(), factory.clone()));
+    let dest = Dest::host();
+
+    let first_manager = manager.clone();
+    let first_dest = dest.clone();
+    let first =
+        tokio::spawn(async move { first_manager.get_or_create_transport(&first_dest).await });
+    timeout(Duration::from_secs(1), factory.first_started.notified())
+        .await
+        .expect("first flight should start");
+
+    manager
+        .close_transport(&dest)
+        .await
+        .expect("closing first flight should succeed");
+
+    let replacement = timeout(
+        Duration::from_secs(1),
+        manager.get_or_create_transport(&dest),
+    )
+    .await
+    .expect("replacement flight should not wait for stale creator")
+    .expect("replacement flight should succeed");
+
+    factory.first_release.notify_one();
+    let stale_result = timeout(Duration::from_secs(1), first)
+        .await
+        .expect("stale creator should finish")
+        .expect("stale creator task should not panic");
+    assert!(
+        stale_result.is_err(),
+        "stale creator must not commit over replacement"
+    );
+
+    let current = manager
+        .get_or_create_transport(&dest)
+        .await
+        .expect("current transport should remain available");
+    assert!(Arc::ptr_eq(&current, &replacement));
+    assert_eq!(factory.calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        first_wire.close_count(),
+        1,
+        "transport produced by stale creator must be closed"
+    );
+}
+
+#[tokio::test]
+async fn inv13_cancelled_creator_releases_ownership_without_erasing_replacement() {
+    let factory = Arc::new(SupersedableFactory {
+        calls: AtomicUsize::new(0),
+        first_started: Notify::new(),
+        first_release: Notify::new(),
+        first_wire: Arc::new(CountingWire::new(ConnType::WebSocket, None)),
+        replacement_wire: Arc::new(CountingWire::new(ConnType::WebSocket, None)),
+    });
+    let manager = Arc::new(PeerTransport::new(ActrId::default(), factory.clone()));
+    let dest = Dest::host();
+
+    let first_manager = manager.clone();
+    let first_dest = dest.clone();
+    let first =
+        tokio::spawn(async move { first_manager.get_or_create_transport(&first_dest).await });
+    timeout(Duration::from_secs(1), factory.first_started.notified())
+        .await
+        .expect("first flight should start");
+
+    first.abort();
+    let _ = first.await;
+
+    let replacement = timeout(
+        Duration::from_secs(1),
+        manager.get_or_create_transport(&dest),
+    )
+    .await
+    .expect("replacement must wake from cancellation rather than the ten-second waiter timeout")
+    .expect("replacement flight should succeed");
+    assert_eq!(
+        factory.calls.load(Ordering::Acquire),
+        2,
+        "replacement should own a fresh generation"
+    );
+
+    let current = manager
+        .get_or_create_transport(&dest)
+        .await
+        .expect("replacement transport should remain committed");
+    assert!(
+        Arc::ptr_eq(&current, &replacement),
+        "cancellation cleanup must not erase the replacement generation"
+    );
+}
+
+#[tokio::test]
+async fn flight_waiter_is_event_driven_and_cannot_miss_completion() {
+    let first_wire = Arc::new(CountingWire::new(ConnType::WebSocket, None));
+    let factory = Arc::new(SupersedableFactory {
+        calls: AtomicUsize::new(0),
+        first_started: Notify::new(),
+        first_release: Notify::new(),
+        first_wire,
+        replacement_wire: Arc::new(CountingWire::new(ConnType::WebSocket, None)),
+    });
+    let manager = Arc::new(PeerTransport::new(ActrId::default(), factory.clone()));
+    let dest = Dest::host();
+
+    let creator_manager = manager.clone();
+    let creator_dest = dest.clone();
+    let creator =
+        tokio::spawn(async move { creator_manager.get_or_create_transport(&creator_dest).await });
+    timeout(Duration::from_secs(1), factory.first_started.notified())
+        .await
+        .expect("creator should start");
+
+    let waiter_manager = manager.clone();
+    let waiter_dest = dest.clone();
+    let waiter =
+        tokio::spawn(async move { waiter_manager.get_or_create_transport(&waiter_dest).await });
+    factory.first_release.notify_one();
+
+    let created = timeout(Duration::from_secs(1), creator)
+        .await
+        .expect("creator should finish")
+        .expect("creator should not panic")
+        .expect("creator should succeed");
+    let observed = timeout(Duration::from_secs(1), waiter)
+        .await
+        .expect("waiter should wake from flight completion")
+        .expect("waiter should not panic")
+        .expect("waiter should succeed");
+
+    assert!(Arc::ptr_eq(&created, &observed));
+    assert_eq!(
+        factory.calls.load(Ordering::Acquire),
+        1,
+        "waiter must share the existing flight"
+    );
+}
+
 /// Build a `PeerTransport` whose `dest` maps to a ready `DestTransport` carrying
 /// both a WebRTC wire (with the given session identity) and a WebSocket wire.
 ///
@@ -193,7 +427,7 @@ async fn peer_transport_with_webrtc_and_ws(
     mgr.transports
         .write()
         .await
-        .insert(dest.clone(), Either::Right(Arc::new(transport)));
+        .insert(dest.clone(), DestState::Connected(Arc::new(transport)));
 
     (mgr, dest)
 }

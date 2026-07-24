@@ -75,6 +75,11 @@ pub mod error;
 // Runtime error re-exports (from actr_protocol, distinct from HyperError)
 pub mod runtime_error;
 
+// RFC-0400 audited timer facade and source-controlled inventory. Production
+// code must not construct Tokio timers directly outside this module.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod timer;
+
 // Verify module: TrustProvider trait + built-in verifiers (native-only).
 // The verified manifest / package types live in `actr_pack` and are
 // re-exported below for downstream consumers.
@@ -1210,6 +1215,20 @@ impl Node<Attached> {
             .create_network_event_handle(debounce_ms)
     }
 
+    /// Create a lifecycle-gated network event handle for mobile embeddings.
+    /// The binding must inject an authoritative initial app phase before
+    /// recovery work becomes eligible.
+    pub fn create_gated_network_event_handle(
+        &mut self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
+        self.attachment
+            .as_mut()
+            .expect("Node<Attached> without attachment")
+            .node
+            .create_gated_network_event_handle(debounce_ms)
+    }
+
     /// AIS endpoint URL resolved from the attached [`RuntimeConfig`].
     /// Convenience accessor for callers that just drove `from_config_file`
     /// + `attach` and need the endpoint to pass into `register`.
@@ -1247,6 +1266,20 @@ impl Node<Registered> {
             .expect("Node<Registered> without attachment")
             .node
             .create_network_event_handle(debounce_ms)
+    }
+
+    /// Create a lifecycle-gated network event handle for mobile embeddings.
+    /// The binding must inject an authoritative initial app phase before
+    /// recovery work becomes eligible.
+    pub fn create_gated_network_event_handle(
+        &mut self,
+        debounce_ms: u64,
+    ) -> crate::lifecycle::NetworkEventHandle {
+        self.attachment
+            .as_mut()
+            .expect("Node<Registered> without attachment")
+            .node
+            .create_gated_network_event_handle(debounce_ms)
     }
 }
 

@@ -20,6 +20,19 @@ internal interface NetworkMonitorLifecycle {
     fun getCurrentNetworkStatus(): String
 }
 
+internal class MobileEventDeliveryGate {
+    private val closed = AtomicBoolean(false)
+
+    fun close() {
+        closed.set(true)
+    }
+
+    suspend fun deliver(block: suspend () -> Unit) {
+        if (closed.get()) return
+        block()
+    }
+}
+
 internal class NetworkMonitorLifecycleAdapter(
     private val monitor: NetworkMonitor,
 ) : NetworkMonitorLifecycle {
@@ -54,24 +67,34 @@ internal class ManagedNetworkResources(
     }
 
     fun onAppBackground() {
+        if (closed.get()) return
         monitor?.onAppBackground()
     }
 
     fun onAppForeground() {
+        if (closed.get()) return
         monitor?.onAppForeground()
     }
 
     fun cleanupConnections(reason: CleanupReason) {
+        if (closed.get()) return
         monitor?.cleanupConnections(reason)
     }
 
     fun forceReconnect(reason: ReconnectReason) {
+        if (closed.get()) return
         monitor?.forceReconnect(reason)
     }
 
     fun triggerNetworkCheck() {
+        if (closed.get()) return
         monitor?.triggerNetworkCheck()
     }
 
-    fun getCurrentNetworkStatus(): String? = monitor?.getCurrentNetworkStatus()
+    fun getCurrentNetworkStatus(): String? =
+        if (closed.get()) {
+            null
+        } else {
+            monitor?.getCurrentNetworkStatus()
+        }
 }

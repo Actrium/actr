@@ -1058,7 +1058,8 @@ async fn instantiate_parts(
         .set_fuel(limits.fuel_per_invocation)
         .map_err(|e| WasmError::LoadFailed(format!("set fuel: {e}")))?;
     store.set_epoch_deadline(epoch_deadline_ticks(limits));
-    let bindings = match tokio::time::timeout(
+    let bindings = match crate::timer::timeout(
+        crate::timer::ids::WASM_INSTANTIATION,
         limits.invocation_timeout,
         ActrWorkloadGuest::instantiate_async(&mut store, component, &linker),
     )
@@ -1308,7 +1309,8 @@ impl WasmWorkload {
         self.reseed_fuel()?;
         self.install_invocation(ctx, host_abi);
 
-        let result = tokio::time::timeout(
+        let result = crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
             self.limits.invocation_timeout,
             self.bindings.actr_workload_workload().call_on_start(
                 self.store
@@ -1343,7 +1345,8 @@ impl WasmWorkload {
         self.reseed_fuel()?;
         self.install_invocation(ctx, host_abi);
 
-        let result = tokio::time::timeout(
+        let result = crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
             self.limits.invocation_timeout,
             self.bindings.actr_workload_workload().call_on_ready(
                 self.store
@@ -1378,7 +1381,8 @@ impl WasmWorkload {
         self.reseed_fuel()?;
         self.install_invocation(ctx, host_abi);
 
-        let result = tokio::time::timeout(
+        let result = crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
             self.limits.invocation_timeout,
             self.bindings.actr_workload_workload().call_on_stop(
                 self.store
@@ -1414,148 +1418,152 @@ impl WasmWorkload {
         let label = event.request_id();
         self.reseed_fuel()?;
         self.install_invocation(ctx, host_abi);
-        let result = tokio::time::timeout(self.limits.invocation_timeout, async {
-            match event {
-                PackageHookEvent::SignalingConnecting => {
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_signaling_connecting(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                        )
-                        .await
+        let result = crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
+            self.limits.invocation_timeout,
+            async {
+                match event {
+                    PackageHookEvent::SignalingConnecting => {
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_signaling_connecting(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                            )
+                            .await
+                    }
+                    PackageHookEvent::SignalingConnected => {
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_signaling_connected(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                            )
+                            .await
+                    }
+                    PackageHookEvent::SignalingDisconnected => {
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_signaling_disconnected(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                            )
+                            .await
+                    }
+                    PackageHookEvent::WebSocketConnecting(event) => {
+                        let event = proto_peer_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_websocket_connecting(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                &event,
+                            )
+                            .await
+                    }
+                    PackageHookEvent::WebSocketConnected(event) => {
+                        let event = proto_peer_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_websocket_connected(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                &event,
+                            )
+                            .await
+                    }
+                    PackageHookEvent::WebSocketDisconnected(event) => {
+                        let event = proto_peer_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_websocket_disconnected(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                &event,
+                            )
+                            .await
+                    }
+                    PackageHookEvent::WebRtcConnecting(event) => {
+                        let event = proto_peer_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_webrtc_connecting(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                &event,
+                            )
+                            .await
+                    }
+                    PackageHookEvent::WebRtcConnected(event) => {
+                        let event = proto_peer_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_webrtc_connected(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                &event,
+                            )
+                            .await
+                    }
+                    PackageHookEvent::WebRtcDisconnected(event) => {
+                        let event = proto_peer_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_webrtc_disconnected(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                &event,
+                            )
+                            .await
+                    }
+                    PackageHookEvent::CredentialRenewed(event) => {
+                        let event = proto_credential_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_credential_renewed(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                event,
+                            )
+                            .await
+                    }
+                    PackageHookEvent::CredentialExpiring(event) => {
+                        let event = proto_credential_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_credential_expiring(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                event,
+                            )
+                            .await
+                    }
+                    PackageHookEvent::MailboxBackpressure(event) => {
+                        let event = proto_backpressure_event_to_wit(event);
+                        self.bindings
+                            .actr_workload_workload()
+                            .call_on_mailbox_backpressure(
+                                self.store
+                                    .as_mut()
+                                    .expect("serviceable wasm instance must have a Store"),
+                                event,
+                            )
+                            .await
+                    }
                 }
-                PackageHookEvent::SignalingConnected => {
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_signaling_connected(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                        )
-                        .await
-                }
-                PackageHookEvent::SignalingDisconnected => {
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_signaling_disconnected(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                        )
-                        .await
-                }
-                PackageHookEvent::WebSocketConnecting(event) => {
-                    let event = proto_peer_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_websocket_connecting(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            &event,
-                        )
-                        .await
-                }
-                PackageHookEvent::WebSocketConnected(event) => {
-                    let event = proto_peer_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_websocket_connected(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            &event,
-                        )
-                        .await
-                }
-                PackageHookEvent::WebSocketDisconnected(event) => {
-                    let event = proto_peer_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_websocket_disconnected(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            &event,
-                        )
-                        .await
-                }
-                PackageHookEvent::WebRtcConnecting(event) => {
-                    let event = proto_peer_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_webrtc_connecting(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            &event,
-                        )
-                        .await
-                }
-                PackageHookEvent::WebRtcConnected(event) => {
-                    let event = proto_peer_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_webrtc_connected(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            &event,
-                        )
-                        .await
-                }
-                PackageHookEvent::WebRtcDisconnected(event) => {
-                    let event = proto_peer_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_webrtc_disconnected(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            &event,
-                        )
-                        .await
-                }
-                PackageHookEvent::CredentialRenewed(event) => {
-                    let event = proto_credential_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_credential_renewed(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            event,
-                        )
-                        .await
-                }
-                PackageHookEvent::CredentialExpiring(event) => {
-                    let event = proto_credential_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_credential_expiring(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            event,
-                        )
-                        .await
-                }
-                PackageHookEvent::MailboxBackpressure(event) => {
-                    let event = proto_backpressure_event_to_wit(event);
-                    self.bindings
-                        .actr_workload_workload()
-                        .call_on_mailbox_backpressure(
-                            self.store
-                                .as_mut()
-                                .expect("serviceable wasm instance must have a Store"),
-                            event,
-                        )
-                        .await
-                }
-            }
-        })
+            },
+        )
         .await;
         let result = match result {
             Ok(result) => result,
@@ -1613,7 +1621,8 @@ impl WasmWorkload {
         self.install_invocation(ctx, host_abi);
 
         let wit_envelope = rpc_envelope_to_wit(&envelope);
-        let dispatch_result = tokio::time::timeout(
+        let dispatch_result = crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
             self.limits.invocation_timeout,
             self.bindings.actr_workload_workload().call_dispatch(
                 self.store
@@ -1659,7 +1668,8 @@ impl WasmWorkload {
 
         let wit_chunk = proto_data_chunk_to_wit(chunk);
         let wit_sender = proto_actr_id_to_wit(&sender);
-        let result = tokio::time::timeout(
+        let result = crate::timer::timeout(
+            crate::timer::ids::WASM_GUEST_INVOCATION,
             self.limits.invocation_timeout,
             self.bindings.actr_workload_workload().call_on_data_chunk(
                 self.store

@@ -449,6 +449,9 @@ pub(crate) struct WebRtcDataLane {
 
     /// Per-lane reassembly state for multi-fragment messages.
     reassembly: Arc<Mutex<ReassemblyBuffer>>,
+
+    /// Woken by the DataChannel open/close callbacks.
+    state_changed: Arc<tokio::sync::Notify>,
 }
 
 impl std::fmt::Debug for WebRtcDataLane {
@@ -460,12 +463,17 @@ impl std::fmt::Debug for WebRtcDataLane {
 impl WebRtcDataLane {
     /// Create WebRTC DataChannel DataLane
     #[inline]
-    pub(crate) fn new(data_channel: Arc<RTCDataChannel>, rx: mpsc::Receiver<bytes::Bytes>) -> Self {
+    pub(crate) fn new(
+        data_channel: Arc<RTCDataChannel>,
+        rx: mpsc::Receiver<bytes::Bytes>,
+        state_changed: Arc<tokio::sync::Notify>,
+    ) -> Self {
         Self {
             data_channel,
             rx: Arc::new(Mutex::new(rx)),
             msg_id_counter: Arc::new(AtomicU32::new(0)),
             reassembly: Arc::new(Mutex::new(ReassemblyBuffer::new())),
+            state_changed,
         }
     }
 }
@@ -549,7 +557,8 @@ pub(crate) fn classify_peer_connection_error(
 impl DataLane for WebRtcDataLane {
     async fn send(&self, data: bytes::Bytes) -> NetworkResult<()> {
         // Keep the lane wait aligned with initial WebRTC connection readiness.
-        let start = tokio::time::Instant::now();
+        // Open/close callbacks drive the wait; the timer is only a failure bound.
+        let deadline = tokio::time::Instant::now() + INITIAL_CONNECTION_TIMEOUT;
         loop {
             let state = self.data_channel.ready_state();
             if state == RTCDataChannelState::Open {
@@ -558,7 +567,24 @@ impl DataLane for WebRtcDataLane {
             if state == RTCDataChannelState::Closed || state == RTCDataChannelState::Closing {
                 return Err(NetworkError::DataChannelClosed(format!("{state:?}")));
             }
-            if start.elapsed() > INITIAL_CONNECTION_TIMEOUT {
+            let changed = self.state_changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+
+            // Close the callback-registration race before awaiting the event.
+            let state_after_subscribe = self.data_channel.ready_state();
+            if state_after_subscribe != state {
+                continue;
+            }
+
+            if crate::timer::timeout_at(
+                crate::timer::ids::LANE_INITIAL_READY,
+                deadline,
+                &mut changed,
+            )
+            .await
+            .is_err()
+            {
                 // Deliberately not a closed-like variant: treating a stuck
                 // Connecting channel as closed would make the stale-candidate
                 // retry path wait a full INITIAL_CONNECTION_TIMEOUT per cycle
@@ -567,10 +593,9 @@ impl DataLane for WebRtcDataLane {
                 // `classify_data_channel_send_error` and by
                 // `ConnectionEvent::DataChannelClosed`-driven cleanup.
                 return Err(NetworkError::DataChannelError(format!(
-                    "DataChannel open timeout: {state:?}"
+                    "DataChannel open timeout: {state_after_subscribe:?}"
                 )));
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
 
         let msg_id = self.msg_id_counter.fetch_add(1, Ordering::Relaxed);

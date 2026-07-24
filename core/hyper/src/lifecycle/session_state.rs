@@ -19,6 +19,8 @@ use prost::bytes::Bytes;
 use prost_types::Timestamp;
 use tokio::sync::RwLock;
 
+use super::SupervisorFactSink;
+
 // ---------------------------------------------------------------------------
 // Phase
 // ---------------------------------------------------------------------------
@@ -71,6 +73,9 @@ struct SessionStateInner {
     /// Stale detector snapshot — written immediately after a hard rebind
     /// commit so old-generation contexts can compare.
     current_generation: u64,
+    /// Supervisor fact sink for `SessionActivated` facts. Installed after
+    /// construction (the reconciler's input channel outlives the session).
+    fact_sink: Option<SupervisorFactSink>,
 }
 
 impl SessionState {
@@ -81,8 +86,15 @@ impl SessionState {
                 phase: SessionPhase::Active,
                 current_generation: snapshot.generation,
                 snapshot,
+                fact_sink: None,
             })),
         }
+    }
+
+    /// Install the supervisor fact sink so an authoritative generation commit
+    /// (hard rebind) reports `SessionActivated` to the connection supervisor.
+    pub(crate) async fn set_fact_sink(&self, sink: SupervisorFactSink) {
+        self.inner.write().await.fact_sink = Some(sink);
     }
 
     // ---- readers -----------------------------------------------------------
@@ -190,10 +202,19 @@ impl SessionState {
         &self,
         new_snapshot: SessionSnapshot,
     ) -> SessionSnapshot {
-        let mut guard = self.inner.write().await;
-        let old = guard.snapshot.clone();
-        guard.snapshot = new_snapshot;
-        guard.current_generation = guard.snapshot.generation;
+        let (old, fact_sink, new_generation) = {
+            let mut guard = self.inner.write().await;
+            let old = guard.snapshot.clone();
+            guard.snapshot = new_snapshot;
+            guard.current_generation = guard.snapshot.generation;
+            (old, guard.fact_sink.clone(), guard.current_generation)
+        };
+        // The new session generation is now authoritatively committed; report it
+        // to the supervisor so recovery mode returns to `Active` and the new
+        // session's restoration obligation is derived.
+        if let Some(sink) = fact_sink {
+            sink.session_activated(new_generation);
+        }
         old
     }
 

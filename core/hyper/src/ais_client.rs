@@ -53,8 +53,12 @@ impl AisClient {
     ///
     /// `endpoint` is the AIS base URL, e.g. `"http://ais.example.com:8080"`.
     pub fn new(endpoint: impl Into<String>) -> Self {
+        crate::timer::register_external(
+            crate::timer::ids::EXTERNAL_AIS_HTTP_REQUEST,
+            Duration::from_secs(30),
+        );
         let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(Duration::from_secs(30))
             .build()
             .expect("reqwest::Client build failed (should never happen)");
         Self {

@@ -69,6 +69,8 @@ async fn insert_pending_offer_peer(
             restart_task_handle: None,
             restart_wake: Arc::new(tokio::sync::Notify::new()),
             restart_retry_wake: Arc::new(tokio::sync::Notify::new()),
+            ice_gathering_changed: Arc::new(tokio::sync::Notify::new()),
+            health_check_wake: Arc::clone(&coordinator.health_check_wake),
             last_ice_restart_offer_at: None,
             last_state_change: std::time::Instant::now(),
             current_state: RTCPeerConnectionState::New,
@@ -322,7 +324,215 @@ fn new_test_coordinator(local_id: ActrId) -> Arc<WebRtcCoordinator> {
 }
 
 #[tokio::test]
-async fn coordinator_background_tasks_are_joined_by_shutdown() {
+async fn connection_factory_cache_lookup_retires_closed_session_awaiting_cleanup() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "stale-session").await;
+    let stale_connection = coordinator
+        .peers
+        .read()
+        .await
+        .get(&peer_id)
+        .expect("stale peer should exist before close")
+        .webrtc_conn
+        .clone();
+
+    // Reproduce the timeout/reconnect race from CI: WebRtcConnection::close
+    // marks the shared ConnectionSession closed before the coordinator's
+    // asynchronous ConnectionClosed listener removes its PeerState. This test
+    // deliberately leaves that listener stopped so the boundary is stable.
+    stale_connection
+        .close_immediately()
+        .await
+        .expect("stale connection should close");
+    assert!(
+        coordinator.peers.read().await.contains_key(&peer_id),
+        "precondition: the closed session must still await coordinator cleanup"
+    );
+
+    assert!(
+        coordinator
+            .active_connection_or_retire(&peer_id)
+            .await
+            .is_none(),
+        "the factory cache lookup must not return a closed WebRTC session"
+    );
+    assert!(
+        !coordinator.peers.read().await.contains_key(&peer_id),
+        "the exact stale session should be retired before replacement"
+    );
+}
+
+#[tokio::test]
+async fn connection_factory_cache_lookup_keeps_session_during_ice_recovery() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "recovering-session").await;
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers
+            .get_mut(&peer_id)
+            .expect("recovering peer should exist");
+        state.current_state = RTCPeerConnectionState::Disconnected;
+        state.ice_restart_inflight = true;
+    }
+
+    let returned = coordinator
+        .active_connection_or_retire(&peer_id)
+        .await
+        .expect("an ICE-recovering session must remain reusable");
+
+    assert_eq!(
+        returned.session_id(),
+        session_id,
+        "the factory must not replace a non-terminal ICE-recovering session"
+    );
+}
+
+#[tokio::test]
+async fn inv18_ice_gathering_transition_is_retained_after_listener_is_armed() {
+    let state_changed = tokio::sync::Notify::new();
+    let notification = arm_notification(&state_changed);
+
+    // Mirrors the ICE-gathering callback racing immediately after the state
+    // listener is armed but before the caller observes the current state.
+    state_changed.notify_waiters();
+
+    tokio::time::timeout(Duration::from_millis(100), notification)
+        .await
+        .expect("an armed ICE-gathering listener must retain the transition");
+}
+
+#[tokio::test]
+async fn inv18_initial_readiness_subscribes_before_accepting_transition() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "readiness-exchange").await;
+    let webrtc_conn = coordinator
+        .peers
+        .read()
+        .await
+        .get(&peer_id)
+        .expect("peer should exist")
+        .webrtc_conn
+        .clone();
+    let receiver_count = coordinator.event_broadcaster.sender().receiver_count();
+
+    let wait = tokio::spawn({
+        let peer_id = peer_id.clone();
+        let peers = Arc::clone(&coordinator.peers);
+        let event_broadcaster = coordinator.event_broadcaster.clone();
+        async move {
+            WebRtcCoordinator::wait_for_connection_ready_event(
+                &peer_id,
+                session_id,
+                &peers,
+                &event_broadcaster,
+                &webrtc_conn,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+            .await
+        }
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while coordinator.event_broadcaster.sender().receiver_count() == receiver_count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("readiness waiter should subscribe before waiting");
+
+    coordinator
+        .event_broadcaster
+        .send(ConnectionEvent::DataChannelOpened {
+            peer_id,
+            session_id,
+            payload_type: PayloadType::RpcReliable,
+        });
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), wait)
+            .await
+            .expect("readiness should react to the transition without polling")
+            .expect("readiness waiter should not panic")
+    );
+}
+
+#[tokio::test]
+async fn inv22_success_transition_completes_without_polling_or_failure_deadline() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    let session_id =
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "restart-exchange").await;
+    {
+        let mut peers = coordinator.peers.write().await;
+        peers
+            .get_mut(&peer_id)
+            .expect("peer should exist")
+            .ice_restart_inflight = true;
+    }
+    let restart_wake = coordinator
+        .peers
+        .read()
+        .await
+        .get(&peer_id)
+        .expect("peer should exist")
+        .restart_wake
+        .clone();
+    let receiver_count = coordinator.event_broadcaster.sender().receiver_count();
+
+    let wait = tokio::spawn({
+        let peers = Arc::clone(&coordinator.peers);
+        let peer_id = peer_id.clone();
+        let event_broadcaster = coordinator.event_broadcaster.clone();
+        async move {
+            WebRtcCoordinator::wait_for_restart_completion_static(
+                &peers,
+                &peer_id,
+                session_id,
+                Duration::from_secs(5),
+                &restart_wake,
+                &event_broadcaster,
+            )
+            .await
+        }
+    });
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while coordinator.event_broadcaster.sender().receiver_count() == receiver_count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("restart completion waiter should subscribe before waiting");
+
+    {
+        let mut peers = coordinator.peers.write().await;
+        let state = peers.get_mut(&peer_id).expect("peer should exist");
+        state.update_connection_state(RTCPeerConnectionState::Connected);
+        state.ice_restart_inflight = false;
+    }
+    coordinator
+        .event_broadcaster
+        .send(ConnectionEvent::IceRestartCompleted {
+            peer_id,
+            session_id,
+            success: true,
+        });
+
+    let outcome = tokio::time::timeout(Duration::from_millis(100), wait)
+        .await
+        .expect("success must complete without a fixed polling interval")
+        .expect("restart completion waiter should not panic");
+    assert!(matches!(outcome, IceRestartWaitOutcome::Completed));
+}
+
+#[tokio::test]
+async fn inv23_coordinator_background_tasks_are_joined_by_shutdown() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     Arc::clone(&coordinator)
         .start()
@@ -967,7 +1177,7 @@ async fn webrtc_connected_hook_waits_for_open_data_channel() {
 }
 
 #[tokio::test]
-async fn connecting_state_reopens_connected_hook_window() {
+async fn inv18_connecting_state_reopens_connected_hook_window() {
     let local_id = test_actor_id(1);
     let peer_id = test_actor_id(99);
     let coordinator = new_test_coordinator(local_id);
@@ -1010,7 +1220,7 @@ async fn connecting_state_reopens_connected_hook_window() {
 }
 
 #[tokio::test]
-async fn initial_connecting_state_emits_connecting_hook() {
+async fn inv18_initial_connecting_state_emits_connecting_hook() {
     let local_id = test_actor_id(1);
     let peer_id = test_actor_id(99);
     let coordinator = new_test_coordinator(local_id);
@@ -1049,7 +1259,7 @@ async fn initial_connecting_state_emits_connecting_hook() {
 }
 
 #[tokio::test]
-async fn initial_failure_emits_idle_not_recovering() {
+async fn inv18_initial_failure_emits_idle_not_recovering() {
     let local_id = test_actor_id(1);
     let peer_id = test_actor_id(99);
     let coordinator = new_test_coordinator(local_id);
@@ -2814,7 +3024,7 @@ async fn clear_pending_restarts_cancels_blocked_answerer_restart_request() {
 }
 
 #[tokio::test]
-async fn close_all_hook_reentry_returns_without_self_deadlock() {
+async fn inv16_reentrant_close_all_does_not_deadlock() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let target = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
@@ -2847,6 +3057,54 @@ async fn close_all_hook_reentry_returns_without_self_deadlock() {
         .await
         .expect("reentrant close-all must not deadlock")
         .expect("outer close-all should succeed");
+    assert!(coordinator.peers.read().await.is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn inv23_close_all_hooks_share_one_overall_deadline() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    for serial in [98, 99] {
+        let peer_id = test_actor_id(serial);
+        insert_pending_offer_peer(&coordinator, peer_id.clone(), "close-exchange").await;
+        coordinator
+            .peers
+            .write()
+            .await
+            .get_mut(&peer_id)
+            .expect("peer should exist")
+            .public_hook_state = PublicRtcHookState::Connected;
+    }
+
+    let hook_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook: crate::wire::webrtc::HookCallback = Arc::new({
+        let hook_calls = Arc::clone(&hook_calls);
+        move |event| {
+            let hook_calls = Arc::clone(&hook_calls);
+            Box::pin(async move {
+                if matches!(
+                    event,
+                    crate::wire::webrtc::HookEvent::WebRtcDisconnected { .. }
+                ) {
+                    hook_calls.fetch_add(1, Ordering::AcqRel);
+                    std::future::pending::<()>().await;
+                }
+            })
+        }
+    });
+    coordinator.set_hook_callback(hook);
+
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(3), coordinator.close_all_peers())
+        .await
+        .expect("close-all must stay within its bounded shutdown window")
+        .expect("hook deadlines should not fail physical peer teardown");
+    let elapsed = started.elapsed();
+
+    assert_eq!(hook_calls.load(Ordering::Acquire), 2);
+    assert!(
+        elapsed < CLOSE_ALL_HOOK_TIMEOUT.saturating_mul(2),
+        "two stalled children must share one hook deadline, elapsed={elapsed:?}"
+    );
     assert!(coordinator.peers.read().await.is_empty());
 }
 
@@ -3032,7 +3290,7 @@ async fn cancelled_close_all_after_drain_still_finishes_owned_teardown() {
 }
 
 #[tokio::test]
-async fn peer_creation_epoch_capture_rejects_active_close_all() {
+async fn inv16_close_all_rejects_racing_peer_creation() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let lifecycle_guard = coordinator.peer_signaling.lifecycle_gate.lock().await;
     let close_state_guard =
@@ -3055,7 +3313,7 @@ async fn peer_creation_epoch_capture_rejects_active_close_all() {
 }
 
 #[tokio::test]
-async fn stale_peer_creation_epoch_cannot_insert_after_close_all() {
+async fn inv15_close_all_rejects_late_successful_peer_publication() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let target = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
@@ -3089,7 +3347,7 @@ async fn stale_peer_creation_epoch_cannot_insert_after_close_all() {
 }
 
 #[tokio::test]
-async fn close_all_times_out_when_peer_commit_cannot_quiesce() {
+async fn inv15_failed_close_all_commit_does_not_partially_remove_peer() {
     let coordinator = new_test_coordinator(test_actor_id(1));
     let target = test_actor_id(99);
     insert_pending_offer_peer(&coordinator, target.clone(), "current-exchange").await;
@@ -3563,23 +3821,24 @@ fn codec_to_payload_type_maps_known_and_unknown() {
 }
 
 #[test]
-fn stale_peer_reap_uses_dedicated_disconnected_threshold() {
+fn inv19_stale_peer_reap_uses_dedicated_disconnected_threshold() {
     use RTCPeerConnectionState::*;
 
-    // Terminal states (Failed/Closed) are reaped after MAX_FAILED_DURATION (60s).
+    // Terminal states (Failed/Closed) are reaped at MAX_FAILED_DURATION (60s).
+    assert!(stale_peer_reap_reason(Failed, Duration::from_secs(60)).is_some());
     assert!(stale_peer_reap_reason(Failed, Duration::from_secs(61)).is_some());
     assert!(stale_peer_reap_reason(Closed, Duration::from_secs(61)).is_some());
     assert!(stale_peer_reap_reason(Failed, Duration::from_secs(59)).is_none());
     assert!(stale_peer_reap_reason(Closed, Duration::from_secs(59)).is_none());
 
     // Disconnected gets the dedicated 90s threshold (restart budget + margin):
-    // reaped past 90s ...
+    // reaped at 90s without a periodic-check delay ...
+    assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(90)).is_some());
     assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(91)).is_some());
     // ... but NOT at the terminal-state threshold, where an ICE restart
     // (60s budget, measured from its trigger, not from the state change)
     // may still legitimately be recovering the peer ...
     assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(61)).is_none());
-    assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(90)).is_none());
     // ... and a fresh Disconnected peer is never touched.
     assert!(stale_peer_reap_reason(Disconnected, Duration::from_secs(5)).is_none());
 
@@ -3590,6 +3849,49 @@ fn stale_peer_reap_uses_dedicated_disconnected_threshold() {
             "{state:?} must never be reaped"
         );
     }
+}
+
+#[tokio::test]
+async fn inv19_duplicate_peer_state_does_not_extend_stale_reap_deadline() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "sdp-1").await;
+
+    let mut peers = coordinator.peers.write().await;
+    let state = peers.get_mut(&peer_id).expect("peer state should exist");
+    state.update_connection_state(RTCPeerConnectionState::Disconnected);
+    let first_transition_at = state.last_state_change;
+    state.update_connection_state(RTCPeerConnectionState::Disconnected);
+
+    assert_eq!(
+        state.last_state_change, first_transition_at,
+        "duplicate state notifications must not keep a stale peer alive"
+    );
+}
+
+#[tokio::test]
+async fn inv19_new_peer_state_cannot_reuse_the_previous_states_timestamp() {
+    let coordinator = new_test_coordinator(test_actor_id(1));
+    let peer_id = test_actor_id(2);
+    insert_pending_offer_peer(&coordinator, peer_id.clone(), "sdp-1").await;
+
+    let mut peers = coordinator.peers.write().await;
+    let state = peers.get_mut(&peer_id).expect("peer state should exist");
+    state.last_state_change = std::time::Instant::now()
+        .checked_sub(MAX_FAILED_DURATION + Duration::from_secs(1))
+        .expect("test host should have enough monotonic-clock history");
+    let previous_timestamp = state.last_state_change;
+
+    state.update_connection_state(RTCPeerConnectionState::Failed);
+
+    assert_ne!(
+        state.last_state_change, previous_timestamp,
+        "a new state must atomically install its own transition timestamp"
+    );
+    assert!(
+        stale_peer_reap_reason(state.current_state, state.last_state_change.elapsed(),).is_none(),
+        "the reaper must not combine a new state with the previous state's stale timestamp"
+    );
 }
 
 /// The health check reads the REAL-TIME connection state from the

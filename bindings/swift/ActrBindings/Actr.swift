@@ -613,9 +613,11 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol ActrNodeProtocol: AnyObject, Sendable {
     
     /**
-     * Create a network event handle for platform callbacks.
+     * Create a lifecycle-gated network event handle for platform callbacks.
      *
-     * This must be called before `start()`.
+     * This must be called before `start()`. Swift/Kotlin adapters must inject
+     * their authoritative initial foreground/background state; until then,
+     * active recovery remains gated.
      */
     func createNetworkEventHandle() throws  -> NetworkEventHandleWrapper
     
@@ -736,9 +738,11 @@ public static func newFromPackageFileWithObservers(configPath: String, packagePa
 
     
     /**
-     * Create a network event handle for platform callbacks.
+     * Create a lifecycle-gated network event handle for platform callbacks.
      *
-     * This must be called before `start()`.
+     * This must be called before `start()`. Swift/Kotlin adapters must inject
+     * their authoritative initial foreground/background state; until then,
+     * active recovery remains gated.
      */
 open func createNetworkEventHandle()throws  -> NetworkEventHandleWrapper  {
     return try  FfiConverterTypeNetworkEventHandleWrapper_lift(try rustCallWithError(FfiConverterTypeActrError_lift) {
@@ -4585,7 +4589,7 @@ public func FfiConverterCallbackInterfaceCredentialObserverBridge_lower(_ v: Cre
 public protocol DataChunkCallback: AnyObject, Sendable {
     
     /**
-     * Handle an incoming DataChunk chunk.
+     * Handle an incoming DataChunk.
      */
     func onStream(chunk: DataChunk, sender: ActrId) async throws
     
@@ -6994,7 +6998,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_actr_checksum_method_opusencoder_frame_size() != 18284) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 24690) {
+    if (uniffi_actr_checksum_method_actrnode_create_network_event_handle() != 40057) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_actr_checksum_method_actrnode_start() != 22494) {
