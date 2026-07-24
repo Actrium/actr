@@ -453,6 +453,8 @@ message SignalingEnvelope {
   required uint32 envelope_version = 1;
   required string envelope_id = 2;
   optional string reply_for = 3;
+  reserved 4;
+  reserved "timestamp";
 
   oneof flow {
     PeerToSignaling peer_to_signaling = 10;

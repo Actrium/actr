@@ -2,7 +2,6 @@ syntax = "proto2";
 
 package signaling;
 
-import "google/protobuf/timestamp.proto";
 import "actr.proto";
 import "webrtc.proto";
 
@@ -13,7 +12,9 @@ message SignalingEnvelope {
   required uint32 envelope_version = 1;          // envelope schema version
   required string envelope_id = 2;               // unique id for this message
   optional string reply_for = 3;                 // correlation to a previous envelope
-  required google.protobuf.Timestamp timestamp = 4; // enqueue time (server clock)
+  // Retired in envelope version 2. Never reuse the former timestamp tag/name.
+  reserved 4;
+  reserved "timestamp";
   optional string traceparent = 5;               // W3C trace context header value
   optional string tracestate = 6;                // W3C trace state header value
 

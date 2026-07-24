@@ -3,8 +3,8 @@
 //! 测试核心信令流程，确保 WebSocket 连接、注册、心跳、信令中继等功能正常
 
 use actr_protocol::{
-    AIdCredential, ActrToSignaling, ActrType, Ping, Realm, SignalingEnvelope, actr_to_signaling,
-    signaling_envelope, signaling_to_actr,
+    AIdCredential, ActrToSignaling, ActrType, Ping, Realm, SIGNALING_ENVELOPE_VERSION,
+    SignalingEnvelope, actr_to_signaling, signaling_envelope, signaling_to_actr,
 };
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -108,18 +108,9 @@ async fn create_test_server() -> (String, tokio::task::JoinHandle<()>) {
 
 /// 测试辅助：创建 SignalingEnvelope
 fn create_envelope(flow: signaling_envelope::Flow) -> SignalingEnvelope {
-    use prost_types::Timestamp;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap();
-
     SignalingEnvelope {
-        envelope_version: 1,
+        envelope_version: SIGNALING_ENVELOPE_VERSION,
         envelope_id: Uuid::new_v4().to_string(),
-        timestamp: Timestamp {
-            seconds: now.as_secs() as i64,
-            nanos: now.subsec_nanos() as i32,
-        },
         reply_for: None,
         traceparent: None,
         tracestate: None,

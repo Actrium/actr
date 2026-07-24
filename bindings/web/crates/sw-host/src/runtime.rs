@@ -31,11 +31,11 @@ use actr_protocol::prost::Message as ProstMessage;
 use actr_protocol::{
     AIdCredential, Acl, AclRule, ActrId, ActrToSignaling, ActrType, Direction, Ping,
     RegisterAuthMode, RegisterRequest, RenewCredentialRequest, RoleNegotiation,
-    RouteCandidatesRequest, RpcEnvelope, ServiceAvailabilityState, SignalingEnvelope, acl_rule,
-    actr_relay, actr_to_signaling, renew_credential_response, route_candidates_request,
-    session_description, signaling_envelope, signaling_to_actr,
+    RouteCandidatesRequest, RpcEnvelope, SIGNALING_ENVELOPE_VERSION, ServiceAvailabilityState,
+    SignalingEnvelope, acl_rule, actr_relay, actr_to_signaling, renew_credential_response,
+    route_candidates_request, session_description, signaling_envelope, signaling_to_actr,
 };
-use actr_protocol::{IceCandidate, SessionDescription, prost_types};
+use actr_protocol::{IceCandidate, SessionDescription};
 use actr_web_common::{ExponentialBackoff, MessageFormat, PayloadType, RenewError, WebAisClient};
 use bytes::Bytes;
 use futures::StreamExt;
@@ -259,22 +259,13 @@ impl SignalingClient {
         format!("sw-env-{}-{}", next, js_sys::Date::now() as u64)
     }
 
-    fn now_timestamp() -> prost_types::Timestamp {
-        let ms = js_sys::Date::now() as i64;
-        prost_types::Timestamp {
-            seconds: ms / 1000,
-            nanos: ((ms % 1000) * 1_000_000) as i32,
-        }
-    }
-
     async fn send_envelope(&self, mut envelope: SignalingEnvelope) -> Result<(), JsValue> {
         if envelope.envelope_id.is_empty() {
             envelope.envelope_id = self.next_envelope_id();
         }
         if envelope.envelope_version == 0 {
-            envelope.envelope_version = 1;
+            envelope.envelope_version = SIGNALING_ENVELOPE_VERSION;
         }
-        envelope.timestamp = Self::now_timestamp();
 
         let bytes = envelope.encode_to_vec();
         self.ws.send_with_u8_array(&bytes)?;
@@ -1251,10 +1242,9 @@ impl SwRuntime {
             sticky_client_ids: vec![],
         };
         let envelope = SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: self.signaling.next_envelope_id(),
             reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrToServer(ActrToSignaling {
@@ -1333,10 +1323,9 @@ impl SwRuntime {
         };
 
         let envelope = SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: self.signaling.next_envelope_id(),
             reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrToServer(ActrToSignaling {
@@ -1442,10 +1431,9 @@ impl SwRuntime {
         };
 
         let envelope = SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: self.signaling.next_envelope_id(),
             reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrToServer(ActrToSignaling {
@@ -1548,10 +1536,9 @@ impl SwRuntime {
             payload: Some(payload),
         };
         let envelope = SignalingEnvelope {
-            envelope_version: 1,
+            envelope_version: SIGNALING_ENVELOPE_VERSION,
             envelope_id: self.signaling.next_envelope_id(),
             reply_for: None,
-            timestamp: SignalingClient::now_timestamp(),
             traceparent: None,
             tracestate: None,
             flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
@@ -2088,10 +2075,9 @@ impl SwRuntime {
                     payload: Some(actr_relay::Payload::SessionDescription(sd)),
                 };
                 let envelope = SignalingEnvelope {
-                    envelope_version: 1,
+                    envelope_version: SIGNALING_ENVELOPE_VERSION,
                     envelope_id: self.signaling.next_envelope_id(),
                     reply_for: None,
-                    timestamp: SignalingClient::now_timestamp(),
                     traceparent: None,
                     tracestate: None,
                     flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
@@ -2117,10 +2103,9 @@ impl SwRuntime {
                     payload: Some(actr_relay::Payload::IceCandidate(ice)),
                 };
                 let envelope = SignalingEnvelope {
-                    envelope_version: 1,
+                    envelope_version: SIGNALING_ENVELOPE_VERSION,
                     envelope_id: self.signaling.next_envelope_id(),
                     reply_for: None,
-                    timestamp: SignalingClient::now_timestamp(),
                     traceparent: None,
                     tracestate: None,
                     flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
@@ -2326,10 +2311,9 @@ impl SwRuntime {
                     payload: Some(actr_relay::Payload::SessionDescription(sd)),
                 };
                 let envelope = SignalingEnvelope {
-                    envelope_version: 1,
+                    envelope_version: SIGNALING_ENVELOPE_VERSION,
                     envelope_id: self.signaling.next_envelope_id(),
                     reply_for: None,
-                    timestamp: SignalingClient::now_timestamp(),
                     traceparent: None,
                     tracestate: None,
                     flow: Some(signaling_envelope::Flow::ActrRelay(relay)),
