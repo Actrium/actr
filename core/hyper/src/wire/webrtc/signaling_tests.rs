@@ -1141,3 +1141,64 @@ async fn test_fake_client_tracks_connect_calls() {
         "FakeSignalingClient should accurately track connect call count"
     );
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 13. Re-acquired credential pacing across renew cycles
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// The first re-acquired credential reconnects immediately; every consecutive
+/// rejection of a freshly renewed credential must take an escalating delay so
+/// the renew/reconnect loop cannot spin at network latency.
+#[test]
+fn reacquire_pacing_allows_one_immediate_retry_then_backs_off() {
+    let mut pacing = [
+        Duration::from_secs(1),
+        Duration::from_secs(2),
+        Duration::from_secs(4),
+    ]
+    .into_iter();
+
+    assert_eq!(reacquire_pacing_delay(1, &mut pacing, 60), None);
+    assert_eq!(
+        reacquire_pacing_delay(2, &mut pacing, 60),
+        Some(Duration::from_secs(1))
+    );
+    assert_eq!(
+        reacquire_pacing_delay(3, &mut pacing, 60),
+        Some(Duration::from_secs(2))
+    );
+    assert_eq!(
+        reacquire_pacing_delay(4, &mut pacing, 60),
+        Some(Duration::from_secs(4))
+    );
+}
+
+/// An exhausted pacing iterator must clamp to the configured max delay instead
+/// of ever returning to immediate retries.
+#[test]
+fn reacquire_pacing_clamps_to_max_delay_when_iterator_is_exhausted() {
+    let mut pacing = std::iter::empty::<Duration>();
+    assert_eq!(
+        reacquire_pacing_delay(5, &mut pacing, 60),
+        Some(Duration::from_secs(60))
+    );
+}
+
+/// The real pacing source keeps yielding delays: the production backoff is
+/// built without a retry cap, so repeated rejections never fall back to the
+/// immediate path within a cycle.
+#[test]
+fn reacquire_pacing_with_production_backoff_never_returns_none_after_first_round() {
+    use actr_framework::ExponentialBackoff;
+
+    let mut pacing = ExponentialBackoff::builder()
+        .initial_delay(Duration::from_secs(1))
+        .max_delay(Duration::from_secs(60))
+        .build();
+    for round in 2..40u32 {
+        let delay = reacquire_pacing_delay(round, &mut pacing, 60)
+            .expect("every round after the first must be delayed");
+        assert!(delay >= Duration::from_secs(1));
+        assert!(delay <= Duration::from_secs(60));
+    }
+}

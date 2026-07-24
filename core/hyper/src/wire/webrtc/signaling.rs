@@ -5,6 +5,7 @@
 #[cfg(feature = "opentelemetry")]
 use super::trace;
 use crate::lifecycle::CredentialState;
+use crate::lifecycle::membership::{MembershipHandle, MembershipResolution};
 use crate::transport::{NetworkError, NetworkResult};
 #[cfg(feature = "opentelemetry")]
 use crate::wire::webrtc::trace::extract_trace_context;
@@ -284,6 +285,13 @@ pub trait SignalingClient: Send + Sync {
     /// also needs.
     /// Default implementation is a no-op for clients that don't support hooks.
     fn set_hook_callback(&self, _cb: HookCallback) {}
+
+    /// Install the membership authority wiring (self-healing credential
+    /// lifecycle). Default is a no-op for clients that don't participate.
+    ///
+    /// When installed, the client builds handshake URLs from the controller's
+    /// credential watch and routes typed auth verdicts through its handle.
+    async fn install_membership(&self, _handle: MembershipHandle) {}
 }
 
 /// High-level signaling connection state (kept for quick boolean checks).
@@ -400,6 +408,47 @@ enum ConnectIntent {
     AutoReconnect { generation: u64 },
 }
 
+/// Outcome of routing a reconnect error through the membership authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthVerdictAction {
+    /// A newer credential was published after the auth verdict was reported;
+    /// the caller should reconnect immediately with it.
+    Reacquired,
+    /// AIS was temporarily unavailable. Do not park; let the existing socket
+    /// backoff retry and produce a fresh on-demand report if auth still fails.
+    RetrySameCredential,
+    /// The realm denied membership. Stop this reconnect cycle; recovery needs
+    /// a new external trigger.
+    Denied,
+    /// The credential owner shut down while we were parked; stop the cycle.
+    ShutdownWhileParked,
+    /// The error was not an auth verdict (or no controller is wired); the caller
+    /// should apply the normal backoff path.
+    NotAVerdict,
+}
+
+/// Pacing decision for reconnecting with a re-acquired credential.
+///
+/// The first `Reacquired` round in a reconnect cycle retries immediately —
+/// that is the normal "credential expired, renewed, reconnect" path. Every
+/// consecutive round after it means signaling rejected a credential that AIS
+/// just minted, so the caller must sleep the returned delay before restarting
+/// the cycle; otherwise renew/reconnect spins at network latency.
+fn reacquire_pacing_delay(
+    reacquired_rounds: u32,
+    pacing: &mut impl Iterator<Item = std::time::Duration>,
+    max_delay_secs: u64,
+) -> Option<std::time::Duration> {
+    if reacquired_rounds <= 1 {
+        return None;
+    }
+    Some(
+        pacing
+            .next()
+            .unwrap_or(std::time::Duration::from_secs(max_delay_secs)),
+    )
+}
+
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
     config: SignalingConfig,
@@ -448,6 +497,15 @@ pub struct WebSocketSignalingClient {
     reconnect_backoff_reset_generation: AtomicU64,
     /// Hook callback for ordered lifecycle notification (set once, lock-free read)
     hook_callback: OnceLock<HookCallback>,
+    /// Membership authority wiring (set once when the membership controller is
+    /// enabled). When present:
+    /// - `build_url_with_identity` reads the credential from the `watch`
+    ///   receiver instead of the stored `credential_state`, so the handshake URL
+    ///   always carries the latest published credential.
+    /// - The reconnect loop submits a tracked on-demand recovery request. It
+    ///   reconnects after a successful publication and resumes normal socket
+    ///   backoff after a transient AIS failure.
+    membership: OnceLock<MembershipHandle>,
 }
 
 impl WebSocketSignalingClient {
@@ -480,7 +538,17 @@ impl WebSocketSignalingClient {
             reconnect_generation: AtomicU64::new(0),
             reconnect_backoff_reset_generation: AtomicU64::new(0),
             hook_callback: OnceLock::new(),
+            membership: OnceLock::new(),
         }
+    }
+
+    /// Install the membership wiring. Idempotent; only the first call binds.
+    ///
+    /// After this the client reads its credential from the `watch` receiver and
+    /// reports auth verdicts through the `mpsc` sender instead of retrying a dead
+    /// credential.
+    pub(crate) fn install_membership(&self, handle: MembershipHandle) {
+        let _ = self.membership.set(handle);
     }
 
     /// Start the reconnect manager if enabled in config and not already started.
@@ -622,6 +690,51 @@ impl WebSocketSignalingClient {
         });
     }
 
+    /// Handle a reconnect error against the membership authority.
+    ///
+    /// If the error carries a typed [`crate::transport::AuthVerdict`] and the
+    /// membership controller is wired, submit one on-demand request. A successful
+    /// publication reconnects immediately; a transient AIS failure returns to
+    /// the socket's normal backoff instead of parking forever.
+    async fn handle_auth_verdict(&self, err: &NetworkError) -> AuthVerdictAction {
+        let Some(verdict) = err.auth_verdict() else {
+            return AuthVerdictAction::NotAVerdict;
+        };
+        let Some(handle) = self.membership.get() else {
+            // No controller wired (flag off): treat as a normal failure so the
+            // legacy backoff path applies.
+            return AuthVerdictAction::NotAVerdict;
+        };
+
+        let mut rx = handle.credential_rx();
+        let stale_revision = rx.borrow().revision;
+
+        tracing::warn!(
+            ?verdict,
+            stale_revision,
+            "🔒 Signaling auth verdict; requesting on-demand credential recovery"
+        );
+
+        match handle.resolve(verdict, stale_revision).await {
+            MembershipResolution::Published | MembershipResolution::Superseded => {
+                // Publish happens before the resolution reply. Keep the watch
+                // fence for the superseded/racing case.
+                if rx.borrow().revision <= stale_revision
+                    && rx
+                        .wait_for(|published| published.revision > stale_revision)
+                        .await
+                        .is_err()
+                {
+                    return AuthVerdictAction::ShutdownWhileParked;
+                }
+                AuthVerdictAction::Reacquired
+            }
+            MembershipResolution::Deferred => AuthVerdictAction::RetrySameCredential,
+            MembershipResolution::Denied => AuthVerdictAction::Denied,
+            MembershipResolution::Shutdown => AuthVerdictAction::ShutdownWhileParked,
+        }
+    }
+
     /// Execute one full reconnect cycle with exponential backoff + jitter.
     async fn run_reconnect_cycle(self: &Arc<Self>) {
         use actr_framework::ExponentialBackoff;
@@ -659,6 +772,21 @@ impl WebSocketSignalingClient {
                 }
             }
         }
+
+        // Pacing for re-acquired credentials. A renewed credential normally
+        // reconnects immediately, but when signaling keeps rejecting freshly
+        // published credentials (stale validator key cache, misconfiguration)
+        // every rejection triggers another AIS renewal and another immediate
+        // handshake — a tight loop at network latency that burns the AIS and
+        // connection rate budget. This backoff lives OUTSIDE the 'cycle loop
+        // so it survives the per-cycle backoff reconstruction and paces every
+        // consecutive renew/reconnect round after the first.
+        let mut reacquired_rounds: u32 = 0;
+        let mut reacquire_pacing = ExponentialBackoff::builder()
+            .initial_delay(std::time::Duration::from_secs(cfg.initial_delay.max(1)))
+            .max_delay(std::time::Duration::from_secs(cfg.max_delay.max(1)))
+            .with_jitter()
+            .build();
 
         'cycle: loop {
             let backoff_reset_generation = self
@@ -707,11 +835,86 @@ impl WebSocketSignalingClient {
                             return;
                         }
 
+                        // Membership authority: an auth VERDICT (401/403) means
+                        // the credential itself is dead — retrying the same
+                        // credential is pointless. Report it to the credential
+                        // owner and wait for that one on-demand recovery
+                        // attempt. If it publishes a newer credential revision,
+                        // continue the cycle and reconnect with it. A deferred
+                        // attempt returns to the normal socket backoff so a
+                        // later server verdict can trigger another attempt.
+                        //
+                        // A transient error (None) and `ServerNotReady` (503)
+                        // fall through to the existing backoff path and retry
+                        // the SAME credential (honoring Retry-After for 503).
+                        match self.handle_auth_verdict(&e).await {
+                            AuthVerdictAction::Reacquired => {
+                                reacquired_rounds = reacquired_rounds.saturating_add(1);
+                                let Some(pacing_delay) = reacquire_pacing_delay(
+                                    reacquired_rounds,
+                                    &mut reacquire_pacing,
+                                    cfg.max_delay.max(1),
+                                ) else {
+                                    tracing::info!(
+                                        "🔑 Reconnecting with re-acquired credential after auth verdict"
+                                    );
+                                    continue 'cycle;
+                                };
+
+                                // The credential publication wake stores a
+                                // notify permit, so this delay deliberately
+                                // does NOT select on `reconnect_notify` — it
+                                // would resolve immediately and defeat the
+                                // pacing. Cancellation is re-checked below.
+                                tracing::warn!(
+                                    reacquired_rounds,
+                                    delay_secs = pacing_delay.as_secs(),
+                                    "⚠️ Signaling rejected a freshly renewed credential again; \
+                                     pacing the next renew/reconnect round to protect the AIS \
+                                     and connection rate budget"
+                                );
+                                tokio::time::sleep(pacing_delay).await;
+                                if Arc::strong_count(self) <= 1 {
+                                    tracing::debug!(
+                                        "Stopping signaling auto-reconnect cycle after owner drop"
+                                    );
+                                    return;
+                                }
+                                if self.auto_reconnect_cancelled(generation) {
+                                    tracing::debug!(
+                                        "Stopping signaling auto-reconnect cycle after explicit disconnect"
+                                    );
+                                    return;
+                                }
+                                continue 'cycle;
+                            }
+                            AuthVerdictAction::RetrySameCredential => {
+                                tracing::debug!(
+                                    "Credential recovery deferred; continuing socket backoff"
+                                );
+                            }
+                            AuthVerdictAction::Denied => {
+                                tracing::error!(
+                                    "Stopping signaling reconnect cycle after realm denial"
+                                );
+                                return;
+                            }
+                            AuthVerdictAction::ShutdownWhileParked => {
+                                tracing::debug!(
+                                    "Stopping signaling auto-reconnect cycle: shutdown while parked on credential"
+                                );
+                                return;
+                            }
+                            AuthVerdictAction::NotAVerdict => { /* fall through */ }
+                        }
+
+                        let retry_after = e.retry_after();
+                        let effective_delay = retry_after.unwrap_or(delay);
                         tracing::warn!(
-                            "❌ Reconnect attempt {attempt} failed: {e}, retrying in {delay:?}"
+                            "❌ Reconnect attempt {attempt} failed: {e}, retrying in {effective_delay:?}"
                         );
                         tokio::select! {
-                            _ = tokio::time::sleep(delay) => {}
+                            _ = tokio::time::sleep(effective_delay) => {}
                             _ = self.reconnect_notify.notified() => {
                                 tracing::debug!("Explicit reconnect request interrupted reconnect backoff");
                             }
@@ -766,7 +969,14 @@ impl WebSocketSignalingClient {
                     "Signaling auto-reconnect cooldown ended after explicit disconnect suppression"
                 );
             }
-            // After cooldown, the loop returns to notify.notified() and can be woken again
+            // Membership recovery is driven by fresh socket auth verdicts. Keep
+            // the socket cycle alive across bounded retry windows so a later AIS
+            // recovery produces another on-demand report instead of leaving the
+            // node permanently parked. The legacy path retains its existing
+            // notify-driven behavior.
+            if self.membership.get().is_some() {
+                continue 'cycle;
+            }
             return;
         }
     }
@@ -884,6 +1094,34 @@ impl WebSocketSignalingClient {
     /// so the signaling server can validate the credential before upgrading the WebSocket.
     async fn build_url_with_identity(&self) -> Url {
         let mut url = self.config.server_url.clone();
+
+        // When the membership controller is wired, the credential owner is the
+        // single source of truth: read the latest published credential + actor
+        // id straight from the `watch`. This is what makes the reconnect
+        // self-heal — after the owner mints a fresh credential and wakes us, the
+        // very next handshake URL carries it, never the stale one.
+        if let Some(handle) = self.membership.get() {
+            let credential_rx = handle.credential_rx();
+            let published = credential_rx.borrow().clone();
+            let actor_str = actr_protocol::ActrId::to_string_repr(&published.actor_id);
+            url.query_pairs_mut().append_pair("actor_id", &actor_str);
+
+            let cred = &published.credential;
+            let claims_b64 = base64::engine::general_purpose::STANDARD.encode(&cred.claims);
+            let sig_b64 = base64::engine::general_purpose::STANDARD.encode(&cred.signature);
+            url.query_pairs_mut()
+                .append_pair("key_id", &cred.key_id.to_string())
+                .append_pair("claims", &claims_b64)
+                .append_pair("signature", &sig_b64);
+
+            if let Some(role) = &self.config.webrtc_role {
+                url.query_pairs_mut().append_pair("webrtc_role", role);
+            }
+            return url;
+        }
+
+        // Legacy path (membership controller disabled): stored actor id +
+        // credential_state.
         let actor_id_opt = self.actor_id.lock().await.clone();
         if let Some(actor_id) = actor_id_opt {
             let actor_str = actr_protocol::ActrId::to_string_repr(&actor_id);
@@ -2142,6 +2380,10 @@ impl SignalingClient for WebSocketSignalingClient {
 
     fn set_hook_callback(&self, cb: HookCallback) {
         let _ = self.hook_callback.set(cb);
+    }
+
+    async fn install_membership(&self, handle: MembershipHandle) {
+        WebSocketSignalingClient::install_membership(self, handle);
     }
 }
 

@@ -1,7 +1,62 @@
 //! Network layer error definitions
 
 use actr_protocol::{ActrError, Classify, ErrorKind};
+use std::time::Duration;
 use thiserror::Error;
+
+/// Typed authentication verdict extracted from a transport failure.
+///
+/// This is the correctness-critical distinction the membership authority relies
+/// on: a verdict means the *credential itself* was rejected (or the realm is
+/// gone), so retrying the SAME credential is pointless — the recovery engine
+/// must mint a fresh one. Transport blips (timeouts, closed sockets, transient
+/// connection errors) never produce a verdict; they stay on the plain backoff
+/// path and retry the existing credential.
+///
+/// Kept deliberately small: only the outcomes that a signaling handshake or
+/// heartbeat can surface as an *authentication* decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthVerdict {
+    /// The credential was presented and rejected (handshake / heartbeat 401).
+    ///
+    /// Refresh-eligible: the recovery engine should re-acquire (soft renew,
+    /// then hard `/register` fallback) against the stable node identity.
+    Rejected,
+    /// The realm returned 403 — membership in this realm is denied.
+    ///
+    /// Terminal for automatic recovery: no amount of re-acquiring a credential
+    /// helps because the realm itself refuses this node. The controller enters
+    /// a loud, slow-cadence `Denied` phase rather than a tight retry loop.
+    RealmDenied,
+}
+
+/// Private status detail carried inside the existing `NetworkError::Other`
+/// variant. This preserves typed handshake handling without adding variants to
+/// the public, exhaustively matchable `NetworkError` enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalingHandshakeKind {
+    CredentialRejected,
+    RealmDenied,
+    ServerNotReady,
+}
+
+#[derive(Debug, Error)]
+#[error("{message}")]
+struct SignalingHandshakeFailure {
+    kind: SignalingHandshakeKind,
+    message: String,
+    retry_after: Option<Duration>,
+}
+
+impl SignalingHandshakeFailure {
+    fn auth_verdict(&self) -> Option<AuthVerdict> {
+        match self.kind {
+            SignalingHandshakeKind::CredentialRejected => Some(AuthVerdict::Rejected),
+            SignalingHandshakeKind::RealmDenied => Some(AuthVerdict::RealmDenied),
+            SignalingHandshakeKind::ServerNotReady => None,
+        }
+    }
+}
 
 /// Network layer error types
 #[derive(Error, Debug)]
@@ -161,6 +216,14 @@ pub enum NetworkError {
 
 impl Classify for NetworkError {
     fn kind(&self) -> ErrorKind {
+        if let Some(failure) = self.signaling_handshake_failure() {
+            return match failure.kind {
+                SignalingHandshakeKind::CredentialRejected
+                | SignalingHandshakeKind::RealmDenied => ErrorKind::Client,
+                SignalingHandshakeKind::ServerNotReady => ErrorKind::Transient,
+            };
+        }
+
         match self {
             // Transient: connection-level failures that may resolve on retry
             NetworkError::ConnectionError(_)
@@ -191,7 +254,7 @@ impl Classify for NetworkError {
             | NetworkError::ConfigurationError(_)
             | NetworkError::ServiceDiscoveryError(_) => ErrorKind::Client,
 
-            // Client: auth/permission
+            // Client: auth/permission.
             NetworkError::AuthenticationError(_)
             | NetworkError::PermissionError(_)
             | NetworkError::CredentialExpired(_) => ErrorKind::Client,
@@ -216,8 +279,23 @@ impl Classify for NetworkError {
 }
 
 impl NetworkError {
+    fn signaling_handshake_failure(&self) -> Option<&SignalingHandshakeFailure> {
+        match self {
+            NetworkError::Other(error) => error.downcast_ref::<SignalingHandshakeFailure>(),
+            _ => None,
+        }
+    }
+
     /// Get error category
     pub fn category(&self) -> &'static str {
+        if let Some(failure) = self.signaling_handshake_failure() {
+            return match failure.kind {
+                SignalingHandshakeKind::CredentialRejected => "credential_rejected",
+                SignalingHandshakeKind::RealmDenied => "realm_denied",
+                SignalingHandshakeKind::ServerNotReady => "server_not_ready",
+            };
+        }
+
         match self {
             NetworkError::ConnectionError(_) => "connection",
             NetworkError::SignalingError(_) => "signaling",
@@ -263,6 +341,14 @@ impl NetworkError {
 
     /// Get error severity (1-10, 10 is most severe)
     pub fn severity(&self) -> u8 {
+        if let Some(failure) = self.signaling_handshake_failure() {
+            return match failure.kind {
+                SignalingHandshakeKind::CredentialRejected
+                | SignalingHandshakeKind::RealmDenied => 10,
+                SignalingHandshakeKind::ServerNotReady => 5,
+            };
+        }
+
         match self {
             NetworkError::ConfigurationError(_)
             | NetworkError::AuthenticationError(_)
@@ -368,6 +454,34 @@ impl NetworkError {
             | NetworkError::Other(_) => false,
         }
     }
+
+    /// Classify this error as a typed authentication verdict, if any.
+    ///
+    /// This is the single branch point the membership authority relies on:
+    ///
+    /// - `Some(AuthVerdict::Rejected)` — the credential was presented and
+    ///   rejected (handshake / heartbeat 401). Re-acquire is warranted.
+    /// - `Some(AuthVerdict::RealmDenied)` — realm 403. Terminal for automatic
+    ///   recovery.
+    /// - `None` — NOT an auth decision. Includes `ServerNotReady` (503; the
+    ///   credential is fine, the server asked us to retry later) and every
+    ///   transport-level failure. These stay on the plain backoff / retry-same-
+    ///   credential path and MUST never reach the credential owner.
+    ///
+    /// The status detail is stored inside the existing `Other` variant so this
+    /// capability does not expand the public enum.
+    pub fn auth_verdict(&self) -> Option<AuthVerdict> {
+        self.signaling_handshake_failure()
+            .and_then(SignalingHandshakeFailure::auth_verdict)
+    }
+
+    /// The server-provided `Retry-After` hint, when the error carries one.
+    ///
+    /// Only a private signaling 503 detail currently carries a hint.
+    pub fn retry_after(&self) -> Option<Duration> {
+        self.signaling_handshake_failure()
+            .and_then(|failure| failure.retry_after)
+    }
 }
 
 // TODO: Implement UnifiedError trait (when actr-protocol provides error_unified module)
@@ -388,6 +502,10 @@ impl From<actr_protocol::ActrIdError> for NetworkError {
 /// This is the single boundary where transport failures become user-visible errors.
 impl From<NetworkError> for ActrError {
     fn from(err: NetworkError) -> Self {
+        if err.auth_verdict().is_some() {
+            return ActrError::PermissionDenied(err.to_string());
+        }
+
         // Preserve specific variants where the protocol surface has a precise
         // counterpart (e.g. caller-deadline TimedOut), so binding consumers can
         // branch on the exact failure mode instead of a coarse Unavailable.
@@ -454,14 +572,75 @@ pub(crate) fn is_tungstenite_closed(err: &tokio_tungstenite::tungstenite::Error)
     )
 }
 
-/// Convert from WebSocket error
+/// Parse an HTTP `Retry-After` header value that carries a delta-seconds count.
+///
+/// Only the numeric (delta-seconds) form is honored; an HTTP-date form returns
+/// `None` (the caller falls back to its own backoff). Kept narrow on purpose.
+fn parse_retry_after_seconds(
+    headers: &tokio_tungstenite::tungstenite::http::HeaderMap,
+) -> Option<Duration> {
+    let value = headers.get(tokio_tungstenite::tungstenite::http::header::RETRY_AFTER)?;
+    let secs: u64 = value.to_str().ok()?.trim().parse().ok()?;
+    Some(Duration::from_secs(secs))
+}
+
+/// Convert from WebSocket error.
+///
+/// The critical case is `Error::Http(resp)`: the signaling handshake was
+/// answered with an HTTP status instead of a 101 upgrade. Previously every such
+/// failure was flattened to `WebSocketError` (a transient), so a 401 credential
+/// rejection was indistinguishable from a network blip. Status detail is now
+/// wrapped privately in the existing `Other` variant; `auth_verdict()` can still
+/// branch on it without adding a source-breaking public enum variant.
 impl From<tokio_tungstenite::tungstenite::Error> for NetworkError {
     fn from(err: tokio_tungstenite::tungstenite::Error) -> Self {
+        use tokio_tungstenite::tungstenite::Error as WsError;
+        use tokio_tungstenite::tungstenite::http::StatusCode;
+
         if is_tungstenite_closed(&err) {
-            NetworkError::WebSocketClosed(err.to_string())
-        } else {
-            NetworkError::WebSocketError(err.to_string())
+            return NetworkError::WebSocketClosed(err.to_string());
         }
+
+        if let WsError::Http(resp) = &err {
+            let status = resp.status();
+            let body_hint = resp
+                .body()
+                .as_ref()
+                .and_then(|bytes| std::str::from_utf8(bytes).ok())
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| format!(": {s}"))
+                .unwrap_or_default();
+
+            return match status {
+                StatusCode::UNAUTHORIZED => {
+                    NetworkError::Other(anyhow::Error::new(SignalingHandshakeFailure {
+                        kind: SignalingHandshakeKind::CredentialRejected,
+                        message: format!("signaling handshake returned 401{body_hint}"),
+                        retry_after: None,
+                    }))
+                }
+                StatusCode::FORBIDDEN => {
+                    NetworkError::Other(anyhow::Error::new(SignalingHandshakeFailure {
+                        kind: SignalingHandshakeKind::RealmDenied,
+                        message: format!("signaling handshake returned 403{body_hint}"),
+                        retry_after: None,
+                    }))
+                }
+                StatusCode::SERVICE_UNAVAILABLE => {
+                    NetworkError::Other(anyhow::Error::new(SignalingHandshakeFailure {
+                        kind: SignalingHandshakeKind::ServerNotReady,
+                        message: format!("signaling handshake returned 503{body_hint}"),
+                        retry_after: parse_retry_after_seconds(resp.headers()),
+                    }))
+                }
+                other => NetworkError::WebSocketError(format!(
+                    "signaling handshake returned HTTP {other}{body_hint}"
+                )),
+            };
+        }
+
+        NetworkError::WebSocketError(err.to_string())
     }
 }
 

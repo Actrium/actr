@@ -44,6 +44,9 @@ pub enum AidError {
     #[error("manufacturer not verified or not registered")]
     ManufacturerNotVerified,
 
+    #[error("actor identity possession not proven")]
+    ActorPossessionNotProven,
+
     #[error("actor package has been revoked")]
     PackageRevoked,
 }

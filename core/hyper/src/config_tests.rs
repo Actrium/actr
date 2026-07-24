@@ -70,6 +70,27 @@ async fn node_from_config_file_dev_only_succeeds() {
 }
 
 #[tokio::test]
+async fn node_from_config_file_wires_membership_controller_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("actr.toml");
+    let data_dir = dir.path().display().to_string().replace('\\', "/");
+    std::fs::write(
+        &path,
+        format!(
+            "{BASE_CONFIG_TOML}[hyper]\ndata_dir = \"{data_dir}\"\n\
+             membership_controller_enabled = true\n\
+             [hyper.trust]\nkind = \"dev_only\"\n"
+        ),
+    )
+    .unwrap();
+
+    let node = node_from_config_file(&path)
+        .await
+        .expect("membership flag should deserialize through the normal config path");
+    assert!(node.hyper.membership_controller_enabled);
+}
+
+#[tokio::test]
 async fn node_from_config_file_missing_trust_errors() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("actr.toml");

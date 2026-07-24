@@ -6,7 +6,9 @@
 use crate::ais_client::AisClient;
 use crate::lifecycle::CredentialState;
 use crate::lifecycle::credential_manager::CredentialManager;
-use crate::transport::NetworkError;
+use crate::lifecycle::membership::MembershipHandle;
+use crate::lifecycle::session_state::SessionPhase;
+use crate::transport::{AuthVerdict, NetworkError};
 use crate::wire::webrtc::gate::WebRtcGate;
 use crate::wire::webrtc::{HookCallback, HookEvent, SignalingClient, WebRtcCoordinator};
 use actr_protocol::{ActrId, RegisterRequest, ServiceAvailabilityState};
@@ -26,6 +28,31 @@ fn expiry_to_system_time(expires_at: &prost_types::Timestamp) -> SystemTime {
 async fn fire_hook(cb: Option<&HookCallback>, event: HookEvent) {
     if let Some(cb) = cb {
         cb(event).await;
+    }
+}
+
+/// Route a credential-refresh trigger to the right owner.
+///
+/// When the membership controller is wired, the heartbeat is a pure REPORTER:
+/// it sends a `Rejected` verdict for the current credential generation and lets
+/// the controller (the sole owner) drive the single-flight, generation-fenced
+/// re-acquire. When the controller is disabled, it falls back to the legacy
+/// fire-and-forget `CredentialManager::trigger_renewal`.
+async fn request_credential_refresh(
+    membership: Option<&MembershipHandle>,
+    credential_manager: Option<&CredentialManager>,
+) {
+    if let Some(handle) = membership {
+        let stale_revision = handle.current_revision();
+        handle.report(AuthVerdict::Rejected, stale_revision).await;
+        return;
+    }
+    if let Some(manager) = credential_manager {
+        manager.trigger_renewal();
+    } else {
+        tracing::warn!(
+            "Credential refresh requested but neither membership controller nor CredentialManager is installed; keeping existing identity"
+        );
     }
 }
 
@@ -130,6 +157,7 @@ async fn send_heartbeat_and_handle_response(
     hook_callback: Option<&HookCallback>,
     _webrtc_coordinator: Option<&Arc<WebRtcCoordinator>>,
     _webrtc_gate: Option<&Arc<WebRtcGate>>,
+    membership: Option<&MembershipHandle>,
 ) -> Option<ActrId> {
     // Get current credential from shared state
     let current_credential = credential_state.credential().await;
@@ -176,13 +204,7 @@ async fn send_heartbeat_and_handle_response(
                 .await;
             }
 
-            if let Some(manager) = credential_manager {
-                manager.trigger_renewal();
-            } else {
-                tracing::warn!(
-                    "Credential expired but CredentialManager is not installed; keeping existing identity"
-                );
-            }
+            request_credential_refresh(membership, credential_manager).await;
             return None;
         }
         Ok(Err(e)) => {
@@ -259,9 +281,7 @@ async fn send_heartbeat_and_handle_response(
             )
             .await;
         }
-        if let Some(manager) = credential_manager {
-            manager.trigger_renewal();
-        }
+        request_credential_refresh(membership, credential_manager).await;
     }
     None
 }
@@ -296,6 +316,7 @@ pub async fn heartbeat_task(
     hook_callback: Option<HookCallback>,
     webrtc_coordinator: Option<Arc<WebRtcCoordinator>>,
     webrtc_gate: Option<Arc<WebRtcGate>>,
+    membership: Option<MembershipHandle>,
 ) {
     let mut interval = tokio::time::interval(heartbeat_interval);
     let mut actor_id = actor_id;
@@ -313,6 +334,26 @@ pub async fn heartbeat_task(
                 }
 
                 if !client.is_connected() {
+                    if membership.is_some() {
+                        // Terminal realm denial: the membership contract is
+                        // "no automatic re-probe". Waking the reconnect
+                        // manager here would restart the handshake, collect
+                        // another Denied verdict and loop against the realm
+                        // on every heartbeat tick.
+                        if let Some(manager) = credential_manager.as_ref()
+                            && manager.phase().await == SessionPhase::RealmUnavailable
+                        {
+                            tracing::debug!(
+                                "💓 Heartbeat: realm denied membership (terminal); suppressing auto-reconnect wake"
+                            );
+                            continue;
+                        }
+                        // The signaling reconnect manager is the sole socket
+                        // driver when membership recovery is enabled. Heartbeat
+                        // only wakes it and waits for the next connected tick.
+                        client.schedule_auto_reconnect();
+                        continue;
+                    }
                     match client.connect_once().await {
                         Ok(()) => {
                             tracing::info!("✅ Signaling reconnected before heartbeat");
@@ -352,6 +393,7 @@ pub async fn heartbeat_task(
                     hook_callback.as_ref(),
                     webrtc_coordinator.as_ref(),
                     webrtc_gate.as_ref(),
+                    membership.as_ref(),
                 )
                 .await {
                     tracing::info!(

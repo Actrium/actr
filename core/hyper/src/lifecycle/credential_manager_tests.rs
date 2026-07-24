@@ -64,13 +64,13 @@ fn register_ok(serial: u64, key_id: u32) -> register_response::RegisterOk {
 }
 
 #[tokio::test]
-async fn expired_renewal_token_hard_rebinds_via_register() {
+async fn expired_renewal_token_reissues_for_stable_actor_id() {
     let mut server = mockito::Server::new_async().await;
     let response = RegisterResponse {
-        result: Some(register_response::Result::Success(register_ok(2, 9))),
+        result: Some(register_response::Result::Success(register_ok(1, 9))),
     };
     let mock = server
-        .mock("POST", "/register")
+        .mock("POST", "/reissue")
         .with_status(200)
         .with_header("content-type", "application/x-protobuf")
         .with_body(response.encode_to_vec())
@@ -120,7 +120,7 @@ async fn expired_renewal_token_hard_rebinds_via_register() {
 
     mock.assert_async().await;
     let snapshot = session.snapshot().await;
-    assert_eq!(snapshot.actor_id, actor(2));
+    assert_eq!(snapshot.actor_id, actor(1));
     assert_eq!(snapshot.credential.key_id, 9);
     assert_eq!(snapshot.generation, 2);
     assert_eq!(
@@ -226,6 +226,168 @@ async fn soft_renewal_fires_credential_renewed_hook() {
     assert_eq!(hook_expiry.load(AtomicOrdering::SeqCst), NEW_EXPIRY as u64);
 }
 
+/// P2 regression: the credential-only hard reissue (membership controller
+/// path) commits new credential material and must fire the documented
+/// CredentialRenewed notification exactly like the soft-renew path.
+#[tokio::test]
+async fn credential_only_hard_reissue_fires_credential_renewed_hook() {
+    let mut server = mockito::Server::new_async().await;
+    let response = RegisterResponse {
+        result: Some(register_response::Result::Success(register_ok(1, 9))),
+    };
+    let mock = server
+        .mock("POST", "/reissue")
+        .with_status(200)
+        .with_header("content-type", "application/x-protobuf")
+        .with_body(response.encode_to_vec())
+        .expect(1)
+        .create_async()
+        .await;
+
+    // Expired renewal token -> run_reacquire_once takes the hard-rebind branch.
+    let session = SessionState::new(SessionSnapshot {
+        actor_id: actor(1),
+        credential: credential(1),
+        credential_expires_at: prost_types::Timestamp {
+            seconds: 10,
+            nanos: 0,
+        },
+        turn_credential: TurnCredential {
+            username: "10:actor-1".to_string(),
+            password: "old".to_string(),
+            expires_at: 10,
+        },
+        renewal_token: Bytes::from_static(b"expired-renewal-token-32bytes"),
+        renewal_token_expires_at: prost_types::Timestamp {
+            seconds: 1,
+            nanos: 0,
+        },
+        generation: 1,
+    });
+
+    let hook_expiry = Arc::new(AtomicU64::new(0));
+    let hook_expiry_for_cb = hook_expiry.clone();
+    let hook_callback: crate::wire::webrtc::HookCallback = Arc::new(move |event| {
+        let hook_expiry = hook_expiry_for_cb.clone();
+        Box::pin(async move {
+            if let crate::wire::webrtc::HookEvent::CredentialRenewed { new_expiry } = event {
+                let secs = new_expiry
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("expiry should be after epoch")
+                    .as_secs();
+                hook_expiry.store(secs, AtomicOrdering::SeqCst);
+            }
+        })
+    });
+
+    let outcome = run_reacquire_once(
+        session,
+        server.url(),
+        None,
+        RegistrationContext::Linked {
+            request: RegisterRequest {
+                actr_type: actor(1).r#type,
+                realm: Realm { realm_id: 7 },
+                ..Default::default()
+            },
+            realm_secret: None,
+        },
+        None,
+        Some(hook_callback),
+    )
+    .await;
+
+    mock.assert_async().await;
+    assert!(
+        matches!(outcome, ReacquireOutcome::Renewed(_)),
+        "hard reissue should publish a renewed credential"
+    );
+    // register_ok(1, 9) advertises credential_expires_at = 1000s.
+    assert_eq!(
+        hook_expiry.load(AtomicOrdering::SeqCst),
+        1000,
+        "hard reissue must fire CredentialRenewed with the committed expiry"
+    );
+}
+
+/// The legacy fire-and-forget hard rebind path has the same contract: after a
+/// committed reissue, the workload observes CredentialRenewed.
+#[tokio::test]
+async fn legacy_hard_rebind_fires_credential_renewed_hook() {
+    let mut server = mockito::Server::new_async().await;
+    let response = RegisterResponse {
+        result: Some(register_response::Result::Success(register_ok(1, 9))),
+    };
+    let mock = server
+        .mock("POST", "/reissue")
+        .with_status(200)
+        .with_header("content-type", "application/x-protobuf")
+        .with_body(response.encode_to_vec())
+        .expect(1)
+        .create_async()
+        .await;
+
+    let session = SessionState::new(SessionSnapshot {
+        actor_id: actor(1),
+        credential: credential(1),
+        credential_expires_at: prost_types::Timestamp {
+            seconds: 10,
+            nanos: 0,
+        },
+        turn_credential: TurnCredential {
+            username: "10:actor-1".to_string(),
+            password: "old".to_string(),
+            expires_at: 10,
+        },
+        renewal_token: Bytes::from_static(b"expired-renewal-token-32bytes"),
+        renewal_token_expires_at: prost_types::Timestamp {
+            seconds: 1,
+            nanos: 0,
+        },
+        generation: 1,
+    });
+
+    let hook_expiry = Arc::new(AtomicU64::new(0));
+    let hook_expiry_for_cb = hook_expiry.clone();
+    let hook_callback: crate::wire::webrtc::HookCallback = Arc::new(move |event| {
+        let hook_expiry = hook_expiry_for_cb.clone();
+        Box::pin(async move {
+            if let crate::wire::webrtc::HookEvent::CredentialRenewed { new_expiry } = event {
+                let secs = new_expiry
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("expiry should be after epoch")
+                    .as_secs();
+                hook_expiry.store(secs, AtomicOrdering::SeqCst);
+            }
+        })
+    });
+
+    run_renewal_once(
+        session,
+        server.url(),
+        None,
+        RegistrationContext::Linked {
+            request: RegisterRequest {
+                actr_type: actor(1).r#type,
+                realm: Realm { realm_id: 7 },
+                ..Default::default()
+            },
+            realm_secret: None,
+        },
+        None,
+        Some(hook_callback),
+    )
+    .await
+    .expect("hard rebind should commit new snapshot");
+
+    mock.assert_async().await;
+    assert_eq!(
+        hook_expiry.load(AtomicOrdering::SeqCst),
+        1000,
+        "legacy hard rebind must fire CredentialRenewed with the committed expiry"
+    );
+}
+
 #[test]
 fn backoff_sequence() {
     let mut b = Backoff::new();
@@ -282,10 +444,10 @@ async fn package_hard_rebind_re_signs_manufacturer_proof() {
 
     let mut server = mockito::Server::new_async().await;
     let response = RegisterResponse {
-        result: Some(register_response::Result::Success(register_ok(2, 9))),
+        result: Some(register_response::Result::Success(register_ok(1, 9))),
     };
     let mock = server
-        .mock("POST", "/register")
+        .mock("POST", "/reissue")
         .with_status(200)
         .with_header("content-type", "application/x-protobuf")
         .with_body(response.encode_to_vec())

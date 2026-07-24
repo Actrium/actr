@@ -241,6 +241,21 @@ message RenewCredentialResponse {
   }
 }
 
+// Re-issue credentials for an existing actor when its renewal token can no
+// longer be used. The nested registration request re-authenticates the workload
+// (manufacturer proof for packages, realm authorization for linked workloads),
+// while actr_id identifies the stable runtime identity that must be preserved.
+message ReissueCredentialRequest {
+  required ActrId actr_id = 1;
+  required RegisterRequest registration = 2;
+  // Proof that the caller owns exactly this actr_id: the raw renewal token
+  // most recently issued to that actor (possibly expired). AIS matches its
+  // hash against the issuer-recorded token bindings for actr_id and rejects
+  // the reissue when no binding matches, so a workload cannot mint
+  // credentials for another same-realm/type actor or an arbitrary serial.
+  optional bytes renewal_proof = 3;
+}
+
 // ============================================================================
 // Unregister
 // ============================================================================

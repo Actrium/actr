@@ -351,6 +351,12 @@ pub(crate) struct HyperSection {
     /// `[[trust]]` array instead.
     #[serde(default)]
     pub trust: Option<HyperTrustAnchor>,
+
+    /// Enable on-demand credential recovery for signaling authentication
+    /// failures. Kept in the private runtime wrapper so adding the flag does not
+    /// add a required field to the public `HyperConfig` struct.
+    #[serde(default)]
+    pub membership_controller_enabled: Option<bool>,
 }
 
 /// Trust anchor config for `[hyper.trust]`. Superset of
@@ -460,6 +466,8 @@ pub(crate) async fn node_from_config_file_with_package(
         ))
     })?;
     let hyper_section = hyper_section.hyper;
+    let membership_controller_enabled =
+        hyper_section.membership_controller_enabled.unwrap_or(false);
 
     // Resolve the data_dir: [hyper].data_dir > CLI user-config default.
     let data_dir = if let Some(dir) = hyper_section.data_dir.clone() {
@@ -545,7 +553,9 @@ pub(crate) async fn node_from_config_file_with_package(
     // to the caller — bindings and the CLI both want control over when
     // the tracing subscriber gets installed (they may want to layer in
     // their own filters first).
-    let hyper = crate::Hyper::new(hyper_config).await?;
+    let hyper = crate::Hyper::new(hyper_config)
+        .await?
+        .with_membership_controller_enabled(membership_controller_enabled);
     let _ = &base_dir;
     Ok(crate::Node::from_hyper(hyper, runtime_config))
 }
