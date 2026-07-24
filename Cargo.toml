@@ -63,6 +63,7 @@ members = [
     "core/platform-traits",
     "core/platform-native",
     "core/pack",
+    "core/hlc",
     # === Developer Tools ===
     "tools/protoc-gen/rust",
     "tools/protoc-gen/web",
@@ -125,6 +126,7 @@ actr-hyper = { path = "core/hyper", version = "0.5.4" }
 actr-platform-traits = { path = "core/platform-traits", version = "0.5.4" }
 actr-platform-native = { path = "core/platform-native", version = "0.5.4" }
 actr-pack = { path = "core/pack", version = "0.5.4" }
+actr-hlc = { path = "core/hlc", version = "0.5.4" }
 actr-mock-actrix = { path = "testing/mock-actrix", version = "0.5.4" }
 
 # === Async Runtime ===

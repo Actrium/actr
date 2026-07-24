@@ -294,6 +294,12 @@ impl ReconnectBeforeHeartbeatClient {
             heartbeat_sent: Notify::new(),
         }
     }
+
+    fn new_connected() -> Self {
+        let client = Self::new_disconnected();
+        client.connected.store(true, Ordering::SeqCst);
+        client
+    }
 }
 
 #[async_trait::async_trait]
@@ -563,8 +569,16 @@ async fn credential_warning_triggers_credential_manager_renewal() {
             expires_at: OLD_EXPIRY as u64,
         },
         renewal_token: vec![7; 32].into(),
+        // Within the plausible issuance window measured from the real
+        // wall clock: the renewal-token pre-check treats implausibly far
+        // expiries (like the far-future OLD_EXPIRY placeholder) as expired
+        // and would divert into hard rebind.
         renewal_token_expires_at: prost_types::Timestamp {
-            seconds: OLD_EXPIRY + 1000,
+            seconds: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                + 3600,
             nanos: 0,
         },
         generation: 1,
@@ -803,4 +817,334 @@ async fn re_registration_sends_realm_secret_to_ais() {
     .await;
 
     assert_eq!(returned_actor_id, new_actor_id);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Virtual-time heartbeat pacing and ping-timeout boundaries (RFC-0419 §6)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Signaling client whose `send_heartbeat` never resolves. Records that the
+/// send was entered so tests can anchor the `ping_timeout` deadline at the
+/// exact virtual instant the timer was created.
+struct StalledHeartbeatClient {
+    heartbeat_entered: AtomicBool,
+}
+
+impl StalledHeartbeatClient {
+    fn new() -> Self {
+        Self {
+            heartbeat_entered: AtomicBool::new(false),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SignalingClient for StalledHeartbeatClient {
+    async fn connect(&self) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn connect_once(&self) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn disconnect(&self) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn send_register_request(
+        &self,
+        _request: RegisterRequest,
+    ) -> NetworkResult<RegisterResponse> {
+        unimplemented!("not used by this test")
+    }
+
+    async fn send_unregister_request(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _reason: Option<String>,
+    ) -> NetworkResult<UnregisterResponse> {
+        unimplemented!("not used by this test")
+    }
+
+    async fn send_heartbeat(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _availability: ServiceAvailabilityState,
+        _power_reserve: f32,
+        _mailbox_backlog: f32,
+    ) -> NetworkResult<Pong> {
+        self.heartbeat_entered.store(true, Ordering::SeqCst);
+        std::future::pending::<()>().await;
+        unreachable!("stalled heartbeat never resolves")
+    }
+
+    async fn send_route_candidates_request(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _request: RouteCandidatesRequest,
+    ) -> NetworkResult<RouteCandidatesResponse> {
+        unimplemented!("not used by this test")
+    }
+
+    async fn get_signing_key(
+        &self,
+        _actor_id: ActrId,
+        _credential: AIdCredential,
+        _key_id: u32,
+    ) -> NetworkResult<(u32, Vec<u8>)> {
+        unimplemented!("not used by this test")
+    }
+
+    async fn send_envelope(&self, _envelope: SignalingEnvelope) -> NetworkResult<()> {
+        Ok(())
+    }
+
+    async fn receive_envelope(&self) -> NetworkResult<Option<SignalingEnvelope>> {
+        Ok(None)
+    }
+
+    fn is_connected(&self) -> bool {
+        true
+    }
+
+    fn get_stats(&self) -> SignalingStats {
+        SignalingStats::default()
+    }
+
+    fn subscribe_events(&self) -> broadcast::Receiver<SignalingEvent> {
+        let (_tx, rx) = broadcast::channel(1);
+        rx
+    }
+
+    async fn set_actor_id(&self, _actor_id: ActrId) {}
+
+    async fn set_credential_state(&self, _credential_state: CredentialState) {}
+
+    async fn clear_identity(&self) {}
+}
+
+/// Poll the scheduler without moving virtual time. Asserting an unchanged
+/// counter after this proves "no fire between advances" exactly: while the
+/// test task only yields, the paused clock cannot auto-advance.
+async fn yield_many(iterations: usize) {
+    for _ in 0..iterations {
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Wait until `condition` holds, mostly by yielding. The heartbeat path
+/// contains one internal short timer (the bounded power-reserve fetch), so a
+/// stalled condition is unstuck by small virtual advances. The total virtual
+/// advance is bounded (≤ 10 s) so callers can budget it against their
+/// interval slack; panics when the budget runs out.
+async fn wait_for_with_bounded_advance(label: &str, mut condition: impl FnMut() -> bool) {
+    let mut advanced = Duration::ZERO;
+    for _ in 0..200 {
+        for _ in 0..50 {
+            if condition() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(Duration::from_millis(50)).await;
+        advanced += Duration::from_millis(50);
+    }
+    panic!("timed out waiting for {label} (virtual advance budget exhausted at {advanced:?})");
+}
+
+fn heartbeat_register_request(actor_id: &ActrId) -> RegisterRequest {
+    RegisterRequest {
+        actr_type: actor_id.r#type.clone(),
+        realm: actor_id.realm,
+        ..Default::default()
+    }
+}
+
+/// R2: under the paused (virtual) clock, heartbeats fire exactly on the
+/// configured interval — never before the boundary, exactly one per boundary.
+/// The generous interval/slack ratio absorbs the ≤ 10 s virtual creep the
+/// bounded-advance waits may introduce around each observation.
+#[tokio::test(start_paused = true)]
+async fn heartbeat_ticks_track_the_configured_interval_in_virtual_time() {
+    const INTERVAL: Duration = Duration::from_secs(3600);
+    const SLACK: Duration = Duration::from_secs(60);
+
+    let actor_id = test_actor_id(1);
+    let client = Arc::new(ReconnectBeforeHeartbeatClient::new_connected());
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(heartbeat_task(
+        shutdown.clone(),
+        client.clone() as Arc<dyn SignalingClient>,
+        actor_id.clone(),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(EmptyMailbox) as Arc<dyn Mailbox>,
+        INTERVAL,
+        heartbeat_register_request(&actor_id),
+        "http://127.0.0.1:1".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+
+    // The first tick fires immediately on task start.
+    wait_for_with_bounded_advance("first heartbeat", || {
+        client.heartbeat_calls.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert_eq!(client.heartbeat_calls.load(Ordering::SeqCst), 1);
+
+    for expected in 2usize..=3 {
+        // Just short of the next boundary nothing may fire (no-early-fire).
+        tokio::time::advance(INTERVAL - SLACK).await;
+        yield_many(200).await;
+        assert_eq!(
+            client.heartbeat_calls.load(Ordering::SeqCst),
+            expected - 1,
+            "heartbeat must not fire before its interval elapses"
+        );
+
+        // Crossing the boundary releases exactly one more tick.
+        tokio::time::advance(SLACK).await;
+        wait_for_with_bounded_advance("next heartbeat", || {
+            client.heartbeat_calls.load(Ordering::SeqCst) >= expected
+        })
+        .await;
+        assert_eq!(client.heartbeat_calls.load(Ordering::SeqCst), expected);
+    }
+
+    shutdown.cancel();
+    task.await.expect("heartbeat task should stop cleanly");
+    assert_eq!(
+        client.connect_calls.load(Ordering::SeqCst),
+        0,
+        "a connected client must not trigger the reconnect preflight"
+    );
+}
+
+/// R2/R3: `tokio::time::interval` defaults to `MissedTickBehavior::Burst`, so
+/// after a long pause of the heartbeat task (the virtual-time analogue of a
+/// process suspension: the monotonic clock kept counting while the task never
+/// ran) every missed boundary is delivered as a prompt catch-up tick — and
+/// only the missed ones.
+#[tokio::test(start_paused = true)]
+async fn heartbeat_interval_bursts_missed_ticks_after_a_long_virtual_pause() {
+    const INTERVAL: Duration = Duration::from_secs(60);
+
+    let actor_id = test_actor_id(1);
+    let client = Arc::new(ReconnectBeforeHeartbeatClient::new_connected());
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(heartbeat_task(
+        shutdown.clone(),
+        client.clone() as Arc<dyn SignalingClient>,
+        actor_id.clone(),
+        CredentialState::new(test_credential(), None, None),
+        Arc::new(EmptyMailbox) as Arc<dyn Mailbox>,
+        INTERVAL,
+        heartbeat_register_request(&actor_id),
+        "http://127.0.0.1:1".to_string(),
+        None,
+        None,
+        None,
+        None,
+        None,
+    ));
+
+    wait_for_with_bounded_advance("first heartbeat", || {
+        client.heartbeat_calls.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert_eq!(client.heartbeat_calls.load(Ordering::SeqCst), 1);
+
+    // Jump over three missed boundaries in one advance.
+    tokio::time::advance(INTERVAL * 3 + Duration::from_secs(30)).await;
+    wait_for_with_bounded_advance("burst catch-up ticks", || {
+        client.heartbeat_calls.load(Ordering::SeqCst) >= 4
+    })
+    .await;
+
+    // Exactly the three missed ticks are delivered; the cadence then resumes
+    // on the original schedule, so no further tick fires without an advance.
+    yield_many(200).await;
+    assert_eq!(
+        client.heartbeat_calls.load(Ordering::SeqCst),
+        4,
+        "burst catch-up must deliver every missed tick and nothing more"
+    );
+
+    shutdown.cancel();
+    task.await.expect("heartbeat task should stop cleanly");
+}
+
+/// Drive one stalled heartbeat send and pin the `ping_timeout` deadline with
+/// a double-sided boundary: still pending one millisecond before the
+/// deadline, resolved (as one consecutive failure) once the clock reaches it.
+async fn assert_ping_timeout_boundary(heartbeat_interval: Duration, expected_timeout: Duration) {
+    let actor_id = test_actor_id(1);
+    let client = Arc::new(StalledHeartbeatClient::new());
+
+    let task = tokio::spawn({
+        let client = client.clone() as Arc<dyn SignalingClient>;
+        let actor_id = actor_id.clone();
+        async move {
+            let mut consecutive_failures = 0u64;
+            send_heartbeat_and_handle_response(
+                &client,
+                &actor_id,
+                &CredentialState::new(test_credential(), None, None),
+                &(Arc::new(EmptyMailbox) as Arc<dyn Mailbox>),
+                heartbeat_interval,
+                &heartbeat_register_request(&actor_id),
+                &mut consecutive_failures,
+                "http://127.0.0.1:1",
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+            consecutive_failures
+        }
+    });
+
+    // Once the stalled send is entered, the timeout timer exists and its
+    // deadline is anchored at the current virtual instant.
+    wait_for_with_bounded_advance("stalled heartbeat send to start", || {
+        client.heartbeat_entered.load(Ordering::SeqCst)
+    })
+    .await;
+
+    tokio::time::advance(expected_timeout - Duration::from_millis(1)).await;
+    yield_many(50).await;
+    assert!(
+        !task.is_finished(),
+        "ping timeout must not fire before its {expected_timeout:?} deadline"
+    );
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let consecutive_failures = task.await.expect("heartbeat send task should join");
+    assert_eq!(
+        consecutive_failures, 1,
+        "a timed-out heartbeat must count exactly one consecutive failure"
+    );
+}
+
+/// R2/R4: `ping_timeout = 0.4 × interval` when that product clears the floor.
+/// A 30 s interval yields a 12 s timeout that must not fire at 11.999 s.
+#[tokio::test(start_paused = true)]
+async fn heartbeat_ping_timeout_fires_no_earlier_than_its_deadline() {
+    assert_ping_timeout_boundary(Duration::from_secs(30), Duration::from_secs(12)).await;
+}
+
+/// R2/R4: the `max(0.4 × interval, 1 s)` floor. A 2 s interval would give
+/// 0.8 s; the timeout must instead hold the full 1 s (pending at 999 ms).
+#[tokio::test(start_paused = true)]
+async fn heartbeat_ping_timeout_floors_at_one_second() {
+    assert_ping_timeout_boundary(Duration::from_secs(2), Duration::from_secs(1)).await;
 }

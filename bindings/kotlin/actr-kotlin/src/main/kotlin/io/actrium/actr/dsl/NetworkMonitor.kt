@@ -6,6 +6,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import io.actrium.actr.ActrException
 import io.actrium.actr.AppLifecycleState
@@ -450,7 +451,9 @@ class NetworkMonitor
     // Monotonically incrementing sequence number for NetworkSnapshot
     private val sequenceCounter = AtomicLong(0)
 
-    // Time when the app entered background (epoch millis), null if in foreground
+    // Time when the app entered background (SystemClock.elapsedRealtime millis),
+    // null if in foreground. elapsedRealtime is monotonic and keeps counting in
+    // deep sleep, unlike the wall clock which jumps on NTP/user time changes.
     @Volatile
     private var backgroundEnteredAtMs: Long? = null
 
@@ -514,8 +517,10 @@ class NetworkMonitor
      * This records the background entry time and notifies the runtime.
      */
     fun onAppBackground() {
-        backgroundEnteredAtMs = System.currentTimeMillis()
-        Log.i(TAG, "App entered background at $backgroundEnteredAtMs")
+        // elapsedRealtime() is monotonic and includes deep sleep; wall clock
+        // (currentTimeMillis) jumps when the system time is adjusted.
+        backgroundEnteredAtMs = SystemClock.elapsedRealtime()
+        Log.i(TAG, "App entered background at elapsedRealtime=${backgroundEnteredAtMs}ms")
 
         scope.launch(Dispatchers.IO) {
             try {
@@ -535,7 +540,7 @@ class NetworkMonitor
     fun onAppForeground() {
         val backgroundDurationMs =
             backgroundEnteredAtMs?.let { start ->
-                (System.currentTimeMillis() - start).coerceAtLeast(0)
+                (SystemClock.elapsedRealtime() - start).coerceAtLeast(0)
             } ?: 0L
 
         backgroundEnteredAtMs = null

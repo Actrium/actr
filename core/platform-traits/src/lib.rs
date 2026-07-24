@@ -10,11 +10,19 @@
 //! - [`KvStore`] — key-value storage (SQLite on native, IndexedDB on web)
 //! - [`CryptoProvider`] — cryptographic primitives (ed25519-dalek on native, Web Crypto on web)
 //! - [`PlatformProvider`] — composite provider grouping all platform services
+//! - [`MonotonicClock`] — process-local monotonic time for timeouts, deadlines
+//!   and backoff (`std::time::Instant` on native, `performance.now()` on web);
+//!   a deterministic virtual `TestClock` for runtime tests is exported from
+//!   [`clock`] under the `test-utils` feature
 
+pub mod clock;
 pub mod crypto;
 pub mod platform;
 pub mod storage;
 
+pub use clock::MonotonicClock;
+#[cfg(any(test, feature = "test-utils"))]
+pub use clock::{TestClock, TestInstant, assert_monotonic_clock_contract};
 pub use crypto::CryptoProvider;
 pub use platform::PlatformProvider;
 pub use storage::{KvOp, KvStore, KvStoreClone};

@@ -1,0 +1,14 @@
+[package]
+name = "actr-hlc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Optional hybrid logical clock library for actr (RFC-0419)"
+# Not published until RFC-0419 is accepted.
+publish = false
+
+[lints]
+workspace = true

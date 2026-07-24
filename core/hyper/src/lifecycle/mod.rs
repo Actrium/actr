@@ -7,6 +7,7 @@ pub(crate) mod compat_lock;
 mod connection_supervisor;
 pub(crate) mod credential_manager;
 pub(crate) mod dedup;
+pub(crate) mod expiry;
 mod heartbeat;
 pub(crate) mod hooks;
 mod network_event;

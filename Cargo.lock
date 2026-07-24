@@ -160,6 +160,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "actr-hlc"
+version = "0.5.4"
+
+[[package]]
 name = "actr-hyper"
 version = "0.5.4"
 dependencies = [

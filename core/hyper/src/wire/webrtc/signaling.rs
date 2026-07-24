@@ -28,7 +28,7 @@ use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -434,7 +434,8 @@ pub struct WebSocketSignalingClient {
     ping_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Connection state broadcast channel (event-driven)
     event_tx: broadcast::Sender<SignalingEvent>,
-    /// Last time we saw inbound traffic (pong/any message), unix epoch seconds
+    /// Last time we saw inbound traffic (pong/any message), in seconds on the
+    /// process-monotonic time base (see [`monotonic_secs`]).
     last_pong: Arc<AtomicU64>,
     /// Flag to track if reconnect manager has been started
     reconnector_started: Arc<AtomicBool>,
@@ -1030,7 +1031,7 @@ impl WebSocketSignalingClient {
             self.auto_reconnect_suppressed
                 .store(false, Ordering::Release);
         }
-        self.last_pong.store(current_unix_secs(), Ordering::Release);
+        self.last_pong.store(monotonic_secs(), Ordering::Release);
         // Enqueue the hook before broadcasting to other subscribers.
         self.invoke_hook(HookEvent::SignalingConnected).await;
         let _ = self.event_tx.send(SignalingEvent::Connected);
@@ -1188,7 +1189,7 @@ impl WebSocketSignalingClient {
                 match msg {
                     Ok(tokio_tungstenite::tungstenite::Message::Binary(data)) => {
                         // Any inbound traffic counts as liveness
-                        last_pong.store(current_unix_secs(), Ordering::Release);
+                        last_pong.store(monotonic_secs(), Ordering::Release);
                         match SignalingEnvelope::decode(&data[..]) {
                             Ok(envelope) => {
                                 #[cfg(feature = "opentelemetry")]
@@ -1232,14 +1233,14 @@ impl WebSocketSignalingClient {
                     }
                     Ok(tokio_tungstenite::tungstenite::Message::Pong(payload)) => {
                         tracing::debug!("Received pong");
-                        last_pong.store(current_unix_secs(), Ordering::Release);
+                        last_pong.store(monotonic_secs(), Ordering::Release);
                         if let Some(sender) = pending_pongs.lock().await.remove(&payload.to_vec()) {
                             let _ = sender.send(());
                         }
                     }
                     Ok(tokio_tungstenite::tungstenite::Message::Ping(_)) => {
                         tracing::debug!("Received ping");
-                        last_pong.store(current_unix_secs(), Ordering::Release);
+                        last_pong.store(monotonic_secs(), Ordering::Release);
                     }
                     Ok(other) => {
                         tracing::warn!("Received non-binary frame, ignoring: {other:?}");
@@ -1346,9 +1347,9 @@ impl WebSocketSignalingClient {
                 }
 
                 // Check for stale pong
-                let now = current_unix_secs();
+                let now = monotonic_secs();
                 let last = last_pong.load(Ordering::Acquire);
-                if now.saturating_sub(last) > PONG_TIMEOUT_SECS {
+                if pong_is_stale(now, last, PONG_TIMEOUT_SECS) {
                     tracing::warn!(
                         "Signaling pong timeout (last seen {}s ago), marking disconnected",
                         now.saturating_sub(last)
@@ -1794,7 +1795,7 @@ impl SignalingClient for WebSocketSignalingClient {
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(())) => {
-                self.last_pong.store(current_unix_secs(), Ordering::Release);
+                self.last_pong.store(monotonic_secs(), Ordering::Release);
                 Ok(())
             }
             Ok(Err(_)) => {
@@ -2232,6 +2233,24 @@ fn current_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// Seconds elapsed since a process-wide monotonic anchor.
+///
+/// The pong liveness watchdog stores and compares these values instead of
+/// wall-clock seconds: a wall-clock adjustment (NTP step, manual set) would
+/// otherwise fire a false pong timeout or mask a dead peer.
+fn monotonic_secs() -> u64 {
+    static ANCHOR: OnceLock<Instant> = OnceLock::new();
+    ANCHOR.get_or_init(Instant::now).elapsed().as_secs()
+}
+
+/// Staleness decision for the ping watchdog: the connection is considered
+/// stale when the last observed pong is older than `timeout_secs`. Both
+/// timestamps must come from [`monotonic_secs`]. Saturating so a `last`
+/// ahead of `now` (startup race) reads as age zero instead of underflowing.
+fn pong_is_stale(now_secs: u64, last_pong_secs: u64, timeout_secs: u64) -> bool {
+    now_secs.saturating_sub(last_pong_secs) > timeout_secs
 }
 
 #[cfg(test)]

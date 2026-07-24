@@ -849,6 +849,9 @@ async fn handle_ping(
 
     // 创建 Pong 响应
     let mut pong = Pong {
+        // Wall-clock seconds used as an opaque echo value only. This is not a
+        // sequence number: clock adjustments can make it repeat or go
+        // backwards, so consumers must not rely on it for ordering.
         seq: chrono::Utc::now().timestamp() as u64,
         suggest_interval_secs: Some(30),
         credential_warning: None,

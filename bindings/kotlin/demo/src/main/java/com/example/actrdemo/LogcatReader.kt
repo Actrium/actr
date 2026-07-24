@@ -2,6 +2,7 @@ package com.example.actrdemo
 
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -65,7 +66,10 @@ class LogcatReader(
                 try {
                     val pb = ProcessBuilder("logcat", "-b", "main", "-v", "threadtime", "actr:V", "*:S")
                     pb.redirectErrorStream(true)
-                    val startMs = System.currentTimeMillis()
+                    // Monotonic clock: wall-clock (currentTimeMillis) differences
+                    // jump with NTP/manual time changes and would misreport the
+                    // logcat session duration used in the retry decision logs.
+                    val startMs = SystemClock.elapsedRealtime()
                     val proc = pb.start()
                     process = proc
 
@@ -86,7 +90,7 @@ class LogcatReader(
                             }
                     }
 
-                    val elapsed = System.currentTimeMillis() - startMs
+                    val elapsed = SystemClock.elapsedRealtime() - startMs
                     if (readAny) {
                         consecutiveFailures = 0
                         Log.d("LogcatReader", "logcat exited with code=$exitCode after ${elapsed}ms")

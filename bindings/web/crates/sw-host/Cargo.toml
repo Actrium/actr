@@ -48,6 +48,7 @@ web-sys = { workspace = true, features = [
     "ErrorEvent",
     "WorkerGlobalScope",
     "ServiceWorkerGlobalScope",
+    "Performance",
 ] }
 
 # IndexedDB (Mailbox persistence)

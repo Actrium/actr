@@ -234,6 +234,27 @@ async fn verify_credential_expired_returns_none() {
     );
 }
 
+/// expires_at implausibly far in the future (beyond any well-formed AIS
+/// issuance; the signature is valid) -> treated as expired -> None.
+/// Simulates the view after a local wall-clock rollback, under which a naive
+/// `expires_at <= now` check would keep honoring an expired credential.
+#[tokio::test]
+async fn verify_credential_implausibly_far_expiry_returns_none() {
+    let sk = signing_key(6);
+    let actor = test_actor_id(104);
+    let ctx = make_auth_ctx(&sk, 1, test_actor_id(999)).await;
+    let ten_years = future_ts() + 10 * 365 * 24 * 3600;
+    let credential = make_valid_credential(&sk, &actor, ten_years, 1);
+    let source_bytes = actr_protocol::prost::Message::encode_to_vec(&actor);
+
+    assert!(
+        WebSocketGate::verify_credential(&credential, &source_bytes, &ctx)
+            .await
+            .is_none(),
+        "credential with an implausibly far expiry should be rejected"
+    );
+}
+
 /// claims.actor_id does not match ActrId from X-Actr-Source-ID -> None (prevent identity spoofing)
 #[tokio::test]
 async fn verify_credential_actor_id_mismatch_returns_none() {

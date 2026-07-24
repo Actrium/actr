@@ -3009,7 +3009,11 @@ impl Inner {
                                         match RpcEnvelope::decode(&msg_record.payload[..]) {
                                             Ok(envelope) => {
                                                 let request_id = envelope.request_id.clone();
-                                                let queue_latency_ms = (chrono::Utc::now() - msg_record.created_at).num_milliseconds();
+                                                // Wall-clock on purpose: enqueue stamps are persisted in the
+                                                // SQLite mailbox, so only wall time is comparable across
+                                                // restarts. Observational only; clamped non-negative against
+                                                // clock jumps.
+                                                let queue_latency_ms = (chrono::Utc::now() - msg_record.created_at).num_milliseconds().max(0);
                                                 tracing::info!(request_id = %request_id, queue_latency_ms = queue_latency_ms, "rpc.mailbox.dequeued");
 
                                                 tracing::debug!("📦 Processing message: request_id={}", request_id);

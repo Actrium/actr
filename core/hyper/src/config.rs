@@ -165,9 +165,10 @@ pub struct WasmRuntimeLimits {
     /// Period at which a background task calls `Engine::increment_epoch`; each
     /// entry sets a deadline of a few ticks. Default `50ms`.
     pub epoch_tick: Duration,
-    /// Wall-clock deadline wrapping each guest entry (`tokio::time::timeout`).
-    /// Default `5s`. Distinct from fuel/epoch: a guest that awaits a host
-    /// import indefinitely is interrupted here.
+    /// Elapsed-time deadline wrapping each guest entry (`tokio::time::timeout`,
+    /// which runs on the monotonic clock and is unaffected by wall-clock
+    /// adjustments). Default `5s`. Distinct from fuel/epoch: a guest that
+    /// awaits a host import indefinitely is interrupted here.
     pub invocation_timeout: Duration,
     /// Max linear memory bytes per store. Default 64 MiB.
     pub max_linear_memory: usize,

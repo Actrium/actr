@@ -56,6 +56,82 @@ use crate::inbound::{InboundPacketDispatcher, MailboxProcessor, Scheduler};
 use crate::outbound::Gate;
 use crate::web_context::RuntimeBridge;
 
+/// Milliseconds from `performance.now()`: monotonic per RFC-0419, unlike
+/// `Date.now()`, which jumps when the wall clock changes (NTP, manual set).
+///
+/// Reads `performance` off the worker global scope; falls back to `Date.now()`
+/// if the Performance API is unavailable.
+fn monotonic_now_ms() -> f64 {
+    js_sys::global()
+        .unchecked_into::<web_sys::WorkerGlobalScope>()
+        .performance()
+        .map(|p| p.now())
+        .unwrap_or_else(|| {
+            warn_once_performance_fallback();
+            js_sys::Date::now()
+        })
+}
+
+/// One-shot warning for the `Date.now()` fallback above: the degradation is
+/// per-worker and permanent for the worker's lifetime, so a single warn
+/// carries the full signal without flooding the console on every poll tick.
+fn warn_once_performance_fallback() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        log::warn!(
+            "[SW] Performance API unavailable; timeout pacing degrades to Date.now(), \
+             so wall-clock jumps (NTP, manual set) can fire or stall connection timeouts"
+        );
+    }
+}
+
+/// Upper bound on the plausible remaining lifetime of a persisted AIS access
+/// or TURN credential, both issued with a 1-hour TTL by default; 24 h leaves
+/// headroom for longer configured TTLs plus clock skew. Mirrors
+/// `lifecycle::expiry` in actr-hyper.
+const MAX_CREDENTIAL_REMAINING_SECS: u64 = 24 * 60 * 60;
+
+/// Upper bound on the plausible remaining lifetime of a persisted AIS
+/// renewal token (24-hour issuance TTL by default); 7 days leaves headroom
+/// for longer configured TTLs plus clock skew. Mirrors `lifecycle::expiry`
+/// in actr-hyper.
+const MAX_RENEWAL_TOKEN_REMAINING_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Jump-tolerant verdict for absolute Unix-second expiry checks on persisted
+/// artifacts (RFC-0419 §3): `true` when the deadline is genuinely due
+/// (`expires_at <= now`, identical to the naive comparison) or when its
+/// remaining lifetime exceeds `max_remaining_secs` — a state no well-formed
+/// issuance can produce, so it indicates a local wall-clock rollback since
+/// the artifact was persisted, or corrupt stored bytes. Under a rollback the
+/// naive comparison would keep honoring an expired artifact; treating the
+/// implausible deadline as expired instead drops the artifact and re-issues
+/// through the normal registration/renewal path, which is always safe to
+/// take early. The implausible case warns: it signals a host clock problem
+/// with visible but recoverable consequences (identity or credential
+/// re-issuance).
+fn expired_or_implausibly_far(
+    expires_at_secs: u64,
+    now_secs: u64,
+    max_remaining_secs: u64,
+    what: &str,
+) -> bool {
+    if expires_at_secs <= now_secs {
+        return true;
+    }
+    let remaining = expires_at_secs - now_secs;
+    if remaining > max_remaining_secs {
+        log::warn!(
+            "[SW] {what} expiry is implausibly far in the future \
+             (expires_at={expires_at_secs}, now={now_secs}, remaining={remaining}s, \
+             max={max_remaining_secs}s); treating as expired — likely local wall-clock \
+             rollback or corrupt persisted state, artifact will be re-issued"
+        );
+        return true;
+    }
+    false
+}
+
 type StreamHandler = Rc<RefCell<Box<dyn FnMut(Bytes)>>>;
 
 #[derive(Serialize)]
@@ -171,7 +247,7 @@ impl SignalingClient {
         // Wait for open (max 15s)
         let ws_clone = ws.clone();
         let open_future = async move {
-            let start = js_sys::Date::now();
+            let start = monotonic_now_ms();
             loop {
                 if ws_clone.ready_state() == WebSocket::OPEN {
                     return Ok(());
@@ -179,7 +255,7 @@ impl SignalingClient {
                 if ws_clone.ready_state() == WebSocket::CLOSED {
                     return Err(JsValue::from_str("WebSocket closed"));
                 }
-                if js_sys::Date::now() - start > 15000.0 {
+                if monotonic_now_ms() - start > 15000.0 {
                     return Err(JsValue::from_str("WebSocket connect timeout"));
                 }
                 TimeoutFuture::new(10).await;
@@ -897,7 +973,12 @@ impl SwRuntime {
         }
         let expires_at = u64::from_le_bytes(expires_bytes.as_slice().try_into().unwrap());
         let now_secs = (js_sys::Date::now() / 1000.0) as u64;
-        if now_secs >= expires_at {
+        if expired_or_implausibly_far(
+            expires_at,
+            now_secs,
+            MAX_RENEWAL_TOKEN_REMAINING_SECS,
+            "persisted renewal token",
+        ) {
             let _ = kv.delete("renewal_token").await;
             let _ = kv.delete("renewal_token_expires_at").await;
             return Ok(None);
@@ -989,9 +1070,14 @@ impl SwRuntime {
 
         // Check if TurnCredential is still valid
         let now_secs = (js_sys::Date::now() / 1000.0) as u64;
-        if tc.expires_at <= now_secs {
+        if expired_or_implausibly_far(
+            tc.expires_at,
+            now_secs,
+            MAX_CREDENTIAL_REMAINING_SECS,
+            "persisted TurnCredential",
+        ) {
             log::info!(
-                "[SW] persisted TurnCredential expired (expires_at={}, now={})",
+                "[SW] persisted TurnCredential expired or implausible (expires_at={}, now={})",
                 tc.expires_at,
                 now_secs
             );
@@ -1070,9 +1156,14 @@ impl SwRuntime {
             .map_err(|e| JsValue::from_str(&format!("Failed to decode identity claims: {e}")))?;
 
         let now_secs = (js_sys::Date::now() / 1000.0) as u64;
-        if claims.expires_at <= now_secs {
+        if expired_or_implausibly_far(
+            claims.expires_at,
+            now_secs,
+            MAX_CREDENTIAL_REMAINING_SECS,
+            "persisted credential",
+        ) {
             log::info!(
-                "[SW] persisted credential expired (expires_at={}, now={})",
+                "[SW] persisted credential expired or implausible (expires_at={}, now={})",
                 claims.expires_at,
                 now_secs
             );
@@ -3800,4 +3891,57 @@ fn bytes_to_base64(data: &[u8]) -> String {
 /// URL-encode a string using JS `encodeURIComponent`.
 fn js_encode_uri_component(s: &str) -> String {
     js_sys::encode_uri_component(s).into()
+}
+
+#[cfg(test)]
+mod expiry_guard_tests {
+    use super::{
+        MAX_CREDENTIAL_REMAINING_SECS, MAX_RENEWAL_TOKEN_REMAINING_SECS, expired_or_implausibly_far,
+    };
+    use wasm_bindgen_test::*;
+
+    const NOW: u64 = 1_700_000_000;
+
+    #[wasm_bindgen_test]
+    fn past_and_present_deadlines_are_expired() {
+        assert!(expired_or_implausibly_far(NOW - 1, NOW, 3600, "test"));
+        assert!(expired_or_implausibly_far(0, NOW, 3600, "test"));
+        // Exactly now -> expired (`<=`), matching the naive comparison.
+        assert!(expired_or_implausibly_far(NOW, NOW, 3600, "test"));
+    }
+
+    #[wasm_bindgen_test]
+    fn deadlines_within_the_plausible_window_pass_unchanged() {
+        assert!(!expired_or_implausibly_far(NOW + 1, NOW, 3600, "test"));
+        assert!(!expired_or_implausibly_far(NOW + 3599, NOW, 3600, "test"));
+        // Exactly at the bound is still plausible (`>` triggers, not `>=`).
+        assert!(!expired_or_implausibly_far(NOW + 3600, NOW, 3600, "test"));
+    }
+
+    #[wasm_bindgen_test]
+    fn implausibly_far_deadlines_are_treated_as_expired() {
+        // One second past the bound.
+        assert!(expired_or_implausibly_far(NOW + 3601, NOW, 3600, "test"));
+
+        // Wall-clock rollback simulation: a credential persisted with a 1 h
+        // TTL looks 30 days + 1 h "remaining" after the local clock is set
+        // back 30 days; the naive comparison would honor it for the whole
+        // rollback.
+        let issued_expiry = NOW + 3600;
+        let rolled_back_now = NOW - 30 * 24 * 3600;
+        assert!(expired_or_implausibly_far(
+            issued_expiry,
+            rolled_back_now,
+            MAX_CREDENTIAL_REMAINING_SECS,
+            "test"
+        ));
+
+        // Absurd persisted bytes (corrupt state).
+        assert!(expired_or_implausibly_far(
+            u64::MAX,
+            NOW,
+            MAX_RENEWAL_TOKEN_REMAINING_SECS,
+            "test"
+        ));
+    }
 }

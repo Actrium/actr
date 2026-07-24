@@ -284,7 +284,9 @@ impl Monitor for BasicMonitor {
 
         self.metrics.push(metric);
 
-        // Clean up expired metrics
+        // Clean up expired metrics. Wall-clock cutoff against wall-clock
+        // metric timestamps is intentional (same time base); a clock jump
+        // only shifts how much observational data is retained.
         let cutoff =
             Utc::now() - chrono::Duration::seconds(self.config.metrics_retention_seconds as i64);
         self.metrics.retain(|m| m.timestamp > cutoff);
@@ -293,6 +295,7 @@ impl Monitor for BasicMonitor {
     }
 
     fn get_metrics(&self, name: &str, duration_seconds: u64) -> ActorResult<Vec<Metric>> {
+        // Same intentional wall-clock cutoff as in `record_metric`.
         let cutoff = Utc::now() - chrono::Duration::seconds(duration_seconds as i64);
 
         let metrics: Vec<Metric> = self

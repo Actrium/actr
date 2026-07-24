@@ -236,7 +236,10 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
     private weak var networkEventMonitor: NetworkEventMonitor?
     private let queue: DispatchQueue
     private var observers: [NSObjectProtocol] = []
-    private var backgroundedAt: Date?
+    /// CLOCK_MONOTONIC nanoseconds captured when the app entered background,
+    /// nil while in foreground. On Darwin this clock keeps advancing during
+    /// system sleep and is immune to wall-clock adjustments.
+    private var backgroundedAtNs: UInt64?
 
     init(handle: NetworkEventHandleWrapper, networkEventMonitor: NetworkEventMonitor) {
         self.handle = handle
@@ -289,8 +292,11 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
 
     private func handleDidEnterBackground() {
         let timestamp = formattedTimestamp()
-        if backgroundedAt == nil {
-            backgroundedAt = Date()
+        if backgroundedAtNs == nil {
+            // CLOCK_MONOTONIC on Darwin keeps ticking across system sleep and
+            // ignores wall-clock changes. Date() jumps when the clock is set;
+            // ProcessInfo.systemUptime / mach_absolute_time pause during sleep.
+            backgroundedAtNs = clock_gettime_nsec_np(CLOCK_MONOTONIC)
             print("🔵 App entered background: time=\(timestamp)")
             notifyLifecycleChanged(state: .background)
         } else {
@@ -300,16 +306,18 @@ private final class AppLifecycleMonitor: @unchecked Sendable {
 
     private func handleWillEnterForeground() {
         let timestamp = formattedTimestamp()
-        guard let backgroundedAt else {
+        guard let backgroundedAtNs else {
             print("🟢 App entered foreground (no background timestamp): time=\(timestamp)")
             notifyLifecycleChanged(state: .foreground(backgroundDurationMs: 0))
             networkEventMonitor?.notifyCurrentPath()
             return
         }
 
-        self.backgroundedAt = nil
-        let duration = Date().timeIntervalSince(backgroundedAt)
-        let durationMs = UInt64(max(0, duration * 1000).rounded())
+        self.backgroundedAtNs = nil
+        let nowNs = clock_gettime_nsec_np(CLOCK_MONOTONIC)
+        // Saturating subtraction: CLOCK_MONOTONIC never goes backwards, but
+        // guard against a wrap rather than trapping on UInt64 underflow.
+        let durationMs = nowNs >= backgroundedAtNs ? (nowNs - backgroundedAtNs) / 1_000_000 : 0
         print("🟢 App entered foreground: time=\(timestamp), backgroundDurationMs=\(durationMs)")
         notifyLifecycleChanged(state: .foreground(backgroundDurationMs: durationMs))
         networkEventMonitor?.notifyCurrentPath()

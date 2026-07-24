@@ -182,8 +182,16 @@ async fn soft_renewal_fires_credential_renewed_hook() {
             expires_at: OLD_EXPIRY as u64,
         },
         renewal_token: Bytes::from(vec![7; 32]),
+        // Within the plausible issuance window measured from the real
+        // wall clock: the renewal-token pre-check treats implausibly far
+        // expiries (like the far-future OLD_EXPIRY placeholder) as expired
+        // and would divert into hard rebind.
         renewal_token_expires_at: prost_types::Timestamp {
-            seconds: OLD_EXPIRY + 1000,
+            seconds: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                + 3600,
             nanos: 0,
         },
         generation: 1,
@@ -365,8 +373,30 @@ fn is_expired_past_and_future() {
     // Exactly now → expired (<=).
     assert!(is_expired(now));
 
-    // Far future → not expired.
+    // Within the plausible issuance window → not expired.
     assert!(!is_expired(now + 3600));
+    assert!(!is_expired(
+        now + crate::lifecycle::expiry::MAX_RENEWAL_TOKEN_REMAINING_SECS
+    ));
+}
+
+/// A remaining lifetime no well-formed AIS issuance can produce — the view
+/// after a local wall-clock rollback — is conservatively treated as expired,
+/// routing into hard rebind instead of honoring the token indefinitely.
+#[test]
+fn is_expired_treats_implausibly_far_expiry_as_expired() {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // One second beyond the plausible bound.
+    assert!(is_expired(
+        now + crate::lifecycle::expiry::MAX_RENEWAL_TOKEN_REMAINING_SECS + 1
+    ));
+
+    // A year of apparent remaining lifetime (clock rolled back ~1 year).
+    assert!(is_expired(now + 365 * 24 * 3600));
 }
 
 #[tokio::test]

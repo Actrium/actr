@@ -200,6 +200,47 @@ async fn send_envelope_times_out_while_waiting_for_sink_lock() {
         .expect("send timeout should wake the reconnect manager");
 }
 
+/// RFC-0419 §6 R4 double-sided deadline boundary for the signaling send
+/// timeout: one millisecond before `SIGNALING_SEND_TIMEOUT_SECS` the send is
+/// still pending; once the virtual clock reaches the deadline it times out
+/// (fires no earlier than its instant).
+#[tokio::test(start_paused = true)]
+async fn send_envelope_timeout_fires_no_earlier_than_its_deadline() {
+    let client = make_ws_client(make_config());
+    client.connected.store(true, Ordering::Release);
+    let _sink_guard = client.ws_sink.lock().await;
+
+    let send_task = {
+        let client = Arc::clone(&client);
+        tokio::spawn(async move { client.send_envelope(SignalingEnvelope::default()).await })
+    };
+    // Let the send reach the stalled sink lock so its timeout timer is armed
+    // at the current virtual instant.
+    tokio::task::yield_now().await;
+
+    tokio::time::advance(
+        Duration::from_secs(SIGNALING_SEND_TIMEOUT_SECS) - Duration::from_millis(1),
+    )
+    .await;
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !send_task.is_finished(),
+        "signaling send must stay pending one tick before its deadline"
+    );
+
+    tokio::time::advance(Duration::from_millis(1)).await;
+    let err = send_task
+        .await
+        .expect("send task should join")
+        .expect_err("reaching the deadline must time out the send");
+    assert!(
+        err.to_string().contains("sink lock/send timed out"),
+        "unexpected error: {err}"
+    );
+}
+
 #[tokio::test]
 async fn send_envelope_failure_publishes_disconnect_and_requests_reconnect() {
     let client = make_ws_client(make_config());
@@ -1139,5 +1180,32 @@ async fn test_fake_client_tracks_connect_calls() {
         client.connect_calls.load(UsizeOrdering::SeqCst),
         3,
         "FakeSignalingClient should accurately track connect call count"
+    );
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 13. Pong liveness watchdog time base
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+#[test]
+fn pong_staleness_is_a_pure_monotonic_difference() {
+    // Within the timeout window: alive.
+    assert!(!pong_is_stale(5, 0, PONG_TIMEOUT_SECS));
+    // Exactly at the timeout boundary: still alive (strict '>' comparison).
+    assert!(!pong_is_stale(PONG_TIMEOUT_SECS, 0, PONG_TIMEOUT_SECS));
+    // One second past the timeout: stale.
+    assert!(pong_is_stale(PONG_TIMEOUT_SECS + 1, 0, PONG_TIMEOUT_SECS));
+    // A last_pong ahead of now (startup race) saturates to age zero
+    // instead of underflowing into a huge age.
+    assert!(!pong_is_stale(0, 5, PONG_TIMEOUT_SECS));
+}
+
+#[test]
+fn monotonic_secs_never_decreases() {
+    let earlier = monotonic_secs();
+    let later = monotonic_secs();
+    assert!(
+        later >= earlier,
+        "monotonic time base must never move backwards"
     );
 }

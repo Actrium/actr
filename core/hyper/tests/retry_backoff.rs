@@ -236,6 +236,89 @@ async fn rpc_signal_retries_once_then_fails_with_correct_backoff() {
     );
 }
 
+/// RFC-0419 §6 R4 double-sided deadline boundary for the retry backoff: the
+/// 500 ms `RpcSignal` backoff must NOT release the retry one millisecond
+/// before its deadline and MUST release it once the virtual clock reaches
+/// the deadline (fires no earlier than its instant).
+///
+/// Unlike the lower-bound-only assertions above, this test drives the send in
+/// a spawned task and advances virtual time manually, so auto-advance cannot
+/// blur the boundary.
+#[tokio::test(start_paused = true)]
+async fn rpc_signal_backoff_fires_no_earlier_than_its_deadline() {
+    let builder = ControlledWireBuilder::new(u32::MAX); // always fail
+    let calls_ref = Arc::clone(&builder.calls);
+    let call_times_ref = Arc::clone(&builder.call_times);
+
+    let transport = Arc::new(PeerTransport::new(local_actor_id(), Arc::new(builder)));
+    let gate = Arc::new(PeerGate::new(transport, None));
+
+    let send_task = {
+        let gate = Arc::clone(&gate);
+        let target = test_actor_id();
+        tokio::spawn(async move {
+            gate.send_message_with_type(&target, PayloadType::RpcSignal, signal_envelope())
+                .await
+        })
+    };
+
+    // Attempt 1 requires no virtual delay: only yield, never advance.
+    for _ in 0..100 {
+        if calls_ref.load(Ordering::Relaxed) >= 1 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        calls_ref.load(Ordering::Relaxed),
+        1,
+        "first attempt must happen without any virtual time"
+    );
+
+    // The backoff sleep is armed in the same poll chain that recorded the
+    // attempt-1 timestamp, so its deadline is attempt-1 + 500 ms exactly.
+    let deadline = {
+        let times = call_times_ref.lock().unwrap();
+        times[0] + Duration::from_millis(500)
+    };
+
+    // One tick before the deadline: still exactly one attempt.
+    let just_before = deadline - Duration::from_millis(1) - Instant::now();
+    tokio::time::advance(just_before).await;
+    for _ in 0..100 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        calls_ref.load(Ordering::Relaxed),
+        1,
+        "retry must not fire before its backoff deadline"
+    );
+    assert!(
+        !send_task.is_finished(),
+        "send must stay pending while the backoff holds"
+    );
+
+    // Reaching the deadline releases the retry.
+    tokio::time::advance(Duration::from_millis(1)).await;
+    for _ in 0..100 {
+        if calls_ref.load(Ordering::Relaxed) >= 2 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        calls_ref.load(Ordering::Relaxed),
+        2,
+        "retry must fire once the backoff deadline is reached"
+    );
+
+    let result = send_task.await.expect("send task should join");
+    assert!(
+        result.is_err(),
+        "RpcSignal exhausts its 2-attempt budget when every attempt fails"
+    );
+}
+
 /// Non-retryable errors (`NetworkError::ConfigurationError` → `ErrorKind::Client`)
 /// must be returned immediately without consuming any retry budget.
 ///

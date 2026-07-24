@@ -33,6 +33,8 @@ uuid.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+# `test-utils` pulls in the shared executable MonotonicClock contract suite.
+actr-platform-traits = { workspace = true, features = ["test-utils"] }
 rand.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true }
