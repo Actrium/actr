@@ -426,6 +426,28 @@ enum AuthVerdictAction {
     NotAVerdict,
 }
 
+/// Pacing decision for reconnecting with a re-acquired credential.
+///
+/// The first `Reacquired` round in a reconnect cycle retries immediately —
+/// that is the normal "credential expired, renewed, reconnect" path. Every
+/// consecutive round after it means signaling rejected a credential that AIS
+/// just minted, so the caller must sleep the returned delay before restarting
+/// the cycle; otherwise renew/reconnect spins at network latency.
+fn reacquire_pacing_delay(
+    reacquired_rounds: u32,
+    pacing: &mut impl Iterator<Item = std::time::Duration>,
+    max_delay_secs: u64,
+) -> Option<std::time::Duration> {
+    if reacquired_rounds <= 1 {
+        return None;
+    }
+    Some(
+        pacing
+            .next()
+            .unwrap_or(std::time::Duration::from_secs(max_delay_secs)),
+    )
+}
+
 /// WebSocket signaling clientImplementation
 pub struct WebSocketSignalingClient {
     config: SignalingConfig,
@@ -750,6 +772,21 @@ impl WebSocketSignalingClient {
             }
         }
 
+        // Pacing for re-acquired credentials. A renewed credential normally
+        // reconnects immediately, but when signaling keeps rejecting freshly
+        // published credentials (stale validator key cache, misconfiguration)
+        // every rejection triggers another AIS renewal and another immediate
+        // handshake — a tight loop at network latency that burns the AIS and
+        // connection rate budget. This backoff lives OUTSIDE the 'cycle loop
+        // so it survives the per-cycle backoff reconstruction and paces every
+        // consecutive renew/reconnect round after the first.
+        let mut reacquired_rounds: u32 = 0;
+        let mut reacquire_pacing = ExponentialBackoff::builder()
+            .initial_delay(std::time::Duration::from_secs(cfg.initial_delay.max(1)))
+            .max_delay(std::time::Duration::from_secs(cfg.max_delay.max(1)))
+            .with_jitter()
+            .build();
+
         'cycle: loop {
             let backoff_reset_generation = self
                 .reconnect_backoff_reset_generation
@@ -811,9 +848,43 @@ impl WebSocketSignalingClient {
                         // the SAME credential (honoring Retry-After for 503).
                         match self.handle_auth_verdict(&e).await {
                             AuthVerdictAction::Reacquired => {
-                                tracing::info!(
-                                    "🔑 Reconnecting with re-acquired credential after auth verdict"
+                                reacquired_rounds = reacquired_rounds.saturating_add(1);
+                                let Some(pacing_delay) = reacquire_pacing_delay(
+                                    reacquired_rounds,
+                                    &mut reacquire_pacing,
+                                    cfg.max_delay.max(1),
+                                ) else {
+                                    tracing::info!(
+                                        "🔑 Reconnecting with re-acquired credential after auth verdict"
+                                    );
+                                    continue 'cycle;
+                                };
+
+                                // The credential publication wake stores a
+                                // notify permit, so this delay deliberately
+                                // does NOT select on `reconnect_notify` — it
+                                // would resolve immediately and defeat the
+                                // pacing. Cancellation is re-checked below.
+                                tracing::warn!(
+                                    reacquired_rounds,
+                                    delay_secs = pacing_delay.as_secs(),
+                                    "⚠️ Signaling rejected a freshly renewed credential again; \
+                                     pacing the next renew/reconnect round to protect the AIS \
+                                     and connection rate budget"
                                 );
+                                tokio::time::sleep(pacing_delay).await;
+                                if Arc::strong_count(self) <= 1 {
+                                    tracing::debug!(
+                                        "Stopping signaling auto-reconnect cycle after owner drop"
+                                    );
+                                    return;
+                                }
+                                if self.auto_reconnect_cancelled(generation) {
+                                    tracing::debug!(
+                                        "Stopping signaling auto-reconnect cycle after explicit disconnect"
+                                    );
+                                    return;
+                                }
                                 continue 'cycle;
                             }
                             AuthVerdictAction::RetrySameCredential => {
