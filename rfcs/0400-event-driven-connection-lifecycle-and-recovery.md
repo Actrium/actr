@@ -780,9 +780,11 @@ includes old-generation teardown, so it creates no separate `CleanupWork`.
 `RecoveryPauseRequested` sends `ExplicitPause` to the recovery-domain gates
 in scope; `RecoveryResumeRequested` and `ConfigurationChanged` are release
 triggers matched against recorded release masks.
-`CompletedWithResiduals` and `Abandoned` are valid only for teardown kinds
-(cleanup and confirmed offline disconnect) and are success-class outcomes:
-both extinguish the obligation while reporting residual diagnostics. Every
+`Abandoned` is valid only for teardown kinds (cleanup and confirmed offline
+disconnect). `CompletedWithResiduals` is valid for teardown kinds and for
+peer-scoped recovery completions under the per-peer coverage contract. Both
+are success-class outcomes: they extinguish the obligation while reporting
+residual diagnostics. Every
 derivation from an accepted input to machine inputs is defined exclusively
 by the normative policy translation section below.
 
@@ -1536,30 +1538,66 @@ dispatch, is what completes the effect:
    discarded and covers nothing — the per-peer analogue of the
    effect-level `action_id` and `policy_revision` guard;
 4. the effect's single terminal `EffectCompleted` is synthesized from
-   per-peer terminal facts only:
+   per-peer terminal facts and committed handoffs only. Synthesis
+   distinguishes diagnosis scope: a **shared-scope** diagnosis names a
+   defect whose remedy is shared-layer work — the signaling generation,
+   the path, credentials, or configuration — while a **peer-scoped**
+   diagnosis names one peer's transport or ICE state and implies nothing
+   about the other targets:
    - `Succeeded` requires every target to be covered by a valid success
      fact;
-   - an uncovered target whose failure the classification table can
-     retry yields `Failed { diagnosis }` carrying the most severe
-     representative diagnosis, with per-peer detail attached as
-     diagnostics; the standard classification verdict applies and the
+   - a shared-scope failure yields `Failed { diagnosis }` carrying the
+     most severe shared-scope diagnosis, with per-peer detail attached
+     as diagnostics; the standard classification verdict applies and the
      obligation is retained, and a retry derives its target set afresh
      from current facts, so peers that recovered in the meantime drop
      out;
+   - once the effect's shared prerequisites — its non-peer-scoped work,
+     such as restoring the signaling generation — have completed, a
+     target that is still unfinished, or whose failure is peer-scoped
+     and retryable, is covered by a committed handoff rather than by
+     holding the lifecycle slot until that peer terminates: before the
+     effect completes, the peer's resource owner records one
+     resource-scoped recovery obligation carrying that target's identity
+     tuple, and the completion is `CompletedWithResiduals` with one
+     handoff residual naming the tuple and the receiving owner.
+     Dispatch alone is not a handoff: the handoff exists only when the
+     receiving owner has recorded the obligation and acknowledged the
+     record to the effect;
    - an uncovered target that is conclusively out of scope — the peer
      left the session or the session ended — yields
      `CompletedWithResiduals` with one residual per uncovered peer,
      naming its identity tuple and reason;
    - an `Abandon` verdict keeps its existing bounded-teardown semantics;
-5. `RecoveryIntent` is discharged only by full coverage or by an explicit
-   residual or abandon record, both auditable; there is no silent
-   partial success.
+5. `RecoveryIntent` is discharged only by full coverage or by explicit
+   handoff, residual, or abandon records, all auditable; there is no
+   silent partial success.
+
+A handed-off obligation is durable in the sense of this RFC's obligation
+model, not persisted storage: its owner retains it across event batches,
+offline intervals, and foreground/background transitions, and it ends only
+through that owner's enumerated extinguishment paths — success
+acknowledgement validated by the identity tuple, supersession of the
+peer's session or ICE generation, peer departure, or owner lifetime end —
+each recorded with the path taken. Completion, retry, and backoff for a
+handed-off target stay peer-scoped: the owner runs its per-peer
+single-flight task under the same typed-diagnosis and capped, jittered
+backoff rules, its retry delays are the ICE-restart `Failure backoff`
+entries already in the audited timer inventory, and no supervisor retry
+gate is created — peers still do not enter the supervisor's machines. A
+per-peer outcome propagates to lifecycle recovery only by scope: when the
+owner's classification concludes the remedy is shared-layer work, it
+reports a normalized supervisor fact, as `SignalingGenerationLost` does,
+which derives lifecycle intent at a new revision; a peer-scoped failure
+alone never fails, escalates, or parks the lifecycle record.
 
 For example, if Reconnect fans out to three peers and one terminal fact
 arrives bearing a superseded ICE generation, that fact is discarded: two
 targets are covered, one is not, and the effect MUST NOT report
-`Succeeded`. It fails with the uncovered peer's representative diagnosis
-or, if that peer has left the session, completes with one named residual.
+`Succeeded`. If the uncovered peer is still in scope, the effect commits
+a handoff to that peer's resource owner and completes with one handoff
+residual; if the peer has left the session, it completes with one named
+out-of-scope residual; only a shared-scope diagnosis fails the effect.
 
 ### Cleanup bounded completion
 
@@ -2059,9 +2097,16 @@ Implementations conforming to this RFC must demonstrate:
     by its origin and cannot make that effect's own completion stale.
 33. A peer-scoped recovery effect never reports a success-class outcome for
     dispatch alone: every target peer is either covered by an
-    identity-validated terminal fact matching its captured identity tuple
-    or named in a recorded residual before `RecoveryIntent` is
-    acknowledged.
+    identity-validated terminal fact matching its captured identity tuple,
+    covered by a committed, identity-tracked handoff to a resource-scoped
+    recovery obligation, or named in a recorded residual before
+    `RecoveryIntent` is acknowledged.
+34. Peer-scoped and shared-scope recovery stay isolated: a handed-off
+    obligation retries under its owner's peer-scoped gate and ends only
+    through a recorded extinguishment path; a peer-scoped failure alone
+    never fails, escalates, or parks lifecycle recovery; and only a
+    shared-scope diagnosis, reported as a normalized supervisor fact,
+    derives new lifecycle intent.
 
 ## Drawbacks
 
@@ -2215,7 +2260,7 @@ RFC, and every existing production timer has one inventory entry.
   and offline barrier semantics;
 - separate event acceptance from effect completion.
 
-Acceptance criteria: invariants 1 through 11 and 25 through 33 pass under
+Acceptance criteria: invariants 1 through 11 and 25 through 34 pass under
 paused-time and deterministic interleaving tests without scheduler sleeps,
 including full reducer coverage of the translation and classification
 tables.
