@@ -47,9 +47,9 @@ governor = "0.10"
 
 
 # Internal dependencies
-platform = { path = "../platform", package = "actrix-platform", version = "0.5.4" }
-signer = { path = "../signer", package = "actrix-signer", version = "0.5.4" }
-actrix-mfr = { path = "../mfr", version = "0.5.4" }
+platform = { path = "../platform", package = "actrix-platform", version = "0.5.5" }
+signer = { path = "../signer", package = "actrix-signer", version = "0.5.5" }
+actrix-mfr = { path = "../mfr", version = "0.5.5" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
